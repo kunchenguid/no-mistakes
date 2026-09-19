@@ -5,7 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	githubscm "github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -148,11 +152,268 @@ func TestSyncHelpExposesGuardedModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
-		for _, want := range []string{"fast-forward", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves"} {
+		for _, want := range []string{"fast-forward", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves", "--accept-repository-rename", "same-ID GitHub"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%v help missing %q:\n%s", args, want, out)
 			}
 		}
+	}
+}
+
+// TestAxiSyncRepositoryRenameContinuation uses a fake authenticated GitHub
+// response (not a live provider) but drives the real AXI command, SQLite state,
+// and local Git transitions. It reproduces the terminal failed-run sequence:
+// the canonical existing PR is discoverable, init-equivalent URL refresh makes
+// the old push fingerprint target_changed, and the explicit migration preserves
+// source/history while returning rerun as the supported continuation.
+func TestAxiSyncRepositoryRenameContinuation(t *testing.T) {
+	for _, rerunHistory := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rerun_history=%t", rerunHistory), func(t *testing.T) {
+			testAxiSyncRepositoryRenameContinuation(t, rerunHistory)
+		})
+	}
+}
+
+func testAxiSyncRepositoryRenameContinuation(t *testing.T, rerunHistory bool) {
+	f := newCLISyncFixture(t)
+	if out, err := executeCmd("axi", "sync"); err != nil {
+		t.Fatalf("prepare synchronized source: %v\n%s", err, out)
+	}
+	const (
+		previous = "https://github.com/owner/previous"
+		current  = "https://github.com/org/current"
+	)
+	fakeBin := t.TempDir()
+	ghPath := filepath.Join(fakeBin, "gh")
+	if runtime.GOOS == "windows" {
+		ghPath += ".exe"
+	}
+	ghSource := filepath.Join(fakeBin, "gh.go")
+	ghProgram := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := strings.Join(os.Args[1:], " ")
+	switch args {
+	case "pr list --head feature/sync --base main --repo owner/previous --state open --json number,url,baseRefName":
+		fmt.Println("[{\"number\":42,\"url\":\"https://github.com/org/current/pull/42\",\"baseRefName\":\"main\"}]")
+	case "api --hostname github.com repos/owner/previous", "api --hostname github.com repos/org/current":
+		if os.Getenv("FAKE_RENAME_IDENTITY") == "offline" {
+			os.Exit(1)
+		}
+		if os.Getenv("FAKE_RENAME_IDENTITY") == "different_id" && strings.HasSuffix(args, "repos/org/current") {
+			fmt.Println("{\"id\":9999,\"full_name\":\"org/current\"}")
+			return
+		}
+		fmt.Println("{\"id\":1234,\"full_name\":\"org/current\"}")
+	default:
+		fmt.Fprintln(os.Stderr, "unexpected gh command:", args)
+		os.Exit(2)
+	}
+}
+`
+	if err := os.WriteFile(ghSource, []byte(ghProgram), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("go", "build", "-o", ghPath, ghSource).CombinedOutput(); err != nil {
+		t.Fatalf("build fake gh: %v\n%s", err, out)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmdFactory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, name, args...)
+	}
+	host := githubscm.New(cmdFactory, func() bool { return true }, "github.com", "owner/previous")
+	pr, err := host.FindPR(context.Background(), "feature/sync", "main")
+	if err != nil || pr == nil || pr.URL != "https://github.com/org/current/pull/42" {
+		t.Fatalf("canonical existing PR discovery = (%+v, %v)", pr, err)
+	}
+	t.Logf("Fixture GitHub PR discovery: number=%s url=%s", pr.Number, pr.URL)
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.GetRun(f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var older *db.Run
+	var olderSteps []*db.StepResult
+	var olderRounds []*db.StepRound
+	if rerunHistory {
+		if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{HeadSHA: f.old, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(previous), Ref: "refs/heads/feature/sync"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateRunErrorStatus(run.ID, "failed after preserving a repair", types.RunFailed); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateRunIntent(run.ID, db.RunIntent{Summary: "preserve every source fix", Source: "explicit"}); err != nil {
+			t.Fatal(err)
+		}
+		olderStep, err := database.InsertStepResult(run.ID, types.StepCI)
+		if err != nil {
+			t.Fatal(err)
+		}
+		olderFindings := `{"items":[{"id":"older-repair","severity":"error","description":"repair preserved but validation failed"}]}`
+		if _, err := database.InsertStepRound(olderStep.ID, 1, "auto_fix", &olderFindings, nil, 17); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.FailStep(olderStep.ID, "failed after preserving a repair", 21); err != nil {
+			t.Fatal(err)
+		}
+		older, err = database.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		olderSteps, err = database.GetStepsByRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		olderRounds, err = database.GetRoundsByStep(olderStep.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cliGit(t, f.local, "clone", "--bare", f.local, p.RepoDir(run.RepoID))
+		run, err = database.InsertRun(run.RepoID, run.Branch, f.pushed, f.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(previous), Ref: "refs/heads/feature/sync"}); err != nil {
+		t.Fatal(err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepPR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"items":[{"id":"rename-association","severity":"error","description":"canonical PR association failed"}]}`
+	if _, err := database.InsertStepRound(step.ID, 1, "execute", &findings, nil, 19); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FailStep(step.ID, "canonical PR association failed", 23); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunErrorStatus(run.ID, "canonical PR association failed", types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	before, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.UpdateRepoMetadata(before.RepoID, current, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Keep all remote traffic local while making the registered locator exactly
+	// match the GitHub name used by the production identity verifier.
+	cliGit(t, f.local, "config", "url."+f.remote+".insteadOf", current)
+	beforeHistory := cliGit(t, f.local, "rev-list", "HEAD")
+	statusArgs := []string{"axi", "status"}
+	wantInitialState := "state: target_changed"
+	if rerunHistory {
+		statusArgs = append(statusArgs, "--run", older.ID)
+		wantInitialState = "state: pipeline_owned"
+	}
+	out, err := executeCmd(statusArgs...)
+	if err != nil || !strings.Contains(out, wantInitialState) {
+		t.Fatalf("rename failure not reproduced: %v\n%s", err, out)
+	}
+	t.Logf("Before rename acceptance — no-mistakes %s:\n%s", strings.Join(statusArgs, " "), out)
+	for _, mode := range []string{"offline", "different_id"} {
+		t.Setenv("FAKE_RENAME_IDENTITY", mode)
+		out, err = executeCmd("axi", "sync", "--accept-repository-rename", previous)
+		if err == nil || !strings.Contains(out, "changed: false") || !strings.Contains(out, "blocked_repository_rename_identity_unverified") {
+			t.Fatalf("unverified identity %s did not refuse: %v\n%s", mode, err, out)
+		}
+		t.Logf("Identity refusal (%s) — no-mistakes axi sync --accept-repository-rename %s:\n%s", mode, previous, out)
+	}
+	t.Setenv("FAKE_RENAME_IDENTITY", "")
+	out, err = executeCmd("axi", "sync", "--accept-repository-rename", previous)
+	if err != nil {
+		t.Fatalf("rename continuation: %v\n%s", err, out)
+	}
+	t.Logf("Verified acceptance — no-mistakes axi sync --accept-repository-rename %s:\n%s", previous, out)
+	for _, want := range []string{"state: synchronized", "changed: true", "safety: repository_rename_accepted", "freshness: live", "code: rerun_pipeline", "command: no-mistakes rerun"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rename continuation missing %q:\n%s", want, out)
+		}
+	}
+	out, err = executeCmd("axi", "sync", "--accept-repository-rename", previous)
+	if err != nil || !strings.Contains(out, "changed: false") || !strings.Contains(out, "safety: repository_rename_already_accepted") {
+		t.Fatalf("idempotent repetition = %v\n%s", err, out)
+	}
+	t.Logf("Repeated acceptance — no-mistakes axi sync --accept-repository-rename %s:\n%s", previous, out)
+	out, err = executeCmd("axi", "status")
+	if err != nil || !strings.Contains(out, run.ID) || !strings.Contains(out, "outcome: failed") || strings.Contains(out, "branch_sync:") {
+		t.Fatalf("cached continuation did not preserve the failed outcome: %v\n%s", err, out)
+	}
+	t.Logf("Cached inspection — no-mistakes axi status:\n%s", out)
+	out, err = executeCmd("axi", "sync", "--check")
+	if err != nil || !strings.Contains(out, "state: synchronized") || !strings.Contains(out, "freshness: live") {
+		t.Fatalf("live continuation: %v\n%s", err, out)
+	}
+	t.Logf("Fresh local-remote inspection — no-mistakes axi sync --check:\n%s", out)
+	if got := cliGit(t, f.local, "rev-list", "HEAD"); got != beforeHistory {
+		t.Fatalf("continuation rewrote source history:\nbefore %s\nafter %s", beforeHistory, got)
+	}
+	cliGit(t, f.local, "merge-base", "--is-ancestor", f.old, f.pushed)
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("continuation moved HEAD = %s, want %s", got, f.pushed)
+	}
+	t.Logf("Unchanged source history — git rev-list HEAD:\n%s", beforeHistory)
+
+	database, err = db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	after, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != types.RunFailed || after.Error == nil || *after.Error != "canonical PR association failed" || after.HeadSHA != before.HeadSHA ||
+		after.LastPushedSHA == nil || *after.LastPushedSHA != f.pushed || after.PushTargetFingerprint == nil || *after.PushTargetFingerprint != branchsync.TargetFingerprint(current) ||
+		after.PushGeneration == nil || *after.PushGeneration != *before.PushGeneration || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("failed-run evidence changed: before=%+v after=%+v", before, after)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 || steps[0].Status != types.StepStatusFailed {
+		t.Fatalf("validation steps changed: %+v, %v", steps, err)
+	}
+	rounds, err := database.GetRoundsByStep(step.ID)
+	if err != nil || len(rounds) != 1 || rounds[0].FindingsJSON == nil || *rounds[0].FindingsJSON != findings {
+		t.Fatalf("validation rounds changed: %+v, %v", rounds, err)
+	}
+	t.Logf("Persisted selected run: status=%s error=%q head=%s pushed=%s generation=%d updated_at=%d\nPreserved PR findings: %s", after.Status, *after.Error, after.HeadSHA, *after.LastPushedSHA, *after.PushGeneration, after.UpdatedAt, *rounds[0].FindingsJSON)
+	if older != nil {
+		preserved, err := database.GetRun(older.ID)
+		if err != nil || !reflect.DeepEqual(older, preserved) {
+			t.Fatalf("historical run changed: before=%+v after=%+v, %v", older, preserved, err)
+		}
+		steps, err := database.GetStepsByRun(older.ID)
+		if err != nil || !reflect.DeepEqual(olderSteps, steps) {
+			t.Fatalf("historical steps changed: %+v, %v", steps, err)
+		}
+		rounds, err := database.GetRoundsByStep(olderSteps[0].ID)
+		if err != nil || !reflect.DeepEqual(olderRounds, rounds) {
+			t.Fatalf("historical findings and rounds changed: %+v, %v", rounds, err)
+		}
+		t.Logf("Preserved older run: status=%s error=%q head=%s pushed=%s fingerprint=%s intent=%q\nPreserved CI findings: %s", preserved.Status, *preserved.Error, preserved.HeadSHA, *preserved.LastPushedSHA, *preserved.PushTargetFingerprint, *preserved.Intent, *rounds[0].FindingsJSON)
 	}
 }
 
@@ -1318,9 +1579,13 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"sync", "--keep-local"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--recover"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--yes"},
+		{"sync", "--accept-repository-rename", "", "--yes"},
+		{"sync", "--accept-repository-rename", "https://github.com/owner/old", "--check"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--keep-local"},
 		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
+		{"axi", "sync", "--accept-repository-rename", ""},
+		{"axi", "sync", "--accept-repository-rename", "https://github.com/owner/old", "--recover"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError

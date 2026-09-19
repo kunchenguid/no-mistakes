@@ -525,6 +525,133 @@ func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 	return nil
 }
 
+// PushTargetMigration is the complete immutable run snapshot required to move
+// one successful-push fingerprint after a verified repository rename. Within
+// the run, only the fingerprint changes; its outcome, heads, ref, generation,
+// timestamps, findings, rounds, and other validation records remain untouched.
+type PushTargetMigration struct {
+	RunID, RepoID, Branch, HeadSHA     string
+	Status                             types.RunStatus
+	TargetKind, PreviousFingerprint    string
+	CurrentFingerprint, Ref            string
+	CurrentUpstreamURL, CurrentForkURL string
+	Generation                         int64
+}
+
+// MigrateRunPushTarget commits the selected run's fingerprint and its exact
+// rename provenance together, so cached selection cannot observe a partially
+// migrated lineage. The caller owns authenticated identity and Git proofs;
+// this transaction rechecks successful-push, registered-target, and branch
+// ownership facts against snapshot. Conflicting provenance rolls back the
+// update; an exact repeated migration is an idempotent no-op.
+func (d *DB) MigrateRunPushTarget(snapshot PushTargetMigration) (bool, error) {
+	if snapshot.PreviousFingerprint == "" || snapshot.CurrentFingerprint == "" || snapshot.PreviousFingerprint == snapshot.CurrentFingerprint {
+		return false, errors.New("migrate run push target: distinct exact fingerprints are required")
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, fmt.Errorf("migrate run push target: begin: %w", err)
+	}
+	defer tx.Rollback()
+	var previous string
+	if err := tx.QueryRow(`SELECT push_target_fingerprint FROM runs WHERE id = ?`, snapshot.RunID).Scan(&previous); err != nil {
+		return false, fmt.Errorf("migrate run push target: read binding: %w", err)
+	}
+	result, err := tx.Exec(
+		`UPDATE runs SET push_target_fingerprint = ?
+		 WHERE id = ? AND repo_id = ? AND branch = ? AND status = ?
+		   AND status IN ('completed', 'failed', 'cancelled')
+		   AND head_sha = ? AND last_pushed_sha = ? AND push_target_kind = ?
+		   AND push_target_fingerprint IN (?, ?) AND push_ref = ? AND push_generation = ?
+		   AND submitted_head_sha IS NOT NULL AND COALESCE(push_active, 0) = 0
+		   AND EXISTS (
+		     SELECT 1 FROM repos target
+		      WHERE target.id = ? AND target.upstream_url = ? AND COALESCE(target.fork_url, '') = ?
+		   )
+		   AND NOT EXISTS (
+		     SELECT 1 FROM runs active
+		      WHERE active.repo_id = ? AND active.branch = ? AND active.id <> ?
+		        AND active.status IN ('pending', 'running')
+		   )`,
+		snapshot.CurrentFingerprint,
+		snapshot.RunID, snapshot.RepoID, snapshot.Branch, snapshot.Status,
+		snapshot.HeadSHA, snapshot.HeadSHA, snapshot.TargetKind,
+		snapshot.PreviousFingerprint, snapshot.CurrentFingerprint, snapshot.Ref, snapshot.Generation,
+		snapshot.RepoID, snapshot.CurrentUpstreamURL, snapshot.CurrentForkURL,
+		snapshot.RepoID, snapshot.Branch, snapshot.RunID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("migrate run push target: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return false, fmt.Errorf("migrate run push target rows affected: %w", err)
+	} else if affected != 1 {
+		return false, errors.New("migrate run push target: run binding or ownership changed")
+	}
+
+	// An already-current binding may only replay existing exact provenance.
+	// It must not manufacture a new incoming edge from an unrelated old name.
+	if previous == snapshot.PreviousFingerprint {
+		if _, err := tx.Exec(`INSERT INTO push_target_migrations
+			(run_id, repo_id, branch, status, head_sha, target_kind, previous_fingerprint, current_fingerprint, push_ref, push_generation)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, previous_fingerprint, current_fingerprint) DO NOTHING`,
+			snapshot.RunID, snapshot.RepoID, snapshot.Branch, snapshot.Status, snapshot.HeadSHA, snapshot.TargetKind,
+			snapshot.PreviousFingerprint, snapshot.CurrentFingerprint, snapshot.Ref, snapshot.Generation); err != nil {
+			return false, fmt.Errorf("migrate run push target: record provenance: %w", err)
+		}
+	}
+	var matching int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM push_target_migrations
+		WHERE run_id = ? AND repo_id = ? AND branch = ? AND status = ? AND head_sha = ? AND target_kind = ?
+		AND previous_fingerprint = ? AND current_fingerprint = ? AND push_ref = ? AND push_generation = ?`,
+		snapshot.RunID, snapshot.RepoID, snapshot.Branch, snapshot.Status, snapshot.HeadSHA, snapshot.TargetKind,
+		snapshot.PreviousFingerprint, snapshot.CurrentFingerprint, snapshot.Ref, snapshot.Generation).Scan(&matching); err != nil || matching != 1 {
+		return false, errors.New("migrate run push target: conflicting rename provenance")
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("migrate run push target: commit: %w", err)
+	}
+	return previous != snapshot.CurrentFingerprint, nil
+}
+
+// GetPushTargetRenameWitnesses returns runs whose current fingerprint is
+// reachable from previousFingerprint through their own exact recorded rename
+// edges. Every edge must still match the run's immutable push snapshot. UNION
+// bounds traversal even if a repository is renamed back to an earlier name.
+// The caller must prove run ordering, routing, and Git containment when using
+// these witnesses to bridge history across different runs.
+func (d *DB) GetPushTargetRenameWitnesses(repoID, branch, previousFingerprint string) ([]*Run, error) {
+	rows, err := d.sql.Query(`WITH RECURSIVE valid_migrations AS (
+		SELECT m.* FROM push_target_migrations m JOIN runs ON m.run_id = runs.id
+			WHERE runs.repo_id = ? AND runs.branch = ? AND runs.status IN ('completed', 'failed', 'cancelled')
+			AND COALESCE(runs.push_active, 0) = 0 AND runs.submitted_head_sha IS NOT NULL
+			AND m.repo_id = runs.repo_id AND m.branch = runs.branch AND m.status = runs.status
+			AND m.head_sha = runs.head_sha AND m.head_sha = runs.last_pushed_sha
+			AND m.target_kind = runs.push_target_kind AND m.push_ref = runs.push_ref AND m.push_generation = runs.push_generation
+		), reachable(run_id, fingerprint) AS (
+			SELECT run_id, current_fingerprint FROM valid_migrations WHERE previous_fingerprint = ?
+			UNION
+			SELECT m.run_id, m.current_fingerprint FROM valid_migrations m JOIN reachable r
+				ON m.run_id = r.run_id AND m.previous_fingerprint = r.fingerprint
+		)
+		SELECT `+runColumns+` FROM runs WHERE EXISTS (
+			SELECT 1 FROM reachable r WHERE r.run_id = runs.id AND r.fingerprint = runs.push_target_fingerprint)`,
+		repoID, branch, previousFingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("read push target rename provenance: %w", err)
+	}
+	defer rows.Close()
+	var witnesses []*Run
+	for rows.Next() {
+		run := &Run{}
+		if err := scanRun(rows, run); err != nil {
+			return nil, fmt.Errorf("read push target rename witness: %w", err)
+		}
+		witnesses = append(witnesses, run)
+	}
+	return witnesses, rows.Err()
+}
+
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
 // returned custody of this run's branch to the operator worktree. Stamping is
 // idempotent: the first timestamp wins so the record keeps the original

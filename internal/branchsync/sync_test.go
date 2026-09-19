@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,6 +162,212 @@ func TestTargetIdentityNeverPersistsOrDisplaysHTTPUserinfo(t *testing.T) {
 	}
 	if got := displayTarget(credentialed); got != plain || strings.Contains(got, "secret") || strings.Contains(got, "token") {
 		t.Fatalf("display target = %q", got)
+	}
+}
+
+func prepareRepositoryRenameFixture(t *testing.T) (*syncFixture, string, string) {
+	t.Helper()
+	f := newSyncFixture(t)
+	if state := f.service.Apply(f.ctx); state.State != StateSynchronized {
+		t.Fatalf("prepare synchronized source: %#v", state)
+	}
+	previous := "https://github.com/owner/previous"
+	current := "https://github.com/org/current"
+	if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+		HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(previous), Ref: "refs/heads/feature/sync",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunErrorStatus(f.run.ID, "PR association failed", types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := f.db.UpdateRepoMetadata(f.repo.ID, current, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.repo = repo
+	f.service.Repo = repo
+	f.run, err = f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.VerifyRepositoryRename = func(_ context.Context, old, next string) error {
+		if old != previous || next != current {
+			return fmt.Errorf("unexpected locators")
+		}
+		return nil
+	}
+	f.service.lsRemote = func(_ context.Context, _, remote, ref string) (string, error) {
+		if remote != current || ref != "refs/heads/feature/sync" {
+			return "", fmt.Errorf("unexpected remote read")
+		}
+		return f.pushed, nil
+	}
+	return f, previous, current
+}
+
+func TestAcceptRepositoryRenameMigratesOnlyFingerprintAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	f, previous, _ := prepareRepositoryRenameFixture(t)
+	before, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial := f.service.InspectCached(f.ctx); initial.State != StateTargetChanged || initial.Safety != "blocked_target_changed" {
+		t.Fatalf("unfixed rename state = %#v", initial)
+	}
+	verifier := f.service.VerifyRepositoryRename
+	f.service.VerifyRepositoryRename = func(context.Context, string, string) error { return context.Canceled }
+	if interrupted := f.service.AcceptRepositoryRename(f.ctx, previous); interrupted.State == StateSynchronized || interrupted.Changed {
+		t.Fatalf("interrupted proof changed binding: %#v", interrupted)
+	}
+	stillOld, err := f.db.GetRun(f.run.ID)
+	if err != nil || stillOld.PushTargetFingerprint == nil || *stillOld.PushTargetFingerprint != *before.PushTargetFingerprint {
+		t.Fatalf("interrupted proof did not roll back: %+v, %v", stillOld, err)
+	}
+	f.service.VerifyRepositoryRename = verifier
+	for attempt, wantChanged := range []bool{true, false} {
+		state := f.service.AcceptRepositoryRename(f.ctx, previous)
+		if state.State != StateSynchronized || state.Changed != wantChanged || state.Local.Head != f.pushed || state.Pipeline.PushedHead != f.pushed || state.Remote.Freshness != "live" {
+			t.Fatalf("attempt %d state = %#v", attempt+1, state)
+		}
+		wantSafety := "repository_rename_accepted"
+		if !wantChanged {
+			wantSafety = "repository_rename_already_accepted"
+		}
+		if state.Safety != wantSafety || state.NextAction == nil || state.NextAction.Code != "rerun_pipeline" || state.NextAction.Command != "no-mistakes rerun" {
+			t.Fatalf("attempt %d continuation = %#v", attempt+1, state)
+		}
+	}
+	after, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PushTargetFingerprint == nil || *after.PushTargetFingerprint != TargetFingerprint(f.repo.PushURL()) || after.Status != types.RunFailed ||
+		after.Error == nil || *after.Error != "PR association failed" || after.HeadSHA != before.HeadSHA || after.LastPushedSHA == nil || *after.LastPushedSHA != *before.LastPushedSHA ||
+		after.PushGeneration == nil || *after.PushGeneration != *before.PushGeneration || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("rename migration rewrote validation evidence: before=%+v after=%+v", before, after)
+	}
+	if !isAncestor(f.ctx, f.local, f.old, after.HeadSHA) {
+		t.Fatal("historical source commit was not preserved")
+	}
+	if got := mustRun(t, f.local, "show", "HEAD:fix.txt"); got != "pipeline fix" {
+		t.Fatalf("pipeline fix commit content was not preserved: %q", got)
+	}
+}
+
+func TestAcceptRepositoryRenameRefusesUnsafeStateWithoutChangingBinding(t *testing.T) {
+	t.Parallel()
+
+	for _, condition := range []string{"identity_failure", "wrong_remote_head", "dirty", "dirty_during_remote_read", "divergent", "active_run", "different_fork", "previous_target_mismatch", "active_run_started_during_verification", "target_changed_during_verification"} {
+		condition := condition
+		t.Run(condition, func(t *testing.T) {
+			t.Parallel()
+			f, previous, current := prepareRepositoryRenameFixture(t)
+			originalFingerprint := *f.run.PushTargetFingerprint
+			switch condition {
+			case "identity_failure":
+				f.service.VerifyRepositoryRename = func(context.Context, string, string) error { return fmt.Errorf("API unavailable") }
+			case "wrong_remote_head":
+				f.service.lsRemote = func(context.Context, string, string, string) (string, error) { return f.old, nil }
+			case "dirty":
+				mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+			case "dirty_during_remote_read":
+				readRemote := f.service.lsRemote
+				f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+					mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+					return readRemote(ctx, dir, remote, ref)
+				}
+			case "divergent":
+				mustRun(t, f.local, "reset", "--hard", f.base)
+				mustWrite(t, filepath.Join(f.local, "diverged.txt"), "diverged\n")
+				mustRun(t, f.local, "add", "diverged.txt")
+				mustRun(t, f.local, "commit", "-m", "diverged local")
+			case "active_run":
+				if _, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.pushed, f.base); err != nil {
+					t.Fatal(err)
+				}
+			case "different_fork":
+				repo, err := f.db.UpdateRepoMetadataWithFork(f.repo.ID, current, "https://github.com/other/fork", "main")
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.repo, f.service.Repo = repo, repo
+			case "previous_target_mismatch":
+				previous = "https://github.com/unrelated/previous"
+			case "active_run_started_during_verification":
+				f.service.beforeTargetMigration = func() {
+					_, _ = f.db.InsertRun(f.repo.ID, "feature/sync", f.pushed, f.base)
+				}
+			case "target_changed_during_verification":
+				f.service.beforeTargetMigration = func() {
+					_, _ = f.db.UpdateRepoMetadata(f.repo.ID, "https://github.com/org/changed-again", "main")
+				}
+			}
+			state := f.service.AcceptRepositoryRename(f.ctx, previous)
+			if state.State == StateSynchronized || state.Changed || !strings.HasPrefix(state.Safety, "blocked_repository_rename_") {
+				t.Fatalf("unsafe rename accepted: %#v", state)
+			}
+			got, err := f.db.GetRun(f.run.ID)
+			if err != nil || got.PushTargetFingerprint == nil || *got.PushTargetFingerprint != originalFingerprint {
+				t.Fatalf("refusal changed binding: %+v, %v", got, err)
+			}
+			if head := mustRun(t, f.local, "rev-parse", "HEAD"); condition != "divergent" && head != f.pushed {
+				t.Fatalf("refusal moved HEAD to %s", head)
+			}
+			if condition == "dirty_during_remote_read" {
+				if state.Safety != "blocked_repository_rename_assumptions_changed" {
+					t.Fatalf("late worktree change was not refused before migration: %#v", state)
+				}
+				if data, err := os.ReadFile(filepath.Join(f.local, "dirty.txt")); err != nil || string(data) != "dirty\n" {
+					t.Fatalf("refusal changed the operator's file: %q, %v", data, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAcceptRepositoryRenamePostconditionRefusalReportsMigrationChange(t *testing.T) {
+	t.Parallel()
+
+	for _, condition := range []string{"target_changed", "worktree_dirty"} {
+		for _, alreadyMigrated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/already_migrated=%t", condition, alreadyMigrated), func(t *testing.T) {
+				t.Parallel()
+				f, previous, current := prepareRepositoryRenameFixture(t)
+				if alreadyMigrated {
+					if state := f.service.AcceptRepositoryRename(f.ctx, previous); !state.Changed || state.State != StateSynchronized {
+						t.Fatalf("prepare accepted migration: %#v", state)
+					}
+				}
+				f.service.afterTargetMigration = func() {
+					switch condition {
+					case "target_changed":
+						if _, err := f.db.UpdateRepoMetadata(f.repo.ID, "https://github.com/org/changed-again", "main"); err != nil {
+							t.Fatal(err)
+						}
+					case "worktree_dirty":
+						mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+					}
+				}
+				state := f.service.AcceptRepositoryRename(f.ctx, previous)
+				if state.State == StateSynchronized || state.Safety != "blocked_repository_rename_postcondition" || state.Changed != !alreadyMigrated || state.NextAction != nil {
+					t.Fatalf("post-migration refusal lost its mutation result: %#v", state)
+				}
+				after, err := f.db.GetRun(f.run.ID)
+				if err != nil || after == nil {
+					t.Fatalf("read migrated run: %+v, %v", after, err)
+				}
+				if ptr(after.PushTargetFingerprint) != TargetFingerprint(current) || after.Status != f.run.Status || after.HeadSHA != f.run.HeadSHA ||
+					value(after.PushGeneration) != value(f.run.PushGeneration) || after.UpdatedAt != f.run.UpdatedAt {
+					t.Fatalf("post-migration refusal changed validation evidence: before=%+v after=%+v", f.run, after)
+				}
+				if head := mustRun(t, f.local, "rev-parse", "HEAD"); head != f.pushed {
+					t.Fatalf("post-migration refusal moved HEAD to %s", head)
+				}
+			})
+		}
 	}
 }
 
