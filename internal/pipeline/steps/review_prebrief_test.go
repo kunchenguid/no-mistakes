@@ -228,6 +228,8 @@ func setupJevRepo(t *testing.T) (string, string, string) {
 	}
 
 	run("init")
+	run("config", "user.name", "test")
+	run("config", "user.email", "test@test.com")
 	run("checkout", "-b", "main")
 	write("widget/widget.go", "package widget\n\nfunc RenderWidget() string {\n\treturn \"base\"\n}\n")
 	write("widget/user.go", "package widget\n\nfunc Show() string {\n\treturn RenderWidget()\n}\n")
