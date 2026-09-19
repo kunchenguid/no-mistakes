@@ -558,21 +558,36 @@ func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLe
 // PushCommit pushes one immutable commit object to a remote ref. Unlike Push,
 // a concurrent worktree HEAD move cannot change the source selected by git.
 func PushCommit(ctx context.Context, dir, remote, commitSHA, ref, expectedSHA string, forceWithLease bool) error {
-	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, nil)
+	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, nil, false)
 }
 
 // PushCommitWithOptions pushes an immutable commit with hook-visible options.
 // It keeps proof launch identity attached to the commit sampled before pushing.
 func PushCommitWithOptions(ctx context.Context, dir, remote, commitSHA, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
-	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, pushOptions)
+	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, pushOptions, false)
+}
+
+// PushCommitWithOptionsSkippingHooks is PushCommitWithOptions for an internal
+// control-plane push that must not invoke the repository's pre-push hook. Use
+// it only for a local no-mistakes gate trigger; delivery pushes keep the
+// repository hook.
+func PushCommitWithOptionsSkippingHooks(ctx context.Context, dir, remote, commitSHA, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, pushOptions, true)
 }
 
 // PushWithOptions pushes HEAD to a remote with per-push options.
 func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
-	return pushSourceWithOptions(ctx, dir, remote, "HEAD", ref, expectedSHA, forceWithLease, pushOptions)
+	return pushSourceWithOptions(ctx, dir, remote, "HEAD", ref, expectedSHA, forceWithLease, pushOptions, false)
 }
 
-func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+// PushWithOptionsSkippingHooks is PushWithOptions for an internal control-plane
+// push that must not invoke the repository's pre-push hook. Use it only for a
+// local no-mistakes gate trigger; delivery pushes keep the repository hook.
+func PushWithOptionsSkippingHooks(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+	return pushSourceWithOptions(ctx, dir, remote, "HEAD", ref, expectedSHA, forceWithLease, pushOptions, true)
+}
+
+func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expectedSHA string, forceWithLease bool, pushOptions []string, skipHooks bool) error {
 	// On an up-to-date push, send-pack sends no ref update but still writes the
 	// push options and a closing flush; receive-pack exits on the empty update
 	// list without reading them, so that write can kill git with SIGPIPE. Git
@@ -582,6 +597,9 @@ func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expect
 		return nil
 	}
 	args := []string{"push"}
+	if skipHooks {
+		args = append(args, "--no-verify")
+	}
 	for _, option := range pushOptions {
 		args = append(args, "-o", option)
 	}

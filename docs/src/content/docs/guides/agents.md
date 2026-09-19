@@ -120,6 +120,8 @@ agent: [codex, grok]
 If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix, for example `agent: acp:gemini`.
 `agent: auto` probes native agents and first-class ACP aliases (such as `cursor`), and never auto-selects arbitrary `acp:<target>` entries.
 
+`acp:omp` (Oh My Pi over ACP) is additionally a verified gate agent under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings): its default launch neutralizes the target repository's context files, rules, skills, and extensions. See that reference entry for the exact mechanism and the override that fails closed.
+
 The [`agent` field reference](/no-mistakes/reference/global-config/#agent) owns the exact resolution order, fallback-list filtering and retry semantics, and the failure behavior when no entry is runnable.
 
 ## Where agent choice matters most

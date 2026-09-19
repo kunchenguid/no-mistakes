@@ -172,7 +172,8 @@ func TestACPModelIsPinnedOnTheAcpxCommand(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer ag.Close()
-		args := ag.(*acpxAgent).buildArgs(RunOpts{CWD: "/w"})
+		acpxAg := ag.(*acpxAgent)
+		args := acpxAg.buildArgs(acpxAg.rawCommand, RunOpts{CWD: "/w"})
 		modelIdx, execIdx := -1, -1
 		for i, arg := range args {
 			switch arg {
@@ -197,7 +198,8 @@ func TestACPWithoutModelKeepsItsPreviousArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer plain.Close()
-	for _, arg := range plain.(*acpxAgent).buildArgs(RunOpts{CWD: "/w"}) {
+	plainACPX := plain.(*acpxAgent)
+	for _, arg := range plainACPX.buildArgs(plainACPX.rawCommand, RunOpts{CWD: "/w"}) {
 		if arg == "--model" {
 			t.Fatal("acpx received --model with no model pinned")
 		}

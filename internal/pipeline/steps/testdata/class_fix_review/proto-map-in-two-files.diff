@@ -1,0 +1,46 @@
+diff --git a/src/aliases.js b/src/aliases.js
+index 1111111..2222222 100644
+--- a/src/aliases.js
++++ b/src/aliases.js
+@@ -1 +1,18 @@
+ "use strict";
++
++// User-defined aliases loaded from the config file: alias name -> command name.
++const aliases = {};
++
++function alias(name, target) {
++  aliases[name] = target;
++}
++
++function resolve(name) {
++  return aliases[name] || name;
++}
++
++function all() {
++  return Object.keys(aliases);
++}
++
++module.exports = { alias, resolve, all };
+diff --git a/src/registry.js b/src/registry.js
+index 1111111..2222222 100644
+--- a/src/registry.js
++++ b/src/registry.js
+@@ -1 +1,18 @@
+ "use strict";
++
++// Command handlers keyed by the name the user typed on the command line.
++const handlers = {};
++
++function register(name, handler) {
++  handlers[name] = handler;
++}
++
++function lookup(name) {
++  return handlers[name];
++}
++
++function names() {
++  return Object.keys(handlers);
++}
++
++module.exports = { register, lookup, names };

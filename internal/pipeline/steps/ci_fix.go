@@ -17,8 +17,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// ciFailingCheckFixRules is the CI-repair prompt contract for a failing check.
-// The narrow-fix sentence matches the review fixer so both apply one discipline.
 var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
 
 // errAttestationWriteFailed marks a failure specifically inside
@@ -31,15 +29,27 @@ var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
 // propagates whatever publishRunHead returns.
 var errAttestationWriteFailed = errors.New("pipeline attestation write failed")
 
+// ciFixerClassRules is shared by every CI-repair prompt path so failing-check,
+// combined, and merge-conflict-only repairs follow the Review fixer's same
+// invariant-complete discipline.
+const ciFixerClassRules = `- Before changing code, state for each finding the invariant it violates (what must always hold, in one sentence) and enumerate every place in the changed area where that same invariant must hold: every axis, direction, and representation; every sibling call path, command, action, and state transition; every consumer of the same input, field, or record. Fix the invariant at all of those places in this round, with the same small correction, or at the one shared boundary that makes all of them hold. A fix that closes only the reported site and leaves a sibling site reachable is incomplete; the next review will report the sibling.
+- Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not. Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
+- After applying the fixes and before verification, re-trace for each finding the concrete failing sequence it describes through the code as it now is, and trace the ordinary successful path through every function you changed, including each of its callers. Remove any alias, branch, parameter, or helper your fix made unreachable. A fix that makes the reported sequence pass while breaking the ordinary path, a caller's assumption, or a sibling site is a regression the next review will report.`
+
 const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code (a broken test, build, lint, or similar defect in the change), you MUST produce file changes that fix it and set code_change_needed to true. A real failing test or build must still be fixed.
 		- If a failing check is not caused by the code under review (a stale or superseded check run, an infrastructure or attestation check such as "PR must be raised via no-mistakes" that fails only because a later pipeline push moved the head, or any failure external to the code), you MAY conclude that no code change is warranted. Set code_change_needed to false and report that conclusion in summary instead of editing files. Do not invent work to satisfy a check the code did not cause.
 		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
 		- If a test is flaky, make it deterministic.
 		- Make the smallest correct root-cause fix.
-		- Fix the reported instance narrowly. Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
+` + ciFixerClassRules + `
 		- Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires.
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
+
+const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
+		- Do not make unrelated file edits.
+` + ciFixerClassRules + `
+		- Verify the rebase completes cleanly before finishing.`
 
 // repairFromFindings runs one CI fix round over the findings the executor
 // selected for it (sctx.PreviousFindings): the auto-fix subset of the last
@@ -182,9 +192,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		promptRules = ciFailingCheckFixRules
 	case mergeConflict:
 		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
-		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
-		- Do not make unrelated file edits.
-		- Verify the rebase completes cleanly before finishing.`
+		promptRules = ciMergeConflictFixRules
 	case len(failingNames) == 0:
 		promptIntro = "Address the following findings selected at the CI gate of this PR."
 		promptRules = ciFailingCheckFixRules

@@ -194,8 +194,8 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex, claude, and pi have a verified
-// neutralization knob today.
+// unneutralized in the target checkout. Only codex, claude, pi, and acp:omp have
+// a verified neutralization knob today.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -205,9 +205,9 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex, claude, and pi have a verified neutralization knob (and only when it "+
-		"is not overridden by agent_args_override); set 'agent' to codex, claude, or pi in "+
-		"~/.no-mistakes/config.yaml", a.Name())
+		"checkout. Only codex, claude, pi, and acp:omp have a verified neutralization knob (and only "+
+		"when it is not overridden by agent_args_override or an acp_registry_overrides entry); set "+
+		"'agent' to codex, claude, pi, or acp:omp in ~/.no-mistakes/config.yaml", a.Name())
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -292,10 +292,11 @@ type Options struct {
 	ACPRegistryOverrides map[string]string
 	Environment          runenv.Overlay
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude, pi) to launch with the target repo's project-level agent
-	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
-	// from config.Config; adapters without a verified suppression knob ignore it
-	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
+	// claude, pi, and the acp:omp target) to launch with the target repo's
+	// project-level agent settings/instructions suppressed. It is the resolved,
+	// trusted-only opt-out from config.Config; adapters without a verified
+	// suppression knob ignore it and are refused separately by
+	// EnsureGateNeutralized when the opt-out is on.
 	DisableProjectSettings bool
 	// Profile is the harness-neutral model/effort selection (see
 	// internal/agentcfg). NewWithOptions maps it down to whatever mechanism the
@@ -1302,7 +1303,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, subprocessContext: newSubprocessContext(opts.Environment)}, nil
+		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	}
 	// Mapped flags follow the operator's raw agent_args_override flags, so they
 	// still precede no-mistakes' managed flags in every adapter's argv. A knob

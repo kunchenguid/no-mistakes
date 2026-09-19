@@ -1166,10 +1166,10 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "smallest correct root-cause fix") {
 		t.Errorf("prompt should prefer root-cause fixes over bandaids, got:\n%s", capturedPrompt)
 	}
-	if !strings.Contains(capturedPrompt, "Fix the reported instance narrowly") {
-		t.Errorf("prompt should scope the fix to the reported instance, got:\n%s", capturedPrompt)
+	if !strings.Contains(capturedPrompt, "state for each finding the invariant it violates") {
+		t.Errorf("prompt should scope the fix to the violated invariant at every sibling site, got:\n%s", capturedPrompt)
 	}
-	if !strings.Contains(capturedPrompt, "Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms") {
+	if !strings.Contains(capturedPrompt, "Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms") {
 		t.Errorf("prompt should prefer simplification over symptom machinery, got:\n%s", capturedPrompt)
 	}
 	if !strings.Contains(capturedPrompt, "Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires") {
@@ -1206,17 +1206,66 @@ func TestCIStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Fix the reported instance narrowly.",
-		"Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.",
+		"Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not.",
+		"Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.",
 		"Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires",
 		"smallest correct root-cause fix",
 	} {
 		if !strings.Contains(capturedPrompt, want) {
-			t.Errorf("CI fix prompt missing narrow-fix contract %q:\n%s", want, capturedPrompt)
+			t.Errorf("CI fix prompt missing anti-machinery contract %q:\n%s", want, capturedPrompt)
 		}
 	}
 	if strings.Contains(capturedPrompt, "fix the deepest practical cause instead") {
 		t.Errorf("CI fix prompt still licenses expanding to the deepest practical cause:\n%s", capturedPrompt)
+	}
+}
+
+// TestCIStep_FixPromptClosesTheInvariantAcrossSiblingSites is the CI twin of
+// the review fixer's invariant-complete contract: a red check exposes an
+// invariant, and the repair closes it at every sibling site in the changed
+// area in the same round, never as machinery, then re-traces the failing
+// sequence and the ordinary path through every changed function before
+// verifying. Neither superseded scope rule may return. Merge-conflict-only
+// repair is a sibling path of the same CI fixer, so it carries the same three
+// rules rather than the old minimal conflict prompt.
+func TestCIStep_FixPromptClosesTheInvariantAcrossSiblingSites(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		targets ciFixTargets
+	}{
+		{name: "failing_check", targets: ciTargetsFor([]string{"test"}, false)},
+		{name: "merge_conflict_only", targets: ciTargetsFor(nil, true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+			var capturedPrompt string
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					capturedPrompt = opts.Prompt
+					return &agent.Result{}, nil
+				},
+			}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+			if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, tc.targets); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range fixerClassRuleLines {
+				if !promptHasExactLine(capturedPrompt, want) {
+					t.Errorf("CI fix prompt missing exact invariant-complete line %q:\n%s", want, capturedPrompt)
+				}
+			}
+			for _, stale := range fixerSupersededScopeRules {
+				if strings.Contains(capturedPrompt, stale) {
+					t.Errorf("CI fix prompt still carries the superseded scope rule %q:\n%s", stale, capturedPrompt)
+				}
+			}
+		})
 	}
 }
 
@@ -1757,7 +1806,7 @@ func TestCIStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 		"When a problem can be solved by removing a code path that is not strictly required to satisfy the intent",
 		"fix it by removing that path, not by validating, hardening, or documenting it",
 		"Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose",
-		"Fix the reported instance narrowly.",
+		"state for each finding the invariant it violates",
 		"Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires",
 	} {
 		if !strings.Contains(capturedPrompt, want) {

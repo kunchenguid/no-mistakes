@@ -64,7 +64,7 @@ func TestNewWithOptions_ACPRegistryOverride(t *testing.T) {
 	if !ok {
 		t.Fatalf("agent type = %T, want *acpxAgent", a)
 	}
-	args := acpx.buildArgs(RunOpts{Prompt: "do work", CWD: "/repo"})
+	args := acpx.buildArgs(acpx.rawCommand, RunOpts{Prompt: "do work", CWD: "/repo"})
 	joined := strings.Join(args, "\x00")
 	if !strings.Contains(joined, "--agent\x00node /tmp/mock-acp.mjs") {
 		t.Fatalf("args = %q, want raw --agent override", args)
@@ -89,7 +89,7 @@ func TestACPAliasUsesDefaultCommand(t *testing.T) {
 	if acpx.rawCommand != "cursor-agent acp" {
 		t.Errorf("rawCommand = %q, want cursor-agent acp", acpx.rawCommand)
 	}
-	args := acpx.buildArgs(RunOpts{Prompt: "do work"})
+	args := acpx.buildArgs(acpx.rawCommand, RunOpts{Prompt: "do work"})
 	joined := strings.Join(args, "\x00")
 	if !strings.Contains(joined, "--agent\x00cursor-agent acp") {
 		t.Fatalf("args = %q, want alias default command", args)
@@ -111,7 +111,7 @@ func TestACPTargetUsesAliasDefaultCommand(t *testing.T) {
 	if acpx.rawCommand != "cursor-agent acp" {
 		t.Errorf("rawCommand = %q, want cursor-agent acp", acpx.rawCommand)
 	}
-	args := acpx.buildArgs(RunOpts{Prompt: "do work"})
+	args := acpx.buildArgs(acpx.rawCommand, RunOpts{Prompt: "do work"})
 	joined := strings.Join(args, "\x00")
 	if !strings.Contains(joined, "--agent\x00cursor-agent acp") {
 		t.Fatalf("args = %q, want target default command", args)
@@ -152,7 +152,7 @@ func TestACPAliasBlankRegistryOverrideUsesDefaultCommand(t *testing.T) {
 
 func TestACPAgentBuildArgsUsesExecMode(t *testing.T) {
 	a := &acpxAgent{target: "gemini"}
-	args := a.buildArgs(RunOpts{Prompt: "do work"})
+	args := a.buildArgs(a.rawCommand, RunOpts{Prompt: "do work"})
 
 	if got, want := args[len(args)-4:], []string{"gemini", "exec", "--file", "-"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("trailing args = %q, want %q", got, want)

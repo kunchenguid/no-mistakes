@@ -662,6 +662,44 @@ Session identities are persisted only as minimum local resume metadata, never as
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
 
+### jev
+
+Opt-in TypeSafe Jev pre-brief for review turns (issue #1055).
+
+|         |          |
+| ------- | -------- |
+| Type    | `object` |
+| Default | disabled |
+
+```yaml
+jev:
+  review_assist: false
+```
+
+| Field               | Type   | Default | Description                                       |
+| ------------------- | ------ | ------- | ------------------------------------------------- |
+| `jev.review_assist` | `bool` | `false` | Consult TypeSafe Jev before each review turn      |
+
+When enabled and [`TYPESAFE_API_KEY`](/no-mistakes/reference/environment/#typesafe_api_key) is set in the daemon's environment, each review turn - the initial review and every rereview - runs one batched Jev evaluation over a code-filtered digest of the change before the reviewer launches.
+The digest covers only the files the review covers, so paths matching `ignore_patterns` are left out.
+Its typed answers feed the review prompt one kind of advisory input: a ranked list of surrounding-context files worth reading first.
+The candidates Jev ranks are found in code: files that use the names the change defines, preferring files that use rare names over files that only share common ones, then same-directory siblings of the changed files.
+Paths matching `ignore_patterns` are never candidates.
+Jev's answer decides which candidates are listed: a candidate is listed when most of its probability mass sits at "relevant" or "essential" (a probability-weighted score threshold would demand near-certainty and never fires), and the order also weighs the code's evidence, so a file that uses a changed name is listed ahead of a same-directory sibling Jev scored the same.
+A live off/on benchmark of this assist on real cold reviews lives in `benchmarks/issue-1055/` (method, raw data, and conclusion).
+
+The assist can only add to a review, never subtract.
+Complete-change coverage, the `reviewed_paths` contract, and every prompt obligation are exactly what they are with the assist off, no Jev answer can remove a file, a clause, or an obligation, and the reviewer stays a fresh, session-free invocation that never resumes the fixer session.
+Every failure mode - unset key, network or API error, undecodable answer - falls back to the same cold review with one log line.
+Jev answers are typed numbers, not generated text, so the service cannot inject prose into the review prompt.
+
+This setting is global-only: it does not exist in `.no-mistakes.yaml`, so a pushed branch cannot enable or steer the pre-screen that feeds the reviewer gating it.
+The request sent to TypeSafe carries the branch name, the base commit, the clipped diff and diff stat of the reviewable files, and the paths of up to 40 candidate files.
+It sends no content from unchanged files: candidates are paths only.
+The change content in it is a subset of what the review agent itself sends to its model provider, and the request leaves the machine only when you set both this flag and the key.
+The model is pinned (`jev-1.13.0`), and each request is billed per input token at [TypeSafe's published price](https://docs.typesafe.ai/models); output tokens are free.
+The local step log records how many candidates were listed, the answering model ID, and the input-token usage; none of it goes to telemetry.
+
 ### worktree_roots
 
 Where a repository's pipeline run worktrees are created.
