@@ -49,7 +49,7 @@ import (
 
 // jevDiffMaxBytes clips the unified diff inside the Jev state. Jev's state
 // budget is 32k tokens and code tokenizes denser than prose, so the digest,
-// candidate evidence, and questions together must stay well under it; an
+// candidate paths, and questions together must stay well under it; an
 // oversized request fails closed to a pre-brief-less review anyway.
 const jevDiffMaxBytes = 32 * 1024
 

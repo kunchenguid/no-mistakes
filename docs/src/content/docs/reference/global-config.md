@@ -676,7 +676,7 @@ This setting is global-only: it does not exist in `.no-mistakes.yaml`, so a push
 The request sent to TypeSafe carries the branch name, the base commit, the clipped diff and diff stat of the reviewable files, and the paths of up to 40 candidate files.
 It sends no content from unchanged files: candidates are paths only.
 The change content in it is a subset of what the review agent itself sends to its model provider, and the request leaves the machine only when you set both this flag and the key.
-The model is pinned (`jev-1.13.0`, billed per input token at TypeSafe's published price, which is cents per thousand reviews).
+The model is pinned (`jev-1.13.0`), and each request is billed per input token at [TypeSafe's published price](https://docs.typesafe.ai/models); output tokens are free.
 The local step log records how many candidates were listed, the answering model ID, and the input-token usage; none of it goes to telemetry.
 
 ### worktree_roots

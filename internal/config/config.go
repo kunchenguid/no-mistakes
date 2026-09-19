@@ -203,7 +203,7 @@ type GlobalConfig struct {
 	// record replay provenance), never a repository policy. Keeping it out of
 	// RepoConfig means no pushed branch can enable, disable, or resize it.
 	Eval Eval
-	// Jev holds the resolved TypeSafe pre-brief settings (see Config.Jev).
+	// Jev holds the resolved TypeSafe pre-brief settings (see the Jev type).
 	// Global-only for the same reason as Eval: it decides whether this
 	// machine's review turns consult an external pre-screen service under the
 	// operator's own key, so no pushed branch may enable or steer it.
