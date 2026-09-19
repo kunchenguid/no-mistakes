@@ -818,12 +818,13 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 	ag := &hangingAgent{
 		name: "suite-runner",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// A quiet agent blocked on a long tool call: it announces the call,
-			// then its child runs past the stall budget while the agent itself
+			// A quiet agent blocked on a long tool call: after its startup
+			// output it announces the call and spawns the child at once, and
+			// that child runs past the stall budget while the agent itself
 			// writes nothing.
 			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started func()) {
+				time.Sleep(300 * time.Millisecond)
 				opts.OnChunk("running the suite\n")
-				time.Sleep(500 * time.Millisecond)
 				started()
 			})
 		},
@@ -853,10 +854,10 @@ func TestRunAgent_HelperStartedJustBeforeTheFirstOutputDoesNotExtendTheBudget(t 
 	ag := &hangingAgent{
 		name: "hung-after-init",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// A stdio MCP server or an acpx inner agent starts moments before the
-			// agent's first output, then the provider hangs.
+			// A stdio MCP server or an acpx inner agent starts with the agent,
+			// moments before its first output, then the provider hangs.
 			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(func()) {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(300 * time.Millisecond)
 				opts.OnChunk("init\n")
 			})
 		},

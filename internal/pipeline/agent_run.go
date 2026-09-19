@@ -102,6 +102,7 @@ func invokeAgent(parent context.Context, timeout time.Duration, cause error, act
 	result, err := run(ctx)
 	runErr := classifyAgentRun(ctx, budget, activity, err)
 	cancel()
+	activity.finish()
 	if runErr != nil {
 		return nil, runErr
 	}
@@ -136,25 +137,44 @@ type agentActivity struct {
 	// exited is set once the launched subprocess reported its exit, so its
 	// PID is never probed for children after the kernel may have reused it.
 	exited bool
-	// helpers is the launched subprocess's live descendants as snapshotted at
-	// its most recent output; helpersOK is false until one snapshot of the
-	// current attempt was read successfully. waitingOnChild counts only
-	// descendants missing from it.
-	helpers   map[int]bool
-	helpersOK bool
-	// snapshotAt and snapshotSeq throttle and order those snapshots;
-	// generation discards a snapshot that finishes after its attempt ended.
-	snapshotAt  time.Time
-	snapshotSeq int
-	appliedSeq  int
-	generation  int
+	// trackChildren is set when a stall budget applies, the only reader of
+	// the child samples below.
+	trackChildren bool
+	// finished stops the child sampler once the invocation returned.
+	finished bool
+	// generation stops a sampler whose attempt or launch was superseded.
+	generation int
+	// current and previous are the two most recent periodic samples of the
+	// launched subprocess's live descendants.
+	current, previous childSample
+	// helpers is frozen from a sample completed before the most recent
+	// output, and is never refreshed during a quiet stretch, so a tool the
+	// agent launched after speaking cannot age into it. waitingOnChild
+	// counts only descendants missing from it.
+	helpers childSample
 }
 
-// helperSnapshotInterval bounds how often output triggers a descendant
-// snapshot, so a turn streaming prose token by token does not read the
-// process table for every chunk. The first output after a quiet stretch
-// always snapshots immediately.
-const helperSnapshotInterval = time.Second
+// childSample is one read of a subprocess's live descendants.
+type childSample struct {
+	children map[int]bool
+	ok       bool
+	at       time.Time
+}
+
+const (
+	// childSampleInterval paces the descendant sampler for the rest of a
+	// turn; childSampleWarmupInterval samples faster right after launch,
+	// when an agent starts the helpers it keeps for the whole turn (stdio
+	// MCP servers, the ACP agent under acpx) just before its first output.
+	childSampleInterval       = time.Second
+	childSampleWarmup         = 5 * time.Second
+	childSampleWarmupInterval = 100 * time.Millisecond
+	// childSampleSettle is how long before an observed output a sample must
+	// have completed to be frozen as helpers. Output is read a moment after
+	// the agent wrote it, and a tool it announced may already be running in
+	// between; a sample completed that close to the read could hold it.
+	childSampleSettle = 50 * time.Millisecond
+)
 
 func newAgentActivity() *agentActivity {
 	return &agentActivity{begun: time.Now()}
@@ -168,40 +188,62 @@ func (a *agentActivity) observe() {
 	a.mu.Lock()
 	a.observed++
 	a.last = now
-	snapshot := a.launched && !a.exited && now.Sub(a.snapshotAt) >= helperSnapshotInterval
-	var pid, seq, generation int
-	if snapshot {
-		a.snapshotAt = now
-		a.snapshotSeq++
-		pid, seq, generation = a.launchedPID, a.snapshotSeq, a.generation
+	cutoff := now.Add(-childSampleSettle)
+	switch {
+	case !a.current.at.IsZero() && !a.current.at.After(cutoff):
+		a.helpers = a.current
+	case !a.previous.at.IsZero() && !a.previous.at.After(cutoff):
+		a.helpers = a.previous
+	default:
+		a.helpers = childSample{}
 	}
 	a.mu.Unlock()
-	if snapshot {
-		go a.snapshotHelpers(pid, seq, generation)
+}
+
+// sampleChildren reads the launched subprocess's live descendants
+// periodically until the subprocess exits, the invocation returns, or a new
+// attempt or launch supersedes it. Only observe() turns a sample into the
+// helper baseline.
+func (a *agentActivity) sampleChildren(pid, generation int, launchedAt time.Time) {
+	for {
+		children, err := procreap.LiveDescendants(pid)
+		sample := childSample{children: children, ok: err == nil, at: time.Now()}
+		a.mu.Lock()
+		if generation != a.generation || a.exited || a.finished {
+			a.mu.Unlock()
+			return
+		}
+		a.previous, a.current = a.current, sample
+		a.mu.Unlock()
+		interval := childSampleInterval
+		if time.Since(launchedAt) < childSampleWarmup {
+			interval = childSampleWarmupInterval
+		}
+		time.Sleep(interval)
 	}
 }
 
-// snapshotHelpers records the descendants alive at an observed output as
-// helpers: whatever the agent was already running when it spoke cannot be a
-// tool call it is now silently waiting on.
-func (a *agentActivity) snapshotHelpers(pid, seq, generation int) {
-	helpers, err := procreap.LiveDescendants(pid)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if generation != a.generation || seq < a.appliedSeq {
+func (a *agentActivity) resetChildren() {
+	a.generation++
+	a.current, a.previous, a.helpers = childSample{}, childSample{}, childSample{}
+}
+
+func (a *agentActivity) enableChildTracking() {
+	if a == nil {
 		return
 	}
-	a.appliedSeq = seq
-	a.helpers, a.helpersOK = helpers, err == nil
+	a.mu.Lock()
+	a.trackChildren = true
+	a.mu.Unlock()
 }
 
-func (a *agentActivity) resetHelpers() {
-	a.generation++
-	a.helpers = nil
-	a.helpersOK = false
-	a.snapshotAt = time.Time{}
-	a.snapshotSeq = 0
-	a.appliedSeq = 0
+func (a *agentActivity) finish() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.finished = true
+	a.mu.Unlock()
 }
 
 func (a *agentActivity) beginAttempt() {
@@ -216,7 +258,7 @@ func (a *agentActivity) beginAttempt() {
 	a.launchedAt = time.Time{}
 	a.launched = false
 	a.exited = false
-	a.resetHelpers()
+	a.resetChildren()
 	a.mu.Unlock()
 }
 
@@ -229,8 +271,13 @@ func (a *agentActivity) observeLaunch(pid int) {
 	a.launchedPID = pid
 	a.launchedAt = time.Now()
 	a.exited = false
-	a.resetHelpers()
+	a.resetChildren()
+	sample := a.trackChildren && !a.finished && pid > 1
+	generation, launchedAt := a.generation, a.launchedAt
 	a.mu.Unlock()
+	if sample {
+		go a.sampleChildren(pid, generation, launchedAt)
+	}
 }
 
 func (a *agentActivity) observeExit() {
@@ -243,14 +290,14 @@ func (a *agentActivity) observeExit() {
 }
 
 // waitingOnChild reports whether the launched agent subprocess is running a
-// child process that was not alive at its latest output snapshot, such as a
-// test suite a tool call announced and then launched. Such a wait emits no
-// output, so it is the only evidence that a quiet agent is working rather
-// than wedged. Children already running at that output (an ACP agent under
-// acpx, stdio MCP servers) live for the whole turn and prove nothing, and an
-// agent that never produced output never announced a tool call. A missing
-// snapshot or an unreadable process table reports false, so the budget is
-// never extended on a guess. It is liveness, not output: evidence() never
+// child process missing from the helper baseline frozen at its latest
+// output, such as a test suite a tool call announced and then launched. Such
+// a wait emits no output, so it is the only evidence that a quiet agent is
+// working rather than wedged. Children already running before that output
+// (an ACP agent under acpx, stdio MCP servers) live for the whole turn and
+// prove nothing, and an agent that never produced output never announced a
+// tool call. A missing baseline or an unreadable process table reports
+// false, so the budget is never extended on a guess. It is liveness, not output: evidence() never
 // reports it as the agent having produced anything.
 func (a *agentActivity) waitingOnChild() bool {
 	if a == nil {
@@ -258,8 +305,8 @@ func (a *agentActivity) waitingOnChild() bool {
 	}
 	a.mu.Lock()
 	pid := a.launchedPID
-	ready := a.launched && !a.exited && a.observed > 0 && a.helpersOK
-	helpers := a.helpers
+	ready := a.launched && !a.exited && a.observed > 0 && a.helpers.ok
+	helpers := a.helpers.children
 	a.mu.Unlock()
 	if !ready {
 		return false
@@ -415,6 +462,7 @@ func bindAgentDeadline(parent context.Context, timeout time.Duration, cause erro
 		cause = ErrAgentTimeout
 	}
 	budget := &agentBudget{timeout: timeout, cause: cause, start: time.Now()}
+	activity.enableChildTracking()
 	hardCap := AgentTimeoutHardCap(timeout)
 	idle := AgentTimeoutIdleGrace(timeout)
 	cancelCtx, cancelCause := context.WithCancelCause(parent)
