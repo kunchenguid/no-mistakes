@@ -68,10 +68,6 @@ const jevMinIdentifierLen = 4
 // jevMaxCandidates caps the candidate files sent for ranking.
 const jevMaxCandidates = 40
 
-// jevMaxMatchesPerCandidate caps the grep-matched lines kept per candidate as
-// coupling evidence, for Jev's judgment and for the reviewer.
-const jevMaxMatchesPerCandidate = 4
-
 // jevMaxListed caps how many ranked files the pre-brief lists.
 const jevMaxListed = 10
 
@@ -99,11 +95,10 @@ type jevClient interface {
 	Evaluate(ctx context.Context, state any, questions map[string]jev.Question) (*jev.Response, error)
 }
 
-// jevCandidate is one surrounding-context file offered for ranking, with the
-// coupling evidence code found for it.
+// jevCandidate is one surrounding-context file offered for ranking. It is a
+// path only: no content of an unchanged file leaves the machine.
 type jevCandidate struct {
-	Path    string   `json:"path"`
-	Matches []string `json:"matches,omitempty"`
+	Path string `json:"path"`
 }
 
 // jevChangeState is the state one pre-brief evaluation runs over.
@@ -180,7 +175,7 @@ func buildJevReviewState(ctx context.Context, sctx *pipeline.StepContext, baseSH
 		DiffStat:   clipMiddle(stat, jevStatMaxBytes),
 		Diff:       clipMiddle(diff, jevDiffMaxBytes),
 	}
-	candidates := jevContextCandidates(ctx, sctx.WorkDir, diff, changed, reviewable)
+	candidates := jevContextCandidates(ctx, sctx.WorkDir, diff, changed, reviewable, sctx.Config.IgnorePatterns)
 	return &jevChangeState{Change: digest, Candidates: candidates}, candidates
 }
 
@@ -210,7 +205,7 @@ func buildJevQuestions(candidates []jevCandidate) map[string]jev.Question {
 		questions[id] = jev.Question{
 			Type: "score",
 			Instructions: fmt.Sprintf(
-				"You are ranking supporting files for a code review. The change under review is in `change`. How relevant is the file `candidates[%d]` as surrounding context for reviewing that change? Judge from its path and the shown matched lines, which are the places it references the changed symbols.", i),
+				"You are ranking supporting files for a code review. The change under review is in `change`. How relevant is the file `candidates[%d]` as surrounding context for reviewing that change? Judge from its path and the change: candidates are files that use names the change defines, then files in the same directories as the changed files.", i),
 			Criteria: jevRelevanceLevels,
 		}
 	}
@@ -322,18 +317,17 @@ func appendDefinition(ids []string, seen map[string]bool, text string) []string 
 }
 
 // jevContextCandidates builds the candidate surrounding-context set without
-// any model: use sites of the identifiers the change introduces or modifies
-// (with the matched lines as coupling evidence), then same-directory siblings
-// of the reviewable files. Changed files themselves are never candidates -
-// the reviewer reads them regardless - and the set is capped at
-// jevMaxCandidates.
+// any model: use sites of the identifiers the change introduces or modifies,
+// then same-directory siblings of the reviewable files. Changed files are
+// never candidates - the reviewer reads them regardless - nor are paths
+// matching ignore_patterns, and the set is capped at jevMaxCandidates.
 //
 // Use sites are ranked by how specific their matches are: each identifier
 // contributes 1/N to every file it appears in, N being how many files it
 // appears in. A file referencing a rare changed name outranks one that only
 // shares a ubiquitous name, so the cap keeps the tightest coupling rather
 // than whatever sorts first by path.
-func jevContextCandidates(ctx context.Context, workDir, diff string, changed, reviewable []string) []jevCandidate {
+func jevContextCandidates(ctx context.Context, workDir, diff string, changed, reviewable, ignorePatterns []string) []jevCandidate {
 	changedSet := make(map[string]bool, len(changed))
 	for _, p := range changed {
 		changedSet[p] = true
@@ -346,7 +340,7 @@ func jevContextCandidates(ctx context.Context, workDir, diff string, changed, re
 	score := map[string]float64{}
 	for _, id := range ids {
 		files := nulSeparated(jevGrep(ctx, workDir, "-l", "-z", "-w", "-F", "-I", "-e", id))
-		for _, f := range files {
+		for _, f := range reviewablePaths(files, ignorePatterns) {
 			if !changedSet[f] {
 				score[f] += 1 / float64(len(files))
 			}
@@ -372,46 +366,22 @@ func jevContextCandidates(ctx context.Context, workDir, diff string, changed, re
 		index[f] = i
 	}
 
-	// Matched lines as coupling evidence, searched only in the kept files.
-	if len(candidates) > 0 {
-		args := []string{"-n", "-z", "-w", "-F", "-I"}
-		for _, id := range ids {
-			args = append(args, "-e", id)
-		}
-		args = append(args, "--")
-		for _, f := range order {
-			args = append(args, ":(literal)"+f)
-		}
-		for _, line := range strings.Split(string(jevGrep(ctx, workDir, args...)), "\n") {
-			parts := strings.SplitN(line, "\x00", 3)
-			if len(parts) != 3 {
-				continue
-			}
-			i, ok := index[parts[0]]
-			if !ok || len(candidates[i].Matches) >= jevMaxMatchesPerCandidate {
-				continue
-			}
-			candidates[i].Matches = append(candidates[i].Matches, clipMiddle(parts[1]+": "+strings.TrimSpace(parts[2]), 140))
-		}
-	}
-
-	// Same-directory siblings, path-only. One ls-files read is cheaper than
-	// walking directories and respects the worktree.
+	// Same-directory siblings, path-only, in one pass over one ls-files read.
 	if len(candidates) < jevMaxCandidates {
 		if tracked, err := git.RunRaw(ctx, workDir, "ls-files", "-z"); err == nil {
-			trackedFiles := nulSeparated(tracked)
-			for _, changedPath := range reviewable {
-				dir := path.Dir(changedPath)
-				for _, f := range trackedFiles {
-					if len(candidates) >= jevMaxCandidates {
-						break
-					}
-					if _, seen := index[f]; seen || changedSet[f] || path.Dir(f) != dir {
-						continue
-					}
-					index[f] = len(candidates)
-					candidates = append(candidates, jevCandidate{Path: f})
+			dirs := make(map[string]bool, len(reviewable))
+			for _, p := range reviewable {
+				dirs[path.Dir(p)] = true
+			}
+			for _, f := range reviewablePaths(nulSeparated(tracked), ignorePatterns) {
+				if len(candidates) >= jevMaxCandidates {
+					break
 				}
+				if _, seen := index[f]; seen || changedSet[f] || !dirs[path.Dir(f)] {
+					continue
+				}
+				index[f] = len(candidates)
+				candidates = append(candidates, jevCandidate{Path: f})
 			}
 		}
 	}

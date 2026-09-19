@@ -229,6 +229,8 @@ func setupJevRepo(t *testing.T) (string, string, string) {
 	write("widget/user.go", "package widget\n\nfunc Show() string {\n\treturn RenderWidget()\n}\n")
 	write("widget/widget_test.go", "package widget\n\nimport \"testing\"\n\nfunc TestRenderWidget(t *testing.T) {\n\tif RenderWidget() == \"\" {\n\t\tt.Fatal(\"empty\")\n\t}\n}\n")
 	write("widget/style.go", "package widget\n")
+	write("widget/widget_pb.go", "package widget\n")
+	write("fixtures/payload.json", "{\"call\": \"RenderWidget\"}\n")
 	run("add", "-A")
 	run("commit", "-m", "base commit")
 	baseSHA := run("rev-parse", "HEAD")
@@ -242,16 +244,15 @@ func setupJevRepo(t *testing.T) (string, string, string) {
 }
 
 // TestJevContextCandidates_FindsUseSitesAndSiblings pins the code-built
-// candidate set: use sites of changed definitions carry their matched lines,
-// same-directory siblings are included, and the changed file itself is never
-// a candidate.
+// candidate set: use sites of changed definitions and same-directory siblings
+// are included, and the changed file itself is never a candidate.
 func TestJevContextCandidates_FindsUseSitesAndSiblings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupJevRepo(t)
 
 	diff := gitCmd(t, dir, "diff", "--no-renames", baseSHA+".."+headSHA)
 	changed := []string{"widget/widget.go"}
-	candidates := jevContextCandidates(context.Background(), dir, diff, changed, changed)
+	candidates := jevContextCandidates(context.Background(), dir, diff, changed, changed, nil)
 
 	byPath := map[string]jevCandidate{}
 	for _, c := range candidates {
@@ -260,13 +261,8 @@ func TestJevContextCandidates_FindsUseSitesAndSiblings(t *testing.T) {
 			t.Fatal("the changed file must never be its own context candidate")
 		}
 	}
-	user, ok := byPath["widget/user.go"]
-	if !ok {
+	if _, ok := byPath["widget/user.go"]; !ok {
 		t.Fatalf("widget/user.go (use site) not among candidates: %v", byPath)
-	}
-	joined := strings.Join(user.Matches, "\n")
-	if !strings.Contains(joined, "RenderWidget") {
-		t.Fatalf("use-site candidate carries no coupling evidence: %v", user.Matches)
 	}
 	if _, ok := byPath["widget/widget_test.go"]; !ok {
 		t.Fatal("test file referencing the changed definition not among candidates")
@@ -306,15 +302,12 @@ func TestJevContextCandidates_RanksRareNamesAboveUbiquitousOnes(t *testing.T) {
 
 	diff := gitCmd(t, dir, "diff", "--no-renames", baseSHA+"..HEAD")
 	changed := []string{"zz/widget.go"}
-	candidates := jevContextCandidates(context.Background(), dir, diff, changed, changed)
+	candidates := jevContextCandidates(context.Background(), dir, diff, changed, changed, nil)
 	if len(candidates) != jevMaxCandidates {
 		t.Fatalf("candidates = %d, want the cap %d", len(candidates), jevMaxCandidates)
 	}
 	if candidates[0].Path != "zz/user.go" {
 		t.Fatalf("first candidate = %s, want zz/user.go (the only use site of RenderWidget)", candidates[0].Path)
-	}
-	if !strings.Contains(strings.Join(candidates[0].Matches, "\n"), "RenderWidget()") {
-		t.Fatalf("use-site candidate carries no coupling evidence: %v", candidates[0].Matches)
 	}
 }
 
@@ -458,19 +451,17 @@ func TestReviewStep_JevPrebriefRereviewDigestsFixerWork(t *testing.T) {
 	}
 }
 
-// TestReviewStep_JevPrebriefDigestSkipsIgnoredPaths reproduces a digest
-// crowded by ignored content: files matching ignore_patterns stay out of the
-// diff and stat sent to Jev, and out of the identifiers used to find
-// candidates.
+// TestReviewStep_JevPrebriefDigestSkipsIgnoredPaths reproduces a state
+// carrying ignored and unchanged content: files matching ignore_patterns stay
+// out of the diff, the stat, and the candidates sent to Jev, and unchanged
+// candidates are sent as paths without their content.
 func TestReviewStep_JevPrebriefDigestSkipsIgnoredPaths(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, _ := setupJevRepo(t)
 	if err := os.MkdirAll(filepath.Join(dir, "dist"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Show is also defined by the unchanged widget/user.go, so a name taken
-	// from the ignored bundle would surface that line as evidence.
-	if err := os.WriteFile(filepath.Join(dir, "dist", "bundle.js"), []byte("function Show() {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "dist", "bundle.js"), []byte("function Bundled() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, dir, "add", "-A")
@@ -486,7 +477,7 @@ func TestReviewStep_JevPrebriefDigestSkipsIgnoredPaths(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.Jev.ReviewAssist = true
-	sctx.Config.IgnorePatterns = []string{"dist/**"}
+	sctx.Config.IgnorePatterns = []string{"dist/**", "fixtures/**", "*_pb.go"}
 
 	if _, err := (&ReviewStep{jev: fake}).Execute(sctx); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -502,9 +493,23 @@ func TestReviewStep_JevPrebriefDigestSkipsIgnoredPaths(t *testing.T) {
 			t.Errorf("digest %s misses the reviewable file:\n%s", name, text)
 		}
 	}
+	paths := map[string]bool{}
 	for _, c := range fake.state.Candidates {
-		if strings.Contains(strings.Join(c.Matches, "\n"), "func Show()") {
-			t.Errorf("candidate %s carries evidence for a name defined only in an ignored file: %v", c.Path, c.Matches)
+		paths[c.Path] = true
+	}
+	if !paths["widget/user.go"] || !paths["widget/style.go"] {
+		t.Errorf("candidates miss the reviewable use site or sibling: %v", paths)
+	}
+	for _, ignored := range []string{"fixtures/payload.json", "widget/widget_pb.go"} {
+		if paths[ignored] {
+			t.Errorf("candidates carry the ignored file %s", ignored)
 		}
+	}
+	encoded, err := json.Marshal(fake.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "func Show()") {
+		t.Errorf("state carries content of the unchanged candidate widget/user.go:\n%s", encoded)
 	}
 }
