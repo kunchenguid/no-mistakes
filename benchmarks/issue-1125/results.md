@@ -40,22 +40,29 @@ Means of the two completed launches per arm (n=2; not a median over a real sampl
 | off | 848 | 90,890 | 1,553,536 | 27,057 |
 | on  | 844 | 95,435 | 1,351,808 | 27,752 |
 | on vs off | -0.5% | +5.0% | -13% | +2.6% |
+| on + Jev input | 844 | 114,590 | 1,351,808 | 27,752 |
+| on + Jev vs off | -0.5% | +26% | -13% | +2.6% |
+
+The `input` column in the first three rows is the Pi reviewer's billed input only.
+The last two rows add Jev's 19,155 billed input tokens per on-launch, which is the honest total billed input of the on arm.
+Wall time already includes the Jev call, because each launch times the whole `ReviewStep.Execute`.
 
 The ranges overlap on every review-token counter and on wall time.
+Total billed input does not overlap: the on arm paid roughly a quarter more fresh input for a prompt that ended up unchanged.
 
 ## Reading
 
 The live TypeSafe client works: pin `jev-1.13.0` answers, usage is populated, and the production pre-brief path can list a file on a small coupled fixture.
 
 On this corpus, at this sample size, the pre-brief does not measurably cut review token cost or wall time.
-That is the expected result when Jev lists nothing: the assist billed ~19k input tokens and then left the review prompt unchanged, so off/on deltas are agent noise.
+That is the expected result when Jev lists nothing: the assist billed ~19k input tokens and then left the review prompt unchanged, so off/on reviewer deltas are agent noise and the Jev tokens are a pure added cost (+26% total billed input).
 Kimi found at most one finding in either arm; findings parity is not a quality claim.
 
 What this run supports:
 
 - The operator-credentialed live path succeeds (issue #1125 gap).
 - Fail-closed listing still holds: 0 listed is an empty section, not a degraded review.
-- Jev's line item stays four orders of magnitude below a multi-minute review.
+- Jev's line item is not negligible on fresh input: 19,155 tokens is about 21% of the off arm's mean reviewer input, and about 1.2% of its input plus cache reads.
 
 What it does not support: a token-savings or wall-time-savings claim, including the indicative wall-time drop in `benchmarks/issue-1055/`.
 This re-run cannot confirm or refute that drop: different model (Kimi after a Codex usage-limit refusal), different head (`9b697a7b` rather than the unpublished `5082cdc1`), n=2, and Jev listed nothing here.
