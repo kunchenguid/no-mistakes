@@ -78,8 +78,23 @@ func TestReviewStep_LiveTypeSafePrebrief(t *testing.T) {
 		t.Fatalf("live pre-brief input_tokens = %d, want billed input", inputTokens)
 	}
 
+	// Jev may legitimately list nothing, so the live check is that the reviewer
+	// prompt agrees with the logged count: a pre-brief section exactly when
+	// something was listed, naming that many paths.
+	prompt := reviewPromptOf(t, ag)
+	hasPrebrief := strings.Contains(prompt, "Pre-brief (advisory")
+	if hasPrebrief != (listed > 0) {
+		t.Fatalf("logged %d listed candidates but prompt_has_prebrief=%v:\n%s", listed, hasPrebrief, prompt)
+	}
+	if listed > 0 {
+		_, section, _ := strings.Cut(prompt, "Pre-brief (advisory")
+		if got := strings.Count(section, "\n  - "); got != listed {
+			t.Fatalf("pre-brief section lists %d paths, log reported %d:\n%s", got, listed, section)
+		}
+	}
+
 	t.Logf("live pre-brief: listed=%d candidates=%d model=%s input_tokens=%d wall_ms=%d prompt_has_prebrief=%v",
-		listed, candidates, model, inputTokens, wall.Milliseconds(), strings.Contains(reviewPromptOf(t, ag), "Pre-brief"))
+		listed, candidates, model, inputTokens, wall.Milliseconds(), hasPrebrief)
 
 	if dir := os.Getenv("NO_MISTAKES_JEV_LIVE_EVIDENCE"); dir != "" {
 		payload := map[string]any{
@@ -89,7 +104,7 @@ func TestReviewStep_LiveTypeSafePrebrief(t *testing.T) {
 			"candidates":          candidates,
 			"input_tokens":        inputTokens,
 			"wall_ms":             wall.Milliseconds(),
-			"prompt_has_prebrief": strings.Contains(reviewPromptOf(t, ag), "Pre-brief"),
+			"prompt_has_prebrief": hasPrebrief,
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create live evidence dir: %v", err)
