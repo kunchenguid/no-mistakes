@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,24 +87,28 @@ Rules:
 Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(repair)
 		}
-		fixCtx, cancelFix, fixTimeout := testAgentContext(sctx)
+		fixTimeout := testAgentTimeout(sctx)
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix test failures...",
 			Prompt:          fixPrompt,
 			FallbackSummary: "fix test failures",
-			AgentContext:    fixCtx,
+			RunAgent: func(runOpts agent.RunOpts) (*agent.Result, error) {
+				result, runErr := sctx.RunAgentBudget(sctx.Ctx, fixTimeout, errTestAgentTimeout, runOpts)
+				if runErr != nil {
+					return nil, testAgentError(fixTimeout, "agent fix tests", runErr)
+				}
+				return result, nil
+			},
 			AfterAgentRun: func(*agent.Result) error {
 				newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
 				return nil
 			},
 		})
-		cancelFix()
 		if err != nil {
-			runErr := testAgentError(fixCtx, fixTimeout, "agent fix tests", err)
-			if !errors.Is(runErr, errTestAgentTimeout) {
-				return nil, runErr
+			if !errors.Is(err, errTestAgentTimeout) {
+				return nil, err
 			}
-			repairCut = runErr
+			repairCut = err
 		}
 		fixSummary = summary
 	}
@@ -301,19 +304,17 @@ func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error
 				testAnalyzerMaxAttempts,
 			))
 		}
-		evidenceCtx, cancel, timeout := testAgentContext(sctx)
-		result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
+		timeout := testAgentTimeout(sctx)
+		result, err := sctx.RunAgentBudget(sctx.Ctx, timeout, errTestAgentTimeout, agent.RunOpts{
 			Prompt:     current,
 			CWD:        sctx.WorkDir,
 			JSONSchema: testFindingsSchema,
 			OnChunk:    sctx.LogChunk,
 		})
-		runErr := testAgentError(evidenceCtx, timeout, "agent run tests", err)
-		if runErr != nil && (context.Cause(evidenceCtx) != nil || !agent.IsStructuredOutputRejected(runErr)) {
-			cancel()
+		runErr := testAgentError(timeout, "agent run tests", err)
+		if runErr != nil && (errors.Is(runErr, errTestAgentTimeout) || sctx.Ctx.Err() != nil || !agent.IsStructuredOutputRejected(runErr)) {
 			return Findings{}, runErr
 		}
-		cancel()
 
 		var valErr error
 		if runErr != nil {
@@ -515,19 +516,17 @@ func mergeNewTestFiles(fromFix, fromEvidence []string) []string {
 	return merged
 }
 
-func testAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
-	timeout := config.DefaultTestAgentTimeout
+func testAgentTimeout(sctx *pipeline.StepContext) time.Duration {
 	if sctx != nil && sctx.Config != nil && sctx.Config.TestAgentTimeout > 0 {
-		timeout = sctx.Config.TestAgentTimeout
+		return sctx.Config.TestAgentTimeout
 	}
-	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errTestAgentTimeout)
-	return ctx, cancel, timeout
+	return config.DefaultTestAgentTimeout
 }
 
 var errTestAgentTimeout = errors.New("test agent timeout")
 
 // testAgentTimeoutOutcome parks the Test step when an evidence or repair
-// invocation burned its wall-clock budget. A budget cut is not a code
+// invocation burned its stall budget. A budget cut is not a code
 // failure: the run stays alive with the worktree so leftover commits and
 // uncommitted files are not discarded, and an approval is a Test exception
 // rather than a silent green pass. Late structured output from the expired
@@ -549,7 +548,7 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 			"The Test agent did not finish within its invocation budget. "+
 				"Reported: %v. %s "+
 				"Re-running the same request costs another full budget, so no further attempt is made automatically. "+
-				"If this repository's targeted tests or evidence gathering routinely approach the default %s, raise test_agent_timeout in global config. "+
+				"If this repository's targeted tests or evidence gathering routinely stay quiet longer than the default %s, raise test_agent_timeout in global config. "+
 				"Respond with fix to spend another budget: a repair turn runs only for selected findings other than this budget cut, then validation re-runs. Or abort and retry after raising the budget.",
 			err, cause, config.DefaultTestAgentTimeout),
 	}}
@@ -722,15 +721,10 @@ func porcelainPaths(status string) []string {
 	return paths
 }
 
-// testAgentError renders a Test-invocation budget expiry. It keeps the agent's
-// own error rather than replacing it with the bare context cause: for a native
-// agent that error carries the killed subprocess's exit status and stderr, and
-// is the only account of what the process was doing when the budget ran out.
-func testAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
-	if timeout > 0 && errors.Is(context.Cause(ctx), errTestAgentTimeout) {
-		if err == nil {
-			err = context.Cause(ctx)
-		}
+// testAgentError renders a Test-invocation stall-budget expiry. The measured
+// activity evidence is already on err from the shared agent-run seam.
+func testAgentError(timeout time.Duration, prefix string, err error) error {
+	if timeout > 0 && errors.Is(err, errTestAgentTimeout) {
 		return fmt.Errorf("%s timed out after %s: %w", prefix, timeout, err)
 	}
 	if err != nil {

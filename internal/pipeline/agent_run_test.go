@@ -62,6 +62,124 @@ func TestRunAgent_HangingAgentFailsAfterTimeout(t *testing.T) {
 	}
 }
 
+func TestAgentTimeoutHardCapAndIdleGrace(t *testing.T) {
+	t.Parallel()
+	if got := AgentTimeoutHardCap(30 * time.Minute); got != 60*time.Minute {
+		t.Fatalf("hard cap for 30m = %s, want 60m", got)
+	}
+	if got := AgentTimeoutIdleGrace(30 * time.Minute); got != config.DefaultStepQuietWarning {
+		t.Fatalf("idle grace for 30m = %s, want %s", got, config.DefaultStepQuietWarning)
+	}
+	if got := AgentTimeoutIdleGrace(20 * time.Millisecond); got != 20*time.Millisecond {
+		t.Fatalf("idle grace for 20ms = %s, want 20ms", got)
+	}
+}
+
+func TestRunAgent_StreamingPastStallBudgetSucceeds(t *testing.T) {
+	t.Parallel()
+	const stall = 80 * time.Millisecond
+	done := time.NewTimer(stall + stall/2)
+	defer done.Stop()
+	ag := &hangingAgent{
+		name: "slow-but-working",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(5 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-done.C:
+					return &agent.Result{Text: "finished after stall budget"}, nil
+				case <-tick.C:
+					opts.OnChunk("working\n")
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err != nil {
+		t.Fatalf("working agent cut at the stall budget: %v", err)
+	}
+	if result == nil || result.Text != "finished after stall budget" {
+		t.Fatalf("result = %+v, want the turn that finished after the stall budget", result)
+	}
+}
+
+func TestRunAgent_SilentAgentDoesNotWaitForHardCap(t *testing.T) {
+	t.Parallel()
+	const stall = 40 * time.Millisecond
+	ag := &hangingAgent{
+		name: "mute",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= AgentTimeoutHardCap(stall) {
+		t.Fatalf("silent agent hung for %s, want a cancel at the %s stall budget not the %s hard cap", elapsed, stall, AgentTimeoutHardCap(stall))
+	}
+}
+
+func TestRunAgent_StreamingAgentHitsHardCap(t *testing.T) {
+	t.Parallel()
+	const stall = 40 * time.Millisecond
+	ag := &hangingAgent{
+		name: "never-finishes",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(2 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-tick.C:
+					opts.OnChunk("still going\n")
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "last produced output") {
+		t.Fatalf("error = %q, want a busy-agent diagnosis at the hard cap", err)
+	}
+	if elapsed < stall {
+		t.Fatalf("busy agent cut after %s, want to pass the %s stall budget", elapsed, stall)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("busy agent hung for %s, want a bounded hard-cap fail", elapsed)
+	}
+}
+
 func TestRunAgent_LateSuccessAfterTimeoutIsRejected(t *testing.T) {
 	t.Parallel()
 	ag := &hangingAgent{

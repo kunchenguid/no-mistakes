@@ -63,6 +63,40 @@ func TestTestStep_HangingEvidenceAgentParksForADecision(t *testing.T) {
 	}
 }
 
+func TestTestStep_StreamingEvidenceAfterStallBudgetCompletes(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	const stall = 80 * time.Millisecond
+	done := time.NewTimer(stall + stall/2)
+	defer done.Stop()
+	ag := &mockAgent{
+		name: "slow-evidence-agent",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(5 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-done.C:
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"user runs the command","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)}, nil
+				case <-tick.C:
+					opts.OnChunk("testing\n")
+				}
+			}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = stall
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("working Test agent cut at the stall budget: %v", err)
+	}
+	if outcome == nil || outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want a completed Test pass", outcome)
+	}
+}
+
 func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

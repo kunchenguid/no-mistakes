@@ -250,8 +250,8 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	// actually observed. An agent that never emitted anything is a different
 	// operator problem from one that streamed until the deadline, and the run
 	// error is the only place that distinction survives.
-	if !strings.Contains(got, "reached its absolute wall-clock limit after 20ms") {
-		t.Fatalf("run error = %q, want the expired review wall-clock limit named", got)
+	if !strings.Contains(got, "reached its invocation budget after 20ms") {
+		t.Fatalf("run error = %q, want the expired review stall budget named", got)
 	}
 	if !strings.Contains(got, "produced no output at all") {
 		t.Fatalf("run error = %q, want the measured silence of a never-emitting agent", got)
@@ -295,29 +295,24 @@ func TestReviewStep_WallClockTimeoutPreservesTheAgentReport(t *testing.T) {
 	if !strings.Contains(got, "provider authentication required") {
 		t.Fatalf("run error = %q, want the agent's own report preserved", got)
 	}
-	if !strings.Contains(got, "reached its absolute wall-clock limit after 20ms") {
-		t.Fatalf("run error = %q, want the expired review wall-clock limit named", got)
+	if !strings.Contains(got, "reached its invocation budget after 20ms") {
+		t.Fatalf("run error = %q, want the expired review stall budget named", got)
 	}
 }
 
 // TestReviewStep_EachAgentInvocationGetsItsOwnBudget pins the
 // review_agent_timeout ownership contract across two complete auto-fix cycles.
-// Each successful fixer consumes 29 of its 30 fake minutes; both independent
-// rereviewers must still start with a fresh full 30-minute allowance.
+// Each fixer and each independent rereviewer must start with a fresh hard cap,
+// not leftover stall time from the previous turn.
 func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-	const (
-		timeout    = 30 * time.Minute
-		fixerWork  = 29 * time.Minute
-		reviewWork = time.Minute
-	)
-	fakeNow := time.Now().Add(24 * time.Hour)
+	const timeout = 30 * time.Minute
+	hardCap := pipeline.AgentTimeoutHardCap(timeout)
 	type call struct {
-		fixTurn  bool
-		deadline time.Time
-		started  time.Time
+		fixTurn   bool
+		remaining time.Duration
 	}
 	var calls []call
 
@@ -330,12 +325,10 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 				t.Errorf("agent call %d ran with no deadline", len(calls)+1)
 			}
 			isFix := strings.Contains(opts.Prompt, "Investigate previous review findings")
-			calls = append(calls, call{fixTurn: isFix, deadline: dl, started: fakeNow})
+			calls = append(calls, call{fixTurn: isFix, remaining: time.Until(dl)})
 			if isFix {
-				fakeNow = fakeNow.Add(fixerWork)
 				return &agent.Result{Output: json.RawMessage(`{"summary":"fixed it"}`)}, nil
 			}
-			fakeNow = fakeNow.Add(reviewWork)
 			// Initial review and the first rereview each request another fix;
 			// the second independent rereview certifies the result.
 			if len(calls) == 1 || len(calls) == 3 {
@@ -354,8 +347,7 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	sctx.Config.ReviewAgentTimeout = timeout
 	sctx.Config.AutoFix.Review = 2
 
-	step := &ReviewStep{now: func() time.Time { return fakeNow }}
-	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{step}, nil)
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -369,20 +361,10 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 		if calls[i].fixTurn != wantFix[i] {
 			t.Fatalf("turn order = %+v, want review, fix, rereview, fix, rereview", calls)
 		}
-		remaining := calls[i].deadline.Sub(calls[i].started)
-		if remaining != timeout {
-			t.Errorf("call %d started with %v, want exactly %v", i+1, remaining, timeout)
-		}
-	}
-	if extension := calls[2].deadline.Sub(calls[1].deadline); extension != fixerWork {
-		t.Errorf("long fixer extended rereviewer deadline by %v, want %v; fixer consumed rereviewer budget", extension, fixerWork)
-	}
-	if extension := calls[4].deadline.Sub(calls[3].deadline); extension != fixerWork {
-		t.Errorf("second long fixer extended rereviewer deadline by %v, want %v; fixer consumed rereviewer budget", extension, fixerWork)
-	}
-	for i := 1; i < len(calls); i++ {
-		if !calls[i].deadline.After(calls[i-1].deadline) {
-			t.Errorf("call %d deadline %v did not refresh after call %d deadline %v", i+1, calls[i].deadline, i, calls[i-1].deadline)
+		// Visible deadline is the hard cap (2x stall budget). Leftover stall
+		// time from a previous turn would be far smaller than timeout itself.
+		if calls[i].remaining < timeout || calls[i].remaining > hardCap+time.Second {
+			t.Errorf("call %d started with %v remaining, want a fresh hard cap around %v", i+1, calls[i].remaining, hardCap)
 		}
 	}
 }
@@ -391,11 +373,14 @@ func TestReviewFix_PostAgentCommitUsesStepParentContext(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-	fakeNow := time.Now().Add(time.Hour)
 	var invocationDeadline time.Time
+	prepared := false
 	ag := &mockAgent{
 		name: "near-deadline-fixer",
 		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if !prepared {
+				t.Fatal("fixer deadline started before synchronous preparation")
+			}
 			deadline, ok := ctx.Deadline()
 			if !ok {
 				t.Fatal("fixer context has no deadline")
@@ -404,14 +389,12 @@ func TestReviewFix_PostAgentCommitUsesStepParentContext(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			fakeNow = deadline.Add(-time.Second)
 			return &agent.Result{Output: json.RawMessage(`{"summary":"fix timeout ownership"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
 	sctx.Config.ReviewAgentTimeout = 30 * time.Minute
-	prepared := false
 	originalLog := sctx.Log
 	sctx.Log = func(message string) {
 		if message == "preparing fixer" {
@@ -419,21 +402,12 @@ func TestReviewFix_PostAgentCommitUsesStepParentContext(t *testing.T) {
 		}
 		originalLog(message)
 	}
-	step := &ReviewStep{now: func() time.Time {
-		if !prepared {
-			t.Fatal("fixer deadline started before synchronous preparation")
-		}
-		return fakeNow
-	}}
 
-	summary, err := step.executeReviewFixWithTimeout(sctx, types.StepReview, fixExecutionOptions{
+	summary, err := (&ReviewStep{}).executeReviewFixWithTimeout(sctx, types.StepReview, fixExecutionOptions{
 		LogMessage:      "preparing fixer",
 		ErrorPrefix:     "agent fix failed",
 		FallbackSummary: "fix review findings",
 		AfterAgentRun: func(*agent.Result) error {
-			if remaining := invocationDeadline.Sub(fakeNow); remaining != time.Second {
-				t.Fatalf("post-agent work began with %v of the invocation budget, want 1s", remaining)
-			}
 			if _, ok := sctx.Ctx.Deadline(); ok {
 				t.Fatal("post-agent work inherited the invocation deadline")
 			}
@@ -478,6 +452,40 @@ func TestReviewStep_LateCompletionAfterInvocationDeadlineIsRejected(t *testing.T
 	}
 }
 
+func TestReviewStep_StreamingPastStallBudgetCompletes(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	const stall = 80 * time.Millisecond
+	done := time.NewTimer(stall + stall/2)
+	defer done.Stop()
+	ag := &mockAgent{
+		name: "slow-reviewer",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(5 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-done.C:
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
+				case <-tick.C:
+					opts.OnChunk("reviewing\n")
+				}
+			}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = stall
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("working review cut at the stall budget: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected a completed review outcome")
+	}
+}
+
 func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
@@ -500,7 +508,7 @@ func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T)
 
 	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
-		t.Fatal("expected progress-only review to hit its absolute limit")
+		t.Fatal("expected progress-only review to hit its hard cap")
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
@@ -515,8 +523,8 @@ func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T)
 	if strings.Contains(*run.Error, "produced no output at all") || strings.Contains(*run.Error, "silent") {
 		t.Fatalf("actively streaming review was mislabelled silent: %q", *run.Error)
 	}
-	if !strings.Contains(*run.Error, "absolute wall-clock limit") || !strings.Contains(*run.Error, "last produced output") {
-		t.Fatalf("timeout diagnosis did not separate the absolute limit from measured activity: %q", *run.Error)
+	if !strings.Contains(*run.Error, "invocation budget") || !strings.Contains(*run.Error, "last produced output") {
+		t.Fatalf("timeout diagnosis did not separate the stall budget from measured activity: %q", *run.Error)
 	}
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {

@@ -40,18 +40,19 @@ const (
 	// DefaultStepQuietWarning is how long a running/fixing step can go without
 	// a new log or lifecycle activity before AXI status marks it quiet.
 	DefaultStepQuietWarning = 10 * time.Minute
-	// DefaultAgentTimeout bounds one pipeline agent invocation that does not
-	// install a more specific deadline, so a stalled agent cannot leave a run
-	// active forever. Review and Test keep their own knobs; this is the
-	// default-by-construction budget for every other step.
+	// DefaultAgentTimeout is the stall budget for one pipeline agent invocation
+	// that does not install a more specific deadline, so a silent agent cannot
+	// leave a run active forever. A still-working invocation may continue until
+	// it goes idle or hits twice this budget. Review and Test keep their own
+	// knobs; this is the default-by-construction budget for every other step.
 	DefaultAgentTimeout = 30 * time.Minute
-	// DefaultReviewAgentTimeout is the absolute wall-clock limit for one
-	// review or review-fix invocation. Every later invocation derives a fresh
-	// limit, so a stalled agent is bounded without charging the next turn.
+	// DefaultReviewAgentTimeout is the stall budget for one review or
+	// review-fix invocation. Every later invocation derives a fresh budget, so
+	// a stalled agent is bounded without charging the next turn.
 	DefaultReviewAgentTimeout = 30 * time.Minute
-	// DefaultTestAgentTimeout bounds one Test-step agent invocation, including
-	// the post-test evidence-gathering turn and a Test-repair turn, so a stalled
-	// agent cannot leave a run active forever.
+	// DefaultTestAgentTimeout is the stall budget for one Test-step agent
+	// invocation, including the post-test evidence-gathering turn and a
+	// Test-repair turn, so a silent agent cannot leave a run active forever.
 	DefaultTestAgentTimeout = 30 * time.Minute
 	// DefaultDaemonConnectTimeout bounds client IPC connection attempts to a
 	// daemon socket that exists but is not accepting connections.
@@ -1034,21 +1035,21 @@ ci_timeout: "168h"
 # only; it never cancels work.
 step_quiet_warning: "10m"
 
-# Maximum wall-clock time for one pipeline agent invocation that does not
-# install a more specific deadline (document, lint, rebase, PR, CI-fix, and
-# auto-fix). A stalled agent fails the run instead of leaving it active.
+# Stall budget for one pipeline agent invocation that does not install a more
+# specific deadline (document, lint, rebase, PR, CI-fix, and auto-fix). A silent
+# agent is cancelled here; a still-working one may continue until it goes idle
+# or hits twice this budget.
 agent_timeout: "30m"
 
-# Absolute wall-clock limit for one Review agent invocation. Each optional
-# fixer and each fresh independent rereviewer receives a new full limit.
-# Activity is reported at expiry but does not reset this hard safety bound.
+# Stall budget for one Review agent invocation. Each optional fixer and each
+# fresh independent rereviewer receives a new full budget. A silent review is
+# cancelled here; a still-working one may continue until idle or twice this.
 review_agent_timeout: "30m"
 
-# Maximum wall-clock time for one Test-step agent invocation, including the
-# post-test evidence-gathering turn. A stalled test agent parks for a decision
-# instead of leaving the run active. Raise this when targeted tests or evidence
-# gathering routinely approach 30m; the default is a stall bound, not slack
-# for a long suite.
+# Stall budget for one Test-step agent invocation, including the post-test
+# evidence-gathering turn. A silent test agent parks for a decision instead of
+# leaving the run active. A still-working one may continue until idle or twice
+# this budget, so a long targeted run is not cut solely for provider slowness.
 test_agent_timeout: "30m"
 
 # Maximum time a CLI client waits for an existing daemon socket to accept a
