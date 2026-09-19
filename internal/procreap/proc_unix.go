@@ -39,6 +39,31 @@ func listProcesses() ([]Process, error) {
 	return parseProcessTable(string(out)), nil
 }
 
+// listProcessStates reads pid, parent, group, and state for every process.
+func listProcessStates() ([]processState, error) {
+	cmd := exec.Command(psExecutable(), "-eo", "pid=,ppid=,pgid=,stat=")
+	cmd.Env = cEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate processes: %w", err)
+	}
+	var procs []processState
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		ppid, ppidErr := strconv.Atoi(fields[1])
+		pgid, pgidErr := strconv.Atoi(fields[2])
+		if pidErr != nil || ppidErr != nil || pgidErr != nil || pid <= 0 {
+			continue
+		}
+		procs = append(procs, processState{PID: pid, PPID: ppid, PGID: pgid, Stat: fields[3]})
+	}
+	return procs, nil
+}
+
 // parseProcessTable turns `ps -eo pid=,ppid=,pgid=,etime=,command=` output
 // into Process values. Lines it cannot parse are skipped: a partially
 // readable table is still useful, and an unreadable line must never abort the

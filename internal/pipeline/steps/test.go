@@ -721,11 +721,12 @@ func porcelainPaths(status string) []string {
 	return paths
 }
 
-// testAgentError renders a Test-invocation stall-budget expiry. The measured
-// activity evidence is already on err from the shared agent-run seam.
+// testAgentError renders a Test-invocation budget expiry. The shared
+// agent-run seam supplies which bound cut the turn (stall budget or hard cap),
+// how long it ran, and the measured activity evidence.
 func testAgentError(timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(err, errTestAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s: %w", prefix, timeout, err)
+		return fmt.Errorf("%s timed out %s: %w", prefix, pipeline.AgentBudgetBound(err, timeout), err)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", prefix, err)

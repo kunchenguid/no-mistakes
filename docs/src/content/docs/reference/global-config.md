@@ -504,15 +504,15 @@ Stall budget for one pipeline agent invocation that does not already have a more
 This is the default-by-construction budget: Document, Lint, Rebase conflict repair, PR drafting, CI auto-fix, and any future agent-spawning step are bounded even if they forget to install their own timer.
 Review still uses [`review_agent_timeout`](#review_agent_timeout) for each review or fix invocation, Test still uses [`test_agent_timeout`](#test_agent_timeout) per invocation, and Intent keeps its five-minute extraction cap; any existing deadline is honored rather than capped.
 A silent invocation is cancelled when this budget expires.
-An invocation that is still producing output at expiry continues until it goes quiet for [`step_quiet_warning`](#step_quiet_warning) (or for this budget when the budget is shorter) or until twice this budget, whichever comes first.
-That hard cap is the fail-closed bound so a chatty turn cannot run forever.
+An invocation that is still producing output at expiry, or whose agent subprocess is still running a child process such as a test suite a tool call started, continues until it goes quiet with no live child process for [`step_quiet_warning`](#step_quiet_warning) (or for this budget when the budget is shorter) or until twice this budget, whichever comes first.
+That hard cap is the fail-closed bound so a chatty or long-waiting turn cannot run forever.
 The shipped default is not raised: widening it for hung agents would add latency on the default path, and a still-working turn already has slack through the extension.
 When the invocation is cancelled, it returns a timeout diagnostic instead of remaining active indefinitely.
 Most agent-driven mutation steps fail the run, CI auto-fix parks for a user decision, and PR drafting follows its existing agent-error fallback and continues with deterministic content.
 The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the approval behavior.
 A late successful return after cancellation is rejected, so post-agent commits and PR content cannot use work from a timed-out turn.
 
-The diagnostic names the stall budget that expired and separately reports what activity was actually measured.
+The diagnostic names which bound cut the invocation and how long it ran, for example `after 30m0s (stall budget, then no recent output or live child process; ran 41m10s)` or `at its 1h0m0s hard cap (twice the 30m0s stall budget, still active; ran 1h0m0s)`, and separately reports what activity was actually measured.
 Evidence resets whenever a retry or fallback starts a replacement attempt, including provider fallback, failed session resume, and OpenCode's prompt-only structured-output fallback, so the diagnostic describes only the attempt that reached the deadline:
 
 - `agent produced no output at all in 30m0s after its subprocess started (pid=1234)` - the current attempt launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.
@@ -521,6 +521,8 @@ Evidence resets whenever a retry or fallback starts a replacement attempt, inclu
 
 Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr.
 Subprocess bytes matter because an agent spends most of a long turn running tools rather than writing prose, so prose alone cannot tell a working agent from a wedged one.
+A live child process of the agent subprocess extends the budget too, because a long tool call writes nothing until it returns, but it is liveness rather than output and is never reported as the agent having produced anything.
+Agents that report no subprocess, and hosts where the process table cannot be read, get no such extension.
 [`step_quiet_warning`](#step_quiet_warning) remains a separate status-only signal before the stall budget; after the stall budget the same quiet window is the cancel condition for a previously-working turn.
 Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; credential-bearing URLs are redacted and the report is length-bounded before it can reach logs or findings.
 A bare context cancellation is omitted because it adds no evidence.

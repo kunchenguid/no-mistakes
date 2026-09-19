@@ -585,13 +585,12 @@ func reviewAgentTimeout(cfg *config.Config) time.Duration {
 
 var errReviewAgentTimeout = errors.New("review agent timeout")
 
-// reviewAgentError renders one review invocation's stall-budget expiry.
-// The measured activity evidence comes from the shared agent-run seam. A still-
-// working turn may continue past this budget until idle or the hard cap; the
-// diagnostic still names the stall budget, not inactivity.
+// reviewAgentError renders one review invocation's budget expiry. The shared
+// agent-run seam supplies which bound cut the turn (stall budget or hard cap),
+// how long it ran, and the measured activity evidence.
 func reviewAgentError(timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(err, errReviewAgentTimeout) {
-		return fmt.Errorf("%s reached its invocation budget after %s: %w", prefix, timeout, err)
+		return fmt.Errorf("%s reached its invocation budget %s: %w", prefix, pipeline.AgentBudgetBound(err, timeout), err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
 }
