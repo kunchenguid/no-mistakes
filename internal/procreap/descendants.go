@@ -1,62 +1,56 @@
 package procreap
 
-import (
-	"strings"
-	"time"
-)
+import "strings"
 
 // processState is one process-table entry as the descendant probe needs it.
 type processState struct {
-	PID     int
-	PPID    int
-	PGID    int
-	Stat    string
-	Elapsed time.Duration
+	PID  int
+	PPID int
+	PGID int
+	Stat string
 }
 
-// HasLiveDescendantSince reports whether pid currently has a running
-// descendant that started at or after since: a process whose parent chain
-// reaches pid, or a member of the process group pid leads. Zombies do not
-// count because they are finished work nobody has reaped yet.
+// LiveDescendants returns the running descendants of pid: processes whose
+// parent chain reaches pid, and members of the process group pid leads.
+// Zombies are left out because they are finished work nobody has reaped yet.
 //
-// It answers "is this agent still waiting on something it launched" for the
-// invocation stall budget. A long tool call (a test suite, a build) produces
-// no bytes on the agent's own stdout or stderr until it returns, so output
-// alone cannot tell that wait from a wedged agent; a live child can. The
-// start bound is what separates that tool work from helpers an agent keeps
-// alive for its whole turn (an ACP agent under acpx, stdio MCP servers):
-// those start before the agent's output they would otherwise outlive.
-// Process ages have whole-second resolution, so a process started within
-// the second before since still counts.
-// A failure to read the process table reports false, so an unreadable host
-// never extends a budget.
-func HasLiveDescendantSince(pid int, since time.Time) bool {
+// The invocation stall budget compares two of these sets to tell whether a
+// quiet agent is still waiting on a tool call it launched (a test suite, a
+// build) or is wedged next to helpers it keeps alive for its whole turn (an
+// ACP agent under acpx, stdio MCP servers). A PID set rather than process
+// start times is compared because ps reports ages in whole seconds, which
+// cannot order a helper started just before the agent's output against a
+// tool started just after it.
+func LiveDescendants(pid int) (map[int]bool, error) {
 	if pid <= 1 {
-		return false
+		return map[int]bool{}, nil
 	}
 	procs, err := listProcessStates()
 	if err != nil {
-		return false
+		return nil, err
 	}
-	return hasLiveDescendant(pid, procs, time.Since(since))
+	return liveDescendants(pid, procs), nil
 }
 
-func hasLiveDescendant(root int, procs []processState, maxAge time.Duration) bool {
+func liveDescendants(root int, procs []processState) map[int]bool {
 	byPID := make(map[int]processState, len(procs))
 	for _, p := range procs {
 		byPID[p.PID] = p
 	}
+	found := make(map[int]bool)
 	for _, p := range procs {
-		if p.PID == root || p.PID <= 1 || strings.HasPrefix(p.Stat, "Z") || p.Elapsed > maxAge {
+		if p.PID == root || p.PID <= 1 || strings.HasPrefix(p.Stat, "Z") {
 			continue
 		}
 		if p.PGID == root {
-			return true
+			found[p.PID] = true
+			continue
 		}
 		seen := map[int]bool{p.PID: true}
 		for parent := p.PPID; parent > 1 && !seen[parent]; {
 			if parent == root {
-				return true
+				found[p.PID] = true
+				break
 			}
 			seen[parent] = true
 			next, ok := byPID[parent]
@@ -66,5 +60,5 @@ func hasLiveDescendant(root int, procs []processState, maxAge time.Duration) boo
 			parent = next.PPID
 		}
 	}
-	return false
+	return found
 }

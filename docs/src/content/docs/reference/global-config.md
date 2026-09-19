@@ -522,7 +522,7 @@ Evidence resets whenever a retry or fallback starts a replacement attempt, inclu
 Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr.
 Subprocess bytes matter because an agent spends most of a long turn running tools rather than writing prose, so prose alone cannot tell a working agent from a wedged one.
 A live child process of the agent subprocess extends the budget too, because a long tool call writes nothing until it returns, but it is liveness rather than output and is never reported as the agent having produced anything.
-Only a child started after the agent's last output counts, so helpers an agent keeps alive for the whole turn, such as the ACP agent under `acpx` or stdio MCP servers, cannot keep a hung turn alive past the stall budget.
+Only a child that was not already running when the agent last produced output counts: the agent's child processes are snapshotted as it produces output, so helpers it keeps alive for the whole turn, such as the ACP agent under `acpx` or stdio MCP servers, cannot keep a hung turn alive past the stall budget.
 Agents that report no subprocess, and hosts where the process table cannot be read, get no such extension.
 [`step_quiet_warning`](#step_quiet_warning) remains a separate status-only signal before the stall budget; after the stall budget the same quiet window is the cancel condition for a previously-working turn.
 Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; credential-bearing URLs are redacted and the report is length-bounded before it can reach logs or findings.

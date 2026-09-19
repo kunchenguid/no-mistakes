@@ -814,15 +814,16 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the live-child probe reads the POSIX process table")
 	}
-	const stall = time.Second
+	const stall = 2 * time.Second
 	ag := &hangingAgent{
 		name: "suite-runner",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			// A quiet agent blocked on a long tool call: it announces the call,
 			// then its child runs past the stall budget while the agent itself
 			// writes nothing.
-			return runLaunchedShell(ctx, opts, "read go; sleep 1.5", func(started func()) {
+			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started func()) {
 				opts.OnChunk("running the suite\n")
+				time.Sleep(500 * time.Millisecond)
 				started()
 			})
 		},
@@ -840,6 +841,40 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 	}
 	if result == nil || result.Text != "done" {
 		t.Fatalf("result = %+v, want the finished turn", result)
+	}
+}
+
+func TestRunAgent_HelperStartedJustBeforeTheFirstOutputDoesNotExtendTheBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = time.Second
+	ag := &hangingAgent{
+		name: "hung-after-init",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// A stdio MCP server or an acpx inner agent starts moments before the
+			// agent's first output, then the provider hangs.
+			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(func()) {
+				time.Sleep(100 * time.Millisecond)
+				opts.OnChunk("init\n")
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= AgentTimeoutHardCap(stall) {
+		t.Fatalf("hung agent with a helper started before its first output ran %s, want a cut before the %s hard cap", elapsed, AgentTimeoutHardCap(stall))
 	}
 }
 

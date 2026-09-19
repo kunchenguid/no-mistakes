@@ -136,7 +136,25 @@ type agentActivity struct {
 	// exited is set once the launched subprocess reported its exit, so its
 	// PID is never probed for children after the kernel may have reused it.
 	exited bool
+	// helpers is the launched subprocess's live descendants as snapshotted at
+	// its most recent output; helpersOK is false until one snapshot of the
+	// current attempt was read successfully. waitingOnChild counts only
+	// descendants missing from it.
+	helpers   map[int]bool
+	helpersOK bool
+	// snapshotAt and snapshotSeq throttle and order those snapshots;
+	// generation discards a snapshot that finishes after its attempt ended.
+	snapshotAt  time.Time
+	snapshotSeq int
+	appliedSeq  int
+	generation  int
 }
+
+// helperSnapshotInterval bounds how often output triggers a descendant
+// snapshot, so a turn streaming prose token by token does not read the
+// process table for every chunk. The first output after a quiet stretch
+// always snapshots immediately.
+const helperSnapshotInterval = time.Second
 
 func newAgentActivity() *agentActivity {
 	return &agentActivity{begun: time.Now()}
@@ -146,10 +164,44 @@ func (a *agentActivity) observe() {
 	if a == nil {
 		return
 	}
+	now := time.Now()
 	a.mu.Lock()
 	a.observed++
-	a.last = time.Now()
+	a.last = now
+	snapshot := a.launched && !a.exited && now.Sub(a.snapshotAt) >= helperSnapshotInterval
+	var pid, seq, generation int
+	if snapshot {
+		a.snapshotAt = now
+		a.snapshotSeq++
+		pid, seq, generation = a.launchedPID, a.snapshotSeq, a.generation
+	}
 	a.mu.Unlock()
+	if snapshot {
+		go a.snapshotHelpers(pid, seq, generation)
+	}
+}
+
+// snapshotHelpers records the descendants alive at an observed output as
+// helpers: whatever the agent was already running when it spoke cannot be a
+// tool call it is now silently waiting on.
+func (a *agentActivity) snapshotHelpers(pid, seq, generation int) {
+	helpers, err := procreap.LiveDescendants(pid)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if generation != a.generation || seq < a.appliedSeq {
+		return
+	}
+	a.appliedSeq = seq
+	a.helpers, a.helpersOK = helpers, err == nil
+}
+
+func (a *agentActivity) resetHelpers() {
+	a.generation++
+	a.helpers = nil
+	a.helpersOK = false
+	a.snapshotAt = time.Time{}
+	a.snapshotSeq = 0
+	a.appliedSeq = 0
 }
 
 func (a *agentActivity) beginAttempt() {
@@ -164,6 +216,7 @@ func (a *agentActivity) beginAttempt() {
 	a.launchedAt = time.Time{}
 	a.launched = false
 	a.exited = false
+	a.resetHelpers()
 	a.mu.Unlock()
 }
 
@@ -176,6 +229,7 @@ func (a *agentActivity) observeLaunch(pid int) {
 	a.launchedPID = pid
 	a.launchedAt = time.Now()
 	a.exited = false
+	a.resetHelpers()
 	a.mu.Unlock()
 }
 
@@ -188,24 +242,38 @@ func (a *agentActivity) observeExit() {
 	a.mu.Unlock()
 }
 
-// waitingOnChild reports whether the launched agent subprocess is still
-// running a child process it started after its last observed output, such as
-// a test suite a tool call announced and then launched. Such a wait emits no
+// waitingOnChild reports whether the launched agent subprocess is running a
+// child process that was not alive at its latest output snapshot, such as a
+// test suite a tool call announced and then launched. Such a wait emits no
 // output, so it is the only evidence that a quiet agent is working rather
-// than wedged. Children already running before that output (an ACP agent
-// under acpx, stdio MCP servers) live for the whole turn and prove nothing,
-// and an agent that never produced output never announced a tool call. It is
-// liveness, not output: evidence() never reports it as the agent having
-// produced anything.
+// than wedged. Children already running at that output (an ACP agent under
+// acpx, stdio MCP servers) live for the whole turn and prove nothing, and an
+// agent that never produced output never announced a tool call. A missing
+// snapshot or an unreadable process table reports false, so the budget is
+// never extended on a guess. It is liveness, not output: evidence() never
+// reports it as the agent having produced anything.
 func (a *agentActivity) waitingOnChild() bool {
 	if a == nil {
 		return false
 	}
 	a.mu.Lock()
-	pid, live := a.launchedPID, a.launched && !a.exited && a.observed > 0
-	last := a.last
+	pid := a.launchedPID
+	ready := a.launched && !a.exited && a.observed > 0 && a.helpersOK
+	helpers := a.helpers
 	a.mu.Unlock()
-	return live && procreap.HasLiveDescendantSince(pid, last)
+	if !ready {
+		return false
+	}
+	current, err := procreap.LiveDescendants(pid)
+	if err != nil {
+		return false
+	}
+	for child := range current {
+		if !helpers[child] {
+			return true
+		}
+	}
+	return false
 }
 
 // evidence renders what was actually observed, for the timeout message.
