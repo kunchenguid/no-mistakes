@@ -188,6 +188,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
+				if m.boundedReviewNeedsDisposition(step.StepName) {
+					return m, nil
+				}
 				m.toggleCurrentFinding(step.StepName)
 				m.moveFindingCursor(step.StepName, 1)
 			}
@@ -197,6 +200,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "A":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
+				if m.boundedReviewNeedsDisposition(step.StepName) {
+					return m, nil
+				}
 				m.selectAllFindings(step.StepName)
 			}
 		}
@@ -205,6 +211,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "N":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
+				if m.boundedReviewNeedsDisposition(step.StepName) {
+					return m, nil
+				}
 				m.clearAllFindings(step.StepName)
 			}
 		}
@@ -213,6 +222,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
+				if m.boundedReviewNeedsDisposition(step.StepName) {
+					return m, nil
+				}
 				if item, ok := m.findingAtCursor(step.StepName); ok && item.ID != "" {
 					existing := ""
 					if byStep := m.findingInstructions[step.StepName]; byStep != nil {
@@ -226,9 +238,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case "v":
+		if !m.showDiff {
+			if step := awaitingStep(m.steps); step != nil && m.boundedReviewNeedsDisposition(step.StepName) {
+				if item, ok := m.findingAtCursor(step.StepName); ok && item.ID != "" {
+					existing := m.findingDispositions[step.StepName][item.ID]
+					m.editor = newDispositionEditor(step.StepName, item.ID, existing)
+				}
+			}
+		}
+		return m, nil
 	case "+":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
+				if m.boundedReviewNeedsDisposition(step.StepName) {
+					return m, nil
+				}
 				m.editor = newAddFindingEditor(step.StepName)
 			}
 		}

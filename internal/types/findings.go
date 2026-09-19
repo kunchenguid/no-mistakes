@@ -14,6 +14,37 @@ const (
 	ActionAskUser = "ask-user"
 )
 
+// Review finding dispositions are recorded by the implementation worker after
+// the independent reviewer returns. They describe what the worker established,
+// not what the reviewer recommended.
+const (
+	FindingDispositionFix      = "confirmed-fix"
+	FindingDispositionReject   = "rejected"
+	FindingDispositionDefer    = "deferred"
+	FindingDispositionEscalate = "escalate"
+)
+
+var knownFindingDispositions = []string{
+	FindingDispositionFix,
+	FindingDispositionReject,
+	FindingDispositionDefer,
+	FindingDispositionEscalate,
+}
+
+// FindingDisposition is the AXI/IPC input used to adjudicate one review
+// finding. Reason is required for every decision so accepts and rejects carry
+// the same burden of proof.
+type FindingDisposition struct {
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+}
+
+func IsKnownFindingDisposition(value string) bool {
+	return slices.Contains(knownFindingDispositions, strings.ToLower(strings.TrimSpace(value)))
+}
+
+func KnownFindingDispositions() []string { return slices.Clone(knownFindingDispositions) }
+
 // Finding severity constants: the vocabulary the review prompt instructs
 // agents to use, ordered most to least severe.
 const (
@@ -185,6 +216,8 @@ type Finding struct {
 	File             string `json:"file,omitempty"`
 	Line             int    `json:"line,omitempty"`
 	Description      string `json:"description"`
+	Evidence         string `json:"evidence,omitempty"`
+	Verification     string `json:"verification,omitempty"`
 	Action           string `json:"action"`
 	Source           string `json:"source,omitempty"`
 	UserInstructions string `json:"user_instructions,omitempty"`
@@ -199,6 +232,10 @@ type Finding struct {
 	// every non-CI finding.
 	Check   string `json:"check,omitempty"`
 	CheckID string `json:"check_id,omitempty"`
+	// Disposition and DispositionReason are written by the implementation
+	// worker in bounded review mode. Reviewer output never supplies them.
+	Disposition       string `json:"disposition,omitempty"`
+	DispositionReason string `json:"disposition_reason,omitempty"`
 }
 
 // TestScenario is one named end-to-end scenario the test step derived from the
@@ -262,6 +299,8 @@ type findingWire struct {
 	File                string `json:"file,omitempty"`
 	Line                int    `json:"line,omitempty"`
 	Description         string `json:"description"`
+	Evidence            string `json:"evidence,omitempty"`
+	Verification        string `json:"verification,omitempty"`
 	Action              string `json:"action"`
 	Source              string `json:"source,omitempty"`
 	UserInstructions    string `json:"user_instructions,omitempty"`
@@ -269,6 +308,8 @@ type findingWire struct {
 	Category            string `json:"category,omitempty"`
 	Check               string `json:"check,omitempty"`
 	CheckID             string `json:"check_id,omitempty"`
+	Disposition         string `json:"disposition,omitempty"`
+	DispositionReason   string `json:"disposition_reason,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -301,6 +342,7 @@ type Findings struct {
 	RiskLevel           string `json:"risk_level"`
 	RiskRationale       string `json:"risk_rationale"`
 	RiskScope           string `json:"risk_scope,omitempty"`
+	ReviewStrategy      string `json:"review_strategy,omitempty"`
 }
 
 type findingsWire struct {
@@ -318,6 +360,7 @@ type findingsWire struct {
 	RiskLevel           string         `json:"risk_level"`
 	RiskRationale       string         `json:"risk_rationale"`
 	RiskScope           string         `json:"risk_scope"`
+	ReviewStrategy      string         `json:"review_strategy"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -345,6 +388,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		RiskLevel:           wire.RiskLevel,
 		RiskRationale:       wire.RiskRationale,
 		RiskScope:           wire.RiskScope,
+		ReviewStrategy:      wire.ReviewStrategy,
 	}, nil
 }
 
@@ -572,6 +616,8 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.File = wire.File
 	f.Line = wire.Line
 	f.Description = wire.Description
+	f.Evidence = wire.Evidence
+	f.Verification = wire.Verification
 	f.Action = wire.Action
 	f.Source = wire.Source
 	f.UserInstructions = wire.UserInstructions
@@ -579,6 +625,8 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Category = wire.Category
 	f.Check = wire.Check
 	f.CheckID = wire.CheckID
+	f.Disposition = wire.Disposition
+	f.DispositionReason = wire.DispositionReason
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

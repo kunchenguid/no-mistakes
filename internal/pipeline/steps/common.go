@@ -215,6 +215,8 @@ var findingsSchema = json.RawMessage(`{
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
 					"description": {"type": "string"},
+					"evidence": {"type": "string"},
+					"verification": {"type": "string"},
 					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]}
 				},
 				"required": ["severity", "description", "action"]

@@ -329,6 +329,11 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 		}
 		b.WriteString(desc + "\n")
 
+		if item.Disposition != "" {
+			disposition := wrapIndentedText("["+item.Disposition+"] "+item.DispositionReason, width, 8)
+			b.WriteString(blueStyle.Render(disposition) + "\n")
+		}
+
 		if item.UserInstructions != "" {
 			instr := wrapIndentedText("> "+item.UserInstructions, width, 8)
 			b.WriteString(blueStyle.Render(instr) + "\n")

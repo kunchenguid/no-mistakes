@@ -395,6 +395,55 @@ func TestWriteGateShape(t *testing.T) {
 	}
 }
 
+func TestBoundedReviewGateRendersEvidenceDispositionContractAndCostBound(t *testing.T) {
+	findings := types.Findings{
+		ReviewStrategy: config.ReviewStrategyBounded,
+		Summary:        "two findings",
+		Items: []types.Finding{
+			{ID: "review-1", Severity: "error", File: "main.go", Description: "bug", Evidence: "nil reaches dereference", Verification: "run TestNil"},
+			{ID: "review-2", Severity: "warning", File: "api.go", Description: "design question", Evidence: "two policies", Verification: "authority decision"},
+		},
+	}
+	raw, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := stepView{Name: "review", Status: "awaiting_approval", FindingsJSON: raw}
+	out := axiDoc(gateFields(gate)...)
+	for _, want := range []string{
+		"evidence", "verification", "disposition", "disposition_reason",
+		"implementation worker owns adjudication", "--dispositions", "No full-diff AI review runs after this response",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("bounded gate output missing %q:\n%s", want, out)
+		}
+	}
+
+	findings.Items[0].Disposition = types.FindingDispositionFix
+	findings.Items[0].DispositionReason = "reproduced"
+	findings.Items[1].Disposition = types.FindingDispositionEscalate
+	findings.Items[1].DispositionReason = "security policy"
+	raw, err = types.MarshalFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rv := runView{ID: "run-1", Status: string(types.RunRunning), Steps: []stepView{
+		{Name: "review", Status: string(types.StepStatusFixReview), FindingsJSON: raw, RoundCount: 2, FixRoundCount: 1},
+		{Name: "test", Status: string(types.StepStatusPending)},
+		{Name: "lint", Status: string(types.StepStatusPending)},
+	}}
+	status := axiDoc(runObjectField(rv))
+	for _, want := range []string{
+		"review_cycle:", "strategy: bounded", "full_review_runs: 1", "correction_runs: 1",
+		"full_review_loop_permitted: false", "next_owner: authority", "validations_remaining[2]: test,lint", "confirmed_fix: 1", "escalated: 1",
+		"dispositions[2]{id,decision,reason}:", "review-1,confirmed-fix,reproduced", "review-2,escalate,security policy",
+	} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("bounded status missing %q:\n%s", want, status)
+		}
+	}
+}
+
 func TestRenderDriveResult_ProtectedPathGateHelp(t *testing.T) {
 	refusal := pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "package.lock", Rule: "*.lock"})
 	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {

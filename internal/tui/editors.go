@@ -17,6 +17,7 @@ const (
 	editorNone editorKind = iota
 	editorInstruction
 	editorAddFinding
+	editorDisposition
 )
 
 // addFindingField identifies the currently focused input in the add-finding modal.
@@ -39,10 +40,32 @@ type editorState struct {
 	findingID   string
 	instruction textarea.Model
 
+	// bounded Review disposition editor fields
+	dispositionDecision string
+	dispositionReason   textarea.Model
+
 	// add-finding editor fields
 	addDesc  textarea.Model
 	addInstr textarea.Model
 	addFocus addFindingField
+}
+
+func newDispositionEditor(step types.StepName, findingID string, existing types.FindingDisposition) *editorState {
+	reason := textarea.New()
+	reason.Placeholder = "evidence for this decision (required)..."
+	reason.SetValue(existing.Reason)
+	reason.ShowLineNumbers = false
+	reason.CharLimit = 2000
+	reason.SetHeight(5)
+	reason.SetWidth(72)
+	reason.Focus()
+	return &editorState{
+		kind:                editorDisposition,
+		step:                step,
+		findingID:           findingID,
+		dispositionDecision: existing.Decision,
+		dispositionReason:   reason,
+	}
 }
 
 func newInstructionEditor(step types.StepName, findingID, existing string) *editorState {
@@ -105,8 +128,66 @@ func (m Model) updateEditor(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.updateInstructionEditor(msg)
 	case editorAddFinding:
 		return m.updateAddFindingEditor(msg)
+	case editorDisposition:
+		return m.updateDispositionEditor(msg)
 	}
 	return m, nil
+}
+
+func (m Model) updateDispositionEditor(msg tea.KeyMsg) (Model, tea.Cmd) {
+	key := msg.String()
+	switch key {
+	case "esc":
+		m.editor = nil
+		return m, nil
+	case "1":
+		m.editor.dispositionDecision = types.FindingDispositionFix
+		return m, nil
+	case "2":
+		m.editor.dispositionDecision = types.FindingDispositionReject
+		return m, nil
+	case "3":
+		m.editor.dispositionDecision = types.FindingDispositionDefer
+		return m, nil
+	case "4":
+		m.editor.dispositionDecision = types.FindingDispositionEscalate
+		return m, nil
+	case "ctrl+s", "ctrl+enter":
+		if err := m.saveDisposition(); err != nil {
+			m.editor.errorMsg = err.Error()
+			return m, nil
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.editor.dispositionReason, cmd = m.editor.dispositionReason.Update(msg)
+	return m, cmd
+}
+
+func (m *Model) saveDisposition() error {
+	if m.editor == nil || m.editor.kind != editorDisposition {
+		return nil
+	}
+	decision := strings.TrimSpace(m.editor.dispositionDecision)
+	reason := strings.TrimSpace(m.editor.dispositionReason.Value())
+	if !types.IsKnownFindingDisposition(decision) {
+		return fmt.Errorf("choose disposition 1-4")
+	}
+	if reason == "" {
+		return fmt.Errorf("evidence is required")
+	}
+	if m.findingDispositions == nil {
+		m.findingDispositions = make(map[types.StepName]map[string]types.FindingDisposition)
+	}
+	if m.findingDispositions[m.editor.step] == nil {
+		m.findingDispositions[m.editor.step] = make(map[string]types.FindingDisposition)
+	}
+	m.findingDispositions[m.editor.step][m.editor.findingID] = types.FindingDisposition{
+		Decision: decision,
+		Reason:   reason,
+	}
+	m.editor = nil
+	return nil
 }
 
 func (m Model) updateInstructionEditor(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -379,5 +460,51 @@ func (m Model) renderAddFindingEditor(width int) string {
 	body.WriteString(dimStyle.Render("tab next field  ·  ctrl+s save  ·  esc cancel"))
 
 	title := titleStyle.Render("Add finding")
+	return renderBoxWithStyledTitle(title, body.String(), boxWidth, "")
+}
+
+func (m Model) renderDispositionEditor(width int) string {
+	if m.editor == nil || m.editor.kind != editorDisposition {
+		return ""
+	}
+	boxWidth := width
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+	contentWidth := boxWidth - 4
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	m.editor.dispositionReason.SetWidth(contentWidth)
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	selectedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan))
+	choice := func(key, value string) string {
+		label := key + " " + value
+		if m.editor.dispositionDecision == value {
+			return selectedStyle.Render("[" + label + "]")
+		}
+		return dimStyle.Render(" " + label + " ")
+	}
+
+	var body strings.Builder
+	body.WriteString(strings.Join([]string{
+		choice("1", types.FindingDispositionFix),
+		choice("2", types.FindingDispositionReject),
+		choice("3", types.FindingDispositionDefer),
+		choice("4", types.FindingDispositionEscalate),
+	}, "  "))
+	body.WriteString("\n\n")
+	body.WriteString(m.editor.dispositionReason.View())
+	body.WriteString("\n")
+	if m.editor.errorMsg != "" {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+		body.WriteString(errStyle.Render("! " + m.editor.errorMsg))
+		body.WriteString("\n")
+	}
+	body.WriteString(dimStyle.Render("1-4 choose  ·  ctrl+s save  ·  esc cancel"))
+
+	title := titleStyle.Render(fmt.Sprintf("Disposition for %s", m.editor.findingID))
 	return renderBoxWithStyledTitle(title, body.String(), boxWidth, "")
 }

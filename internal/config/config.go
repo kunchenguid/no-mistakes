@@ -195,6 +195,10 @@ type GlobalConfig struct {
 	// Rebase is the operator's own rebase-step default. A trusted repo
 	// value still wins over it.
 	Rebase RebaseRaw
+	// Review selects the machine-wide review strategy. Repository path
+	// instructions remain repository-only; only the strategy has a global
+	// default so an operator can adopt bounded review without private patches.
+	Review GlobalReviewRaw `yaml:"review"`
 	Commit GlobalCommitRaw
 	Intent IntentRaw
 	Test   TestRaw
@@ -237,6 +241,7 @@ type globalConfigRaw struct {
 	AutoFix                 AutoFixRaw                 `yaml:"auto_fix"`
 	CI                      CIRaw                      `yaml:"ci"`
 	Rebase                  RebaseRaw                  `yaml:"rebase"`
+	Review                  GlobalReviewRaw            `yaml:"review"`
 	Commit                  GlobalCommitRaw            `yaml:"commit"`
 	Intent                  IntentRaw                  `yaml:"intent"`
 	Test                    TestRaw                    `yaml:"test"`
@@ -356,6 +361,11 @@ type DocumentRaw struct {
 
 // ReviewRaw is the YAML representation of review-step settings.
 type ReviewRaw struct {
+	// Strategy selects the review state machine. The historical iterative
+	// strategy remains the default. Bounded runs one full review, requires the
+	// implementation worker to disposition every finding, applies all confirmed
+	// fixes together, and never launches a post-fix full review.
+	Strategy string `yaml:"strategy"`
 	// PathInstructions scope extra review guidance to the paths a change
 	// actually touches. The review step appends the blocks whose glob matches
 	// at least one changed file; a run that touches nothing matching leaves
@@ -792,8 +802,20 @@ type Document struct {
 // trusted default-branch repo config and scope extra review guidance to the
 // changed paths each glob matches.
 type Review struct {
+	Strategy         string
 	PathInstructions []PathInstruction
 }
+
+// GlobalReviewRaw exposes only the strategy globally. Path instructions are a
+// repository policy and remain trusted-default-branch-only.
+type GlobalReviewRaw struct {
+	Strategy string `yaml:"strategy"`
+}
+
+const (
+	ReviewStrategyIterative = "iterative"
+	ReviewStrategyBounded   = "bounded"
+)
 
 // TestRaw is the YAML representation of test-step settings.
 type TestRaw struct {
@@ -2092,6 +2114,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateRebaseRaw(raw.Rebase); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateReviewStrategy(raw.Review.Strategy); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 
 	if len(raw.Agent) > 0 {
 		cfg.Agents = copyAgents(raw.Agent)
@@ -2220,6 +2245,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg.AutoFix = raw.AutoFix
 	cfg.CI = raw.CI
 	cfg.Rebase = raw.Rebase
+	cfg.Review = raw.Review
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
@@ -2415,6 +2441,9 @@ func validatePRRaw(pr PRRaw) error {
 // invalid block has to fail here, before it merges, rather than brick the
 // repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
+	if err := validateReviewStrategy(review.Strategy); err != nil {
+		return err
+	}
 	if len(review.PathInstructions) > MaxReviewPathInstructions {
 		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(review.PathInstructions), MaxReviewPathInstructions)
 	}
@@ -2437,6 +2466,15 @@ func validateReviewRaw(review ReviewRaw) error {
 		return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt, at most %d are allowed so the prompt stays within budget", total, MaxReviewPathInstructionsBytes)
 	}
 	return nil
+}
+
+func validateReviewStrategy(strategy string) error {
+	switch strings.TrimSpace(strategy) {
+	case "", ReviewStrategyIterative, ReviewStrategyBounded:
+		return nil
+	default:
+		return fmt.Errorf("review.strategy: %q is not valid (want %q or %q)", strategy, ReviewStrategyIterative, ReviewStrategyBounded)
+	}
 }
 
 // validatePathInstructionGlob mirrors how ignore_patterns are matched: a
@@ -3066,10 +3104,13 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:             pr,
-		ForgeProfiles:  global.ForgeProfiles,
-		Providers:      providers,
+		Review: Review{
+			Strategy:         reviewStrategy(repo.Review.Strategy, global.Review.Strategy),
+			PathInstructions: resolvePathInstructions(repo.Review.PathInstructions),
+		},
+		PR:            pr,
+		ForgeProfiles: global.ForgeProfiles,
+		Providers:     providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
@@ -3085,6 +3126,16 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	return cfg
+}
+
+func reviewStrategy(repoValue, globalValue string) string {
+	if repoValue = strings.TrimSpace(repoValue); repoValue != "" {
+		return repoValue
+	}
+	if globalValue = strings.TrimSpace(globalValue); globalValue != "" {
+		return globalValue
+	}
+	return ReviewStrategyIterative
 }
 
 // EnableEvalProvenance pins the exact configuration this run reviews under so

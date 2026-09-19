@@ -1339,7 +1339,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason); err != nil {
+		if err := mgr.HandleRespondWithAdjudication(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings, p.Dispositions, p.ApprovalReason); err != nil {
 			return nil, err
 		}
 		return &ipc.RespondResult{OK: true}, nil

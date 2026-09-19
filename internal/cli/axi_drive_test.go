@@ -541,6 +541,30 @@ func TestGateResolution(t *testing.T) {
 	}
 }
 
+func TestBoundedReviewNeedsExplicitAdjudicationEvenUnderYes(t *testing.T) {
+	findings := types.Findings{ReviewStrategy: "bounded", Items: []types.Finding{{
+		ID: "review-1", Severity: "error", Description: "bug", Evidence: "trace", Verification: "focused test",
+	}}}
+	raw, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := stepView{Name: string(types.StepReview), Status: string(types.StepStatusAwaitingApproval), FindingsJSON: raw}
+	if !boundedReviewRequiresExplicitResponse(gate) {
+		t.Fatal("unadjudicated bounded review gate was eligible for --yes auto-resolution")
+	}
+	findings.Items[0].Disposition = types.FindingDispositionEscalate
+	findings.Items[0].DispositionReason = "security policy"
+	raw, err = types.MarshalFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.FindingsJSON = raw
+	if !boundedReviewRequiresExplicitResponse(gate) {
+		t.Fatal("authority-owned bounded review gate was eligible for --yes auto-resolution")
+	}
+}
+
 func TestRenderDriveResult_ChecksPassed(t *testing.T) {
 	run := &ipc.RunInfo{
 		ID:      "run-1",

@@ -289,7 +289,7 @@ func TestRenderPipelineView_FixingStatusOmitsAgentFixingLabel(t *testing.T) {
 }
 
 func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
-	out := stripANSI(renderApprovalActions(true, true, false, 5, 5, false, true, true, false))
+	out := stripANSI(renderApprovalActions(true, true, false, 5, 5, false, true, true, false, false))
 	// Keys should not be bracket-wrapped - design uses "a approve" not "[a] approve".
 	if strings.Contains(out, "[a]") {
 		t.Error("expected bare key format 'a approve', not '[a] approve'")
@@ -305,7 +305,7 @@ func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
 }
 
 func TestRenderApprovalActions_NoSelectionActions(t *testing.T) {
-	out := stripANSI(renderApprovalActions(false, true, false, 5, 5, false, true, true, false))
+	out := stripANSI(renderApprovalActions(false, true, false, 5, 5, false, true, true, false, false))
 	// Without selection actions, no │ separator should appear.
 	if strings.Contains(out, "│") {
 		t.Error("expected no │ separator when no selection actions")
@@ -320,7 +320,7 @@ func TestRenderPipelineView_HidesFixActionWhenDisabled(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, false, false, 0, 5, false, true, true, false))
+	out := stripANSI(renderActionBar(run.Steps, true, false, false, 0, 5, false, true, true, false, false))
 	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden when disabled")
 	}

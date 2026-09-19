@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.strategy`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -42,6 +42,8 @@ document:
 # Optional extra review guidance, scoped to the paths a change touches.
 # Read only from the trusted default branch.
 review:
+  # iterative (default) or bounded
+  strategy: bounded
   path_instructions:
     - path: "internal/scm/**"
       instructions: |
@@ -384,6 +386,21 @@ The document step always applies a built-in placement policy: every fact has exa
 It augments or clarifies the built-in policy; it cannot disable documentation integrity.
 
 Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
+
+### review.strategy
+
+Selects the Review state machine.
+
+| | |
+|---|---|
+| Type | `string`: `iterative` or `bounded` |
+| Default | `iterative` |
+
+`iterative` preserves the existing review, fix, and rereview behavior. `bounded` runs one read-only full-diff review, then parks for the implementation worker to disposition every finding as `confirmed-fix`, `rejected`, `deferred`, or `escalate`. All confirmed findings are corrected together. Rejected and deferred findings never reach the fixer. After that correction, Review never launches another full-diff AI pass; normal Test, Document, Lint, Push, PR, and CI steps continue.
+
+The implementation worker owns finding verification and disposition. Only product, architecture, security-sensitive, destructive, or scope-expanding decisions use `escalate` and remain parked for authority. `auto_fix.review` does not apply to bounded Review, and AXI `--yes` stops at the initial bounded gate because an evidence-backed disposition cannot be inferred safely.
+
+Like `review.path_instructions`, the repository value is read only from the trusted default-branch config. The global [`review.strategy`](/no-mistakes/reference/global-config/#reviewstrategy) is the fallback when the trusted repository leaves it unset.
 
 ### review.path_instructions
 

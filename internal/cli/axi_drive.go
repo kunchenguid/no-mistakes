@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -131,7 +134,8 @@ func newAxiRunCmd() *cobra.Command {
 			"prints it. With --yes it auto-resolves eligible gates (fixing actionable\n" +
 			"findings - including ask-user findings, with no escalation - then\n" +
 			"accepting the result) until a decision point or outcome.\n" +
-			"Protected-path and Test unvalidated-work refusals require an explicit\n" +
+			"Protected-path refusals, Test unvalidated-work refusals, and bounded\n" +
+			"Review adjudication require an explicit\n" +
 			"response, even with --yes.\n\n" +
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
@@ -851,6 +855,10 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 				fmt.Fprintf(progress, "%s: unvalidated work in the run worktree requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
 				return run, false, nil
 			}
+			if boundedReviewRequiresExplicitResponse(gate) {
+				fmt.Fprintf(progress, "%s: bounded review requires worker adjudication or an authority decision; --yes leaves this gate awaiting a response\n", gate.Name)
+				return run, false, nil
+			}
 			gateKey := gate.Name + "\x00" + gate.Status
 			if pendingGate == gateKey {
 				// Duplicate or delayed events can race persistence after a response.
@@ -862,7 +870,7 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, ""); err != nil {
+			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, ""); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -876,6 +884,14 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			return run, true, nil
 		}
 	}
+}
+
+func boundedReviewRequiresExplicitResponse(gate stepView) bool {
+	if gate.Name != string(types.StepReview) {
+		return false
+	}
+	findings, err := types.ParseFindingsJSON(gate.FindingsJSON)
+	return err == nil && findings.ReviewStrategy == config.ReviewStrategyBounded
 }
 
 // ciReadyToMerge reports whether the CI step is actively monitoring and the
@@ -948,7 +964,7 @@ func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, er
 }
 
 // sendRespond issues an approval action to the daemon for a step.
-func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) error {
+func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, added []types.Finding, dispositions map[string]types.FindingDisposition, approvalReason string) error {
 	params := &ipc.RespondParams{
 		RunID:          runID,
 		Step:           step,
@@ -956,6 +972,7 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 		FindingIDs:     findingIDs,
 		Instructions:   instructions,
 		AddedFindings:  added,
+		Dispositions:   dispositions,
 		ApprovalReason: approvalReason,
 	}
 	var result ipc.RespondResult
@@ -1091,7 +1108,7 @@ func successReportHelp(fixes []fixRow) []string {
 }
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, instructions, addFinding, reason string
+	var action, step, findings, instructions, addFinding, dispositions, reason string
 	var autoYes bool
 	var wait time.Duration
 
@@ -1119,6 +1136,7 @@ func newAxiRespondCmd() *cobra.Command {
 					findings:     findings,
 					instructions: instructions,
 					addFinding:   addFinding,
+					dispositions: dispositions,
 					reason:       reason,
 					autoYes:      autoYes,
 					wait:         wait,
@@ -1132,6 +1150,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&reason, "reason", "", "exception reason preserved with Test approval (with --action approve)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
+	cmd.Flags().StringVar(&dispositions, "dispositions", "", "JSON object mapping every bounded Review finding ID to decision and reason")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve subsequent eligible gates until a decision point or outcome; protected-path and Test unvalidated-work refusals require an explicit response")
 	bindAxiWaitFlag(cmd, &wait)
 	return cmd
@@ -1143,6 +1162,7 @@ type respondArgs struct {
 	findings     string
 	instructions string
 	addFinding   string
+	dispositions string
 	reason       string
 	autoYes      bool
 	wait         time.Duration
@@ -1223,10 +1243,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	findingIDs := splitCSV(ra.findings)
 	var instructions map[string]string
 	var added []types.Finding
+	var dispositions map[string]types.FindingDisposition
 
 	if act == types.ActionFix {
-		if len(findingIDs) == 0 && ra.addFinding == "" {
-			return emitError(cmd, 2, "--action fix requires --findings <id,...> or --add-finding <json>",
+		if len(findingIDs) == 0 && ra.addFinding == "" && strings.TrimSpace(ra.dispositions) == "" {
+			return emitError(cmd, 2, "--action fix requires --findings <id,...>, --add-finding <json>, or --dispositions <json>",
 				"Run `no-mistakes axi status` to list finding IDs")
 		}
 		if note := strings.TrimSpace(ra.instructions); note != "" && len(findingIDs) > 0 {
@@ -1243,9 +1264,26 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			}
 			added = append(added, f)
 		}
+		if strings.TrimSpace(ra.dispositions) != "" {
+			if err := json.Unmarshal([]byte(ra.dispositions), &dispositions); err != nil {
+				return emitError(cmd, 2, fmt.Sprintf("invalid --dispositions: %v", err),
+					`Expected an object such as {"review-1":{"decision":"confirmed-fix","reason":"reproduced with TestX"}}`)
+			}
+			if len(findingIDs) == 0 {
+				for id, disposition := range dispositions {
+					if strings.ToLower(strings.TrimSpace(disposition.Decision)) == types.FindingDispositionFix {
+						findingIDs = append(findingIDs, id)
+					}
+				}
+				slices.Sort(findingIDs)
+			}
+		}
+	}
+	if strings.TrimSpace(ra.dispositions) != "" && act != types.ActionFix {
+		return emitError(cmd, 2, "--dispositions applies only to --action fix on a bounded Review gate")
 	}
 
-	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added, ra.reason); err != nil {
+	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added, dispositions, ra.reason); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
 

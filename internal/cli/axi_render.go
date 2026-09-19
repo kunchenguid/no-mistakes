@@ -9,6 +9,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -65,6 +66,23 @@ type findingRow struct {
 	File        string `toon:"file"`
 	Action      string `toon:"action"`
 	Description string `toon:"description"`
+}
+
+type boundedFindingRow struct {
+	ID                string `toon:"id"`
+	Severity          string `toon:"severity"`
+	File              string `toon:"file"`
+	Description       string `toon:"description"`
+	Evidence          string `toon:"evidence"`
+	Verification      string `toon:"verification"`
+	Disposition       string `toon:"disposition"`
+	DispositionReason string `toon:"disposition_reason"`
+}
+
+type findingDispositionRow struct {
+	ID       string `toon:"id"`
+	Decision string `toon:"decision"`
+	Reason   string `toon:"reason"`
 }
 
 type runRow struct {
@@ -506,6 +524,12 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		}
 	}
 	fields = append(fields, toon.Field{Key: "steps", Value: rows})
+	for _, step := range rv.Steps {
+		if cycle := boundedReviewCycleField(step, rv.Steps); cycle != nil {
+			fields = append(fields, *cycle)
+			break
+		}
+	}
 	if skips := rv.automaticSkips(); len(skips) > 0 {
 		fields = append(fields, toon.Field{Key: "automatic_skips", Value: skips})
 	}
@@ -532,9 +556,24 @@ func (rv runView) automaticSkips() []automaticSkipRow {
 // gateFields renders the active approval gate: the awaiting step, its findings
 // table, and the next-step commands an agent can run to clear it.
 func gateFields(gate stepView) []toon.Field {
+	parsed, _ := types.ParseFindingsJSON(gate.FindingsJSON)
 	help := []string{
 		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
 		"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
+	}
+	if parsed.ReviewStrategy == config.ReviewStrategyBounded {
+		if boundedReviewAdjudicated(parsed) {
+			help = []string{
+				"Authority findings remain. Run `no-mistakes axi respond --action approve` only after the responsible authority decides to proceed, or `no-mistakes axi abort` if it must not ship.",
+				"The local full review and consolidated correction are complete; another full-diff AI review or correction round is not permitted.",
+			}
+		} else {
+			help = []string{
+				`Verify every finding against the code, then run no-mistakes axi respond --action fix --dispositions '<json>' where JSON maps every finding ID to {"decision":"confirmed-fix|rejected|deferred|escalate","reason":"evidence"}. Confirmed fixes are inferred and applied together.`,
+				"Reject or defer unsupported/out-of-scope feedback with evidence. Use escalate only for product, architecture, security-sensitive, destructive, or scope-expanding authority decisions.",
+				"No full-diff AI review runs after this response.",
+			}
+		}
 	}
 	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
 		help = []string{
@@ -581,7 +620,24 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	// disabled, so agents should expect blocking and ask-user findings to park
 	// unless config explicitly opts back in.
 	if gate.Name == string(types.StepReview) {
-		gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
+		if parsed.ReviewStrategy == config.ReviewStrategyBounded {
+			gfields = append(gfields, toon.Field{Key: "note", Value: "Bounded Review ran one read-only full-diff pass. The implementation worker owns adjudication and one consolidated correction; no probabilistic rereview is permitted."})
+		} else {
+			gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
+		}
+	}
+	if parsed.ReviewStrategy == config.ReviewStrategyBounded {
+		rows := make([]boundedFindingRow, 0, len(parsed.Items))
+		for _, f := range parsed.Items {
+			rows = append(rows, boundedFindingRow{
+				ID: f.ID, Severity: f.Severity, File: f.File,
+				Description: truncate(f.Description, maxFindingDesc),
+				Evidence:    truncate(f.Evidence, maxFindingDesc), Verification: truncate(f.Verification, maxFindingDesc),
+				Disposition: f.Disposition, DispositionReason: truncate(f.DispositionReason, maxFindingDesc),
+			})
+		}
+		gfields = append(gfields, toon.Field{Key: "findings", Value: rows})
+		return []toon.Field{{Key: "gate", Value: toon.NewObject(gfields...)}, {Key: "help", Value: help}}
 	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {
@@ -599,6 +655,72 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 		{Key: "gate", Value: toon.NewObject(gfields...)},
 		{Key: "help", Value: help},
 	}
+}
+
+func boundedReviewAdjudicated(findings types.Findings) bool {
+	if len(findings.Items) == 0 {
+		return false
+	}
+	for _, finding := range findings.Items {
+		if finding.Disposition == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func boundedReviewCycleField(step stepView, allSteps []stepView) *toon.Field {
+	findings, err := types.ParseFindingsJSON(step.FindingsJSON)
+	if err != nil || findings.ReviewStrategy != config.ReviewStrategyBounded {
+		return nil
+	}
+	counts := map[string]int{}
+	dispositions := make([]findingDispositionRow, 0, len(findings.Items))
+	for _, finding := range findings.Items {
+		if finding.Disposition != "" {
+			counts[finding.Disposition]++
+			dispositions = append(dispositions, findingDispositionRow{
+				ID: finding.ID, Decision: finding.Disposition, Reason: truncate(finding.DispositionReason, maxFindingDesc),
+			})
+		}
+	}
+	remaining := make([]string, 0, len(allSteps))
+	seenReview := false
+	for _, candidate := range allSteps {
+		if candidate.Name == string(types.StepReview) {
+			seenReview = true
+			continue
+		}
+		if seenReview && candidate.Status != string(types.StepStatusCompleted) && candidate.Status != string(types.StepStatusSkipped) {
+			remaining = append(remaining, candidate.Name)
+		}
+	}
+	nextOwner := "implementation-worker"
+	if counts[types.FindingDispositionEscalate] > 0 && (step.Status == string(types.StepStatusAwaitingApproval) || step.Status == string(types.StepStatusFixReview)) {
+		nextOwner = "authority"
+	} else if step.Status == string(types.StepStatusCompleted) {
+		nextOwner = "none"
+		if len(remaining) > 0 {
+			nextOwner = "deterministic-validation"
+		}
+	}
+	cycleFields := []toon.Field{
+		toon.Field{Key: "strategy", Value: config.ReviewStrategyBounded},
+		toon.Field{Key: "full_review_runs", Value: min(step.RoundCount, 1)},
+		toon.Field{Key: "correction_runs", Value: step.FixRoundCount},
+		toon.Field{Key: "full_review_loop_permitted", Value: false},
+		toon.Field{Key: "next_owner", Value: nextOwner},
+		toon.Field{Key: "validations_remaining", Value: remaining},
+		toon.Field{Key: "confirmed_fix", Value: counts[types.FindingDispositionFix]},
+		toon.Field{Key: "rejected", Value: counts[types.FindingDispositionReject]},
+		toon.Field{Key: "deferred", Value: counts[types.FindingDispositionDefer]},
+		toon.Field{Key: "escalated", Value: counts[types.FindingDispositionEscalate]},
+	}
+	if len(dispositions) > 0 {
+		cycleFields = append(cycleFields, toon.Field{Key: "dispositions", Value: dispositions})
+	}
+	field := toon.Field{Key: "review_cycle", Value: toon.NewObject(cycleFields...)}
+	return &field
 }
 
 func axiLogsFullCommand(step, runID string) string {

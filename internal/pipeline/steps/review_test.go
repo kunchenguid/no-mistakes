@@ -641,6 +641,205 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 }
 
+func TestReviewStep_BoundedCorrectionRunsFixerOnceWithoutRereview(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(dir, "bounded-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+			return nil, err
+		}
+		return &agent.Result{Output: json.RawMessage(`{"summary":"fix confirmed defect"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review.Strategy = config.ReviewStrategyBounded
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"review_strategy":"bounded","findings":[{"id":"review-1","severity":"error","file":"feature.txt","description":"confirmed bug","evidence":"concrete trace","verification":"run focused test","disposition":"confirmed-fix","disposition_reason":"reproduced"}]}`
+	sctx.DeferredFindings = `{"review_strategy":"bounded","findings":[{"id":"review-2","severity":"warning","file":"feature.txt","description":"unsupported claim","evidence":"assumption","verification":"inspect caller","disposition":"rejected","disposition_reason":"caller excludes it"},{"id":"review-3","severity":"warning","file":"feature.txt","description":"large redesign","evidence":"policy gap","verification":"authority decision","disposition":"deferred","disposition_reason":"outside task scope"},{"id":"review-4","severity":"warning","file":"feature.txt","description":"security policy choice","evidence":"two valid policies","verification":"authority decision","disposition":"escalate","disposition_reason":"security-sensitive policy"}]}`
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want one consolidated fixer and no rereviewer", len(ag.calls))
+	}
+	if !outcome.NeedsApproval || outcome.AutoFixable {
+		t.Fatalf("authority finding outcome = %+v, want non-auto-fixable approval gate", outcome)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 4 || findings.ReviewStrategy != config.ReviewStrategyBounded {
+		t.Fatalf("bounded outcome = %+v", findings)
+	}
+	for _, finding := range findings.Items[:3] {
+		if finding.Action != types.ActionNoOp {
+			t.Fatalf("resolved finding %s action = %q, want no-op", finding.ID, finding.Action)
+		}
+	}
+	if findings.Items[3].Action != types.ActionAskUser {
+		t.Fatalf("escalated finding action = %q, want ask-user", findings.Items[3].Action)
+	}
+	if outcome.ReviewApprovedHeadSHA != sctx.Run.HeadSHA {
+		t.Fatalf("approved head = %q, corrected head = %q", outcome.ReviewApprovedHeadSHA, sctx.Run.HeadSHA)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("bounded correction left dirty custody state: %q", status)
+	}
+	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
+		t.Fatalf("branch SHA = %s, corrected run head = %s", branchSHA, sctx.Run.HeadSHA)
+	}
+}
+
+func TestReviewStep_BoundedCorrectionCannotApproveANoOpFix(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"summary":"claim fix without changes"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review.Strategy = config.ReviewStrategyBounded
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"review_strategy":"bounded","findings":[{"id":"review-1","severity":"error","file":"feature.txt","description":"confirmed bug","evidence":"concrete trace","verification":"run focused test","disposition":"confirmed-fix","disposition_reason":"reproduced"}]}`
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "made no repository change") {
+		t.Fatalf("outcome = %+v, error = %v, want no-op correction rejection", outcome, err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want one fixer and no rereviewer", len(ag.calls))
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("run head = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+}
+
+func TestReviewStep_BoundedMalformedReportDoesNotStartAnotherFullReview(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"review-1","severity":"error","file":"feature.txt","description":"claim","action":"auto-fix"}],"summary":"one","risk_level":"high","risk_rationale":"claim","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review.Strategy = config.ReviewStrategyBounded
+
+	_, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "validate bounded review findings") {
+		t.Fatalf("error = %v, want bounded validation failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("full review invocations = %d, want exactly one", calls)
+	}
+}
+
+func TestReviewStep_BoundedReviewerMutationFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if err := os.WriteFile(filepath.Join(dir, "reviewer-write.txt"), []byte("unauthorized\n"), 0o644); err != nil {
+			return nil, err
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review.Strategy = config.ReviewStrategyBounded
+
+	_, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "violated the read-only contract") {
+		t.Fatalf("error = %v, want read-only contract failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("review invocations = %d, want one", calls)
+	}
+}
+
+func TestReviewStep_BoundedIncompleteCoverageFailsWithoutRereview(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":[]}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review.Strategy = config.ReviewStrategyBounded
+
+	_, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "did not cover the complete diff") {
+		t.Fatalf("error = %v, want complete-diff coverage failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("review invocations = %d, want one", calls)
+	}
+}
+
+func TestValidateBoundedReviewFindings_RequiresExactUniqueStableIDs(t *testing.T) {
+	t.Parallel()
+	base := Finding{ID: "review-1", Evidence: "source trace", Verification: "focused test"}
+	for _, tc := range []struct {
+		name     string
+		findings Findings
+		want     string
+	}{
+		{name: "surrounding whitespace", findings: Findings{Items: []Finding{{ID: " review-1 ", Evidence: base.Evidence, Verification: base.Verification}}}, want: "surrounding whitespace"},
+		{name: "duplicate", findings: Findings{Items: []Finding{base, base}}, want: "duplicated"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateBoundedReviewFindings(tc.findings, []string{"feature.txt"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReviewStep_BoundedInformationalFindingStillRequiresDisposition(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	output, err := json.Marshal(Findings{
+		Items: []Finding{{
+			ID: "review-1", Severity: types.FindingSeverityInfo, Action: types.ActionNoOp,
+			File: "feature.txt", Description: "follow-up note", Evidence: "source trace", Verification: "inspect caller",
+		}},
+		Summary: "one informational finding", RiskLevel: "low", RiskRationale: "non-blocking note",
+		RiskScope: types.FindingsRiskScopeSourceOrExternal, ReviewedPaths: []string{"feature.txt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if !strings.Contains(opts.Prompt, "This is the single full-diff review pass") || !strings.Contains(opts.Prompt, "You are read-only") {
+			t.Fatalf("bounded review prompt missing single-pass read-only contract:\n%s", opts.Prompt)
+		}
+		return &agent.Result{Output: output}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review.Strategy = config.ReviewStrategyBounded
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("bounded informational finding bypassed worker disposition")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings.ReviewStrategy != config.ReviewStrategyBounded {
+		t.Fatalf("review strategy = %q", findings.ReviewStrategy)
+	}
+}
+
 // A deterministic fake finding exercises the ordinary review gate, repair,
 // and rereview flow without claiming that the fake agent can judge tests.
 func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {

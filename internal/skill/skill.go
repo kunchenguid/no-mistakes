@@ -187,6 +187,19 @@ Run the pipeline and decide on its findings as they come up:
    self-fixed. (Other steps such as test and lint may auto-fix within the
    pipeline and re-run before they ever gate.)
 
+   A bounded Review gate says so in ` + "`review_cycle.strategy`" + ` and renders
+   ` + "`evidence`" + ` plus ` + "`verification`" + ` for each finding. You are the
+   implementation worker: verify every finding against the code, then submit one
+   evidence-backed disposition per ID in a single response:
+   ` + "```sh" + `
+   no-mistakes axi respond --action fix --dispositions '{"review-1":{"decision":"confirmed-fix","reason":"reproduced by TestX"},"review-2":{"decision":"rejected","reason":"caller excludes this state"}}'
+   ` + "```" + `
+   Valid decisions are ` + "`confirmed-fix`" + `, ` + "`rejected`" + `, ` + "`deferred`" + `,
+   and ` + "`escalate`" + `. Use ` + "`escalate`" + ` only for product, architecture,
+   security-sensitive, destructive, or scope-expanding authority decisions. All
+   confirmed findings are fixed together. Never request another full review or a
+   second correction round; rejected and deferred findings do not mutate code.
+
    Choose one response:
    ` + "```sh" + `
    # accept the step as-is and continue
@@ -201,7 +214,8 @@ Run the pipeline and decide on its findings as they come up:
    While a run is active, never fix findings by editing the code yourself -
    the pipeline owns both the findings and the fixes. Your job at a gate is to
    decide and respond; ` + "`--action fix`" + ` has the pipeline apply the fix and
-   re-review the result. For the same reason, while a run is active do **not**
+   re-review the result in iterative mode. Bounded Review performs its one
+   consolidated correction without a rereview. For the same reason, while a run is active do **not**
    ` + "`abort`" + ` or ` + "`rerun`" + ` to go fix a finding yourself - even a real bug in
    your own code - because that discards the pipeline's in-flight work and
    forces a full re-validation. ` + "`abort`" + ` and ` + "`rerun`" + ` are for *between*
@@ -218,7 +232,8 @@ Run the pipeline and decide on its findings as they come up:
     - ` + "`--add-finding '<json>'`" + ` (with ` + "`--action fix`" + `) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in
-      the gate's own ` + "`findings`" + ` table.
+      the gate's own ` + "`findings`" + ` table. It is not accepted at a bounded
+      Review gate, whose correction is limited to the independent report.
     - ` + "`--step <name>`" + ` responds to a specific step instead of the one currently
       awaiting approval. You rarely need this; omit it to answer the active gate.
 3. Repeat step 2 until the output has an ` + "`outcome:`" + ` instead of a ` + "`gate:`" + `. The
@@ -329,6 +344,10 @@ fix round, accepts the resulting fix review, and approves gates with only
 ` + "`no-op`" + ` findings. Only use it when the user has asked you to drive the whole
 run without checking back.
 
+An initial bounded Review gate is not eligible: ` + "`--yes`" + ` stops because
+finding verification and disposition belong to the implementation worker and
+cannot be inferred from standing consent.
+
 A ` + "`protected-path-refusal`" + ` gate still requires an explicit operator response
 under ` + "`--yes`" + `. Relay its path and rule; do not automatically fix, approve,
 or skip it. Approval is rejected. Have the operator inspect and resolve the
@@ -362,6 +381,11 @@ no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside 
 - ` + "`axi status`" + ` is scoped to your current branch when ` + "`--run`" + ` is omitted: with a known current branch, an implicitly resolved ` + "`run:`" + ` is this branch's. A run under ` + "`other_branch_run:`" + ` is one you named with ` + "`--run <id>`" + ` that belongs to another branch - never read its status or outcome as your own work. An explicit ` + "`--run <id>`" + ` rendered under ` + "`run:`" + ` while the current branch is unknown (detached ` + "`HEAD`" + ` or a branch-lookup failure) encodes no branch relationship. In a successful status response, no run object at all means this branch has no run yet, whatever the recent-runs table lists; an ` + "`error:`" + ` response proves nothing about run ownership, so act on the error instead of concluding the branch is idle.
 - A non-terminal run object may include ` + "`awaiting_agent: parked <duration>`" + ` immediately after ` + "`status`" + `; that means the run is parked at a gate. Only an implicitly resolved current-branch gate offers ` + "`axi respond`" + `; an explicit ` + "`--run <id>`" + ` status is inspection-only even when its branch matches, because the branch may have a newer active run. Follow the response's ` + "`help`" + `.
 - A run object with a ` + "`running`" + ` or ` + "`fixing`" + ` step may include an ` + "`active_steps`" + ` table. ` + "`active_for`" + ` is the enclosing step duration; ` + "`round_active_for`" + ` is the displayed execution or fix round duration and resets for a fix round. Older runs without round timing leave ` + "`round_active_for`" + ` empty.
+- A bounded run includes ` + "`review_cycle`" + ` with ` + "`full_review_runs`" + `,
+  ` + "`correction_runs`" + `, disposition totals and per-finding decisions,
+  ` + "`next_owner`" + `, and
+  ` + "`full_review_loop_permitted: false`" + `. Treat that object as the stable
+  source of truth across reattachment and daemon recovery.
 - The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
 - Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.
 - Exit codes: ` + "`0`" + ` success, no-op, or normal decision gates, ` + "`1`" + ` failed or cancelled final outcomes, ` + "`2`" + ` bad usage.

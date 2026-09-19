@@ -87,13 +87,28 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 
 AI code review of your diff. This is probabilistic evidence, not a security or compliance certification, and does not replace deterministic repository-owned authorization and privacy tests, static analysis, threat modeling, or human security review.
 
+Review has two strategies. `iterative` is the compatible default and owns the behavior described below. [`review.strategy: bounded`](/no-mistakes/reference/repo-config/#reviewstrategy) replaces only Review's repeated review/fix loop with the bounded contract in the next section; later deterministic and publication steps are unchanged.
+
+### Bounded Review
+
+Bounded Review has one owner per phase:
+
+1. The implementation worker completes the change before Review begins.
+2. The configured counterweight reviewer runs one read-only, session-free full-diff invocation. No-mistakes snapshots repository state around that invocation and fails the step if the reviewer changes `HEAD`, the index, or the worktree. The report must cover the complete reviewable path set, and every finding must carry a stable ID, severity, concrete evidence, and focused verification guidance. Incomplete or malformed output fails the step instead of starting a second full review.
+3. The implementation worker verifies every finding and submits exactly one disposition for each: `confirmed-fix`, `rejected`, `deferred`, or `escalate`, with an evidence-backed reason. AXI `--yes` cannot invent these decisions and stops at this gate.
+4. The fixer receives only all `confirmed-fix` findings and applies them in one consolidated correction. That correction must produce a repository commit; a fixer that returns without changing the repository fails Review and cannot grant review authority. `rejected` and `deferred` findings are retained as evidence but never mutate code. `escalate` is reserved for product, architecture, security-sensitive, destructive, or scope-expanding authority decisions.
+5. Review records the corrected head and never launches a rereviewer or another correction round. Resolved findings become `no-op`; escalated findings remain `ask-user` until authority responds.
+6. The normal Test, Document, and Lint steps, not another probabilistic reviewer, own post-correction verification. Repository-owned live UI/E2E commands remain Test surfaces and their evidence is recorded normally. Push, PR, and CI continue through the existing custody and publication machinery; review-bot findings in CI remain a separate PR-level signal.
+
+`auto_fix.review` is ignored in bounded mode. AXI status includes `review_cycle` with the review and correction counts, disposition totals, next owner, and `full_review_loop_permitted: false`, so recovery never has to infer whether another probabilistic pass is allowed.
+
 **Behavior:**
 
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
 - Requires the `reviewed_paths` coverage record before a clean review can certify the head: the exact changed files the reviewer actually read and judged. On a clean review it must exactly cover the trusted reviewable set computed from the current diff (the paths that survive `ignore_patterns`); omitted, empty, partial, fabricated, out-of-scope, or mixed coverage parks the round for approval instead of certifying the whole head, and the step log names the files left unverified. The field is optional in the output schema only so an older payload still parses; an absent record is treated as no coverage, never as a pass. During carry-forward verification, omitted or invalid coverage likewise cannot clear an outstanding selected finding.
-- When the reviewer's final output is rejected, reruns a fresh, session-free review with the same prompt plus a note quoting the validation error, up to three attempts in total.
+- In iterative mode, when the reviewer's final output is rejected, reruns a fresh, session-free review with the same prompt plus a note quoting the validation error, up to three attempts in total.
   It reruns when the agent adapter marks that output as rejected against the schema, which covers Pi when its final JSON fails validation (for example a missing required `risk_level`, or `tested` given as a boolean) and opencode once its own internal StructuredOutput retries run out, and when Review's own checks refuse the output.
   Claude Code's `--json-schema` re-prompts within its own limit and reports exhaustion as `error_max_structured_output_retries`; that result is not marked as a rejection, so it fails the step as before.
   Findings come only from the attempt that validates, and nothing else from a rejected attempt carries over.

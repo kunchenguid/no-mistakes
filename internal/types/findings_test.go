@@ -69,6 +69,41 @@ func TestParseFindingsJSON_TestingSummary(t *testing.T) {
 	}
 }
 
+func TestFindingsJSON_RoundTripsBoundedReviewEvidenceAndDisposition(t *testing.T) {
+	t.Parallel()
+	want := Findings{
+		ReviewStrategy: "bounded",
+		Items: []Finding{{
+			ID: "review-1", Severity: FindingSeverityError, Description: "nil dereference",
+			Evidence: "caller passes nil at main.go:42", Verification: "run TestNilCaller",
+			Disposition: FindingDispositionFix, DispositionReason: "reproduced by TestNilCaller",
+		}},
+	}
+	raw, err := MarshalFindingsJSON(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewStrategy != want.ReviewStrategy || len(got.Items) != 1 || got.Items[0] != want.Items[0] {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestKnownFindingDispositions(t *testing.T) {
+	t.Parallel()
+	for _, decision := range KnownFindingDispositions() {
+		if !IsKnownFindingDisposition(decision) {
+			t.Fatalf("known disposition %q was rejected", decision)
+		}
+	}
+	if IsKnownFindingDisposition("improve") {
+		t.Fatal("speculative improvement must not be a bounded-review disposition")
+	}
+}
+
 func TestFilterFindings_PreservesRiskFields(t *testing.T) {
 	f := Findings{
 		Items: []Finding{

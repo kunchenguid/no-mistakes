@@ -153,8 +153,9 @@ With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` fi
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 The [`protected_paths` refusal rules](/no-mistakes/reference/repo-config/#protected_paths) are an exception to this automatic handling.
 So is a Test budget-cut gate that reports `test-agent-unvalidated-work`: approval is refused there, so `--yes` stops at it and leaves the choice between `--action fix` and `no-mistakes axi abort` to the operator (see [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout)).
+An initial [bounded Review](/no-mistakes/reference/pipeline-steps/#bounded-review) gate is also explicit: `--yes` stops so the implementation worker can verify and disposition every finding. It never selects findings or starts a review loop on the worker's behalf.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
-Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
+Iterative Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix. Bounded Review gates instead render `evidence`, `verification`, `disposition`, and `disposition_reason`, plus a `review_cycle` object in run status that records per-finding decisions and makes its cost bound and next owner explicit.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
 `--wait` defaults to 8m so an agent harness with a 10-minute tool cap gets a structured error instead of an unbounded hang. It bounds the active-run lookup, event-subscription acknowledgement, and subsequent run driving. Elapsed wait is not a pipeline failure and does not mean the daemon is dead: run `no-mistakes axi status` and reattach with `axi run`. A live daemon that is slow to answer a pre-drive `get_active_run` or `get_run` state read is retried after a health probe rather than reported as an I/O failure or mistaken for an absent run.
 Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
@@ -214,6 +215,7 @@ Answer the current approval gate and continue until the next gate, CI-ready deci
 no-mistakes axi respond --action approve
 no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional guidance"
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
+no-mistakes axi respond --action fix --dispositions '{"review-1":{"decision":"confirmed-fix","reason":"reproduced by TestX"},"review-2":{"decision":"rejected","reason":"caller excludes this state"}}'
 no-mistakes axi respond --action skip
 ```
 
@@ -224,7 +226,8 @@ no-mistakes axi respond --action skip
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
 | `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`            |
 | `--reason`       | `string` | (none)        | Operator's exception explanation for Test approval only              |
-| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
+| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix; not accepted at a bounded Review gate |
+| `--dispositions` | `string` | (none)        | Bounded Review JSON map from every finding ID to `decision` and evidence-backed `reason`; confirmed-fix IDs are inferred |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
 | `--wait`         | `duration` | `8m`        | Maximum time for pre-drive reads and post-response driving before the caller must reattach |
 
@@ -234,6 +237,8 @@ The step retains its findings and exit code, and the reason is durable local evi
 Revalidation, a new fix round, or skipping the step clears that current-step approval so a later result cannot inherit it.
 This is separate from the configured-command waiver and trusted repository opt-in used by [PR enforcement](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation); neither that policy nor approval authority changes.
 `--instructions` remains fix guidance, not an approval-reason input.
+
+At the initial bounded Review gate, `--action fix --dispositions <json>` is the only valid response shape. The object must name every reported finding exactly once. Valid decisions are `confirmed-fix`, `rejected`, `deferred`, and `escalate`; every entry needs a non-empty reason. If `--findings` is also supplied, it must list exactly the `confirmed-fix` IDs. All confirmed findings enter one correction together. After that correction, another fix response is refused because a second full review or correction loop is outside the bounded contract.
 
 After the explicit response, `--yes` uses the same [auto-resolution behavior and exceptions as `axi run --yes`](#no-mistakes-axi-run).
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome, subject to the same default `--wait 8m` boundary as `axi run`. That boundary also covers its initial active-run and run-state reads plus event-subscription acknowledgement, so a caller can interrupt establishment as well as the later event wait.

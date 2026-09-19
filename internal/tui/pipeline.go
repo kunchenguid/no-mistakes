@@ -213,12 +213,12 @@ func appendRightLabel(line, label string, width int) string {
 // Per DESIGN.md: "Sits below the pipeline box, above findings/diff"
 // showDiff controls whether the 'd' key label says "findings" (to toggle back) or "diff".
 // Selection actions are hidden in diff mode since they don't apply.
-func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool, retryAvailable bool) string {
+func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool, retryAvailable bool, boundedDisposition bool) string {
 	step := awaitingStep(steps)
 	if step == nil {
 		if retryAvailable {
 			promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
-			return promptStyle.Render("Review state unavailable:") + "\n" + renderApprovalActions(false, false, false, 0, 0, confirmAbort, false, false, true)
+			return promptStyle.Render("Review state unavailable:") + "\n" + renderApprovalActions(false, false, false, 0, 0, confirmAbort, false, false, true, false)
 		}
 		return ""
 	}
@@ -233,11 +233,11 @@ func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allo
 	b.WriteString("\n")
 	// Hide selection actions in diff mode since toggle/A/N keys don't work there.
 	effectiveSelection := showSelectionActions && !showDiff
-	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount, confirmAbort, hasDiff, approvalReady, retryAvailable))
+	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount, confirmAbort, hasDiff, approvalReady, retryAvailable, boundedDisposition))
 	return b.String()
 }
 
-func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool, retryAvailable bool) string {
+func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool, retryAvailable bool, boundedDisposition bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	renderAction := func(key, label string) string {
 		return boldKey.Render(key) + " " + label
@@ -256,15 +256,27 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bo
 		return " " + strings.Join([]string{status, renderAction("x", abortLabel)}, "  ")
 	}
 
-	primary := []string{renderAction("a", "approve")}
-	if allowFix {
+	var primary []string
+	if boundedDisposition {
+		if allowFix {
+			primary = append(primary, renderAction("f", fmt.Sprintf("submit dispositions (%d/%d)", selectedCount, totalCount)))
+		} else {
+			primary = append(primary, fmt.Sprintf("dispositioned %d/%d", selectedCount, totalCount))
+		}
+	} else {
+		primary = append(primary, renderAction("a", "approve"))
+	}
+	if allowFix && !boundedDisposition {
 		fixLabel := "fix"
 		if selectedCount > 0 && selectedCount < totalCount {
 			fixLabel = fmt.Sprintf("fix (%d/%d)", selectedCount, totalCount)
 		}
 		primary = append(primary, renderAction("f", fixLabel))
 	}
-	primary = append(primary, renderAction("s", "skip"), renderAction("x", abortLabel))
+	if !boundedDisposition {
+		primary = append(primary, renderAction("s", "skip"))
+	}
+	primary = append(primary, renderAction("x", abortLabel))
 	if hasDiff {
 		diffLabel := "diff"
 		if showDiff {
@@ -278,6 +290,9 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bo
 	if showSelectionActions {
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 		selection := []string{renderAction("\u2423", "toggle"), renderAction("e", "edit"), renderAction("+", "add"), renderAction("A", "all"), renderAction("N", "none")}
+		if boundedDisposition {
+			selection = []string{renderAction("v", "disposition")}
+		}
 		result += " " + dimStyle.Render("│") + " " + strings.Join(selection, "  ")
 	} else if showDiff {
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))

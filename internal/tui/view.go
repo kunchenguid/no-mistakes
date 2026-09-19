@@ -50,7 +50,8 @@ func (m Model) View() string {
 	stepAwaiting := awaitingStep(m.steps)
 	approvalReady := m.approvalReady(stepAwaiting)
 	retryAvailable := m.reviewRetryAvailable()
-	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff, approvalReady, retryAvailable)
+	boundedDisposition := stepAwaiting != nil && m.boundedReviewNeedsDisposition(stepAwaiting.StepName)
+	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff, approvalReady, retryAvailable, boundedDisposition)
 	if stepAwaiting != nil && m.stepDiffTruncated[stepAwaiting.StepName] {
 		warning := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow)).
 			Render("⚠ Diff truncated at 512 KiB. Approval applies to the full diff.")
@@ -131,6 +132,8 @@ func (m Model) View() string {
 			section = m.renderInstructionEditor(boxWidth)
 		case editorAddFinding:
 			section = m.renderAddFindingEditor(boxWidth)
+		case editorDisposition:
+			section = m.renderDispositionEditor(boxWidth)
 		}
 		if section != "" {
 			extraSections = append(extraSections, section)
@@ -199,7 +202,11 @@ func (m Model) View() string {
 					boxHeight = contentBudget
 				}
 				raw := m.combinedFindingsJSON(step.StepName)
-				appendExtraSection(renderFindingsBoxForHeight(raw, rightWidth, cursor, m.findingSelections[step.StepName], boxHeight))
+				selected := m.findingSelections[step.StepName]
+				if m.boundedReviewNeedsDisposition(step.StepName) {
+					selected = m.boundedReviewFixSelections(step.StepName)
+				}
+				appendExtraSection(renderFindingsBoxForHeight(raw, rightWidth, cursor, selected, boxHeight))
 			}
 		}
 	}

@@ -152,6 +152,7 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 			m.diffOffset = 0
 			if event.Status != nil && (types.StepStatus(*event.Status) == types.StepStatusAwaitingApproval || types.StepStatus(*event.Status) == types.StepStatusFixReview) {
 				delete(m.findingInstructions, *event.StepName)
+				delete(m.findingDispositions, *event.StepName)
 				delete(m.addedFindings, *event.StepName)
 				m.resetFindingSelection(*event.StepName)
 			}
@@ -278,6 +279,7 @@ func sameGateState(oldGate, newGate *ipc.StepResultInfo, oldFindings, newFinding
 
 func (m *Model) clearGateState(step types.StepName) {
 	delete(m.findingSelections, step)
+	delete(m.findingDispositions, step)
 	delete(m.findingCursor, step)
 	delete(m.findingInstructions, step)
 	delete(m.addedFindings, step)

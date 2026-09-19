@@ -192,16 +192,17 @@ type SubscribeParams struct {
 // Instructions carries optional per-finding notes keyed by finding ID, which
 // the daemon attaches to the corresponding finding before dispatching a fix.
 // AddedFindings carries user-authored findings that are merged into the round
-// alongside agent-produced ones. Both fields only apply when Action triggers
-// a fix round.
+// alongside agent-produced ones. Dispositions carries bounded Review worker
+// adjudication. These fields only apply when Action triggers a fix round.
 type RespondParams struct {
-	RunID          string               `json:"run_id"`
-	Step           types.StepName       `json:"step"`
-	Action         types.ApprovalAction `json:"action"`
-	FindingIDs     []string             `json:"finding_ids,omitempty"`
-	Instructions   map[string]string    `json:"instructions,omitempty"`
-	AddedFindings  []types.Finding      `json:"added_findings,omitempty"`
-	ApprovalReason string               `json:"approval_reason,omitempty"` // Test approval only
+	RunID          string                              `json:"run_id"`
+	Step           types.StepName                      `json:"step"`
+	Action         types.ApprovalAction                `json:"action"`
+	FindingIDs     []string                            `json:"finding_ids,omitempty"`
+	Instructions   map[string]string                   `json:"instructions,omitempty"`
+	AddedFindings  []types.Finding                     `json:"added_findings,omitempty"`
+	Dispositions   map[string]types.FindingDisposition `json:"dispositions,omitempty"`
+	ApprovalReason string                              `json:"approval_reason,omitempty"` // Test approval only
 }
 
 // CancelRunParams cancels an active pipeline run.

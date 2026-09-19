@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -22,12 +24,63 @@ func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, 
 		return false, false, 0, 0
 	}
 	totalCount = len(items)
+	if m.boundedReviewNeedsDisposition(step.StepName) {
+		selectedCount = len(m.findingDispositions[step.StepName])
+		return true, m.boundedReviewDispositionsComplete(step.StepName), selectedCount, totalCount
+	}
 	selected, ok := m.findingSelections[step.StepName]
 	if !ok {
 		return true, true, totalCount, totalCount
 	}
 	selectedCount = len(selected)
 	return true, selectedCount > 0, selectedCount, totalCount
+}
+
+// boundedReviewNeedsDisposition identifies the initial bounded Review gate.
+// Once the daemon records decisions in the findings payload, later authority
+// gates render those durable decisions and use the ordinary approval actions.
+func (m Model) boundedReviewNeedsDisposition(step types.StepName) bool {
+	if step != types.StepReview {
+		return false
+	}
+	parsed, err := parseFindings(m.stepFindings[step])
+	if err != nil || parsed == nil || parsed.ReviewStrategy != "bounded" || len(parsed.Items) == 0 {
+		return false
+	}
+	for _, item := range parsed.Items {
+		if item.Disposition == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) boundedReviewDispositionsComplete(step types.StepName) bool {
+	if !m.boundedReviewNeedsDisposition(step) {
+		return false
+	}
+	items := m.agentFindingItems(step)
+	decisions := m.findingDispositions[step]
+	if len(decisions) != len(items) {
+		return false
+	}
+	for _, item := range items {
+		decision, ok := decisions[item.ID]
+		if !ok || !types.IsKnownFindingDisposition(decision.Decision) || strings.TrimSpace(decision.Reason) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func (m Model) boundedReviewFixSelections(step types.StepName) map[string]bool {
+	selected := make(map[string]bool)
+	for id, decision := range m.findingDispositions[step] {
+		if decision.Decision == types.FindingDispositionFix {
+			selected[id] = true
+		}
+	}
+	return selected
 }
 
 // findingItems returns the complete list of findings rendered for the step,
@@ -64,7 +117,8 @@ func (m *Model) combinedFindingsJSON(step types.StepName) string {
 	raw := m.stepFindings[step]
 	instructions := m.findingInstructions[step]
 	added := m.addedFindings[step]
-	if len(instructions) == 0 && len(added) == 0 {
+	dispositions := m.findingDispositions[step]
+	if len(instructions) == 0 && len(added) == 0 && len(dispositions) == 0 {
 		return raw
 	}
 	base, err := parseFindings(raw)
@@ -72,6 +126,12 @@ func (m *Model) combinedFindingsJSON(step types.StepName) string {
 		base = &findings{}
 	}
 	merged := types.MergeUserOverrides(*base, instructions, added)
+	for i := range merged.Items {
+		if decision, ok := dispositions[merged.Items[i].ID]; ok {
+			merged.Items[i].Disposition = decision.Decision
+			merged.Items[i].DispositionReason = decision.Reason
+		}
+	}
 	encoded, err := types.MarshalFindingsJSON(merged)
 	if err != nil {
 		return raw

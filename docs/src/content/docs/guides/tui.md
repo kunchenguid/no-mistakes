@@ -183,8 +183,11 @@ When yolo mode is on, the footer changes from `y yolo` to `y end yolo`.
 | `e` | Edit fix note for the current finding |
 | `+` | Add a user-authored finding |
 | `D` | Delete the current user-authored finding |
+| `v` | Record the disposition and evidence for the current bounded Review finding |
 
 When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or `esc` to cancel. In the add-finding editor, use `tab` / `shift+tab` to move between fields, `Ctrl+s` to save, and `esc` to cancel.
+
+At an initial bounded Review gate, selection controls are replaced by `v disposition`. Choose `1 confirmed-fix`, `2 rejected`, `3 deferred`, or `4 escalate`, enter a non-empty evidence-backed reason, and save with `Ctrl+s`. The action bar enables `f submit dispositions` only after every finding has a decision. It sends only `confirmed-fix` findings to the single consolidated correction. Approve, skip, user-added findings, and yolo are unavailable at this gate because they would bypass worker-owned adjudication.
 
 ### View
 

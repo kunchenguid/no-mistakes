@@ -84,6 +84,9 @@ ci:
 rebase:
   strategy: rebase # or: merge
 
+review:
+  strategy: iterative # or: bounded
+
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
   # branch_pattern: '^PROJ/([0-9]+)$'
@@ -711,6 +714,15 @@ The key is matched against the checkout path recorded at `init`. After moving a 
 
 `no-mistakes init --worktree-root <dir>` prints the exact entry to add for the checkout you are initializing. The global config is hand-maintained, so init never rewrites it for you.
 
+### review.strategy
+
+Sets the machine-wide Review strategy. The default is `iterative`, which preserves existing behavior. Set it to `bounded` to use one read-only full-diff review followed by worker-owned finding dispositions and at most one consolidated correction. A trusted repository `review.strategy` overrides this global value. See the [Review step](/no-mistakes/reference/pipeline-steps/#review) for the complete contract.
+
+| | |
+|---|---|
+| Type | `string`: `iterative` or `bounded` |
+| Default | `iterative` |
+
 ### auto_fix
 
 Maximum follow-up auto-fix attempts per step. Set a step to `0` to disable the follow-up auto-fix loop, so findings require manual approval.
@@ -724,7 +736,7 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | Field               | Type  | Default | Description                                                                                 |
 | ------------------- | ----- | ------- | ------------------------------------------------------------------------------------------- |
 | `auto_fix.rebase`   | `int` | `3`     | Rebase conflict auto-fix attempts                                                           |
-| `auto_fix.review`   | `int` | `0`     | Review finding auto-fix attempts                                                            |
+| `auto_fix.review`   | `int` | `0`     | Iterative Review finding auto-fix attempts; ignored by bounded Review                        |
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |

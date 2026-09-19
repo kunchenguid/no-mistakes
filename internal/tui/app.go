@@ -45,18 +45,19 @@ type Model struct {
 	// production, where the IPC client is used; injectable for tests.
 	fetchStepDiff       func(types.StepName) (string, error)
 	steps               []ipc.StepResultInfo
-	stepFindings        map[types.StepName]string            // step name → raw findings JSON
-	stepDiffs           map[types.StepName]string            // step name → raw unified diff (fetched on demand)
-	stepDiffTruncated   map[types.StepName]bool              // steps whose fetched diff was capped
-	stepDiffFetching    map[types.StepName]bool              // steps with an in-flight diff read
-	stepDiffLoaded      map[types.StepName]bool              // steps whose current diff request completed
-	stepDiffRequestID   map[types.StepName]uint64            // latest request generation per step
-	pendingDiffFetch    []stepDiffRequest                    // diff reads to issue on the next update
-	findingSelections   map[types.StepName]map[string]bool   // step name → finding ID → selected
-	findingCursor       map[types.StepName]int               // step name → current finding cursor
-	findingInstructions map[types.StepName]map[string]string // step name → finding ID → user note
-	addedFindings       map[types.StepName][]types.Finding   // user-authored findings per step
-	editor              *editorState                         // active modal editor (nil when none)
+	stepFindings        map[types.StepName]string                              // step name → raw findings JSON
+	stepDiffs           map[types.StepName]string                              // step name → raw unified diff (fetched on demand)
+	stepDiffTruncated   map[types.StepName]bool                                // steps whose fetched diff was capped
+	stepDiffFetching    map[types.StepName]bool                                // steps with an in-flight diff read
+	stepDiffLoaded      map[types.StepName]bool                                // steps whose current diff request completed
+	stepDiffRequestID   map[types.StepName]uint64                              // latest request generation per step
+	pendingDiffFetch    []stepDiffRequest                                      // diff reads to issue on the next update
+	findingSelections   map[types.StepName]map[string]bool                     // step name → finding ID → selected
+	findingDispositions map[types.StepName]map[string]types.FindingDisposition // bounded Review decisions entered locally
+	findingCursor       map[types.StepName]int                                 // step name → current finding cursor
+	findingInstructions map[types.StepName]map[string]string                   // step name → finding ID → user note
+	addedFindings       map[types.StepName][]types.Finding                     // user-authored findings per step
+	editor              *editorState                                           // active modal editor (nil when none)
 	logs                []string
 	logPartial          string // buffered partial line (no trailing newline yet)
 
@@ -116,6 +117,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		stepDiffLoaded:      make(map[types.StepName]bool),
 		stepDiffRequestID:   make(map[types.StepName]uint64),
 		findingSelections:   make(map[types.StepName]map[string]bool),
+		findingDispositions: make(map[types.StepName]map[string]types.FindingDisposition),
 		findingCursor:       make(map[types.StepName]int),
 		findingInstructions: make(map[types.StepName]map[string]string),
 		addedFindings:       make(map[types.StepName][]types.Finding),

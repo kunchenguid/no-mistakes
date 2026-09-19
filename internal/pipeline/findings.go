@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"strconv"
 	"strings"
@@ -69,7 +70,53 @@ func findingKey(item types.Finding) types.Finding {
 	item.Action = ""
 	item.Source = ""
 	item.UserInstructions = ""
+	item.Disposition = ""
+	item.DispositionReason = ""
 	return item
+}
+
+// applyFindingDispositionsJSON records one evidence-backed worker decision for
+// every finding in a bounded review report. The returned IDs are exactly the
+// confirmed bounded fixes and therefore the complete input to the one
+// correction turn.
+func applyFindingDispositionsJSON(raw string, decisions map[string]types.FindingDisposition) (string, []string, error) {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse review findings: %w", err)
+	}
+	known := make(map[string]bool, len(findings.Items))
+	fixIDs := make([]string, 0, len(findings.Items))
+	for i := range findings.Items {
+		item := &findings.Items[i]
+		known[item.ID] = true
+		decision, ok := decisions[item.ID]
+		if !ok {
+			return "", nil, fmt.Errorf("finding %s has no disposition", item.ID)
+		}
+		decision.Decision = strings.ToLower(strings.TrimSpace(decision.Decision))
+		decision.Reason = strings.TrimSpace(decision.Reason)
+		if !types.IsKnownFindingDisposition(decision.Decision) {
+			return "", nil, fmt.Errorf("finding %s has invalid disposition %q (want %s)", item.ID, decision.Decision, strings.Join(types.KnownFindingDispositions(), ", "))
+		}
+		if decision.Reason == "" {
+			return "", nil, fmt.Errorf("finding %s disposition requires a reason", item.ID)
+		}
+		item.Disposition = decision.Decision
+		item.DispositionReason = decision.Reason
+		if decision.Decision == types.FindingDispositionFix {
+			fixIDs = append(fixIDs, item.ID)
+		}
+	}
+	for id := range decisions {
+		if !known[id] {
+			return "", nil, fmt.Errorf("disposition names unknown finding %s", id)
+		}
+	}
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return "", nil, fmt.Errorf("encode dispositioned findings: %w", err)
+	}
+	return encoded, fixIDs, nil
 }
 
 func findingFingerprint(item types.Finding) types.Finding {
@@ -270,7 +317,15 @@ func hasAskUserFindingsJSON(raw string) bool {
 	if err != nil {
 		return false
 	}
-	return types.HasAskUserFindings(findings)
+	for _, item := range findings.Items {
+		if item.Disposition != "" && item.Disposition != types.FindingDispositionEscalate {
+			continue
+		}
+		if item.ActionOrDefault() == types.ActionAskUser {
+			return true
+		}
+	}
+	return false
 }
 
 func hasBlockingFindingsJSON(raw string) bool {
@@ -282,6 +337,9 @@ func hasBlockingFindingsJSON(raw string) bool {
 		return true
 	}
 	for _, item := range findings.Items {
+		if item.Disposition != "" && item.Disposition != types.FindingDispositionEscalate {
+			continue
+		}
 		if item.Severity == types.FindingSeverityError || item.Severity == types.FindingSeverityWarning {
 			return true
 		}

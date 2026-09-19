@@ -29,6 +29,7 @@ func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
+	boundedReview := sctx.Config != nil && sctx.Config.Review.Strategy == config.ReviewStrategyBounded
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
@@ -102,7 +103,13 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// genuine doubt still leaves the code alone and reports the finding
 	// unresolved.
 	var fixSummary string
-	if sctx.Fixing && !sctx.SkipFixExecution {
+	if sctx.Fixing && findingsCountForReview(sctx.PreviousFindings) == 0 {
+		if boundedReview {
+			return boundedReviewCorrectionOutcome(sctx, "")
+		}
+		return nil, fmt.Errorf("review fix requires previous review findings")
+	}
+	if sctx.Fixing && !sctx.SkipFixExecution && strings.TrimSpace(sctx.PreviousFindings) != "" && findingsCountForReview(sctx.PreviousFindings) > 0 {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
@@ -162,7 +169,13 @@ Previous review findings to address:
 		if err != nil {
 			return nil, err
 		}
+		if boundedReview && summary == NoChangesAppliedSummary {
+			return nil, errors.New("bounded Review correction made no repository change for confirmed findings")
+		}
 		fixSummary = summary
+	}
+	if boundedReview && sctx.Fixing {
+		return boundedReviewCorrectionOutcome(sctx, fixSummary)
 	}
 	reviewTargetSHA := sctx.Run.HeadSHA
 
@@ -188,6 +201,9 @@ Previous review findings to address:
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
 			RiskRationale: "no reviewable changes",
+		}
+		if boundedReview {
+			noChangeFindings.ReviewStrategy = config.ReviewStrategyBounded
 		}
 		// Nothing changed, so nothing needed covering; an empty coverage record
 		// is honest here and cannot clear any outstanding finding.
@@ -241,6 +257,16 @@ Previous review findings to address:
 	// clause, or obligation - and any failure leaves the prompt byte-identical
 	// to running with the assist off.
 	prebrief := s.reviewPrebriefSection(ctx, sctx, baseSHA, changed, reviewable)
+	boundedContract := ""
+	if boundedReview {
+		boundedContract = `
+
+Bounded review contract:
+- This is the single full-diff review pass. You are read-only: do not edit files, run formatters, commit, push, or mutate repository state.
+- Complete the entire review before returning. A later correction will not trigger another probabilistic review.
+- Every finding must include a unique stable id, evidence naming the concrete source-backed mechanism, and verification with one focused command or code path the implementation worker can use to confirm or reject it.
+- The burden of proof is on the finding. Do not report speculative hardening, generalization, style preferences, or improvements outside the stated intent.`
+	}
 
 	// The authorization/privacy obligation below specializes the existing
 	// concrete-state trace only when changed behavior crosses a potentially
@@ -350,7 +376,7 @@ Risk assessment (after listing all findings):
 - Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
 - Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
 - Provide a one-sentence risk_rationale explaining why you chose that risk level.
-- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s%s%s`,
+- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s%s%s%s`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -360,6 +386,7 @@ Risk assessment (after listing all findings):
 		historySection,
 		pathInstructions,
 		prebrief,
+		boundedContract,
 	)
 
 	// Every review turn - the initial review and every post-fix rereview -
@@ -374,9 +401,12 @@ Risk assessment (after listing all findings):
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
 	//
-	// A review whose final JSON fails validation is a formatting slip, not a
-	// verdict, so it is rerun as a fresh session-free review of the same
-	// prompt, told only the validation error, up to reviewAnalyzerMaxAttempts.
+	// In iterative mode, a review whose final JSON fails validation is a
+	// formatting slip, not a verdict, so it is rerun as a fresh session-free
+	// review of the same prompt, told only the validation error, up to
+	// reviewAnalyzerMaxAttempts. Bounded mode has exactly one full-diff
+	// invocation: malformed output fails the step instead of spending another
+	// probabilistic review pass.
 	// Findings come only from the attempt that validates. Every other failure
 	// returns at once, and so does a rejection from a turn its deadline or a
 	// cancellation cut short.
@@ -391,14 +421,36 @@ Risk assessment (after listing all findings):
 	}
 	var findings Findings
 	for attempt := 1; ; attempt++ {
+		var readOnlyState reviewWorktreeState
+		var err error
+		if boundedReview {
+			readOnlyState, err = snapshotReviewWorktree(sctx)
+			if err != nil {
+				return nil, fmt.Errorf("snapshot bounded review worktree: %w", err)
+			}
+		}
 		result, err := s.runReviewAgent(sctx, "agent review", "", opts)
+		if boundedReview {
+			if stateErr := verifyReviewWorktreeUnchanged(sctx, readOnlyState); stateErr != nil {
+				if err != nil {
+					return nil, errors.Join(err, stateErr)
+				}
+				return nil, stateErr
+			}
+		}
 		if err == nil {
 			findings, err = parseReviewAnalyzerOutput(result)
+			if err == nil && boundedReview {
+				err = validateBoundedReviewFindings(findings, reviewable)
+			}
 			if err == nil {
 				break
 			}
 		} else if !agent.IsStructuredOutputRejected(err) || sctx.Ctx.Err() != nil || errors.Is(err, errReviewAgentTimeout) {
 			return nil, err
+		}
+		if boundedReview {
+			return nil, fmt.Errorf("validate bounded review findings: %w", err)
 		}
 		if attempt == reviewAnalyzerMaxAttempts {
 			return nil, fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err)
@@ -415,8 +467,16 @@ Risk assessment (after listing all findings):
 		sctx.Log(fmt.Sprintf("dropped %d deferred pipeline-owned delivery finding(s) (owned by later push/PR/CI steps)", n))
 		findings = stripped
 	}
+	if boundedReview {
+		findings.ReviewStrategy = config.ReviewStrategyBounded
+	}
 
 	needsApproval := hasBlockingFindings(findings.Items)
+	if boundedReview && len(findings.Items) > 0 {
+		// Every bounded finding, including informational feedback, must receive a
+		// worker-owned disposition before Review can complete.
+		needsApproval = true
+	}
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 		// A clean round certifies the whole head, so it is held to a positive
 		// coverage record over every trusted reviewable path. An omitted
@@ -443,6 +503,58 @@ Risk assessment (after listing all findings):
 // reviewAnalyzerMaxAttempts bounds the review turns one Execute spends on
 // output that fails validation, including the first.
 const reviewAnalyzerMaxAttempts = 3
+
+type reviewWorktreeState struct {
+	head   string
+	status string
+}
+
+func snapshotReviewWorktree(sctx *pipeline.StepContext) (reviewWorktreeState, error) {
+	head, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return reviewWorktreeState{}, err
+	}
+	status, err := stepGitRunRaw(sctx, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return reviewWorktreeState{}, err
+	}
+	return reviewWorktreeState{head: head, status: status}, nil
+}
+
+func verifyReviewWorktreeUnchanged(sctx *pipeline.StepContext, before reviewWorktreeState) error {
+	after, err := snapshotReviewWorktree(sctx)
+	if err != nil {
+		return fmt.Errorf("verify bounded reviewer read-only state: %w", err)
+	}
+	if after != before {
+		return errors.New("bounded reviewer violated the read-only contract: repository HEAD, index, or worktree changed")
+	}
+	return nil
+}
+
+func validateBoundedReviewFindings(findings Findings, reviewable []string) error {
+	seen := make(map[string]bool, len(findings.Items))
+	for i, finding := range findings.Items {
+		id := strings.TrimSpace(finding.ID)
+		if id == "" {
+			return fmt.Errorf("bounded review finding %d must include a stable ID", i+1)
+		}
+		if id != finding.ID {
+			return fmt.Errorf("bounded review finding ID %q must not contain surrounding whitespace", finding.ID)
+		}
+		if seen[id] {
+			return fmt.Errorf("bounded review finding ID %q is duplicated", id)
+		}
+		seen[id] = true
+		if strings.TrimSpace(finding.Evidence) == "" || strings.TrimSpace(finding.Verification) == "" {
+			return fmt.Errorf("bounded review finding %d must include evidence and verification guidance", i+1)
+		}
+	}
+	if !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
+		return fmt.Errorf("bounded review did not cover the complete diff: %s", uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
+	}
+	return nil
+}
 
 // parseReviewAnalyzerOutput validates a review turn's structured findings. A
 // review that produced no structured output, or one whose risk assessment is
@@ -568,6 +680,74 @@ func approvedReviewOutcome(reviewTargetSHA string, outcome *pipeline.StepOutcome
 	return outcome, nil
 }
 
+func findingsCountForReview(raw string) int {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return 0
+	}
+	return len(findings.Items)
+}
+
+// boundedReviewCorrectionOutcome closes the local AI-review stage after the
+// implementation worker's one consolidated correction. It deliberately does
+// not call the reviewer again. The normal Test, Document, and Lint steps remain
+// the complete deterministic verification that follows this step.
+func boundedReviewCorrectionOutcome(sctx *pipeline.StepContext, fixSummary string) (*pipeline.StepOutcome, error) {
+	selected, err := types.ParseFindingsJSON(sctx.PreviousFindings)
+	if err != nil {
+		return nil, fmt.Errorf("parse bounded Review confirmed findings: %w", err)
+	}
+	var deferred types.Findings
+	if strings.TrimSpace(sctx.DeferredFindings) != "" {
+		deferred, err = types.ParseFindingsJSON(sctx.DeferredFindings)
+		if err != nil {
+			return nil, fmt.Errorf("parse bounded Review remaining findings: %w", err)
+		}
+	}
+	byID := make(map[string]types.Finding, len(selected.Items)+len(deferred.Items))
+	order := make([]string, 0, len(selected.Items)+len(deferred.Items))
+	for _, group := range [][]types.Finding{selected.Items, deferred.Items} {
+		for _, finding := range group {
+			if _, exists := byID[finding.ID]; !exists {
+				order = append(order, finding.ID)
+			}
+			byID[finding.ID] = finding
+		}
+	}
+	result := types.FindingsMetadata(selected)
+	if result.ReviewStrategy == "" {
+		result = types.FindingsMetadata(deferred)
+	}
+	result.ReviewStrategy = config.ReviewStrategyBounded
+	result.Summary = "bounded review adjudicated; no further full review permitted"
+	needsAuthority := false
+	for _, id := range order {
+		finding := byID[id]
+		switch finding.Disposition {
+		case types.FindingDispositionFix, types.FindingDispositionReject, types.FindingDispositionDefer:
+			finding.Action = types.ActionNoOp
+		case types.FindingDispositionEscalate:
+			finding.Action = types.ActionAskUser
+			needsAuthority = true
+		default:
+			return nil, fmt.Errorf("bounded Review finding %s has no recorded disposition", finding.ID)
+		}
+		result.Items = append(result.Items, finding)
+	}
+	encoded, err := types.MarshalFindingsJSON(result)
+	if err != nil {
+		return nil, fmt.Errorf("encode bounded Review outcome: %w", err)
+	}
+	return approvedReviewOutcome(sctx.Run.HeadSHA, &pipeline.StepOutcome{
+		NeedsApproval:   needsAuthority,
+		AutoFixable:     false,
+		Findings:        encoded,
+		ReviewedPaths:   result.ReviewedPaths,
+		ReviewablePaths: result.ReviewedPaths,
+		FixSummary:      fixSummary,
+	})
+}
+
 func sanitizedPreviousFindingsForPrompt(raw string) string {
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
@@ -578,11 +758,15 @@ func sanitizedPreviousFindingsForPrompt(raw string) string {
 		findings.Items[i].Severity = sanitizePromptText(findings.Items[i].Severity)
 		findings.Items[i].File = sanitizePromptText(findings.Items[i].File)
 		findings.Items[i].Description = sanitizePromptMultilineText(findings.Items[i].Description)
+		findings.Items[i].Evidence = sanitizePromptMultilineText(findings.Items[i].Evidence)
+		findings.Items[i].Verification = sanitizePromptMultilineText(findings.Items[i].Verification)
 		findings.Items[i].Source = sanitizePromptText(findings.Items[i].Source)
 		findings.Items[i].UserInstructions = sanitizePromptMultilineText(findings.Items[i].UserInstructions)
 		findings.Items[i].ReviewScope = sanitizePromptText(findings.Items[i].ReviewScope)
 		findings.Items[i].Category = sanitizePromptText(findings.Items[i].Category)
 		findings.Items[i].Check = sanitizePromptText(findings.Items[i].Check)
+		findings.Items[i].Disposition = sanitizePromptText(findings.Items[i].Disposition)
+		findings.Items[i].DispositionReason = sanitizePromptMultilineText(findings.Items[i].DispositionReason)
 	}
 	findings.Summary = sanitizePromptMultilineText(findings.Summary)
 	findings.RiskLevel = sanitizePromptText(findings.RiskLevel)
