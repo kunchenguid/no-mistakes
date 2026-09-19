@@ -33,6 +33,36 @@ func (h *hangingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Resu
 	return &agent.Result{Text: "ok"}, nil
 }
 
+func TestRunAgent_ZeroCPURunnableWedgeFailsFast(t *testing.T) {
+	old := sampleAgentProcess
+	sampleAgentProcess = func(int) (uint64, string, error) { return 0, "R", nil }
+	t.Cleanup(func() { sampleAgentProcess = old })
+	ag := &hangingAgent{
+		name: "zero-cpu-wedged",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if opts.OnLifecycle != nil {
+				opts.OnLifecycle(agent.LifecycleEvent{Agent: "zero-cpu-wedged", Phase: agent.LifecyclePhaseStart, PID: 1234})
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx: context.Background(), Agent: ag,
+		Config: &config.Config{AgentTimeout: time.Minute, AgentStallTimeout: time.Minute},
+	}
+	started := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"})
+	if !errors.Is(err, ErrAgentStall) {
+		t.Fatalf("error = %v, want ErrAgentStall", err)
+	}
+	if elapsed := time.Since(started); elapsed > 15*time.Second {
+		t.Fatalf("zero-CPU wedge took %s, want fast failure", elapsed)
+	}
+	if !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("error = %q, want actionable no-progress diagnostic", err)
+	}
+}
 func TestRunAgent_HangingAgentFailsAfterTimeout(t *testing.T) {
 	t.Parallel()
 	ag := &hangingAgent{

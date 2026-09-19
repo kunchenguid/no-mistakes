@@ -30,6 +30,13 @@ var ErrAgentTimeout = errors.New("agent timeout")
 // change, while a caller that wants to distinguish them can.
 var ErrAgentStall = errors.New("agent stalled")
 
+// zeroCPUWedgeGrace is a short confirmation window for the measured native
+// wedge shape: the process is still reported runnable, its accumulated CPU
+// time remains zero, and the turn has made no progress. It is deliberately
+// independent of agent_stall_timeout; that setting still owns ordinary silent
+// turns and this exception only catches a process that never began executing.
+const zeroCPUWedgeGrace = 5 * time.Second
+
 // AgentTimeout is the per-invocation budget applied at the shared agent-run
 // seam. A positive Config.AgentTimeout wins; otherwise the default (30m).
 func AgentTimeout(cfg *config.Config) time.Duration {
@@ -156,13 +163,16 @@ func invokeAgent(parent context.Context, timeout, stall time.Duration, activity 
 // watches is the ABSENCE of events: an event-driven timer would have to be
 // re-armed from the agent's own callbacks, which run on the path that is by
 // definition silent when this matters. The interval is a fraction of the bound
-// so detection is prompt without busy-waiting, and it is floored so a
-// deliberately tiny bound (tests, pathological configs) cannot spin.
+// so detection is prompt without busy-waiting, and is capped to sample the
+// zero-CPU wedge before its confirmation window expires.
 func watchAgentStall(ctx context.Context, cancel context.CancelFunc, stall time.Duration, activity *agentActivity) func() bool {
 	if stall <= 0 || activity == nil {
 		return func() bool { return false }
 	}
 	interval := stall / 4
+	if zeroCPUInterval := zeroCPUWedgeGrace / 2; interval > zeroCPUInterval {
+		interval = zeroCPUInterval
+	}
 	if interval < 25*time.Millisecond {
 		interval = 25 * time.Millisecond
 	}
@@ -184,7 +194,7 @@ func watchAgentStall(ctx context.Context, cancel context.CancelFunc, stall time.
 				return
 			case <-ticker.C:
 				silent, _, ok := activity.progressSilence()
-				if ok && silent >= stall {
+				if ok && (silent >= stall || activity.zeroCPURunnableWedge(silent)) {
 					fired.Store(true)
 					cancel()
 					return
@@ -234,10 +244,38 @@ type agentActivity struct {
 	launchedPID int
 	launchedAt  time.Time
 	launched    bool
+	// zeroCPUSince records a continuous runnable/zero-CPU sample window.
+	zeroCPUSince time.Time
 }
 
 func newAgentActivity() *agentActivity {
 	return &agentActivity{begun: time.Now()}
+}
+
+func (a *agentActivity) zeroCPURunnableWedge(silent time.Duration) bool {
+	if a == nil || silent < zeroCPUWedgeGrace {
+		return false
+	}
+	a.mu.Lock()
+	pid, launched, launchedAt := a.launchedPID, a.launched, a.launchedAt
+	a.mu.Unlock()
+	if !launched || pid <= 0 || time.Since(launchedAt) < zeroCPUWedgeGrace {
+		return false
+	}
+	cpu, state, err := sampleAgentProcess(pid)
+	if err != nil || cpu != 0 || len(state) == 0 || state[0] != 'R' {
+		a.mu.Lock()
+		a.zeroCPUSince = time.Time{}
+		a.mu.Unlock()
+		return false
+	}
+	a.mu.Lock()
+	if a.zeroCPUSince.IsZero() {
+		a.zeroCPUSince = time.Now()
+	}
+	stable := time.Since(a.zeroCPUSince) >= zeroCPUWedgeGrace
+	a.mu.Unlock()
+	return stable
 }
 
 func (a *agentActivity) observe() {
@@ -247,6 +285,7 @@ func (a *agentActivity) observe() {
 	a.mu.Lock()
 	a.observed++
 	a.last = time.Now()
+	a.zeroCPUSince = time.Time{}
 	a.mu.Unlock()
 }
 
@@ -262,7 +301,7 @@ func (a *agentActivity) beginAttempt() {
 	a.progressCount = 0
 	a.launchedPID = 0
 	a.launchedAt = time.Time{}
-	a.launched = false
+	a.zeroCPUSince = time.Time{}
 	a.mu.Unlock()
 }
 
@@ -274,6 +313,7 @@ func (a *agentActivity) observeLaunch(pid int) {
 	a.launched = true
 	a.launchedPID = pid
 	a.launchedAt = time.Now()
+	a.zeroCPUSince = time.Time{}
 	a.mu.Unlock()
 }
 
@@ -287,6 +327,7 @@ func (a *agentActivity) observeProgress() {
 	a.mu.Lock()
 	a.progressCount++
 	a.progressed = time.Now()
+	a.zeroCPUSince = time.Time{}
 	a.mu.Unlock()
 }
 
