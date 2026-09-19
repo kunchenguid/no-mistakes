@@ -1,7 +1,7 @@
 # Results: Jev review pre-brief benchmark (issue #1055)
 
-Method in `method.md`; raw per-launch rows in `launches-*.jsonl`;
-`summary.csv` is the same data flattened.
+Method in `method.md`; raw per-launch rows in `launches-*.jsonl`, which the
+tables below summarize.
 All launches ran 2026-09-19 on the production `ReviewStep`, Pi CLI at xhigh,
 with the corrected listing rule (see the calibration note in `method.md`).
 
@@ -35,40 +35,57 @@ Jev cost per on-launch: one batched request, 17,867-18,377 input tokens
 (about $0.0008 at the published $0.042/Mtok), latency about 2 s - negligible
 next to a multi-minute review.
 Every on-launch listed 2-4 surrounding files; coverage was complete in both
-arms of every change (11/11 and 31/31 reviewed_paths), so R4 held throughout.
+arms of every completed launch (11/11 and 31/31 reviewed_paths), so R4 held
+throughout.
 
 ## Reading
 
+Deltas are on-arm median vs off-arm median; the codex pi-profile-pin pair is
+one launch per arm, so it has no spread to compare against.
+
 - Fresh input tokens - the quantity least disturbed by provider caching -
-  moved within noise: +1.4% on jev-prebrief (median), -4% on the single
-  codex pi-profile-pin pair, -2.5% on kimi.
-- Wall time moved -12% (jev-prebrief), -19% (codex pair), -8% (kimi), all
-  within the run-to-run spread of the off arm alone.
-- Cache-read volume is noisy (one on-launch on jev-prebrief read 1.52M, more
-  than double its arm's median; the kimi on-arm median is 42% ABOVE its off
-  arm). No trustworthy direction there.
-- Findings parity held on the codex arms (4-5 vs 4 on A; the same 3 on the
-  B pair). Kimi found at most 1 finding in either arm; the model difference
-  dwarfs the assist difference.
+  moved +1.4% on jev-prebrief, -4% on the codex pair, and -2.5% on kimi, and
+  the on and off ranges overlap on both changes with three launches per arm.
+- Wall time moved -12% (jev-prebrief), -19% (codex pair), and -8% (kimi) -
+  the one metric that fell in every comparison.
+  On jev-prebrief the arms overlap: two of the three on launches (278 s,
+  315 s) sit inside the off arm's 259-325 s range.
+  On kimi they do not: every on launch (912, 953, 980 s) was faster than every
+  off launch (1,022, 1,038, 1,044 s), whose spread is only 22 s.
+  That is a consistent direction, but at n=3 on one change with one model.
+- Cache-read volume has no consistent direction: -12% (jev-prebrief, where one
+  on-launch read 1.52M, more than double its arm's median), -26% (codex
+  pair), and +42% (kimi).
+- Output tokens: -5% (jev-prebrief), -21% (codex pair), +6% (kimi).
+- Findings parity held on the codex arms (4-5 vs 4 on jev-prebrief; 3 and 3
+  on the pi-profile-pin pair).
+  Kimi found at most 1 finding in either arm; the model difference dwarfs the
+  assist difference.
 
 ## Conclusion
 
 On this corpus, at this sample size, the pre-brief does NOT measurably cut
-review cost or time.
+review token cost.
+Fresh input moved -4% to +1.4%, and cache reads and output moved in opposite
+directions on different comparisons; the median deltas across every arm and
+metric run from -26% (codex pair cache reads) to +42% (kimi cache reads).
+Wall time is the exception: it fell in all three comparisons (-8% to -19%),
+and on kimi every on launch beat every off launch.
+With n=3, n=1, and n=3 on two changes, that is an indicative signal worth
+re-measuring, not an established saving, and nowhere near a dramatic one.
 The effect the design can legally produce is bounded to shortening the cold
-reviewer's unguided search, and on a repository of this size a frontier
-coding agent at xhigh already finds the same surrounding files quickly; the
-2-4-file reading list saves at most a few exploration rounds, which is lost
-in cache-read noise.
-The measured deltas (-12% to +40% depending on arm and metric) are all inside
-launch-to-launch variance at n=3-4.
+reviewer's unguided search: the 2-4-file reading list can save at most a few
+exploration rounds on a pass that still reads the complete change.
 
 What the benchmark DOES support:
 
-- The assist is safe: coverage complete in both arms, findings parity on the
-  stronger model, fail-closed paths exercised (missing key, API error), and
-  the Jev line item is four orders of magnitude below the review launch
-  (~$0.0008 vs dollars).
+- The assist is safe on the launches measured: coverage complete in both
+  arms, findings parity on the stronger model, and the Jev line item is four
+  orders of magnitude below the review launch (~$0.0008 vs dollars).
+  Every on launch here got a successful Jev answer, so the fail-closed paths
+  (missing key, API error) are not exercised by this benchmark; the unit tests
+  (`internal/pipeline/steps/review_prebrief_test.go`, `internal/jev`) and the
+  e2e journey `TestJevReviewAssistJourney` cover them.
 - The calibration fix is necessary: as originally shipped (weighted score
   >= 2.0), the assist listed nothing on either change - Jev's distributions
   spread across adjacent levels, so the real rule must read the mass at
@@ -86,8 +103,9 @@ on a still-complete, still-cold pass.
 ## Recommendation
 
 Ship the assist only if an opt-in, off-by-default, $0.0008/review reading
-list is worth the surface on its own merits; do not ship it on a savings
-claim.
+list is worth the surface on its own merits; do not ship it on a token-savings
+claim, and re-measure the wall-time signal with more launches before claiming
+a time saving.
 If kept, revisit value on changes whose important context is large amounts of
 UNCHANGED code (big monorepos, wide refactors), where the search tail this
 assist targets is a larger share of the launch - this corpus's changes were

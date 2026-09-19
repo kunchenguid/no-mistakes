@@ -47,6 +47,9 @@ Recorded per launch (see `launches-*.jsonl`): wall time, Pi-reported
 input/output/cache-read tokens, findings count, reviewed_paths count, risk
 level, and the production pre-brief log line (listed/candidate counts, model,
 Jev input tokens) for on-mode launches.
+The harness now sums tokens over every agent attempt of a launch and records
+the attempt count; the rows in this directory predate that (see Honest
+limits).
 The TypeSafe key came from the environment and was never printed or
 persisted; Jev usage is the API-reported `input_tokens` of the one batched
 request per launch.
@@ -59,8 +62,7 @@ field is ignored in the analysis.
 
 Calibration note: the shipped PR originally listed a candidate when its
 probability-weighted score reached 2.0.
-Live probing during this benchmark (score distributions in `results.md`)
-showed that rule never fires: Jev spreads probability across adjacent levels,
+Live probing during this benchmark showed that rule never fires: Jev spreads probability across adjacent levels,
 so even a file it is quite sure is relevant scores 1.6-1.8.
 The listing rule was corrected to the rubric's semantics - list when the mass
 at "relevant" or "essential" (levels 2+3) is at least 0.5 - and that fix is
@@ -72,7 +74,14 @@ part of this PR; every launch below ran with the corrected rule.
   proven. Token counts on agentic coding launches vary widely between
   identical runs.
 - Fresh-input vs cache-read billing rates are provider-specific; the JSONL
-  records both raw, and `fresh_input_tokens` = input minus cache reads.
+  records `input_tokens` and `cache_read_tokens` raw.
+  The early rows' `fresh_input_tokens` field is the discarded derivation
+  described above, not a measured quantity.
+- The recorded rows were captured before the harness summed attempts: each
+  carries only the usage of the launch's last successful agent call, and no
+  attempt count.
+  A launch whose reviewer reran after a schema rejection, or whose adapter
+  retried, would be undercounted, and these rows cannot show whether any did.
 - Two changes on one repository is not a corpus; the pre-brief's value should
   grow with changes whose important context is unchanged code, which both of
   these are moderate on.

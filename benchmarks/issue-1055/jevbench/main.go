@@ -46,16 +46,21 @@ import (
 
 // launchRecord is one cold review launch's evidence row.
 type launchRecord struct {
-	Change          string `json:"change"`
-	Mode            string `json:"mode"` // "off" or "on"
-	BaseSHA         string `json:"base_sha"`
-	HeadSHA         string `json:"head_sha"`
-	StartedAt       string `json:"started_at"`
-	WallMS          int64  `json:"wall_ms"`
-	UsageReported   bool   `json:"usage_reported"`
-	InputTokens     int    `json:"input_tokens"`
-	OutputTokens    int    `json:"output_tokens"`
-	CacheReadTokens int    `json:"cache_read_tokens"`
+	Change    string `json:"change"`
+	Mode      string `json:"mode"` // "off" or "on"
+	BaseSHA   string `json:"base_sha"`
+	HeadSHA   string `json:"head_sha"`
+	StartedAt string `json:"started_at"`
+	WallMS    int64  `json:"wall_ms"`
+	// Attempts counts every agent attempt the launch made: review reruns
+	// after a schema rejection and adapter-internal retries alike. The token
+	// counters sum all of them, and UsageReported is false when any attempt
+	// reported no usage, so a launch that needed reruns never reads as cheaper.
+	Attempts        int  `json:"attempts"`
+	UsageReported   bool `json:"usage_reported"`
+	InputTokens     int  `json:"input_tokens"`
+	OutputTokens    int  `json:"output_tokens"`
+	CacheReadTokens int  `json:"cache_read_tokens"`
 	// Token semantics are adapter-specific: Pi reports uncached input and
 	// cache reads as separate counters, so input_tokens IS the fresh input
 	// and no derived field is computed here; results.md does the arithmetic
@@ -72,20 +77,49 @@ type launchRecord struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// meteringAgent records the usage each invocation reported.
+// meteringAgent sums the usage of every attempt a launch makes, the way eval
+// replay's observedAgent does: the review step can rerun its reviewer, and the
+// adapter retries below this seam and hands back only its last attempt.
 type meteringAgent struct {
-	inner agent.Agent
-	last  *agent.Result
+	inner        agent.Agent
+	attempts     int
+	usage        agent.TokenUsage
+	usageMissing bool
+	model        string
 }
 
 func (m *meteringAgent) Name() string { return m.inner.Name() }
 func (m *meteringAgent) Close() error { return m.inner.Close() }
 func (m *meteringAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-	result, err := m.inner.Run(ctx, opts)
-	if err == nil {
-		m.last = result
+	reported := 0
+	previous := opts.OnAttempt
+	opts.OnAttempt = func(attempt agent.Attempt) {
+		if previous != nil {
+			previous(attempt)
+		}
+		reported++
+		m.observe(attempt.Result)
 	}
+	result, err := m.inner.Run(ctx, opts)
+	if reported == 0 {
+		reported = 1
+		m.observe(result)
+	}
+	m.attempts += reported
 	return result, err
+}
+
+func (m *meteringAgent) observe(result *agent.Result) {
+	if result == nil || !result.UsageReported {
+		m.usageMissing = true
+		return
+	}
+	m.usage.InputTokens += result.Usage.InputTokens
+	m.usage.OutputTokens += result.Usage.OutputTokens
+	m.usage.CacheReadTokens += result.Usage.CacheReadTokens
+	if result.Model != "" {
+		m.model = result.Model
+	}
 }
 
 func main() {
@@ -210,19 +244,17 @@ func runLaunch(repo, base, head, change, mode, agentName, model, effort string) 
 	start := time.Now()
 	outcome, err := (&steps.ReviewStep{}).Execute(sctx)
 	record.WallMS = time.Since(start).Milliseconds()
+	record.Attempts = metered.attempts
+	record.UsageReported = metered.attempts > 0 && !metered.usageMissing
+	record.InputTokens = metered.usage.InputTokens
+	record.OutputTokens = metered.usage.OutputTokens
+	record.CacheReadTokens = metered.usage.CacheReadTokens
+	record.ReportedModel = metered.model
 	if err != nil {
 		// A failed launch is evidence too: record it with the error and let
 		// the caller decide whether the sample stands.
 		record.Error = err.Error()
 		return record, nil
-	}
-	if metered.last != nil {
-		u := metered.last.Usage
-		record.UsageReported = metered.last.UsageReported
-		record.InputTokens = u.InputTokens
-		record.OutputTokens = u.OutputTokens
-		record.CacheReadTokens = u.CacheReadTokens
-		record.ReportedModel = metered.last.Model
 	}
 	if outcome != nil {
 		var findings steps.Findings
@@ -276,7 +308,7 @@ func appendRecord(path string, record launchRecord) error {
 	if _, err := f.Write(append(encoded, '\n')); err != nil {
 		return err
 	}
-	fmt.Printf("jevbench: %s %s launch complete: wall=%ds input=%d output=%d cache_read=%d findings=%d jev=%q err=%q\n",
-		record.Change, record.Mode, record.WallMS/1000, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.Findings, record.JevNote, record.Error)
+	fmt.Printf("jevbench: %s %s launch complete: wall=%ds attempts=%d input=%d output=%d cache_read=%d findings=%d jev=%q err=%q\n",
+		record.Change, record.Mode, record.WallMS/1000, record.Attempts, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.Findings, record.JevNote, record.Error)
 	return nil
 }

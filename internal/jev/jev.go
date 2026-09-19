@@ -106,8 +106,8 @@ type Client struct {
 	// HTTPClient overrides the HTTP client, for tests. Nil uses a client
 	// with DefaultTimeout.
 	HTTPClient *http.Client
-	// Sleep bounds the rate-limit retry wait in tests. Nil uses
-	// time.Sleep with a real timer.
+	// Sleep replaces the rate-limit retry wait in tests. Nil waits on a
+	// timer that a context cancellation interrupts.
 	Sleep func(time.Duration)
 }
 

@@ -118,13 +118,15 @@ func TestEvaluate_Unauthorized(t *testing.T) {
 // rate-limit wait returns immediately instead of sleeping through it, so the
 // caller's ordinary cold-review fallback starts at once.
 func TestEvaluate_RetryWaitIsContextAware(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.AfterFunc(100*time.Millisecond, cancel)
 		w.Header().Set("Retry-After", "5")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer server.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	client := &Client{Endpoint: server.URL, Key: "k", Sleep: func(time.Duration) { cancel() }}
+	client := &Client{Endpoint: server.URL, Key: "k"}
 	start := time.Now()
 	_, err := client.Evaluate(ctx, "s", map[string]Question{"q": {Type: "noul", Instructions: "i"}})
 	if err == nil || !errors.Is(err, context.Canceled) {
