@@ -321,9 +321,9 @@ func (a *agentActivity) observeExit() {
 // wedged. Helpers (an ACP agent under acpx, stdio MCP servers) live for the
 // whole turn and prove nothing, and an agent that never produced output never
 // announced a tool call. A missing permanent set, a baseline frozen from a
-// failed sample, or an unreadable process table reports false, so the budget is never extended on a guess. It is liveness,
-// not output: evidence() never reports it as the agent having produced
-// anything.
+// failed sample, or an unreadable process table reports false, so the budget
+// is never extended on a guess. It is liveness, not output: evidence() never
+// reports it as the agent having produced anything.
 func (a *agentActivity) waitingOnChild() bool {
 	if a == nil {
 		return false
