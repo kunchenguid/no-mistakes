@@ -311,9 +311,55 @@ func TestJevContextCandidates_RanksRareNamesAboveUbiquitousOnes(t *testing.T) {
 	}
 }
 
-// TestJevIdentifiers pins which names become search terms: definitions in
-// code, never prose (documentation files, comments, a keyword inside a longer
-// word) and never names too short to point at a use site.
+// TestJevIdentifiers pins which names become search terms and in what order:
+// definitions in code, never prose (documentation files, comments, a keyword
+// inside a longer word), never names too short to point at a use site, never
+// an unchanged neighbour after a hunk's first change, and taken in turn from
+// each changed file.
+// TestJevContextCandidates_LaterFileNamesAreSearched reproduces a search
+// budget spent on the first file in path order: names the first file
+// introduces have no use site yet, so they must not keep a later file's
+// changed function from being searched.
+func TestJevContextCandidates_LaterFileNamesAreSearched(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, dir, "init")
+	write("aa/first.go", "package aa\n")
+	write("zz/widget.go", "package zz\n\nfunc RenderWidget() string {\n\treturn \"base\"\n}\n")
+	write("app/user.go", "package app\n\nfunc Show() string {\n\treturn zz.RenderWidget()\n}\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	var fresh strings.Builder
+	fresh.WriteString("package aa\n")
+	for i := 0; i < jevMaxGreps; i++ {
+		fmt.Fprintf(&fresh, "\nfunc FreshHelper%02d() {}\n", i)
+	}
+	write("aa/first.go", fresh.String())
+	write("zz/widget.go", "package zz\n\nfunc RenderWidget() string {\n\treturn \"changed\"\n}\n")
+	gitCmd(t, dir, "commit", "-am", "change")
+
+	diff := gitCmd(t, dir, "diff", "--no-renames", baseSHA+"..HEAD")
+	changed := []string{"aa/first.go", "zz/widget.go"}
+	candidates := jevContextCandidates(context.Background(), dir, diff, changed, changed, nil)
+	for _, c := range candidates {
+		if c.Path == "app/user.go" {
+			return
+		}
+	}
+	t.Fatalf("app/user.go (the only use site of the changed RenderWidget) not among candidates: %v", candidates)
+}
+
 func TestJevIdentifiers(t *testing.T) {
 	t.Parallel()
 	diff := `diff --git a/docs/guide.md b/docs/guide.md
@@ -326,6 +372,7 @@ diff --git a/widget/widget.go b/widget/widget.go
 --- a/widget/widget.go
 +++ b/widget/widget.go
 @@ -1,5 +1,9 @@ func RenderWidget() string {
+ type EnclosingKind int
 +func RenderWidgetV2() string {
 +	var b strings.Builder
 +	// we let callers choose
@@ -333,9 +380,16 @@ diff --git a/widget/widget.go b/widget/widget.go
 +}
 +export type WidgetOption struct{}
 +outlet Plug
+ func NeighbourAfter() {}
+diff --git a/gadget/gadget.go b/gadget/gadget.go
+--- a/gadget/gadget.go
++++ b/gadget/gadget.go
+@@ -1,2 +1,4 @@
++func GadgetOne() {}
++func GadgetTwo() {}
 `
 	got := jevIdentifiers(diff)
-	want := []string{"RenderWidget", "RenderWidgetV2", "WidgetOption"}
+	want := []string{"RenderWidget", "GadgetOne", "EnclosingKind", "GadgetTwo", "RenderWidgetV2", "WidgetOption"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("identifiers = %v, want %v", got, want)
 	}

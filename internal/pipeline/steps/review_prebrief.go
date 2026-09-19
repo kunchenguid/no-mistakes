@@ -56,9 +56,13 @@ const jevDiffMaxBytes = 32 * 1024
 // jevStatMaxBytes clips the diff --stat summary in the Jev state.
 const jevStatMaxBytes = 4 * 1024
 
-// jevMaxIdentifiers caps how many changed-code identifiers are greped for
-// candidate context files.
+// jevMaxIdentifiers caps how many changed-code identifiers with at least one
+// use site feed the candidate context files.
 const jevMaxIdentifiers = 8
+
+// jevMaxGreps bounds the git grep runs spent looking for those identifiers,
+// since a name the change just introduced often has no use site yet.
+const jevMaxGreps = 16
 
 // jevMinIdentifierLen skips names too short to search for: a one- to
 // three-letter name (a loop index, a minified symbol) matches as a whole word
@@ -255,39 +259,58 @@ func formatJevPrebrief(resp *jev.Response, candidates []jevCandidate) (string, i
 // are far noisier.
 var definitionPattern = regexp.MustCompile(`^\s*(?:(?:export|default|pub|public|private|protected|static|async|abstract|final)\s+)*(?:func|def|function|fn|sub|type|class|struct|enum|interface|trait|record|const|var|let)\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)`)
 
-// jevIdentifiers returns up to jevMaxIdentifiers distinct defined names from
-// the diff, in first-appearance order. Three line shapes carry them: added
-// definition lines (what the change introduces), hunk-header trailing context
-// and unchanged context lines (the enclosing definition a behavior-only edit
-// modifies), and removed lines (what the change replaces). Prose files are
-// skipped, and names shorter than jevMinIdentifierLen are dropped. Candidates
-// built from these are advisory and ranked downstream, so a
-// nearby-but-unrelated definition costs at most a low-ranked candidate.
+// jevIdentifiers returns the distinct defined names in the diff, taken in
+// turn from each changed code file so the first file in path order cannot
+// claim every search slot. Within a file, names keep their diff order and
+// come from three line shapes: the hunk header's trailing context and the
+// unchanged lines before a hunk's first change (the enclosing definition a
+// behavior-only edit modifies), and added or removed definition lines (what
+// the change introduces or replaces). Unchanged lines after a hunk's first
+// change are skipped: they are neighbours of the change, not part of it.
+// Prose files are skipped, and names shorter than jevMinIdentifierLen are
+// dropped.
 func jevIdentifiers(diff string) []string {
 	seen := map[string]bool{}
-	var ids []string
-	prose := false
+	var byFile [][]string
+	prose, changedInHunk := false, false
+	add := func(text string) {
+		if len(byFile) > 0 {
+			byFile[len(byFile)-1] = appendDefinition(byFile[len(byFile)-1], seen, text)
+		}
+	}
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			// The header line ends with the post-image path.
 			prose = isProsePath(line)
+			byFile = append(byFile, nil)
 		case prose:
 		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
 		case strings.HasPrefix(line, "@@"):
+			changedInHunk = false
 			if _, rest, ok := strings.Cut(line, "@@"); ok {
 				// rest follows the first @@; the trailing context follows the
 				// second one.
 				if _, context, ok := strings.Cut(rest, "@@"); ok {
-					ids = appendDefinition(ids, seen, context)
+					add(context)
 				}
 			}
-		case strings.HasPrefix(line, "+"), strings.HasPrefix(line, "-"), strings.HasPrefix(line, " "):
-			ids = appendDefinition(ids, seen, line[1:])
+		case strings.HasPrefix(line, "+"), strings.HasPrefix(line, "-"):
+			changedInHunk = true
+			add(line[1:])
+		case strings.HasPrefix(line, " ") && !changedInHunk:
+			add(line[1:])
 		}
 	}
-	if len(ids) > jevMaxIdentifiers {
-		ids = ids[:jevMaxIdentifiers]
+	var ids []string
+	for i, more := 0, true; more; i++ {
+		more = false
+		for _, names := range byFile {
+			if i < len(names) {
+				ids = append(ids, names[i])
+				more = true
+			}
+		}
 	}
 	return ids
 }
@@ -332,18 +355,28 @@ func jevContextCandidates(ctx context.Context, workDir, diff string, changed, re
 	for _, p := range changed {
 		changedSet[p] = true
 	}
-	ids := jevIdentifiers(diff)
-
 	// git grep -l prints each matching path once, so the output is bounded by
 	// the number of tracked files however common the name is. git grep exits
-	// 1 when nothing matches; that is not an error for an advisory list.
+	// 1 when nothing matches; that is not an error for an advisory list. A
+	// name without an unchanged, non-ignored use site does not count toward
+	// jevMaxIdentifiers.
 	score := map[string]float64{}
-	for _, id := range ids {
+	used, greps := 0, 0
+	for _, id := range jevIdentifiers(diff) {
+		if used >= jevMaxIdentifiers || greps >= jevMaxGreps {
+			break
+		}
+		greps++
 		files := nulSeparated(jevGrep(ctx, workDir, "-l", "-z", "-w", "-F", "-I", "-e", id))
+		found := false
 		for _, f := range reviewablePaths(files, ignorePatterns) {
 			if !changedSet[f] {
 				score[f] += 1 / float64(len(files))
+				found = true
 			}
+		}
+		if found {
+			used++
 		}
 	}
 	order := make([]string, 0, len(score))

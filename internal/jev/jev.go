@@ -90,15 +90,13 @@ type Response struct {
 }
 
 // Client calls the evaluation endpoint. The zero value is not usable;
-// construct with NewClient or set the fields directly in tests.
+// construct with NewClientFromEnv or set the fields directly in tests.
 type Client struct {
 	// Endpoint is the full URL of the evaluation endpoint. Empty uses
 	// DefaultEndpoint.
 	Endpoint string
 	// Key is the bearer token. Evaluate refuses to send an empty key.
 	Key string
-	// Model is the model field of the request. Empty uses Model.
-	Model string
 	// HTTPClient overrides the HTTP client, for tests. Nil uses a client
 	// with DefaultTimeout.
 	HTTPClient *http.Client
@@ -141,11 +139,7 @@ func (c *Client) Evaluate(ctx context.Context, state any, questions map[string]Q
 	if len(questions) == 0 {
 		return nil, fmt.Errorf("jev: at least one question is required")
 	}
-	model := c.Model
-	if model == "" {
-		model = Model
-	}
-	body, err := json.Marshal(request{State: state, Model: model, Questions: questions})
+	body, err := json.Marshal(request{State: state, Model: Model, Questions: questions})
 	if err != nil {
 		return nil, fmt.Errorf("jev: encode request: %w", err)
 	}
