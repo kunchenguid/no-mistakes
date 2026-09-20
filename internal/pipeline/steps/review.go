@@ -28,6 +28,14 @@ type ReviewStep struct {
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	decisions, err := loadRecordedFixDecisions(sctx)
+	if err != nil {
+		return nil, err
+	}
+	decisionSection, err := recordedFixDecisionSection(decisions)
+	if err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
@@ -104,7 +112,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
-		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
+		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + decisionSection + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones.
 
@@ -183,7 +191,7 @@ Previous review findings to address:
 	changed := changedPathList(changedFiles)
 
 	reviewable := reviewablePaths(changed, sctx.Config.IgnorePatterns)
-	if len(reviewable) == 0 {
+	if len(reviewable) == 0 && len(decisions) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -223,6 +231,10 @@ Previous review findings to address:
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+
+	if len(decisions) > 0 {
+		historySection += decisionSection + recordedDecisionReviewRule
+	}
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -384,7 +396,7 @@ Risk assessment (after listing all findings):
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
-		JSONSchema: reviewFindingsSchema,
+		JSONSchema: reviewSchemaForDecisions(decisions),
 		OnChunk:    sctx.LogChunk,
 		Purpose:    "review",
 		Workload:   workload,
@@ -416,6 +428,7 @@ Risk assessment (after listing all findings):
 		findings = stripped
 	}
 
+	findings.Items = append(findings.Items, recordedDecisionFindings(decisions, findings.DecisionReviews)...)
 	needsApproval := hasBlockingFindings(findings.Items)
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 		// A clean round certifies the whole head, so it is held to a positive

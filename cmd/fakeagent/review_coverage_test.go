@@ -120,3 +120,25 @@ func TestReviewCoverageReportsAnEmptySetAsPresent(t *testing.T) {
 		t.Fatalf("paths = %#v, want an empty non-nil slice", paths)
 	}
 }
+
+func TestRecordedDecisionCoverage_OnlyFillsOmittedReviewAssessments(t *testing.T) {
+	prompt := reviewPromptMarker + "\nBEGIN RECORDED FIX DECISIONS\n[{\"decision_id\":\"round/choice\"}]\nEND RECORDED FIX DECISIONS"
+	original := map[string]any{"findings": []any{}}
+	got := withRecordedDecisionCoverage(prompt, Action{Structured: original})
+	reviews, ok := got.Structured["decision_reviews"].([]map[string]any)
+	if !ok || len(reviews) != 1 || reviews[0]["decision_id"] != "round/choice" {
+		t.Fatalf("assessments = %#v", got.Structured)
+	}
+	if _, mutated := original["decision_reviews"]; mutated {
+		t.Fatal("mutated scenario")
+	}
+	for _, explicit := range []any{nil, []any{}, []any{map[string]any{"result": "contradicted"}}} {
+		a := Action{Structured: map[string]any{"decision_reviews": explicit}}
+		if got := withRecordedDecisionCoverage(prompt, a); !reflect.DeepEqual(got.Structured["decision_reviews"], explicit) {
+			t.Fatal("overwrote scenario assessment")
+		}
+	}
+	if got := withRecordedDecisionCoverage(strings.ReplaceAll(prompt, reviewPromptMarker, "Fix failing tests"), Action{Structured: original}); len(got.Structured) != 1 {
+		t.Fatal("added assessments outside Review")
+	}
+}
