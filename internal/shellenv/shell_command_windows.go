@@ -84,7 +84,7 @@ func configureWindowsShellCommand(cmd *exec.Cmd, cooperative bool) {
 	// Suppress the visible console window Windows would otherwise allocate for
 	// this console child (agents, cmd.exe shell steps) when spawned from the
 	// console-less daemon. See issue #287. Harden allocates SysProcAttr if
-	// needed; the required creation flags are then OR-ed in alongside it.
+	// needed; the creation flags are then adjusted for the requested topology.
 	winproc.Harden(cmd)
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -144,9 +144,9 @@ func configureWindowsShellCommand(cmd *exec.Cmd, cooperative bool) {
 	}
 }
 
-// StartShellCommand starts cmd and assigns it to the job object created by
-// ConfigureShellCommand. If the job cannot be created or assigned, the command
-// fails instead of running without clean-exit descendant cleanup.
+// StartShellCommand starts cmd and assigns it to the job object created by its
+// shell-command configurator. If the job cannot be created or assigned, the
+// command fails instead of running without clean-exit descendant cleanup.
 func StartShellCommand(cmd *exec.Cmd) error {
 	if err, ok := takeShellCommandJobSetupError(cmd); ok {
 		return fmt.Errorf("windows job object setup: %w", err)

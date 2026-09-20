@@ -19,8 +19,9 @@ type shellOutputPipe struct {
 // RunShellCommand starts cmd with StartShellCommand, waits for it, and
 // terminates any surviving command-group descendants.
 //
-// Use this instead of cmd.Run after ConfigureShellCommand so clean exits and
-// ordinary errors get the same process-tree cleanup as context cancellation.
+// Use this instead of cmd.Run after ConfigureShellCommand or
+// ConfigureCooperativeShellCommand so clean exits and ordinary errors get the
+// same process-tree cleanup as context cancellation.
 func RunShellCommand(cmd *exec.Cmd) error {
 	pipes, err := prepareShellOutputPipes(cmd)
 	if err != nil {
