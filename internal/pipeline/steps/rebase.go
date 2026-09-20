@@ -100,6 +100,14 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 
 	merging := mergesMovedBase(sctx)
+	var preservation submittedMergePreservation
+	if !merging {
+		var err error
+		preservation, err = discoverSubmittedMergePreservation(ctx, sctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	if sctx.Fixing {
 		before, err := git.HeadSHA(ctx, sctx.WorkDir)
@@ -116,6 +124,9 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 			if err != nil {
 				return nil, err
 			}
+		}
+		if err := preserveSubmittedMergeParent(ctx, sctx, preservation); err != nil {
+			return nil, err
 		}
 		outcome, err := updateHeadSHA(ctx, sctx)
 		if err == nil {
@@ -170,6 +181,9 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
+	if err := preserveSubmittedMergeParent(ctx, sctx, preservation); err != nil {
+		return nil, err
+	}
 	return updateHeadSHA(ctx, sctx)
 }
 
@@ -197,6 +211,177 @@ func forcePushRebaseTargets(branch, defaultBranch string) []string {
 		return nil
 	}
 	return []string{"origin/" + defaultBranch}
+}
+
+// submittedMergePreservation identifies the narrow topology handoff used when
+// a submitted merge joined the corrected head to the private mirror. A normal
+// rebase flattens that merge and can leave the private mirror outside the
+// resulting history even when the replayed content is present. The handoff is
+// only eligible when the exact submitted commit's second parent is still the
+// exact direct gate-branch head; the publication guard remains the authority
+// for every other private head.
+type submittedMergePreservation struct {
+	submittedHead string
+	privateHead   string
+	branchRef     string
+}
+
+func discoverSubmittedMergePreservation(ctx context.Context, sctx *pipeline.StepContext) (submittedMergePreservation, error) {
+	var preservation submittedMergePreservation
+	if sctx == nil || sctx.Run == nil || sctx.Run.SubmittedHeadSHA == nil || strings.TrimSpace(sctx.GateDir) == "" {
+		return preservation, nil
+	}
+	submitted := strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
+	if submitted == "" || strings.TrimSpace(sctx.Run.HeadSHA) != submitted {
+		return preservation, nil
+	}
+	resolved, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", submitted+"^{commit}")
+	if err != nil || resolved != submitted {
+		return preservation, nil
+	}
+	parentsLine, err := git.Run(ctx, sctx.WorkDir, "rev-list", "--parents", "-n", "1", submitted)
+	if err != nil {
+		return preservation, fmt.Errorf("inspect submitted head %s: %w", submitted, err)
+	}
+	parents := strings.Fields(parentsLine)
+	if len(parents) != 3 || parents[0] != submitted {
+		return preservation, nil
+	}
+	branchRef := normalizedBranchRef(sctx.Run.Branch)
+	if !strings.HasPrefix(branchRef, "refs/heads/") {
+		return preservation, nil
+	}
+	privateHead, exists, err := git.DirectRefTarget(ctx, sctx.GateDir, branchRef)
+	if err != nil {
+		return preservation, fmt.Errorf("inspect private mirror ref %s for submitted merge: %w", branchRef, err)
+	}
+	if !exists || privateHead != parents[2] {
+		return preservation, nil
+	}
+	return submittedMergePreservation{
+		submittedHead: submitted,
+		privateHead:   privateHead,
+		branchRef:     branchRef,
+	}, nil
+}
+
+// preserveSubmittedMergeParent rejoins a rebased head to the exact submitted
+// merge before the run records its new head. The current tree is authoritative:
+// the topology commit may add ancestry, but it must not add, remove, or replace
+// any content produced by the rebase. A regular Git merge is attempted first;
+// when it conflicts, resetting its index to the already accepted current tree
+// resolves that topology-only merge explicitly. The tree and parent order are
+// proved again before returning, so a merge that would import unaccepted
+// content, or an agent/ref race that changed the premise, fails closed.
+func preserveSubmittedMergeParent(ctx context.Context, sctx *pipeline.StepContext, preservation submittedMergePreservation) error {
+	if preservation.submittedHead == "" {
+		return nil
+	}
+	currentHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("preserve submitted merge history: resolve rebased head: %w", err)
+	}
+	if currentHead == preservation.submittedHead || isAncestor(ctx, sctx.WorkDir, preservation.submittedHead, currentHead) {
+		return nil
+	}
+	privateHead, exists, err := git.DirectRefTarget(ctx, sctx.GateDir, preservation.branchRef)
+	if err != nil {
+		return fmt.Errorf("preserve submitted merge history: inspect private mirror ref %s: %w", preservation.branchRef, err)
+	}
+	if !exists || privateHead != preservation.privateHead {
+		return fmt.Errorf("preserve submitted merge history: private mirror ref %s moved from %s", preservation.branchRef, preservation.privateHead)
+	}
+	if rebaseInProgress(ctx, sctx.WorkDir) || mergeInProgress(ctx, sctx.WorkDir) {
+		return fmt.Errorf("preserve submitted merge history: worktree still has an integration in progress")
+	}
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("preserve submitted merge history: inspect worktree: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("preserve submitted merge history: rebased worktree is not clean")
+	}
+	currentTree, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", currentHead+"^{tree}")
+	if err != nil {
+		return fmt.Errorf("preserve submitted merge history: resolve rebased tree: %w", err)
+	}
+
+	sctx.Log(fmt.Sprintf("preserving submitted merge history through rebase (%s)", shortSHA(preservation.submittedHead)))
+	_, mergeErr := git.Run(ctx, sctx.WorkDir, "merge", "--no-ff", "--no-commit", preservation.submittedHead)
+	if mergeErr != nil && !mergeInProgress(ctx, sctx.WorkDir) {
+		return fmt.Errorf("preserve submitted merge history: merge submitted head: %w", mergeErr)
+	}
+	if mergeErr != nil {
+		if _, err := git.Run(ctx, sctx.WorkDir, "read-tree", "--reset", "-u", currentHead); err != nil {
+			return abortSubmittedMerge(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: restore accepted tree after topology conflict: %w", err))
+		}
+	}
+	mergedTree, err := git.Run(ctx, sctx.WorkDir, "write-tree")
+	if err != nil {
+		return abortSubmittedMerge(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: write topology tree: %w", err))
+	}
+	if mergedTree != currentTree {
+		return abortSubmittedMerge(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: topology merge changed accepted tree from %s to %s", currentTree, mergedTree))
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "--no-edit"); err != nil {
+		return abortSubmittedMerge(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: conclude topology merge: %w", err))
+	}
+
+	preservedHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("preserve submitted merge history: resolve topology head: %w", err)
+	}
+	parentsLine, err := git.Run(ctx, sctx.WorkDir, "rev-list", "--parents", "-n", "1", preservedHead)
+	if err != nil {
+		return restoreSubmittedMergeHead(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: inspect topology parents: %w", err))
+	}
+	parents := strings.Fields(parentsLine)
+	if len(parents) != 3 || parents[1] != currentHead || parents[2] != preservation.submittedHead {
+		return restoreSubmittedMergeHead(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: topology head %s has parents %v, want [%s %s]", preservedHead, parents, currentHead, preservation.submittedHead))
+	}
+	finalTree, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", preservedHead+"^{tree}")
+	if err != nil {
+		return restoreSubmittedMergeHead(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: inspect topology tree: %w", err))
+	}
+	if finalTree != currentTree {
+		return restoreSubmittedMergeHead(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: topology head %s changed accepted tree to %s", preservedHead, finalTree))
+	}
+	return nil
+}
+
+func abortSubmittedMerge(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
+	if _, err := git.Run(ctx, sctx.WorkDir, "merge", "--abort"); err != nil {
+		return fmt.Errorf("%w; abort topology merge: %v", cause, err)
+	}
+	return verifySubmittedMergeRestore(ctx, sctx, currentHead, cause)
+}
+
+func restoreSubmittedMergeHead(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
+	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--hard", currentHead); err != nil {
+		return fmt.Errorf("%w; restore topology head %s: %v", cause, currentHead, err)
+	}
+	return verifySubmittedMergeRestore(ctx, sctx, currentHead, cause)
+}
+
+func verifySubmittedMergeRestore(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
+	head, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("%w; verify topology restore: %v", cause, err)
+	}
+	if head != currentHead {
+		return fmt.Errorf("%w; topology restore left HEAD at %s, want %s", cause, head, currentHead)
+	}
+	if mergeInProgress(ctx, sctx.WorkDir) || rebaseInProgress(ctx, sctx.WorkDir) {
+		return fmt.Errorf("%w; topology restore left an integration in progress", cause)
+	}
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("%w; verify topology worktree: %v", cause, err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("%w; topology restore left a dirty worktree", cause)
+	}
+	return cause
 }
 
 // effectivePRBaseBranch resolves the branch used as the integration base for
