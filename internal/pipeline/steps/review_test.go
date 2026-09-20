@@ -45,6 +45,17 @@ func cleanReviewFindings() Findings {
 	}
 }
 
+func TestParseReviewAnalyzerOutput_StripsAgentSuppliedDecisionIdentity(t *testing.T) {
+	result := &agent.Result{Output: json.RawMessage(`{"findings":[{"decision_id":"spoofed","severity":"warning","description":"ordinary finding","action":"ask-user","review_scope":"source"}],"summary":"one finding","risk_level":"low","risk_rationale":"bounded","risk_scope":"source-or-external"}`)}
+	findings, err := parseReviewAnalyzerOutput(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].DecisionID != "" {
+		t.Fatalf("agent-controlled decision identity survived parsing: %+v", findings.Items)
+	}
+}
+
 // fullReviewCoverage is the coverage record a mock reviewer that "read
 // everything" reports: every file changed between baseSHA and dir's working
 // tree, which is the same set ReviewStep computes as reviewable when no

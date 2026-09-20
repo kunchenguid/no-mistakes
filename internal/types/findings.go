@@ -181,6 +181,7 @@ func KnownTestVerdicts() []string { return slices.Clone(knownTestVerdicts) }
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
 	ID               string `json:"id,omitempty"`
+	DecisionID       string `json:"decision_id,omitempty"`
 	Severity         string `json:"severity"`
 	File             string `json:"file,omitempty"`
 	Line             int    `json:"line,omitempty"`
@@ -258,6 +259,7 @@ type TestArtifact struct {
 
 type findingWire struct {
 	ID                  string `json:"id,omitempty"`
+	DecisionID          string `json:"decision_id,omitempty"`
 	Severity            string `json:"severity"`
 	File                string `json:"file,omitempty"`
 	Line                int    `json:"line,omitempty"`
@@ -461,6 +463,9 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	counter := 0
 	appended := false
 	for _, item := range added {
+		// DecisionID is reserved for findings synthesized by the pipeline after
+		// independent Review. User-authored findings cannot claim that identity.
+		item.DecisionID = ""
 		item.Source = FindingSourceUser
 		if item.Action == "" {
 			item.Action = ActionAutoFix
@@ -579,6 +584,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	f.ID = wire.ID
+	f.DecisionID = wire.DecisionID
 	f.Severity = wire.Severity
 	f.File = wire.File
 	f.Line = wire.Line

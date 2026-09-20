@@ -2,8 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -641,6 +644,233 @@ func TestResolveVerifiedFindingsJSON_FilelessFindingIsNeverVerifiedAway(t *testi
 	got := resolveVerifiedFindingsJSON(outstanding, []string{"review-1"}, []string{"service.go", "cache.go"}, []string{"service.go", "cache.go"}, "")
 	if !strings.Contains(got, "review-1") {
 		t.Fatalf("file-less finding was verified away by an unrelated coverage record: %s", got)
+	}
+}
+
+func TestExecutor_ReviewCarryForward_DecisionAssessmentClearsSelectedDecisionFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		file           string
+		reviewedPaths  []string
+		reviewablePath []string
+	}{
+		{name: "ignored file", file: "ignored.go", reviewedPaths: []string{"current.go"}, reviewablePath: []string{"current.go"}},
+		{name: "file absent from current diff", file: "removed-from-diff.go", reviewedPaths: []string{"current.go"}, reviewablePath: []string{"current.go"}},
+		{name: "no file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			decisionID := "review/round-1/decision"
+			calls := 0
+			step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+				calls++
+				if calls == 1 {
+					findings := types.Findings{Items: []types.Finding{{
+						DecisionID: decisionID, Severity: "warning", File: tc.file, Description: "recorded decision is contradicted",
+						Action: types.ActionAskUser,
+					}}, Summary: "recorded decision is contradicted"}
+					raw, err := json.Marshal(findings)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return &StepOutcome{NeedsApproval: true, Findings: string(raw)}, nil
+				}
+				verified, err := json.Marshal(types.Findings{
+					DecisionReviews: []types.DecisionReview{{DecisionID: decisionID, Result: "satisfied", Evidence: "current tree preserves the selected behavior"}},
+					Items:           []types.Finding{}, Summary: "no findings",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &StepOutcome{Findings: string(verified), ReviewedPaths: tc.reviewedPaths, ReviewablePaths: tc.reviewablePath}, nil
+			}}
+
+			exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+			done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+			steps, err := database.GetStepsByRun(run.ID)
+			if err != nil || len(steps) != 1 || steps[0].FindingsJSON == nil {
+				t.Fatalf("load parked decision finding: steps=%d err=%v", len(steps), err)
+			}
+			parked, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
+			if err != nil || len(parked.Items) != 1 {
+				t.Fatalf("parse parked decision finding: %+v, %v", parked, err)
+			}
+			if parked.Items[0].DecisionID != decisionID {
+				t.Fatalf("parked decision identity = %q, want %q", parked.Items[0].DecisionID, decisionID)
+			}
+			if err := exec.Respond(types.StepReview, types.ActionFix, []string{parked.Items[0].ID}); err != nil {
+				t.Fatal(err)
+			}
+			waitExecutorDone(t, done)
+			if calls != 2 {
+				t.Fatalf("review calls = %d, want 2", calls)
+			}
+		})
+	}
+}
+
+func TestResolveVerifiedFindingsJSON_DecisionAssessmentsFailClosed(t *testing.T) {
+	outstanding := `{"findings":[{"id":"review-1","decision_id":"decision-1","severity":"warning","description":"recorded decision contradicted","action":"ask-user"}],"summary":"blocked"}`
+	valid := types.DecisionReview{DecisionID: "decision-1", Result: "satisfied", Evidence: "source-backed evidence"}
+	for _, tc := range []struct {
+		name    string
+		reviews []types.DecisionReview
+	}{
+		{name: "missing"},
+		{name: "duplicate", reviews: []types.DecisionReview{valid, valid}},
+		{name: "blank identity", reviews: []types.DecisionReview{{DecisionID: "", Result: "satisfied", Evidence: "evidence"}}},
+		{name: "blank evidence", reviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "satisfied", Evidence: " "}}},
+		{name: "malformed result", reviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "approved", Evidence: "evidence"}}},
+		{name: "adverse", reviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "contradicted", Evidence: "contrary source"}}},
+		{name: "unrelated", reviews: []types.DecisionReview{{DecisionID: "decision-2", Result: "satisfied", Evidence: "other decision"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(types.Findings{DecisionReviews: tc.reviews, Items: []types.Finding{}, Summary: "round"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := resolveVerifiedFindingsJSON(outstanding, []string{"review-1"}, nil, nil, string(raw))
+			if !strings.Contains(got, "review-1") {
+				t.Fatalf("invalid assessment cleared the decision finding: %s", got)
+			}
+		})
+	}
+}
+
+func TestResolveVerifiedFindingsJSON_DecisionIdentityCollisionFailsClosed(t *testing.T) {
+	outstanding := `{"findings":[{"id":"review-1","decision_id":"decision-1","severity":"warning","description":"first decision finding","action":"ask-user"},{"id":"review-2","decision_id":"decision-1","severity":"warning","description":"colliding decision finding","action":"ask-user"}],"summary":"blocked"}`
+	raw, err := json.Marshal(types.Findings{
+		DecisionReviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "satisfied", Evidence: "source-backed evidence"}},
+		Items:           []types.Finding{}, Summary: "round",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resolveVerifiedFindingsJSON(outstanding, []string{"review-1"}, nil, nil, string(raw))
+	if !strings.Contains(got, "review-1") {
+		t.Fatalf("colliding decision identity cleared a selected finding: %s", got)
+	}
+}
+
+func TestExecutor_ReviewCarryForward_PersistsCurrentDecisionReviews(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	decisionID := "review/round-1/decision"
+	newDecisionID := "test/round-2/decision"
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		calls++
+		if calls == 1 {
+			return &StepOutcome{NeedsApproval: true, Findings: `{"decision_reviews":[{"decision_id":"` + decisionID + `","result":"contradicted","evidence":"old evidence"}],"findings":[{"id":"review-1","decision_id":"` + decisionID + `","severity":"warning","description":"old decision finding","action":"ask-user"},{"id":"review-2","severity":"warning","file":"other.go","description":"ordinary outstanding finding","action":"ask-user"}],"summary":"blocked"}`}, nil
+		}
+		return &StepOutcome{NeedsApproval: true, Findings: `{"decision_reviews":[{"decision_id":"` + decisionID + `","result":"satisfied","evidence":"fresh evidence"},{"decision_id":"` + newDecisionID + `","result":"contradicted","evidence":"new decision evidence"}],"findings":[{"id":"review-1","decision_id":"` + newDecisionID + `","severity":"warning","description":"new decision finding","action":"ask-user"}],"summary":"still blocked"}`}, nil
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 || steps[0].FindingsJSON == nil {
+		t.Fatalf("load first round: steps=%d err=%v", len(steps), err)
+	}
+	first, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
+	if err != nil || len(first.Items) < 1 {
+		t.Fatalf("parse first round: %+v, %v", first, err)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	steps, err = database.GetStepsByRun(run.ID)
+	if err != nil || steps[0].FindingsJSON == nil {
+		t.Fatalf("load second round: %v", err)
+	}
+	current, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []types.DecisionReview{{DecisionID: decisionID, Result: "satisfied", Evidence: "fresh evidence"}, {DecisionID: newDecisionID, Result: "contradicted", Evidence: "new decision evidence"}}
+	if !reflect.DeepEqual(current.DecisionReviews, want) {
+		t.Fatalf("decision reviews = %+v, want current round %+v", current.DecisionReviews, want)
+	}
+	if !slices.ContainsFunc(current.Items, func(item types.Finding) bool { return item.Description == "ordinary outstanding finding" }) {
+		t.Fatalf("ordinary outstanding finding was lost: %+v", current.Items)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
+}
+
+func TestExecutor_ReviewCarryForward_RewordedAdverseDecisionCanLaterClear(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	decisionID := "review/round-1/decision"
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		calls++
+		result := "contradicted"
+		evidence := "first adverse explanation"
+		description := "first wording"
+		if calls == 2 {
+			evidence = "different adverse explanation"
+			description = "reworded finding"
+		}
+		if calls == 3 {
+			result = "satisfied"
+			evidence = "fresh source-backed evidence"
+		}
+		findings := types.Findings{
+			DecisionReviews: []types.DecisionReview{{DecisionID: decisionID, Result: result, Evidence: evidence}},
+			Items:           []types.Finding{}, Summary: result,
+		}
+		if result != "satisfied" {
+			findings.Items = append(findings.Items, types.Finding{DecisionID: decisionID, Severity: "warning", Description: description, Action: types.ActionAskUser})
+		}
+		raw, err := json.Marshal(findings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &StepOutcome{NeedsApproval: result != "satisfied", Findings: string(raw)}, nil
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || steps[0].FindingsJSON == nil {
+		t.Fatalf("load repeated adverse round: %v", err)
+	}
+	adverse, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adverse.Items) != 1 || adverse.Items[0].DecisionID != decisionID {
+		t.Fatalf("reworded adverse round accumulated identities: %+v", adverse.Items)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{adverse.Items[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
+	if calls != 3 {
+		t.Fatalf("review calls = %d, want 3", calls)
+	}
+}
+
+func TestMergeOutstandingFindingsJSON_EmptyCurrentRoundClearsStaleDecisionReviews(t *testing.T) {
+	prior := `{"decision_reviews":[{"decision_id":"decision-1","result":"satisfied","evidence":"stale"}],"findings":[{"id":"review-1","severity":"warning","file":"other.go","description":"ordinary outstanding finding","action":"ask-user"}],"summary":"blocked"}`
+	for _, current := range []string{"", `{"findings":[],"summary":"clean"}`, `{"decision_reviews":[],"findings":[],"summary":"clean"}`} {
+		merged := mergeOutstandingFindingsJSON(prior, current, nil)
+		parsed, err := types.ParseFindingsJSON(merged)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(parsed.DecisionReviews) != 0 {
+			t.Fatalf("current %q retained stale reviews: %+v", current, parsed.DecisionReviews)
+		}
 	}
 }
 

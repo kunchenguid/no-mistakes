@@ -495,6 +495,10 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 		return findings, errors.New("review analyzer findings invalid risk scope")
 	}
 	for i := range findings.Items {
+		// A recorded-decision identity is pipeline-owned metadata. The review
+		// agent assesses decisions separately; only recordedDecisionFindings
+		// below may attach an identity to a finding.
+		findings.Items[i].DecisionID = ""
 		if !types.IsKnownFindingSeverity(findings.Items[i].Severity) {
 			return findings, fmt.Errorf("review analyzer finding %d missing severity", i)
 		}

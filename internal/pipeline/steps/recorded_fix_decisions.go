@@ -153,7 +153,7 @@ func recordedDecisionFindings(decisions []recordedFixDecision, reviews []types.D
 			}
 		}
 		findings = append(findings, Finding{
-			Severity: "warning", Action: types.ActionAskUser, File: decision.file,
+			DecisionID: decision.ID, Severity: "warning", Action: types.ActionAskUser, File: decision.file,
 			Description: fmt.Sprintf("recorded fix decision %s (%s round %d): %s", decision.ID, decision.Step, decision.Round, reason),
 		})
 	}

@@ -174,6 +174,9 @@ func TestReviewStep_RecordedDecisionsRequirePositiveAssessmentEvenWithoutDiff(t 
 				if result != "satisfied" && (len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser || !strings.Contains(findings.Items[0].Description, decisionID)) {
 					t.Fatalf("missing named park: %+v", findings)
 				}
+				if result != "satisfied" && findings.Items[0].DecisionID != decisionID {
+					t.Fatalf("decision identity = %q, want %q", findings.Items[0].DecisionID, decisionID)
+				}
 			})
 		}
 	}
