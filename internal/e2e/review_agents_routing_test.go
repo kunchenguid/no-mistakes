@@ -48,6 +48,8 @@ func writeReviewAgentsRoutingScenario(t *testing.T) string {
       risk_level: low
       risk_rationale: "issue resolved by the fixer"
       risk_scope: source-or-external
+      reviewed_paths:
+        - "feature.txt"
   - match: "` + reviewTurnMarker + `"
     text: "found one blocking issue"
     structured:
@@ -55,6 +57,7 @@ func writeReviewAgentsRoutingScenario(t *testing.T) string {
         - id: "routing-check"
           severity: warning
           description: "mechanical issue routed through the fixer role"
+          file: "feature.txt"
           action: auto-fix
           review_scope: source
       summary: "one blocking issue"
@@ -133,7 +136,7 @@ func TestReviewAgentsRouteIndependentProfilesOnRealBinary(t *testing.T) {
 	if gated == nil {
 		t.Fatal("run did not park at the review gate")
 	}
-	h.Respond(gated.ID, types.StepReview, types.ActionFix)
+	h.RespondWithFindings(gated.ID, types.StepReview, types.ActionFix, []string{"routing-check"})
 
 	run := h.WaitForRun(branch, 120*time.Second)
 	if run.Status != types.RunCompleted {

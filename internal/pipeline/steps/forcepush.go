@@ -13,12 +13,20 @@ import (
 type gitRunner func(args ...string) (string, error)
 
 // forcePushDecision describes how to push a head to a remote branch safely.
-// Exactly one of newBranch / upToDate is true, or neither (a guarded
+// Exactly one of newBranch / upToDate / fastForward is true, or none (a guarded
 // force-push anchored to remoteSHA is required).
 type forcePushDecision struct {
 	remoteSHA string // current remote head; the lease anchor for a force-push
 	newBranch bool   // the branch does not exist on the remote -> plain push
 	upToDate  bool   // the remote already points at the head -> no push needed
+	// fastForward means the remote head is already an ancestor of the head
+	// being pushed, so the update only appends: nothing on the remote can be
+	// discarded and no force is needed. Force-with-lease would also succeed
+	// here; a plain push is preferred because it is the remote, not our own
+	// lease bookkeeping, that then enforces the no-rewrite property - which is
+	// what an open PR's head, and a review attestation bound to an exact SHA,
+	// actually depend on.
+	fastForward bool
 }
 
 // forcePushWouldDiscardError reports that a force-push would discard commits
@@ -73,6 +81,13 @@ func resolveForcePushDecision(gitRun gitRunner, pushURL, ref, newHeadSHA, lastSe
 	}
 	if current == newHeadSHA {
 		return forcePushDecision{remoteSHA: current, upToDate: true}, nil
+	}
+	// A fast-forward discards nothing by construction, so it needs neither the
+	// lease nor --force. The ancestry test is local: when the remote head is a
+	// commit we do not have (it arrived out of band), git errors and we fall
+	// through to the guarded path below, which fetches it properly.
+	if _, err := gitRun("merge-base", "--is-ancestor", current, newHeadSHA); err == nil {
+		return forcePushDecision{remoteSHA: current, fastForward: true}, nil
 	}
 	if lastSeenSHA != "" && current == lastSeenSHA {
 		// Remote unchanged since the pipeline last observed it: the force-push

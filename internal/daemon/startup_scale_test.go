@@ -3,7 +3,6 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 )
 
 // TestColdDetachedStartupProductionGateCardinality reproduces the production
@@ -72,7 +72,7 @@ func startColdDetachedFixture(t *testing.T, gateCount int, delayedGit bool) time
 	}
 
 	if delayedGit {
-		realGit, err := exec.LookPath("git")
+		realGit, err := testgit.RealGit()
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -778,7 +779,7 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "new work")
 	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
 
-	realGit, err := exec.LookPath("git")
+	realGit, err := testgit.RealGit()
 	if err != nil {
 		t.Fatal(err)
 	}

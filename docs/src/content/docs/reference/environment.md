@@ -215,6 +215,17 @@ When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts a
 When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
 tea has no CLI-specific override env var (unlike `GLAB_CONFIG_DIR`/`GH_CONFIG_DIR`); no-mistakes always looks for its configured logins at `$XDG_CONFIG_HOME/tea/config.yml`, falling back to `~/.config/tea/config.yml` when `XDG_CONFIG_HOME` is unset. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
 
+## `COMPACT_ADVISER_DISABLE`
+
+Kill-switch injected into every pipeline agent subprocess so compact-adviser stays inert during unattended work.
+
+|         |                                      |
+| ------- | ------------------------------------ |
+| Type    | always `1` for agent subprocesses    |
+| Default | injected; not a daemon-wide setting  |
+
+no-mistakes stamps `COMPACT_ADVISER_DISABLE=1` onto every spawned gate agent (Claude, Codex, Grok, Pi, OpenCode, Copilot, Antigravity, Rovo Dev, acpx/Cursor, and managed agent servers that can load host plugins). Forge and profile overlays cannot drop the flag. The daemon process itself is unchanged; this is agent-child policy only, not a user-facing knob for the service environment.
+
 ## `NO_MISTAKES_UMAMI_HOST`
 
 Override the telemetry collection host.
@@ -277,6 +288,20 @@ Disable telemetry collection.
 | Default | unset                                                             |
 
 When set to a disabling value, telemetry stays off even if a runtime or embedded website ID is available.
+
+## `TYPESAFE_API_KEY`
+
+TypeSafe API key for the opt-in Jev review pre-brief ([`jev.review_assist`](/no-mistakes/reference/global-config/#jev)).
+
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
+
+Read by the daemon at review time, and only when `jev.review_assist` is enabled.
+When unset, the assist stays inert and reviews run exactly as they do with the assist off.
+The key is never written to configuration, logs, or the state database.
+The daemon resolves its environment once at startup, so set the variable where your login shell loads it and restart the daemon to pick it up.
 
 ## Environment the daemon sees
 

@@ -20,10 +20,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-var testGitExecutable, _ = exec.LookPath("git")
+var testGitExecutable, testGitErr = testgit.RealGit()
 
 // ExecuteWithAutoFix drives step the way the executor drives a step whose
 // outcome carries auto-fix findings (see Executor.executeStep): it executes
@@ -215,6 +216,9 @@ func SetupGitRepo(t *testing.T) (string, string, string) {
 // newTestContext creates a StepContext for testing with optional config overrides.
 func NewTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
+	if testGitErr != nil {
+		t.Fatal(testGitErr)
+	}
 
 	// Most step tests do not exercise remote transport. Give repositories that
 	// lack an explicitly configured origin a local one so incidental upstream
@@ -259,6 +263,9 @@ func NewTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 // fakeCLIEnv builds environment variable entries for a fake CLI binary and PATH override.
 // Returns env entries that should be set on StepContext.Env for parallel-safe tests.
 func FakeCLIEnv(binDir string, vars map[string]string) []string {
+	if testGitErr != nil {
+		panic(testGitErr)
+	}
 	env := []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"FAKE_CLI_REAL_GIT=" + testGitExecutable,

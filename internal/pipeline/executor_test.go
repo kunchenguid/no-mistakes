@@ -190,6 +190,50 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 	}
 }
 
+func TestExecutor_RevalidationClearsReviewCarry(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	reviewCalls := 0
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		reviewCalls++
+		if reviewCalls == 1 {
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"id":"review-1","severity":"warning","description":"review needed","action":"ask-user"}],"summary":"review needed"}`,
+			}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+	ciCalls := 0
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(*StepContext) (*StepOutcome, error) {
+		ciCalls++
+		if ciCalls == 1 {
+			return &StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{review, ci}, nil)
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve initial review: %v", err)
+	}
+	waitExecutorDone(t, done)
+
+	if reviewCalls != 2 || ciCalls != 2 {
+		t.Fatalf("calls = review %d, ci %d; want two each", reviewCalls, ciCalls)
+	}
+	completed, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want %s", completed.Status, types.RunCompleted)
+	}
+}
+
 func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

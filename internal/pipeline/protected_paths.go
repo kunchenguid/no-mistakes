@@ -11,13 +11,36 @@ const protectedPathFindingID = "protected-path-refusal"
 
 // HasProtectedPathRefusal identifies gates that require an explicit response.
 func HasProtectedPathRefusal(findingsJSON string) bool {
+	return hasFindingID(findingsJSON, protectedPathFindingID)
+}
+
+// HasUnvalidatedWorkRefusal identifies a Test budget-cut gate whose worktree
+// holds work no Test turn validated. Approve is refused there because the
+// steps after Test would commit and publish that work; fix validates it.
+func HasUnvalidatedWorkRefusal(findingsJSON string) bool {
+	return hasFindingID(findingsJSON, types.FindingIDTestAgentUnvalidatedWork)
+}
+
+func hasFindingID(findingsJSON, id string) bool {
 	findings, _ := types.ParseFindingsJSON(findingsJSON)
 	for _, finding := range findings.Items {
-		if finding.ID == protectedPathFindingID {
+		if finding.ID == id {
 			return true
 		}
 	}
 	return false
+}
+
+// approvalRefusal reports why Approve is rejected at a gate, or "" when it is
+// accepted.
+func approvalRefusal(step types.StepName, findingsJSON string) string {
+	switch {
+	case HasProtectedPathRefusal(findingsJSON):
+		return fmt.Sprintf("cannot approve a protected-path refusal: resolve the reported edit, then use fix to retry %s; approval would skip unfinished work", step)
+	case HasUnvalidatedWorkRefusal(findingsJSON):
+		return fmt.Sprintf("cannot approve %s: the run worktree holds work no Test turn validated and approval would publish it; inspect it as the findings describe, then use fix to validate it, or abort", step)
+	}
+	return ""
 }
 
 type ProtectedPathError struct {

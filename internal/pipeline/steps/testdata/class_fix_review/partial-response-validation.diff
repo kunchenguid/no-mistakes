@@ -1,0 +1,37 @@
+diff --git a/transport/hello.go b/transport/hello.go
+index 1111111..2222222 100644
+--- a/transport/hello.go
++++ b/transport/hello.go
+@@ -1 +1,32 @@
+ package transport
++
++import (
++	"encoding/json"
++	"errors"
++	"net"
++	"strconv"
++)
++
++// hello is the agent's first response: which agent answered and where its
++// data channel listens.
++type hello struct {
++	ID   string `json:"id"`
++	Host string `json:"host"`
++	Port int    `json:"port"`
++}
++
++func parseHello(raw []byte) (hello, error) {
++	var h hello
++	if err := json.Unmarshal(raw, &h); err != nil {
++		return hello{}, err
++	}
++	if h.ID == "" {
++		return hello{}, errors.New("hello: missing id")
++	}
++	return h, nil
++}
++
++// endpoint is dialed as soon as the hello is accepted.
++func endpoint(h hello) string {
++	return net.JoinHostPort(h.Host, strconv.Itoa(h.Port))
++}

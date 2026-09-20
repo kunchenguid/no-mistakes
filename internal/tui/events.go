@@ -79,6 +79,9 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 		if event.CIOverrideReason != nil {
 			m.run.CIOverrideReason = *event.CIOverrideReason
 		}
+		if event.TestOverrideReason != nil {
+			m.run.TestOverrideReason = *event.TestOverrideReason
+		}
 		if m.syntheticSteps {
 			m.steps = nil
 			m.run.Steps = nil

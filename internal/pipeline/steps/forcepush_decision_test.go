@@ -64,6 +64,51 @@ func TestResolveForcePushDecision_UpToDate(t *testing.T) {
 	}
 }
 
+// An append-only update needs no force at all. The remote itself then enforces
+// the no-rewrite property an open PR's head and a SHA-bound review attestation
+// depend on, instead of our own lease bookkeeping.
+func TestResolveForcePushDecision_FastForwardNeedsNoForce(t *testing.T) {
+	t.Parallel()
+	dir, gitRun, remote, featureSHA := newForcePushFixture(t)
+	os.WriteFile(filepath.Join(dir, "more.txt"), []byte("more"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "more")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.fastForward {
+		t.Fatalf("expected a fast-forward decision, got %#v", d)
+	}
+	if d.remoteSHA != featureSHA {
+		t.Fatalf("remoteSHA = %s, want %s", d.remoteSHA, featureSHA)
+	}
+}
+
+// A rewrite is not a fast-forward and must keep taking the guarded path.
+func TestResolveForcePushDecision_RewriteIsNotAFastForward(t *testing.T) {
+	t.Parallel()
+	dir, gitRun, remote, featureSHA := newForcePushFixture(t)
+	gitCmd(t, dir, "reset", "--hard", "HEAD~1")
+	os.WriteFile(filepath.Join(dir, "rewritten.txt"), []byte("rewritten"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rewritten feature")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.fastForward {
+		t.Fatalf("a rewrite must not be published as a fast-forward: %#v", d)
+	}
+	if d.remoteSHA != featureSHA {
+		t.Fatalf("remoteSHA = %s, want the lease anchor %s", d.remoteSHA, featureSHA)
+	}
+}
+
 func TestResolveForcePushDecision_RemoteUnchangedSinceLastSeen(t *testing.T) {
 	t.Parallel()
 	dir, gitRun, remote, featureSHA := newForcePushFixture(t)

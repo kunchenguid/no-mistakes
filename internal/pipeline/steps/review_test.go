@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +43,28 @@ func cleanReviewFindings() Findings {
 		RiskRationale: "clean",
 		RiskScope:     types.FindingsRiskScopeSourceOrExternal,
 	}
+}
+
+// fullReviewCoverage is the coverage record a mock reviewer that "read
+// everything" reports: every file changed between baseSHA and dir's working
+// tree, which is the same set ReviewStep computes as reviewable when no
+// ignore_patterns apply. Tests that exercise partial or fabricated coverage
+// spell reviewed_paths out instead.
+func fullReviewCoverage(t *testing.T, dir, baseSHA string) []string {
+	t.Helper()
+	cmd := exec.Command("git", "diff", "--name-only", "--no-renames", baseSHA)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff --name-only %s: %v", baseSHA, err)
+	}
+	paths := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return paths
 }
 
 // TestReviewStep_UnrunAnalyzerDoesNotApprove pins issue #703's review half: a
@@ -109,6 +132,87 @@ func TestReviewStep_UnrunAnalyzerDoesNotApprove(t *testing.T) {
 			}
 			if outcome != nil {
 				t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+			}
+		})
+	}
+}
+
+// TestReviewStep_PartialReviewedPathsDoesNotGrantApproval closes the
+// Greptile P1 that a clean round (zero findings) with an EMPTY or PARTIAL
+// reviewed_paths could still certify the whole head, since NeedsApproval
+// was decided from hasBlockingFindings alone. An OMITTED reviewed_paths is
+// held to the same bar: the field is schema-optional only so an older
+// payload still parses, never a legacy pass that clears the head unread
+// (VISION.md R4). Each parked case logs which reviewable files went
+// unverified so the operator can see why a clean review did not approve.
+func TestReviewStep_PartialReviewedPathsDoesNotGrantApproval(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name              string
+		output            json.RawMessage
+		wantNeedsApproval bool
+		wantLog           string
+	}{
+		{
+			name:              "reviewed_paths absent fails closed: clean findings park for approval",
+			output:            json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review reported no reviewed_paths; parking for approval with 1 reviewable file(s) unverified: feature.txt",
+		},
+		{
+			name:              "reviewed_paths explicitly null fails closed like an omitted field",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review reported no reviewed_paths; parking for approval with 1 reviewable file(s) unverified: feature.txt",
+		},
+		{
+			name:              "reviewed_paths present but empty does not grant approval",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review coverage is incomplete; parking for approval with 1 reviewable file(s) unverified: feature.txt",
+		},
+		{
+			name:              "reviewed_paths present and covering the reviewable set approves",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: false,
+		},
+		{
+			name:              "reviewed_paths with an out-of-scope path does not approve",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt","fabricated.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review coverage is incomplete; parking for approval; 1 reviewed_paths entry(ies) outside the reviewable set: fabricated.txt",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: tc.output}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			var logs []string
+			sctx.Log = func(msg string) { logs = append(logs, msg) }
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if outcome.NeedsApproval != tc.wantNeedsApproval {
+				t.Fatalf("NeedsApproval = %v, want %v", outcome.NeedsApproval, tc.wantNeedsApproval)
+			}
+			joined := strings.Join(logs, "\n")
+			if tc.wantLog == "" {
+				if strings.Contains(joined, "parking for approval") {
+					t.Fatalf("full coverage must not log a coverage park; logs:\n%s", joined)
+				}
+				return
+			}
+			if !strings.Contains(joined, tc.wantLog) {
+				t.Fatalf("log missing %q; logs:\n%s", tc.wantLog, joined)
 			}
 		})
 	}
@@ -217,7 +321,7 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	}
 	var calls []call
 
-	findings := `{"findings":[{"file":"a.txt","line":1,"severity":"warning","action":"auto-fix","description":"tidy"}],"risk_level":"low","risk_rationale":"tidy finding","risk_scope":"source-or-external"}`
+	findings := `{"findings":[{"file":"feature.txt","line":1,"severity":"warning","action":"auto-fix","description":"tidy"}],"risk_level":"low","risk_rationale":"tidy finding","risk_scope":"source-or-external"}`
 	ag := &mockAgent{
 		name: "budget-probe",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -237,7 +341,12 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 			if len(calls) == 1 || len(calls) == 3 {
 				return &agent.Result{Output: json.RawMessage(findings)}, nil
 			}
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
+			// The final rereview must report reviewed_paths covering the
+			// finding's file to positively clear it under the append-only
+			// carry-forward contract (see resolveVerifiedFindingsJSON):
+			// without a coverage record, a clean round leaves a selected
+			// finding outstanding and the step never completes.
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
 		},
 	}
 
@@ -443,7 +552,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"  'address review findings.'  "}`)}, nil
 			}
 			// Review call — return clean findings
-			findings := Findings{Items: []Finding{}, Summary: "all clear", RiskLevel: "low", RiskRationale: "all clear", RiskScope: types.FindingsRiskScopeSourceOrExternal}
+			findings := Findings{Items: []Finding{}, Summary: "all clear", RiskLevel: "low", RiskRationale: "all clear", RiskScope: types.FindingsRiskScopeSourceOrExternal, ReviewedPaths: fullReviewCoverage(t, dir, baseSHA)}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},
@@ -494,8 +603,8 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "deeper design, abstraction, validation, ownership, or test-coverage flaw") {
 		t.Error("expected review fix prompt to require root-cause diagnosis before editing")
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "Fix the reported instance narrowly") {
-		t.Error("expected review fix prompt to scope the fix to the reported instance")
+	if !strings.Contains(ag.calls[0].Prompt, "state for each finding the invariant it violates") {
+		t.Error("expected review fix prompt to scope the fix to the violated invariant at every sibling site")
 	}
 	assertTestQualityRulePrompt(t, ag.calls[0].Prompt)
 	if len(ag.calls[0].JSONSchema) == 0 {
@@ -565,7 +674,9 @@ func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
 			case 3:
 				assertTestQualityRulePrompt(t, opts.Prompt)
 				assertTestQualityReviewerAction(t, opts.Prompt)
-				output, _ := json.Marshal(cleanReviewFindings())
+				rereview := cleanReviewFindings()
+				rereview.ReviewedPaths = fullReviewCoverage(t, dir, baseSHA)
+				output, _ := json.Marshal(rereview)
 				return &agent.Result{Output: output}, nil
 			default:
 				return nil, fmt.Errorf("unexpected agent call %d", calls)
@@ -1524,10 +1635,11 @@ func TestReviewStep_PromptClassifiesFindingsByRemedyScope(t *testing.T) {
 }
 
 // TestReviewStep_FixPromptPrefersSimplificationOverMachinery pins the fixer's
-// depth rule as rendered: fix the reported instance narrowly, and when depth is
-// warranted reach it by simplifying an architectural reason rather than bolting
-// on machinery that manages the symptoms. The preceding diagnosis rule stays -
-// depth is not forbidden, symptom machinery is.
+// depth rule as rendered: closing sibling sites with the same small edit or one
+// shared boundary is the fix, and when depth is warranted reach it by
+// simplifying an architectural reason rather than bolting on machinery that
+// manages the symptoms. The preceding diagnosis rule stays - depth is not
+// forbidden, symptom machinery is.
 func TestReviewStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -1554,14 +1666,14 @@ func TestReviewStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 	}
 	fixPrompt := ag.calls[0].Prompt
 	for _, want := range []string{
-		"Fix the reported instance narrowly.",
-		"Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.",
-		// Depth diagnosis is retained; the two rules are complementary.
+		"Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not.",
+		"Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.",
+		// Depth diagnosis is retained; the rules are complementary.
 		"identify whether each finding is a local defect or a symptom of a deeper design",
 		"smallest correct root-cause fix",
 	} {
 		if !strings.Contains(fixPrompt, want) {
-			t.Errorf("review fix prompt missing narrow-fix contract %q:\n%s", want, fixPrompt)
+			t.Errorf("review fix prompt missing anti-machinery contract %q:\n%s", want, fixPrompt)
 		}
 	}
 	// The superseded rule licensed expanding the fix to "the deepest practical
@@ -1850,8 +1962,8 @@ func TestReviewStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 		"If the original change introduced something the intent requires, fix it forward",
 		"do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue",
 		"When in doubt about whether the intent requires the code, leave it and report the finding as unresolved",
-		// The narrow-fix and diagnosis rules are complementary and stay.
-		"Fix the reported instance narrowly.",
+		// The invariant-complete and diagnosis rules are complementary and stay.
+		"state for each finding the invariant it violates",
 		"smallest correct root-cause fix",
 	} {
 		if !strings.Contains(fixPrompt, want) {

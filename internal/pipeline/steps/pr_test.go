@@ -782,8 +782,9 @@ func TestPRStep_UsesConfiguredTitleFormat(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
-	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
-	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
+	sctx.Run.Branch = "refs/heads/PROJ/123"
+	sctx.Config.Commit.BranchPattern = `^PROJ/([0-9]+)$`
+	sctx.Config.Commit.BranchReplacement = "PROJ-${1}"
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {

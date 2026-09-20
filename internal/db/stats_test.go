@@ -180,3 +180,52 @@ func assertStepStat(t *testing.T, stats []StepStats, step types.StepName, report
 	}
 	t.Fatalf("missing stats for step %s", step)
 }
+
+func TestGetStatsDoesNotCountTestBudgetCutsAsFixedMistakes(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/repo/cut", "git@example.com:cut.git", "main")
+
+	// Two cuts in a row, then a validation-only fix round that completes. Each
+	// cut's description names a different killed process.
+	cutOnly, _ := d.InsertRun(repo.ID, "cut-only", "head", "base")
+	cutOnlyTest, _ := d.InsertStepResult(cutOnly.ID, types.StepTest)
+	firstCut := `{"findings":[{"id":"test-agent-timeout","severity":"warning","description":"cut (pid 101)","action":"ask-user"},{"id":"test-agent-unvalidated-work","severity":"error","description":"holds foo_test.go","action":"ask-user"}],"summary":"cut"}`
+	secondCut := `{"findings":[{"id":"test-agent-timeout","severity":"warning","description":"cut (pid 202)","action":"ask-user"}],"summary":"cut"}`
+	if _, err := d.InsertStepRound(cutOnlyTest.ID, 1, "initial", &firstCut, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertStepRound(cutOnlyTest.ID, 2, "user_fix", &secondCut, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertStepRound(cutOnlyTest.ID, 3, "user_fix", nil, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real defect parked beside a cut still counts once it is fixed.
+	mixed, _ := d.InsertRun(repo.ID, "mixed", "head", "base")
+	mixedTest, _ := d.InsertStepResult(mixed.ID, types.StepTest)
+	mixedCut := `{"findings":[{"id":"test-agent-timeout","severity":"warning","description":"cut (pid 303)","action":"ask-user"},{"id":"test-1","severity":"error","description":"TestFoo fails","action":"auto-fix"}],"summary":"cut"}`
+	if _, err := d.InsertStepRound(mixedTest.ID, 1, "initial", &mixedCut, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertStepRound(mixedTest.ID, 2, "user_fix", nil, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := d.GetStats()
+	if err != nil {
+		t.Fatalf("get stats: %v", err)
+	}
+	if stats.ReportedFindings != 1 || stats.FixedFindings != 1 || stats.RescueRuns != 1 {
+		t.Fatalf("stats = reported %d fixed %d rescued %d, want reported 1 fixed 1 rescued 1 (only the real defect)", stats.ReportedFindings, stats.FixedFindings, stats.RescueRuns)
+	}
+	assertStepStat(t, stats.StepStats, types.StepTest, 1, 1)
+
+	cutOnlyStats, err := d.StepFindingStats(cutOnlyTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cutOnlyStats.ReportedFindings != 0 || cutOnlyStats.FixedFindings != 0 {
+		t.Fatalf("cut-only step = reported %d fixed %d, want 0/0", cutOnlyStats.ReportedFindings, cutOnlyStats.FixedFindings)
+	}
+}

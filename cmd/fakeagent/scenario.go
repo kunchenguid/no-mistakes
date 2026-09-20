@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -48,6 +49,15 @@ type Action struct {
 
 	// Stage lists paths to git-add after edits are applied.
 	Stage []string `yaml:"stage,omitempty"`
+
+	// Git runs git invocations in CWD after edits and staging, each entry the
+	// argument list for one `git` call. File edits alone cannot express HOW an
+	// agent ended an in-progress operation, which is exactly what the rebase
+	// step's merge-shape guard judges: concluding a merge with
+	// `git commit --no-edit`, abandoning it with `git merge --abort`, or
+	// replacing it with a rebase are three different histories from the same
+	// resolved files. A scenario needs to be able to produce each one.
+	Git [][]string `yaml:"git,omitempty"`
 
 	// DelayMS pauses before responding, for e2e tests that need an observable active run.
 	DelayMS int `yaml:"delay_ms,omitempty"`
@@ -116,14 +126,143 @@ func defaultScenario() *Scenario {
 
 // Match returns the first action whose Match substring is contained in the
 // prompt. An empty Match matches everything, so a single trailing entry
-// can serve as the catch-all.
+// can serve as the catch-all. The process working directory is the
+// worktree no-mistakes pointed the agent at; MatchInDir is the variant for
+// adapters whose worktree arrives with the request instead.
 func (s *Scenario) Match(prompt string) Action {
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = "."
+	}
+	return s.MatchInDir(wd, prompt)
+}
+
+// MatchInDir is Match for a worktree named explicitly. A review turn whose
+// canned response omits reviewed_paths gets the worktree's own reviewable
+// changed-file set filled in (see reviewCoverageForPrompt).
+func (s *Scenario) MatchInDir(wd, prompt string) Action {
 	for _, a := range s.Actions {
 		if a.Match == "" || strings.Contains(prompt, a.Match) {
-			return a
+			return withReviewCoverage(wd, prompt, a)
 		}
 	}
 	return Action{Text: "no matching scenario"}
+}
+
+// reviewPromptMarker opens every review turn's prompt (initial review and
+// each post-fix rereview); the fix turn and every other step use different
+// openers and are left alone.
+const reviewPromptMarker = "Review the code changes and return structured findings"
+
+// withReviewCoverage is the fixture-side stand-in for the coverage record a
+// real reviewer reports. The production Review step fails closed when a
+// clean round omits reviewed_paths (it parks for approval instead of
+// certifying an unread head), so a canned review response that does not
+// spell out reviewed_paths would park every e2e journey at the review gate.
+// A scenario that names reviewed_paths itself - partial, empty, or
+// fabricated - is passed through untouched so coverage tests can still
+// exercise the gate; only an absent field is filled, and only on a review
+// turn. The fill is the same set the step computes for that round: the
+// files changed between the prompt's base commit and the worktree, minus
+// the prompt's ignore patterns. This escape lives in the fake agent alone;
+// there is no production default that stands in for a missing record.
+func withReviewCoverage(wd, prompt string, a Action) Action {
+	if !strings.Contains(prompt, reviewPromptMarker) || a.StructuredRaw != "" {
+		return a
+	}
+	if a.Structured != nil {
+		if _, present := a.Structured["reviewed_paths"]; present {
+			return a
+		}
+	}
+	paths, err := reviewCoverageForPrompt(wd, prompt)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent: review coverage: %v\n", err)
+		return a
+	}
+	structured := make(map[string]any, len(a.Structured)+1)
+	for k, v := range a.Structured {
+		structured[k] = v
+	}
+	structured["reviewed_paths"] = paths
+	a.Structured = structured
+	return a
+}
+
+// reviewCoverageForPrompt derives the reviewable changed-file set for a
+// review prompt: `git diff --name-only <base commit>` against the worktree
+// (which equals base..HEAD when the tree is clean, in both the initial review
+// and the post-fix rereview), filtered by the prompt's ignore patterns with
+// the same matching rules the pipeline applies (basename glob for a bare
+// pattern, prefix for `dir/**`, full-path glob otherwise). Paths are
+// returned as an empty, non-nil slice when nothing is reviewable so the
+// field is still reported.
+func reviewCoverageForPrompt(wd, prompt string) ([]string, error) {
+	base := promptContextValue(prompt, "base commit")
+	if base == "" {
+		return nil, errors.New("review prompt has no base commit line")
+	}
+	var ignore []string
+	if raw := promptContextValue(prompt, "ignore patterns"); raw != "" && raw != "none" {
+		for _, pattern := range strings.Split(raw, ",") {
+			if pattern = strings.TrimSpace(pattern); pattern != "" {
+				ignore = append(ignore, pattern)
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "-z", "--no-renames", base)
+	cmd.Dir = wd
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff --name-only %s in %s: %w", base, wd, err)
+	}
+	paths := []string{}
+	for _, file := range strings.Split(string(out), "\x00") {
+		if file == "" || ignoredByPatterns(file, ignore) {
+			continue
+		}
+		paths = append(paths, file)
+	}
+	return paths, nil
+}
+
+// promptContextValue reads a `- <key>: <value>` line from the prompt's
+// Context block.
+func promptContextValue(prompt, key string) string {
+	prefix := "- " + key + ": "
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+// ignoredByPatterns mirrors the pipeline's matchIgnorePattern
+// (internal/pipeline/steps/common_diff.go) so the fake reviewer's coverage is
+// the exact set the step holds it to.
+func ignoredByPatterns(file string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.HasSuffix(pattern, "/**") {
+			prefix := strings.TrimSuffix(pattern, "/**")
+			if file == prefix || strings.HasPrefix(file, prefix+"/") {
+				return true
+			}
+			continue
+		}
+		if !strings.Contains(pattern, "/") {
+			if matched, _ := path.Match(pattern, path.Base(file)); matched {
+				return true
+			}
+			continue
+		}
+		if matched, _ := path.Match(pattern, file); matched {
+			return true
+		}
+	}
+	return false
 }
 
 // applyEdits mutates files under CWD (which is the worktree no-mistakes
@@ -153,7 +292,30 @@ func applyActionInDir(wd string, action Action) error {
 	if err := applyEditsInDir(wd, action.Edits); err != nil {
 		return err
 	}
-	return stageFilesInDir(wd, action.Stage)
+	if err := stageFilesInDir(wd, action.Stage); err != nil {
+		return err
+	}
+	return runGitInDir(wd, action.Git)
+}
+
+// runGitInDir runs each scenario git invocation in wd. A failure is returned
+// rather than logged: a scenario that says "conclude the merge" and silently
+// did not would make the pipeline's own guard look like the thing under test.
+func runGitInDir(wd string, invocations [][]string) error {
+	for _, args := range invocations {
+		if len(args) == 0 {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = wd
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	return nil
 }
 
 func applyEditsInDir(wd string, edits []Edit) error {

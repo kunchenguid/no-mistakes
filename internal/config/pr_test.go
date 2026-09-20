@@ -83,6 +83,26 @@ func TestPRRenderTitle_CustomFormat(t *testing.T) {
 	}
 }
 
+func TestPRRenderTitle_UsesReplacedBranchIdentifier(t *testing.T) {
+	t.Parallel()
+
+	commit := Commit{
+		BranchPattern:     `^PROJ/([0-9]+)$`,
+		BranchReplacement: "PROJ-${1}",
+	}
+	branch, err := commit.BranchValue("PROJ/123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := (PR{TitleFormat: "{{.Branch}}: {{.Title}}"}).RenderTitle(branch, "preserve legacy drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "PROJ-123: preserve legacy drafts"; got != want {
+		t.Fatalf("RenderTitle() = %q, want %q", got, want)
+	}
+}
+
 func TestPRRenderTitle_DoesNotApplyProviderLimit(t *testing.T) {
 	t.Parallel()
 

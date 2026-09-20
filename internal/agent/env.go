@@ -19,6 +19,15 @@ import (
 // coarse (`=1`): presence is the whole signal.
 const GateRoleEnvVar = "NO_MISTAKES_GATE"
 
+// CompactAdviserDisableEnvVar is stamped onto every spawned gate-agent
+// subprocess, including managed agent servers that can load host plugins, so
+// compact-adviser stays inert during unattended pipeline work. The daemon
+// process itself is unchanged; only agent children receive the flag. Truthy
+// values recognized by compact-adviser are 1/true/yes/on; the product stamp
+// is always "1". Appended last so forge/profile overlays and ambient values
+// cannot drop or weaken it.
+const CompactAdviserDisableEnvVar = "COMPACT_ADVISER_DISABLE"
+
 // subprocessContext centralizes environment policy shared by every agent
 // adapter, including persistent server-backed adapters.
 type subprocessContext struct {
@@ -45,7 +54,8 @@ func (c subprocessContext) overlay() runenv.Overlay {
 //
 // It also stamps GateRoleEnvVar so a cooperating orchestration harness in the
 // target repo can recognize the gate agent and refuse to let it act as a fleet
-// operator. Appended last so it wins over any ambient value.
+// operator, and CompactAdviserDisableEnvVar so compact-adviser stays inert.
+// Both are appended last so they win over any ambient or overlay value.
 //
 // dir must be the value assigned to cmd.Dir so PWD stays coupled to the working
 // directory; see git.NonInteractiveEnv for why this matters.
@@ -59,5 +69,5 @@ func gitSafeEnvWithOverlay(dir string, overlay runenv.Overlay, extra ...[]string
 	if len(extra) > 0 {
 		env = append(env, extra[0]...)
 	}
-	return append(env, GateRoleEnvVar+"=1")
+	return append(env, GateRoleEnvVar+"=1", CompactAdviserDisableEnvVar+"=1")
 }

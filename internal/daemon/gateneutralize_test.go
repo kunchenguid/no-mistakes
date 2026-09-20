@@ -32,6 +32,35 @@ func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
 	}
 }
 
+// TestNewPipelineAgent_OptOut_AdmitsOMPACPTarget is the fleet's exact
+// configuration: agent: acp:omp with disable_project_settings=true. omp is
+// driven only through acpx, and its context-file/rule/skill/extension
+// suppression is verified, so the default acp:omp launch must pass the gate and
+// report neutralized. An operator acp_registry_overrides entry for omp is an
+// opaque custom command and must fail closed.
+func TestNewPipelineAgent_OptOut_AdmitsOMPACPTarget(t *testing.T) {
+	cfg := &config.Config{Agent: types.AgentName("acp:omp"), DisableProjectSettings: true}
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err != nil {
+		t.Fatalf("acp:omp must pass under opt-out, got: %v", err)
+	}
+	if !agent.NeutralizesGateInstructions(ag) {
+		t.Error("acp:omp pipeline agent must report neutralized under opt-out")
+	}
+	_ = ag.Close()
+
+	overridden := &config.Config{
+		Agent:                  types.AgentName("acp:omp"),
+		DisableProjectSettings: true,
+		ACPRegistryOverrides:   map[string]string{"omp": "omp acp --profile custom"},
+	}
+	if _, err := newPipelineAgent(context.Background(), overridden, t.TempDir(), fakeLookPath, runenv.Overlay{}); err == nil {
+		t.Fatal("acp:omp with an operator raw-command override must be refused under opt-out")
+	} else if !strings.Contains(err.Error(), "does not neutralize") {
+		t.Errorf("refusal should explain the reason, got: %v", err)
+	}
+}
+
 // TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness is the captain-mandated
 // fail-closed contract at the daemon wiring: under the opt-out, a harness with no
 // verified neutralization knob is refused rather than launched with project

@@ -64,6 +64,23 @@ func TestCommitRenderFixMessageForBranch_NoIdentifierFailsClosed(t *testing.T) {
 	}
 }
 
+func TestCommitRenderFixMessageForBranch_ReplacesCapturedIdentifier(t *testing.T) {
+	t.Parallel()
+
+	commit := Commit{
+		FixMessage:        "{{.Branch}}: {{.Summary}}",
+		BranchPattern:     `^PROJ/([0-9]+)$`,
+		BranchReplacement: "PROJ-${1}",
+	}
+	got, err := commit.RenderFixMessageForBranch(types.StepLint, "preserve invariants", "refs/heads/PROJ/123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "PROJ-123: preserve invariants"; got != want {
+		t.Fatalf("RenderFixMessageForBranch() = %q, want %q", got, want)
+	}
+}
+
 func TestCommitRenderFixMessage_DefaultRemainsUnchangedWithBranchPattern(t *testing.T) {
 	t.Parallel()
 
@@ -238,23 +255,45 @@ func TestLoadGlobal_CommitFixMessage(t *testing.T) {
 	}
 }
 
+func TestLoadGlobal_CommitBranchReplacement(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadGlobalFromBytes([]byte("commit:\n  branch_pattern: '^PROJ/([0-9]+)$'\n  branch_replacement: 'PROJ-${1}'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Commit.BranchPattern == nil || *cfg.Commit.BranchPattern != `^PROJ/([0-9]+)$` {
+		t.Fatalf("commit.branch_pattern = %v, want configured pattern", cfg.Commit.BranchPattern)
+	}
+	if cfg.Commit.BranchReplacement == nil || *cfg.Commit.BranchReplacement != "PROJ-${1}" {
+		t.Fatalf("commit.branch_replacement = %v, want configured replacement", cfg.Commit.BranchReplacement)
+	}
+}
+
 func TestLoadGlobal_RejectsInvalidCommitFixMessage(t *testing.T) {
 	tests := map[string]string{
-		"unknown variable":      "commit:\n  fix_message: '{{.Unknown}}'\n",
-		"template function":     "commit:\n  fix_message: '{{printf \"%s\" .Summary}}'\n",
-		"conditional":           "commit:\n  fix_message: '{{if .Summary}}{{.Summary}}{{end}}'\n",
-		"named template":        "commit:\n  fix_message: '{{define \"loop\"}}{{template \"loop\"}}{{end}}{{template \"loop\"}}'\n",
-		"malformed syntax":      "commit:\n  fix_message: '{{'\n",
-		"empty template":        "commit:\n  fix_message: ''\n",
-		"oversized template":    "commit:\n  fix_message: '" + strings.Repeat("x", maxFixMessageTemplateBytes+1) + "'\n",
-		"too many placeholders": "commit:\n  fix_message: '" + strings.Repeat("{{.Summary}}", maxFixMessagePlaceholders+1) + "'\n",
-		"multiline output":      "commit:\n  fix_message: |-\n    first line\n    second line\n",
-		"bell control":          "commit:\n  fix_message: \"chore:\\u0007 {{.Summary}}\"\n",
-		"escape control":        "commit:\n  fix_message: \"chore:\\u001b {{.Summary}}\"\n",
-		"line separator":        "commit:\n  fix_message: \"chore:\\u2028{{.Summary}}\"\n",
-		"paragraph separator":   "commit:\n  fix_message: \"chore:\\u2029{{.Summary}}\"\n",
-		"bidi override":         "commit:\n  fix_message: \"chore:\\u202e{{.Summary}}\"\n",
-		"zero-width space":      "commit:\n  fix_message: \"chore:\\u200b{{.Summary}}\"\n",
+		"unknown variable":                   "commit:\n  fix_message: '{{.Unknown}}'\n",
+		"template function":                  "commit:\n  fix_message: '{{printf \"%s\" .Summary}}'\n",
+		"conditional":                        "commit:\n  fix_message: '{{if .Summary}}{{.Summary}}{{end}}'\n",
+		"named template":                     "commit:\n  fix_message: '{{define \"loop\"}}{{template \"loop\"}}{{end}}{{template \"loop\"}}'\n",
+		"malformed syntax":                   "commit:\n  fix_message: '{{'\n",
+		"empty template":                     "commit:\n  fix_message: ''\n",
+		"oversized template":                 "commit:\n  fix_message: '" + strings.Repeat("x", maxFixMessageTemplateBytes+1) + "'\n",
+		"too many placeholders":              "commit:\n  fix_message: '" + strings.Repeat("{{.Summary}}", maxFixMessagePlaceholders+1) + "'\n",
+		"multiline output":                   "commit:\n  fix_message: |-\n    first line\n    second line\n",
+		"bell control":                       "commit:\n  fix_message: \"chore:\\u0007 {{.Summary}}\"\n",
+		"escape control":                     "commit:\n  fix_message: \"chore:\\u001b {{.Summary}}\"\n",
+		"line separator":                     "commit:\n  fix_message: \"chore:\\u2028{{.Summary}}\"\n",
+		"paragraph separator":                "commit:\n  fix_message: \"chore:\\u2029{{.Summary}}\"\n",
+		"bidi override":                      "commit:\n  fix_message: \"chore:\\u202e{{.Summary}}\"\n",
+		"zero-width space":                   "commit:\n  fix_message: \"chore:\\u200b{{.Summary}}\"\n",
+		"multiple branch captures":           "commit:\n  branch_pattern: '^([A-Z]+)/([0-9]+)$'\n",
+		"unbraced capture reference":         "commit:\n  branch_pattern: '^PROJ/([0-9]+)$'\n  branch_replacement: 'PROJ-$1draft'\n",
+		"malformed capture reference":        "commit:\n  branch_pattern: '^PROJ/([0-9]+)$'\n  branch_replacement: 'PROJ-${1'\n",
+		"wrong capture reference":            "commit:\n  branch_pattern: '^PROJ/([0-9]+)$'\n  branch_replacement: 'PROJ-${2}'\n",
+		"multiple capture references":        "commit:\n  branch_pattern: '^PROJ/([0-9]+)$'\n  branch_replacement: '${1}-${1}'\n",
+		"literal dollar":                     "commit:\n  branch_pattern: '^PROJ/([0-9]+)$'\n  branch_replacement: '$$${1}'\n",
+		"replacement without branch pattern": "commit:\n  branch_replacement: 'PROJ-${1}'\n",
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -265,7 +304,7 @@ func TestLoadGlobal_RejectsInvalidCommitFixMessage(t *testing.T) {
 			}
 
 			if _, err := LoadGlobal(path); err == nil {
-				t.Fatal("LoadGlobal() accepted an invalid commit.fix_message")
+				t.Fatal("LoadGlobal() accepted an invalid commit configuration")
 			}
 		})
 	}
@@ -307,7 +346,7 @@ func TestLoadRepo_RejectsInvalidCommitFixMessage(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := LoadRepoFromBytes([]byte(data)); err == nil {
-				t.Fatal("LoadRepoFromBytes() accepted an invalid commit.fix_message")
+				t.Fatal("LoadRepoFromBytes() accepted an invalid commit configuration")
 			}
 		})
 	}
@@ -332,10 +371,68 @@ func TestMerge_CommitFixMessagePrecedence(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := Merge(&GlobalConfig{Commit: tt.global}, &RepoConfig{Commit: tt.repo})
+			cfg := Merge(&GlobalConfig{Commit: GlobalCommitRaw{CommitRaw: tt.global}}, &RepoConfig{Commit: tt.repo})
 			if cfg.Commit.FixMessage != tt.want {
 				t.Fatalf("commit.fix_message = %q, want %q", cfg.Commit.FixMessage, tt.want)
 			}
 		})
+	}
+}
+
+func TestMerge_CommitBranchReplacementIsGlobalOnly(t *testing.T) {
+	t.Parallel()
+
+	globalPattern := `^PROJ/([0-9]+)$`
+	globalReplacement := "PROJ-${1}"
+	repoPattern := `([A-Z]+-[0-9]+)`
+
+	t.Run("global replacement applies", func(t *testing.T) {
+		cfg := Merge(
+			&GlobalConfig{Commit: GlobalCommitRaw{CommitRaw: CommitRaw{BranchPattern: &globalPattern}, BranchReplacement: &globalReplacement}},
+			&RepoConfig{},
+		)
+		got, err := cfg.Commit.BranchValue("PROJ/123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "PROJ-123"; got != want {
+			t.Fatalf("BranchValue() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("repo pattern disables global replacement", func(t *testing.T) {
+		cfg := Merge(
+			&GlobalConfig{Commit: GlobalCommitRaw{CommitRaw: CommitRaw{BranchPattern: &globalPattern}, BranchReplacement: &globalReplacement}},
+			&RepoConfig{Commit: CommitRaw{BranchPattern: &repoPattern}},
+		)
+		got, err := cfg.Commit.BranchValue("feature/PROJ-123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "PROJ-123"; got != want {
+			t.Fatalf("BranchValue() = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestLoadRepo_CommitBranchReplacementIsInert(t *testing.T) {
+	t.Parallel()
+
+	repo, err := LoadRepoFromBytes([]byte("commit:\n  branch_replacement: 'WRONG-${1}'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalPattern := `^PROJ/([0-9]+)$`
+	globalReplacement := "PROJ-${1}"
+	cfg := Merge(
+		&GlobalConfig{Commit: GlobalCommitRaw{CommitRaw: CommitRaw{BranchPattern: &globalPattern}, BranchReplacement: &globalReplacement}},
+		repo,
+	)
+	got, err := cfg.Commit.BranchValue("PROJ/123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "PROJ-123"; got != want {
+		t.Fatalf("BranchValue() = %q, want %q", got, want)
 	}
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -80,5 +81,20 @@ func TestRenderBox_MultilineContent(t *testing.T) {
 	out := stripANSI(renderBox("Test", "line1\nline2\nline3", 40))
 	if !strings.Contains(out, "line1") || !strings.Contains(out, "line2") || !strings.Contains(out, "line3") {
 		t.Error("expected all content lines in output")
+	}
+}
+
+func TestRenderErrorBox_WrapsLongErrorsInsteadOfCuttingThem(t *testing.T) {
+	msg := "cannot approve test: the run worktree holds work no Test turn validated and approval would publish it; use fix to validate it, or abort"
+	out := stripANSI(renderErrorBox(errors.New(msg), 60))
+	var words []string
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w != 60 {
+			t.Errorf("line width = %d, want 60: %q", w, line)
+		}
+		words = append(words, strings.Fields(strings.Trim(line, "│╭╮╰╯─ "))...)
+	}
+	if got := strings.Join(words, " "); !strings.Contains(got, msg) {
+		t.Fatalf("error box = %q, want the whole message %q", out, msg)
 	}
 }

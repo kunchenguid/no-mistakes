@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -82,7 +82,7 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
-	realGit, err := exec.LookPath("git")
+	realGit, err := testgit.RealGit()
 	if err != nil {
 		t.Fatal(err)
 	}

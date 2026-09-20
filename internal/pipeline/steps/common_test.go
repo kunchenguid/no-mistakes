@@ -1122,8 +1122,8 @@ func TestExecuteFixMode_NoWorktreeChangesCanonicalizesAgentSummary(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary != noChangesAppliedSummary {
-		t.Fatalf("fix summary = %q, want %q", summary, noChangesAppliedSummary)
+	if summary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", summary, NoChangesAppliedSummary)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("HEAD after no-op fix = %q, want %q", got, headSHA)
@@ -1562,6 +1562,22 @@ func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 	for field, found := range want {
 		if !found {
 			t.Errorf("missing required field %q in schema", field)
+		}
+	}
+	// reviewed_paths is a recognized property but is deliberately NOT
+	// required: a caller that omits it keeps the pre-carry-forward behavior
+	// instead of failing schema validation, so recorded eval/replay
+	// fixtures that predate the field are not broken by its addition.
+	props, ok := parsed["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected 'properties' object in schema")
+	}
+	if _, ok := props["reviewed_paths"]; !ok {
+		t.Error("reviewFindingsSchema missing reviewed_paths property")
+	}
+	for _, r := range required {
+		if r == "reviewed_paths" {
+			t.Error("reviewed_paths must not be required, to preserve backward compatibility with callers that omit it")
 		}
 	}
 }

@@ -109,11 +109,18 @@ type StepOutcome struct {
 	NeedsApproval bool // whether the step pauses for user action
 	AutoFixable   bool
 	Findings      string // JSON findings for TUI display (optional)
-	ExitCode      int    // process exit code (0 = success)
-	PRURL         string // PR/MR URL if this step created or found one
-	Skipped       bool   // mark the step as skipped without failing the run
-	SkipReason    string // automatic PR/CI skip cause; explicit per-run skips leave it empty
-	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
+	// ReviewedPaths is the review step's agent-reported coverage record for this
+	// round. It is a positive-verification signal only after the executor
+	// intersects it with ReviewablePaths.
+	ReviewedPaths []string
+	// ReviewablePaths is the trusted changed-file set this review round can
+	// certify. It is computed from the diff, not supplied by the agent.
+	ReviewablePaths []string
+	ExitCode        int    // process exit code (0 = success)
+	PRURL           string // PR/MR URL if this step created or found one
+	Skipped         bool   // mark the step as skipped without failing the run
+	SkipReason      string // automatic PR/CI skip cause; explicit per-run skips leave it empty
+	SkipRemaining   bool   // skip all subsequent steps (e.g. empty diff after rebase)
 	// RestartFrom asks the executor to re-run validation from this earlier step.
 	// CI repairs use it when policy requires revalidation or continuity cannot be
 	// proven, sending the new local head back through review before push.

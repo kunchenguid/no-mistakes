@@ -374,13 +374,11 @@ func renderErrorBox(err error, width int) string {
 	}
 	contentWidth := boxWidth - 4 // 2 border + 2 padding
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-	errLines := strings.Split(err.Error(), "\n")
 	var errContent strings.Builder
-	for i, line := range errLines {
+	for i, line := range wrapText(err.Error(), contentWidth) {
 		if i > 0 {
 			errContent.WriteString("\n")
 		}
-		line, _ = cutText(line, contentWidth)
 		errContent.WriteString(errStyle.Render(line))
 	}
 	return renderBox("Error", errContent.String(), boxWidth)

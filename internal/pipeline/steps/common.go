@@ -317,6 +317,11 @@ var reviewFindingsSchema = json.RawMessage(`{
 				"required": ["severity", "description", "action", "review_scope"]
 			}
 		},
+		"reviewed_paths": {
+			"type": "array",
+			"items": {"type": "string"},
+			"description": "Exact set of changed files this pass actually read and judged; a file omitted here is treated as unverified"
+		},
 		"tested": {
 			"type": "array",
 			"items": {"type": "string"}

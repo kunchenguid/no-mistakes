@@ -152,6 +152,12 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		return partialResult(), retErr
 	}
 
+	// Codex's strict output mode treats every property as required after
+	// addAdditionalPropertiesFalse, but it may still omit properties that were
+	// optional in the caller's schema. The normalized schema makes those fields
+	// nullable; materialize them as null before the shared validator sees the
+	// response so omission remains compatible without weakening required fields.
+	lastMessage = codexFillNullableRequiredFields(lastMessage, opts.JSONSchema)
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
 	if res != nil {
 		res.SessionID = threadID
@@ -401,6 +407,75 @@ func codexOutputSchema(schema json.RawMessage) ([]byte, error) {
 	}
 	addAdditionalPropertiesFalse(value)
 	return json.Marshal(value)
+}
+
+// codexFillNullableRequiredFields turns properties that were optional in the
+// caller's schema but became required by addAdditionalPropertiesFalse into
+// explicit nulls when Codex omitted them. It deliberately leaves genuinely
+// required properties absent: the normal structured-output validator must still
+// reject those responses. Invalid or non-JSON text is returned unchanged so
+// the shared parser remains responsible for reporting its ordinary error.
+func codexFillNullableRequiredFields(text string, schema json.RawMessage) string {
+	if len(schema) == 0 || strings.TrimSpace(text) == "" {
+		return text
+	}
+
+	var output any
+	if err := json.Unmarshal([]byte(text), &output); err != nil {
+		return text
+	}
+	var schemaValue any
+	if err := json.Unmarshal(schema, &schemaValue); err != nil {
+		return text
+	}
+
+	if !codexFillNullableFields(output, schemaValue) {
+		return text
+	}
+	filled, err := json.Marshal(output)
+	if err != nil {
+		return text
+	}
+	return string(filled)
+}
+
+func codexFillNullableFields(value, schema any) bool {
+	schemaMap, ok := schema.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	changed := false
+	if properties, ok := schemaMap["properties"].(map[string]any); ok {
+		object, ok := value.(map[string]any)
+		if ok {
+			required := requiredSet(schemaMap)
+			for name, propertySchema := range properties {
+				property, present := object[name]
+				if !present {
+					if !required[name] {
+						object[name] = nil
+						changed = true
+					}
+					continue
+				}
+				if property != nil && codexFillNullableFields(property, propertySchema) {
+					changed = true
+				}
+			}
+		}
+	}
+
+	if items, ok := schemaMap["items"]; ok {
+		if array, ok := value.([]any); ok {
+			for _, item := range array {
+				if codexFillNullableFields(item, items) {
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
 }
 
 func addAdditionalPropertiesFalse(value any) {

@@ -4,20 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
+func TestTestStep_HangingEvidenceAgentParksForADecision(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "hanging-evidence-agent",
@@ -29,30 +31,35 @@ func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
 
-	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&TestStep{}}, nil)
-	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
-		t.Fatal("expected hanging evidence agent to fail the run")
-	}
-
-	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	outcome, err := (&TestStep{}).Execute(sctx)
 	if err != nil {
-		t.Fatalf("get run: %v", err)
+		t.Fatalf("Execute() error = %v, want a parked budget cut rather than a failed run", err)
 	}
-	if run.Status != types.RunFailed {
-		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the Test step parked for a decision", outcome)
 	}
-	var got string
-	if run.Error != nil {
-		got = *run.Error
+	findings, parseErr := types.ParseFindingsJSON(outcome.Findings)
+	if parseErr != nil {
+		t.Fatalf("parse findings: %v", parseErr)
 	}
+	if len(findings.Items) != 1 || findings.Items[0].ID != types.FindingIDTestAgentTimeout {
+		t.Fatalf("findings = %#v, want the test-agent-timeout park", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q", findings.Items[0].Action, types.ActionAskUser)
+	}
+	got := findings.Items[0].Description
 	if !strings.Contains(got, "timed out after 20ms") {
-		t.Fatalf("run error = %q, want the expired test budget named", got)
+		t.Fatalf("finding = %q, want the expired test budget named", got)
 	}
 	if !strings.Contains(got, "produced no output at all") {
-		t.Fatalf("run error = %q, want the measured silence of a never-emitting agent", got)
+		t.Fatalf("finding = %q, want the measured silence of a never-emitting agent", got)
 	}
 	if strings.Contains(got, "silent for 20ms") {
-		t.Fatalf("run error = %q, must not restate the budget as if it were a measurement", got)
+		t.Fatalf("finding = %q, must not restate the budget as if it were a measurement", got)
+	}
+	if findings.Verdict == types.TestVerdictGo {
+		t.Fatal("late structured output after the deadline must not complete Test as a pass")
 	}
 }
 
@@ -202,7 +209,7 @@ func TestTestStep_FixAgentTimeoutDoesNotCancelPostProcessing(t *testing.T) {
 	}
 }
 
-func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.T) {
+func TestTestStep_FixAgentTimeoutParksWithoutCommit(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -220,8 +227,19 @@ func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *test
 	sctx.Fixing = true
 	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
 
-	if _, err := (&TestStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
-		t.Fatalf("late successful return error = %v, want timeout", err)
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the Test step parked for a decision", outcome)
+	}
+	if got := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentTimeout).Description; !strings.Contains(got, "agent fix tests timed out after 20ms") || strings.Count(got, "agent fix tests") != 1 {
+		t.Fatalf("finding = %q, want the timeout named once", got)
+	}
+	work := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentUnvalidatedWork).Description
+	if !strings.Contains(work, "uncommitted changes to fix.txt") || !strings.Contains(work, "git -C "+dir+" diff") {
+		t.Fatalf("finding = %q, want the leftover file named with how to inspect it", work)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
@@ -229,6 +247,635 @@ func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *test
 	if got := gitCmd(t, dir, "status", "--porcelain", "--", "fix.txt"); got != "?? fix.txt" {
 		t.Fatalf("fix.txt status = %q, want uncommitted", got)
 	}
+}
+
+func TestTestStep_FixAgentTimeoutRecordsCommittedHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "fix.txt")
+			gitCmd(t, dir, "commit", "-m", "timed-out repair")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+	sctx.Fixing = true
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the Test step parked for a decision", outcome)
+	}
+	committed := gitCmd(t, dir, "rev-parse", "HEAD")
+	if committed == headSHA {
+		t.Fatal("timed-out agent commit was lost")
+	}
+	if sctx.Run.HeadSHA != committed {
+		t.Fatalf("run head = %s, want recorded committed head %s", sctx.Run.HeadSHA, committed)
+	}
+	work := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentUnvalidatedWork).Description
+	if !strings.Contains(work, "recorded locally") || !strings.Contains(work, "log -p "+headSHA+".."+committed) {
+		t.Fatalf("finding = %q, want the committed head retained with how to inspect it", work)
+	}
+}
+
+func TestTestStep_EvidenceCutKeepsTheFailingConfiguredCommand(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	testCmd := "printf 'TestCheckout failed'; exit 3"
+	if runtime.GOOS == "windows" {
+		testCmd = "echo TestCheckout failed && exit /b 3"
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if outcome.ExitCode != 3 {
+		t.Fatalf("ExitCode = %d, want the configured command's 3", outcome.ExitCode)
+	}
+	if parked, parseErr := types.ParseFindingsJSON(outcome.Findings); parseErr != nil || !strings.Contains(parked.Summary, "TestCheckout failed") {
+		t.Fatalf("park summary = %q (%v), want the failing command's output kept for the next repair", parked.Summary, parseErr)
+	}
+	if got := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
+		t.Fatalf("finding = %q, must not call the cut harmless while the configured command failed", got)
+	}
+	persistTestStepFindings(t, sctx, outcome.ExitCode, outcome.Findings)
+	unresolved, err := (&TestStep{}).VerifyApprovalOverride(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unresolved != "configured test command failed with exit code 3" {
+		t.Fatalf("unresolved = %q, want approval to stay a configured-command waiver", unresolved)
+	}
+}
+
+func TestTestStep_RepairCutRecordsTheConfiguredCommandResult(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 4"})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"test-1","severity":"error","category":"test-command","description":"configured test command failed with exit code 4"}]}`
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if calls != 1 {
+		t.Fatalf("agent calls = %d, want only the cut repair turn", calls)
+	}
+	if outcome.ExitCode != 4 {
+		t.Fatalf("ExitCode = %d, want the configured command's 4", outcome.ExitCode)
+	}
+	persistTestStepFindings(t, sctx, outcome.ExitCode, outcome.Findings)
+	unresolved, err := (&TestStep{}).VerifyApprovalOverride(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unresolved != "configured test command failed with exit code 4" {
+		t.Fatalf("unresolved = %q, want approval to stay a configured-command waiver", unresolved)
+	}
+	if pipeline.HasUnvalidatedWorkRefusal(outcome.Findings) {
+		t.Fatalf("findings = %s, a cut that changed nothing must stay approvable", outcome.Findings)
+	}
+}
+
+func TestTestStep_FixOfABudgetCutAloneRerunsOnlyValidation(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	var prompts []string
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompts = append(prompts, opts.Prompt)
+		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"budget cut"},{"id":"test-agent-unvalidated-work","severity":"error","action":"ask-user","description":"uncommitted changes"}]}`
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, want the re-run validation to pass", outcome)
+	}
+	if len(prompts) != 1 || strings.Contains(prompts[0], "Fix the failing tests") || !strings.Contains(prompts[0], "Derive the scenarios") {
+		t.Fatalf("prompts = %q, want exactly one evidence turn and no repair turn", prompts)
+	}
+	if outcome.FixSummary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q: a validation-only round fixes nothing", outcome.FixSummary, NoChangesAppliedSummary)
+	}
+}
+
+func TestTestStep_CutMidRebaseRecordsNoPartialHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		leaveConflictedRebase(t, dir)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("run head = %s, want the partial rebase head left unrecorded", sctx.Run.HeadSHA)
+	}
+	if work := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentUnvalidatedWork).Description; !strings.Contains(work, "unfinished rebase or merge") {
+		t.Fatalf("finding = %q, want the unfinished rebase named", work)
+	}
+}
+
+func noGoTestGateJSON(testedHead string) string {
+	return `{"findings":[{"id":"test-2","severity":"error","action":"auto-fix","description":"live validation verdict: no-go (1 of 1 scenarios were driven live against the product); failed: checkout"}],"summary":"checkout failed","verdict":"no-go","scenarios":[{"name":"checkout","result":"fail","live":true,"evidence":"checkout.png","reason":""}],"tested_head_sha":"` + testedHead + `"}`
+}
+
+func TestTestStep_RepeatedCutKeepsRefusingUnvalidatedWork(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("repair round error = %v", err)
+	}
+	repaired := sctx.Run.HeadSHA
+	if repaired == headSHA || !pipeline.HasUnvalidatedWorkRefusal(first.Findings) {
+		t.Fatalf("repair round findings = %s, want the unvalidated repair commit refused", first.Findings)
+	}
+
+	parked, err := types.ParseFindingsJSON(first.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budgetCut, err := types.MarshalFindingsJSON(types.FilterFindings(parked, []string{types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.PreviousFindings = budgetCut
+	second, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("validation-only round error = %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("agent calls = %d, want the second round to run only the evidence turn", calls)
+	}
+	if !pipeline.HasUnvalidatedWorkRefusal(second.Findings) {
+		t.Fatalf("findings = %s, want the repeated cut to keep refusing the repair no evidence turn validated", second.Findings)
+	}
+	if work := testFindingByID(t, second.Findings, types.FindingIDTestAgentUnvalidatedWork).Description; !strings.Contains(work, "log -p "+headSHA+".."+repaired) {
+		t.Fatalf("finding = %q, want the range since the last validated head", work)
+	}
+}
+
+func TestTestStep_RepairCutKeepsTheFindingsItWasFixing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings.Verdict != types.TestVerdictNoGo || len(findings.Scenarios) != 1 || !strings.Contains(outcome.Findings, "failed: checkout") {
+		t.Fatalf("findings = %s, want the no-go the repair was fixing kept on the park", outcome.Findings)
+	}
+	if got := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
+		t.Fatalf("finding = %q, must not call the cut harmless next to a no-go", got)
+	}
+	if pipeline.HasUnvalidatedWorkRefusal(outcome.Findings) {
+		t.Fatalf("findings = %s, a cut that changed nothing must stay approvable", outcome.Findings)
+	}
+
+	persistTestStepFindings(t, sctx, outcome.ExitCode, outcome.Findings)
+	if err := sctx.DB.SetTestApprovalReason(sctx.StepResultID, "accepted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteStep(sctx.StepResultID, 0, 1, "test.log"); err != nil {
+		t.Fatal(err)
+	}
+	sr, err := sctx.DB.GetStepResult(sctx.StepResultID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sr.TestOverrideReason(); !strings.Contains(got, "live validation verdict: no-go") {
+		t.Fatalf("TestOverrideReason = %q, want approval recorded against the no-go", got)
+	}
+}
+
+// answerTestPark splits a parked Test gate the way the executor does for a fix
+// response selecting ids: the selection and the deferred rest.
+func answerTestPark(t *testing.T, raw string, ids ...string) (string, string) {
+	t.Helper()
+	parked, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked = types.NormalizeFindings(parked, string(types.StepTest))
+	selected, err := types.MarshalFindingsJSON(types.FilterFindings(parked, ids))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferred, err := types.MarshalFindingsJSON(types.ExcludeFindings(parked, ids))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return selected, deferred
+}
+
+func TestTestStep_CutAfterAnEarlierStepCommittedStaysApprovable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	reviewed := baseSHA
+	sctx.Run.ReviewApprovedHeadSHA = &reviewed
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if pipeline.HasUnvalidatedWorkRefusal(outcome.Findings) {
+		t.Fatalf("findings = %s, commits made before Test started are not leftovers of the cut", outcome.Findings)
+	}
+}
+
+func TestTestStep_RepeatedCutKeepsRefusingBeforeAnyEvidenceCompletes(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(dir, "setup.txt"), []byte("setup"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "setup.txt")
+			gitCmd(t, dir, "commit", "-m", "evidence agent setup")
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("first round error = %v", err)
+	}
+	committed := sctx.Run.HeadSHA
+	if committed == headSHA || !pipeline.HasUnvalidatedWorkRefusal(first.Findings) {
+		t.Fatalf("first round findings = %s, want the agent's commit refused", first.Findings)
+	}
+
+	sctx.Fixing = true
+	sctx.PreviousFindings, sctx.DeferredFindings = answerTestPark(t, first.Findings, types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork)
+	second, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("validation-only round error = %v", err)
+	}
+	if work := testFindingByID(t, second.Findings, types.FindingIDTestAgentUnvalidatedWork).Description; !strings.Contains(work, "log -p "+headSHA+".."+committed) {
+		t.Fatalf("finding = %q, want the earlier cut's unvalidated commit still refused", work)
+	}
+}
+
+func TestTestStep_RepeatedCutReMeasuresLeftoversInsteadOfRepeatingThem(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(dir, "foo_test.go"), []byte("package foo"), 0o644); err != nil {
+				return nil, err
+			}
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+	cutAgain := func(answered string) string {
+		t.Helper()
+		sctx.Fixing = true
+		sctx.PreviousFindings, sctx.DeferredFindings = answerTestPark(t, answered, types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork)
+		outcome, err := (&TestStep{}).Execute(sctx)
+		if err != nil {
+			t.Fatalf("validation-only round error = %v", err)
+		}
+		return outcome.Findings
+	}
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("first round error = %v", err)
+	}
+	second := cutAgain(first.Findings)
+	work := testFindingByID(t, second, types.FindingIDTestAgentUnvalidatedWork).Description
+	if strings.Count(work, "uncommitted changes to foo_test.go") != 1 || strings.Contains(work, "Since then") {
+		t.Fatalf("finding = %q, want the same leftover named once, not repeated as new work", work)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "foo_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	third := cutAgain(second)
+	if pipeline.HasUnvalidatedWorkRefusal(third) {
+		t.Fatalf("findings = %s, a worktree with the leftover gone and HEAD unmoved must be approvable again", third)
+	}
+}
+
+func TestTestStep_ValidationOnlyCutKeepsTheDeferredNoGo(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("repair round error = %v", err)
+	}
+	sctx.PreviousFindings, sctx.DeferredFindings = answerTestPark(t, first.Findings, types.FindingIDTestAgentTimeout)
+	second, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("validation-only round error = %v", err)
+	}
+	if !strings.Contains(second.Findings, "failed: checkout") {
+		t.Fatalf("findings = %s, want the deferred no-go kept on the park", second.Findings)
+	}
+	if second.FixSummary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q: a cut validation-only round fixes nothing", second.FixSummary, NoChangesAppliedSummary)
+	}
+	if got := testFindingByID(t, second.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
+		t.Fatalf("finding = %q, must not call the cut harmless next to a no-go", got)
+	}
+}
+
+func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
+	t.Parallel()
+	const guidance = "drive only the checkout scenario; do not run the full suite"
+	for _, tt := range []struct {
+		name      string
+		selection []string
+		repair    bool
+	}{
+		{"validation only", []string{types.FindingIDTestAgentTimeout}, false},
+		{"both budget-cut findings carry one note", []string{types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork}, false},
+		{"with a repair finding", []string{types.FindingIDTestAgentTimeout, "test-2"}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			var prompts []string
+			ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				prompts = append(prompts, opts.Prompt)
+				if len(prompts) == 1 && tt.repair {
+					return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+			sctx.Fixing = true
+			parked := `{"findings":[{"id":"` + types.FindingIDTestAgentTimeout + `","severity":"warning","action":"ask-user","description":"budget cut"},` +
+				`{"id":"` + types.FindingIDTestAgentUnvalidatedWork + `","severity":"warning","action":"ask-user","description":"approval is refused"},` +
+				strings.TrimPrefix(noGoTestGateJSON(headSHA), `{"findings":[`)
+			selected, deferred := answerTestPark(t, parked, tt.selection...)
+			answered, err := types.ParseFindingsJSON(selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range answered.Items {
+				if slices.Contains(testBudgetCutIDs, answered.Items[i].ID) {
+					answered.Items[i].UserInstructions = guidance
+				}
+			}
+			if sctx.PreviousFindings, err = types.MarshalFindingsJSON(answered); err != nil {
+				t.Fatal(err)
+			}
+			sctx.DeferredFindings = deferred
+
+			if _, err := (&TestStep{}).Execute(sctx); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			wantCalls := 1
+			if tt.repair {
+				wantCalls = 2
+			}
+			if len(prompts) != wantCalls {
+				t.Fatalf("agent calls = %d, want %d", len(prompts), wantCalls)
+			}
+			evidence := prompts[len(prompts)-1]
+			if !strings.Contains(evidence, "Operator guidance for this validation (from the decision on the Test agent budget cut):\n"+guidance+"\n") {
+				t.Fatalf("evidence prompt lacks the operator's budget-cut guidance:\n%s", evidence)
+			}
+			if n := strings.Count(evidence, guidance); n != 1 {
+				t.Fatalf("evidence prompt carries the operator's guidance %d times, want once:\n%s", n, evidence)
+			}
+		})
+	}
+}
+
+func TestTestStep_CutParkDoesNotRenderAnEarlierCyclesEvidence(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	park := outcome.Findings
+	earlierCycle := liveValidatedFindingsJSON(t, []types.TestScenario{
+		{Name: "user reaches the success screen", Result: types.ScenarioResultPass, Live: true, Evidence: "checkout.png"},
+	}, types.TestVerdictGo, baseSHA)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &park}}
+	rounds := map[string][]*db.StepRound{"s1": {
+		{Round: 1, Trigger: "initial", FindingsJSON: &earlierCycle},
+		{Round: 2, Trigger: "initial", FindingsJSON: &park},
+	}}
+
+	md := BuildTestingSummary(steps, rounds)
+	for _, stale := range []string{"drove the checkout scenarios", "Live validation", "user reaches the success screen"} {
+		if strings.Contains(md, stale) {
+			t.Fatalf("Testing section renders an earlier cycle's evidence %q for a head it never validated:\n%s", stale, md)
+		}
+	}
+	if !strings.Contains(md, "before live validation completed") {
+		t.Fatalf("Testing section = %q, want it to say the cut left no evidence for this head", md)
+	}
+}
+
+func TestTestStep_RepairPromptLeavesOutTheBudgetCutFindings(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	var prompts []string
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompts = append(prompts, opts.Prompt)
+		if len(prompts) == 1 {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[` +
+		`{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"raise test_agent_timeout in global config"},` +
+		`{"id":"test-agent-unvalidated-work","severity":"error","action":"ask-user","description":"Approval is refused: leftover.txt"},` +
+		`{"id":"test-1","severity":"error","category":"test-command","description":"configured test command failed with exit code 1"}]}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) == 0 || !strings.Contains(prompts[0], "Fix the failing tests") {
+		t.Fatalf("prompts = %q, want a repair turn first", prompts)
+	}
+	repair := prompts[0]
+	if !strings.Contains(repair, "configured test command failed with exit code 1") {
+		t.Fatalf("repair prompt = %q, want the command failure to address", repair)
+	}
+	for _, operatorOnly := range []string{"raise test_agent_timeout in global config", "Approval is refused"} {
+		if strings.Contains(repair, operatorOnly) {
+			t.Fatalf("repair prompt carries the operator-only budget-cut text %q:\n%s", operatorOnly, repair)
+		}
+	}
+}
+
+func TestTestStep_EvidenceAgentCannotClaimAReservedBudgetCutID(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"test-agent-unvalidated-work","severity":"warning","action":"ask-user","description":"leftover build output"},{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"slow suite"}],"summary":"ok","tested":["go test ./x"],"testing_summary":"drove it","artifacts":[],"scenarios":[{"name":"user runs it","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go","unvalidated_since_sha":"deadbeef"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings.UnvalidatedSinceSHA != "" {
+		t.Fatalf("findings = %s, an agent payload must not set the park's measured head", outcome.Findings)
+	}
+	for _, item := range findings.Items {
+		if item.ID == types.FindingIDTestAgentUnvalidatedWork || item.ID == types.FindingIDTestAgentTimeout {
+			t.Fatalf("findings = %s, an agent finding must not claim a step-owned budget-cut ID", outcome.Findings)
+		}
+	}
+	if pipeline.HasUnvalidatedWorkRefusal(outcome.Findings) || !strings.Contains(outcome.Findings, "leftover build output") {
+		t.Fatalf("findings = %s, want the agent finding kept without refusing approval", outcome.Findings)
+	}
+}
+
+// leaveConflictedRebase stops a rebase on a conflict, leaving HEAD detached at
+// a partial result the way an agent cut mid-rebase does.
+func leaveConflictedRebase(t *testing.T, dir string) {
+	t.Helper()
+	start := gitCmd(t, dir, "rev-parse", "HEAD")
+	commitFile := func(content string) {
+		if err := os.WriteFile(filepath.Join(dir, "conflict.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "add", "conflict.txt")
+		gitCmd(t, dir, "commit", "-m", content)
+	}
+	commitFile("theirs")
+	onto := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "reset", "--hard", start)
+	commitFile("ours")
+	cmd := exec.Command("git", "rebase", onto)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("rebase unexpectedly applied cleanly: %s", out)
+	}
+}
+
+func testFindingByID(t *testing.T, raw, id string) types.Finding {
+	t.Helper()
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	for _, item := range findings.Items {
+		if item.ID == id {
+			return item
+		}
+	}
+	t.Fatalf("findings = %#v, want %s", findings.Items, id)
+	return types.Finding{}
 }
 
 func TestTestStep_FixMode(t *testing.T) {

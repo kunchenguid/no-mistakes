@@ -160,3 +160,43 @@ func TestWorktreeSteering_DescribesSoftBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestWorktreeSteering_BoundsHostFilesystemSearch pins the host-search boundary
+// added after a Test run spent its whole 30-minute budget on an agent-authored
+// `find / -maxdepth 4` that blocked in a macOS automount at 0% CPU, so no
+// scenario ever ran. The preamble that allows out-of-worktree reads must name
+// whole-root searches as disallowed (including the exact `find /` shape and the
+// `mdfind /` spotlight variant), keep bounded worktree/evidence/repo-local reads
+// allowed, and spell out a missing-tool fallback that stays role-neutral: only
+// the Test step has scenarios and an "untested" state, so the shared preamble
+// asks the role to report the missing tool in its own normal result.
+func TestWorktreeSteering_BoundsHostFilesystemSearch(t *testing.T) {
+	preamble := WorktreeSteering(filepath.Join(t.TempDir(), "evidence"))
+	normalized := strings.Join(strings.Fields(preamble), " ")
+	for _, want := range []string{
+		"Do not search the host filesystem",
+		"Never run a filesystem-wide search such as `find /` or `mdfind /`",
+		"never hunt the machine for an installed tool",
+		"does not make a whole-root search bounded",
+		"Bounded searches inside the worktree",
+		"external evidence path a prompt explicitly names",
+		"repository-local path you were given remain fine",
+		"not on PATH and no repository-local path is supplied",
+		"report the missing tool and the work it blocked in your normal result",
+		"with the concrete reason, and stop there",
+	} {
+		if !strings.Contains(normalized, want) {
+			t.Errorf("steering preamble missing host-search boundary %q:\n%s", want, preamble)
+		}
+	}
+	// The shared fallback must not claim a scenario/untested shape that only the
+	// Test step's schema supports; the Test prompt owns that wording.
+	if strings.Contains(normalized, "untested") || strings.Contains(normalized, "scenario") {
+		t.Errorf("shared steering fallback is not role-neutral (mentions scenario/untested):\n%s", preamble)
+	}
+	// The pre-existing read allowance must survive: this narrows an unbounded
+	// host search, it does not ban reading outside the worktree.
+	if !strings.Contains(preamble, "You may read files outside the worktree and run read-only commands") {
+		t.Errorf("steering preamble dropped the out-of-worktree read allowance:\n%s", preamble)
+	}
+}

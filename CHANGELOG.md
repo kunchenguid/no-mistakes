@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.79.0](https://github.com/kunchenguid/no-mistakes/compare/v1.78.0...v1.79.0) (2026-09-19)
+
+
+### Features
+
+* **agent:** disable compact-adviser in every pipeline agent subprocess ([#1115](https://github.com/kunchenguid/no-mistakes/issues/1115)) ([4b79b6e](https://github.com/kunchenguid/no-mistakes/commit/4b79b6ef119a8e69d6c46c609dd6959f2efc9c06))
+* **pipeline:** add opt-in TypeSafe Jev context pre-brief to review turns ([#1120](https://github.com/kunchenguid/no-mistakes/issues/1120)) ([9b697a7](https://github.com/kunchenguid/no-mistakes/commit/9b697a7bc9448a3d158eb6e8a65c20628535ce08))
+
+
+### Bug Fixes
+
+* **cli:** bypass pre-push hooks for gate triggers ([#909](https://github.com/kunchenguid/no-mistakes/issues/909)) ([6840d18](https://github.com/kunchenguid/no-mistakes/commit/6840d18689ad84fc570b7603abb80b45a643b06c))
+* **pipeline:** close defect classes in review fix rounds ([#1123](https://github.com/kunchenguid/no-mistakes/issues/1123)) ([bfc098c](https://github.com/kunchenguid/no-mistakes/commit/bfc098c6f1d7e37a9db2332129cbe43e64af3937))
+* **pipeline:** fail closed on PR attestation refresh ([#910](https://github.com/kunchenguid/no-mistakes/issues/910)) ([b48fa6d](https://github.com/kunchenguid/no-mistakes/commit/b48fa6da49baba46a764ea166371ca4818380436))
+* **pipeline:** park Test agent budget cuts for a decision instead of failing the run ([#1114](https://github.com/kunchenguid/no-mistakes/issues/1114)) ([664424f](https://github.com/kunchenguid/no-mistakes/commit/664424f9ee57a1859691f1f9329fd449866c0af2))
+
+## [1.78.0](https://github.com/kunchenguid/no-mistakes/compare/v1.77.1...v1.78.0) (2026-09-17)
+
+
+### Features
+
+* **daemon:** pin Pi model and reasoning effort per run ([#1072](https://github.com/kunchenguid/no-mistakes/issues/1072)) ([71cd911](https://github.com/kunchenguid/no-mistakes/commit/71cd9110543eeac67fd76180f2bdabd355395ec2))
+
+## [1.77.1](https://github.com/kunchenguid/no-mistakes/compare/v1.77.0...v1.77.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **agent:** bound pipeline agent host filesystem searches ([#1096](https://github.com/kunchenguid/no-mistakes/issues/1096)) ([3eb3c25](https://github.com/kunchenguid/no-mistakes/commit/3eb3c25e51a0b19547d56d2b6958c2d521da96df))
+* **pipeline:** keep review findings outstanding until verified ([#1095](https://github.com/kunchenguid/no-mistakes/issues/1095)) ([8f683b5](https://github.com/kunchenguid/no-mistakes/commit/8f683b5313fe93b70b4d76f52f37dfd69f187197))
+* **pipeline:** report approved Test exceptions as passed-with-override ([#1100](https://github.com/kunchenguid/no-mistakes/issues/1100)) ([2bcb710](https://github.com/kunchenguid/no-mistakes/commit/2bcb710112036952dc794fdebf575ea2626839dc))
+
+## [1.77.0](https://github.com/kunchenguid/no-mistakes/compare/v1.76.0...v1.77.0) (2026-09-16)
+
+
+### Features
+
+* **pipeline:** integrate a moved base by merging behind rebase.strategy ([#1081](https://github.com/kunchenguid/no-mistakes/issues/1081)) ([ae2e99a](https://github.com/kunchenguid/no-mistakes/commit/ae2e99a8b250eb90e66211ae98508f1b21442293))
+
+## [1.76.0](https://github.com/kunchenguid/no-mistakes/compare/v1.75.3...v1.76.0) (2026-09-15)
+
+
+### Features
+
+* **config:** add branch capture replacements ([#1077](https://github.com/kunchenguid/no-mistakes/issues/1077)) ([2707071](https://github.com/kunchenguid/no-mistakes/commit/270707132de94f2dcffb9faab54ad1d197538234))
+
 ## [1.75.3](https://github.com/kunchenguid/no-mistakes/compare/v1.75.2...v1.75.3) (2026-09-14)
 
 

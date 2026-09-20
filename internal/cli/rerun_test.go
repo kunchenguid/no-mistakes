@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -39,7 +40,7 @@ func TestRerunCallerHeadDoesNotCombineDifferentGitStates(t *testing.T) {
 	cliGit(t, dir, "reset", "--hard", original)
 	chdir(t, dir)
 
-	realGit, err := exec.LookPath("git")
+	realGit, err := testgit.RealGit()
 	if err != nil {
 		t.Fatal(err)
 	}

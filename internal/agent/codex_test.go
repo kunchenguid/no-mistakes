@@ -422,6 +422,59 @@ exit 1
 	}
 }
 
+func TestCodexAgent_RunFillsOmittedNullableFields(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"required\":\"present\",\"nested\":{}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"required\\\":\\\"present\\\",\\\"nested\\\":{}}\"}}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}",
+	}, "\r\n"))
+
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"required":{"type":"string"},
+			"optional":{"type":"string"},
+			"nested":{
+				"type":"object",
+				"properties":{
+					"nested_optional":{"type":"boolean"}
+				},
+				"required":[]
+			}
+		},
+		"required":["required","nested"]
+	}`)
+
+	result, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt:     "review",
+		CWD:        dir,
+		JSONSchema: schema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	optional, present := output["optional"]
+	if !present || optional != nil {
+		t.Fatalf("optional field = %#v (present=%t), want explicit null", optional, present)
+	}
+	nested, ok := output["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested field = %#v, want object", output["nested"])
+	}
+	nestedOptional, present := nested["nested_optional"]
+	if !present || nestedOptional != nil {
+		t.Fatalf("nested optional field = %#v (present=%t), want explicit null", nestedOptional, present)
+	}
+}
+
 func TestCodexAgent_RunAcceptsNormalizedNullableFields(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCodex(t, dir, `#!/bin/sh

@@ -286,6 +286,31 @@ func TestPushWithOptionsForwardsPushOptions(t *testing.T) {
 	}
 }
 
+// An up-to-date push sends receive-pack no ref update, and receive-pack exits
+// without reading the push options git still writes after that, so the push
+// can die of SIGPIPE. It must succeed without opening a receive-pack session;
+// the failing receive-pack command makes any session fail every time.
+func TestPushCommitWithOptionsUpToDateOpensNoReceivePackSession(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "dest.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	run(t, bare, "git", "config", "receive.advertisePushOptions", "true")
+	run(t, src, "git", "remote", "add", "dest", bare)
+	run(t, src, "git", "push", "dest", "HEAD:refs/heads/main")
+	run(t, src, "git", "config", "remote.dest.receivepack", "false")
+	head := run(t, src, "git", "rev-parse", "HEAD")
+
+	if err := PushCommitWithOptions(ctx, src, "dest", head, "refs/heads/main", "", false, []string{"no-mistakes.intent=x"}); err != nil {
+		t.Fatalf("up-to-date push with options failed: %v", err)
+	}
+	if got, _ := Run(ctx, bare, "rev-parse", "refs/heads/main"); got != head {
+		t.Fatalf("dest main = %q, want unchanged %q", got, head)
+	}
+}
+
 func TestPushForceWithLease(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)

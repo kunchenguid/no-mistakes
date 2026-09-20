@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -1165,10 +1166,10 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "smallest correct root-cause fix") {
 		t.Errorf("prompt should prefer root-cause fixes over bandaids, got:\n%s", capturedPrompt)
 	}
-	if !strings.Contains(capturedPrompt, "Fix the reported instance narrowly") {
-		t.Errorf("prompt should scope the fix to the reported instance, got:\n%s", capturedPrompt)
+	if !strings.Contains(capturedPrompt, "state for each finding the invariant it violates") {
+		t.Errorf("prompt should scope the fix to the violated invariant at every sibling site, got:\n%s", capturedPrompt)
 	}
-	if !strings.Contains(capturedPrompt, "Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms") {
+	if !strings.Contains(capturedPrompt, "Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms") {
 		t.Errorf("prompt should prefer simplification over symptom machinery, got:\n%s", capturedPrompt)
 	}
 	if !strings.Contains(capturedPrompt, "Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires") {
@@ -1205,17 +1206,66 @@ func TestCIStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Fix the reported instance narrowly.",
-		"Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.",
+		"Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not.",
+		"Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.",
 		"Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires",
 		"smallest correct root-cause fix",
 	} {
 		if !strings.Contains(capturedPrompt, want) {
-			t.Errorf("CI fix prompt missing narrow-fix contract %q:\n%s", want, capturedPrompt)
+			t.Errorf("CI fix prompt missing anti-machinery contract %q:\n%s", want, capturedPrompt)
 		}
 	}
 	if strings.Contains(capturedPrompt, "fix the deepest practical cause instead") {
 		t.Errorf("CI fix prompt still licenses expanding to the deepest practical cause:\n%s", capturedPrompt)
+	}
+}
+
+// TestCIStep_FixPromptClosesTheInvariantAcrossSiblingSites is the CI twin of
+// the review fixer's invariant-complete contract: a red check exposes an
+// invariant, and the repair closes it at every sibling site in the changed
+// area in the same round, never as machinery, then re-traces the failing
+// sequence and the ordinary path through every changed function before
+// verifying. Neither superseded scope rule may return. Merge-conflict-only
+// repair is a sibling path of the same CI fixer, so it carries the same three
+// rules rather than the old minimal conflict prompt.
+func TestCIStep_FixPromptClosesTheInvariantAcrossSiblingSites(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		targets ciFixTargets
+	}{
+		{name: "failing_check", targets: ciTargetsFor([]string{"test"}, false)},
+		{name: "merge_conflict_only", targets: ciTargetsFor(nil, true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+			var capturedPrompt string
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					capturedPrompt = opts.Prompt
+					return &agent.Result{}, nil
+				},
+			}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+			if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, tc.targets); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range fixerClassRuleLines {
+				if !promptHasExactLine(capturedPrompt, want) {
+					t.Errorf("CI fix prompt missing exact invariant-complete line %q:\n%s", want, capturedPrompt)
+				}
+			}
+			for _, stale := range fixerSupersededScopeRules {
+				if strings.Contains(capturedPrompt, stale) {
+					t.Errorf("CI fix prompt still carries the superseded scope rule %q:\n%s", stale, capturedPrompt)
+				}
+			}
+		})
 	}
 }
 
@@ -1308,6 +1358,172 @@ func TestCIStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testin
 	}
 	if got := gitCmd(t, dir, "status", "--porcelain", "--", "ci-fix.txt"); got != "?? ci-fix.txt" {
 		t.Fatalf("ci-fix.txt status = %q, want uncommitted", got)
+	}
+}
+
+func TestCIStep_FixAgentTimeoutRecordsCommittedRepair(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`
+	env := fakeCIGH(t, "OPEN", checksJSON)
+
+	ag := &mockAgent{
+		name: "slow-repair",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "repair.txt")
+			gitCmd(t, dir, "commit", "-m", "timed-out CI repair")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/1109"
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+	sctx.Config.AgentTimeout = 50 * time.Millisecond
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls > 3 {
+				t.Fatal("CI monitor kept polling after the fix agent exhausted its budget")
+			}
+			return nil
+		},
+	}
+
+	outcome, err := driveCI(t, step, sctx)
+	if err != nil {
+		t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
+	}
+	committed := gitCmd(t, dir, "rev-parse", "HEAD")
+	if committed == headSHA {
+		t.Fatal("timed-out agent commit was lost")
+	}
+	if sctx.Run.HeadSHA != committed {
+		t.Fatalf("run head = %s, want recorded committed head %s", sctx.Run.HeadSHA, committed)
+	}
+	var findings Findings
+	if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
+		t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
+	}
+	var timeout Finding
+	for _, item := range findings.Items {
+		if item.ID == "ci-fix-agent-timeout" {
+			timeout = item
+		}
+	}
+	if timeout.ID == "" {
+		t.Fatalf("findings = %#v, want a timeout diagnostic", findings.Items)
+	}
+	if !strings.Contains(timeout.Description, "recorded locally") {
+		t.Fatalf("finding %q, want the committed repair retained", timeout.Description)
+	}
+	if strings.Contains(timeout.Description, "uncommitted changes") {
+		t.Fatalf("finding %q, committed repair should not be described as dirty worktree leftovers", timeout.Description)
+	}
+	if strings.Contains(timeout.Description, "not a code failure") {
+		t.Fatalf("finding %q, must not call the cut harmless next to the failing checks it carries", timeout.Description)
+	}
+}
+
+func TestCIStep_FixAfterATimedOutRepairRevalidatesTheRecordedCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`)
+
+	calls := 0
+	ag := &mockAgent{
+		name: "slow-repair",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			calls++
+			if calls > 1 {
+				return &agent.Result{Output: json.RawMessage(`{"summary":"the recorded repair already fixes it","code_change_needed":true}`)}, nil
+			}
+			if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "repair.txt")
+			gitCmd(t, dir, "commit", "-m", "timed-out CI repair")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	prURL := "https://github.com/test/repo/pull/1109"
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: headSHA, TargetKind: "origin", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+	sctx.Config.AgentTimeout = 50 * time.Millisecond
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}
+
+	parked, err := driveCI(t, step, sctx)
+	if err != nil || parked == nil || !parked.NeedsApproval {
+		t.Fatalf("first round = %#v, %v; want a parked budget cut", parked, err)
+	}
+	recorded := sctx.Run.HeadSHA
+	if recorded == headSHA {
+		t.Fatal("timed-out repair was not recorded")
+	}
+
+	sctx.Fixing = true
+	sctx.PreviousFindings = parked.Findings
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("fix round error = %v", err)
+	}
+	if outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("fix round outcome = %#v, want the recorded repair sent to revalidation from Review", outcome)
+	}
+	if sctx.Run.HeadSHA != recorded {
+		t.Fatalf("run head = %s, want the recorded repair %s", sctx.Run.HeadSHA, recorded)
+	}
+}
+
+func TestCIStep_FixAgentCutMidRebaseRecordsNoPartialHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`)
+	ag := &mockAgent{
+		name: "slow-rebase",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			leaveConflictedRebase(t, dir)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	prURL := "https://github.com/test/repo/pull/1109"
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+	sctx.Config.AgentTimeout = 50 * time.Millisecond
+
+	outcome, err := driveCI(t, &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}, sctx)
+	if err != nil || outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, %v; want a parked budget cut", outcome, err)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("run head = %s, want the partial rebase head left unrecorded", sctx.Run.HeadSHA)
+	}
+	if !strings.Contains(outcome.Findings, "unfinished rebase or merge") || strings.Contains(outcome.Findings, "recorded locally") {
+		t.Fatalf("findings = %s, want the unfinished rebase named and nothing recorded", outcome.Findings)
 	}
 }
 
@@ -1590,7 +1806,7 @@ func TestCIStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 		"When a problem can be solved by removing a code path that is not strictly required to satisfy the intent",
 		"fix it by removing that path, not by validating, hardening, or documenting it",
 		"Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose",
-		"Fix the reported instance narrowly.",
+		"state for each finding the invariant it violates",
 		"Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires",
 	} {
 		if !strings.Contains(capturedPrompt, want) {

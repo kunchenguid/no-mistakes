@@ -3,7 +3,6 @@ package steps
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -141,7 +141,7 @@ func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
 	// The concurrent reset is driven by a git shim rather than a repository
 	// hook, so this regression keeps reproducing the incident for commits the
 	// pipeline deliberately makes hook-free.
-	realGit, err := exec.LookPath("git")
+	realGit, err := testgit.RealGit()
 	if err != nil {
 		t.Fatal(err)
 	}

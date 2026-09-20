@@ -35,10 +35,16 @@ type CommitRaw struct {
 	BranchPattern *string `yaml:"branch_pattern"`
 }
 
+type GlobalCommitRaw struct {
+	CommitRaw         `yaml:",inline"`
+	BranchReplacement *string `yaml:"branch_replacement"`
+}
+
 // Commit is the resolved auto-fix commit configuration.
 type Commit struct {
-	FixMessage    string
-	BranchPattern string
+	FixMessage        string
+	BranchPattern     string
+	BranchReplacement string
 }
 
 type fixMessageData struct {
@@ -49,7 +55,7 @@ type fixMessageData struct {
 
 func validateCommitRaw(raw CommitRaw) error {
 	if raw.BranchPattern != nil {
-		if err := validateBranchPattern(*raw.BranchPattern); err != nil {
+		if _, err := compileBranchPattern(*raw.BranchPattern); err != nil {
 			return err
 		}
 	}
@@ -76,27 +82,64 @@ func validateCommitRaw(raw CommitRaw) error {
 	return nil
 }
 
-func validateBranchPattern(pattern string) error {
+func validateGlobalCommitRaw(raw GlobalCommitRaw) error {
+	if err := validateCommitRaw(raw.CommitRaw); err != nil {
+		return err
+	}
+	if raw.BranchReplacement == nil {
+		return nil
+	}
+	if raw.CommitRaw.BranchPattern == nil {
+		return fmt.Errorf("commit.branch_replacement requires commit.branch_pattern")
+	}
+	return validateBranchReplacement(*raw.BranchReplacement)
+}
+
+func compileBranchPattern(pattern string) (*regexp.Regexp, error) {
 	if strings.TrimSpace(pattern) == "" {
-		return fmt.Errorf("commit.branch_pattern must not be empty")
+		return nil, fmt.Errorf("commit.branch_pattern must not be empty")
 	}
 	if len(pattern) > maxBranchPatternBytes {
-		return fmt.Errorf("commit.branch_pattern must not exceed %d bytes", maxBranchPatternBytes)
+		return nil, fmt.Errorf("commit.branch_pattern must not exceed %d bytes", maxBranchPatternBytes)
 	}
 	if !utf8.ValidString(pattern) {
-		return fmt.Errorf("commit.branch_pattern must contain valid UTF-8")
+		return nil, fmt.Errorf("commit.branch_pattern must contain valid UTF-8")
 	}
 	if containsUnsafeFixMessageRune(pattern) {
-		return fmt.Errorf("commit.branch_pattern must not contain control or unsafe Unicode format characters or line separators")
+		return nil, fmt.Errorf("commit.branch_pattern must not contain control or unsafe Unicode format characters or line separators")
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return fmt.Errorf("parse commit.branch_pattern: %w", err)
+		return nil, fmt.Errorf("parse commit.branch_pattern: %w", err)
 	}
 	if re.NumSubexp() != 1 {
-		return fmt.Errorf("commit.branch_pattern must contain exactly one capture group")
+		return nil, fmt.Errorf("commit.branch_pattern must contain exactly one capture group")
+	}
+	return re, nil
+}
+
+func validateBranchReplacement(replacement string) error {
+	if strings.TrimSpace(replacement) == "" {
+		return fmt.Errorf("commit.branch_replacement must not be empty")
+	}
+	if len(replacement) > maxBranchPatternBytes {
+		return fmt.Errorf("commit.branch_replacement must not exceed %d bytes", maxBranchPatternBytes)
+	}
+	if !utf8.ValidString(replacement) {
+		return fmt.Errorf("commit.branch_replacement must contain valid UTF-8")
+	}
+	if containsUnsafeFixMessageRune(replacement) {
+		return fmt.Errorf("commit.branch_replacement must not contain control or unsafe Unicode format characters or line separators")
+	}
+	const capture = "${1}"
+	if strings.Count(replacement, capture) != 1 || strings.Contains(strings.Replace(replacement, capture, "", 1), "$") {
+		return invalidBranchReplacement()
 	}
 	return nil
+}
+
+func invalidBranchReplacement() error {
+	return fmt.Errorf("commit.branch_replacement must contain exactly one ${1} capture reference and no other dollar signs")
 }
 
 // RenderFixMessage renders and validates a single-line auto-fix commit subject.
@@ -179,7 +222,7 @@ func (c Commit) renderFixMessage(step types.StepName, summary, branch string, re
 
 // BranchValue returns the branch value exposed to commit and PR title
 // templates. BranchPattern, when configured, must capture the identifier in
-// its only capture group; otherwise the normalized branch name is returned.
+// its only capture group. BranchReplacement can add literal text around it.
 func (c Commit) BranchValue(branch string) (string, error) {
 	branch = strings.TrimSpace(strings.TrimPrefix(branch, "refs/heads/"))
 	if c.BranchPattern == "" {
@@ -188,15 +231,25 @@ func (c Commit) BranchValue(branch string) (string, error) {
 		}
 		return branch, nil
 	}
-	re, err := regexp.Compile(c.BranchPattern)
+	re, err := compileBranchPattern(c.BranchPattern)
 	if err != nil {
-		return "", fmt.Errorf("parse commit.branch_pattern: %w", err)
+		return "", err
 	}
 	match := re.FindStringSubmatch(branch)
 	if len(match) < 2 || strings.TrimSpace(match[1]) == "" {
 		return "", fmt.Errorf("commit.branch_pattern did not find an identifier in branch %q", branch)
 	}
-	value := strings.TrimSpace(match[1])
+	value := match[1]
+	if c.BranchReplacement != "" {
+		if err := validateBranchReplacement(c.BranchReplacement); err != nil {
+			return "", err
+		}
+		value = strings.Replace(c.BranchReplacement, "${1}", value, 1)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("commit.branch_pattern did not produce a non-empty identifier for branch %q", branch)
+	}
 	if !utf8.ValidString(value) || containsUnsafeFixMessageRune(value) {
 		return "", fmt.Errorf("commit.branch_pattern captured an invalid branch identifier")
 	}

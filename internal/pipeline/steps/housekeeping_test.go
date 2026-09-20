@@ -252,8 +252,8 @@ func TestLintStep_RunsOwnPassWithoutCombinedResult(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatal("clean lint pass must not park")
 	}
-	if outcome.FixSummary != noChangesAppliedSummary {
-		t.Fatalf("fix summary = %q, want %q", outcome.FixSummary, noChangesAppliedSummary)
+	if outcome.FixSummary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", outcome.FixSummary, NoChangesAppliedSummary)
 	}
 }
 

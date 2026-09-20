@@ -169,8 +169,14 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	}
 
 	switch {
-	case decision.newBranch:
-		// New branch: regular push (no force needed).
+	case decision.newBranch, decision.fastForward:
+		// A branch absent from the remote creates it, and an append-only update
+		// discards nothing by construction, so both are a plain push with no
+		// force and no lease anchor. That leaves the remote, rather than our own
+		// lease bookkeeping, enforcing the no-rewrite property an open PR's head
+		// and a SHA-bound attestation depend on - which is what keeps that head
+		// from being rewritten when the branch integrated a moved base by
+		// merging rather than rebasing (rebase.strategy).
 		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, ref, "", false); err != nil {
 			return fmt.Errorf("push to %s: %w", pushTarget, err)
 		}

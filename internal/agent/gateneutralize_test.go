@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -151,5 +153,169 @@ func TestNeutralizesGateInstructions_HonestOnEffectiveOverride(t *testing.T) {
 	}
 	if !NeutralizesGateInstructions(optOutAgent(t, types.AgentPi, []string{"-nc"})) {
 		t.Error("pi with an explicit -nc must stay neutralized")
+	}
+}
+
+// acpOptOutAgent builds an acpx adapter with the trusted opt-out ON. It passes
+// "acpx" as the binary (the real acpx shim name) rather than the agent name so
+// the target and raw-command resolution match production.
+func acpOptOutAgent(t *testing.T, name types.AgentName, overrides map[string]string) *acpxAgent {
+	t.Helper()
+	a, err := NewWithOptions(name, "acpx", nil, Options{
+		DisableProjectSettings: true,
+		ACPRegistryOverrides:   overrides,
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions(%s): %v", name, err)
+	}
+	acpx, ok := a.(*acpxAgent)
+	if !ok {
+		t.Fatalf("agent type = %T, want *acpxAgent", a)
+	}
+	return acpx
+}
+
+// TestNeutralizesGateInstructions_OMPTargetUnderOptOut is the omp gate-agent
+// admission contract: acp:omp neutralizes (and the gate admits it) only under
+// the opt-out and only on its default launch. A non-omp acp target, the same
+// target without the opt-out, and an operator raw-command override all fail
+// closed - a custom command is opaque, so we cannot prove it applies the
+// suppression overlay and flags.
+func TestNeutralizesGateInstructions_OMPTargetUnderOptOut(t *testing.T) {
+	omp := acpOptOutAgent(t, types.AgentName("acp:omp"), nil)
+	if !NeutralizesGateInstructions(omp) {
+		t.Fatal("acp:omp must neutralize under the opt-out on its default launch")
+	}
+	if err := EnsureGateNeutralized(omp); err != nil {
+		t.Fatalf("acp:omp must pass the gate under the opt-out: %v", err)
+	}
+
+	// Without the opt-out the value must be honest: false.
+	noOptOut, err := NewWithOptions(types.AgentName("acp:omp"), "acpx", nil, Options{})
+	if err != nil {
+		t.Fatalf("NewWithOptions(acp:omp): %v", err)
+	}
+	if NeutralizesGateInstructions(noOptOut) {
+		t.Error("acp:omp must not report neutralized when the repo did not opt out")
+	}
+
+	// A different acp target is not verified and must fail closed.
+	other := acpOptOutAgent(t, types.AgentName("acp:gemini"), nil)
+	if NeutralizesGateInstructions(other) {
+		t.Error("acp:gemini has no verified knob; must NOT report neutralized")
+	}
+	if err := EnsureGateNeutralized(other); err == nil {
+		t.Error("acp:gemini must be refused by the gate under the opt-out")
+	}
+
+	// An operator raw-command override for omp is opaque -> fail closed.
+	overridden := acpOptOutAgent(t, types.AgentName("acp:omp"), map[string]string{"omp": "omp acp --profile custom"})
+	if NeutralizesGateInstructions(overridden) {
+		t.Error("acp:omp with an operator raw-command override must fail closed")
+	}
+	if err := EnsureGateNeutralized(overridden); err == nil {
+		t.Error("acp:omp with an override must be refused by the gate under the opt-out")
+	}
+}
+
+// TestOMPGateNeutralization_AppliesSuppressionOverlayAndFlags proves the wiring,
+// not just the capability bool: a neutralized acp:omp launch replaces the
+// built-in omp target with an `omp acp` command that carries the context-file
+// suppression overlay (via --config) and the rule/skill/extension flags, and the
+// overlay it writes disables every omp context-file discovery provider. Close
+// removes the overlay file.
+func TestOMPGateNeutralization_AppliesSuppressionOverlayAndFlags(t *testing.T) {
+	omp := acpOptOutAgent(t, types.AgentName("acp:omp"), nil)
+
+	rawCommand, err := omp.resolveRawCommand()
+	if err != nil {
+		t.Fatalf("resolveRawCommand: %v", err)
+	}
+	overlayPath := omp.overlayPath
+	if overlayPath == "" {
+		t.Fatal("neutralized omp launch must write a suppression overlay")
+	}
+	// The overlay path MUST be absolute: acpx composes it into the --agent
+	// command while omp resolves --config relative to the gate's CWD (the target
+	// checkout). A relative path (from a relative TMPDIR) would resolve against
+	// the wrong directory and miss - and since omp fails closed on a missing
+	// overlay, that miss would abort every gate run. An absolute path is what
+	// makes the intended overlay load regardless of the launch cwd.
+	if !filepath.IsAbs(overlayPath) {
+		t.Fatalf("overlay path must be absolute, got %q", overlayPath)
+	}
+
+	// The launch is `omp acp --config <overlay>` plus the suppression flags, and
+	// deliberately does NOT fall through to acpx's built-in omp target.
+	wantPrefix := "omp acp --config " + overlayPath
+	if !strings.HasPrefix(rawCommand, wantPrefix) {
+		t.Fatalf("raw command = %q, want prefix %q", rawCommand, wantPrefix)
+	}
+	for _, flag := range []string{"--no-rules", "--no-skills", "--no-extensions"} {
+		if !strings.Contains(rawCommand, " "+flag) {
+			t.Errorf("raw command = %q, missing suppression flag %q", rawCommand, flag)
+		}
+	}
+
+	args := omp.buildArgs(rawCommand, RunOpts{CWD: "/repo"})
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "--agent\x00"+rawCommand) {
+		t.Fatalf("args = %q, want the neutralized command behind --agent", args)
+	}
+	if strings.Contains(joined, "\x00omp\x00") {
+		t.Fatalf("args = %q, must not also append the bare omp target subcommand", args)
+	}
+
+	overlay, err := os.ReadFile(overlayPath)
+	if err != nil {
+		t.Fatalf("read overlay: %v", err)
+	}
+	body := string(overlay)
+	if !strings.Contains(body, "disabledProviders:") {
+		t.Fatalf("overlay does not disable providers:\n%s", body)
+	}
+	for _, provider := range []string{"native", "claude", "codex", "gemini", "opencode", "github", "agents", "agents-md", "claude-md"} {
+		if !strings.Contains(body, "- "+provider+"\n") {
+			t.Errorf("overlay does not disable context-file provider %q:\n%s", provider, body)
+		}
+	}
+	if !strings.Contains(body, "memory:") || !strings.Contains(body, "backend: off") {
+		t.Errorf("overlay does not disable mnemopi memory:\n%s", body)
+	}
+
+	if err := omp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(overlayPath); !os.IsNotExist(err) {
+		t.Errorf("Close must remove the overlay file, stat err = %v", err)
+	}
+}
+
+// TestOverlayPathShellSafe pins the cross-platform path rule that keeps
+// windows-core green: a Windows temp path (backslashes, drive colon) composes
+// safely into acpx's --agent command, while whitespace and quotes are unsafe on
+// every OS and a backslash is anomalous - and refused - off Windows. goos is a
+// parameter so both branches are proven from any host.
+func TestOverlayPathShellSafe(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		goos string
+		want bool
+	}{
+		{"windows temp path is safe", `C:\Users\runneradmin\AppData\Local\Temp\nm-omp-gate-1.yml`, "windows", true},
+		{"windows path with space is unsafe", `C:\Users\John Doe\Temp\nm-omp-gate-1.yml`, "windows", false},
+		{"posix temp path is safe", "/tmp/nm-omp-gate-1.yml", "linux", true},
+		{"posix relative-resolved path is safe", "/var/folders/xy/T/nm-omp-gate-1.yml", "darwin", true},
+		{"backslash is unsafe off windows", `/tmp/a\b/nm-omp-gate-1.yml`, "linux", false},
+		{"posix path with space is unsafe", "/tmp/a b/nm-omp-gate-1.yml", "linux", false},
+		{"quote is unsafe on windows too", `C:\Temp\a"b\nm-omp-gate-1.yml`, "windows", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := overlayPathShellSafe(tc.path, tc.goos); got != tc.want {
+				t.Errorf("overlayPathShellSafe(%q, %q) = %v, want %v", tc.path, tc.goos, got, tc.want)
+			}
+		})
 	}
 }

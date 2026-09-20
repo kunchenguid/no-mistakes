@@ -1,0 +1,38 @@
+diff --git a/pane/pane.go b/pane/pane.go
+index 1111111..2222222 100644
+--- a/pane/pane.go
++++ b/pane/pane.go
+@@ -1 +1,33 @@
+ package pane
++
++// Size and Point are in terminal cells.
++type Size struct{ Cols, Rows int }
++
++type Point struct{ X, Y int }
++
++type Pane struct {
++	size Size
++	pos  Point
++}
++
++// Resize applies the requested size, keeping the pane inside the terminal.
++func (p *Pane) Resize(req Size, term Size) {
++	if req.Cols > term.Cols {
++		req.Cols = term.Cols
++	}
++	if req.Rows > term.Rows {
++		req.Rows = term.Rows
++	}
++	p.size = req
++}
++
++// Move applies the requested position, keeping the pane inside the terminal.
++func (p *Pane) Move(req Point, term Size) {
++	if req.X < 0 {
++		req.X = 0
++	}
++	if req.X+p.size.Cols > term.Cols {
++		req.X = term.Cols - p.size.Cols
++	}
++	p.pos = req
++}
