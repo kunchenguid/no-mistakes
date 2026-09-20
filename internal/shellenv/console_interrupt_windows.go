@@ -44,6 +44,10 @@ func runWindowsCooperativeCommand(eventName, targetPath string, targetArgs []str
 	}
 	defer windows.CloseHandle(cancelEvent)
 
+	// This is the narrow exception to the usual winproc.Harden rule. The target
+	// must inherit this helper's private console for targeted CTRL+BREAK delivery;
+	// Harden would add CREATE_NO_WINDOW and detach it from that console.
+	// HideWindow suppresses a visible window without breaking console membership.
 	target := &exec.Cmd{
 		Path:   targetPath,
 		Args:   append([]string(nil), targetArgs...),
