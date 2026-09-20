@@ -245,6 +245,37 @@ func TestPreserveSubmittedMergeParentRefusesDroppedPrivateContent(t *testing.T) 
 	}
 }
 
+func TestValidateSubmittedMergeParentCancellationRestoresRebasedHead(t *testing.T) {
+	f := newSubmittedMergeFixture(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, f.dir, f.baseSHA, f.submitted, config.Commands{})
+
+	gitCmd(t, f.dir, "reset", "--hard", "origin/main")
+	currentHead := gitCmd(t, f.dir, "rev-parse", "HEAD")
+	currentTree := gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}")
+	fixtureGitAllowFail(t, f.dir, "merge", "--no-ff", "--no-commit", f.submitted)
+	fixtureGit(t, f.dir, "read-tree", "--reset", "-u", currentHead)
+	fixtureGit(t, f.dir, "commit", "--no-edit")
+	if topologyHead := gitCmd(t, f.dir, "rev-parse", "HEAD"); topologyHead == currentHead {
+		t.Fatal("fixture did not create a topology commit")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := validateSubmittedMergeParent(ctx, sctx, submittedMergePreservation{submittedHead: f.submitted}, currentHead, currentTree)
+	if err == nil {
+		t.Fatal("canceled topology validation unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "resolve topology head") {
+		t.Fatalf("topology validation error = %v, want resolution failure", err)
+	}
+	if got := gitCmd(t, f.dir, "rev-parse", "HEAD"); got != currentHead {
+		t.Fatalf("canceled topology validation left HEAD at %s, want %s", got, currentHead)
+	}
+	if got := gitStatusPorcelain(t, f.dir); got != "" {
+		t.Fatalf("canceled topology validation left a dirty worktree: %s", got)
+	}
+}
+
 func TestRebaseStep_OrdinaryRunWithoutPrivateMergeIsUnchanged(t *testing.T) {
 	t.Parallel()
 	f := newMergeFixture(t, false)

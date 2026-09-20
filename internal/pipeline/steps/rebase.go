@@ -334,9 +334,13 @@ func preserveSubmittedMergeParent(ctx context.Context, sctx *pipeline.StepContex
 		return abortSubmittedMerge(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: conclude topology merge: %w", err))
 	}
 
+	return validateSubmittedMergeParent(ctx, sctx, preservation, currentHead, currentTree)
+}
+
+func validateSubmittedMergeParent(ctx context.Context, sctx *pipeline.StepContext, preservation submittedMergePreservation, currentHead, currentTree string) error {
 	preservedHead, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
-		return fmt.Errorf("preserve submitted merge history: resolve topology head: %w", err)
+		return restoreSubmittedMergeHead(ctx, sctx, currentHead, fmt.Errorf("preserve submitted merge history: resolve topology head: %w", err))
 	}
 	parentsLine, err := git.Run(ctx, sctx.WorkDir, "rev-list", "--parents", "-n", "1", preservedHead)
 	if err != nil {
@@ -357,17 +361,19 @@ func preserveSubmittedMergeParent(ctx context.Context, sctx *pipeline.StepContex
 }
 
 func abortSubmittedMerge(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
-	if _, err := git.Run(ctx, sctx.WorkDir, "merge", "--abort"); err != nil {
+	cleanupCtx := context.WithoutCancel(ctx)
+	if _, err := git.Run(cleanupCtx, sctx.WorkDir, "merge", "--abort"); err != nil {
 		return fmt.Errorf("%w; abort topology merge: %v", cause, err)
 	}
-	return verifySubmittedMergeRestore(ctx, sctx, currentHead, cause)
+	return verifySubmittedMergeRestore(cleanupCtx, sctx, currentHead, cause)
 }
 
 func restoreSubmittedMergeHead(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
-	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--hard", currentHead); err != nil {
+	cleanupCtx := context.WithoutCancel(ctx)
+	if _, err := git.Run(cleanupCtx, sctx.WorkDir, "reset", "--hard", currentHead); err != nil {
 		return fmt.Errorf("%w; restore topology head %s: %v", cause, currentHead, err)
 	}
-	return verifySubmittedMergeRestore(ctx, sctx, currentHead, cause)
+	return verifySubmittedMergeRestore(cleanupCtx, sctx, currentHead, cause)
 }
 
 func verifySubmittedMergeRestore(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
