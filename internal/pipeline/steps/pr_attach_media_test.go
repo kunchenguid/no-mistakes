@@ -112,6 +112,50 @@ func TestPRStep_DefaultConfigEmbedsGitHubScreenshotAttachment(t *testing.T) {
 	}
 }
 
+func TestPRStep_DeliveryKeepsGitHubCredentialInsideProtectedCLI(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
+	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
+
+	binDir := fakeCLIBinDir(t)
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+	sctx.Env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE": "gh-protected-attachments",
+		"FAKE_CLI_LOG":  logFile,
+	})
+
+	outcome, err := (&PRStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("PR delivery: %v", err)
+	}
+	if outcome == nil || outcome.PRURL != "https://github.com/test/repo/pull/99" {
+		t.Fatalf("outcome = %+v, want created PR", outcome)
+	}
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logBytes)
+	if strings.Contains(log, "auth token") {
+		t.Fatalf("delivery attempted raw credential disclosure:\n%s", log)
+	}
+	for _, want := range []string{
+		"auth status --hostname github.com",
+		"api --hostname github.com graphql",
+		"api --hostname github.com --method POST",
+		"pr create",
+		"![Checkout screenshot](" + testAttachmentURL + ")",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("protected delivery log missing %q:\n%s", want, log)
+		}
+	}
+}
+
 func TestPRStep_ReusesScreenshotAttachmentAcrossPRRenders(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

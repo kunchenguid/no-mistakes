@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,15 +20,16 @@ import (
 // (internal/attachments/client.go and userasset.go).
 //
 // This is not a documented REST or GraphQL API. gh itself already depends on
-// the same unofficial HTTP endpoint, and Homebrew still lagged 2.99.0 when
-// this shipped, so no-mistakes posts the request from Go rather than requiring
-// `gh --attach` on PATH. The request shape is:
+// the same unofficial HTTP endpoint. no-mistakes sends the request through
+// `gh api` so gh can authenticate it without exporting the raw credential to
+// this process. The request shape is:
 //
-//	POST {uploadsPrefix}user-attachments/assets
-//	  ?name=<basename>&content_type=<mime>&repository_id=<numeric repo id>
-//	Authorization: Bearer <token>
-//	Content-Type: application/octet-stream
-//	Accept: application/vnd.github+json
+//	gh api --hostname <host> --method POST \
+//	  --header "Content-Type: application/octet-stream" \
+//	  --header "Accept: application/vnd.github+json" \
+//	  --input - \
+//	  {uploadsPrefix}user-attachments/assets
+//	    ?name=<basename>&content_type=<mime>&repository_id=<numeric repo id>
 //
 // uploadsPrefix is https://uploads.github.com/ on github.com and
 // https://uploads.<host>/ on GHEC (*.ghe.com). GHES is refused client-side:
@@ -39,13 +38,10 @@ import (
 //
 // Response JSON is {"url":"https://github.com/user-attachments/assets/<uuid>"}.
 //
-// Credential class is an allowlist matching gh: OAuth (gho_), classic PAT
-// (ghp_), fine-grained PAT (github_pat_). Installation / Actions tokens (ghs_)
-// and GitHub App user-to-server tokens (ghu_) are refused before the request;
-// reporters have 404'd the endpoint with GITHUB_TOKEN even with contents:write
-// (cli/cli#14309). Permission allowlist is ADMIN/MAINTAIN/WRITE; READ/TRIAGE
-// 404. Write access is required to upload; repository access is required to
-// view a private asset.
+// gh owns authentication; the endpoint rejects unsupported credential classes.
+// The repository permission allowlist here is ADMIN/MAINTAIN/WRITE; READ/TRIAGE
+// 404 at the endpoint. Write access is required to upload; repository access is
+// required to view a private asset.
 //
 // Client-side file rules, also matching gh: extension only (png, jpg, jpeg,
 // gif, webp, svg, mp4, mov, webm), case-insensitive; regular non-empty files
@@ -172,120 +168,6 @@ func userAssetContentType(path string) (string, bool, error) {
 	return "", false, fmt.Errorf("%s is not a supported file type (supported: %s)", path, strings.Join(supported, ", "))
 }
 
-type githubTokenClass int
-
-const (
-	githubTokenRejected githubTokenClass = iota
-	githubTokenAllowed
-)
-
-func classifyGitHubToken(token string) (githubTokenClass, string) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return githubTokenRejected, "no GitHub token available"
-	}
-	switch {
-	case strings.HasPrefix(token, "ghs_"):
-		return githubTokenRejected, "GitHub App installation and Actions tokens cannot upload user-attachments"
-	case strings.HasPrefix(token, "ghu_"):
-		return githubTokenRejected, "GitHub App user-to-server tokens cannot upload user-attachments"
-	case strings.HasPrefix(token, "gho_"), strings.HasPrefix(token, "ghp_"), strings.HasPrefix(token, "github_pat_"):
-		return githubTokenAllowed, ""
-	default:
-		return githubTokenRejected, "unsupported GitHub authentication type for user-attachments"
-	}
-}
-
-// UserAssetClient posts one validated file to the unofficial upload endpoint.
-type UserAssetClient struct {
-	HTTP         *http.Client
-	UploadPrefix string
-	Token        string
-	RepositoryID int64
-	acceptedHost string
-}
-
-func (c *UserAssetClient) httpClient() *http.Client {
-	if c != nil && c.HTTP != nil {
-		return c.HTTP
-	}
-	return &http.Client{Timeout: userAssetUploadTimeout}
-}
-
-// UploadFile sends asset and returns the user-attachments URL. The URL is
-// checked against gh's response shape before it is returned so a surprising
-// payload cannot become a dead link in a PR body.
-func (c *UserAssetClient) UploadFile(ctx context.Context, asset UserAsset) (string, error) {
-	if c == nil {
-		return "", errors.New("user-attachments client is not configured")
-	}
-	if c.RepositoryID <= 0 {
-		return "", errors.New("could not determine which repository to attach files to")
-	}
-	prefix := strings.TrimSpace(c.UploadPrefix)
-	if prefix == "" {
-		return "", errors.New("user-attachments upload prefix is empty")
-	}
-
-	body, err := os.Open(asset.Path)
-	if err != nil {
-		return "", err
-	}
-	defer body.Close()
-	openedInfo, err := body.Stat()
-	if err != nil {
-		return "", err
-	}
-	if !openedInfo.Mode().IsRegular() || openedInfo.Size() != asset.Size || asset.fileInfo == nil || !os.SameFile(asset.fileInfo, openedInfo) {
-		return "", fmt.Errorf("%s changed after attachment validation", asset.Path)
-	}
-
-	endpoint, err := url.Parse(prefix)
-	if err != nil {
-		return "", err
-	}
-	endpoint = endpoint.JoinPath("user-attachments", "assets")
-	query := endpoint.Query()
-	query.Set("name", filepath.Base(asset.Path))
-	query.Set("content_type", asset.ContentType)
-	query.Set("repository_id", strconv.FormatInt(c.RepositoryID, 10))
-	endpoint.RawQuery = query.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), body)
-	if err != nil {
-		return "", err
-	}
-	req.ContentLength = asset.Size
-	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-
-	httpClient := *c.httpClient()
-	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("user-attachments upload HTTP %d", resp.StatusCode)
-	}
-	var parsed struct {
-		URL string `json:"url"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return "", fmt.Errorf("decode user-attachments response: %w", err)
-	}
-	clean, err := sanitizeUserAttachmentURL(parsed.URL, c.acceptedHost)
-	if err != nil {
-		return "", err
-	}
-	return clean, nil
-}
-
 func sanitizeUserAttachmentURL(raw, host string) (string, error) {
 	clean := strings.TrimSpace(raw)
 	parsed, err := url.ParseRequestURI(clean)
@@ -333,13 +215,6 @@ func (h *Host) UploadUserAsset(ctx context.Context, path string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	token, err := h.authToken(ctx)
-	if err != nil {
-		return "", err
-	}
-	if class, reason := classifyGitHubToken(token); class != githubTokenAllowed {
-		return "", errors.New(reason)
-	}
 	repoID, permission, err := h.userAssetRepo(ctx)
 	if err != nil {
 		return "", err
@@ -350,39 +225,80 @@ func (h *Host) UploadUserAsset(ctx context.Context, path string) (string, error)
 	if !uploadPerms[permission] {
 		return "", errors.New("attaching files requires write access to the repository")
 	}
-	client := &UserAssetClient{
-		HTTP:         h.assetHTTP,
-		UploadPrefix: h.assetUploadPrefix,
-		Token:        token,
-		RepositoryID: repoID,
-		acceptedHost: h.host,
-	}
-	if client.UploadPrefix == "" {
-		client.UploadPrefix = userAssetUploadPrefix(h.host)
-	}
-	if client.HTTP == nil {
-		client.HTTP = &http.Client{Timeout: userAssetUploadTimeout}
-	}
-	return client.UploadFile(ctx, asset)
+	return h.uploadUserAsset(ctx, asset, repoID)
 }
 
-func (h *Host) authToken(ctx context.Context) (string, error) {
-	args := []string{"auth", "token"}
+// uploadUserAsset delegates the authenticated request to gh. In particular,
+// this must not call `gh auth token` or populate an authorization header in
+// no-mistakes: credential custody stays with gh and its configured keychain or
+// credential provider.
+func (h *Host) uploadUserAsset(ctx context.Context, asset UserAsset, repositoryID int64) (string, error) {
+	if repositoryID <= 0 {
+		return "", errors.New("could not determine which repository to attach files to")
+	}
+	body, err := os.Open(asset.Path)
+	if err != nil {
+		return "", err
+	}
+	defer body.Close()
+	openedInfo, err := body.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !openedInfo.Mode().IsRegular() || openedInfo.Size() != asset.Size || asset.fileInfo == nil || !os.SameFile(asset.fileInfo, openedInfo) {
+		return "", fmt.Errorf("%s changed after attachment validation", asset.Path)
+	}
+
+	endpoint, err := url.Parse(userAssetUploadPrefix(h.host))
+	if err != nil {
+		return "", err
+	}
+	endpoint = endpoint.JoinPath("user-attachments", "assets")
+	query := endpoint.Query()
+	query.Set("name", filepath.Base(asset.Path))
+	query.Set("content_type", asset.ContentType)
+	query.Set("repository_id", strconv.FormatInt(repositoryID, 10))
+	endpoint.RawQuery = query.Encode()
+
+	args := []string{"api"}
 	if h.host != "" {
 		args = append(args, "--hostname", h.host)
 	}
-	cmd := h.cmd(ctx, "gh", args...)
+	args = append(args,
+		"--method", "POST",
+		"--header", "Accept: application/vnd.github+json",
+		"--header", "Content-Type: application/octet-stream",
+		"--header", fmt.Sprintf("Content-Length: %d", asset.Size),
+		"--input", "-",
+		endpoint.String(),
+	)
+	uploadCtx, cancel := context.WithTimeout(ctx, userAssetUploadTimeout)
+	defer cancel()
+	cmd := h.cmd(uploadCtx, "gh", args...)
+	cmd.Stdin = body
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail != "" {
-			return "", fmt.Errorf("gh auth token: %s", detail)
+		if errors.Is(uploadCtx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("gh api user-attachments upload timed out: %w", uploadCtx.Err())
 		}
-		return "", fmt.Errorf("gh auth token: %w", err)
+		detail := strings.TrimSpace(stderr.String())
+		if strings.Contains(detail, "HTTP 404") {
+			return "", errors.New("gh api user-attachments upload: attaching files requires write access to the repository (GitHub returned HTTP 404)")
+		}
+		if detail != "" {
+			return "", fmt.Errorf("gh api user-attachments upload: %s", detail)
+		}
+		return "", fmt.Errorf("gh api user-attachments upload: %w", err)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	var response struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		return "", fmt.Errorf("parse gh api user-attachments response: %w", err)
+	}
+	return sanitizeUserAttachmentURL(response.URL, h.host)
 }
 
 func (h *Host) userAssetRepo(ctx context.Context) (int64, string, error) {

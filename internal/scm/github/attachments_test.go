@@ -2,9 +2,6 @@ package github
 
 import (
 	"context"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,32 +26,6 @@ func TestSupportsUserAttachments(t *testing.T) {
 	for host, want := range cases {
 		if got := SupportsUserAttachments(host); got != want {
 			t.Errorf("SupportsUserAttachments(%q) = %v, want %v", host, got, want)
-		}
-	}
-}
-
-func TestClassifyGitHubToken(t *testing.T) {
-	t.Parallel()
-	allowed := []string{"gho_oauth", "ghp_classic", "github_pat_fine"}
-	for _, token := range allowed {
-		class, reason := classifyGitHubToken(token)
-		if class != githubTokenAllowed {
-			t.Errorf("classifyGitHubToken(%q) rejected: %s", token, reason)
-		}
-	}
-	rejected := map[string]string{
-		"":            "no GitHub token",
-		"ghs_actions": "installation",
-		"ghu_app":     "user-to-server",
-		"unknown":     "unsupported",
-	}
-	for token, want := range rejected {
-		class, reason := classifyGitHubToken(token)
-		if class != githubTokenRejected {
-			t.Errorf("classifyGitHubToken(%q) allowed, want rejected", token)
-		}
-		if !strings.Contains(strings.ToLower(reason), strings.ToLower(want)) && reason == "" {
-			t.Errorf("classifyGitHubToken(%q) reason %q does not mention %q", token, reason, want)
 		}
 	}
 }
@@ -111,68 +82,154 @@ func TestValidateUserAsset(t *testing.T) {
 	}
 }
 
-func TestUserAssetClientUploadFile(t *testing.T) {
+func TestHostUploadUserAssetKeepsCredentialInsideGHCLI(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	png := filepath.Join(dir, "checkout.png")
-	body := []byte("fake-png")
-	if err := os.WriteFile(png, body, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	asset, err := ValidateUserAsset(png)
-	if err != nil {
+	png := filepath.Join(dir, "dot.png")
+	if err := os.WriteFile(png, []byte("png"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	var got http.Request
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = *r
-		gotBody, _ = io.ReadAll(r.Body)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"url":"https://github.com/user-attachments/assets/c919a728-162d-435e-83a4-a8636a76a8aa"}`))
-	}))
-	t.Cleanup(server.Close)
+	const uploadURL = "https://github.com/user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	uploadEndpoint := "https://uploads.github.com/user-attachments/assets?content_type=image%2Fpng&name=dot.png&repository_id=42"
+	uploadCommand := "gh api --hostname github.com --method POST --header Accept: application/vnd.github+json --header Content-Type: application/octet-stream --header Content-Length: 3 --input - " + uploadEndpoint
+	commands := map[string]githubTestResponse{
+		"gh auth token --hostname github.com": {
+			stderr: "Automic Vault: Secret Disclosure is not permitted",
+			code:   1,
+		},
+		"gh api --hostname github.com graphql -f query=" + userAssetRepoQuery + " -F owner=test -F name=repo": {
+			stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`,
+		},
+		uploadCommand: {stdout: `{"url":"` + uploadURL + `"}`, wantStdin: "png"},
+	}
+	host := New(githubTestCmdFactory(commands), func() bool { return true }, "github.com", "test/repo")
 
-	client := &UserAssetClient{
-		HTTP:         server.Client(),
-		UploadPrefix: server.URL + "/",
-		Token:        "gho_test-token",
-		RepositoryID: 1354199749,
-		acceptedHost: "github.com",
-	}
-	url, err := client.UploadFile(context.Background(), asset)
+	got, err := host.UploadUserAsset(context.Background(), png)
 	if err != nil {
-		t.Fatalf("UploadFile: %v", err)
+		t.Fatalf("UploadUserAsset: %v", err)
 	}
-	if url != "https://github.com/user-attachments/assets/c919a728-162d-435e-83a4-a8636a76a8aa" {
-		t.Fatalf("url = %q", url)
-	}
-	if got.Method != http.MethodPost {
-		t.Fatalf("method = %s", got.Method)
-	}
-	if got.URL.Path != "/user-attachments/assets" {
-		t.Fatalf("path = %s", got.URL.Path)
-	}
-	q := got.URL.Query()
-	if q.Get("name") != "checkout.png" || q.Get("content_type") != "image/png" || q.Get("repository_id") != "1354199749" {
-		t.Fatalf("query = %s", got.URL.RawQuery)
-	}
-	if got.Header.Get("Authorization") != "Bearer gho_test-token" {
-		t.Fatal("missing bearer authorization")
-	}
-	if got.Header.Get("Content-Type") != "application/octet-stream" {
-		t.Fatalf("content-type = %s", got.Header.Get("Content-Type"))
-	}
-	if got.Header.Get("Accept") != "application/vnd.github+json" {
-		t.Fatalf("accept = %s", got.Header.Get("Accept"))
-	}
-	if string(gotBody) != string(body) {
-		t.Fatalf("body = %q", gotBody)
+	if got != uploadURL {
+		t.Fatalf("URL = %q, want %q", got, uploadURL)
 	}
 }
 
-func TestUserAssetClientUploadFileRejectsReplacedFile(t *testing.T) {
+func TestHostUploadUserAssetSkipsGHES(t *testing.T) {
+	t.Parallel()
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		t.Fatalf("GHES must not call %s %s", name, strings.Join(args, " "))
+		return exec.CommandContext(ctx, "false")
+	}, func() bool { return true }, "ghe.example.com", "ghe.example.com/test/repo")
+	if _, err := host.UploadUserAsset(context.Background(), "dot.png"); err == nil || !strings.Contains(err.Error(), "Enterprise Server") {
+		t.Fatalf("error = %v, want GHES refusal", err)
+	}
+}
+
+func TestHostUploadUserAssetScopesCLIToGHECHost(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	png := filepath.Join(dir, "dot.png")
+	if err := os.WriteFile(png, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const hostName = "acme.ghe.com"
+	const uploadURL = "https://acme.ghe.com/user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	uploadEndpoint := "https://uploads.acme.ghe.com/user-attachments/assets?content_type=image%2Fpng&name=dot.png&repository_id=42"
+	commands := map[string]githubTestResponse{
+		"gh api --hostname " + hostName + " graphql -f query=" + userAssetRepoQuery + " -F owner=test -F name=repo": {
+			stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`,
+		},
+		"gh api --hostname " + hostName + " --method POST --header Accept: application/vnd.github+json --header Content-Type: application/octet-stream --header Content-Length: 3 --input - " + uploadEndpoint: {
+			stdout: `{"url":"` + uploadURL + `"}`, wantStdin: "png",
+		},
+	}
+	host := New(githubTestCmdFactory(commands), func() bool { return true }, hostName, hostName+"/test/repo")
+	got, err := host.UploadUserAsset(context.Background(), png)
+	if err != nil {
+		t.Fatalf("UploadUserAsset: %v", err)
+	}
+	if got != uploadURL {
+		t.Fatalf("URL = %q, want %q", got, uploadURL)
+	}
+}
+
+func TestHostUploadUserAssetDistinguishesCLIAndResponseFailures(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	png := filepath.Join(dir, "dot.png")
+	if err := os.WriteFile(png, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lookup := "gh api --hostname github.com graphql -f query=" + userAssetRepoQuery + " -F owner=test -F name=repo"
+	upload := "gh api --hostname github.com --method POST --header Accept: application/vnd.github+json --header Content-Type: application/octet-stream --header Content-Length: 3 --input - https://uploads.github.com/user-attachments/assets?content_type=image%2Fpng&name=dot.png&repository_id=42"
+
+	t.Run("repository authentication failure", func(t *testing.T) {
+		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+			lookup: {stderr: "authentication required", code: 1},
+		}), func() bool { return true }, "github.com", "test/repo")
+		_, err := host.UploadUserAsset(context.Background(), png)
+		if err == nil || !strings.Contains(err.Error(), "gh api repository for user-attachments: authentication required") {
+			t.Fatalf("error = %v, want repository authentication failure", err)
+		}
+	})
+
+	t.Run("repository malformed response", func(t *testing.T) {
+		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+			lookup: {stdout: "Paste your token: "},
+		}), func() bool { return true }, "github.com", "test/repo")
+		_, err := host.UploadUserAsset(context.Background(), png)
+		if err == nil || !strings.Contains(err.Error(), "parse repository for user-attachments") {
+			t.Fatalf("error = %v, want malformed repository response", err)
+		}
+	})
+
+	t.Run("upload authentication failure", func(t *testing.T) {
+		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+			lookup: {stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`},
+			upload: {stderr: "authentication required", code: 1, wantStdin: "png"},
+		}), func() bool { return true }, "github.com", "test/repo")
+		_, err := host.UploadUserAsset(context.Background(), png)
+		if err == nil || !strings.Contains(err.Error(), "gh api user-attachments upload: authentication required") {
+			t.Fatalf("error = %v, want upload authentication failure", err)
+		}
+	})
+
+	t.Run("write access failure", func(t *testing.T) {
+		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+			lookup: {stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`},
+			upload: {stderr: "gh: Not Found (HTTP 404)", code: 1, wantStdin: "png"},
+		}), func() bool { return true }, "github.com", "test/repo")
+		_, err := host.UploadUserAsset(context.Background(), png)
+		if err == nil || !strings.Contains(err.Error(), "requires write access") {
+			t.Fatalf("error = %v, want actionable write-access failure", err)
+		}
+	})
+
+	t.Run("unexpected prompt text", func(t *testing.T) {
+		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+			lookup: {stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`},
+			upload: {stdout: "Paste your token: ", wantStdin: "png"},
+		}), func() bool { return true }, "github.com", "test/repo")
+		_, err := host.UploadUserAsset(context.Background(), png)
+		if err == nil || !strings.Contains(err.Error(), "parse gh api user-attachments response") {
+			t.Fatalf("error = %v, want malformed response failure", err)
+		}
+	})
+
+	t.Run("unexpected response URL", func(t *testing.T) {
+		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+			lookup: {stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`},
+			upload: {stdout: `{"url":"https://evil.example/not-an-attachment"}`, wantStdin: "png"},
+		}), func() bool { return true }, "github.com", "test/repo")
+		_, err := host.UploadUserAsset(context.Background(), png)
+		if err == nil || !strings.Contains(err.Error(), "not a GitHub attachments host") {
+			t.Fatalf("error = %v, want unexpected URL failure", err)
+		}
+	})
+}
+
+func TestUploadUserAssetRejectsFileReplacedAfterValidation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	png := filepath.Join(dir, "checkout.png")
@@ -193,121 +250,12 @@ func TestUserAssetClientUploadFileRejectsReplacedFile(t *testing.T) {
 	if err := os.Symlink(other, png); err != nil {
 		t.Fatal(err)
 	}
-
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"url":"https://github.com/user-attachments/assets/c919a728-162d-435e-83a4-a8636a76a8aa"}`))
-	}))
-	t.Cleanup(server.Close)
-	client := &UserAssetClient{
-		HTTP:         server.Client(),
-		UploadPrefix: server.URL + "/",
-		Token:        "gho_test",
-		RepositoryID: 1,
-		acceptedHost: "github.com",
-	}
-	if _, err := client.UploadFile(context.Background(), asset); err == nil || !strings.Contains(err.Error(), "changed after attachment validation") {
-		t.Fatalf("error = %v, want replaced-file refusal", err)
-	}
-	if requests != 0 {
-		t.Fatalf("upload requests = %d, want 0", requests)
-	}
-}
-
-func TestUserAssetClientUploadFileRejectsUnexpectedURL(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	png := filepath.Join(dir, "dot.png")
-	if err := os.WriteFile(png, []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	asset, err := ValidateUserAsset(png)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"url":"https://evil.example/not-an-attachment"}`))
-	}))
-	t.Cleanup(server.Close)
-	client := &UserAssetClient{
-		HTTP:         server.Client(),
-		UploadPrefix: server.URL + "/",
-		Token:        "gho_test",
-		RepositoryID: 1,
-		acceptedHost: "github.com",
-	}
-	if _, err := client.UploadFile(context.Background(), asset); err == nil {
-		t.Fatal("expected unexpected URL to fail closed")
-	}
-}
-
-func TestHostUploadUserAssetSkipsGHES(t *testing.T) {
-	t.Parallel()
 	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		t.Fatalf("GHES must not call %s %s", name, strings.Join(args, " "))
+		t.Fatalf("replaced file must not invoke %s %s", name, strings.Join(args, " "))
 		return exec.CommandContext(ctx, "false")
-	}, func() bool { return true }, "ghe.example.com", "ghe.example.com/test/repo")
-	if _, err := host.UploadUserAsset(context.Background(), "dot.png"); err == nil || !strings.Contains(err.Error(), "Enterprise Server") {
-		t.Fatalf("error = %v, want GHES refusal", err)
-	}
-}
-
-func TestHostUploadUserAssetSkipsInstallationToken(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	png := filepath.Join(dir, "dot.png")
-	if err := os.WriteFile(png, []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh auth token --hostname github.com": {stdout: "ghs_installation\n"},
-	}), func() bool { return true }, "github.com", "test/repo")
-	_, err := host.UploadUserAsset(context.Background(), png)
-	if err == nil || !strings.Contains(err.Error(), "installation") {
-		t.Fatalf("error = %v, want installation-token refusal", err)
-	}
-}
-
-func TestHostUploadUserAssetUploadsWithOAuthToken(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	png := filepath.Join(dir, "dot.png")
-	if err := os.WriteFile(png, []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer gho_operator" {
-			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
-		}
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"url":"https://github.com/user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}`))
-	}))
-	t.Cleanup(server.Close)
-
-	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
-		switch {
-		case key == "gh auth token --hostname github.com":
-			return githubTestCmdFactory(map[string]githubTestResponse{key: {stdout: "gho_operator\n"}})(ctx, name, args...)
-		case strings.HasPrefix(key, "gh api --hostname github.com graphql") && strings.Contains(key, "owner=test") && strings.Contains(key, "name=repo"):
-			return githubTestCmdFactory(map[string]githubTestResponse{key: {stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`}})(ctx, name, args...)
-		default:
-			t.Fatalf("unexpected command %q", key)
-			return exec.CommandContext(ctx, "false")
-		}
 	}, func() bool { return true }, "github.com", "test/repo")
-	host.assetHTTP = server.Client()
-	host.assetUploadPrefix = server.URL + "/"
-
-	url, err := host.UploadUserAsset(context.Background(), png)
-	if err != nil {
-		t.Fatalf("UploadUserAsset: %v", err)
-	}
-	if !strings.Contains(url, "user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") {
-		t.Fatalf("url = %q", url)
+	if _, err := host.uploadUserAsset(context.Background(), asset, 42); err == nil || !strings.Contains(err.Error(), "changed after attachment validation") {
+		t.Fatalf("error = %v, want replaced-file refusal", err)
 	}
 }
 
