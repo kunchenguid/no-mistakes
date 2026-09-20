@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -26,6 +27,8 @@ type RebaseStep struct{}
 func (s *RebaseStep) Name() types.StepName { return types.StepRebase }
 
 const forkBranchRefPrefix = "refs/remotes/no-mistakes-push/"
+
+const submittedMergeCleanupTimeout = 30 * time.Second
 
 func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
@@ -361,7 +364,8 @@ func validateSubmittedMergeParent(ctx context.Context, sctx *pipeline.StepContex
 }
 
 func abortSubmittedMerge(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
-	cleanupCtx := context.WithoutCancel(ctx)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submittedMergeCleanupTimeout)
+	defer cancel()
 	if _, err := git.Run(cleanupCtx, sctx.WorkDir, "merge", "--abort"); err != nil {
 		return fmt.Errorf("%w; abort topology merge: %v", cause, err)
 	}
@@ -369,7 +373,8 @@ func abortSubmittedMerge(ctx context.Context, sctx *pipeline.StepContext, curren
 }
 
 func restoreSubmittedMergeHead(ctx context.Context, sctx *pipeline.StepContext, currentHead string, cause error) error {
-	cleanupCtx := context.WithoutCancel(ctx)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submittedMergeCleanupTimeout)
+	defer cancel()
 	if _, err := git.Run(cleanupCtx, sctx.WorkDir, "reset", "--hard", currentHead); err != nil {
 		return fmt.Errorf("%w; restore topology head %s: %v", cause, currentHead, err)
 	}
