@@ -506,6 +506,7 @@ What that boundary protects is the gate's *declaration*, not the repository file
 
 All configured `commands.*` entries and repository gate commands are scoped to their step.
 After no-mistakes starts one of these commands, it terminates any remaining child processes from that command when the command exits, fails, or the step is cancelled.
+On Windows, cancellation first sends `CTRL_BREAK` to the command's isolated process group and allows a three-second cleanup window before forcibly terminating the job. A command that owns external resources should handle the corresponding runtime signal (for example, Node.js emits `SIGBREAK`), finish cleanup within that window, and still expect forced termination if it does not exit.
 Do not rely on a configured command to leave a background server or watcher running after it returns; keep that service inside the command lifetime or start it outside no-mistakes.
 
 ### ignore_patterns

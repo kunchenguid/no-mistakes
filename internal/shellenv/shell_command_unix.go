@@ -82,6 +82,12 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	}
 }
 
+// ConfigureCooperativeShellCommand is identical to ConfigureShellCommand on
+// Unix, where every configured process group already receives SIGTERM first.
+func ConfigureCooperativeShellCommand(cmd *exec.Cmd) {
+	ConfigureShellCommand(cmd)
+}
+
 // StartShellCommand starts cmd after ConfigureShellCommand has prepared its
 // process-group lifecycle. Unix needs no extra setup beyond cmd.Start, but the
 // wrapper keeps call sites aligned with Windows job-object setup.

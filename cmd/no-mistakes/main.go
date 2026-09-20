@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/cli"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/update"
 )
@@ -25,6 +26,14 @@ func main() {
 }
 
 func run() int {
+	if handled, err := shellenv.RunWindowsConsoleInterruptHelper(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+
 	_ = cleanupOldExecutable()
 
 	if root, ok, err := daemonLogSinkRootFromArgs(os.Args[1:]); err != nil {
