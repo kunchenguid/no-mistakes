@@ -35,7 +35,7 @@ When a human resolves a findings gate with Approve, Skip, or Abort without selec
 
 Review, Test, Document, Lint, CI, and repository gate fix agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
 
-Declines and earlier-run context are advisory and fail open. It tells agents not to implement or re-report a declined finding unless the current code introduces a materially different problem, but that advisory history alone does not block a step or commit. Rebase fix prompts do not receive this decision history.
+Declines and earlier-run context are advisory and fail open. This history tells agents not to implement or re-report a declined finding unless the current code introduces a materially different problem, but it alone does not block a step or commit. Rebase fix prompts do not receive this decision history.
 
 Positive human `fix` selections bind subsequent work in the same run. Review and Test receive their complete selected findings and user instructions as acceptance criteria, ahead of conflicting original intent or legacy tests. Independent Review reports a source-backed assessment for every recorded fix decision, even when the decision's path is ignored or a reversal leaves no net diff. Missing, contradicted, or unverified assessments produce named `ask-user` findings; an empty ordinary findings list cannot certify those decisions. Unreadable decision data refuses validation instead of silently omitting criteria; the authoritative criteria are not truncated to the advisory history budget. Later explicit human rulings can supersede earlier decisions.
 
@@ -225,6 +225,7 @@ Pushes the validated branch to the configured push target.
 
 - If `commands.format` is set, ensures [`commands.prepare`](/no-mistakes/reference/repo-config/#commandsprepare) has succeeded once for the isolated worktree, then runs the formatter
 - Commits any uncommitted changes left by pipeline agents or the formatter with message `no-mistakes: apply agent fixes`
+- Applies the [recorded-fix-decision revalidation boundary](#finding-decision-history) before publication, which can restart the existing pipeline at Review
 - Without fork routing, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
 - With GitHub fork routing, the push target is `repos.fork_url`
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
