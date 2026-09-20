@@ -87,16 +87,15 @@ func TestConfigureCooperativeShellCommandCancelAllowsCleanup(t *testing.T) {
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
-	done := make(chan error, 1)
-	go func() { done <- RunShellCommand(cmd) }()
-	childPID := waitForWindowsHelperPID(t, ready, done, &output)
+	run := startWindowsCommandCancellationTest(t, cancel, cmd)
+	childPID := waitForWindowsHelperPID(t, ready, run, &output)
 	if childPID == cmd.Process.Pid {
 		t.Fatalf("helper PID = shell PID %d; want a real cmd.exe descendant", childPID)
 	}
 	cancel()
 
 	select {
-	case <-done:
+	case <-run.done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("cooperating command did not exit after cancellation")
 	}
@@ -122,9 +121,8 @@ func TestConfigureCooperativeShellCommandCancelForcesNonCooperatingTree(t *testi
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
-	done := make(chan error, 1)
-	go func() { done <- RunShellCommand(cmd) }()
-	childPID := waitForWindowsHelperPID(t, ready, done, &output)
+	run := startWindowsCommandCancellationTest(t, cancel, cmd)
+	childPID := waitForWindowsHelperPID(t, ready, run, &output)
 	if childPID == cmd.Process.Pid {
 		t.Fatalf("helper PID = shell PID %d; want a real cmd.exe descendant", childPID)
 	}
@@ -137,7 +135,7 @@ func TestConfigureCooperativeShellCommandCancelForcesNonCooperatingTree(t *testi
 	cancel()
 
 	select {
-	case <-done:
+	case <-run.done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("noncooperating command tree survived forced cancellation")
 	}
@@ -226,13 +224,36 @@ func windowsCommandCancellationHelper(ctx context.Context) *exec.Cmd {
 		`%NM_WINDOWS_HELPER_EXE% -test.run=TestWindowsCommandCancellationHelper`)
 }
 
-func waitForWindowsHelperPID(t *testing.T, path string, done <-chan error, output *bytes.Buffer) int {
+type windowsCommandCancellationTestRun struct {
+	done chan struct{}
+	err  error
+}
+
+func startWindowsCommandCancellationTest(t *testing.T, cancel context.CancelFunc, cmd *exec.Cmd) *windowsCommandCancellationTestRun {
+	t.Helper()
+	run := &windowsCommandCancellationTestRun{done: make(chan struct{})}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-run.done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("Windows command did not exit during test cleanup")
+		}
+	})
+	go func() {
+		run.err = RunShellCommand(cmd)
+		close(run.done)
+	}()
+	return run
+}
+
+func waitForWindowsHelperPID(t *testing.T, path string, run *windowsCommandCancellationTestRun, output *bytes.Buffer) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case err := <-done:
-			t.Fatalf("cmd.exe helper exited before ready: %v\n%s", err, output.String())
+		case <-run.done:
+			t.Fatalf("cmd.exe helper exited before ready: %v\n%s", run.err, output.String())
 		default:
 		}
 		contents, err := os.ReadFile(path)
