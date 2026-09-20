@@ -267,9 +267,11 @@ func discoverSubmittedMergePreservation(ctx context.Context, sctx *pipeline.Step
 }
 
 // preserveSubmittedMergeParent rejoins a rebased head to the exact submitted
-// merge before the run records its new head. The current tree is authoritative:
-// the topology commit may add ancestry, but it must not add, remove, or replace
-// any content produced by the rebase. A regular Git merge is attempted first;
+// merge before the run records its new head. The existing publication
+// reconciliation boundary first proves that the rebased tree retains the
+// private mirror's content. The topology commit may then add ancestry, but it
+// must not add, remove, or replace any content produced by the rebase. A
+// regular Git merge is attempted first;
 // when it conflicts, resetting its index to the already accepted current tree
 // resolves that topology-only merge explicitly. The tree and parent order are
 // proved again before returning, so a merge that would import unaccepted
