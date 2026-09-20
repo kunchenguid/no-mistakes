@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	gatepkg "github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
@@ -304,6 +305,10 @@ func preserveSubmittedMergeParent(ctx context.Context, sctx *pipeline.StepContex
 	currentTree, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", currentHead+"^{tree}")
 	if err != nil {
 		return fmt.Errorf("preserve submitted merge history: resolve rebased tree: %w", err)
+	}
+	branch := strings.TrimPrefix(preservation.branchRef, "refs/heads/")
+	if _, err := gatepkg.PlanMirrorPublicationReconciliation(ctx, sctx.GateDir, sctx.WorkDir, branch, currentHead, ""); err != nil {
+		return fmt.Errorf("preserve submitted merge history: prove private mirror content survived rebase: %w", err)
 	}
 
 	sctx.Log(fmt.Sprintf("preserving submitted merge history through rebase (%s)", shortSHA(preservation.submittedHead)))

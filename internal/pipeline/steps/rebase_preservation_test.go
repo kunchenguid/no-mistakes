@@ -210,6 +210,41 @@ func TestRebaseStep_DoesNotBridgeWhenPrivateMirrorDiffers(t *testing.T) {
 	}
 }
 
+func TestPreserveSubmittedMergeParentRefusesDroppedPrivateContent(t *testing.T) {
+	f := newSubmittedMergeFixture(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, f.dir, f.baseSHA, f.submitted, config.Commands{})
+	gateDir := setupGateMirror(t, sctx)
+	gitCmd(t, gateDir, "fetch", f.dir, f.private+":refs/heads/feature")
+
+	gitCmd(t, f.dir, "reset", "--hard", "origin/main")
+	writeFixtureFile(t, f.dir, "shared.txt", "resolved without private content\n")
+	gitCmd(t, f.dir, "commit", "-am", "rebased conflict resolution")
+	rebasedHead := gitCmd(t, f.dir, "rev-parse", "HEAD")
+
+	err := preserveSubmittedMergeParent(context.Background(), sctx, submittedMergePreservation{
+		submittedHead: f.submitted,
+		privateHead:   f.private,
+		branchRef:     "refs/heads/feature",
+	})
+	if err == nil {
+		t.Fatal("topology bridge accepted a rebased head that dropped private content")
+	}
+	for _, want := range []string{f.private, "private mirror content", "at-risk"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("preservation refusal = %v, want %q", err, want)
+		}
+	}
+	if got := gitCmd(t, f.dir, "rev-parse", "HEAD"); got != rebasedHead {
+		t.Fatalf("refused preservation moved HEAD to %s, want %s", got, rebasedHead)
+	}
+	if got := parents(t, f.dir, rebasedHead); len(got) != 1 {
+		t.Fatalf("refused preservation created a topology bridge: %v", got)
+	}
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != f.private {
+		t.Fatalf("refused preservation moved private mirror to %s, want %s", got, f.private)
+	}
+}
+
 func TestRebaseStep_OrdinaryRunWithoutPrivateMergeIsUnchanged(t *testing.T) {
 	t.Parallel()
 	f := newMergeFixture(t, false)
