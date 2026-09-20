@@ -38,7 +38,7 @@ type shellCommandJobState struct {
 	cancelEventName     string
 	cooperative         bool
 	assigned            atomic.Bool
-	cooperativeDeadline atomic.Int64
+	cooperativeDeadline atomic.Pointer[time.Time]
 }
 
 type jobObjectBasicAccountingInformation struct {
@@ -133,7 +133,8 @@ func configureWindowsShellCommand(cmd *exec.Cmd, cooperative bool) {
 		if job, ok := shellCommandJob(cmd); ok && job.assigned.Load() {
 			if job.cooperative && job.cancelEvent != 0 {
 				if err := windows.SetEvent(job.cancelEvent); err == nil {
-					job.cooperativeDeadline.Store(time.Now().Add(windowsTerminateGrace).UnixNano())
+					deadline := time.Now().Add(windowsTerminateGrace)
+					job.cooperativeDeadline.Store(&deadline)
 					return nil
 				}
 			}
@@ -186,8 +187,8 @@ func TerminateShellCommandGroup(cmd *exec.Cmd) {
 		return
 	}
 	if job, ok := shellCommandJob(cmd); ok && job.assigned.Load() {
-		if deadline := job.cooperativeDeadline.Load(); deadline > 0 {
-			waitForWindowsJobExit(job.handle, time.Until(time.Unix(0, deadline)))
+		if deadline := job.cooperativeDeadline.Load(); deadline != nil {
+			waitForWindowsJobExit(job.handle, time.Until(*deadline))
 		}
 		terminateShellCommandJob(cmd, true)
 		return
