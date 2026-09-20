@@ -195,14 +195,14 @@ func TestHostUploadUserAssetDistinguishesCLIAndResponseFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("write access failure", func(t *testing.T) {
+	t.Run("ambiguous upload rejection", func(t *testing.T) {
 		host := New(githubTestCmdFactory(map[string]githubTestResponse{
 			lookup: {stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`},
 			upload: {stderr: "gh: Not Found (HTTP 404)", code: 1, wantStdin: "png"},
 		}), func() bool { return true }, "github.com", "test/repo")
 		_, err := host.UploadUserAsset(context.Background(), png)
-		if err == nil || !strings.Contains(err.Error(), "requires write access") {
-			t.Fatalf("error = %v, want actionable write-access failure", err)
+		if err == nil || !strings.Contains(err.Error(), "repository write access") || !strings.Contains(err.Error(), "credential type supported") {
+			t.Fatalf("error = %v, want both possible HTTP 404 causes", err)
 		}
 	})
 

@@ -285,7 +285,7 @@ func (h *Host) uploadUserAsset(ctx context.Context, asset UserAsset, repositoryI
 		}
 		detail := strings.TrimSpace(stderr.String())
 		if strings.Contains(detail, "HTTP 404") {
-			return "", errors.New("gh api user-attachments upload: attaching files requires write access to the repository (GitHub returned HTTP 404)")
+			return "", errors.New("gh api user-attachments upload: GitHub returned HTTP 404; verify repository write access and use a credential type supported by GitHub user-attachments")
 		}
 		if detail != "" {
 			return "", fmt.Errorf("gh api user-attachments upload: %s", detail)
