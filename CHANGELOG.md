@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.80.1](https://github.com/kunchenguid/no-mistakes/compare/v1.80.0...v1.80.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pipeline:** preserve recorded human fix decisions ([#1135](https://github.com/kunchenguid/no-mistakes/issues/1135)) ([2c3a301](https://github.com/kunchenguid/no-mistakes/commit/2c3a3013d2a221f4549d7fa7c458a11ef88023e5))
+
 ## [1.80.0](https://github.com/kunchenguid/no-mistakes/compare/v1.79.0...v1.80.0) (2026-09-20)
 
 
