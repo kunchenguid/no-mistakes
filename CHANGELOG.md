@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.80.0](https://github.com/kunchenguid/no-mistakes/compare/v1.79.0...v1.80.0) (2026-09-20)
+
+
+### Features
+
+* **pipeline:** add tighten-only caller-side control to omit the public Intent section ([#1132](https://github.com/kunchenguid/no-mistakes/issues/1132)) ([1d1ef5f](https://github.com/kunchenguid/no-mistakes/commit/1d1ef5f8d8657415ec9dde0342fe3f7f9b574c8c))
+
+
+### Bug Fixes
+
+* **shellenv:** gracefully cancel Windows repository commands ([#1134](https://github.com/kunchenguid/no-mistakes/issues/1134)) ([14d5e60](https://github.com/kunchenguid/no-mistakes/commit/14d5e60efc9d4d2606d906a56120e3dee7e134e1))
+
 ## [1.79.0](https://github.com/kunchenguid/no-mistakes/compare/v1.78.0...v1.79.0) (2026-09-19)
 
 
