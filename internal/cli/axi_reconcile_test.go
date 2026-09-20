@@ -292,7 +292,9 @@ func TestTriggerRunRejectedPushRestoresReconciledGateRef(t *testing.T) {
 		t.Fatalf("failed submission moved caller head to %s, want %s", got, liveHead)
 	}
 
-	receipt, err := triggerProofRun(ctx, env, "main", liveHead, nil, "retry safely", "", "nonce", "generation")
+	proofCtx, proofCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	receipt, err := triggerProofRun(proofCtx, env, "main", liveHead, nil, "retry safely", "", "nonce", "generation")
+	proofCancel()
 	if err == nil || !strings.Contains(err.Error(), "submission-rejected") || receipt != nil {
 		t.Fatalf("rejected proof submission: receipt=%#v err=%v", receipt, err)
 	}
