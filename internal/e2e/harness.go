@@ -187,7 +187,11 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 func (h *Harness) writeLoginShellPathSeed() {
 	line := "export PATH=" + shellQuote(h.BinDir) + ":$PATH\n"
-	for _, name := range []string{".zshenv", ".zprofile", ".bash_profile", ".profile"} {
+	// Interactive zsh reads the system zshrc after the user zprofile. Some
+	// managed systems prepend protected tool directories there, so seed the
+	// user zshrc too and keep the hermetic fake binaries first at the end of
+	// startup. Without this, e2e PR tests can invoke an authenticated system gh.
+	for _, name := range []string{".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".profile"} {
 		if err := os.WriteFile(filepath.Join(h.HomeDir, name), []byte(line), 0o644); err != nil {
 			h.t.Fatalf("write %s: %v", name, err)
 		}
