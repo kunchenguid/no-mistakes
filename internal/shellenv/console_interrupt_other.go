@@ -2,7 +2,7 @@
 
 package shellenv
 
-// RunWindowsConsoleInterruptHelper is a no-op on non-Windows platforms.
-func RunWindowsConsoleInterruptHelper(args []string) (bool, error) {
-	return false, nil
+// RunWindowsCooperativeCommandHelper is a no-op on non-Windows platforms.
+func RunWindowsCooperativeCommandHelper(args []string) (bool, int, error) {
+	return false, 0, nil
 }

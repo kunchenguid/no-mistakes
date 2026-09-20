@@ -26,12 +26,11 @@ func main() {
 }
 
 func run() int {
-	if handled, err := shellenv.RunWindowsConsoleInterruptHelper(os.Args[1:]); handled {
+	if handled, exitCode, err := shellenv.RunWindowsCooperativeCommandHelper(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
 		}
-		return 0
+		return exitCode
 	}
 
 	_ = cleanupOldExecutable()

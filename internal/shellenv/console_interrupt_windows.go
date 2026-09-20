@@ -3,76 +3,90 @@
 package shellenv
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"time"
+	"syscall"
 
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"golang.org/x/sys/windows"
 )
 
-const windowsConsoleInterruptArg = "--internal-windows-console-interrupt="
+const windowsCooperativeCommandArg = "--internal-windows-cooperative-command="
 
-var (
-	kernel32          = windows.NewLazySystemDLL("kernel32.dll")
-	procAttachConsole = kernel32.NewProc("AttachConsole")
-	procFreeConsole   = kernel32.NewProc("FreeConsole")
-)
+// RunWindowsCooperativeCommandHelper handles the private console process that
+// launches a configured command in a targetable process group.
+func RunWindowsCooperativeCommandHelper(args []string) (bool, int, error) {
+	if len(args) == 0 || !strings.HasPrefix(args[0], windowsCooperativeCommandArg) {
+		return false, 0, nil
+	}
+	if len(args) < 3 {
+		return true, 1, errors.New("missing Windows cooperative command arguments")
+	}
 
-// RunWindowsConsoleInterruptHelper handles the private subprocess mode used to
-// deliver CTRL+BREAK to a command's console. The helper is necessary because a
-// process can attach to only one console at a time; attaching the daemon itself
-// would race every other command it starts. It must be called before ordinary
-// CLI initialization.
-func RunWindowsConsoleInterruptHelper(args []string) (bool, error) {
-	if len(args) != 1 || !strings.HasPrefix(args[0], windowsConsoleInterruptArg) {
-		return false, nil
+	eventName := strings.TrimPrefix(args[0], windowsCooperativeCommandArg)
+	if eventName == "" {
+		return true, 1, errors.New("empty Windows cooperative cancel event name")
 	}
-	pidText := strings.TrimPrefix(args[0], windowsConsoleInterruptArg)
-	pid, err := strconv.ParseUint(pidText, 10, 32)
-	if err != nil || pid == 0 {
-		return true, fmt.Errorf("invalid Windows console process ID %q", pidText)
-	}
-	return true, generateWindowsConsoleInterrupt(uint32(pid))
+	exitCode, err := runWindowsCooperativeCommand(eventName, args[1], args[2:])
+	return true, exitCode, err
 }
 
-func sendWindowsConsoleInterrupt(pid uint32) error {
-	exe, err := os.Executable()
+func runWindowsCooperativeCommand(eventName, targetPath string, targetArgs []string) (int, error) {
+	eventNamePtr, err := windows.UTF16PtrFromString(eventName)
 	if err != nil {
-		return err
+		return 1, fmt.Errorf("encode Windows cooperative cancel event name: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, windowsConsoleInterruptArg+strconv.FormatUint(uint64(pid), 10))
-	winproc.Harden(cmd)
-	output, err := cmd.CombinedOutput()
+	cancelEvent, err := windows.OpenEvent(windows.SYNCHRONIZE, false, eventNamePtr)
 	if err != nil {
-		return fmt.Errorf("send Windows console interrupt: %w: %s", err, strings.TrimSpace(string(output)))
+		return 1, fmt.Errorf("open Windows cooperative cancel event: %w", err)
 	}
-	return nil
+	defer windows.CloseHandle(cancelEvent)
+
+	target := &exec.Cmd{
+		Path:   targetPath,
+		Args:   append([]string(nil), targetArgs...),
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+		SysProcAttr: &syscall.SysProcAttr{
+			CreationFlags: windows.CREATE_NEW_PROCESS_GROUP,
+			HideWindow:    true,
+		},
+	}
+	if err := target.Start(); err != nil {
+		return 1, fmt.Errorf("start Windows cooperative command: %w", err)
+	}
+
+	targetHandle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(target.Process.Pid))
+	if err != nil {
+		return windowsCommandExit(target.Wait())
+	}
+	defer windows.CloseHandle(targetHandle)
+
+	event, err := windows.WaitForMultipleObjects([]windows.Handle{cancelEvent, targetHandle}, false, windows.INFINITE)
+	if err != nil {
+		return 1, fmt.Errorf("wait for Windows cooperative command: %w", err)
+	}
+	if event == windows.WAIT_OBJECT_0 {
+		if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(target.Process.Pid)); err != nil {
+			return 1, fmt.Errorf("send CTRL_BREAK to Windows command group: %w", err)
+		}
+		if _, err := windows.WaitForSingleObject(targetHandle, windows.INFINITE); err != nil {
+			return 1, fmt.Errorf("wait for interrupted Windows cooperative command: %w", err)
+		}
+	}
+	return windowsCommandExit(target.Wait())
 }
 
-func generateWindowsConsoleInterrupt(pid uint32) error {
-	// The helper is normally launched with CREATE_NO_WINDOW, but detaching first
-	// also makes this safe when a test runner or unusual host supplied a console.
-	procFreeConsole.Call()
-	if r, _, err := procAttachConsole.Call(uintptr(pid)); r == 0 {
-		return fmt.Errorf("AttachConsole(%d): %w", pid, err)
+func windowsCommandExit(err error) (int, error) {
+	if err == nil {
+		return 0, nil
 	}
-	defer procFreeConsole.Call()
-
-	// CTRL+BREAK is the Windows control event that can be limited to the process
-	// group ConfigureShellCommand created. The sender is attached to the same
-	// private console but is not part of that group, so it does not receive it.
-	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, pid); err != nil {
-		return fmt.Errorf("GenerateConsoleCtrlEvent: %w", err)
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), nil
 	}
-	// Delivery is asynchronous. Keep the sender attached briefly so teardown of
-	// its console attachment cannot race the target handlers starting.
-	time.Sleep(100 * time.Millisecond)
-	return nil
+	return 1, err
 }

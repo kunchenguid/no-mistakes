@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"golang.org/x/sys/windows"
 )
 
@@ -70,7 +69,7 @@ func TestStartShellCommandFailsWhenJobSetupFails(t *testing.T) {
 }
 
 func TestConfigureCooperativeShellCommandCancelAllowsCleanup(t *testing.T) {
-	installWindowsConsoleInterruptTestSender(t)
+	installWindowsCooperativeCommandTestHelper(t)
 
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
@@ -107,7 +106,7 @@ func TestConfigureCooperativeShellCommandCancelAllowsCleanup(t *testing.T) {
 }
 
 func TestConfigureCooperativeShellCommandCancelForcesNonCooperatingTree(t *testing.T) {
-	installWindowsConsoleInterruptTestSender(t)
+	installWindowsCooperativeCommandTestHelper(t)
 
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
@@ -129,6 +128,11 @@ func TestConfigureCooperativeShellCommandCancelForcesNonCooperatingTree(t *testi
 	if childPID == cmd.Process.Pid {
 		t.Fatalf("helper PID = shell PID %d; want a real cmd.exe descendant", childPID)
 	}
+	childHandle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(childPID))
+	if err != nil {
+		t.Fatalf("open noncooperating descendant %d: %v", childPID, err)
+	}
+	defer windows.CloseHandle(childHandle)
 	started := time.Now()
 	cancel()
 
@@ -139,6 +143,13 @@ func TestConfigureCooperativeShellCommandCancelForcesNonCooperatingTree(t *testi
 	}
 	if elapsed := time.Since(started); elapsed < windowsTerminateGrace {
 		t.Fatalf("forced cancellation took %s, want at least cooperative grace %s", elapsed, windowsTerminateGrace)
+	}
+	state, err := windows.WaitForSingleObject(childHandle, 2_000)
+	if err != nil {
+		t.Fatalf("observe noncooperating descendant exit: %v", err)
+	}
+	if state != windows.WAIT_OBJECT_0 {
+		t.Fatalf("noncooperating descendant %d remained alive after forced cancellation", childPID)
 	}
 }
 
@@ -163,34 +174,48 @@ func TestWindowsCommandCancellationHelper(t *testing.T) {
 	}
 }
 
-func TestWindowsConsoleInterruptSenderHelper(t *testing.T) {
-	pidText := os.Getenv("NM_WINDOWS_CONSOLE_TARGET_PID")
-	if pidText == "" {
+func TestWindowsCooperativeCommandLauncherHelper(t *testing.T) {
+	separator := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 || separator == len(os.Args)-1 {
 		return
 	}
-	pid, err := strconv.ParseUint(pidText, 10, 32)
+	handled, exitCode, err := RunWindowsCooperativeCommandHelper(os.Args[separator+1:])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := generateWindowsConsoleInterrupt(uint32(pid)); err != nil {
-		t.Fatal(err)
+	if !handled {
+		t.Fatal("Windows cooperative command helper arguments were not recognized")
+	}
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 }
 
-func installWindowsConsoleInterruptTestSender(t *testing.T) {
+func installWindowsCooperativeCommandTestHelper(t *testing.T) {
 	t.Helper()
-	old := sendWindowsConsoleInterruptFunc
-	sendWindowsConsoleInterruptFunc = func(pid uint32) error {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestWindowsConsoleInterruptSenderHelper$")
-		cmd.Env = append(os.Environ(), "NM_WINDOWS_CONSOLE_TARGET_PID="+strconv.FormatUint(uint64(pid), 10))
-		winproc.Harden(cmd)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return errors.New(string(output))
-		}
-		return nil
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { sendWindowsConsoleInterruptFunc = old })
+	old := windowsCooperativeHelperCommandFunc
+	windowsCooperativeHelperCommandFunc = func(eventName, targetPath string, targetArgs []string) (string, []string, error) {
+		args := []string{
+			exe,
+			"-test.run=^TestWindowsCooperativeCommandLauncherHelper$",
+			"--",
+			windowsCooperativeCommandArg + eventName,
+			targetPath,
+		}
+		args = append(args, targetArgs...)
+		return exe, args, nil
+	}
+	t.Cleanup(func() { windowsCooperativeHelperCommandFunc = old })
 }
 
 func windowsCommandCancellationHelper(ctx context.Context) *exec.Cmd {
