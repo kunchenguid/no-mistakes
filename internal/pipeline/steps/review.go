@@ -33,7 +33,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {

@@ -820,7 +820,7 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	// Check if the branch has any diff against the default branch.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
 	defaultBranch := effectivePRBaseBranch(sctx)
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
+	baseSHA := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, defaultBranch)
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
 		sctx.Log("empty diff after rebase, skipping remaining steps")

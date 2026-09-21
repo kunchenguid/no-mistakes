@@ -40,13 +40,22 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 
 // resolveBranchBaseSHA returns the branch base commit relative to the default
 // branch when possible. This keeps pipeline steps scoped to the full branch,
-// not just the last pushed delta. If merge-base cannot be determined, it falls
-// back to resolveBaseSHA.
-func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
-	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
+// not just the last pushed delta. It fetches the default branch's current
+// remote tip first (same pattern as resolveRunDefaultBranchTip) so the
+// merge-base is computed against the live base, not whatever origin/<base>
+// happened to be sitting at in the worktree - a stale local ref otherwise
+// drafts PR content (and other consumers) against an outdated base and pulls
+// in unrelated commits that already landed there. If the fetch fails, it
+// falls back to the worktree's existing origin/<base> ref, and if merge-base
+// still cannot be determined, to resolveBaseSHA.
+func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) string {
+	if strings.TrimSpace(defaultBranch) != "" {
+		_ = fetchRunUpstreamBranch(ctx, sctx, defaultBranch)
+	}
+	if mb := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch); mb != "" {
 		return mb
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch)
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
