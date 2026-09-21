@@ -131,7 +131,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		if strings.TrimSpace(remote) == "" && sctx.Run.PRURL != nil {
 			remote = *sctx.Run.PRURL
 		}
-		resolvedBase, repo, err := forgejo.ResolveRemote(remote, baseURL, scm.ResolveHost(sctx.Ctx, remote))
+		resolvedBase, repo, err := forgejo.ResolveRemoteWithSSHDomain(remote, baseURL, scm.ResolveHost(sctx.Ctx, remote), forgejoSSHDomainForStep(sctx))
 		if err != nil {
 			return nil, fmt.Sprintf("could not resolve Forgejo host and repository: %v", err)
 		}
@@ -178,11 +178,23 @@ func BuildHostForTest(sctx *pipeline.StepContext, provider scm.Provider) (scm.Ho
 }
 
 func detectProviderForStep(sctx *pipeline.StepContext, remoteURL string) scm.Provider {
-	return scm.DetectProviderContextWithForgejoBaseURL(sctx.Ctx, remoteURL, forgejoBaseURLForStep(sctx))
+	return scm.DetectProviderContextWithForgejo(sctx.Ctx, remoteURL, scm.ForgejoEnvironment{
+		BaseURL:   forgejoBaseURLForStep(sctx),
+		SSHDomain: forgejoSSHDomainForStep(sctx),
+	})
 }
 
 func forgejoBaseURLForStep(sctx *pipeline.StepContext) string {
 	if value, ok := effectiveStepEnvValue(sctx, "FORGEJO_BASE_URL"); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+// forgejoSSHDomainForStep reads the SSH hostname an instance publishes in clone
+// URLs when it differs from its web host, mirroring Forgejo's SSH_DOMAIN.
+func forgejoSSHDomainForStep(sctx *pipeline.StepContext) string {
+	if value, ok := effectiveStepEnvValue(sctx, "FORGEJO_SSH_DOMAIN"); ok {
 		return strings.TrimSpace(value)
 	}
 	return ""
