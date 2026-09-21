@@ -204,7 +204,7 @@ Six global config fields tune resolution and invocation, and the [Global Config 
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude, Codex, Grok, Pi, and Antigravity keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it.
+With the default `session_reuse: true`, Claude, Codex, Grok, Pi, and Antigravity keep one durable review-fixer session per run when every configured fixer for that run supports resume. A later-round fixer that cannot resume makes all fixer turns cold. Resume failures still fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it.
 Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
@@ -293,7 +293,7 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 
 ## Pi
 
-Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns instead create and resume one Pi session per run via `--session <UUID>`.
+Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns create and resume one Pi session per run via `--session <UUID>` when the configured fixer roles support resume. A non-resumable later-round fixer makes those turns cold; see the [later-round role overrides](/no-mistakes/reference/global-config/#later-round-role-overrides) reference.
 Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config) unless the run has an opt-in [per-run Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles). Native mapping is `--model` and `--thinking`.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
