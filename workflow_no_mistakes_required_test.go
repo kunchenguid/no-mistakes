@@ -149,11 +149,9 @@ func evaluateRequiredWorkflowAuthorCondition(condition, author string) (bool, er
 // head before the PR step rewrote the body; that ordering no longer holds.
 func TestNoMistakesRequiredWorkflowTriggersOnRelevantPREvents(t *testing.T) {
 	types := requiredWorkflowPullRequestTypes(t, loadRequiredWorkflow(t))
-
-	for _, typ := range []string{"opened", "edited", "synchronize", "reopened"} {
-		if !slices.Contains(types, typ) {
-			t.Errorf("workflow must trigger on pull_request type %q, got %v", typ, types)
-		}
+	want := []string{"opened", "edited", "synchronize", "reopened"}
+	if !slices.Equal(types, want) {
+		t.Errorf("workflow pull_request types = %v, want exactly T2 %v", types, want)
 	}
 }
 
