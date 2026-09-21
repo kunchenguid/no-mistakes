@@ -86,6 +86,9 @@ func (a *reviewAgents) fixAgents() []Agent {
 	if len(candidates) == 0 {
 		return []Agent{a.primary}
 	}
+	if a.fixer.Agent == nil {
+		return append([]Agent{a.primary}, candidates...)
+	}
 	return candidates
 }
 

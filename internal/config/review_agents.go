@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -69,8 +70,13 @@ func validateReviewAgents(roles map[string]ReviewAgent) error {
 			}
 			continue
 		}
-		if entry.AfterRound != nil && *entry.AfterRound < 1 {
-			return fmt.Errorf("review_agents.%s.after_round must be at least 1, got %d", role, *entry.AfterRound)
+		if entry.AfterRound != nil {
+			if *entry.AfterRound < 1 {
+				return fmt.Errorf("review_agents.%s.after_round must be at least 1, got %d", role, *entry.AfterRound)
+			}
+			if *entry.AfterRound >= math.MaxInt {
+				return fmt.Errorf("review_agents.%s.after_round overflows the takeover round", role)
+			}
 		}
 	}
 	return nil
