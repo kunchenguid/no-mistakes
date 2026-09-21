@@ -147,7 +147,7 @@ func TestTriggerProofRunRebindsGateAfterCancelledRunCustodyReturned(t *testing.T
 		t.Fatalf("post-recovery state = %#v", state)
 	}
 
-	receipt, err := triggerProofRun(context.Background(), f.env, "main", f.current, nil, "validate corrected version", "", "nonce", "generation")
+	receipt, err := triggerProofRun(context.Background(), f.env, "main", f.current, nil, "validate corrected version", "", false, "nonce", "generation")
 	if err != nil {
 		t.Fatalf("fresh run promised by branch-sync status was refused: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestTriggerProofRunStillRefusesUnrecoveredCancelledDivergence(t *testing.T)
 	f := newCancelledRunRebindFixture(t, false)
 	gateBefore := cliGit(t, f.gateDir, "rev-parse", "refs/heads/main")
 
-	receipt, err := triggerProofRun(context.Background(), f.env, "main", f.current, nil, "validate corrected version", "", "nonce", "generation")
+	receipt, err := triggerProofRun(context.Background(), f.env, "main", f.current, nil, "validate corrected version", "", false, "nonce", "generation")
 	if err == nil || receipt != nil {
 		t.Fatalf("unsafe fresh run = receipt %#v, err %v", receipt, err)
 	}
@@ -197,7 +197,7 @@ func TestTriggerProofRunStillRefusesGateHeadMovedAfterCustodyReturn(t *testing.T
 	unsafeGateHead := cliGit(t, writer, "rev-parse", "HEAD")
 	cliGit(t, writer, "push", "origin", "HEAD:refs/heads/main")
 
-	receipt, err := triggerProofRun(context.Background(), f.env, "main", f.current, nil, "validate corrected version", "", "nonce", "generation")
+	receipt, err := triggerProofRun(context.Background(), f.env, "main", f.current, nil, "validate corrected version", "", false, "nonce", "generation")
 	if err == nil || receipt != nil || !strings.Contains(err.Error(), "at-risk commit") {
 		t.Fatalf("moved unsafe gate head = receipt %#v, err %v", receipt, err)
 	}
@@ -293,7 +293,7 @@ func TestTriggerRunRejectedPushRestoresReconciledGateRef(t *testing.T) {
 	}
 
 	proofCtx, proofCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	receipt, err := triggerProofRun(proofCtx, env, "main", liveHead, nil, "retry safely", "", "nonce", "generation")
+	receipt, err := triggerProofRun(proofCtx, env, "main", liveHead, nil, "retry safely", "", false, "nonce", "generation")
 	proofCancel()
 	if err == nil || !strings.Contains(err.Error(), "submission-rejected") || receipt != nil {
 		t.Fatalf("rejected proof submission: receipt=%#v err=%v", receipt, err)
