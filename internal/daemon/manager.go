@@ -297,7 +297,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		return nil, err
 	}
 	roles := make(map[string]agent.Agent, len(cfg.ReviewAgents))
-	for _, role := range []string{"reviewer", "fixer"} {
+	for _, role := range config.ReviewAgentRoles {
 		entry, ok := cfg.ReviewAgents[role]
 		if !ok {
 			continue
@@ -312,7 +312,18 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		}
 		roles[role] = next
 	}
-	return agent.WithReviewAgents(primary, roles["reviewer"], roles["fixer"]), nil
+	return agent.WithReviewRoles(primary, agent.ReviewRoles{
+		Reviewer: agent.RoundedRole{
+			Agent:    roles[config.RoleReviewer],
+			Late:     roles[config.RoleReviewerAfterRound],
+			LateFrom: cfg.ReviewAgentTakeoverRound(config.RoleReviewerAfterRound),
+		},
+		Fixer: agent.RoundedRole{
+			Agent:    roles[config.RoleFixer],
+			Late:     roles[config.RoleFixerAfterRound],
+			LateFrom: cfg.ReviewAgentTakeoverRound(config.RoleFixerAfterRound),
+		},
+	}), nil
 }
 
 func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {

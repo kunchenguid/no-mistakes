@@ -345,12 +345,52 @@ review_agents:
     effort: max
 ```
 
-The only role keys are `reviewer` and `fixer`. Each configured role requires one
+The role keys are `reviewer`, `fixer`, and their optional later-round overlays
+`reviewer_after_round` and `fixer_after_round`. Each configured role requires one
 explicit `agent` (the same harness names as `agent_config`; no `auto` or lists).
 Model and effort are optional and inherit `agent_config` for that harness when
 empty. Nonempty role values override that profile, but native
 `agent_args_override` flags still win. Model availability, credentials, and
 supported effort levels remain the harness/provider's responsibility.
+
+#### Later-round role overrides
+
+`reviewer_after_round` and `fixer_after_round` are opt-in overlays for long
+review loops, where the first pass is worth a stronger tier and later rounds are
+mostly re-checking a fix the stronger model already prescribed. Each takes the
+same `agent` / `model` / `effort` fields plus `after_round`: the number of
+leading rounds that stay on the base role. `after_round` defaults to `1`, so the
+overlay takes over from round 2.
+
+```yaml
+review_agents:
+  fixer:
+    agent: pi
+    model: anthropic-vertex/claude-opus-4-8
+  fixer_after_round:
+    agent: pi
+    model: google-vertex/gemini-3.8-flash
+    after_round: 2
+```
+
+Rounds 1 and 2 above run on the `fixer` profile; round 3 and every later round
+run on `fixer_after_round`. The direction is yours: point the overlay at a
+cheaper tier to stop long loops from spending at the top tier, or at a stronger
+one to escalate a loop that is not converging.
+
+Without these keys nothing changes - every round runs on the role it runs on
+today. They only select the harness for a round; they never change how many
+rounds happen, and `auto_fix` plus the gate remain the only things that bound
+the loop. The overlay applies to a round the pipeline numbered; an invocation
+outside a numbered round keeps the base role. Only the base roles accept plain
+`agent` / `model` / `effort` - setting `after_round` on `reviewer` or `fixer`, or
+a value below 1, is a configuration error. Because a later-round fixer may be a
+harness that cannot resume sessions, fixer session reuse is reported for every
+fixer a run can use: configuring a non-resumable `fixer_after_round` turns fix
+turns cold for the whole run rather than handing round 3 a session it cannot
+resume. `no-mistakes stats --run <id>` shows the agent and served model per
+invocation alongside its round, so which tier served which round is visible
+after the fact.
 
 Both roles can use the same harness with different models. Reviews and rereviews
 always run fresh; only review fixes reuse the fixer's session when
