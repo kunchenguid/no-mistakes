@@ -889,6 +889,9 @@ func TestForcedToolChoiceUnsupportedClassification(t *testing.T) {
 		{name: "colon as clause separator with only auto placement", text: `tool_choice quota note: only auto placement left on the cluster`, want: false},
 		// A colon straight after the token is still one clause.
 		{name: "colon then only auto", text: `tool_choice: only auto`, want: true},
+		{name: "immediate colon then only auto is supported", text: `tool_choice: only "auto" is supported`, want: true},
+		{name: "immediate colon then only auto scaling", text: `tool_choice: only auto scaling is enabled`, want: false},
+		{name: "immediate colon then only auto placement", text: `tool_choice: only auto placement left`, want: false},
 		{name: "unsupported model beside tool_choice", text: `tool_choice set, but the requested model is unsupported`, want: false},
 		{name: "tool_choice value unsupported", text: `tool_choice value is unsupported`, want: true},
 		{name: "invalid parameter without a verdict", text: `invalid tool_choice parameter`, want: false},
