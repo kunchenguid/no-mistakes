@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.81.0](https://github.com/kunchenguid/no-mistakes/compare/v1.80.1...v1.81.0) (2026-09-22)
+
+
+### Features
+
+* **branchsync:** recover published rebased gate lanes ([#1053](https://github.com/kunchenguid/no-mistakes/issues/1053)) ([718ab85](https://github.com/kunchenguid/no-mistakes/commit/718ab852f253fc3b5539d6629e6b063510ac57f7))
+* **pipeline:** add opt-in bounded candidate excerpts to Jev review pre-brief ([#1160](https://github.com/kunchenguid/no-mistakes/issues/1160)) ([11a95ad](https://github.com/kunchenguid/no-mistakes/commit/11a95ad88479fb30a8b79180c971756ff9be6779))
+* **review:** opt-in per-round review agent overrides ([#897](https://github.com/kunchenguid/no-mistakes/issues/897)) ([#1141](https://github.com/kunchenguid/no-mistakes/issues/1141)) ([74455c4](https://github.com/kunchenguid/no-mistakes/commit/74455c44ca814c15c2c68b045763060f4b460a27))
+
+
+### Bug Fixes
+
+* **agent:** trigger prompt-only fallback for unconditional tool_choice rejections ([#1017](https://github.com/kunchenguid/no-mistakes/issues/1017)) ([cd24041](https://github.com/kunchenguid/no-mistakes/commit/cd24041ae58e68a14ae1d7c83e85281cbe0b86bf))
+* **ci:** pin require-no-mistakes at v1.80.1 and restore synchronize ([#1145](https://github.com/kunchenguid/no-mistakes/issues/1145)) ([90d1d0f](https://github.com/kunchenguid/no-mistakes/commit/90d1d0ffa05dc3237d70e1bd1e46e139ce24b5f3))
+
 ## [1.80.1](https://github.com/kunchenguid/no-mistakes/compare/v1.80.0...v1.80.1) (2026-09-20)
 
 
