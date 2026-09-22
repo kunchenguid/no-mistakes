@@ -43,6 +43,7 @@ func TestPipeline_CIRepairRefreshesPublishedAttestationBeforeReadiness(t *testin
 			fork := t.TempDir()
 			gitCmd(t, fork, "init", "--bare", ".")
 			gitCmd(t, dir, "remote", "add", "origin", fork)
+			gitCmd(t, dir, "push", "origin", "main")
 
 			ag := &mockAgent{
 				name: "test",
