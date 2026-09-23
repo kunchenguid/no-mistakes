@@ -865,6 +865,29 @@ Malformed replacement syntax fails configuration loading with an actionable erro
 The expanded identifier is subject to the existing UTF-8, control-character, unsafe-Unicode, and rendered-subject validation.
 A repository `commit.branch_pattern` override disables this machine-local replacement so it cannot be applied to a different pattern.
 
+### repository_overrides
+
+Machine-local settings scoped to one repository by remote host and `owner/repository` path.
+This lets one machine apply ticket conventions to a single repository without adding settings to that repository.
+Remote keys are matched against the registered upstream remote, case-insensitively by host and repository path.
+HTTPS and SSH URLs match across transports, including scp-like SSH remotes and an optional trailing `.git`.
+
+```yaml
+repository_overrides:
+  https://github.com/acme/widget.git:
+    commit:
+      branch_pattern: '([A-Z]+-[0-9]+)'
+      fix_message: '{{.Branch}}: {{.Summary}}'
+    pr:
+      title_format: '{{.Branch}}: {{.Title}}'
+```
+
+Supported fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
+A `commit.branch_replacement` must be paired with `commit.branch_pattern` in the same override.
+Precedence is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
+As with the global replacement, a repository `commit.branch_pattern` replaces the matching machine-local pattern and clears its replacement.
+Repositories matching no block keep existing global and built-in behavior.
+
 ### intent
 
 Transcript-based user-intent extraction settings.

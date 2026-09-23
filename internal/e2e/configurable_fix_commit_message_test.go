@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -174,4 +176,62 @@ commit:
 	t.Logf("branch pushed through no-mistakes: %s", branch)
 	t.Logf("machine-local replacement: %q", "PROJ-${1}")
 	t.Logf("completed pipeline upstream commit subjects:\n%s", strings.TrimSpace(string(log)))
+}
+
+func TestPerRepositoryMachineLocalFixCommitJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: configurableFixCommitScenario(t, "guard unsafe value")})
+
+	globalConfig := filepath.Join(h.NMHome, "config.yaml")
+	globalData, err := os.ReadFile(globalConfig)
+	if err != nil {
+		t.Fatalf("read global config: %v", err)
+	}
+	globalSource := strings.Replace(string(globalData), "  review: 0\n", "  review: 1\n", 1)
+	globalSource += `repository_overrides:
+  https://example.invalid/acme/widget.git:
+    commit:
+      branch_pattern: '([A-Z]+-[0-9]+)'
+      fix_message: '{{.Branch}}: {{.Summary}}'
+`
+	if err := os.WriteFile(globalConfig, []byte(globalSource), 0o644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	database, err := db.Open(paths.WithRoot(h.NMHome).DB())
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := database.GetRepo(h.repoID())
+	if err != nil || repo == nil {
+		t.Fatalf("get registered repository: repo=%v err=%v", repo, err)
+	}
+	const remote = "https://example.invalid/acme/widget.git"
+	if _, err := database.ReplaceRepoURLs(repo.ID, remote, ""); err != nil {
+		t.Fatalf("set registered test remote: %v", err)
+	}
+
+	const branch = "feature/PROJ-123-machine-local"
+	h.CommitChange(branch, "feature.txt", "unsafe\n", "add unsafe feature")
+	h.PushToGate(branch)
+
+	gated := waitForStepStatus(t, h, branch, types.StepReview, types.StepStatusFixReview, 60*time.Second)
+	h.Respond(gated.ID, types.StepReview, types.ActionApprove)
+	run := h.WaitForRun(branch, 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, run.Error)
+	}
+
+	log, err := h.runGit(context.Background(), h.UpstreamDir, "log", "--format=%s", "main..refs/heads/"+branch)
+	if err != nil {
+		t.Fatalf("read upstream commit subjects: %v\n%s", err, log)
+	}
+	subjects := strings.Split(strings.TrimSpace(string(log)), "\n")
+	const want = "PROJ-123: guard unsafe value"
+	if len(subjects) == 0 || subjects[0] != want {
+		t.Fatalf("latest upstream commit subject = %q, want %q (all subjects: %q)", subjects[0], want, subjects)
+	}
 }

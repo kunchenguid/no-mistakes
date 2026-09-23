@@ -1775,7 +1775,19 @@ func revList(ctx context.Context, dir string, args ...string) ([]string, error) 
 }
 
 func mergeTreePreservesFinalHead(ctx context.Context, dir, base, local, pushed string) bool {
-	mergedTree, err := git.Run(ctx, dir, "merge-tree", "--write-tree", "--merge-base", base, pushed, local)
+	// Some supported Git versions do not accept merge-tree's --merge-base
+	// option. Prove that base is the sole best merge base first, then the
+	// automatic merge uses that same unambiguous base; criss-cross histories
+	// with multiple best bases fail closed.
+	basesOutput, err := git.Run(ctx, dir, "merge-base", "--all", local, pushed)
+	if err != nil {
+		return false
+	}
+	bases := strings.Fields(basesOutput)
+	if len(bases) != 1 || bases[0] != base {
+		return false
+	}
+	mergedTree, err := git.Run(ctx, dir, "merge-tree", "--write-tree", pushed, local)
 	if err != nil {
 		return false
 	}
