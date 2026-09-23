@@ -304,6 +304,7 @@ Providers can impose lower publication limits. GitLab titles are checked at its 
 If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR publication fails safely instead of publishing a malformed title.
 
 When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
+For a machine-local title convention that does not require repository configuration, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides).
 
 ### commands.prepare
 
@@ -734,6 +735,7 @@ That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte su
 The setting applies to the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs. It does not apply to commits created by the Rebase or Push steps.
 
 This non-executing field is read from the pushed branch, so a branch can adopt its own commit-subject convention without enabling `allow_repo_commands`.
+To apply a machine-local convention without adding it to the repository, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides).
 
 ### commit.branch_pattern
 
