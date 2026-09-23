@@ -819,10 +819,13 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 
 	// Check if the branch has any diff against the default branch.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
+	// Execute already fetched the base branch (fail-closed) before integrating,
+	// so reuse that ref instead of fetching again after HEAD was rewritten and
+	// persisted: a failure here could not undo either.
 	defaultBranch := effectivePRBaseBranch(sctx)
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, defaultBranch)
-	if err != nil {
-		return nil, err
+	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	if baseSHA == "" {
+		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
 	}
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
