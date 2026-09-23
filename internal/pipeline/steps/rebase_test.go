@@ -615,3 +615,55 @@ func TestRebaseStep_HangingConflictAgentFailsAfterTimeout(t *testing.T) {
 		t.Fatalf("hanging rebase agent error = %v, want timeout", err)
 	}
 }
+
+func TestRebaseStep_BaseFetchFailureFailsBeforeRewritingHead(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare", "-b", "main")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "clone", upstream, ".")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "symbolic-ref", "HEAD", "refs/heads/main")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	if err := os.WriteFile(filepath.Join(dir, "cached.txt"), []byte("cached\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "unverified cached base")
+	gitCmd(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = filepath.Join(t.TempDir(), "does-not-exist")
+	sctx.Repo.URLsVerified = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err == nil {
+		t.Fatal("rebase step succeeded, want the base-branch fetch failure to fail the step")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want %s untouched: rebased onto an unverified cached base", got, headSHA)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.HeadSHA != headSHA {
+		t.Fatalf("persisted head = %s, want %s untouched", run.HeadSHA, headSHA)
+	}
+}
