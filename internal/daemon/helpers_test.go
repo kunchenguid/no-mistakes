@@ -24,7 +24,10 @@ func TestMain(m *testing.M) {
 	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
 	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {
-			_ = os.WriteFile(capturePath, []byte(os.Getenv("NM_HOME")), 0o644)
+			// Atomic rename so a poller that treats "file exists" as "content
+			// ready" cannot observe the empty create-before-write window that
+			// os.WriteFile leaves open (TestStartDetachedDaemonUsesProvidedRootViaNMHome).
+			_ = writeFileAtomic(capturePath, []byte(os.Getenv("NM_HOME")), 0o644)
 		}
 		// Stay alive long enough for tests with a synthetic health transition
 		// to distinguish launch from readiness. The production exit regression
