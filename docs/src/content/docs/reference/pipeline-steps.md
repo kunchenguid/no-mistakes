@@ -9,7 +9,7 @@ This is the per-step reference. For the overview and rationale, see [Pipeline](/
 intent → rebase → review → test → document → lint → push → pr → ci
 ```
 
-Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
+Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Every step that scopes its work to the branch's changes (Rebase's post-integration diff check, Review, Test, Document, Lint, PR drafting, CI repair, and repository gate fixes) first fetches the base branch's live remote tip and computes the branch base against it; if that fetch fails, the step fails instead of falling back to a possibly stale cached base ref. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept.
 The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and Review runs a fresh review up to three times in total when no-mistakes rejects the reviewer's final output; exhausting either bound, and every other step's invalid analyzer output, still stops the affected step.
 Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
@@ -66,7 +66,7 @@ Fetches the latest authoritative remote state, fetches the configured pushed-bra
 The integration branch used below is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch): the repository's forge default branch, or the trusted [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when configured.
 
 **Behavior:**
-- Fetches `origin/<PR base branch>` from the remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history
+- Fetches `origin/<PR base branch>` from the remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history. A failed base-branch fetch fails the step before any rebase or head update, rather than integrating against a possibly stale cached `origin/<PR base branch>`
 - Without fork routing, the pushed-branch target is `origin/<branch>`
 - With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
 - If the branch is not the PR base branch, tries rebasing onto the pushed-branch target first, then `origin/<PR base branch>`
