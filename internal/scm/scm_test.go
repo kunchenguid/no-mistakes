@@ -99,6 +99,33 @@ func TestResolveHost_SSHConfigLookup(t *testing.T) {
 		}
 	})
 
+	t.Run("SSH-over-HTTPS alias resolves to the forge host", func(t *testing.T) {
+		got := resolveHost(context.Background(), "git@github.com:owner/repo.git", func(context.Context, string) (string, error) {
+			return "ssh.github.com", nil
+		})
+		if got != "github.com" {
+			t.Fatalf("resolveHost() = %q, want github.com", got)
+		}
+	})
+
+	t.Run("explicit alias remote resolves to the forge host", func(t *testing.T) {
+		got := resolveHost(context.Background(), "ssh://git@ssh.github.com:443/owner/repo.git", func(context.Context, string) (string, error) {
+			return "ssh.github.com", nil
+		})
+		if got != "github.com" {
+			t.Fatalf("resolveHost() = %q, want github.com", got)
+		}
+	})
+
+	t.Run("GitLab alternate SSH alias resolves to gitlab.com", func(t *testing.T) {
+		got := resolveHost(context.Background(), "git@gitlab.com:owner/repo.git", func(context.Context, string) (string, error) {
+			return "altssh.gitlab.com", nil
+		})
+		if got != "gitlab.com" {
+			t.Fatalf("resolveHost() = %q, want gitlab.com", got)
+		}
+	})
+
 	t.Run("lookup failure preserves alias", func(t *testing.T) {
 		got := resolveHost(context.Background(), "git@github-personal:owner/repo.git", func(context.Context, string) (string, error) {
 			return "", errors.New("ssh unavailable")

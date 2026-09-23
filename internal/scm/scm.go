@@ -163,7 +163,7 @@ func ResolveHost(ctx context.Context, remote string) string {
 }
 
 func resolveHost(ctx context.Context, remote string, lookup sshHostnameLookup) string {
-	host := ExtractHost(remote)
+	host := canonicalSSHHost(ExtractHost(remote))
 	if host == "" || !isSSHRemote(remote) || lookup == nil {
 		return host
 	}
@@ -176,7 +176,25 @@ func resolveHost(ctx context.Context, remote string, lookup sshHostnameLookup) s
 	if resolved == "" {
 		return host
 	}
-	return resolved
+	return canonicalSSHHost(resolved)
+}
+
+// sshAliasCanonicalHosts maps the SSH-over-HTTPS aliases the hosted forges
+// document to the host their CLIs authenticate against. An `ssh -G` lookup
+// returns the alias whenever the user's SSH config routes the forge through
+// port 443, and `gh auth status --hostname ssh.github.com` then reports no
+// account even though github.com is logged in.
+var sshAliasCanonicalHosts = map[string]string{
+	"ssh.github.com":       "github.com",
+	"altssh.gitlab.com":    "gitlab.com",
+	"altssh.bitbucket.org": "bitbucket.org",
+}
+
+func canonicalSSHHost(host string) string {
+	if canonical, ok := sshAliasCanonicalHosts[host]; ok {
+		return canonical
+	}
+	return host
 }
 
 func isSSHRemote(remote string) bool {
