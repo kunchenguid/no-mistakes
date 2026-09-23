@@ -127,13 +127,13 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `devin`, `acp:<target>` |
 | Default | `auto`                                                                                      |
 
-`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, then `cursor`.
-`cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
-With default paths, `auto` only selects it when both `cursor-agent` and `acpx` resolve; `acp_registry_overrides.cursor` and `acpx_path` replace those respective defaults during availability checks.
-`acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`; `acp:cursor` uses the same default command as `cursor`.
+`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, `cursor`, then `devin`.
+`cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`, and `devin` is an ACP alias for the `devin` target with default command `devin acp`.
+With default paths, `auto` only selects an alias when both its command binary (`cursor-agent` or `devin`) and `acpx` resolve; `acp_registry_overrides.<target>` and `acpx_path` replace those respective defaults during availability checks.
+`acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`; `acp:cursor` and `acp:devin` use the same default commands as `cursor` and `devin`.
 Arbitrary `acp:<target>` agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
 If an explicit agent is unavailable, `auto` finds no native agent or ACP alias, or no fallback-list entry is available, the gate fails before its first pipeline step rather than reporting a partial command-only validation as passed.
@@ -146,7 +146,7 @@ agent: [codex, grok]
 ```
 
 The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
-After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` provide one fallback and preserve whichever spelling appears first.
+After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` (or `devin` and `acp:devin`) provide one fallback and preserve whichever spelling appears first.
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Fallback candidates share the invocation's existing bounded context and use only its remaining time; once that context expires or is cancelled, no further candidate is announced or started.
@@ -154,7 +154,7 @@ Structured findings and schema/output validation problems do not trigger fallbac
 
 ### acpx_path
 
-Path to the user-installed `acpx` binary used for `agent: acp:<target>` and ACP aliases such as `agent: cursor`.
+Path to the user-installed `acpx` binary used for `agent: acp:<target>` and ACP aliases such as `agent: cursor` and `agent: devin`.
 
 |         |          |
 | ------- | -------- |
@@ -176,7 +176,7 @@ A bare name is resolved from the daemon's effective `PATH`; an explicit path is 
 
 Map an ACP target name to a raw ACP agent command.
 When `agent: acp:<target>` matches an override key, no-mistakes runs `acpx --agent <command>` instead of `acpx <target>`.
-ACP aliases use the same target keys. For example, `agent: cursor` and `agent: acp:cursor` resolve to the `cursor` target, so set `cursor` to override the default `cursor-agent acp` command.
+ACP aliases use the same target keys. For example, `agent: cursor` and `agent: acp:cursor` resolve to the `cursor` target, so set `cursor` to override the default `cursor-agent acp` command; `devin` likewise overrides the default `devin acp` command.
 Values are trimmed; a blank or whitespace-only value behaves as no override, so an alias keeps its default command.
 Availability checks always resolve `acpx_path`. They also probe the executable named first in the effective non-blank raw command when it is a bare command name or clean absolute path. Relative, quoted, or escaped raw commands are not pre-probed; `acpx` executes them from the worktree. These checks do not invoke the ACP target or test its credentials.
 
@@ -191,6 +191,14 @@ Example:
 agent: acp:local-gemini
 acp_registry_overrides:
   local-gemini: node /opt/mock-acp-agent.mjs
+```
+
+For `devin`, an override is also the way to select a model slug from `devin models list` that Devin does not advertise over ACP, since [`agent_config.devin.model`](#agent_config) accepts only ACP-advertised ids:
+
+```yaml
+agent: devin
+acp_registry_overrides:
+  devin: devin acp --model <slug>
 ```
 
 ### agent_path_override
@@ -224,7 +232,7 @@ Model and reasoning effort per agent, in one common spelling. no-mistakes maps e
 |         |                                                                                     |
 | ------- | ----------------------------------------------------------------------------------- |
 | Type    | `map[string]{model, effort}`                                                        |
-| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `devin`, `acp:<target>` |
 | Default | Empty (every harness keeps its own defaults)                                        |
 
 ```yaml
@@ -253,13 +261,13 @@ How each field maps:
 | `copilot`         | `--model`                                     | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
 | `pi`              | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
 | `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`      | provider-specific                                   |
-| `cursor`, `acp:*` | `acpx --model`                                | not expressible                   | -                                                   |
+| `cursor`, `devin`, `acp:*` | `acpx --model`                       | not expressible                   | -                                                   |
 | `rovodev`         | not expressible                               | not expressible                   | -                                                   |
 | `antigravity`     | not expressible                               | not expressible                   | -                                                   |
 
 `opencode` needs the `provider/model` form (for example `openai/gpt-5`) because its session API takes the provider and the model as separate fields; a bare model name is refused at config load rather than dropped. Both of its knobs travel in the session message, not in the launch command, because `opencode serve` exits with usage on an unknown flag.
 
-`rovodev` and `antigravity` have no mechanism no-mistakes can set - `acli rovodev serve` plus its REST session API take no model parameter, and the `agy` CLI parses flags strictly - so `agent_config` for them is a config error rather than a request that quietly does nothing. Reach for [`agent_args_override`](#agent_args_override) there if your build of the CLI accepts a flag. Reasoning effort is likewise unavailable for ACP targets: no-mistakes drives them through `acpx`, which exposes `--model` but no effort surface.
+`rovodev` and `antigravity` have no mechanism no-mistakes can set - `acli rovodev serve` plus its REST session API take no model parameter, and the `agy` CLI parses flags strictly - so `agent_config` for them is a config error rather than a request that quietly does nothing. Reach for [`agent_args_override`](#agent_args_override) there if your build of the CLI accepts a flag. Reasoning effort is likewise unavailable for ACP targets: no-mistakes drives them through `acpx`, which exposes `--model` but no effort surface. acpx also accepts only the model ids a target advertises over ACP; for `devin` that is a subset of `devin models list`, and [`acp_registry_overrides`](#acp_registry_overrides) is the escape hatch for the rest.
 
 `agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored.
 

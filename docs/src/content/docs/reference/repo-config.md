@@ -6,7 +6,7 @@ description: All fields for .no-mistakes.yaml.
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
 :::caution[Security: gate-control fields are read from the default branch]
-`commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
+`commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
 The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
@@ -126,13 +126,13 @@ Override the default agent for this repo and its setup-wizard suggestions.
 | | |
 | --- | --- |
 | Type | `string` or `string[]` |
-| Values | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Values | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `devin`, `acp:<target>` |
 | Default | Inherits from global config |
 
-`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, then `cursor`.
-`cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
-Its availability uses the global `acpx_path` and `acp_registry_overrides.cursor` settings when present.
-`acp:<target>` uses the user-installed `acpx` binary configured in global config; `acp:cursor` uses the same default command as `cursor`.
+`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, `cursor`, then `devin`.
+`cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`, and `devin` is an ACP alias for the `devin` target with default command `devin acp`.
+An alias's availability uses the global `acpx_path` and `acp_registry_overrides.<target>` settings when present.
+`acp:<target>` uses the user-installed `acpx` binary configured in global config; `acp:cursor` and `acp:devin` use the same default commands as `cursor` and `devin`.
 Arbitrary `acp:<target>` agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
 If the selected explicit agent or `auto` is unavailable, the gate fails before its first pipeline step rather than reporting partial validation as passed.
@@ -144,7 +144,7 @@ agent: [codex, grok]
 ```
 
 The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
-After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` provide one fallback and preserve whichever spelling appears first.
+After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` (or `devin` and `acp:devin`) provide one fallback and preserve whichever spelling appears first.
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
@@ -173,7 +173,7 @@ Suppress project-level agent settings and instructions for every gate-agent star
 This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
 When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
 Codex, Claude, Pi, and the `acp:omp` target (Oh My Pi over ACP) are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, and Pi runs with `--no-context-files` (preserving a pinned `--no-context-files` or `-nc` spelling).
-`acp:omp` is launched as `omp acp` with a generated `--config` overlay that disables every omp context-file discovery provider (`native`, `claude`, `codex`, `gemini`, `opencode`, `github`, `agents`, `agents-md`, `claude-md`) and mnemopi memory, plus `--no-rules`, `--no-skills`, and `--no-extensions`. omp has no CLI flag to disable context files, and a CLI `--config` overlay is the highest settings layer, so the target repository's own `.omp/config.yml` cannot re-enable a provider the overlay disabled. Memory is disabled because a gate turn that reads the repo's `AGENTS.md` while reviewing could otherwise retain it and a later turn recall it around the provider suppression. Only the default `acp:omp` launch qualifies: an `acp_registry_overrides` entry for `omp` is an opaque custom command and fails closed. Other ACP targets (`acp:<target>`) remain unverified and are refused.
+`acp:omp` is launched as `omp acp` with a generated `--config` overlay that disables every omp context-file discovery provider (`native`, `claude`, `codex`, `gemini`, `opencode`, `github`, `agents`, `agents-md`, `claude-md`) and mnemopi memory, plus `--no-rules`, `--no-skills`, and `--no-extensions`. omp has no CLI flag to disable context files, and a CLI `--config` overlay is the highest settings layer, so the target repository's own `.omp/config.yml` cannot re-enable a provider the overlay disabled. Memory is disabled because a gate turn that reads the repo's `AGENTS.md` while reviewing could otherwise retain it and a later turn recall it around the provider suppression. Only the default `acp:omp` launch qualifies: an `acp_registry_overrides` entry for `omp` is an opaque custom command and fails closed. Other ACP targets (`acp:<target>`), including the `cursor` and `devin` aliases, remain unverified and are refused; Devin CLI, for example, loads the target repository's `AGENTS.md`, `CLAUDE.md`, and editor rule files with no verified off-switch.
 Grok 1.0.5 still discovers native project instructions and `.grok` project surfaces, so it is not a verified agent for this boundary. A configuration that resolves Grok while this option is enabled therefore fails closed before launch.
 The setting applies to both new and resumed sessions.
 

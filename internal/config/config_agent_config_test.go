@@ -48,11 +48,14 @@ agent_config:
     effort: high
   cursor:
     model: gpt-5
+  devin:
+    model: gpt-6-luna-medium
 `)
 	want := map[string]agentcfg.Profile{
 		"codex":  {Model: "gpt-5.4", Effort: agentcfg.EffortLow},
 		"claude": {Effort: agentcfg.EffortHigh},
 		"cursor": {Model: "gpt-5"},
+		"devin":  {Model: "gpt-6-luna-medium"},
 	}
 	for name, wantProfile := range want {
 		if got := cfg.AgentConfig[name]; got != wantProfile {
@@ -73,6 +76,7 @@ func TestLoadGlobal_AgentConfigRejectsBadInput(t *testing.T) {
 		{"unmappable model", "agent_config:\n  rovodev:\n    model: x\n", "cannot express model"},
 		{"unmappable effort", "agent_config:\n  antigravity:\n    effort: high\n", "cannot express effort"},
 		{"acp effort", "agent_config:\n  cursor:\n    effort: high\n", "cannot express effort"},
+		{"devin effort", "agent_config:\n  devin:\n    effort: high\n", "acp_registry_overrides.devin"},
 		{"opencode bare model", "agent_config:\n  opencode:\n    model: gpt-5\n", "provider/model"},
 	}
 	for _, tt := range tests {

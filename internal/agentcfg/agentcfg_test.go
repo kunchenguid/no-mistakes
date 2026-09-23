@@ -45,7 +45,7 @@ func TestNativeArgsEmitsNothingForNonArgsHarnesses(t *testing.T) {
 }
 
 func TestNativeArgsZeroProfileIsAlwaysEmpty(t *testing.T) {
-	for _, name := range append(Agents(), types.AgentCursor, "acp:gemini") {
+	for _, name := range append(Agents(), types.AgentCursor, types.AgentDevin, "acp:gemini") {
 		if got := NativeArgs(name, Profile{}, []string{"--model", "pinned"}); got != nil {
 			t.Errorf("NativeArgs(%s, zero) = %v, want nil", name, got)
 		}
@@ -178,7 +178,7 @@ func TestNativeArgsDoesNotMutateRawArgs(t *testing.T) {
 // unpinnable: no-mistakes drives them through acpx, whose --model is a real
 // mechanism.
 func TestACPModelIsMappedThroughAcpx(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCursor, "acp:gemini"} {
+	for _, name := range []types.AgentName{types.AgentCursor, types.AgentDevin, "acp:gemini"} {
 		got := NativeArgs(name, Profile{Model: "gpt-5"}, nil)
 		want := []string{"--model", "gpt-5"}
 		if !reflect.DeepEqual(got, want) {
@@ -193,7 +193,7 @@ func TestACPModelIsMappedThroughAcpx(t *testing.T) {
 // TestACPEffortIsRefusedNotDropped records the deliberately unmappable half of
 // the ACP story: acpx has no reasoning-effort surface.
 func TestACPEffortIsRefusedNotDropped(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCursor, "acp:gemini"} {
+	for _, name := range []types.AgentName{types.AgentCursor, types.AgentDevin, "acp:gemini"} {
 		if mech := MechanismFor(name, KnobEffort); mech != MechanismUnsupported {
 			t.Errorf("MechanismFor(%s, effort) = %s, want %s", name, mech, MechanismUnsupported)
 		}
@@ -257,6 +257,7 @@ func TestValidateAcceptsExpressibleProfiles(t *testing.T) {
 		{types.AgentCopilot, Profile{Model: "gpt-5.4"}},
 		{types.AgentOpenCode, Profile{Model: "openai/gpt-5", Effort: EffortHigh}},
 		{types.AgentCursor, Profile{Model: "gpt-5"}},
+		{types.AgentDevin, Profile{Model: "gpt-6-luna-medium"}},
 		{types.AgentRovoDev, Profile{}},
 		{types.AgentAntigravity, Profile{}},
 		{"nope", Profile{}},
@@ -337,7 +338,7 @@ func TestEverySupportedAgentHasAMapping(t *testing.T) {
 	for _, name := range []types.AgentName{
 		types.AgentClaude, types.AgentCodex, types.AgentGrok, types.AgentRovoDev,
 		types.AgentOpenCode, types.AgentPi, types.AgentCopilot, types.AgentAntigravity,
-		types.AgentCursor, "acp:gemini",
+		types.AgentCursor, types.AgentDevin, "acp:gemini",
 	} {
 		if !Known(name) {
 			t.Errorf("agent %q has no entry in the agentcfg mapping", name)

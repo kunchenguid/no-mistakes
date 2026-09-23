@@ -92,6 +92,20 @@ func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 	if err := EnsureGateNeutralized(nil); err == nil {
 		t.Error("a nil agent must be refused")
 	}
+	// Devin loads the target repo's AGENTS.md/CLAUDE.md with no verified
+	// off-switch, so both spellings and an operator raw command stay refused.
+	for _, devin := range []Agent{
+		acpOptOutAgent(t, types.AgentDevin, nil),
+		acpOptOutAgent(t, "acp:devin", nil),
+		acpOptOutAgent(t, types.AgentDevin, map[string]string{"devin": "devin acp --model claude-opus-5-5-high"}),
+	} {
+		if NeutralizesGateInstructions(devin) {
+			t.Errorf("%s has no verified knob; must NOT report neutralized", devin.Name())
+		}
+		if err := EnsureGateNeutralized(devin); err == nil || !strings.Contains(err.Error(), "acp:devin") {
+			t.Errorf("%s must be refused by name under the opt-out, got: %v", devin.Name(), err)
+		}
+	}
 }
 
 // TestNeutralizesGateInstructions_ThroughProductionWrapping mirrors how the

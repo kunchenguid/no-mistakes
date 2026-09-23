@@ -224,7 +224,7 @@ Kill-switch injected into every pipeline agent subprocess so compact-adviser sta
 | Type    | always `1` for agent subprocesses    |
 | Default | injected; not a daemon-wide setting  |
 
-no-mistakes stamps `COMPACT_ADVISER_DISABLE=1` onto every spawned gate agent (Claude, Codex, Grok, Pi, OpenCode, Copilot, Antigravity, Rovo Dev, acpx/Cursor, and managed agent servers that can load host plugins). Forge and profile overlays cannot drop the flag. The daemon process itself is unchanged; this is agent-child policy only, not a user-facing knob for the service environment.
+no-mistakes stamps `COMPACT_ADVISER_DISABLE=1` onto every spawned gate agent (Claude, Codex, Grok, Pi, OpenCode, Copilot, Antigravity, Rovo Dev, acpx/Cursor/Devin, and managed agent servers that can load host plugins). Forge and profile overlays cannot drop the flag. The daemon process itself is unchanged; this is agent-child policy only, not a user-facing knob for the service environment.
 
 ## `NO_MISTAKES_UMAMI_HOST`
 

@@ -5,7 +5,7 @@ description: Supported AI agents, how to pick one, and how they integrate.
 
 `no-mistakes` is pipeline-agent-agnostic by design: the gate should mean the same thing regardless of which supported agent backend you prefer.
 It is not runner-free.
-Every validation run requires a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`.
+Every validation run requires a supported native agent binary, the `agent: cursor` or `agent: devin` ACP alias, or an explicit `acp:<target>` through `acpx`.
 The default `agent: auto` setting picks the first supported native agent or ACP alias available on your system.
 
 The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
@@ -49,6 +49,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | Pi | `pi` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
+| Devin | `devin` + `acpx` | `devin acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Runner requirements
@@ -75,7 +76,7 @@ Running the gate from Antigravity or another Gemini-based coding environment doe
 Choose one of these supported setups:
 
 1. Install any supported native agent CLI and leave `agent: auto`, or select it explicitly in `~/.no-mistakes/config.yaml`.
-2. Install both `cursor-agent` and `acpx`, then leave `agent: auto` or select `agent: cursor`.
+2. Install both `cursor-agent` and `acpx`, then leave `agent: auto` or select `agent: cursor`; likewise `devin` and `acpx` for `agent: devin`.
 3. Install `acpx`, confirm that the Gemini ACP target works locally, and configure `agent: acp:gemini`.
 
 ```yaml
@@ -118,7 +119,7 @@ agent: [codex, grok]
 ### Optional ACP target
 
 If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix, for example `agent: acp:gemini`.
-`agent: auto` probes native agents and first-class ACP aliases (such as `cursor`), and never auto-selects arbitrary `acp:<target>` entries.
+`agent: auto` probes native agents and first-class ACP aliases (`cursor` and `devin`), and never auto-selects arbitrary `acp:<target>` entries.
 
 `acp:omp` (Oh My Pi over ACP) is additionally a verified gate agent under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings): its default launch neutralizes the target repository's context files, rules, skills, and extensions. See that reference entry for the exact mechanism and the override that fails closed.
 
@@ -313,6 +314,7 @@ The Copilot CLI has no output-schema flag, so when structured output is requeste
 ACP aliases are first-class agent names that resolve to ACP targets.
 `agent: cursor` is the first alias: it is shorthand for the `cursor` ACP target with the default raw command `cursor-agent acp`, not a separate native backend.
 `agent: acp:cursor` uses that same default command, so either spelling works without an `acp_registry_overrides.cursor` entry.
+`agent: devin` works the same way for the `devin` ACP target with the default raw command `devin acp` (Devin CLI's own ACP server), and `agent: acp:devin` uses that same default command.
 
 Because aliases still run through acpx, they use `acpx_path` for the bridge binary and share the same ACP prompt and structured-output behavior as `agent: acp:<target>`.
 Unlike arbitrary `acp:<target>` entries, aliases may participate in `agent: auto` when their availability checks pass.
@@ -328,6 +330,17 @@ Configure custom target commands in the [Global Config Reference](/no-mistakes/r
 no-mistakes invokes acpx with JSON output, approve-all permissions, denied non-interactive permission prompts, and the repo worktree as `--cwd`.
 Structured output is handled by appending the requested JSON schema to the prompt and validating the final assistant text with the common text fallback described above.
 A `model` set under [`agent_config`](/no-mistakes/reference/global-config/#agent_config) for an alias or `acp:<target>` is passed as acpx's own `--model`, so ACP targets can be pinned to an explicit model. acpx exposes no reasoning-effort surface, so `effort` is refused for ACP names rather than silently ignored.
+
+## Devin CLI
+
+`agent: devin` runs Devin CLI's `devin acp` server through acpx and uses the stored `devin` login; no-mistakes never signs in or changes Devin configuration.
+Devin behaves like any other ACP alias, with these Devin-specific details:
+
+- **Model ids.** acpx accepts only the model ids Devin advertises over ACP for `agent_config.devin.model`, not every slug in `devin models list`. An id Devin does not advertise fails the turn with an acpx error that lists the accepted ids. To use a catalog slug, bake it into the raw command instead: `acp_registry_overrides.devin: devin acp --model <slug>`.
+- **Effort.** `agent_config.devin.effort` is refused, as for every ACP name. Devin picks reasoning depth from the model slug or its own session setting, neither of which acpx can set for a one-shot turn.
+- **Tool permissions.** Devin starts each session in its `accept-edits` mode. Read-only commands run without a prompt, and a shell command that writes files raises an ACP permission request, which acpx grants under no-mistakes' approve-all posture.
+- **Token usage.** Devin reports usage over ACP, but its figures cover only the turn's latest model request, not the sum across every request in that turn. Recorded token counts for multi-step Devin turns therefore undercount what the turn consumed.
+- **Project instructions.** Devin loads the target repository's `AGENTS.md`, `CLAUDE.md`, and editor rule files with no verified way to turn that off, so it is refused under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings).
 
 ## Checking agent availability
 
@@ -350,11 +363,12 @@ $ no-mistakes doctor
   – antigravity (not found)
   – acpx (not found)
   – cursor (not found (cursor-agent, acpx))
+  – devin (not found (devin, acpx))
   ✓ gate validation claude is runnable
 ```
 
 `✓` = available, `–` = not found (optional), `✗` = problem detected.
-The standalone `acpx` and `cursor` rows inspect the default binary names.
+The standalone `acpx`, `cursor`, and `devin` rows inspect the default binary names.
 The `gate validation` line is the decisive result: when the configured global runner is unavailable, doctor fails because a complete gate cannot validate without it.
 See the [Global Config Reference](/no-mistakes/reference/global-config/) for ACP availability and probing behavior.
 Every new validation run resolves its effective agent again after applying any trusted repository-level override.

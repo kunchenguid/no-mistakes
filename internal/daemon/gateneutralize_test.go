@@ -66,7 +66,7 @@ func TestNewPipelineAgent_OptOut_AdmitsOMPACPTarget(t *testing.T) {
 // verified neutralization knob is refused rather than launched with project
 // instructions loaded.
 func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentGrok, types.AgentOpenCode, types.AgentCopilot} {
+	for _, name := range []types.AgentName{types.AgentGrok, types.AgentOpenCode, types.AgentCopilot, types.AgentCursor, types.AgentDevin, "acp:devin"} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		if _, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{}); err == nil {
 			t.Fatalf("%s must be refused under opt-out", name)

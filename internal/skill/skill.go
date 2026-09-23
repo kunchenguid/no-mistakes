@@ -101,9 +101,9 @@ the same way once the work is committed on a feature branch.
 - You must be on a **feature branch**, not the repository's default branch.
 - The repository must already be initialized with ` + "`no-mistakes init`" + `.
 - The daemon must have a runnable configured pipeline agent: a supported native
-  agent binary, the ` + "`agent: cursor`" + ` ACP alias, or an explicit ` + "`acp:<target>`" + ` through
-  ` + "`acpx`" + `. You are the AXI driver, not
-  an implicit pipeline-agent backend. If none is available, the run fails
+  agent binary, the ` + "`agent: cursor`" + ` or ` + "`agent: devin`" + ` ACP alias, or an explicit
+  ` + "`acp:<target>`" + ` through ` + "`acpx`" + `. You are the AXI driver, not an
+  implicit pipeline-agent backend. If none is available, the run fails
   before its first step; ` + "`no-mistakes doctor`" + ` reports the configuration problem.
 
 If any of these is not met, ` + "`axi run`" + ` returns an ` + "`error:`" + ` with the exact command

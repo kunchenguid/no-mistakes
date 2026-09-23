@@ -162,8 +162,8 @@ func newAxiRunCmd() *cobra.Command {
 			"Omit flags to reattach; a different selection cannot change an active run.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
-			"ACP alias, or an explicit `acp:<target>` through `acpx`, and fails before the\n" +
-			"first step when none can run.\n\n" +
+			"or `agent: devin` ACP alias, or an explicit `acp:<target>` through `acpx`, and\n" +
+			"fails before the first step when none can run.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,

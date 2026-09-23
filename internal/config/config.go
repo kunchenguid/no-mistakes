@@ -1056,10 +1056,12 @@ const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation. This may also be an ordered fallback list,
 # for example: agent: [codex, grok]
-# Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, acp:<target>
+# Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, acp:<target>
 # "auto" detects the first available native agent or ACP alias on your system
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
+# "devin" is an ACP alias for acp:devin using devin acp via acpx
+# "acp:devin" also uses that Devin default command
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
 
@@ -1073,6 +1075,7 @@ forgejo_axi_path: forgejo-axi
 # acp_registry_overrides:
 #   local-gemini: node /opt/mock-acp-agent.mjs
 #   cursor: cursor-agent acp
+#   devin: devin acp
 
 # Maximum time the CI monitor babysits an open PR with no base-branch movement
 # before giving up. The monitor watches CI and auto-rebases when the base branch
@@ -1140,7 +1143,7 @@ log_level: info
 # --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
 # codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
 # session-message body for opencode (its model needs the provider/model form),
-# and acpx --model for cursor and acp:<target>. Effort is one of
+# and acpx --model for cursor, devin, and acp:<target>. Effort is one of
 # minimal, low, medium, high, xhigh, max; a harness rejects any level it does not
 # implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
 # agent_config is refused for them; agent_args_override remains an escape hatch
@@ -1505,7 +1508,7 @@ func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentNam
 		return resolved, err == nil, "auto", err
 	}
 	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 	if isACPAgent(name) {
 		available, bins, err := c.acpAvailable(name, lookPath)
@@ -1688,7 +1691,7 @@ func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profi
 	for name, entry := range raw {
 		agentName := types.AgentName(name)
 		if !agentcfg.Known(agentName) {
-			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, devin, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
 		}
 		effort, err := agentcfg.ParseEffort(entry.Effort)
 		if err != nil {

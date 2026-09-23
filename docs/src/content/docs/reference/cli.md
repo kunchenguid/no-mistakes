@@ -579,13 +579,13 @@ Checks:
 - SQLite database
 - Daemon status
 - Agent runners: native binaries `claude`, `codex`, `grok`, `acli`, `opencode`, `pi`, `copilot`, and `agy` (Antigravity), plus the optional ACP bridge `acpx`
-- ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`
+- ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`, and `devin` plus `acpx` for `devin`
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
 - Every configured [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry, reported as `forge <host>`: the profile resolves and validates, its provider CLI is installed, and that CLI is authenticated for the profile's host
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 
-The standalone runner rows inspect default binary names; the `cursor` row reports whichever of `cursor-agent` and `acpx` are missing.
+The standalone runner rows inspect default binary names; each ACP alias row (`cursor`, `devin`) reports whichever of its command binary and `acpx` are missing.
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
 
