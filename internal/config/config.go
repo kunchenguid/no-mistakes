@@ -1668,10 +1668,18 @@ func (c *Config) AgentProfile() agentcfg.Profile {
 }
 
 func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
-	if c.AgentConfig == nil {
-		return agentcfg.Profile{}
+	if profile, ok := c.AgentConfig[string(name)]; ok {
+		return profile
 	}
-	return c.AgentConfig[string(name)]
+	if alias, ok := types.ACPAliasFor(name); ok {
+		return c.AgentConfig["acp:"+alias.Target]
+	}
+	if target, ok := types.ACPTargetFor(name); ok {
+		if alias, ok := types.ACPAliasForTarget(target); ok {
+			return c.AgentConfig[string(alias.Name)]
+		}
+	}
+	return agentcfg.Profile{}
 }
 
 // agentProfileRaw is the on-disk YAML shape of one agent_config entry. Effort

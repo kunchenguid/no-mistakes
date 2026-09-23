@@ -169,6 +169,36 @@ func TestAgentProfileFollowsTheSelectedAgent(t *testing.T) {
 	}
 }
 
+func TestACPAliasAgentProfiles(t *testing.T) {
+	for _, alias := range types.ACPAliases() {
+		short := string(alias.Name)
+		raw := "acp:" + alias.Target
+		for _, tt := range []struct {
+			name, selected, configured, other, want string
+		}{
+			{"alias config with raw selection", raw, short, "", "alias-model"},
+			{"raw config with alias selection", short, raw, "", "alias-model"},
+			{"raw selection prefers exact", raw, short, raw, "exact-model"},
+			{"alias selection prefers exact", short, raw, short, "exact-model"},
+		} {
+			t.Run(short+"/"+tt.name, func(t *testing.T) {
+				data := "agent: " + tt.selected + "\nagent_config:\n  " + tt.configured + ": {model: alias-model}\n"
+				if tt.other != "" {
+					data += "  " + tt.other + ": {model: exact-model}\n"
+				}
+				data += "review_agents:\n  reviewer: {agent: " + tt.selected + "}\n"
+				cfg := Merge(writeGlobalConfig(t, data), &RepoConfig{})
+				if got := cfg.AgentProfile().Model; got != tt.want {
+					t.Errorf("main profile model = %q, want %q", got, tt.want)
+				}
+				if got := cfg.ForReviewAgent(cfg.ReviewAgents[RoleReviewer]).AgentProfile().Model; got != tt.want {
+					t.Errorf("review profile model = %q, want %q", got, tt.want)
+				}
+			})
+		}
+	}
+}
+
 // TestRepoConfigCannotSetAgentConfig keeps model and effort selection on the
 // operator's machine: they decide which model runs with the maintainer's
 // credentials, exactly like agent_args_override.
