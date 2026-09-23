@@ -734,7 +734,12 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 }
 
 func TestRecoverPreservesInterruptedCIMonitorWorktree(t *testing.T) {
-	tmpDir := t.TempDir()
+	// Keep the IPC socket below the macOS Unix-domain path limit.
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 	p := paths.WithRoot(tmpDir)
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)

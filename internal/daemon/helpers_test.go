@@ -81,8 +81,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// startTestDaemon starts RunWithResources in a goroutine with a temp root.
-// Returns paths, db, and a cleanup function that stops the daemon.
+// startTestDaemon starts a daemon with a temp root and registers shutdown cleanup.
 func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {
 	t.Helper()
 
@@ -112,12 +111,11 @@ func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {
 // once the daemon answers a health probe. Startup recovery (stale runs, orphan
 // processes, orphan worktrees) completes before the IPC socket is bound, so a
 // returned call is a barrier after which recovery results can be asserted, and
-// the registered cleanup can always reach a daemon that is still serving. The
-// cleanup asks the daemon to shut down and waits for RunWithOptions to return;
-// a failed dial means the listener is already closed because the test stopped
-// the daemon itself. stopWithin only bounds how long a daemon that never exits
-// can stall the test. Register any cleanup that must run after the daemon
-// stops (closing d, removing its root) before calling this.
+// the registered cleanup can reach a daemon that is still serving. The
+// cleanup asks the daemon to shut down when reachable and waits for
+// RunWithOptions to return. stopWithin only bounds how long a daemon that
+// never exits can stall the test. Register cleanup for resources that must
+// outlive the daemon (d and its root) before calling this.
 func runTestDaemon(t *testing.T, p *paths.Paths, d *db.DB, sf StepFactory, stopWithin time.Duration) {
 	t.Helper()
 
