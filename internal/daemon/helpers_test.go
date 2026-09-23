@@ -104,35 +104,42 @@ func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	errCh := make(chan error, 1)
+	runTestDaemon(t, p, d, nil, 3*time.Second)
+	return p, d
+}
+
+// runTestDaemon runs RunWithOptions for the rest of the test and returns only
+// once the daemon answers a health probe. Startup recovery (stale runs, orphan
+// processes, orphan worktrees) completes before the IPC socket is bound, so a
+// returned call is a barrier after which recovery results can be asserted, and
+// the registered cleanup can always reach a daemon that is still serving. The
+// cleanup asks the daemon to shut down and waits for RunWithOptions to return;
+// a failed dial means the listener is already closed because the test stopped
+// the daemon itself. stopWithin only bounds how long a daemon that never exits
+// can stall the test. Register any cleanup that must run after the daemon
+// stops (closing d, removing its root) before calling this.
+func runTestDaemon(t *testing.T, p *paths.Paths, d *db.DB, sf StepFactory, stopWithin time.Duration) {
+	t.Helper()
+
+	stopped := make(chan struct{})
 	go func() {
-		errCh <- RunWithResources(p, d)
+		defer close(stopped)
+		_ = RunWithOptions(p, d, sf)
 	}()
 
-	// Wait for socket to appear.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket()); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
 	t.Cleanup(func() {
-		// Ensure daemon stops.
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
+		if client, err := ipc.Dial(p.Socket()); err == nil {
+			_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
 			client.Close()
 		}
 		select {
-		case <-errCh:
-		case <-time.After(3 * time.Second):
-			t.Error("daemon did not stop within 3s")
+		case <-stopped:
+		case <-time.After(stopWithin):
+			t.Errorf("daemon did not stop within %s", stopWithin)
 		}
 	})
 
-	return p, d
+	waitForDaemonReady(t, p)
 }
 
 // --- Mock steps and helpers for RunManager tests ---
@@ -211,35 +218,10 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 	}
 	t.Cleanup(func() { d.Close() })
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- RunWithOptions(p, d, sf)
-	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket()); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	t.Cleanup(func() {
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
-			client.Close()
-		}
-		// A run reaches its terminal DB state before its goroutine finishes git
-		// worktree cleanup. On process-spawn-bound Windows that cleanup can take
-		// longer than three seconds, so give graceful shutdown its own budget.
-		select {
-		case <-errCh:
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop within 15s")
-		}
-	})
-
+	// A run reaches its terminal DB state before its goroutine finishes git
+	// worktree cleanup. On process-spawn-bound Windows that cleanup can take
+	// longer than three seconds, so give graceful shutdown its own budget.
+	runTestDaemon(t, p, d, sf, 15*time.Second)
 	return p, d
 }
 
