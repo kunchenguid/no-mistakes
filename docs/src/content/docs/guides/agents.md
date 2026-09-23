@@ -312,9 +312,7 @@ The Copilot CLI has no output-schema flag, so when structured output is requeste
 ## ACP aliases
 
 ACP aliases are first-class agent names that resolve to ACP targets.
-`agent: cursor` is the first alias: it is shorthand for the `cursor` ACP target with the default raw command `cursor-agent acp`, not a separate native backend.
-`agent: acp:cursor` uses that same default command, so either spelling works without an `acp_registry_overrides.cursor` entry.
-`agent: devin` works the same way for the `devin` ACP target with the default raw command `devin acp` (Devin CLI's own ACP server), and `agent: acp:devin` uses that same default command.
+`agent: cursor` and `agent: devin` are shorthands for `acp:cursor` and `acp:devin`, not separate native backends. Their default commands and override rules are documented under [global `agent`](/no-mistakes/reference/global-config/#agent).
 
 Because aliases still run through acpx, they use `acpx_path` for the bridge binary and share the same ACP prompt and structured-output behavior as `agent: acp:<target>`.
 Unlike arbitrary `acp:<target>` entries, aliases may participate in `agent: auto` when their availability checks pass.
@@ -333,14 +331,9 @@ A `model` set under [`agent_config`](/no-mistakes/reference/global-config/#agent
 
 ## Devin CLI
 
-`agent: devin` runs Devin CLI's `devin acp` server through acpx and uses the stored `devin` login; no-mistakes never signs in or changes Devin configuration.
-Devin behaves like any other ACP alias, with these Devin-specific details:
+`agent: devin` runs Devin CLI through acpx and uses the stored `devin` login; no-mistakes never signs in or changes Devin configuration. For model ids and effort, see [`agent_config`](/no-mistakes/reference/global-config/#agent_config); for project-instruction suppression, see [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings).
 
-- **Model ids.** acpx accepts only the model ids Devin advertises over ACP for `agent_config.devin.model`, not every slug in `devin models list`. An id Devin does not advertise fails the turn with an acpx error that lists the accepted ids. To use a catalog slug, bake it into the raw command instead: `acp_registry_overrides.devin: devin acp --model <slug>`.
-- **Effort.** `agent_config.devin.effort` is refused, as for every ACP name. Devin picks reasoning depth from the model slug or its own session setting, neither of which acpx can set for a one-shot turn.
-- **Tool permissions.** Devin starts each session in its `accept-edits` mode. Read-only commands run without a prompt, and a shell command that writes files raises an ACP permission request, which acpx grants under no-mistakes' approve-all posture.
-- **Token usage.** Devin reports usage over ACP, but its figures cover only the turn's latest model request, not the sum across every request in that turn. Recorded token counts for multi-step Devin turns therefore undercount what the turn consumed.
-- **Project instructions.** Devin loads the target repository's `AGENTS.md`, `CLAUDE.md`, and editor rule files with no verified way to turn that off, so it is refused under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings).
+Devin starts each session in its `accept-edits` mode. Read-only commands run without a prompt, and a shell command that writes files raises an ACP permission request, which acpx grants under no-mistakes' approve-all posture. Devin reports usage over ACP, but its figures cover only the turn's latest model request, not the sum across every request in that turn. Recorded token counts for multi-step Devin turns therefore undercount what the turn consumed.
 
 ## Checking agent availability
 
