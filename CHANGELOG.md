@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.82.0](https://github.com/kunchenguid/no-mistakes/compare/v1.81.0...v1.82.0) (2026-09-23)
+
+
+### Features
+
+* **agent:** support Devin CLI as an ACP alias ([#1168](https://github.com/kunchenguid/no-mistakes/issues/1168)) ([6b4a55b](https://github.com/kunchenguid/no-mistakes/commit/6b4a55b9dc9552589243f8129202b9ec220047f0))
+
+
+### Bug Fixes
+
+* **daemon:** atomically write NM_HOME capture for detached-start test ([#1172](https://github.com/kunchenguid/no-mistakes/issues/1172)) ([7051487](https://github.com/kunchenguid/no-mistakes/commit/705148782644f1a74ff6f703e40a9a21e1465efa))
+* **pipeline:** retire the Jev review pre-brief and its excerpt option ([#1165](https://github.com/kunchenguid/no-mistakes/issues/1165)) ([d66e3b3](https://github.com/kunchenguid/no-mistakes/commit/d66e3b3721b1476f13eea951c866578bd6642bc3))
+
 ## [1.81.0](https://github.com/kunchenguid/no-mistakes/compare/v1.80.1...v1.81.0) (2026-09-22)
 
 
