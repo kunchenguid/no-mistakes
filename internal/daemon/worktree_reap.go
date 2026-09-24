@@ -94,30 +94,38 @@ func reapWorktrees(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time
 		return candidates[i].modTime.Before(candidates[j].modTime)
 	})
 
-	sweepable := make([]procreap.Worktree, 0, len(candidates))
-	for _, c := range candidates {
-		sweepable = append(sweepable, procreap.Worktree{Dir: c.wt.dir, RepoID: c.wt.repoID, RunID: c.wt.runID})
-	}
-	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_reap")
-
-	removed := 0
+	var toRemove []candidate
 	survivors := make([]candidate, 0, len(candidates))
 	for _, c := range candidates {
 		expired := policy.Retention > 0 && now.Sub(c.modTime) > policy.Retention
 		if expired {
-			if removeOrphanWorktree(context.Background(), c.wt) {
-				removed++
-			}
+			toRemove = append(toRemove, c)
 			continue
 		}
 		survivors = append(survivors, c)
 	}
 
 	if policy.MaxRuns > 0 && len(survivors) > policy.MaxRuns {
-		for _, c := range survivors[:len(survivors)-policy.MaxRuns] {
-			if removeOrphanWorktree(context.Background(), c.wt) {
-				removed++
-			}
+		toRemove = append(toRemove, survivors[:len(survivors)-policy.MaxRuns]...)
+	}
+
+	if len(toRemove) == 0 {
+		return
+	}
+
+	// Only the directories actually selected for removal are swept: sweeping
+	// a retained worktree would kill processes still using a checkout the
+	// policy was meant to keep.
+	sweepable := make([]procreap.Worktree, 0, len(toRemove))
+	for _, c := range toRemove {
+		sweepable = append(sweepable, procreap.Worktree{Dir: c.wt.dir, RepoID: c.wt.repoID, RunID: c.wt.runID})
+	}
+	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_reap")
+
+	removed := 0
+	for _, c := range toRemove {
+		if removeOrphanWorktree(context.Background(), c.wt) {
+			removed++
 		}
 	}
 

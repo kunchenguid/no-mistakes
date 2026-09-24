@@ -458,7 +458,20 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftover, activeWorktrees))
 	logStartupPhase("orphan_processes", orphanProcStarted)
 
+	global, cfgErr := config.LoadGlobal(p.ConfigFile())
+	if cfgErr != nil {
+		slog.Warn("failed to load global config for cleanup reaping, using defaults", "error", cfgErr)
+		global = nil
+	}
+	now := time.Now()
+
+	// reapWorktrees applies the operator's retention policy to the default
+	// <NM_HOME>/worktrees tree before cleanupOrphanWorktrees runs its
+	// unconditional sweep of operator-placed (worktree_roots) leftovers, so a
+	// disabled or wide retention window is honored on the default tree
+	// instead of being bypassed by startup cleanup.
 	worktreeStarted := time.Now()
+	reapWorktrees(d, p, worktreeReapPolicyFor(global), now)
 	cleanupOrphanWorktrees(d, p, leftover)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 
@@ -466,25 +479,12 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// are: every run's status is settled by now, so the active-run guard can
 	// tell a crashed run's leftovers from work still in flight.
 	evidenceStarted := time.Now()
-	global, cfgErr := config.LoadGlobal(p.ConfigFile())
-	if cfgErr != nil {
-		slog.Warn("failed to load global config for evidence reaping, using defaults", "error", cfgErr)
-		global = nil
-	}
 	policy := evidenceReapPolicyFor(global)
 	root := evidenceRootFor(p, global)
-	now := time.Now()
 	reapEvidence(d, root, policy, now)
 	reapLegacyEvidence(d, root, policy, now)
 	reapRunLogs(d, p.LogsDir(), policy, now)
 	logStartupPhase("evidence_cleanup", evidenceStarted)
-
-	// cleanupOrphanWorktrees above already removes every eligible leftover
-	// unconditionally, so this normally finds nothing left to do; it runs
-	// anyway for the same reason reapLegacyEvidence runs after reapEvidence -
-	// one consistent budget enforcement point, regardless of what an earlier
-	// pass already handled.
-	reapWorktrees(d, p, worktreeReapPolicyFor(global), now)
 
 	mgr.resumeRecoveredRuns(plans)
 }
@@ -762,17 +762,21 @@ func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
-// that are no longer active. It is DB-aware: a worktree is only removed when
-// its run row is terminal, or when there is no matching run row at all.
-// This is what keeps cleanup from deleting the checkout out from under a
-// pipeline that is still actually running (see skipWorktreeCleanup).
-// Called from recoverOnStartup after
+// that are no longer active, for the operator-placed leftovers named by
+// recordedOrphanWorktrees (see worktree_roots in the global config) - that
+// directory is the operator's own, so every eligible leftover there is
+// removed unconditionally, once, at startup. It is DB-aware: a worktree is
+// only removed when its run row is terminal, or when there is no matching
+// run row at all. This is what keeps cleanup from deleting the checkout out
+// from under a pipeline that is still actually running (see
+// skipWorktreeCleanup). Called from recoverOnStartup after
 // RecoverStaleRuns, so in the normal single-daemon path every run this loop
-// sees has already been resolved to a terminal status; it is factored out
-// separately so it can also be exercised - and its DB-aware skip behavior
-// verified - independent of stale-run recovery's side effects. Worktrees the
-// operator placed outside this tree are named by recordedOrphanWorktrees, which
-// never walks a directory it does not own.
+// sees has already been resolved to a terminal status.
+//
+// Leftovers under the default <NM_HOME>/worktrees tree are NOT removed here:
+// that tree is bounded by the operator's retention policy via reapWorktrees,
+// which recoverOnStartup runs first, so this only reclaims the (now likely
+// empty) per-repo directories reapWorktrees left behind.
 //
 // Every directory it is going to remove is swept in ONE process snapshot before
 // any of them is removed. The sweep-before-removal invariant is what matters
@@ -784,8 +788,8 @@ func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 // slower to start the more there is to clean up.
 func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) {
 	ctx := context.Background()
-	removable, repoDirs := defaultTreeOrphanWorktrees(d, p)
-	removable = append(removable, recordedOrphanWorktrees(d, p, leftover)...)
+	_, repoDirs := defaultTreeOrphanWorktrees(d, p)
+	removable := recordedOrphanWorktrees(d, p, leftover)
 
 	sweepable := make([]procreap.Worktree, 0, len(removable))
 	for _, wt := range removable {

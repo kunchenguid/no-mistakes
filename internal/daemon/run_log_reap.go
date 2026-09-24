@@ -66,7 +66,18 @@ func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time
 		if err != nil {
 			continue
 		}
-		candidates = append(candidates, candidate{path: path, modTime: info.ModTime(), runID: runID})
+		// The directory's own mtime only advances when a step log file is
+		// created inside it, not when an already-open one is appended to, so
+		// a long-running step's most recent writes can leave the directory
+		// looking far older than its logs actually are. The newest
+		// contained file's mtime catches that recent activity; the
+		// directory's own mtime is still the floor for a directory with no
+		// files yet.
+		modTime := info.ModTime()
+		if newest, ok := newestFileModTime(path); ok && newest.After(modTime) {
+			modTime = newest
+		}
+		candidates = append(candidates, candidate{path: path, modTime: modTime, runID: runID})
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -105,4 +116,30 @@ func removeRunLogDir(path, runID string) bool {
 		return false
 	}
 	return true
+}
+
+// newestFileModTime returns the most recent modification time among the
+// regular files directly inside dir. It reports false when dir has no
+// files to compare against.
+func newestFileModTime(dir string) (time.Time, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return time.Time{}, false
+	}
+	var newest time.Time
+	found := false
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if !found || info.ModTime().After(newest) {
+			newest = info.ModTime()
+			found = true
+		}
+	}
+	return newest, found
 }

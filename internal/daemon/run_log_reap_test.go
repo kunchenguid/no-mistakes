@@ -61,11 +61,15 @@ func (f *runLogFixture) seed(branch string, status types.RunStatus, age time.Dur
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		f.t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "review.log"), []byte("output"), 0o644); err != nil {
+	logFile := filepath.Join(dir, "review.log")
+	if err := os.WriteFile(logFile, []byte("output"), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
 	when := time.Now().Add(-age)
 	if err := os.Chtimes(dir, when, when); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.Chtimes(logFile, when, when); err != nil {
 		f.t.Fatal(err)
 	}
 	return run.ID
