@@ -316,6 +316,12 @@ Fork configurations verify the configured fork URL and exact feature ref rather 
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
 
+### Rewritten push target recovery
+
+When a fresh check finds the configured push target no longer equals the persisted push binding and the bound head is not its ancestor (the branch was force-rewritten outside the pipeline), it reports `state: remote_rewritten` and `safety: blocked_remote_rewritten` and never adopts the rewrite on its own. While the owning run is still active the next action is `continue_active_run`. Once that run is terminal the next action is `next_action.code: recover_remote_rewritten` with the exact command `no-mistakes axi sync --recover`.
+
+That recovery re-reads the live target, anchors the superseded pipeline head under `refs/no-mistakes/recover-rewritten/<run>/<push_generation>` in the worktree or, when only the gate has it, the local gate, confirms the live head did not change again, and then compare-and-swaps the persisted push binding (`pushed_head`, the run head, and `push_generation`) to the verified live head. It reports `recovered: true` with `recovery.source: remote_rewritten`, never changes the worktree, a branch, the gate branch, or the remote, and does not return custody. `--keep-local`, an unanchorable superseded head, a live head that moved again, or a binding or run that changed during recovery refuse without rebinding. Afterwards, follow the ordinary `next_action` reported against the new binding.
+
 ### Published-rebase gate recovery
 
 A custody-returned branch can later be rebased and force-with-lease pushed to its configured target. Its local head then diverges from the preserved gate lane, so an ordinary gate push correctly rejects it as non-fast-forward. Status reports `state: custody_returned`, `relation: diverged`, and `next_action.code: adopt_published` instead of directing another rejected `axi run`.

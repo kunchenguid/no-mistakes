@@ -536,6 +536,28 @@ func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 	return nil
 }
 
+// RebindRunPushedHead moves a terminal run's push binding to a head the
+// configured target was verified to hold after a rewrite outside the pipeline.
+// It is a compare-and-swap on the exact binding the caller verified (status,
+// pushed head, generation, target, ref, and no active push) and reports
+// whether it applied. head_sha follows only when it equalled the old binding,
+// so a custody-returned run keeps its own recorded head.
+func (d *DB) RebindRunPushedHead(id string, status types.RunStatus, expectedPushed string, expectedGeneration int64, fingerprint, ref, head string) (bool, error) {
+	result, err := d.sql.Exec(
+		`UPDATE runs SET head_sha = CASE WHEN head_sha = last_pushed_sha THEN ? ELSE head_sha END, last_pushed_sha = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ?
+		WHERE id = ? AND status = ? AND last_pushed_sha = ? AND COALESCE(push_generation, 0) = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0`,
+		head, head, now(), id, string(status), expectedPushed, expectedGeneration, fingerprint, ref,
+	)
+	if err != nil {
+		return false, fmt.Errorf("rebind run pushed head: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rebind run pushed head: %w", err)
+	}
+	return affected == 1, nil
+}
+
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
 // returned custody of this run's branch to the operator worktree. Stamping is
 // idempotent: the first timestamp wins so the record keeps the original

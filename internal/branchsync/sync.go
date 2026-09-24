@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -176,6 +177,7 @@ type Service struct {
 	beforeRecoverWorktreeMove         func()
 	beforeRecoverBranchMove           func()
 	afterRecoverBranchMove            func()
+	beforeRecoverRebind               func()
 }
 
 // remoteTimeout returns the bounded deadline budget for one remote
@@ -370,6 +372,14 @@ func (s *Service) Refresh(ctx context.Context) State {
 			state.Safety = "blocked_remote_rewritten"
 			state.Relation = RelationUnknown
 			state.Error = "the live remote no longer equals the persisted pipeline push binding; no files or refs were changed"
+			// A rewrite is never adopted implicitly. A terminal run offers the
+			// explicit guarded rebind (see recoverRemoteRewritten); an active
+			// run still owns its binding and must finish first.
+			if terminalRunStatus(freshRun.Status) {
+				state.NextAction = &NextAction{Code: "recover_remote_rewritten", Command: "no-mistakes axi sync --recover"}
+			} else {
+				state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
+			}
 		}
 		return state
 	}
@@ -657,6 +667,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return refusal
 	}
 	state, run, _ := s.inspect(ctx)
+	// Only a live read can observe a rewritten remote, and a custody-returned
+	// run keeps a push binding a third party can still rewrite, so this check
+	// precedes every cached no-op below.
+	if rebound, handled := s.recoverRemoteRewritten(ctx, run, keepLocal); handled {
+		return rebound
+	}
 	if run != nil && run.CustodyReturnedAt != nil {
 		state.Recovered = true
 		state.Changed = false
@@ -1295,6 +1311,95 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		return state
 	}
 	return s.finishRecover(ctx, run, true)
+}
+
+// recoverRemoteRewritten performs the explicit recover_remote_rewritten action
+// for a terminal run whose configured push target was rewritten outside the
+// pipeline. It re-verifies the live remote with a fresh Refresh, anchors the
+// superseded pipeline push head before changing anything, confirms the live
+// head did not move again, then compare-and-swaps the persisted push binding
+// to the verified live head. It never touches the worktree, a branch ref, the
+// gate branch, or the remote, and stamps no custody. handled is false when no
+// verified rewrite exists, leaving the caller's ordinary recovery in charge.
+func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepLocal bool) (State, bool) {
+	if run == nil || !terminalRunStatus(run.Status) || run.LastPushedSHA == nil {
+		return State{}, false
+	}
+	fresh := s.Refresh(ctx)
+	if fresh.Safety != "blocked_remote_rewritten" || fresh.Pipeline.RunID != run.ID || fresh.Remote.Freshness != "live" ||
+		fresh.Remote.ObservedHead == "" || fresh.NextAction == nil || fresh.NextAction.Code != "recover_remote_rewritten" {
+		return State{}, false
+	}
+	if keepLocal {
+		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_keep_local_not_applicable", "--keep-local does not apply to a remote rewritten outside the pipeline; run `no-mistakes axi sync --recover` to rebind the push binding to the verified live head; no files or refs were changed"), true
+	}
+	live := fresh.Remote.ObservedHead
+	superseded := fresh.Pipeline.PushedHead
+	generation := fresh.Pipeline.PushGeneration
+	anchorRef, anchoredIn, ok := s.anchorSupersededPushHead(ctx, run.ID, generation, superseded)
+	if !ok {
+		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_preserve_failed", fmt.Sprintf("the superseded pipeline head %s could not be anchored in the worktree or local gate, so rebinding would drop the last record of it; no files or refs were changed", superseded)), true
+	}
+	if s.beforeRecoverRebind != nil {
+		s.beforeRecoverRebind()
+	}
+	repo, repoErr := s.DB.GetRepo(s.Repo.ID)
+	if repoErr != nil || repo == nil {
+		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the repository record could not be re-read before rebinding; the push binding was not changed"), true
+	}
+	lsCtx, lsCancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer lsCancel()
+	again, err := s.runLsRemote(lsCtx, s.workDir(), repo.PushURL(), fresh.Target.Ref)
+	if err != nil || again != live {
+		blocked := blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_remote_changed", fmt.Sprintf("the live remote changed again before the push binding could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef))
+		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
+		return blocked, true
+	}
+	rebound, err := s.DB.RebindRunPushedHead(run.ID, run.Status, superseded, generation, TargetFingerprint(repo.PushURL()), fresh.Target.Ref, live)
+	if err != nil || !rebound {
+		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", fmt.Sprintf("the run or its push binding changed before it could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef)), true
+	}
+	state, _, _ := s.inspect(ctx)
+	state.Recovered = true
+	state.Changed = false
+	state.Recovery = &RecoveryEvidence{
+		Source: "remote_rewritten", RepositoryID: s.Repo.ID, RunID: run.ID, Branch: fresh.Local.Branch,
+		RequiredHead: live, PreservedHead: superseded, ArchiveRef: anchorRef, Proof: anchoredIn,
+	}
+	return state, true
+}
+
+// anchorSupersededPushHead keeps the pipeline head a rewritten remote replaced
+// reachable before the binding stops recording it. It anchors in the worktree
+// when the object is there, else in the local gate, and never replaces an
+// existing conflicting anchor.
+func (s *Service) anchorSupersededPushHead(ctx context.Context, runID string, generation int64, superseded string) (string, string, bool) {
+	ref := rewrittenAnchorRef(runID, generation)
+	if superseded == "" {
+		return ref, "", false
+	}
+	candidates := []struct{ dir, name string }{{s.workDir(), "worktree"}}
+	if gateDir := strings.TrimSpace(s.GateDir); gateDir != "" {
+		candidates = append(candidates, struct{ dir, name string }{gateDir, "gate"})
+	}
+	for _, candidate := range candidates {
+		if !objectExists(ctx, candidate.dir, superseded) {
+			continue
+		}
+		if err := custody.PreserveRecoveryAnchor(ctx, candidate.dir, ref, superseded); err != nil {
+			return ref, "", false
+		}
+		anchored, err := git.Run(ctx, candidate.dir, "rev-parse", ref+"^{commit}")
+		return ref, candidate.name, err == nil && anchored == superseded
+	}
+	return ref, "", false
+}
+
+// rewrittenAnchorRef names the anchor for the pipeline push head superseded by
+// a remote rewrite. The binding generation keeps each superseded head distinct
+// if the same run's remote is rewritten again after a rebind.
+func rewrittenAnchorRef(runID string, generation int64) string {
+	return "refs/no-mistakes/recover-rewritten/" + runID + "/" + strconv.FormatInt(generation, 10)
 }
 
 func (s *Service) anchorReachablePreserved(ctx context.Context, state State, runID, preserved string) (State, bool) {

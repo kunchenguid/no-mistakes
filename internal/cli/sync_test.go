@@ -1077,6 +1077,68 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	}
 }
 
+// TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd reproduces issue #652:
+// after an operator synchronized to the pipeline head, the push target was
+// force-rewritten outside the pipeline. The check must name the explicit
+// recovery, and that recovery must anchor the superseded pipeline head and
+// rebind the push binding without touching the worktree or the remote.
+func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
+	f := newCLISyncFixture(t)
+	if out, err := executeCmd("axi", "sync"); err != nil {
+		t.Fatalf("initial sync: %v\n%s", err, out)
+	}
+	writer := filepath.Join(t.TempDir(), "writer")
+	cliGit(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.remote, writer)
+	cliGit(t, writer, "config", "user.name", "Writer")
+	cliGit(t, writer, "config", "user.email", "writer@example.com")
+	cliGit(t, writer, "checkout", "feature/sync")
+	cliGit(t, writer, "checkout", "--orphan", "rewrite")
+	cliGit(t, writer, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(writer, "rewrite.txt"), []byte("rewrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, writer, "add", "rewrite.txt")
+	cliGit(t, writer, "commit", "-m", "rewrite")
+	cliGit(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/sync")
+	rewritten := cliGit(t, writer, "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "sync", "--check")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("rewritten check should exit 1, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{"state: remote_rewritten", "safety: blocked_remote_rewritten", "code: recover_remote_rewritten", "command: no-mistakes axi sync --recover"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rewritten check missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = executeCmd("axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("recover: %v\n%s", err, out)
+	}
+	anchor := "refs/no-mistakes/recover-rewritten/" + f.runID + "/1"
+	for _, want := range []string{"recovered: true", "changed: false", "source: remote_rewritten", "pushed_head: " + rewritten, "preserved_head: " + f.pushed, "archive_ref: " + anchor, "proof: worktree"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("recover output missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", anchor); got != f.pushed {
+		t.Fatalf("anchor = %s, want superseded pipeline head %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("recover moved HEAD to %s", got)
+	}
+	if got := cliGit(t, f.remote, "rev-parse", "refs/heads/feature/sync"); got != rewritten {
+		t.Fatalf("recover moved the remote to %s", got)
+	}
+
+	out, _ = executeCmd("axi", "sync", "--check")
+	if strings.Contains(out, "blocked_remote_rewritten") || !strings.Contains(out, "pushed_head: "+rewritten) {
+		t.Fatalf("post-recover check still stranded:\n%s", out)
+	}
+}
+
 func TestAxiSyncRecoverReturnsCustodyEndToEnd(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	out, err := executeCmd("axi", "sync", "--recover")

@@ -1403,3 +1403,51 @@ func TestGetRunGatesForUnknownRun(t *testing.T) {
 		t.Errorf("gates for unknown run = %q, want empty", pinned)
 	}
 }
+
+func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-rebind", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPublication(run.ID, PushBinding{HeadSHA: "pushed", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, attempt := range map[string]func() (bool, error){
+		"stale pushed head": func() (bool, error) {
+			return d.RebindRunPushedHead(run.ID, types.RunCompleted, "other", 1, "digest", "refs/heads/feature", "live")
+		},
+		"stale generation": func() (bool, error) {
+			return d.RebindRunPushedHead(run.ID, types.RunCompleted, "pushed", 2, "digest", "refs/heads/feature", "live")
+		},
+		"changed status": func() (bool, error) {
+			return d.RebindRunPushedHead(run.ID, types.RunFailed, "pushed", 1, "digest", "refs/heads/feature", "live")
+		},
+		"changed target": func() (bool, error) {
+			return d.RebindRunPushedHead(run.ID, types.RunCompleted, "pushed", 1, "other-digest", "refs/heads/feature", "live")
+		},
+	} {
+		applied, err := attempt()
+		if err != nil || applied {
+			t.Fatalf("%s: applied = %v, err = %v", name, applied, err)
+		}
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.HeadSHA != "pushed" || *got.LastPushedSHA != "pushed" || *got.PushGeneration != 1 {
+		t.Fatalf("refused rebind changed run: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
+	}
+
+	applied, err := d.RebindRunPushedHead(run.ID, types.RunCompleted, "pushed", 1, "digest", "refs/heads/feature", "live")
+	if err != nil || !applied {
+		t.Fatalf("verified rebind: applied = %v, err = %v", applied, err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.HeadSHA != "live" || *got.LastPushedSHA != "live" || *got.PushGeneration != 2 {
+		t.Fatalf("rebind result: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
+	}
+}

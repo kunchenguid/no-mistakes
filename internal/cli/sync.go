@@ -93,6 +93,8 @@ func newAxiSyncCmd() *cobra.Command {
 			"--check performs the same fresh read-only plan. Blocked states change nothing.\n" +
 			"--recover performs the guarded custody return offered by\n" +
 			"next_action.code: recover_custody; --keep-local keeps the current local head.\n" +
+			"It also performs next_action.code: recover_remote_rewritten, which anchors the\n" +
+			"superseded pipeline head and rebinds the push binding to the re-verified live head.\n" +
 			"--bind-archive-ref binds one exact existing refs/heads/archive/* commit to\n" +
 			"the selected terminal run; it never creates or moves a Git ref.\n" +
 			"--adopt-published performs the guarded gate-lane recovery offered by\n" +
@@ -301,6 +303,8 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	if recovered.Recovered {
 		if recovered.State == branchsync.StateUserOwned {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Nothing to recover; cancellation already released this branch to you.")
+		} else if recovered.Recovery != nil && recovered.Recovery.Source == "remote_rewritten" {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Push binding rebound to the verified live remote head; the superseded pipeline head stays anchored.")
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; start a fresh run when ready.")
 		}
