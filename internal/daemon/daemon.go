@@ -476,7 +476,15 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	now := time.Now()
 	reapEvidence(d, root, policy, now)
 	reapLegacyEvidence(d, root, policy, now)
+	reapRunLogs(d, p.LogsDir(), policy, now)
 	logStartupPhase("evidence_cleanup", evidenceStarted)
+
+	// cleanupOrphanWorktrees above already removes every eligible leftover
+	// unconditionally, so this normally finds nothing left to do; it runs
+	// anyway for the same reason reapLegacyEvidence runs after reapEvidence -
+	// one consistent budget enforcement point, regardless of what an earlier
+	// pass already handled.
+	reapWorktrees(d, p, worktreeReapPolicyFor(global), now)
 
 	mgr.resumeRecoveredRuns(plans)
 }

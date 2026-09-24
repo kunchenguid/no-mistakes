@@ -590,7 +590,9 @@ func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 }
 
 // cleanupRunEvidence tidies up after one finished run, then bounds the whole
-// evidence directory.
+// evidence directory, the run's own step-log directory (see reapRunLogs), and
+// any leftover run worktree that immediate removal did not clear (see
+// reapWorktrees).
 //
 // The per-run half is deliberately os.Remove and not os.RemoveAll: it succeeds
 // only when the directory is empty, so a run that produced no artifact leaves
@@ -599,8 +601,8 @@ func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 // without this nearly every run left a permanent empty directory - that alone
 // was the overwhelming majority of the accumulation this reaper exists to stop.
 //
-// The sweep that follows keeps a long-lived daemon converging on the retention
-// budget instead of waiting for a restart. Both halves are best effort: losing
+// The sweeps that follow keep a long-lived daemon converging on both retention
+// budgets instead of waiting for a restart. All of this is best effort: losing
 // a cleanup pass costs disk, while failing a finished run over it would cost
 // the user their result.
 func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
@@ -609,18 +611,29 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		Retention: config.DefaultEvidenceRetention,
 		MaxRuns:   config.DefaultEvidenceMaxRuns,
 	}
+	wtPolicy := worktreeReapPolicy{
+		Retention: config.DefaultWorktreeRetention,
+		MaxRuns:   config.DefaultWorktreeMaxRuns,
+	}
 	if cfg != nil {
 		configured = cfg.Test.Evidence.LocalRoot
 		policy = evidenceReapPolicy{
 			Retention: cfg.Test.Evidence.Retention,
 			MaxRuns:   cfg.Test.Evidence.MaxRuns,
 		}
+		wtPolicy = worktreeReapPolicy{
+			Retention: cfg.Worktree.Retention,
+			MaxRuns:   cfg.Worktree.MaxRuns,
+		}
 	}
 	root := m.paths.EvidenceRoot(configured)
 	if err := os.Remove(filepath.Join(root, runID)); err != nil && !os.IsNotExist(err) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
-	reapEvidence(m.db, root, policy, time.Now())
+	now := time.Now()
+	reapEvidence(m.db, root, policy, now)
+	reapWorktrees(m.db, m.paths, wtPolicy, now)
+	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
 }
 
 // removeRunWorktree sweeps processes before deciding whether to remove the
