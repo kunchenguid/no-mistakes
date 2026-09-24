@@ -48,24 +48,6 @@ case "$GATE_DIR" in
     GATE_DIR=$(cd "$HOOK_DIR/.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
     ;;
 esac
-# Bind the CLI call below to the root that owns this gate. The CLI resolves its
-# daemon root from NM_HOME, and git never sets NM_HOME for a hook, so whatever
-# the pushing shell happened to export decides which daemon authorizes the push.
-# Unset - the normal case - means the default ~/.no-mistakes root, so every gate
-# under any other root would authorize against a daemon that does not own it.
-# GATE_DIR is <NM_HOME>/repos/<id>.git by construction, so the owning root is a
-# property of the gate's own location rather than of the ambient environment.
-# Fail closed when it cannot be derived: admission is a security boundary, and
-# asking the wrong daemon is worse than refusing the push.
-NM_HOME=
-case "$GATE_DIR" in
-  */repos/*.git) NM_HOME=${GATE_DIR%/repos/*} ;;
-esac
-if [ -z "$NM_HOME" ]; then
-  printf 'no-mistakes: cannot derive the gate home that owns %s; refusing the push\n' "$GATE_DIR" >&2
-  exit 1
-fi
-export NM_HOME
 out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" 2>&1)
 status=$?
 if [ $status -ne 0 ]; then
@@ -182,23 +164,6 @@ case "$GATE_DIR" in
 esac
 LOG="$GATE_DIR/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
-# Bind notify-push to the root that owns this gate; see the pre-receive hook for
-# why the ambient NM_HOME cannot be trusted to choose the daemon. Without this
-# the notify reaches the default root's daemon, which keeps only the repo id from
-# the gate path and re-resolves it under its own root - so it runs the pipeline
-# against a foreign gate's worktree paths instead of reporting a wrong address.
-# Non-blocking, unlike pre-receive: a gate whose home cannot be derived logs and
-# skips the notify rather than failing a push git has already accepted.
-NM_HOME=
-case "$GATE_DIR" in
-  */repos/*.git) NM_HOME=${GATE_DIR%/repos/*} ;;
-esac
-if [ -z "$NM_HOME" ]; then
-  printf '[%s] cannot derive the gate home that owns %s; skipped notify-push\n' "$(nm_ts)" "$GATE_DIR" >> "$LOG" 2>/dev/null || :
-  printf 'no-mistakes: cannot derive the gate home that owns %s; pipeline not started\n' "$GATE_DIR" >&2
-  exit 0
-fi
-export NM_HOME
 notify_failed=0
 while read oldrev newrev refname; do
 	  set -- --gate "$GATE_DIR" \
