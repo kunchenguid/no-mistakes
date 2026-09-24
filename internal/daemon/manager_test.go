@@ -1582,7 +1582,11 @@ func logLaunchEvidence(t *testing.T, label string, value any) {
 // repository's push against local worktree paths. The misroute must surface as
 // an explicit refusal instead.
 func TestPushReceivedRejectsGateFromAnotherHome(t *testing.T) {
-	p, d := startTestDaemon(t)
+	// The owned-gate half launches a real run, so the daemon must resolve an
+	// agent; startTestDaemon would depend on one being installed on the host.
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
 
 	const repoID = "cross-home-repo"
 	_, headSHA := setupTestGitRepo(t, p, d, repoID)
