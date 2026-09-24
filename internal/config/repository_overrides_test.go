@@ -52,6 +52,9 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		{name: "uppercase git suffix", remote: "https://github.com/acme/widget.GIT", want: "github.com/acme/widget"},
 		{name: "SSH URL on a hosted forge", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "absolute SSH URL path", remote: "ssh://git@host/srv/git/team/widget.git", want: "host//srv/git/team/widget"},
+		{name: "absolute IPv6 scp path", remote: "git@[2001:db8::1]:/srv/git/team/widget.git", want: "2001:db8::1//srv/git/team/widget"},
+		{name: "relative IPv6 scp path", remote: "git@[2001:db8::1]:srv/git/team/widget.git", want: "2001:db8::1/srv/git/team/widget"},
+		{name: "malformed IPv6 scp authority", remote: "git@[2001:db8::1:/srv/git/team/widget.git", wantErr: true},
 		{name: "Git protocol default port", remote: "git://host:9418/team/repo.git", want: "host/team/repo"},
 		{name: "Git protocol nondefault port", remote: "git://host:9419/team/repo.git", want: "host:9419/team/repo"},
 		{name: "scp-like SSH", remote: "git@GITHUB.com:Acme/Widget.git", want: "github.com/acme/widget"},
@@ -115,6 +118,24 @@ func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
 			configKey: "git@host:srv/git/team/widget.git",
 			matching:  "git@host:srv/git/team/widget",
 			distinct:  "ssh://git@host/srv/git/team/widget.git",
+		},
+		{
+			name:      "absolute IPv6 scp config key matches absolute SSH URL",
+			configKey: "git@[2001:db8::1]:/srv/git/team/widget.git",
+			matching:  "ssh://git@[2001:db8::1]/srv/git/team/widget",
+			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
+		},
+		{
+			name:      "absolute IPv6 SSH URL config key matches absolute scp",
+			configKey: "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
+			matching:  "git@[2001:db8::1]:/srv/git/team/widget",
+			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
+		},
+		{
+			name:      "relative IPv6 scp config key rejects absolute SSH URL",
+			configKey: "git@[2001:db8::1]:srv/git/team/widget.git",
+			matching:  "git@[2001:db8::1]:srv/git/team/widget",
+			distinct:  "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
 		},
 	} {
 		tc := tc

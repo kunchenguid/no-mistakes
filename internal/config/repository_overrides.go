@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -62,17 +63,13 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		escapedPath = true
 		absolutePath = scheme == "ssh" && strings.HasPrefix(rawPath, "/")
 	} else {
-		// Git's scp-like SSH form is [user@]host:path.
-		hostPart, remotePath, found := strings.Cut(remote, ":")
-		if !found || strings.Contains(hostPart, "/") {
-			return "", fmt.Errorf("expected an HTTPS, HTTP, SSH, or scp-like Git remote")
+		var err error
+		host, rawPath, err = parseSCPRemote(remote)
+		if err != nil {
+			return "", err
 		}
-		if at := strings.LastIndexByte(hostPart, '@'); at >= 0 {
-			hostPart = hostPart[at+1:]
-		}
-		host = strings.ToLower(hostPart)
-		rawPath = remotePath
-		absolutePath = strings.HasPrefix(remotePath, "/")
+		host = strings.ToLower(host)
+		absolutePath = strings.HasPrefix(rawPath, "/")
 	}
 
 	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
@@ -94,6 +91,45 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		pathPrefix = "//"
 	}
 	return host + portSuffix + pathPrefix + strings.Join(parts, "/"), nil
+}
+
+func parseSCPRemote(remote string) (string, string, error) {
+	firstColon := strings.IndexByte(remote, ':')
+	openBracket := strings.IndexByte(remote, '[')
+	if openBracket >= 0 && (firstColon < 0 || openBracket < firstColon) {
+		closeRelative := strings.IndexByte(remote[openBracket+1:], ']')
+		if closeRelative < 0 {
+			return "", "", fmt.Errorf("expected an HTTPS, HTTP, SSH, or scp-like Git remote")
+		}
+		closeBracket := openBracket + 1 + closeRelative
+		if closeBracket+1 >= len(remote) || remote[closeBracket+1] != ':' {
+			return "", "", fmt.Errorf("expected an HTTPS, HTTP, SSH, or scp-like Git remote")
+		}
+		hostPart := remote[:closeBracket+1]
+		if strings.Contains(hostPart, "/") {
+			return "", "", fmt.Errorf("expected an HTTPS, HTTP, SSH, or scp-like Git remote")
+		}
+		if at := strings.LastIndexByte(hostPart, '@'); at >= 0 {
+			hostPart = hostPart[at+1:]
+		}
+		if len(hostPart) < 4 || hostPart[0] != '[' || hostPart[len(hostPart)-1] != ']' {
+			return "", "", fmt.Errorf("invalid bracketed IPv6 scp host")
+		}
+		ip := hostPart[1 : len(hostPart)-1]
+		if !strings.Contains(ip, ":") || net.ParseIP(ip) == nil {
+			return "", "", fmt.Errorf("invalid bracketed IPv6 scp host")
+		}
+		return ip, remote[closeBracket+2:], nil
+	}
+
+	hostPart, remotePath, found := strings.Cut(remote, ":")
+	if !found || strings.Contains(hostPart, "/") {
+		return "", "", fmt.Errorf("expected an HTTPS, HTTP, SSH, or scp-like Git remote")
+	}
+	if at := strings.LastIndexByte(hostPart, '@'); at >= 0 {
+		hostPart = hostPart[at+1:]
+	}
+	return hostPart, remotePath, nil
 }
 
 func normalizeRemotePath(rawPath string, escaped bool) ([]string, error) {
