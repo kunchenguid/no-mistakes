@@ -259,6 +259,8 @@ If `notify-push.log` mentions `invalid gate path: .`, refresh the managed hook w
 
 Also check `<gate-path>/notify-push.log`. The hook now appends daemon notification failures there and prints the same error back to the pushing client.
 
+If a push is refused with `gate ... does not belong to this daemon's home`, the gate's hooks predate the [`NM_HOME` binding](/no-mistakes/reference/environment/#nm_home) and reached a daemon under a different root. Refresh them with `no-mistakes init` or `no-mistakes daemon restart`, then push again.
+
 ### Check the daemon socket
 
 Both receive hooks talk to the daemon over `~/.no-mistakes/socket`. If the daemon is not running, pre-receive admission fails closed and the push is rejected before any gate ref changes. Start the daemon and push again.
