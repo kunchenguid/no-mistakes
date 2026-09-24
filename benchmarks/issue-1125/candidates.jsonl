@@ -1,0 +1,40 @@
+{"path": "internal/config/config_global_test.go", "coupling": 0.5416666666666666, "relevant": true, "reason": "pins the global-config load/merge/trust-boundary conventions the change's Jev plumbing follows; only globalConfigRaw use site"}
+{"path": "docs/src/content/docs/reference/cli.md", "coupling": 0.25, "relevant": false, "reason": "'Answer' is the English verb in drive help text, not the Jev Answer type (false-positive whole-word match)"}
+{"path": "internal/cli/axi_drive.go", "coupling": 0.25, "relevant": false, "reason": "'Answer' is the English verb in the drive command Short text, not the Jev Answer type (false-positive whole-word match)"}
+{"path": "internal/eval/capture.go", "coupling": 0.05555555555555555, "relevant": true, "reason": "documents ReviewStep's branch-scoped base semantics that the pre-brief digest mirrors"}
+{"path": "internal/eval/replay.go", "coupling": 0.05555555555555555, "relevant": true, "reason": "drives ReviewStep in eval replay; a second ReviewStep caller whose prompt and coverage expectations the pre-brief must not disturb"}
+{"path": "internal/pipeline/executor_approval_test.go", "coupling": 0.05555555555555555, "relevant": false, "reason": "mentions ReviewStep only in a comment; the session-free contract it cites is pinned in review_session_test.go"}
+{"path": "internal/pipeline/executor_intent_conformance_test.go", "coupling": 0.05555555555555555, "relevant": false, "reason": "mentions ReviewStep only in a comment; no review contract under test"}
+{"path": "internal/pipeline/steps/common.go", "coupling": 0.05555555555555555, "relevant": false, "reason": "names ReviewStep only in the AllSteps inventory; ordering is untouched by the pre-brief"}
+{"path": "internal/pipeline/steps/host_search_boundary_test.go", "coupling": 0.05555555555555555, "relevant": true, "reason": "pins the worktree search boundary the pre-brief's own git grep and ls-files calls must respect"}
+{"path": "internal/pipeline/steps/protected_paths_test.go", "coupling": 0.05555555555555555, "relevant": false, "reason": "a CI repair test; ReviewStep appears only as a pipeline-sequence member"}
+{"path": "internal/pipeline/steps/review_pipeline_delivery_test.go", "coupling": 0.05555555555555555, "relevant": true, "reason": "drives ReviewStep on the delivery path; guards the outcome shape the pre-brief wraps"}
+{"path": "internal/pipeline/steps/review_schema_retry_test.go", "coupling": 0.05555555555555555, "relevant": true, "reason": "pins the schema-retry loop wrapping the same Execute the pre-brief feeds"}
+{"path": "internal/pipeline/steps/review_session_test.go", "coupling": 0.05555555555555555, "relevant": true, "reason": "pins ReviewStep session isolation; the fresh session-free reviewer the pre-brief invariant relies on"}
+{"path": "internal/pipeline/steps/review_test.go", "coupling": 0.05555555555555555, "relevant": true, "reason": "drives ReviewStep.Execute across prompt and coverage cases; pins the reviewed_paths contract the pre-brief must preserve"}
+{"path": ".agents/skills/eval-corpus/SKILL.md", "coupling": 0.041666666666666664, "relevant": false, "reason": "documents eval global-only keys and Merge behavior; shares only the GlobalConfig vocabulary"}
+{"path": ".agents/skills/test-evidence-storage/SKILL.md", "coupling": 0.041666666666666664, "relevant": false, "reason": "documents the test.evidence trust split; shares only the GlobalConfig vocabulary"}
+{"path": "internal/branchsync/sync.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "uses GlobalConfig for the branch-sync remote timeout; unrelated to the review pre-brief"}
+{"path": "internal/cli/axi.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "CLI wiring holding GlobalConfig; no review or Jev logic"}
+{"path": "internal/cli/axi_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "CLI tests holding GlobalConfig; no review or Jev logic"}
+{"path": "internal/config/commit_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated commit settings"}
+{"path": "internal/config/config_agent_config_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated agent settings"}
+{"path": "internal/config/config_args_override_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated agent-args overrides"}
+{"path": "internal/config/config_evidence_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated evidence settings"}
+{"path": "internal/config/config_intent_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated intent settings"}
+{"path": "internal/config/config_merge_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated merge behavior"}
+{"path": "internal/config/config_repo_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated repo config"}
+{"path": "internal/config/config_repo_trust_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for the repo trust boundary, but not the Jev global-only key"}
+{"path": "internal/config/config_test_command_override_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated test-command overrides"}
+{"path": "internal/config/config_test_instructions_trust_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated test-instruction trust"}
+{"path": "internal/config/evidence_storage_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated evidence storage"}
+{"path": "internal/config/pi_profile.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "per-run Pi profile resolution; unrelated to the Jev pre-brief"}
+{"path": "internal/config/pi_profile_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "config test for unrelated Pi profiles"}
+{"path": "internal/daemon/daemon.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "daemon startup holding GlobalConfig; no review or Jev logic"}
+{"path": "internal/daemon/evidence_reap.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "evidence retention from GlobalConfig; unrelated to the review pre-brief"}
+{"path": "internal/daemon/manager.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "run management holding GlobalConfig; the Jev key never reaches it"}
+{"path": "internal/pipeline/steps/pr_attach_media_test.go", "coupling": 0.041666666666666664, "relevant": false, "reason": "PR media attachment test; GlobalConfig via config.Merge for evidence settings only"}
+{"path": ".gitattributes", "coupling": 0, "relevant": false, "reason": "root sibling of changed AGENTS.md; no coupling to the change"}
+{"path": ".gitignore", "coupling": 0, "relevant": false, "reason": "root sibling of changed AGENTS.md; no coupling to the change"}
+{"path": ".no-mistakes.yaml", "coupling": 0, "relevant": false, "reason": "root sibling of changed AGENTS.md; the repo's own config, not context for the Jev change"}
+{"path": ".release-please-manifest.json", "coupling": 0, "relevant": false, "reason": "root sibling of changed AGENTS.md; no coupling to the change"}

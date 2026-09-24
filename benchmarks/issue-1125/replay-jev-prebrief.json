@@ -1,0 +1,18 @@
+{
+  "change": "jev-prebrief",
+  "mode": "excerpts-off",
+  "base_sha": "7e2c5fad6cb37f15ea8d3cd90106cb27f993dcef",
+  "head_sha": "9b697a7bc9448a3d158eb6e8a65c20628535ce08",
+  "candidates": 40,
+  "labeled_relevant": 8,
+  "ranked_order": [],
+  "hit_at_10": 0,
+  "hit_at_10_recall": 0,
+  "listed": 0,
+  "listed_relevant": 0,
+  "listed_precision": 0,
+  "non_empty_prebrief": 0,
+  "jev_model": "jev-1.13.0",
+  "jev_input_tokens": 19155,
+  "score_ranked": false
+}

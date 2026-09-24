@@ -12,7 +12,7 @@ func TestRunPiProfileImmutableAndReceiptBound(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo(t.TempDir(), "https://example.com/repo.git", "main")
 	pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "nonce", "gen", "digest", "", pin)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "nonce", "gen", "digest", "", false, pin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,11 +30,11 @@ func TestRunPiProfileImmutableAndReceiptBound(t *testing.T) {
 		t.Fatalf("read pin: %+v %v", got, err)
 	}
 	conflict := &agentcfg.PiProfile{Effort: agentcfg.EffortLow}
-	got, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", conflict)
+	got, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", false, conflict)
 	if err != nil || claimed || got.LaunchReceiptClaimedAt != nil {
 		t.Fatalf("conflict consumed receipt: %+v %v %v", got, claimed, err)
 	}
-	_, claimed, err = d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", &agentcfg.PiProfile{Model: pin.Model})
+	_, claimed, err = d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", false, &agentcfg.PiProfile{Model: pin.Model})
 	if err != nil || !claimed {
 		t.Fatalf("matching request not claimed: %v %v", claimed, err)
 	}

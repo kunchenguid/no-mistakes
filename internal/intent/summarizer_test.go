@@ -91,6 +91,32 @@ func TestAgentSummarizer_PropagatesCWD(t *testing.T) {
 	}
 }
 
+// The summarizer runs with worktree CWD and can write files, so its prompt
+// carries the same agent-memory-files hands-off rule as the pipeline steps:
+// AGENTS.md and CLAUDE.md must never be created or edited by automation.
+func TestAgentSummarizer_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
+	fa := &fakeAgent{output: `{"summary": "x"}`}
+	s := NewAgentSummarizer(fa, "/work/dir")
+	if _, err := s.Summarize(context.Background(), &Session{
+		Messages: []Message{{Role: RoleUser, Text: "do something"}},
+	}); err != nil {
+		t.Fatalf("summarize: %v", err)
+	}
+	for _, want := range []string{
+		"Agent memory files (AGENTS.md and CLAUDE.md) are hands-off",
+		"Do not create, modify, rename, or delete them",
+		"not even to correct or add content that looks stale, wrong, or missing",
+	} {
+		idx := strings.Index(fa.lastPrompt, want)
+		if idx < 0 {
+			t.Fatalf("summarizer prompt missing memory-file rule %q:\n%s", want, fa.lastPrompt)
+		}
+		if boundary := strings.Index(fa.lastPrompt, "Transcript begins below the line."); boundary < 0 || idx > boundary {
+			t.Fatalf("memory-file rule %q must precede the untrusted transcript boundary:\n%s", want, fa.lastPrompt)
+		}
+	}
+}
+
 func TestAgentSummarizer_EmptyTranscript(t *testing.T) {
 	s := NewAgentSummarizer(&fakeAgent{output: `{"summary": "x"}`}, "")
 	_, err := s.Summarize(context.Background(), &Session{})

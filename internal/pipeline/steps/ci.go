@@ -25,9 +25,10 @@ const (
 // checks that are still running. The canonical strings live in cimonitor so all
 // producers and consumers agree on them.
 const (
-	ciChecksPassedMsg   = cimonitor.ChecksPassedMsg
-	ciNoChecksPassedMsg = cimonitor.NoChecksPassedMsg
-	ciChecksRunningMsg  = cimonitor.ChecksRunningMsg
+	ciChecksPassedMsg           = cimonitor.ChecksPassedMsg
+	ciNoChecksPassedMsg         = cimonitor.NoChecksPassedMsg
+	ciChecksRunningMsg          = cimonitor.ChecksRunningMsg
+	ciChecksAwaitingApprovalMsg = cimonitor.ChecksAwaitingApprovalMsg
 )
 
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
@@ -557,12 +558,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// checksPending is the narrow execution state: only checks that are
 			// actively running or queued block a rerun or issue escalation. A
 			// provider-cancelled check is terminal enough to enter the transient
-			// rerun policy, even though it is not a verdict on the code.
-			checksPending := hasPendingChecks(checks)
+			// rerun policy, even though it is not a verdict on the code. A
+			// check held for maintainer approval will not finish on its own,
+			// so it does not defer the other checks' issues.
+			checksPending := hasExecutingPendingChecks(checks)
 			// readinessPending is deliberately broader: any state that is not a
 			// conclusive pass, failure, or skip must keep the PR non-ready. This
-			// includes cancelled and unknown provider states.
-			readinessPending := checksPending || hasUnresolvedChecks(checks)
+			// includes cancelled, held, and unknown provider states.
+			readinessPending := hasPendingChecks(checks) || hasUnresolvedChecks(checks)
 			failing := failingCheckNames(checks)
 
 			// A rerun the provider has answered is no longer outstanding. This
@@ -695,6 +698,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						reruns:              s.transientReruns.used,
 						botComments:         reviewBotComments(sctx, host, pr, checks),
 					})
+					if hasAwaitingApprovalChecks(checks) {
+						sctx.Log(ciChecksAwaitingApprovalMsg)
+					}
 					sctx.Log(fmt.Sprintf("issues detected: %s", findings.Summary))
 					return ciObservationOutcome(findings), nil
 				}
@@ -713,7 +719,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// and unknown checks must never be promoted as green.
 					// Applies even when no_ci is declared: registered checks are
 					// never waived.
-					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
+					lastMonitorLog = logCIMonitorStatus(sctx, ciWaitingMessage(checks), lastMonitorLog)
 				case len(checks) == 0:
 					// Empty forge results are ready ONLY with positive durable
 					// evidence from trusted default-branch config (no_ci: true).
@@ -742,6 +748,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return nil, err
 		}
 	}
+}
+
+// ciWaitingMessage names what the monitor is waiting for when no check has
+// failed. A workflow the provider is holding for approval has run nothing and
+// will run nothing until a maintainer acts, so calling that "checks running"
+// describes work that does not exist and hides the one thing that would move
+// the run along. Anything else is an ordinary wait on checks in flight.
+func ciWaitingMessage(checks []scm.Check) string {
+	if hasAwaitingApprovalChecks(checks) {
+		return ciChecksAwaitingApprovalMsg
+	}
+	return ciChecksRunningMsg
 }
 
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {

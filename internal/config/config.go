@@ -187,7 +187,10 @@ type GlobalConfig struct {
 	// session_reuse: false to force every invocation cold.
 	SessionReuse  bool          `yaml:"-"`
 	ForgeProfiles ForgeProfiles `yaml:"forge_profiles"`
-	AutoFix       AutoFixRaw
+	// RepositoryOverrides scopes machine-local commit and PR-title formats to
+	// canonicalized remote host/owner/repository identities.
+	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
+	AutoFix             AutoFixRaw
 	// CI is the operator's own CI-step floor. It is the only place the rerun
 	// budget can be set for a repository whose default branch this machine's
 	// user does not control (the common case when contributing to someone
@@ -197,18 +200,13 @@ type GlobalConfig struct {
 	// value still wins over it.
 	Rebase RebaseRaw
 	Commit GlobalCommitRaw
-	Intent IntentRaw
+	Intent GlobalIntentRaw
 	Test   TestRaw
 	// Eval is resolved at load time because it is global-only: it describes
 	// this machine's local eval corpus (disk, retention, whether review rounds
 	// record replay provenance), never a repository policy. Keeping it out of
 	// RepoConfig means no pushed branch can enable, disable, or resize it.
-	Eval Eval
-	// Jev holds the resolved TypeSafe pre-brief settings (see the Jev type).
-	// Global-only for the same reason as Eval: it decides whether this
-	// machine's review turns consult an external pre-screen service under the
-	// operator's own key, so no pushed branch may enable or steer it.
-	Jev       Jev
+	Eval      Eval
 	Providers ProvidersRaw
 }
 
@@ -239,12 +237,21 @@ type globalConfigRaw struct {
 	CI                      CIRaw                      `yaml:"ci"`
 	Rebase                  RebaseRaw                  `yaml:"rebase"`
 	Commit                  GlobalCommitRaw            `yaml:"commit"`
-	Intent                  IntentRaw                  `yaml:"intent"`
+	Intent                  GlobalIntentRaw            `yaml:"intent"`
 	Test                    TestRaw                    `yaml:"test"`
 	Eval                    EvalRaw                    `yaml:"eval"`
-	Jev                     JevRaw                     `yaml:"jev"`
-	ForgeProfiles           ForgeProfiles              `yaml:"forge_profiles"`
-	Providers               ProvidersRaw               `yaml:"providers"`
+	// Jev is the retired jev.review_assist pre-brief block. The feature was
+	// removed after the offline trial showed its candidate listing cannot
+	// reach the review findings it is meant to surface. The key stays in the
+	// raw schema as a tombstone ONLY so a global config that still sets one of
+	// the two retired subkeys keeps parsing: the strict decoder would
+	// otherwise reject the whole document as an unknown field. Setting either
+	// key is reported as deprecated at load and has no effect; the resolved
+	// config has no Jev to configure.
+	Jev                 retiredJev          `yaml:"jev"`
+	ForgeProfiles       ForgeProfiles       `yaml:"forge_profiles"`
+	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
+	Providers           ProvidersRaw        `yaml:"providers"`
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
@@ -259,6 +266,20 @@ type ForgeProfile struct {
 
 // ForgeProfiles maps a remote host token to its machine-local provider profile.
 type ForgeProfiles map[string]ForgeProfile
+
+// RepositoryOverride contains machine-local settings for one normalized remote.
+type RepositoryOverride struct {
+	Commit GlobalCommitRaw `yaml:"commit"`
+	PR     RepositoryPRRaw `yaml:"pr"`
+}
+
+// RepositoryPRRaw contains machine-local per-repository PR title settings.
+type RepositoryPRRaw struct {
+	TitleFormat *string `yaml:"title_format"`
+}
+
+// RepositoryOverrides maps remote URLs to machine-local per-repository settings.
+type RepositoryOverrides map[string]RepositoryOverride
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
 type RepoConfig struct {
@@ -670,10 +691,7 @@ type Config struct {
 	LogLevel              string
 	SessionReuse          bool
 	Eval                  Eval
-	// Jev is global-only by design (see GlobalConfig.Jev); Merge copies it
-	// straight through with no repository override step.
-	Jev      Jev
-	Commands Commands
+	Commands              Commands
 	// Gates are the repository's extra checks, already trusted-only by the
 	// time they reach here (EffectiveRepoConfig sourced them from the trusted
 	// default-branch copy).
@@ -919,21 +937,24 @@ type Eval struct {
 	DiversifiedSize int
 }
 
-// JevRaw is the YAML representation of the TypeSafe review pre-brief
-// settings. Pointer fields distinguish "not set" (nil) from explicit values.
-type JevRaw struct {
-	ReviewAssist *bool `yaml:"review_assist"`
+// retiredJev names exactly the two retired jev subkeys so a global config
+// that still sets one keeps parsing under the strict known-fields rule. Both
+// are pointers so a set key is distinguishable from an absent one and can be
+// reported as deprecated at load time; neither configures anything. Any other
+// subkey under jev: is rejected like any unknown field.
+type retiredJev struct {
+	ReviewAssist          *bool `yaml:"review_assist"`
+	CandidateExcerptBytes *int  `yaml:"candidate_excerpt_bytes"`
 }
 
-// Jev is the resolved TypeSafe pre-brief config. ReviewAssist opts review
-// turns into one batched Jev evaluation that ranks surrounding context as
-// advisory prompt input (issue #1055). It never
-// changes what a review covers or who validates it, and every failure of the
-// assist falls back to the same cold review that runs with it off. The API
-// key is read from the daemon's TYPESAFE_API_KEY environment variable at turn
-// time, never from this document.
-type Jev struct {
-	ReviewAssist bool
+// warnRetiredJev reports each set retired jev key once at load time.
+func warnRetiredJev(raw retiredJev) {
+	if raw.ReviewAssist != nil {
+		slog.Warn("jev.review_assist is deprecated: the jev review pre-brief was removed and this setting has no effect")
+	}
+	if raw.CandidateExcerptBytes != nil {
+		slog.Warn("jev.candidate_excerpt_bytes is deprecated: the jev review pre-brief was removed and this setting has no effect")
+	}
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -943,6 +964,30 @@ type IntentRaw struct {
 	Threshold       *float64 `yaml:"threshold"`
 	SlackDays       *int     `yaml:"slack_days"`
 	DisabledReaders []string `yaml:"disabled_readers"`
+}
+
+// GlobalIntentRaw is the global config's `intent:` block. It extends the
+// repo-level IntentRaw with the caller-side publication control, which a
+// repository config deliberately cannot express: publication policy lives in
+// the trusted `pr.publish_intent`, and the caller-side control below is owned
+// by the operator of the machine that runs the gate.
+type GlobalIntentRaw struct {
+	IntentRaw `yaml:",inline"`
+	// PublishIntent is the contributor-side, tighten-only publication
+	// preference for the generated public Intent section. `false` omits that
+	// section for runs started on this machine; it can never publish intent
+	// on a repository whose trusted `pr.publish_intent` disabled it. The full
+	// intent still reaches every step prompt except the PR-drafting turns,
+	// which then see no intent text at all. Default nil, which publishes when
+	// the repository permits it.
+	PublishIntent *bool `yaml:"publish_intent"`
+}
+
+// PublishesIntentByDefault reports whether runs started on this machine
+// publish the generated Intent section when the repository's trusted policy
+// allows it. It makes no promise about model prose.
+func (g GlobalIntentRaw) PublishesIntentByDefault() bool {
+	return g.PublishIntent == nil || *g.PublishIntent
 }
 
 // Intent is the resolved user-intent extraction config.
@@ -1030,10 +1075,12 @@ const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation. This may also be an ordered fallback list,
 # for example: agent: [codex, grok]
-# Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, acp:<target>
+# Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, acp:<target>
 # "auto" detects the first available native agent or ACP alias on your system
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
+# "devin" is an ACP alias for acp:devin using devin acp via acpx
+# "acp:devin" also uses that Devin default command
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
 
@@ -1047,6 +1094,7 @@ forgejo_axi_path: forgejo-axi
 # acp_registry_overrides:
 #   local-gemini: node /opt/mock-acp-agent.mjs
 #   cursor: cursor-agent acp
+#   devin: devin acp
 
 # Maximum time the CI monitor babysits an open PR with no base-branch movement
 # before giving up. The monitor watches CI and auto-rebases when the base branch
@@ -1114,7 +1162,7 @@ log_level: info
 # --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
 # codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
 # session-message body for opencode (its model needs the provider/model form),
-# and acpx --model for cursor and acp:<target>. Effort is one of
+# and acpx --model for cursor, devin, and acp:<target>. Effort is one of
 # minimal, low, medium, high, xhigh, max; a harness rejects any level it does not
 # implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
 # agent_config is refused for them; agent_args_override remains an escape hatch
@@ -1479,7 +1527,7 @@ func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentNam
 		return resolved, err == nil, "auto", err
 	}
 	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 	if isACPAgent(name) {
 		available, bins, err := c.acpAvailable(name, lookPath)
@@ -1639,10 +1687,18 @@ func (c *Config) AgentProfile() agentcfg.Profile {
 }
 
 func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
-	if c.AgentConfig == nil {
-		return agentcfg.Profile{}
+	if profile, ok := c.AgentConfig[string(name)]; ok {
+		return profile
 	}
-	return c.AgentConfig[string(name)]
+	if alias, ok := types.ACPAliasFor(name); ok {
+		return c.AgentConfig["acp:"+alias.Target]
+	}
+	if target, ok := types.ACPTargetFor(name); ok {
+		if alias, ok := types.ACPAliasForTarget(target); ok {
+			return c.AgentConfig[string(alias.Name)]
+		}
+	}
+	return agentcfg.Profile{}
 }
 
 // agentProfileRaw is the on-disk YAML shape of one agent_config entry. Effort
@@ -1662,7 +1718,7 @@ func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profi
 	for name, entry := range raw {
 		agentName := types.AgentName(name)
 		if !agentcfg.Known(agentName) {
-			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, devin, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
 		}
 		effort, err := agentcfg.ParseEffort(entry.Effort)
 		if err != nil {
@@ -1920,7 +1976,6 @@ func DefaultGlobalConfig() *GlobalConfig {
 		LogLevel:                "info",
 		SessionReuse:            true,
 		Eval:                    evalDefaults(),
-		Jev:                     Jev{},
 	}
 }
 
@@ -2093,6 +2148,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateRebaseRaw(raw.Rebase); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	warnRetiredJev(raw.Jev)
 
 	if len(raw.Agent) > 0 {
 		cfg.Agents = copyAgents(raw.Agent)
@@ -2215,6 +2271,13 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.ForgeProfiles = profiles
 	}
+	if raw.RepositoryOverrides != nil {
+		overrides, err := normalizeRepositoryOverrides(raw.RepositoryOverrides)
+		if err != nil {
+			return nil, err
+		}
+		cfg.RepositoryOverrides = overrides
+	}
 	if raw.AutoFix.CI == nil {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
@@ -2226,7 +2289,6 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg.Test = raw.Test
 	cfg.Providers = raw.Providers
 	applyEvalOverrides(&cfg.Eval, &raw.Eval)
-	applyJevOverrides(&cfg.Jev, &raw.Jev)
 
 	return cfg, nil
 }
@@ -2774,13 +2836,6 @@ func applyEvalOverrides(dst *Eval, src *EvalRaw) {
 	}
 }
 
-// applyJevOverrides applies non-nil raw values onto resolved defaults.
-func applyJevOverrides(dst *Jev, src *JevRaw) {
-	if src.ReviewAssist != nil {
-		dst.ReviewAssist = *src.ReviewAssist
-	}
-}
-
 // validateEvalRaw fails the config closed on a negative eval.max_cases. A
 // negative cap has no defensible meaning here - it is neither "keep everything"
 // (0) nor a bound - so surfacing the typo beats guessing which one was meant.
@@ -2964,6 +3019,24 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 // ordered fallback lists, override global agent values when non-empty. Commands
 // and ignore patterns come from repo config only.
 func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
+	return merge(global, repo, nil)
+}
+
+// MergeForRemote combines global and per-repo config, applying a matching
+// machine-local repository override between the global defaults and repo config.
+func MergeForRemote(global *GlobalConfig, repo *RepoConfig, remote string) *Config {
+	var override *RepositoryOverride
+	if global != nil {
+		if key, err := normalizeRepositoryRemote(remote); err == nil {
+			if found, ok := global.RepositoryOverrides[key]; ok {
+				override = &found
+			}
+		}
+	}
+	return merge(global, repo, override)
+}
+
+func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride) *Config {
 	af := autoFixDefaults()
 	applyAutoFixOverrides(&af, &global.AutoFix)
 	applyAutoFixOverrides(&af, &repo.AutoFix)
@@ -2984,7 +3057,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyRebaseOverrides(&rebase, &repo.Rebase)
 
 	intent := intentDefaults()
-	applyIntentOverrides(&intent, &global.Intent)
+	applyIntentOverrides(&intent, &global.Intent.IntentRaw)
 	applyIntentOverrides(&intent, &repo.Intent)
 
 	test := testDefaults()
@@ -3011,6 +3084,18 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	if global.Commit.BranchReplacement != nil {
 		commit.BranchReplacement = *global.Commit.BranchReplacement
 	}
+	if override != nil {
+		if override.Commit.FixMessage != nil {
+			commit.FixMessage = *override.Commit.FixMessage
+		}
+		if override.Commit.BranchPattern != nil {
+			commit.BranchPattern = *override.Commit.BranchPattern
+			commit.BranchReplacement = ""
+		}
+		if override.Commit.BranchReplacement != nil {
+			commit.BranchReplacement = *override.Commit.BranchReplacement
+		}
+	}
 	if repo.Commit.FixMessage != nil {
 		commit.FixMessage = *repo.Commit.FixMessage
 	}
@@ -3027,6 +3112,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		BaseBranch:    strings.TrimSpace(repo.PR.BaseBranch),
 		Template:      repo.PR.Template,
 		PublishIntent: repo.PR.PublishIntent,
+	}
+	if override != nil && override.PR.TitleFormat != nil {
+		pr.TitleFormat = *override.PR.TitleFormat
 	}
 	if repo.PR.TitleFormat != nil {
 		pr.TitleFormat = *repo.PR.TitleFormat
@@ -3053,9 +3141,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		SessionReuse:          global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
-		Eval: global.Eval,
-		// Jev is global-only for the same reason as Eval.
-		Jev:            global.Jev,
+		Eval:           global.Eval,
 		Commands:       repo.Commands,
 		Gates:          copyGates(repo.Gates),
 		IgnorePatterns: repo.IgnorePatterns,

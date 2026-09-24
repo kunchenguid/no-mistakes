@@ -143,10 +143,47 @@ func (s *Scenario) Match(prompt string) Action {
 func (s *Scenario) MatchInDir(wd, prompt string) Action {
 	for _, a := range s.Actions {
 		if a.Match == "" || strings.Contains(prompt, a.Match) {
-			return withReviewCoverage(wd, prompt, a)
+			return withRecordedDecisionCoverage(prompt, withReviewCoverage(wd, prompt, a))
 		}
 	}
 	return Action{Text: "no matching scenario"}
+}
+
+// Like path coverage, canned clean reviews stand in for a model's explicit
+// decision assessments. A scenario-provided field (including null or empty)
+// always wins so missing or adverse assessments remain testable.
+func withRecordedDecisionCoverage(prompt string, a Action) Action {
+	if !strings.Contains(prompt, reviewPromptMarker) || a.StructuredRaw != "" || a.Structured == nil {
+		return a
+	}
+	if _, present := a.Structured["decision_reviews"]; present {
+		return a
+	}
+	_, section, ok := strings.Cut(prompt, "BEGIN RECORDED FIX DECISIONS\n")
+	if !ok {
+		return a
+	}
+	raw, _, ok := strings.Cut(section, "\nEND RECORDED FIX DECISIONS")
+	if !ok {
+		return a
+	}
+	var decisions []struct {
+		ID string `json:"decision_id"`
+	}
+	if json.Unmarshal([]byte(raw), &decisions) != nil {
+		return a
+	}
+	reviews := make([]map[string]any, 0, len(decisions))
+	for _, decision := range decisions {
+		reviews = append(reviews, map[string]any{"decision_id": decision.ID, "result": "satisfied", "evidence": "fakeagent: simulated decision assessment"})
+	}
+	cloned := make(map[string]any, len(a.Structured)+1)
+	for key, value := range a.Structured {
+		cloned[key] = value
+	}
+	cloned["decision_reviews"] = reviews
+	a.Structured = cloned
+	return a
 }
 
 // reviewPromptMarker opens every review turn's prompt (initial review and

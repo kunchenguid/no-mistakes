@@ -12,6 +12,7 @@ import (
 const (
 	MethodPushReceived       = "push_received"
 	MethodResolvePiProfile   = "resolve_pi_profile"
+	MethodProbeOmitIntent    = "probe_omit_intent"
 	MethodStartFreshRun      = "start_fresh_run"
 	MethodClaimLaunchReceipt = "claim_launch_receipt"
 	MethodGetRun             = "get_run"
@@ -82,6 +83,10 @@ type PushReceivedParams struct {
 	LaunchNonce          string           `json:"launch_nonce,omitempty"`
 	ValidationGeneration string           `json:"validation_generation,omitempty"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	// OmitIntent carries the caller-side, tighten-only request to keep the
+	// generated Intent section out of the PR body. It never publishes intent
+	// a repository's trusted config disabled.
+	OmitIntent bool `json:"omit_intent,omitempty"`
 	// ReconciledPreviousHead is the head a reconciled private mirror branch
 	// carried before the pusher archived and removed it. The push re-creates the
 	// branch, so the hook reports no previous head of its own. It is a claim the
@@ -103,6 +108,20 @@ type StartFreshRunParams struct {
 	LaunchNonce          string           `json:"launch_nonce"`
 	ValidationGeneration string           `json:"validation_generation"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	OmitIntent           bool             `json:"omit_intent,omitempty"`
+}
+
+// ProbeOmitIntentParams is the empty request for MethodProbeOmitIntent.
+type ProbeOmitIntentParams struct{}
+
+// ProbeOmitIntentResult answers MethodProbeOmitIntent. The method exists only
+// as a capability check: daemon requests decode JSON permissively, so an older
+// daemon would silently drop the unknown omit_intent field from an existing
+// RPC and publish the intent the caller asked it to withhold. A distinct method
+// is refused by such a daemon (method not found) instead of succeeding
+// silently, so a client that reaches OK=true knows omit_intent is honored.
+type ProbeOmitIntentResult struct {
+	OK bool `json:"ok"`
 }
 
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
@@ -117,6 +136,7 @@ type ClaimLaunchReceiptParams struct {
 	ValidationGeneration string `json:"validation_generation"`
 	IntentDigest         string `json:"intent_digest"`
 	PRBaseBranch         string `json:"pr_base_branch,omitempty"`
+	OmitIntent           bool   `json:"omit_intent,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -177,6 +197,10 @@ type RerunParams struct {
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	// OmitIntent requests omission of the public Intent section for the new
+	// run. It is tighten-only: the selected prior run's decision is always
+	// inherited and this can only add to it.
+	OmitIntent bool `json:"omit_intent,omitempty"`
 	// CallerHeadSHA is a clean caller worktree's HEAD, when known. It guards
 	// the daemon's selected head; it never supplies a replacement run head.
 	CallerHeadSHA string `json:"caller_head_sha,omitempty"`
@@ -337,6 +361,10 @@ type RunInfo struct {
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`
+	// OmitIntent is true when this run was started with the caller-side,
+	// tighten-only request to keep the generated Intent section out of the
+	// PR body (see runs.omit_intent).
+	OmitIntent bool `json:"omit_intent,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both

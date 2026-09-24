@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -924,6 +925,160 @@ func TestRerunInheritsPRBaseBranchFromSelectedRun(t *testing.T) {
 	}
 }
 
+// The omit-intent decision folds once at run start: the caller's tighten-only
+// request OR the operator's global intent.publish_intent default, stamped on
+// the run row at creation. Reruns inherit the selected run's decision and can
+// only add omission (rerun --no-publish-intent), never remove it, so a
+// since-changed config file never re-publishes mid-run or on rerun.
+func TestOmitIntentFoldsAtRunStartAndRerunInherits(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "omit-intent-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	push := func(omit bool) string {
+		t.Helper()
+		var result ipc.PushReceivedResult
+		err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			Gate:       p.RepoDir("omit-intent-repo"),
+			Ref:        "refs/heads/main",
+			Old:        "0000000000000000000000000000000000000000",
+			New:        headSHA,
+			OmitIntent: omit,
+		}, &result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.RunID
+	}
+
+	firstID := push(false)
+	first := waitForRunTerminalState(t, d, firstID)
+	if first.OmitIntent {
+		t.Fatal("run without flag or global default must not omit")
+	}
+
+	secondID := push(true)
+	second := waitForRunTerminalState(t, d, secondID)
+	if !second.OmitIntent {
+		t.Fatal("flagged run must omit")
+	}
+
+	// Rerun inherits the selected run's decision.
+	var rerun ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: "omit-intent-repo", Branch: "main", PreviousRunID: second.ID}, &rerun); err != nil {
+		t.Fatal(err)
+	}
+	inherited := waitForRunTerminalState(t, d, rerun.RunID)
+	if !inherited.OmitIntent {
+		t.Fatal("rerun must inherit the selected run's omit decision")
+	}
+
+	// An explicit rerun request can also raise omission on demand.
+	var rerunFlagged ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: "omit-intent-repo", Branch: "main", PreviousRunID: first.ID, OmitIntent: true}, &rerunFlagged); err != nil {
+		t.Fatal(err)
+	}
+	flagged := waitForRunTerminalState(t, d, rerunFlagged.RunID)
+	if !flagged.OmitIntent {
+		t.Fatal("rerun with explicit omit must stamp it")
+	}
+
+	// A rerun of an omitting run can never re-publish: the wire flag is
+	// tighten-only, so a false request still inherits omission.
+	var rerunLoosen ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: "omit-intent-repo", Branch: "main", PreviousRunID: second.ID, OmitIntent: false}, &rerunLoosen); err != nil {
+		t.Fatal(err)
+	}
+	if loosened := waitForRunTerminalState(t, d, rerunLoosen.RunID); !loosened.OmitIntent {
+		t.Fatal("rerun must not loosen an inherited omit decision")
+	}
+}
+
+// A legacy (unpinned) launch with an unparseable global config still creates
+// a failed run row carrying the load error, so axi status and the trigger
+// wait can surface it instead of timing out on a run that never appears.
+func TestBadGlobalConfigStillCreatesFailedRunRow(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	_, headSHA := setupTestGitRepo(t, p, d, "bad-global-repo")
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: [unterminated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("bad-global-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil || !strings.Contains(err.Error(), "load global config") {
+		t.Fatalf("push with bad global config: err=%v", err)
+	}
+	runs, err := d.GetRunsByRepo("bad-global-repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want 1 failed row", len(runs))
+	}
+	if runs[0].Status != types.RunFailed || runs[0].Error == nil || !strings.Contains(*runs[0].Error, "load config:") {
+		t.Fatalf("run = %+v, want failed row with load config error", runs[0])
+	}
+}
+
+// The operator's global intent.publish_intent: false is folded in at start:
+// runs started without any flag omit the public Intent section.
+func TestGlobalPublishIntentFalseStampsRuns(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	globalConfig, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), append([]byte("intent:\n  publish_intent: false\n"), globalConfig...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, headSHA := setupTestGitRepo(t, p, d, "global-omit-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("global-omit-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first); err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, d, first.RunID)
+	if !run.OmitIntent {
+		t.Fatal("global intent.publish_intent: false must stamp omit on the run")
+	}
+}
+
 func TestRerunInheritsPRURLFromSelectedRun(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
@@ -1418,4 +1573,135 @@ func logLaunchEvidence(t *testing.T, label string, value any) {
 		t.Fatal(err)
 	}
 	t.Logf("launch-evidence %s: %s", label, encoded)
+}
+
+// TestPushReceivedRejectsGateFromAnotherHome is defense in depth behind
+// paths.ForGate's gate-derived root. A gate path names the root that owns it,
+// but the daemon keeps only the repo id from it, so a notify carrying a gate
+// under a different root - from a hand-run CLI or a direct IPC client - used to
+// re-resolve that id under this daemon's own root and validate a foreign
+// repository's push against local worktree paths. The misroute must surface as
+// an explicit refusal instead.
+func TestPushReceivedRejectsGateFromAnotherHome(t *testing.T) {
+	// The owned-gate half launches a real run, so the daemon must resolve an
+	// agent; startTestDaemon would depend on one being installed on the host.
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+
+	const repoID = "cross-home-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+
+	// Same repo id, a different NM_HOME: exactly what the default root's daemon
+	// received when a second root's hook shelled out without NM_HOME set.
+	foreignHome := t.TempDir()
+	foreignGate := filepath.Join(foreignHome, "repos", repoID+".git")
+	if err := os.MkdirAll(foreignGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: foreignGate,
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil {
+		t.Fatalf("daemon started run %q for a gate under another home; it must refuse", result.RunID)
+	}
+	if !strings.Contains(err.Error(), "does not belong to this daemon's home") {
+		t.Fatalf("refusal must name the cause, got: %v", err)
+	}
+
+	// The guard must not cost the ordinary case: this root's own gate still runs.
+	var ok ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repoID),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &ok); err != nil {
+		t.Fatalf("push to this daemon's own gate must still be accepted: %v", err)
+	}
+	if ok.RunID == "" {
+		t.Fatal("expected a run for the owned gate")
+	}
+}
+
+// TestAdmitPushRejectsGateFromAnotherHome guards the same ownership invariant on
+// the admit leg, which is the ref-mutation boundary: an admit call that reached
+// the wrong daemon would otherwise be classified against that daemon's own PID
+// chain and active steps, so a push made inside another root's validation step
+// reads as unnested and is admitted.
+func TestAdmitPushRejectsGateFromAnotherHome(t *testing.T) {
+	p, d := startTestDaemon(t)
+
+	const repoID = "cross-home-admit-repo"
+	setupTestGitRepo(t, p, d, repoID)
+
+	foreignHome := t.TempDir()
+	foreignGate := filepath.Join(foreignHome, "repos", repoID+".git")
+	if err := os.MkdirAll(foreignGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: foreignGate}, &result); err == nil {
+		t.Fatal("daemon classified a push to a gate under another home; it must refuse")
+	} else if !strings.Contains(err.Error(), "does not belong to this daemon's home") {
+		t.Fatalf("refusal must name the cause, got: %v", err)
+	}
+
+	var ok ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: p.RepoDir(repoID)}, &ok); err != nil {
+		t.Fatalf("admit for this daemon's own gate must still be classified: %v", err)
+	}
+}
+
+// TestOwnedGateAcceptsARelativeRootSpelling pins the guard against the root
+// spelling: NM_HOME may be relative, while the gate path always arrives
+// absolute from git rev-parse, so a textual compare would refuse every push to
+// the daemon's own gate.
+func TestOwnedGateAcceptsARelativeRootSpelling(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	const repoID = "relative-root-repo"
+	p := paths.WithRoot("nm")
+	if err := os.MkdirAll(p.RepoDir(repoID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	absGate, err := filepath.Abs(p.RepoDir(repoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absGate); err == nil {
+		absGate = resolved
+	}
+
+	got, err := ownedGateRepoID(p, absGate)
+	if err != nil {
+		t.Fatalf("the daemon's own gate under a relative root must be owned: %v", err)
+	}
+	if got != repoID {
+		t.Fatalf("repo id = %q, want %q", got, repoID)
+	}
+
+	foreign := filepath.Join(t.TempDir(), "repos", repoID+".git")
+	if _, err := ownedGateRepoID(p, foreign); err == nil {
+		t.Fatal("a gate under another root must still be refused")
+	}
 }

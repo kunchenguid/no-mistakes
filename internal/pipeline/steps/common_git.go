@@ -40,13 +40,28 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 
 // resolveBranchBaseSHA returns the branch base commit relative to the default
 // branch when possible. This keeps pipeline steps scoped to the full branch,
-// not just the last pushed delta. If merge-base cannot be determined, it falls
-// back to resolveBaseSHA.
-func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
-	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
-		return mb
+// not just the last pushed delta. It fetches the default branch's current
+// remote tip first (same pattern as resolveRunDefaultBranchTip) so the
+// merge-base is computed against the live base, not whatever origin/<base>
+// happened to be sitting at in the worktree - a stale local ref otherwise
+// drafts PR content (and other consumers) against an outdated base and pulls
+// in unrelated commits that already landed there.
+//
+// A fetch failure is refused rather than degraded: falling back to the
+// worktree's cached origin/<base> ref on fetch failure would silently
+// reintroduce the exact stale-base bug this helper exists to eliminate, one
+// layer down. Callers return the error, which fails the step instead of
+// validating or drafting content against unverified base state.
+func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, error) {
+	if strings.TrimSpace(defaultBranch) != "" {
+		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
+			return "", fmt.Errorf("fetch default branch %q to resolve branch base: %w", defaultBranch, err)
+		}
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+	if mb := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch); mb != "" {
+		return mb, nil
+	}
+	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), nil
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {

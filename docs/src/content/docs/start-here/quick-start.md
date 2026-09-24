@@ -24,7 +24,7 @@ no-mistakes doctor
 You need:
 
 - `git`
-- One supported agent runner (`claude`, `codex`, `grok`, `acli` for Rovo Dev, `opencode`, `pi`, `copilot`, or `agy` for Antigravity), or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
+- One supported agent runner (`claude`, `codex`, `grok`, `acli` for Rovo Dev, `opencode`, `pi`, `copilot`, or `agy` for Antigravity), or a configured Cursor, Devin, or other ACP runner such as `agent: cursor` or `agent: devin`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
 - For PRs and CI: `gh` (GitHub), `glab` (GitLab), `forgejo-axi` (Forgejo), Bitbucket Cloud credentials, `az` with the `azure-devops` extension (Azure DevOps), or `tea` (Gitea)
 
 `no-mistakes doctor` reports whether the configured global runner can start a validation gate.
@@ -49,6 +49,8 @@ no-mistakes init --fork-url git@github.com:you/my-repo.git
 ```
 
 The gate will push validated branches to the fork while opening PRs against the parent.
+
+If you instead cloned your own fork directly (`origin` is your fork, with an `upstream` remote for the parent), plain `init` detects that layout and refuses with the same `--fork-url` guidance instead of silently opening PRs inside your fork.
 
 ```
 $ no-mistakes init

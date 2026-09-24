@@ -877,6 +877,28 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		if state == "" {
 			state = strings.ToUpper(strings.TrimSpace(run.Status))
 		}
+		// GitHub holds a first-time contributor's workflows for maintainer
+		// approval by concluding the run ACTION_REQUIRED without running a
+		// single job. That hold is a wait on a human, not a verdict on the
+		// commit: reported as a failing check it sends the CI step's auto-fix
+		// rounds after work that never executed, and no amount of repairing
+		// the branch can clear something only a maintainer can approve.
+		//
+		// The job list is what separates the hold from a run that concluded
+		// ACTION_REQUIRED after executing jobs, which keeps its failing
+		// classification. It is read from the run itself, and only for a run
+		// already reporting ACTION_REQUIRED, so no other conclusion pays for
+		// it. The read is positive evidence, and only a PRESENT and empty job
+		// list is that evidence: a failed read, and a response carrying no job
+		// list at all, are unreadable job data and leave the run a failure
+		// rather than being guessed as a hold.
+		awaitingApproval := false
+		if bucket == scm.CheckBucketFail && state == "ACTION_REQUIRED" {
+			if jobs, present, jobsErr := h.runJobs(ctx, strconv.FormatInt(run.ID, 10)); jobsErr == nil && present && len(jobs) == 0 {
+				awaitingApproval = true
+				bucket = scm.CheckBucketPending
+			}
+		}
 		link := strings.TrimSpace(run.HTMLURL)
 		if link == "" {
 			host := strings.TrimSpace(h.host)
@@ -885,7 +907,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 			}
 			link = fmt.Sprintf("https://%s/%s/actions/runs/%d", host, repo, run.ID)
 		}
-		checks = append(checks, scm.Check{Name: name, ProviderID: fmt.Sprintf("github-workflow-run:%d", run.ID), Bucket: bucket, Kind: scm.CheckKindRun, State: state, CompletedAt: completedAt, StartedAt: startedAt, WorkflowID: run.WorkflowID, Link: link})
+		checks = append(checks, scm.Check{Name: name, ProviderID: fmt.Sprintf("github-workflow-run:%d", run.ID), Bucket: bucket, Kind: scm.CheckKindRun, State: state, CompletedAt: completedAt, StartedAt: startedAt, WorkflowID: run.WorkflowID, Link: link, AwaitingApproval: awaitingApproval})
 	}
 	return checks, nil
 }
@@ -1024,21 +1046,42 @@ func (h *Host) PreRunFailures(ctx context.Context, checks []scm.Check) ([]bool, 
 	return result, nil
 }
 
-// fetchRunJobs reads a run's jobs (with their steps) from Actions. A run it
-// cannot read yields no jobs, so every check on it fails closed to a genuine
-// failure rather than being guessed as infrastructure.
-func (h *Host) fetchRunJobs(ctx context.Context, runID string) []githubRunJob {
+// runJobs reads a run's jobs (with their steps) from Actions, reporting both
+// why a read failed and whether the response carried a job list at all. A
+// caller that must tell "this run executed no jobs" from "this run's job data
+// is not there" reads this one: an error, an absent list, and a present empty
+// list are three different answers that all look like an empty slice.
+//
+// present is true only for a job array the response actually carried. A
+// missing "jobs" key and an explicit null both decode to a nil pointer and
+// report false, so absent job data is never mistaken for a run that ran
+// nothing.
+func (h *Host) runJobs(ctx context.Context, runID string) (jobs []githubRunJob, present bool, err error) {
 	viewArgs := append([]string{"run", "view", runID}, h.repoArgs()...)
 	viewArgs = append(viewArgs, "--json", "jobs")
 	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
 	if err != nil {
-		return nil
+		return nil, false, fmt.Errorf("gh run view %s: %w", runID, err)
 	}
-	var payload githubRunView
+	var payload githubRunJobsView
 	if err := json.Unmarshal(out, &payload); err != nil {
+		return nil, false, fmt.Errorf("parse jobs for run %s: %w", runID, err)
+	}
+	if payload.Jobs == nil {
+		return nil, false, nil
+	}
+	return *payload.Jobs, true, nil
+}
+
+// fetchRunJobs reads a run's jobs (with their steps) from Actions. A run it
+// cannot read yields no jobs, so every check on it fails closed to a genuine
+// failure rather than being guessed as infrastructure.
+func (h *Host) fetchRunJobs(ctx context.Context, runID string) []githubRunJob {
+	jobs, _, err := h.runJobs(ctx, runID)
+	if err != nil {
 		return nil
 	}
-	return payload.Jobs
+	return jobs
 }
 
 // matchRunJob finds the job a check names: by databaseId when the check's link
@@ -1219,6 +1262,14 @@ type githubRun struct {
 
 type githubRunView struct {
 	Jobs []githubRunJob `json:"jobs"`
+}
+
+// githubRunJobsView decodes the same response as githubRunView, but keeps
+// whether the "jobs" key was there. The pointer is nil for both a missing key
+// and an explicit null, and non-nil for a present array including an empty
+// one, which is the distinction runJobs reports as present.
+type githubRunJobsView struct {
+	Jobs *[]githubRunJob `json:"jobs"`
 }
 
 type githubRunJob struct {

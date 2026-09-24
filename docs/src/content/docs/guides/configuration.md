@@ -22,10 +22,10 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 
 Config is split across two files:
 
-| File                         | Scope                         | Full field reference                                          |
-| ---------------------------- | ----------------------------- | ------------------------------------------------------------- |
-| `~/.no-mistakes/config.yaml` | Global defaults for all repos | [Global Config Reference](/no-mistakes/reference/global-config/) |
-| `<repo>/.no-mistakes.yaml`   | Per-repo overrides            | [Repo Config Reference](/no-mistakes/reference/repo-config/)     |
+| File                         | Scope                                              | Full field reference                                          |
+| ---------------------------- | -------------------------------------------------- | ------------------------------------------------------------- |
+| `~/.no-mistakes/config.yaml` | Global defaults and machine-local repository overrides | [Global Config Reference](/no-mistakes/reference/global-config/) |
+| `<repo>/.no-mistakes.yaml`   | Per-repo overrides                                 | [Repo Config Reference](/no-mistakes/reference/repo-config/)     |
 
 Set `NM_HOME` to relocate the global config directory (the global file becomes `$NM_HOME/config.yaml`).
 Bitbucket Cloud credentials come from environment variables rather than config files.
@@ -35,6 +35,9 @@ For Azure DevOps, authenticate the `az` CLI with either `az devops login` or `AZ
 
 - **Global config** is for your machine-level defaults.
 - **Repo config** is for codebase-specific behavior that should travel with the repo.
+
+For machine-local commit or PR-title conventions scoped to one remote, use global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) instead of adding that configuration to the repository.
+The global reference owns remote matching and precedence.
 
 In practice, most teams should keep personal preferences global and repo policy
 local.
@@ -54,9 +57,9 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 ## Precedence
 
-- Repo config overrides global config field by field: repo `agent` replaces the global `agent` (including a full ordered fallback list), while `auto_fix`, `ci`, `commit`, `intent`, and the repository-scoped `test.evidence` fields overlay individual fields and fall through to the global default for anything unset (`intent.disabled_readers` adds to the globally disabled readers instead of replacing them). Local evidence location and retention are machine-wide and remain global-only; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) owns the exact boundary.
+- Repo config overrides global config field by field: repo `agent` replaces the global `agent` (including a full ordered fallback list), while `auto_fix`, `ci`, `commit`, `intent`, and the repository-scoped `test.evidence` fields overlay individual fields and fall through to the global default for anything unset (`intent.disabled_readers` adds to the globally disabled readers instead of replacing them). For commit and PR-title format precedence, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides). Local evidence location and retention are machine-wide and remain global-only; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) owns the exact boundary.
 - Repo `providers` fields override the matching global fields. The [Global Config Reference](/no-mistakes/reference/global-config/#providersgithubdraft_pull_requests) and [Repo Config Reference](/no-mistakes/reference/repo-config/#providersgithubdraft_pull_requests) own the supported providers, defaults, and behavior.
-- `agent_path_override`, `agent_config`, `agent_args_override`, `review_agents`, `acpx_path`, `acp_registry_overrides`, `ci_timeout`, `daemon_connect_timeout`, `branch_sync_remote_timeout`, `gate_reconcile_interval`, `gate_reconcile_timeout`, `step_quiet_warning`, `agent_timeout`, `review_agent_timeout`, `test_agent_timeout`, `log_level`, `session_reuse`, and `jev` are global-only fields.
+- `agent_path_override`, `agent_config`, `agent_args_override`, `review_agents`, `acpx_path`, `acp_registry_overrides`, `ci_timeout`, `daemon_connect_timeout`, `branch_sync_remote_timeout`, `gate_reconcile_interval`, `gate_reconcile_timeout`, `step_quiet_warning`, `agent_timeout`, `review_agent_timeout`, `test_agent_timeout`, `log_level`, and `session_reuse` are global-only fields.
 - `commands`, `ignore_patterns`, `document.instructions`, `review.path_instructions`, `test.instructions`, `test.allow_approve_over_failure`, `gates`, `allow_repo_commands`, and `disable_project_settings` are repo-only fields. By default, `commands` and `agent` are read from the trusted default branch; a trusted `allow_repo_commands: true` opt-in instead honors their pushed-branch values. The other gate-control fields, including `review.path_instructions`, `test.instructions`, `test.allow_approve_over_failure`, `gates`, and the repo `ci` overlay, always come from the trusted default branch. See the [Repo Config Reference](/no-mistakes/reference/repo-config/) security note.
 - no-mistakes reloads global config while setting up each run, so edits made before starting a run apply to it. [Per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) are the exception for model and effort. For repeatable profiles (for example fast versus deep Codex settings), use separately initialized `NM_HOME` roots; `NM_HOME` moves all no-mistakes state, not just config.
 

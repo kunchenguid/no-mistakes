@@ -1,0 +1,173 @@
+{
+  "change": "jev-prebrief",
+  "mode": "excerpts-off",
+  "base_sha": "7e2c5fad6cb37f15ea8d3cd90106cb27f993dcef",
+  "head_sha": "9b697a7bc9448a3d158eb6e8a65c20628535ce08",
+  "jev_model": "jev-1.13.0",
+  "jev_input_tokens": 19155,
+  "candidates": [
+    {
+      "path": "internal/config/config_global_test.go",
+      "coupling": 0.5416666666666666
+    },
+    {
+      "path": "docs/src/content/docs/reference/cli.md",
+      "coupling": 0.25
+    },
+    {
+      "path": "internal/cli/axi_drive.go",
+      "coupling": 0.25
+    },
+    {
+      "path": "internal/eval/capture.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/eval/replay.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/executor_approval_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/executor_intent_conformance_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/steps/common.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/steps/host_search_boundary_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/steps/protected_paths_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/steps/review_pipeline_delivery_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/steps/review_schema_retry_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/steps/review_session_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": "internal/pipeline/steps/review_test.go",
+      "coupling": 0.05555555555555555
+    },
+    {
+      "path": ".agents/skills/eval-corpus/SKILL.md",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": ".agents/skills/test-evidence-storage/SKILL.md",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/branchsync/sync.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/cli/axi.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/cli/axi_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/commit_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_agent_config_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_args_override_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_evidence_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_intent_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_merge_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_repo_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_repo_trust_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_test_command_override_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/config_test_instructions_trust_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/evidence_storage_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/pi_profile.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/config/pi_profile_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/daemon/daemon.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/daemon/evidence_reap.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/daemon/manager.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": "internal/pipeline/steps/pr_attach_media_test.go",
+      "coupling": 0.041666666666666664
+    },
+    {
+      "path": ".gitattributes",
+      "coupling": 0
+    },
+    {
+      "path": ".gitignore",
+      "coupling": 0
+    },
+    {
+      "path": ".no-mistakes.yaml",
+      "coupling": 0
+    },
+    {
+      "path": ".release-please-manifest.json",
+      "coupling": 0
+    }
+  ],
+  "answers": {},
+  "listed": [],
+  "note": "per-question Jev scores were not persisted by the issue-1125 run; only the outcome (0 of 40 listed) was recorded in launches-jev-prebrief.jsonl. Replay measures the listed set; reruns that persist answers enable score-ranked replay."
+}

@@ -114,6 +114,7 @@ func TestCIGateReconciliationPreservesOpenErrorAndUnknownStates(t *testing.T) {
 func setupCIGateReconcileTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.Repo, string, string, []string) {
 	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	ensureHermeticOrigin(t, dir)
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)

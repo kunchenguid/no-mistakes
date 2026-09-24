@@ -30,6 +30,37 @@ func New() (*Paths, error) {
 	return &Paths{root: filepath.Join(home, ".no-mistakes")}, nil
 }
 
+// ForGate returns Paths rooted at the home that owns a managed gate.
+//
+// A gate always lives at <root>/repos/<id>.git, so the owning root is a
+// property of the gate's own location. Every caller that is handed a gate path
+// - the receive hooks' CLI helpers - must resolve its root this way rather than
+// with New: git does not set NM_HOME for a hook, so New would resolve whatever
+// the pushing shell happened to export, which is usually nothing and therefore
+// the default root. A gate under any other root would then be handled by a
+// daemon that does not own it, which keeps only the repo id from the gate path
+// and re-resolves it against its own tree.
+//
+// Deriving from the gate rather than the environment also keeps this correct on
+// Windows, where the hook's path crosses into the CLI as an argument that MSYS2
+// converts to native form; an environment variable would not be converted.
+//
+// It fails rather than guessing, so a caller holding a path that is not a
+// managed gate refuses instead of silently falling back to the default root.
+func ForGate(gatePath string) (*Paths, error) {
+	clean := filepath.Clean(gatePath)
+	if !strings.HasSuffix(clean, ".git") {
+		return nil, fmt.Errorf("cannot derive the gate home that owns %q: not a managed gate path (expected <root>/repos/<id>.git)", gatePath)
+	}
+	reposDir := filepath.Dir(clean)
+	if filepath.Base(reposDir) != "repos" {
+		return nil, fmt.Errorf("cannot derive the gate home that owns %q: not under a repos directory (expected <root>/repos/<id>.git)", gatePath)
+	}
+	// filepath.Dir("/repos") is "/", so a gate directly under the filesystem
+	// root resolves to "/" rather than an empty root.
+	return &Paths{root: filepath.Dir(reposDir)}, nil
+}
+
 // WithRoot returns Paths rooted at a custom directory (for testing).
 func WithRoot(root string) *Paths {
 	return &Paths{root: root}

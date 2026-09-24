@@ -284,6 +284,38 @@ func TestAgentDisambiguatorReturnsCleanupErrorAfterAgentError(t *testing.T) {
 	}
 }
 
+// The disambiguator runs with worktree CWD and can write files before its
+// snapshot/restore cleanup, so its prompt carries the agent-memory-files
+// hands-off rule: AGENTS.md and CLAUDE.md must never be created or edited by
+// automation.
+func TestAgentDisambiguatorPromptKeepsMemoryFilesHandsOff(t *testing.T) {
+	repo := initDisambiguatorTestRepo(t)
+	var prompt string
+	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompt = opts.Prompt
+		return &agent.Result{Output: json.RawMessage(`{"agent_name":"test","session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+	}}, repo)
+
+	_, err := d.Disambiguate(context.Background(), []string{"conflict.txt"}, []*Match{{Session: &Session{
+		SessionID:    "s1",
+		AgentName:    "test",
+		LastActivity: time.Now(),
+		Messages:     []Message{{Role: RoleUser, Text: "edit conflict.txt"}},
+	}}})
+	if err != nil {
+		t.Fatalf("disambiguate: %v", err)
+	}
+	for _, want := range []string{
+		"Agent memory files (AGENTS.md and CLAUDE.md) are hands-off",
+		"Do not create, modify, rename, or delete them",
+		"not even to correct or add content that looks stale, wrong, or missing",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("disambiguator prompt missing memory-file rule %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func initDisambiguatorTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

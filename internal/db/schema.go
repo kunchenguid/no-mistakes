@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
+    omit_intent          INTEGER NOT NULL DEFAULT 0,
     pi_profile           TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
@@ -281,6 +282,14 @@ var migrationStatements = []string{
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
+	// The caller-side, tighten-only decision to keep the generated Intent
+	// section out of the PR body (axi run --no-publish-intent, or
+	// intent.publish_intent: false in global config). Resolved once at run
+	// start and stamped here so recovery and reruns inherit it instead of
+	// re-reading a since-changed global config. It can only reduce
+	// publication; the repository's trusted pr.publish_intent still wins
+	// independently at render time.
+	`ALTER TABLE runs ADD COLUMN omit_intent INTEGER NOT NULL DEFAULT 0`,
 	// The start of the currently displayed execution/fix round is separate
 	// from started_at, which remains the whole-step clock.
 	`ALTER TABLE step_results ADD COLUMN round_started_at INTEGER`,

@@ -291,6 +291,7 @@ const (
 	AgentPi          AgentName = "pi"
 	AgentCopilot     AgentName = "copilot"
 	AgentCursor      AgentName = "cursor"
+	AgentDevin       AgentName = "devin"
 	AgentAntigravity AgentName = "antigravity"
 )
 
@@ -303,6 +304,7 @@ type ACPAlias struct {
 
 var acpAliases = []ACPAlias{
 	{Name: AgentCursor, Target: "cursor", DefaultCommand: "cursor-agent acp"},
+	{Name: AgentDevin, Target: "devin", DefaultCommand: "devin acp"},
 }
 
 // ACPAliasFor returns the ACP alias metadata for a first-class agent name.

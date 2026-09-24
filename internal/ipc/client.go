@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -77,14 +78,15 @@ func isReadTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-func connectTimeout() time.Duration {
+// connectTimeout resolves the bounded connect timeout from the root that owns
+// socketPath, which always sits at <root>/socket. Reading the ambient NM_HOME
+// instead would mis-scope it: a receive hook resolves its root from the gate it
+// was handed and git sets no NM_HOME for a hook, so it would dial one root's
+// daemon under another root's timeout.
+func connectTimeout(socketPath string) time.Duration {
 	value := os.Getenv("NM_DAEMON_CONNECT_TIMEOUT")
 	if value == "" {
-		p, err := paths.New()
-		if err != nil {
-			return config.DefaultDaemonConnectTimeout
-		}
-		cfg, err := config.LoadGlobal(p.ConfigFile())
+		cfg, err := config.LoadGlobal(paths.WithRoot(filepath.Dir(socketPath)).ConfigFile())
 		if err != nil {
 			return config.DefaultDaemonConnectTimeout
 		}
@@ -128,7 +130,7 @@ func Dial(socketPath string) (*Client, error) {
 }
 
 func dialEndpoint(socketPath string) (net.Conn, error) {
-	timeout := connectTimeout()
+	timeout := connectTimeout(socketPath)
 	conn, err := dial(socketPath, timeout)
 	if err != nil {
 		var netErr net.Error

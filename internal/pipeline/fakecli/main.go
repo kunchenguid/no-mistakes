@@ -623,6 +623,10 @@ func fakeCIGHHandler(args []string) {
 	if strings.Contains(joined, "run rerun") {
 		fakeCIGHRerun()
 	}
+	if strings.Contains(joined, "run view") && strings.Contains(joined, "--json jobs") {
+		printFakeRunJobs()
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")
 		os.Exit(0)
@@ -732,6 +736,10 @@ func fakeCIGHSequenceHandler(args []string) {
 	}
 	if strings.Contains(joined, "run rerun") {
 		fakeCIGHRerun()
+	}
+	if strings.Contains(joined, "run view") && strings.Contains(joined, "--json jobs") {
+		printFakeRunJobs()
+		os.Exit(0)
 	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")
@@ -882,6 +890,17 @@ func fakeCIGHNoChecksHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+// printFakeRunJobs answers `gh run view <id> --json jobs`. The default empty
+// job list is what GitHub reports for a workflow run it is holding for
+// maintainer approval - it concluded without running anything.
+func printFakeRunJobs() {
+	raw := os.Getenv("FAKE_CLI_RUN_JOBS")
+	if raw == "" {
+		raw = "[]"
+	}
+	fmt.Printf("{\"jobs\":%s}\n", raw)
 }
 
 func printFakeWorkflowRuns() {

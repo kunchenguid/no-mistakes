@@ -115,6 +115,7 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 				if strings.HasPrefix(opts.Purpose, "review") {
 					reviews++
 					findings.ReviewedPaths = fullReviewCoverage(t, f.dir, f.sctx.Run.BaseSHA)
+					findings.DecisionReviews = satisfiedDecisionReviews(t, opts.Prompt)
 				}
 				output, err := json.Marshal(findings)
 				return &agent.Result{Output: output}, err

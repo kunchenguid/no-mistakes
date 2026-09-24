@@ -287,7 +287,7 @@ var harnesses = map[types.AgentName]harness{
 	types.AgentAntigravity: {model: unsupported(), effort: unsupported()},
 }
 
-// acpHarness covers every ACP-driven name: the first-class aliases (cursor) and
+// acpHarness covers every ACP-driven name: the first-class aliases (cursor, devin) and
 // explicit acp:<target> spellings. no-mistakes never speaks ACP itself; it
 // shells out to acpx, whose own `--model <id>` is therefore the model
 // mechanism. acpx exposes no reasoning-effort surface, so effort stays

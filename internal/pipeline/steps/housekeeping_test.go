@@ -324,6 +324,7 @@ func TestLintStep_FixRoundReassessesWithOwnAgentPass(t *testing.T) {
 // pass must cost exactly one.
 func TestPipeline_DocumentPlusLintIsOneAgentInvocation(t *testing.T) {
 	workDir, baseSHA, headSHA := setupGitRepo(t)
+	ensureHermeticOrigin(t, workDir)
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {

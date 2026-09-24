@@ -2839,3 +2839,150 @@ func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testin
 		t.Fatal("dropped-work escalation stamped custody")
 	}
 }
+
+// publishedRebaseAfterCustody recreates the lane-staleness shape AdoptPublished
+// recovers: custody is returned, the branch is published, rebased onto a newer
+// main with a follow-up commit, then force-with-lease pushed to the registered
+// target while the gate lane still names the pre-rebase head.
+func publishedRebaseAfterCustody(t *testing.T, f *recoverFixture) string {
+	t.Helper()
+	if state := f.service.Recover(f.ctx, false); !state.Recovered {
+		t.Fatalf("return custody: %#v", state)
+	}
+	mustRun(t, f.local, "remote", "add", "origin", f.remote)
+	mustRun(t, f.local, "push", "origin", "main:refs/heads/main")
+	mustRun(t, f.local, "push", "origin", "HEAD:refs/heads/feature/recover")
+
+	mustRun(t, f.local, "checkout", "main")
+	mustWrite(t, filepath.Join(f.local, "upstream.txt"), "newer main\n")
+	mustRun(t, f.local, "add", "upstream.txt")
+	mustRun(t, f.local, "commit", "-m", "advance main")
+	mustRun(t, f.local, "push", "origin", "main:refs/heads/main")
+
+	mustRun(t, f.local, "checkout", "feature/recover")
+	mustRun(t, f.local, "rebase", "main")
+	mustWrite(t, filepath.Join(f.local, "follow-up.txt"), "post-rebase follow-up\n")
+	mustRun(t, f.local, "add", "follow-up.txt")
+	mustRun(t, f.local, "commit", "-m", "post-rebase follow-up")
+	rebased := mustRun(t, f.local, "rev-parse", "HEAD")
+	mustRun(t, f.local, "push", "--force-with-lease=refs/heads/feature/recover:"+f.preserved, "origin", "HEAD:refs/heads/feature/recover")
+	return rebased
+}
+
+// TestAdoptPublishedFetchHonorsTheRemoteTimeout proves the import of the
+// verified published object is bounded by branch_sync_remote_timeout like every
+// other network call in AdoptPublished. The ls-remote checks are stubbed to
+// answer instantly and ignore their own budget, so the only operation the tiny
+// timeout can reach is the fetch; had that fetch kept the caller's unbounded
+// context it would have succeeded against this local remote and the lane would
+// have been adopted instead of refusing.
+func TestAdoptPublishedFetchHonorsTheRemoteTimeout(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	rebased := publishedRebaseAfterCustody(t, f)
+
+	f.service.RemoteTimeout = time.Nanosecond
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		return rebased, nil
+	}
+
+	state := f.service.AdoptPublished(f.ctx)
+	if state.Changed || state.Safety != "blocked_adopt_published_fetch_failed" {
+		t.Fatalf("stalled fetch did not return the documented closed refusal: %#v", state)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("gate lane = %s, want the untouched pre-rebase head %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != rebased {
+		t.Fatalf("refusal moved the worktree to %s, want %s", got, rebased)
+	}
+}
+
+// TestAdoptPublishedFetchSucceedsWithinItsOwnBudget guards the other side: the
+// bound must be a real per-operation budget, not a cap that makes an ordinary
+// adoption fail. Both ls-remote calls burn most of a generous timeout, and the
+// fetch still gets its own fresh budget and completes.
+//
+// The budget has to clear the cost of the one real network operation left in
+// the path: FetchRemoteRef spawns `git fetch` and then `git rev-parse`. That
+// pair costs ~50ms on Linux and macOS but roughly 10x that on the Windows leg,
+// which is process-spawn bound rather than compute bound (see AGENTS.md). A
+// sub-second budget sits on top of the Windows cost with no margin and fails
+// there as soon as anything perturbs spawn latency, so the budget is kept a
+// whole multiple of the slowest platform's cost.
+//
+// The stub honors its own context rather than sleeping through it, which is
+// what gives this test teeth on every platform. A stub that always succeeds can
+// only report a shared deadline by way of the fetch being starved, and how much
+// of the budget is left for that fetch has to be read against a per-platform
+// spawn cost - so such a stub silently stops detecting the regression wherever
+// the fetch happens to be quick enough to squeeze in. Honoring the context
+// instead makes the SECOND ls-remote the witness: on one shared deadline the
+// first call consumes most of it and the second is left with far less than it
+// needs, failing the adoption regardless of how fast git is on the platform.
+func TestAdoptPublishedFetchSucceedsWithinItsOwnBudget(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	rebased := publishedRebaseAfterCustody(t, f)
+
+	f.service.RemoteTimeout = 3 * time.Second
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		select {
+		case <-time.After(2500 * time.Millisecond):
+			return rebased, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	state := f.service.AdoptPublished(f.ctx)
+	if !state.Changed || state.Safety != "gate_ready" {
+		t.Fatalf("adoption did not complete on its own fetch budget: %#v", state)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != rebased {
+		t.Fatalf("gate lane = %s, want the published rebased head %s", got, rebased)
+	}
+}
+
+func TestAdoptPublishedRefusesReplacedPushTarget(t *testing.T) {
+	t.Run("before adoption", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		publishedRebaseAfterCustody(t, f)
+		replacement := filepath.Join(t.TempDir(), "replacement.git")
+		mustRun(t, filepath.Dir(replacement), "init", "--bare", replacement)
+		if _, err := f.db.ReplaceRepoURLs(f.repo.ID, replacement, ""); err != nil {
+			t.Fatal(err)
+		}
+
+		state := f.service.AdoptPublished(f.ctx)
+		if state.Changed || state.Safety != "blocked_published_head_mismatch" {
+			t.Fatalf("adoption did not refuse the replacement target: %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("gate lane = %s, want the untouched pre-rebase head %s", got, f.preserved)
+		}
+	})
+
+	t.Run("during verification", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		rebased := publishedRebaseAfterCustody(t, f)
+		replacement := filepath.Join(t.TempDir(), "replacement.git")
+		mustRun(t, filepath.Dir(replacement), "init", "--bare", replacement)
+		checks := 0
+		f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+			checks++
+			if checks == 2 {
+				if _, err := f.db.ReplaceRepoURLs(f.repo.ID, replacement, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return rebased, nil
+		}
+
+		state := f.service.AdoptPublished(f.ctx)
+		if state.Changed || state.Safety != "blocked_adopt_published_target_changed" {
+			t.Fatalf("adoption did not refuse the concurrently replaced target: %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("gate lane = %s, want the untouched pre-rebase head %s", got, f.preserved)
+		}
+	})
+}

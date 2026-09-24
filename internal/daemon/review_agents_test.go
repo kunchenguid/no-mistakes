@@ -177,3 +177,59 @@ func TestPushReceivedRoutesReviewRolesToIndependentProfiles(t *testing.T) {
 		}
 	}
 }
+
+// TestPipelineReviewRolesHandOverAtConfiguredRound is the config-to-argv
+// regression for the opt-in later-round role overlay: only the model the round
+// resolved to can appear in that invocation's argv, and an unconfigured round
+// number must keep the first-round profile.
+func TestPipelineReviewRolesHandOverAtConfiguredRound(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "pi-argv.txt")
+	bin := writeCapturingPiAgent(t, dir, capture)
+	global, err := config.LoadGlobalFromBytes([]byte(`agent: pi
+agent_config:
+  pi: {model: default-model, effort: high}
+review_agents:
+  fixer: {agent: pi, model: strong-fix-model, effort: max}
+  fixer_after_round: {agent: pi, model: cheap-fix-model, after_round: 2}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Merge(global, &config.RepoConfig{})
+	cfg.AgentPathOverride = map[string]string{"pi": bin}
+	cfg.DisableProjectSettings = true
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ag.Close()
+
+	// after_round: 2 keeps rounds 1-2 on the strong fixer; round 3 and later
+	// fall to the cheaper one. Round 0 is an invocation the pipeline did not
+	// number and must not be routed by a guessed round.
+	want := []string{"strong-fix-model", "strong-fix-model", "cheap-fix-model", "cheap-fix-model", "strong-fix-model"}
+	for _, round := range []int{1, 2, 3, 9, 0} {
+		if _, err := ag.Run(context.Background(), agent.RunOpts{Purpose: "review-fix", Round: round, Prompt: "hello", CWD: dir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("captured %d invocations, want %d: %q", len(lines), len(want), raw)
+	}
+	for i, model := range want {
+		if !strings.Contains(lines[i], "--model "+model) {
+			t.Fatalf("invocation %d argv %q does not name %q", i+1, lines[i], model)
+		}
+	}
+}

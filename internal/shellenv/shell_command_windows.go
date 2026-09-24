@@ -3,6 +3,8 @@
 package shellenv
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -18,9 +20,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// createNewProcessGroup keeps cancellation fallback paths isolated from the
-// parent console process group.
-const createNewProcessGroup = 0x00000200
+const windowsTerminateGrace = 3 * time.Second
 
 // taskkillExitNoSuchProcess is the nonzero exit code taskkill returns when no
 // process matches the given PID (the child had already exited before we could
@@ -28,13 +28,28 @@ const createNewProcessGroup = 0x00000200
 // be collapsed into os.ErrProcessDone.
 const taskkillExitNoSuchProcess = 128
 
-// defaultWaitDelay bounds Wait when a failed cleanup leaves inherited handles
-// open.
+// defaultWaitDelay bounds Wait when failed cleanup leaves inherited handles
+// open for commands that do not opt into cooperative cancellation.
 const defaultWaitDelay = 5 * time.Second
 
 type shellCommandJobState struct {
-	handle   windows.Handle
-	assigned atomic.Bool
+	handle              windows.Handle
+	cancelEvent         windows.Handle
+	cancelEventName     string
+	cooperative         bool
+	assigned            atomic.Bool
+	cooperativeDeadline atomic.Pointer[time.Time]
+}
+
+type jobObjectBasicAccountingInformation struct {
+	TotalUserTime             int64
+	TotalKernelTime           int64
+	ThisPeriodTotalUserTime   int64
+	ThisPeriodTotalKernelTime int64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TotalTerminatedProcesses  uint32
 }
 
 var shellCommandJobs sync.Map
@@ -43,6 +58,7 @@ var shellCommandJobSetupErrors sync.Map
 var newShellCommandJobFunc = newShellCommandJob
 var assignShellCommandJobFunc = assignShellCommandJob
 var resumeProcessThreadsFunc = resumeProcessThreads
+var windowsCooperativeHelperCommandFunc = windowsCooperativeHelperCommand
 
 // ConfigureShellCommand prepares a Windows command for whole-tree cleanup on
 // cancellation and normal exit. StartShellCommand assigns a kill-on-close job
@@ -55,18 +71,47 @@ var resumeProcessThreadsFunc = resumeProcessThreads
 // the goroutine that owns Wait should terminate the group when the leader exits
 // so inherited pipe holders cannot wedge the parser.
 func ConfigureShellCommand(cmd *exec.Cmd) {
+	configureWindowsShellCommand(cmd, false)
+}
+
+// ConfigureCooperativeShellCommand prepares a repository command that receives
+// CTRL+BREAK and a bounded cleanup window before the usual forced tree kill.
+func ConfigureCooperativeShellCommand(cmd *exec.Cmd) {
+	configureWindowsShellCommand(cmd, true)
+}
+
+func configureWindowsShellCommand(cmd *exec.Cmd, cooperative bool) {
 	// Suppress the visible console window Windows would otherwise allocate for
 	// this console child (agents, cmd.exe shell steps) when spawned from the
 	// console-less daemon. See issue #287. Harden allocates SysProcAttr if
-	// needed; the process-group flag below is then OR-ed in alongside it.
+	// needed; the creation flags are then adjusted for the requested topology.
 	winproc.Harden(cmd)
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
+	if cooperative {
+		cmd.SysProcAttr.CreationFlags &^= windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS
+		cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_CONSOLE
+	} else {
+		cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
+	}
 	if job, err := newShellCommandJobFunc(); err == nil {
-		shellCommandJobs.Store(cmd, &shellCommandJobState{handle: job})
-		cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+		state := &shellCommandJobState{handle: job, cooperative: cooperative}
+		if cooperative {
+			cancelEvent, cancelEventName, eventErr := newWindowsCooperativeCancelEvent()
+			if eventErr != nil {
+				_ = windows.CloseHandle(job)
+				shellCommandJobSetupErrors.Store(cmd, eventErr)
+			} else {
+				state.cancelEvent = cancelEvent
+				state.cancelEventName = cancelEventName
+				shellCommandJobs.Store(cmd, state)
+				cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+			}
+		} else {
+			shellCommandJobs.Store(cmd, state)
+			cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+		}
 	} else {
 		shellCommandJobSetupErrors.Store(cmd, err)
 	}
@@ -76,46 +121,42 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	// bound of its own).
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = defaultWaitDelay
+		if cooperative {
+			cmd.WaitDelay = windowsTerminateGrace
+		}
 	}
 
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
-		if terminateShellCommandJob(cmd, false) {
-			return nil
-		}
-		pid := strconv.Itoa(cmd.Process.Pid)
-		kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
-		winproc.Harden(kill)
-		err := kill.Run()
-		switch {
-		case err == nil:
-			return nil
-		case errors.Is(err, exec.ErrNotFound):
-		case isTaskkillAlreadyGone(err):
-			return os.ErrProcessDone
-		default:
-		}
-		if killErr := cmd.Process.Kill(); killErr != nil {
-			if errors.Is(killErr, os.ErrProcessDone) {
-				return os.ErrProcessDone
+		if job, ok := shellCommandJob(cmd); ok && job.assigned.Load() {
+			if job.cooperative && job.cancelEvent != 0 {
+				if err := windows.SetEvent(job.cancelEvent); err == nil {
+					deadline := time.Now().Add(windowsTerminateGrace)
+					job.cooperativeDeadline.Store(&deadline)
+					return nil
+				}
 			}
-			return fmt.Errorf("taskkill /PID %s: %w; process kill: %v", pid, err, killErr)
+			terminateShellCommandJob(cmd, false)
+			return nil
 		}
-		if err != nil {
-			return fmt.Errorf("taskkill /PID %s: %w", pid, err)
-		}
-		return nil
+		return forceKillShellCommand(cmd)
 	}
 }
 
-// StartShellCommand starts cmd and assigns it to the job object created by
-// ConfigureShellCommand. If the job cannot be created or assigned, the command
-// fails instead of running without clean-exit descendant cleanup.
+// StartShellCommand starts cmd and assigns it to the job object created by its
+// shell-command configurator. If the job cannot be created or assigned, the
+// command fails instead of running without clean-exit descendant cleanup.
 func StartShellCommand(cmd *exec.Cmd) error {
 	if err, ok := takeShellCommandJobSetupError(cmd); ok {
 		return fmt.Errorf("windows job object setup: %w", err)
+	}
+	if job, ok := shellCommandJob(cmd); ok && job.cooperative {
+		if err := wrapWindowsCooperativeCommand(cmd, job.cancelEventName); err != nil {
+			closeShellCommandJob(cmd)
+			return err
+		}
 	}
 	if err := cmd.Start(); err != nil {
 		closeShellCommandJob(cmd)
@@ -137,19 +178,68 @@ func StartShellCommand(cmd *exec.Cmd) error {
 
 // TerminateShellCommandGroup terminates the Windows job object for cmd. Callers
 // defer it after a successful StartShellCommand so clean exits and ordinary
-// errors get the same process-tree cleanup as context cancellation. A nil or
-// never-started command is a no-op.
+// errors get the same process-tree cleanup as context cancellation. After a
+// cooperative cancellation it preserves the remaining grace window before
+// forcing the job down, including when the console leader exits before a child
+// finishes cleanup. A nil or never-started command is a no-op.
 func TerminateShellCommandGroup(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	if terminateShellCommandJob(cmd, true) {
+	if job, ok := shellCommandJob(cmd); ok && job.assigned.Load() {
+		if deadline := job.cooperativeDeadline.Load(); deadline != nil {
+			waitForWindowsJobExit(job.handle, time.Until(*deadline))
+		}
+		terminateShellCommandJob(cmd, true)
 		return
 	}
+	_ = forceKillShellCommand(cmd)
+}
+
+func forceKillShellCommand(cmd *exec.Cmd) error {
 	pid := strconv.Itoa(cmd.Process.Pid)
 	kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
 	winproc.Harden(kill)
-	_ = kill.Run()
+	err := kill.Run()
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, exec.ErrNotFound):
+	case isTaskkillAlreadyGone(err):
+		return os.ErrProcessDone
+	default:
+	}
+	if killErr := cmd.Process.Kill(); killErr != nil {
+		if errors.Is(killErr, os.ErrProcessDone) {
+			return os.ErrProcessDone
+		}
+		return fmt.Errorf("taskkill /PID %s: %w; process kill: %v", pid, err, killErr)
+	}
+	if err != nil {
+		return fmt.Errorf("taskkill /PID %s: %w", pid, err)
+	}
+	return nil
+}
+
+func waitForWindowsJobExit(job windows.Handle, window time.Duration) {
+	if window <= 0 {
+		return
+	}
+	deadline := time.Now().Add(window)
+	for {
+		var info jobObjectBasicAccountingInformation
+		err := windows.QueryInformationJobObject(
+			job,
+			windows.JobObjectBasicAccountingInformation,
+			uintptr(unsafe.Pointer(&info)),
+			uint32(unsafe.Sizeof(info)),
+			nil,
+		)
+		if err != nil || info.ActiveProcesses == 0 || !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func newShellCommandJob() (windows.Handle, error) {
@@ -170,6 +260,49 @@ func newShellCommandJob() (windows.Handle, error) {
 		return 0, err
 	}
 	return job, nil
+}
+
+func newWindowsCooperativeCancelEvent() (windows.Handle, string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return 0, "", err
+	}
+	name := `Local\no-mistakes-cooperative-` + hex.EncodeToString(id[:])
+	namePtr, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return 0, "", err
+	}
+	event, err := windows.CreateEvent(nil, 1, 0, namePtr)
+	if err != nil {
+		return 0, "", err
+	}
+	return event, name, nil
+}
+
+func wrapWindowsCooperativeCommand(cmd *exec.Cmd, eventName string) error {
+	if cmd == nil || cmd.Path == "" || len(cmd.Args) == 0 {
+		return errors.New("invalid Windows cooperative command")
+	}
+	if cmd.SysProcAttr != nil && cmd.SysProcAttr.CmdLine != "" {
+		return errors.New("Windows cooperative commands do not support SysProcAttr.CmdLine")
+	}
+	path, args, err := windowsCooperativeHelperCommandFunc(eventName, cmd.Path, cmd.Args)
+	if err != nil {
+		return fmt.Errorf("prepare Windows cooperative command helper: %w", err)
+	}
+	cmd.Path = path
+	cmd.Args = args
+	return nil
+}
+
+func windowsCooperativeHelperCommand(eventName, targetPath string, targetArgs []string) (string, []string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", nil, err
+	}
+	args := []string{exe, windowsCooperativeCommandArg + eventName, targetPath}
+	args = append(args, targetArgs...)
+	return exe, args, nil
 }
 
 func shellCommandJob(cmd *exec.Cmd) (*shellCommandJobState, bool) {
@@ -207,6 +340,9 @@ func closeShellCommandJob(cmd *exec.Cmd) bool {
 	job, ok := value.(*shellCommandJobState)
 	if !ok {
 		return false
+	}
+	if job.cancelEvent != 0 {
+		_ = windows.CloseHandle(job.cancelEvent)
 	}
 	_ = windows.CloseHandle(job.handle)
 	return true

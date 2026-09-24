@@ -189,6 +189,9 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
 				return &ipc.GetRunsResult{}, nil
 			})
+			srv.Handle(ipc.MethodProbeOmitIntent, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.ProbeOmitIntentResult{OK: true}, nil
+			})
 			srv.Handle(ipc.MethodGetActiveRun, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
 				select {
 				case <-commitDuringWait:
@@ -253,7 +256,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "")
+				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false)
 				if err != nil || runID != "rerun-1" {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
@@ -274,7 +277,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						}
 						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 						defer cancel()
-						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", ""); err != nil {
+						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false); err != nil {
 							t.Fatal(err)
 						}
 						params := <-requests

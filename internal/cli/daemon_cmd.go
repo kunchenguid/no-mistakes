@@ -2,12 +2,14 @@ package cli
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -53,7 +55,9 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := paths.New()
+			// Resolve the daemon root from the gate itself, not NM_HOME: this
+			// runs as a git hook helper, and git sets no NM_HOME for a hook.
+			p, err := paths.ForGate(gatePath)
 			if err != nil {
 				return err
 			}
@@ -121,6 +125,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			omitIntent, err := parseOmitIntentPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			piProfile, err := parsePiProfilePushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -134,7 +142,9 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				return err
 			}
 
-			p, err := paths.New()
+			// Same as admit-push: the owning root is a property of the gate,
+			// not of whatever the pushing shell exported.
+			p, err := paths.ForGate(gatePath)
 			if err != nil {
 				return err
 			}
@@ -156,6 +166,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				LaunchNonce:            launchNonce,
 				ValidationGeneration:   validationGeneration,
 				PRBaseBranch:           prBaseBranch,
+				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
 				ReconciledPreviousHead: reconciledPreviousHead,
 			}, &result)
@@ -327,6 +338,65 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 		branch = value
 	}
 	return branch, nil
+}
+
+// omitIntentPushOption carries axi run --no-publish-intent through a git push.
+// Like every publication control it is tighten-only: the option can only ask
+// for omission, never for publication.
+const omitIntentPushOption = "no-mistakes.omit-intent"
+
+// formatOmitIntentPushOption encodes the caller-side omit-intent request as a
+// push option. An absent request formats to no option at all.
+func formatOmitIntentPushOption(omit bool) string {
+	if !omit {
+		return ""
+	}
+	return omitIntentPushOption
+}
+
+// parseOmitIntentPushOptions reports whether the push carried the omit-intent
+// request. Repetition is harmless; the value is boolean and tighten-only.
+func parseOmitIntentPushOptions(options []string) (bool, error) {
+	omit := false
+	for _, option := range options {
+		if option == omitIntentPushOption {
+			omit = true
+		}
+	}
+	return omit, nil
+}
+
+// requireDaemonHonorsOmitIntent probes the running daemon before any RPC
+// that may start an omitting run. Daemon requests decode JSON permissively,
+// so a reused older daemon would silently ignore the unknown omit_intent
+// field and publish the intent it was asked to withhold; it would likewise
+// never read the global `intent.publish_intent: false` default that only the
+// daemon folds into the run. Omission may apply when the flag is set or the
+// local global default is false; global is nil when the file is unreadable,
+// which counts as may-omit. Only a request that cannot omit skips the probe.
+// A rerun can never rule omission out from the caller side (it inherits the
+// selected prior run's omission, which only the daemon knows), so it calls
+// probeDaemonOmitIntent unconditionally instead.
+func requireDaemonHonorsOmitIntent(client *ipc.Client, omit bool, global *config.GlobalConfig) error {
+	if !omit && global != nil && global.Intent.PublishesIntentByDefault() {
+		return nil
+	}
+	return probeDaemonOmitIntent(client)
+}
+
+// probeDaemonOmitIntent asks the daemon for the omit-intent capability. The
+// probe is a distinct method that an older daemon refuses; any failure or a
+// non-OK answer refuses the request, never falls back to publishing.
+func probeDaemonOmitIntent(client *ipc.Client) error {
+	var result ipc.ProbeOmitIntentResult
+	err := client.Call(ipc.MethodProbeOmitIntent, &ipc.ProbeOmitIntentParams{}, &result)
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the omit-intent capability")
+	}
+	if err != nil {
+		return fmt.Errorf("the running daemon is too old to honor --no-publish-intent (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
 }
 
 // reconciledPreviousHeadPushOptionPrefix carries the pre-reconciliation private

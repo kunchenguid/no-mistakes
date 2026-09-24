@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -34,16 +35,20 @@ fi
 	return path
 }
 
-// TestAcpxAgent_Run_CursorSpawnsDefaultCommandWithoutOverrides proves both
-// spellings of the Cursor agent drive a real acpx spawn with the alias
-// default raw command — no acp_registry_overrides entry configured.
-func TestAcpxAgent_Run_CursorSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
+// TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides proves both
+// spellings of every first-class ACP alias drive a real acpx spawn with the
+// alias default raw command - no acp_registry_overrides entry configured.
+func TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		agent types.AgentName
+		name    string
+		agent   types.AgentName
+		target  string
+		command string
 	}{
-		{name: "cursor alias", agent: types.AgentCursor},
-		{name: "explicit acp:cursor target", agent: "acp:cursor"},
+		{name: "cursor alias", agent: types.AgentCursor, target: "cursor", command: "cursor-agent acp"},
+		{name: "explicit acp:cursor target", agent: "acp:cursor", target: "cursor", command: "cursor-agent acp"},
+		{name: "devin alias", agent: types.AgentDevin, target: "devin", command: "devin acp"},
+		{name: "explicit acp:devin target", agent: "acp:devin", target: "devin", command: "devin acp"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -56,6 +61,9 @@ func TestAcpxAgent_Run_CursorSpawnsDefaultCommandWithoutOverrides(t *testing.T) 
 			if err != nil {
 				t.Fatalf("New(%q): %v", tc.agent, err)
 			}
+			if a.Name() != "acp:"+tc.target {
+				t.Errorf("Name() = %q, want acp:%s", a.Name(), tc.target)
+			}
 			res, err := a.Run(context.Background(), RunOpts{Prompt: "review this change", CWD: dir})
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -64,25 +72,140 @@ func TestAcpxAgent_Run_CursorSpawnsDefaultCommandWithoutOverrides(t *testing.T) 
 				t.Errorf("result text = %q, want stub acpx output", res.Text)
 			}
 
-			data, err := os.ReadFile(argsFile)
-			if err != nil {
-				t.Fatalf("stub acpx never recorded argv: %v", err)
-			}
-			argv := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-			if len(argv) < 2 || argv[0] != "--agent" || argv[1] != "cursor-agent acp" {
-				t.Errorf("spawned argv = %q, want leading --agent \"cursor-agent acp\"", argv)
+			argv := readStubAcpxArgv(t, argsFile)
+			if len(argv) < 2 || argv[0] != "--agent" || argv[1] != tc.command {
+				t.Errorf("spawned argv = %q, want leading --agent %q", argv, tc.command)
 			}
 			if len(argv) < 3 || strings.Join(argv[len(argv)-3:], "\x00") != "exec\x00--file\x00-" {
 				t.Errorf("spawned argv = %q, want trailing exec --file -", argv)
 			}
 			for _, arg := range argv {
-				if arg == "cursor" {
+				if arg == tc.target {
 					t.Errorf("spawned argv = %q, must not pass the bare target when the default command is supplied", argv)
 				}
 			}
 			t.Logf("spawned: acpx %s", strings.Join(argv, " "))
 		})
 	}
+}
+
+// TestAcpxAgent_Run_DevinOverrideAndModelReachTheSpawn proves an operator's
+// acp_registry_overrides.devin replaces the `devin acp` default in the real
+// spawn, and an agent_config model rides acpx's own --model ahead of exec.
+func TestAcpxAgent_Run_DevinOverrideAndModelReachTheSpawn(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		overrides   map[string]string
+		model       string
+		wantCommand string
+	}{
+		{name: "override wins", overrides: map[string]string{"devin": "devin acp --model claude-opus-5-5-high"}, wantCommand: "devin acp --model claude-opus-5-5-high"},
+		{name: "blank override keeps default", overrides: map[string]string{"devin": " \t"}, wantCommand: "devin acp"},
+		{name: "model pin", model: "gpt-6-luna-medium", wantCommand: "devin acp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			argsFile := filepath.Join(dir, "argv.txt")
+			t.Setenv("NM_TEST_ACPX_ARGS_FILE", argsFile)
+			t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
+
+			a, err := NewWithOptions(types.AgentDevin, writeStubAcpx(t, dir), nil, Options{
+				ACPRegistryOverrides: tc.overrides,
+				Profile:              agentcfg.Profile{Model: tc.model},
+			})
+			if err != nil {
+				t.Fatalf("NewWithOptions: %v", err)
+			}
+			if _, err := a.Run(context.Background(), RunOpts{Prompt: "review this change", CWD: dir}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			argv := readStubAcpxArgv(t, argsFile)
+			if len(argv) < 2 || argv[0] != "--agent" || argv[1] != tc.wantCommand {
+				t.Fatalf("spawned argv = %q, want leading --agent %q", argv, tc.wantCommand)
+			}
+			modelAt := -1
+			for i, arg := range argv {
+				if arg == "--model" && i > 1 {
+					modelAt = i
+				}
+			}
+			if tc.model == "" {
+				if modelAt >= 0 {
+					t.Fatalf("spawned argv = %q, want no acpx --model without a pin", argv)
+				}
+				return
+			}
+			if modelAt < 0 || modelAt+1 >= len(argv) || argv[modelAt+1] != tc.model {
+				t.Fatalf("spawned argv = %q, want acpx --model %s", argv, tc.model)
+			}
+			if execAt := len(argv) - 3; modelAt > execAt {
+				t.Fatalf("spawned argv = %q, want --model ahead of exec", argv)
+			}
+		})
+	}
+}
+
+// TestAcpxAgent_Run_DevinObservedStreamYieldsStructuredOutputAndUsage replays
+// the event shape a live `devin acp` turn produced through acpx 0.13.0: thought
+// chunks, a permission-gated shell tool call, usage_update events whose token
+// counts sit under cognition.ai-namespaced _meta keys, a JSON-only final message
+// split across agent_message_chunk events, and camelCase result.usage.
+func TestAcpxAgent_Run_DevinObservedStreamYieldsStructuredOutputAndUsage(t *testing.T) {
+	events := strings.Join([]string{
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Planning"}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c1","kind":"execute","title":"Ran printf, test","rawInput":{"command":"printf hi > hello.txt"}}}}`,
+		`{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c1"},"options":[{"optionId":"allow_once","name":"Allow","kind":"allow_once"}]}}`,
+		`{"jsonrpc":"2.0","id":"p1","result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"usage_update","used":13554,"size":1000000,"_meta":{"cognition.ai/inputTokens":13518,"cognition.ai/outputTokens":36}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"shell_output\":\"true\","}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\"file_created\":true}"}}}}`,
+		`{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","usage":{"totalTokens":13554,"inputTokens":13518,"outputTokens":36,"cachedReadTokens":13345,"cachedWriteTokens":170}}}`,
+	}, "\n")
+	dir := t.TempDir()
+	t.Setenv("NM_TEST_ACPX_ARGS_FILE", filepath.Join(dir, "argv.txt"))
+	t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
+	t.Setenv("NM_TEST_ACPX_EVENT", events)
+
+	a, err := New(types.AgentDevin, writeStubAcpx(t, dir), nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var chunks []string
+	res, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "run a command and create a file",
+		CWD:        dir,
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"shell_output":{"type":"string"},"file_created":{"type":"boolean"}},"required":["shell_output","file_created"]}`),
+		OnChunk:    func(chunk string) { chunks = append(chunks, chunk) },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Errorf("streamed chunks = %q, want the two agent_message_chunk texts and no thought text", chunks)
+	}
+	var out struct {
+		ShellOutput string `json:"shell_output"`
+		FileCreated bool   `json:"file_created"`
+	}
+	if err := json.Unmarshal(res.Output, &out); err != nil || out.ShellOutput != "true" || !out.FileCreated {
+		t.Fatalf("structured output = %s (%v), want the JSON-only final message", res.Output, err)
+	}
+	if !res.UsageReported {
+		t.Fatal("Devin reports usage over ACP; the result must record it as reported")
+	}
+	if res.Usage.OutputTokens != 36 || res.Usage.CacheReadTokens != 13345 || res.Usage.CacheCreationTokens != 170 {
+		t.Errorf("usage = %+v, want result.usage output/cache counts", res.Usage)
+	}
+}
+
+func readStubAcpxArgv(t *testing.T, argsFile string) []string {
+	t.Helper()
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("stub acpx never recorded argv: %v", err)
+	}
+	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 }
 
 func TestAcpxAgent_Run_SendsLargePromptOnlyOnStdin(t *testing.T) {

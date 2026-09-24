@@ -146,6 +146,145 @@ func TestResolveUpstreamURL_FallsBackToRecordedURL(t *testing.T) {
 	}
 }
 
+// TestResolveBranchBaseSHA_FetchesFreshBaseTipBeforeMergeBase reproduces
+// kunchenguid/no-mistakes#997: a worktree's cached origin/<base> ref can be
+// stale relative to the live base branch, so computing merge-base against it
+// picks an ancestor further back than the branch's real cut point and pulls
+// commits that already landed on the base into the PR's drafted diff.
+// resolveBranchBaseSHA must fetch the base branch's current remote tip first
+// (the same pattern resolveRunDefaultBranchTip already uses) and compute
+// merge-base against that fresh tip, not the worktree's stale cached ref.
+func TestResolveBranchBaseSHA_FetchesFreshBaseTipBeforeMergeBase(t *testing.T) {
+	t.Parallel()
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare", "-b", "main")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "clone", upstream, ".")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("c0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "base.txt")
+	gitCmd(t, seed, "commit", "-m", "C0")
+	gitCmd(t, seed, "push", "origin", "HEAD:main")
+
+	// workDir is cloned now, while main is still at C0: its cached
+	// origin/main ref becomes the stale ref the bug trusted.
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", upstream, ".")
+	gitCmd(t, workDir, "config", "user.name", "test")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	staleTip := gitCmd(t, workDir, "rev-parse", "origin/main")
+
+	// main advances on the remote after workDir's clone, before the feature
+	// branch is cut - simulating the base moving since the worktree was set
+	// up.
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("c1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "base.txt")
+	gitCmd(t, seed, "commit", "-m", "C1")
+	freshTip := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "origin", "HEAD:main")
+	if freshTip == staleTip {
+		t.Fatal("test setup: base did not actually advance")
+	}
+
+	// The feature branch is cut from the now-current base tip and pushed.
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("f1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "feature.txt")
+	gitCmd(t, seed, "commit", "-m", "F1")
+	gitCmd(t, seed, "push", "origin", "feature")
+
+	// workDir fetches only the feature branch (as a run's worktree would),
+	// leaving its cached origin/main ref stale at C0.
+	gitCmd(t, workDir, "fetch", "origin", "feature")
+	gitCmd(t, workDir, "checkout", "feature")
+	if got := gitCmd(t, workDir, "rev-parse", "origin/main"); got != staleTip {
+		t.Fatalf("test setup: origin/main in workDir = %q, want still-stale %q", got, staleTip)
+	}
+
+	sctx := minimalStepContext(t, workDir, upstream)
+	got, err := resolveBranchBaseSHA(context.Background(), sctx, "", "main")
+	if err != nil {
+		t.Fatalf("resolveBranchBaseSHA returned unexpected error: %v", err)
+	}
+
+	if got == staleTip {
+		t.Fatalf("resolveBranchBaseSHA = %q, resolved against the stale cached base tip instead of fetching first (issue #997)", got)
+	}
+	if got != freshTip {
+		t.Fatalf("resolveBranchBaseSHA = %q, want current remote base tip %q", got, freshTip)
+	}
+}
+
+// TestResolveBranchBaseSHA_FetchFailureIsRefusedNotStaleFallback covers the
+// gap kunchenguid flagged on PR #1147 (issue #997's follow-up): a base-branch
+// fetch failure (network/auth/etc) must not silently fall back to whatever
+// stale origin/<base> ref is already cached in the worktree, since that
+// reintroduces the exact stale-base bug this helper exists to eliminate, one
+// layer down. resolveBranchBaseSHA must surface the fetch error instead.
+func TestResolveBranchBaseSHA_FetchFailureIsRefusedNotStaleFallback(t *testing.T) {
+	t.Parallel()
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare", "-b", "main")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "clone", upstream, ".")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("c0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "base.txt")
+	gitCmd(t, seed, "commit", "-m", "C0")
+	gitCmd(t, seed, "push", "origin", "HEAD:main")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", upstream, ".")
+	gitCmd(t, workDir, "config", "user.name", "test")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	staleTip := gitCmd(t, workDir, "rev-parse", "origin/main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("f1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "feature.txt")
+	gitCmd(t, seed, "commit", "-m", "F1")
+	gitCmd(t, seed, "push", "origin", "feature")
+	gitCmd(t, workDir, "fetch", "origin", "feature")
+	gitCmd(t, workDir, "checkout", "feature")
+
+	// Point the resolved upstream at an unreachable location so the base-branch
+	// fetch fails (simulating network/auth failure), while workDir's cached
+	// origin/main ref stays at the stale tip.
+	unreachable := filepath.Join(t.TempDir(), "does-not-exist")
+	sctx := minimalStepContext(t, workDir, unreachable)
+	// resolveUpstreamURL prefers a verified refreshed registration over the
+	// worktree's own origin remote; force it to prefer the unreachable URL so
+	// the base-branch fetch actually fails.
+	sctx.Repo.URLsVerified = true
+
+	got, err := resolveBranchBaseSHA(context.Background(), sctx, "", "main")
+	if err == nil {
+		t.Fatalf("resolveBranchBaseSHA succeeded with base %q, want an error surfacing the fetch failure", got)
+	}
+	if got != "" {
+		t.Fatalf("resolveBranchBaseSHA returned base %q on fetch failure, want empty result", got)
+	}
+	if gotStale := gitCmd(t, workDir, "rev-parse", "origin/main"); gotStale != staleTip {
+		t.Fatalf("origin/main moved to %q, want it to remain the stale %q (no fetch should have succeeded)", gotStale, staleTip)
+	}
+}
+
 // TestResolvePushURL_ForkWinsOverCredential confirms the fork URL takes
 // precedence when set (fork-based contribution flow), since fork URLs carry no
 // embedded credentials today.

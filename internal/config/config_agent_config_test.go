@@ -48,11 +48,14 @@ agent_config:
     effort: high
   cursor:
     model: gpt-5
+  devin:
+    model: gpt-6-luna-medium
 `)
 	want := map[string]agentcfg.Profile{
 		"codex":  {Model: "gpt-5.4", Effort: agentcfg.EffortLow},
 		"claude": {Effort: agentcfg.EffortHigh},
 		"cursor": {Model: "gpt-5"},
+		"devin":  {Model: "gpt-6-luna-medium"},
 	}
 	for name, wantProfile := range want {
 		if got := cfg.AgentConfig[name]; got != wantProfile {
@@ -73,6 +76,7 @@ func TestLoadGlobal_AgentConfigRejectsBadInput(t *testing.T) {
 		{"unmappable model", "agent_config:\n  rovodev:\n    model: x\n", "cannot express model"},
 		{"unmappable effort", "agent_config:\n  antigravity:\n    effort: high\n", "cannot express effort"},
 		{"acp effort", "agent_config:\n  cursor:\n    effort: high\n", "cannot express effort"},
+		{"devin effort", "agent_config:\n  devin:\n    effort: high\n", "acp_registry_overrides.devin"},
 		{"opencode bare model", "agent_config:\n  opencode:\n    model: gpt-5\n", "provider/model"},
 	}
 	for _, tt := range tests {
@@ -162,6 +166,36 @@ func TestAgentProfileFollowsTheSelectedAgent(t *testing.T) {
 	}
 	if got := cfg.AgentProfile(); got.Effort != agentcfg.EffortMax {
 		t.Fatalf("AgentProfile() = %#v", got)
+	}
+}
+
+func TestACPAliasAgentProfiles(t *testing.T) {
+	for _, alias := range types.ACPAliases() {
+		short := string(alias.Name)
+		raw := "acp:" + alias.Target
+		for _, tt := range []struct {
+			name, selected, configured, other, want string
+		}{
+			{"alias config with raw selection", raw, short, "", "alias-model"},
+			{"raw config with alias selection", short, raw, "", "alias-model"},
+			{"raw selection prefers exact", raw, short, raw, "exact-model"},
+			{"alias selection prefers exact", short, raw, short, "exact-model"},
+		} {
+			t.Run(short+"/"+tt.name, func(t *testing.T) {
+				data := "agent: " + tt.selected + "\nagent_config:\n  " + tt.configured + ": {model: alias-model}\n"
+				if tt.other != "" {
+					data += "  " + tt.other + ": {model: exact-model}\n"
+				}
+				data += "review_agents:\n  reviewer: {agent: " + tt.selected + "}\n"
+				cfg := Merge(writeGlobalConfig(t, data), &RepoConfig{})
+				if got := cfg.AgentProfile().Model; got != tt.want {
+					t.Errorf("main profile model = %q, want %q", got, tt.want)
+				}
+				if got := cfg.ForReviewAgent(cfg.ReviewAgents[RoleReviewer]).AgentProfile().Model; got != tt.want {
+					t.Errorf("review profile model = %q, want %q", got, tt.want)
+				}
+			})
+		}
 	}
 }
 

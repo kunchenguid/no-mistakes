@@ -28,6 +28,7 @@ func TestNew_KnownAgents(t *testing.T) {
 		{name: "pi", agent: types.AgentPi, bin: "pi", wantName: "pi"},
 		{name: "copilot", agent: types.AgentCopilot, bin: "copilot", wantName: "copilot"},
 		{name: "cursor alias", agent: types.AgentCursor, bin: "acpx", wantName: "acp:cursor"},
+		{name: "devin alias", agent: types.AgentDevin, bin: "acpx", wantName: "acp:devin"},
 	}
 
 	for _, tt := range tests {

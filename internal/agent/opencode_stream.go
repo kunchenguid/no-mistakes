@@ -59,6 +59,10 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 				streamErr = errOpencodeThinkingToolChoiceConflict
 				return false
 			}
+			if props != nil && isForcedToolChoiceUnsupported(props.Error) {
+				streamErr = errOpencodeForcedToolChoiceUnsupported
+				return false
+			}
 
 		case "message.part.delta":
 			if props != nil && props.Field == "text" && props.PartID != "" && props.Delta != "" {

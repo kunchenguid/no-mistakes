@@ -53,6 +53,11 @@ type RunOpts struct {
 	// review-fix, test-evidence, ...). The review-role router uses review and
 	// review-fix to select a harness; concrete adapters ignore it.
 	Purpose string
+	// Round is the 1-based review-loop round this invocation belongs to, or 0
+	// when the caller does not number rounds. The review-role router uses it to
+	// apply an operator-configured later-round role override; concrete adapters
+	// ignore it. An unknown round always keeps the primary role selection.
+	Round int
 	// SessionFallbackReason is the low-cardinality reason a failed resume forced
 	// this fresh-session retry (see db.FallbackReason*). Set only when
 	// SessionFallback is true. Instrumentation only; adapters ignore it.
@@ -1338,7 +1343,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentAntigravity:
 		return &antigravityAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 }
 

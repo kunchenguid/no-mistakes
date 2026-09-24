@@ -107,7 +107,7 @@ The wizard requires:
 
 - The gate to be initialized (`no-mistakes init` has run).
 - A clean enough state to commit and push.
-- A configured native or ACP agent, only when the wizard needs to suggest a branch name or commit subject. For an ordered fallback list, at least one configured entry must be available. See the [Global Config Reference](/no-mistakes/reference/global-config/) for ACP aliases such as `agent: cursor` and target requirements.
+- A configured native or ACP agent, only when the wizard needs to suggest a branch name or commit subject. For an ordered fallback list, at least one configured entry must be available. See the [Global Config Reference](/no-mistakes/reference/global-config/#agent) for ACP aliases and target requirements.
   If you already have a branch and clean working tree, or you enter those values yourself in the interactive flow, the wizard can continue without agent suggestions.
 
 If any of those are missing, the wizard reports the problem and exits.

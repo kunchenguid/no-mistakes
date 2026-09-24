@@ -79,7 +79,7 @@ func TestPiProfileHelpStatusAndUsageEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "", "", "", "", pin)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "", "", "", "", false, pin)
 	if err != nil {
 		t.Fatal(err)
 	}

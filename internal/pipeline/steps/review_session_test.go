@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,7 @@ func (a *sessionFallbackTimeoutAgent) Run(ctx context.Context, opts agent.RunOpt
 func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline.Step) (*pipeline.Executor, *db.DB, *db.Run, *db.Repo, string) {
 	t.Helper()
 	workDir, baseSHA, headSHA := setupGitRepo(t)
+	ensureHermeticOrigin(t, workDir)
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {
@@ -286,7 +288,11 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 			// lets the carried finding leave the outstanding set. A rereview that
 			// reports nothing new without covering the file would leave it
 			// outstanding and park the run again.
-			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`)}
+			findings := cleanReviewFindings()
+			findings.ReviewedPaths = []string{"feature.txt"}
+			findings.DecisionReviews = satisfiedDecisionReviews(t, opts.Prompt)
+			output, _ := json.Marshal(findings)
+			return &agent.Result{Output: output}
 		default:
 			return &agent.Result{Output: []byte(`{"summary":"apply decision"}`)}
 		}

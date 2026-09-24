@@ -122,7 +122,7 @@ agent_path_override:
   claude: /Users/you/.local/bin/claude
 ```
 
-For `agent: acp:<target>` and ACP aliases such as `agent: cursor`, set `acpx_path` for the bridge.
+For explicit ACP targets and [ACP aliases](/no-mistakes/reference/global-config/#agent), set `acpx_path` for the bridge.
 If the raw target command is also outside `PATH`, set its target key in `acp_registry_overrides`; `agent_path_override` applies only to native agents:
 
 ```yaml
@@ -258,6 +258,8 @@ Current managed hooks resolve the gate as an absolute bare-repo path before noti
 If `notify-push.log` mentions `invalid gate path: .`, refresh the managed hook with `no-mistakes init` or `no-mistakes daemon restart`, then push again.
 
 Also check `<gate-path>/notify-push.log`. The hook now appends daemon notification failures there and prints the same error back to the pushing client.
+
+A daemon refuses a gate that does not sit under [its own root](/no-mistakes/reference/environment/#nm_home) with `gate ... does not belong to this daemon's home`. The managed hooks derive the owning root from the gate path, so they cannot produce this; it means a caller handed a daemon a gate belonging to a different root - a hand-run `no-mistakes daemon admit-push` / `notify-push`, or a client talking to the socket directly. Point the call at the gate under that daemon's own root, or push through the gate's own remote.
 
 ### Check the daemon socket
 

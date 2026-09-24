@@ -917,6 +917,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			stepName: stepName,
 			round:    func() int { return roundNum + 1 },
 		}
+		// Outermost: stamp the round on every invocation from the same closure
+		// the recorder reads, so an operator-configured later-round review role
+		// and the recorded evidence name the same round.
+		stepAgent = &roundStampingAgent{inner: stepAgent, round: func() int { return roundNum + 1 }}
 	}
 	ciReady := run.CIReadyAt != nil
 	ciReadyNoCI := run.CIReadyNoCI

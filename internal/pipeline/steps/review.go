@@ -18,17 +18,24 @@ import (
 // ReviewStep reviews the diff for bugs, security issues, and doc gaps.
 type ReviewStep struct {
 	now func() time.Time
-	// jev, when non-nil, is the TypeSafe pre-brief client (tests inject a
-	// fake). Nil resolves from TYPESAFE_API_KEY in the daemon environment at
-	// turn time; the assist is inert unless jev.review_assist is enabled.
-	jev jevClient
 }
 
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	decisions, err := loadRecordedFixDecisions(sctx)
+	if err != nil {
+		return nil, err
+	}
+	decisionSection, err := recordedFixDecisionSection(decisions)
+	if err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	if err != nil {
+		return nil, err
+	}
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
@@ -103,7 +110,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
-		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
+		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + decisionSection + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones.
 
@@ -181,7 +188,7 @@ Previous review findings to address:
 	changed := changedPathList(changedFiles)
 
 	reviewable := reviewablePaths(changed, sctx.Config.IgnorePatterns)
-	if len(reviewable) == 0 {
+	if len(reviewable) == 0 && len(decisions) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -222,6 +229,10 @@ Previous review findings to address:
 	// regardless of intent source. Held pending a scope decision.
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
+	if len(decisions) > 0 {
+		historySection += decisionSection + recordedDecisionReviewRule
+	}
+
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
 	// branch cannot steer the reviewer that gates it. Selection runs against the
@@ -233,12 +244,6 @@ Previous review findings to address:
 	pathInstructionMatches := matchPathInstructions(changed, sctx.Config.Review.PathInstructions)
 	logPathInstructions(sctx.Log, pathInstructionMatches)
 	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
-
-	// The opt-in Jev pre-brief contributes advisory context ranking to the
-	// prompt below. It can only add to the prompt - never remove a file,
-	// clause, or obligation - and any failure leaves the prompt byte-identical
-	// to running with the assist off.
-	prebrief := s.reviewPrebriefSection(ctx, sctx, baseSHA, changed, reviewable)
 
 	// The authorization/privacy obligation below specializes the existing
 	// concrete-state trace only when changed behavior crosses a potentially
@@ -357,7 +362,7 @@ Risk assessment (after listing all findings):
 		ignorePatterns,
 		historySection,
 		pathInstructions,
-		prebrief,
+		agent.MemoryFilesRule,
 	)
 
 	// Every review turn - the initial review and every post-fix rereview -
@@ -382,7 +387,7 @@ Risk assessment (after listing all findings):
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
-		JSONSchema: reviewFindingsSchema,
+		JSONSchema: reviewSchemaForDecisions(decisions),
 		OnChunk:    sctx.LogChunk,
 		Purpose:    "review",
 		Workload:   workload,
@@ -414,6 +419,7 @@ Risk assessment (after listing all findings):
 		findings = stripped
 	}
 
+	findings.Items = append(findings.Items, recordedDecisionFindings(decisions, findings.DecisionReviews)...)
 	needsApproval := hasBlockingFindings(findings.Items)
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 		// A clean round certifies the whole head, so it is held to a positive
@@ -480,6 +486,10 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 		return findings, errors.New("review analyzer findings invalid risk scope")
 	}
 	for i := range findings.Items {
+		// A recorded-decision identity is pipeline-owned metadata. The review
+		// agent assesses decisions separately; only recordedDecisionFindings
+		// below may attach an identity to a finding.
+		findings.Items[i].DecisionID = ""
 		if !types.IsKnownFindingSeverity(findings.Items[i].Severity) {
 			return findings, fmt.Errorf("review analyzer finding %d missing severity", i)
 		}

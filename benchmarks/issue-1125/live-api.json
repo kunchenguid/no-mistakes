@@ -1,0 +1,11 @@
+{
+  "answer_count": 1,
+  "answer_type": "score",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "input_tokens": 429,
+  "kind": "typesafe-evaluate",
+  "output_tokens": 19,
+  "reported_model": "jev-1.13.0",
+  "requested_model": "jev-1.13.0",
+  "wall_ms": 465
+}

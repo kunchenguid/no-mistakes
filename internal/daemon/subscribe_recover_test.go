@@ -355,33 +355,9 @@ func TestRecoverStaleRunsOnStartup(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
-			return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-		})
-	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket()); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	t.Cleanup(func() {
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
-			client.Close()
-		}
-		select {
-		case <-errCh:
-		case <-time.After(3 * time.Second):
-			t.Error("daemon did not stop within 3s")
-		}
-	})
+	runTestDaemon(t, p, d, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	}, 3*time.Second)
 
 	// Verify the stale run was marked as failed.
 	run, err := d.GetRun(staleRun.ID)
@@ -421,6 +397,7 @@ func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = database.Close() })
 			repo, err := database.InsertRepoWithID("terminal-pr-"+state, t.TempDir(), "https://github.com/test/repo", "main")
 			if err != nil {
 				t.Fatal(err)
@@ -445,34 +422,7 @@ func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			errCh := make(chan error, 1)
-			go func() {
-				errCh <- RunWithOptions(p, database, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepCI}} })
-			}()
-			defer func() {
-				client, dialErr := ipc.Dial(p.Socket())
-				if dialErr == nil {
-					_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
-					_ = client.Close()
-				}
-				select {
-				case <-errCh:
-				case <-time.After(3 * time.Second):
-					t.Error("isolated daemon did not stop")
-				}
-				_ = database.Close()
-			}()
-
-			deadline := time.Now().Add(5 * time.Second)
-			for {
-				if _, statErr := os.Stat(p.Socket()); statErr == nil {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("isolated daemon did not become ready")
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			runTestDaemon(t, p, database, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepCI}} }, 3*time.Second)
 
 			got, err := database.GetRun(run.ID)
 			if err != nil {
@@ -773,33 +723,9 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
-			return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-		})
-	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket()); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	t.Cleanup(func() {
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
-			client.Close()
-		}
-		select {
-		case <-errCh:
-		case <-time.After(3 * time.Second):
-			t.Error("daemon did not stop within 3s")
-		}
-	})
+	runTestDaemon(t, p, d, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	}, 3*time.Second)
 
 	// Orphaned worktree directory should be removed.
 	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
@@ -808,7 +734,12 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 }
 
 func TestRecoverPreservesInterruptedCIMonitorWorktree(t *testing.T) {
-	tmpDir := t.TempDir()
+	// Keep the IPC socket below the macOS Unix-domain path limit.
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 	p := paths.WithRoot(tmpDir)
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -854,33 +785,9 @@ func TestRecoverPreservesInterruptedCIMonitorWorktree(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
-			return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-		})
-	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket()); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	t.Cleanup(func() {
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
-			client.Close()
-		}
-		select {
-		case <-errCh:
-		case <-time.After(3 * time.Second):
-			t.Error("daemon did not stop within 3s")
-		}
-	})
+	runTestDaemon(t, p, d, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	}, 3*time.Second)
 
 	recovered, err := d.GetRun(run.ID)
 	if err != nil {

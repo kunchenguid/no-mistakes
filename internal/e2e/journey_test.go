@@ -868,8 +868,8 @@ func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
 	if err == nil {
 		t.Fatalf("daemon notify-push for invalid gate path should fail, got output:\n%s", out)
 	}
-	if !strings.Contains(out, "invalid gate path") {
-		t.Errorf("daemon notify-push invalid gate path output should mention 'invalid gate path', got:\n%s", out)
+	if !strings.Contains(out, "not a managed gate path") {
+		t.Errorf("daemon notify-push invalid gate path output should mention 'not a managed gate path', got:\n%s", out)
 	}
 }
 
