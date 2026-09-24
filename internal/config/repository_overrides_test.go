@@ -52,10 +52,12 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		{name: "uppercase git suffix", remote: "https://github.com/acme/widget.GIT", want: "github.com/acme/widget"},
 		{name: "SSH URL on a hosted forge", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "absolute SSH URL path", remote: "ssh://git@host/srv/git/team/widget.git", want: "host//srv/git/team/widget"},
-		{name: "absolute IPv6 scp path", remote: "git@[2001:db8::1]:/srv/git/team/widget.git", want: "2001:db8::1//srv/git/team/widget"},
-		{name: "relative IPv6 scp path", remote: "git@[2001:db8::1]:srv/git/team/widget.git", want: "2001:db8::1/srv/git/team/widget"},
-		{name: "expanded IPv6 scp address", remote: "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git", want: "2001:db8::1//srv/git/team/widget"},
-		{name: "expanded IPv6 SSH URL address", remote: "ssh://git@[2001:0db8:0:0:0:0:0:1]/srv/git/team/widget.git", want: "2001:db8::1//srv/git/team/widget"},
+		{name: "absolute IPv6 scp path", remote: "git@[2001:db8::1]:/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget"},
+		{name: "relative IPv6 scp path", remote: "git@[2001:db8::1]:srv/git/team/widget.git", want: "[2001:db8::1]/srv/git/team/widget"},
+		{name: "expanded IPv6 scp address", remote: "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget"},
+		{name: "expanded IPv6 SSH URL address", remote: "ssh://git@[2001:0db8:0:0:0:0:0:1]/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget"},
+		{name: "IPv6 URL port", remote: "ssh://git@[2001:db8::1]:2222/team/repo.git", want: "[2001:db8::1]:2222//team/repo"},
+		{name: "IPv6 address ending in port digits", remote: "ssh://git@[2001:db8::1:2222]/team/repo.git", want: "[2001:db8::1:2222]//team/repo"},
 		{name: "malformed IPv6 scp authority", remote: "git@[2001:db8::1:/srv/git/team/widget.git", wantErr: true},
 		{name: "Git protocol default port", remote: "git://host:9418/team/repo.git", want: "host/team/repo"},
 		{name: "Git protocol nondefault port", remote: "git://host:9419/team/repo.git", want: "host:9419/team/repo"},
@@ -150,6 +152,56 @@ func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
 			configKey: "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
 			matching:  "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget",
 			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			global, err := LoadGlobalFromBytes([]byte("repository_overrides:\n  '" + tc.configKey + "':\n    commit:\n      fix_message: 'override {{.Summary}}'\n"))
+			if err != nil {
+				t.Fatalf("LoadGlobalFromBytes(): %v", err)
+			}
+			for _, candidate := range []struct {
+				remote string
+				want   string
+			}{
+				{remote: tc.matching, want: "override summary"},
+				{remote: tc.distinct, want: "no-mistakes(review): summary"},
+			} {
+				merged := MergeForRemote(global, &RepoConfig{}, candidate.remote)
+				got, err := merged.Commit.RenderFixMessageForBranch(types.StepReview, "summary", "feature")
+				if err != nil {
+					t.Fatalf("remote %q: %v", candidate.remote, err)
+				}
+				if got != candidate.want {
+					t.Errorf("remote %q fix subject = %q, want %q", candidate.remote, got, candidate.want)
+				}
+			}
+		})
+	}
+}
+
+func TestMergeForRemote_IPv6HostPortKeysRemainDistinct(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		configKey string
+		matching  string
+		distinct  string
+	}{
+		{
+			name:      "URL port differs from address suffix",
+			configKey: "ssh://git@[2001:db8::1]:2222/team/repo.git",
+			matching:  "ssh://git@[2001:db8::1]:2222/team/repo",
+			distinct:  "ssh://git@[2001:db8::1:2222]/team/repo.git",
+		},
+		{
+			name:      "scp IPv6 address differs from URL port",
+			configKey: "git@[2001:db8::1:2222]:/srv/git/team/widget.git",
+			matching:  "ssh://git@[2001:db8::1:2222]/srv/git/team/widget",
+			distinct:  "ssh://git@[2001:db8::1]:2222/srv/git/team/widget.git",
 		},
 	} {
 		tc := tc

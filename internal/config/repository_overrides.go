@@ -94,6 +94,9 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 	if absolutePath && !repositoryNamespaceHost(host) {
 		pathPrefix = "//"
 	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
 	return host + portSuffix + pathPrefix + strings.Join(parts, "/"), nil
 }
 
