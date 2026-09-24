@@ -86,6 +86,56 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 	}
 }
 
+func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		configKey string
+		matching  string
+		distinct  string
+	}{
+		{
+			name:      "absolute config key",
+			configKey: "git@host:/srv/git/team/widget.git",
+			matching:  "git@host:/srv/git/team/widget",
+			distinct:  "git@host:srv/git/team/widget.git",
+		},
+		{
+			name:      "relative config key",
+			configKey: "git@host:srv/git/team/widget.git",
+			matching:  "git@host:srv/git/team/widget",
+			distinct:  "git@host:/srv/git/team/widget.git",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			global, err := LoadGlobalFromBytes([]byte("repository_overrides:\n  '" + tc.configKey + "':\n    commit:\n      fix_message: 'override {{.Summary}}'\n"))
+			if err != nil {
+				t.Fatalf("LoadGlobalFromBytes(): %v", err)
+			}
+			for _, candidate := range []struct {
+				remote string
+				want   string
+			}{
+				{remote: tc.matching, want: "override summary"},
+				{remote: tc.distinct, want: "no-mistakes(review): summary"},
+			} {
+				merged := MergeForRemote(global, &RepoConfig{}, candidate.remote)
+				got, err := merged.Commit.RenderFixMessageForBranch(types.StepReview, "summary", "feature")
+				if err != nil {
+					t.Fatalf("remote %q: %v", candidate.remote, err)
+				}
+				if got != candidate.want {
+					t.Errorf("remote %q fix subject = %q, want %q", candidate.remote, got, candidate.want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadGlobal_RejectsInvalidRepositoryOverrides(t *testing.T) {
 	t.Parallel()
 

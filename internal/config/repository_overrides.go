@@ -39,6 +39,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 
 	var host, portSuffix, rawPath, scheme string
 	escapedPath := false
+	absoluteScpPath := false
 	if strings.Contains(remote, "://") {
 		parsed, err := url.Parse(remote)
 		if err != nil {
@@ -70,6 +71,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		}
 		host = strings.ToLower(hostPart)
 		rawPath = remotePath
+		absoluteScpPath = strings.HasPrefix(remotePath, "/")
 	}
 
 	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
@@ -86,7 +88,11 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return host + portSuffix + "/" + strings.Join(parts, "/"), nil
+	pathPrefix := "/"
+	if absoluteScpPath {
+		pathPrefix = "//"
+	}
+	return host + portSuffix + pathPrefix + strings.Join(parts, "/"), nil
 }
 
 func normalizeRemotePath(rawPath string, escaped bool) ([]string, error) {
