@@ -1121,9 +1121,14 @@ func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
 		t.Errorf("successful rebind must keep divergence in branch_sync.note without a top-level error:\n%s", out)
 	}
 	anchor := "refs/no-mistakes/recover-rewritten/" + f.runID + "/1"
-	for _, want := range []string{"recovered: true", "changed: false", "source: remote_rewritten", "pushed_head: " + rewritten, "preserved_head: " + f.pushed, "archive_ref: " + anchor, "proof: worktree"} {
+	for _, want := range []string{"recovered: true", "changed: false", "source: remote_rewritten", "archive_ref: " + anchor, "proof: worktree"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("recover output missing %q:\n%s", want, out)
+		}
+	}
+	for key, sha := range map[string]string{"pushed_head": rewritten, "preserved_head": f.pushed} {
+		if !toonHasValue(out, key, sha) {
+			t.Errorf("recover output missing %s %s:\n%s", key, sha, out)
 		}
 	}
 	if got := cliGit(t, f.local, "rev-parse", anchor); got != f.pushed {
@@ -1137,9 +1142,15 @@ func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
 	}
 
 	out, _ = executeCmd("axi", "sync", "--check")
-	if strings.Contains(out, "blocked_remote_rewritten") || !strings.Contains(out, "pushed_head: "+rewritten) {
+	if strings.Contains(out, "blocked_remote_rewritten") || !toonHasValue(out, "pushed_head", rewritten) {
 		t.Fatalf("post-recover check still stranded:\n%s", out)
 	}
+}
+
+// toonHasValue reports whether TOON output renders key with value, which the
+// encoder quotes when a SHA could otherwise read as a number.
+func toonHasValue(out, key, value string) bool {
+	return strings.Contains(out, key+": "+value+"\n") || strings.Contains(out, key+": \""+value+"\"\n")
 }
 
 func TestAxiSyncRecoverReturnsCustodyEndToEnd(t *testing.T) {

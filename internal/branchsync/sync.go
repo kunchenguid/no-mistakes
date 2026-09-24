@@ -1316,31 +1316,39 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	return s.finishRecover(ctx, run, true)
 }
 
-// recoverRemoteRewritten performs the explicit recover_remote_rewritten action
-// for a terminal run whose configured push target was rewritten outside the
-// pipeline. It re-verifies the live remote with a fresh Refresh, anchors the
+// recoverRemoteRewritten owns Recover's outcome for a terminal run whose push
+// binding is the recorded truth: a published run or a custody-returned one.
+// Its success decision is an allowlist. Recovered is true only when (a) the
+// explicit recover_remote_rewritten rebind committed, or (b) a fresh live
+// check proved the binding already equals the live head, in which case the
+// caller's ordinary idempotent path decides (handled=false). Every other fresh
+// outcome refuses with Recovered=false and never reaches a cached no-op.
+// Runs whose head moved past an unpublished binding keep the ordinary custody
+// recovery (handled=false without a live check).
+//
+// The rebind re-verifies the live remote with a fresh Refresh, anchors the
 // superseded pipeline push head before changing anything, confirms the live
 // head did not move again, then compare-and-swaps the persisted push binding
 // to the verified live head. It never touches the worktree, a branch ref, the
-// gate branch, or the remote, and stamps no custody. handled is false when no
-// verified rewrite exists, leaving the caller's ordinary recovery in charge;
-// an attempted live check that failed is handled as a refusal.
+// gate branch, or the remote, and stamps no custody.
 func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepLocal bool) (State, bool) {
-	if run == nil || !terminalRunStatus(run.Status) || run.LastPushedSHA == nil {
+	if run == nil || !terminalRunStatus(run.Status) || run.LastPushedSHA == nil || unpublishedPipelineHead(run) {
 		return State{}, false
 	}
 	fresh := s.Refresh(ctx)
-	// A live check that was attempted but could not complete proves nothing
-	// about the binding, so no later cached no-op may report success.
 	switch fresh.Safety {
 	case "blocked_offline", "blocked_remote_changed_during_refresh", "blocked_binding_changed":
 		blocked := blockedPlan(fresh, fresh.State, fresh.Safety, "the live push target could not be verified, so nothing was recovered; no files or refs were changed")
 		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --recover"}
 		return blocked, true
 	}
+	if fresh.Pipeline.RunID == run.ID && fresh.Remote.Freshness == "live" && fresh.Remote.ObservedHead != "" &&
+		fresh.Remote.ObservedHead == ptr(run.LastPushedSHA) && fresh.Pipeline.PushedHead == fresh.Remote.ObservedHead {
+		return State{}, false
+	}
 	if fresh.Safety != "blocked_remote_rewritten" || fresh.Pipeline.RunID != run.ID || fresh.Remote.Freshness != "live" ||
 		fresh.Remote.ObservedHead == "" || fresh.NextAction == nil || fresh.NextAction.Code != "recover_remote_rewritten" {
-		return State{}, false
+		return refuseUnverifiedPushBinding(fresh), true
 	}
 	if keepLocal {
 		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_keep_local_not_applicable", "--keep-local does not apply to a remote rewritten outside the pipeline; run `no-mistakes axi sync --recover` to rebind the push binding to the verified live head; no files or refs were changed"), true
@@ -1376,6 +1384,10 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", fmt.Sprintf("the run or its push binding changed before it could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef)), true
 	}
 	state, _, _ := s.inspect(ctx)
+	after, afterErr := s.DB.GetRun(run.ID)
+	if afterErr != nil || after == nil || ptr(after.LastPushedSHA) != live || value(after.PushGeneration) != generation+1 || state.Pipeline.RunID != run.ID {
+		return blockedPlan(state, state.State, "blocked_recover_ownership_changed", fmt.Sprintf("the push binding was rebound to %s, but this run no longer owns the branch or its binding could not be confirmed; the superseded pipeline head stays anchored at %s", live, anchorRef)), true
+	}
 	state.Recovered = true
 	state.Changed = false
 	state.Recovery = &RecoveryEvidence{
@@ -1383,6 +1395,24 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		RequiredHead: live, PreservedHead: superseded, ArchiveRef: anchorRef, Proof: anchoredIn,
 	}
 	return state, true
+}
+
+// refuseUnverifiedPushBinding turns a fresh state that neither proves the push
+// binding nor offers the rewrite rebind into a recovery refusal. It keeps the
+// fresh reason and guidance so the operator sees why nothing was recovered.
+func refuseUnverifiedPushBinding(fresh State) State {
+	blocked := fresh
+	blocked.Recovered = false
+	blocked.Changed = false
+	if !strings.HasPrefix(blocked.Safety, "blocked_") {
+		blocked.Safety = "blocked_recover_live_unverified"
+	}
+	if blocked.Error == "" {
+		blocked.Error = "a fresh live check did not prove the pipeline push binding, so nothing was recovered; no files or refs were changed"
+	} else {
+		blocked.Error = "nothing was recovered: " + blocked.Error
+	}
+	return blocked
 }
 
 // anchorSupersededPushHead keeps the pipeline head a rewritten remote replaced

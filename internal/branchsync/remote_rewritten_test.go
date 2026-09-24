@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
@@ -278,5 +279,169 @@ func TestRecoverDoesNotReportSuccessWhenLiveVerificationFails(t *testing.T) {
 	}
 	if rebound := f.service.Recover(f.ctx, false); !rebound.Recovered || rebound.Recovery == nil || rebound.Recovery.Source != "remote_rewritten" {
 		t.Fatalf("recover after the target returned = %#v", rebound)
+	}
+}
+
+func TestRecoverAfterCustodyReturnDoesNotSucceedWhenBoundRemoteRefIsDeleted(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.local, "push", f.remote, ":refs/heads/feature/sync")
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatalf("recover with a deleted bound remote ref = %#v", state)
+	}
+	assertRewrittenBindingUntouched(t, f)
+}
+
+func TestRecoverAfterCustodyReturnDoesNotSucceedForClosedPRWithRewrittenRemote(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunPRState(f.run.ID, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatalf("recover for a closed PR with a rewritten remote = %#v", state)
+	}
+	assertRewrittenBindingUntouched(t, f)
+}
+
+func TestRecoverRewrittenRemoteRefusesWhenNewerRunTakesBranchBeforeRebind(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	f.service.beforeRecoverRebind = func() {
+		newer, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.UpdateRunStatus(newer.ID, types.RunRunning); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatalf("recover after a newer run took the branch = %#v", state)
+	}
+	assertRewrittenBindingUntouched(t, f)
+}
+
+// TestRecoverOnPushedRunSucceedsOnlyForCommittedRebindOrVerifiedBinding walks
+// the fresh states a terminal run with a push binding can reach and pins the
+// success allowlist: Recovered is true only when the rewrite rebind committed
+// or a fresh live check proved the binding already equals the live head.
+func TestRecoverOnPushedRunSucceedsOnlyForCommittedRebindOrVerifiedBinding(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		custody       bool
+		rewrite       bool
+		setup         func(t *testing.T, f *syncFixture)
+		wantRecovered bool
+	}{
+		{name: "rewritten remote rebinds", rewrite: true, wantRecovered: true},
+		{name: "rewritten remote rebinds after custody return", custody: true, rewrite: true, wantRecovered: true},
+		{name: "live equals binding after custody return", custody: true, wantRecovered: true},
+		{name: "merged PR live equals binding after custody return", custody: true, wantRecovered: true, setup: func(t *testing.T, f *syncFixture) {
+			if err := f.db.UpdateRunPRState(f.run.ID, "merged"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "live equals binding without custody return"},
+		{name: "rewritten remote with keep-local", custody: true, rewrite: true, setup: nil},
+		{name: "rewritten remote on closed PR", custody: true, rewrite: true, setup: func(t *testing.T, f *syncFixture) {
+			if err := f.db.UpdateRunPRState(f.run.ID, "closed"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "rewritten remote on merged PR", custody: true, rewrite: true, setup: func(t *testing.T, f *syncFixture) {
+			if err := f.db.UpdateRunPRState(f.run.ID, "merged"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "remote advanced", custody: true, setup: func(t *testing.T, f *syncFixture) {
+			writer := cloneRemoteBranch(t, f.remote)
+			mustWrite(t, filepath.Join(writer, "advanced.txt"), "advanced\n")
+			mustRun(t, writer, "add", "advanced.txt")
+			mustRun(t, writer, "commit", "-m", "out of band")
+			mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/sync")
+		}},
+		{name: "remote ref deleted", custody: true, setup: func(t *testing.T, f *syncFixture) {
+			mustRun(t, f.local, "push", f.remote, ":refs/heads/feature/sync")
+		}},
+		{name: "remote offline", custody: true, setup: func(t *testing.T, f *syncFixture) {
+			if err := os.Rename(f.remote, f.remote+".offline"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "remote changed during refresh", custody: true, setup: func(t *testing.T, f *syncFixture) {
+			f.service.lsRemote = func(context.Context, string, string, string) (string, error) {
+				return strings.Repeat("a", 40), nil
+			}
+		}},
+		{name: "dirty worktree", custody: true, setup: func(t *testing.T, f *syncFixture) {
+			mustWrite(t, filepath.Join(f.local, "file.txt"), "uncommitted\n")
+		}},
+		{name: "push target changed", custody: true, setup: func(t *testing.T, f *syncFixture) {
+			other := filepath.Join(t.TempDir(), "other.git")
+			mustRun(t, filepath.Dir(other), "init", "--bare", other)
+			updated, err := f.db.UpdateRepoForkURL(f.repo.ID, other)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.service.Repo = updated
+		}},
+		{name: "rewritten remote while the run is active", rewrite: true, setup: func(t *testing.T, f *syncFixture) {
+			if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newSyncFixture(t)
+			gate := filepath.Join(filepath.Dir(f.local), "gate.git")
+			mustRun(t, filepath.Dir(f.local), "clone", "--bare", f.remote, gate)
+			f.service.GateDir = gate
+			// The operator synchronized to the pipeline head before anything
+			// else happened, so the verified-binding cases start clean.
+			if state := f.service.Apply(f.ctx); state.State != StateSynchronized {
+				t.Fatalf("initial sync = %#v", state)
+			}
+			if tc.custody {
+				if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.rewrite {
+				forceRewriteRemote(t, f, "rewrite")
+			}
+			if tc.setup != nil {
+				tc.setup(t, f)
+			}
+			keepLocal := tc.name == "rewritten remote with keep-local"
+			state := f.service.Recover(f.ctx, keepLocal)
+			if state.Recovered != tc.wantRecovered {
+				t.Fatalf("Recovered = %v, want %v; state = %#v", state.Recovered, tc.wantRecovered, state)
+			}
+			run, err := f.db.GetRun(f.run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rebound := ptr(run.LastPushedSHA) != f.pushed
+			if rebound != (tc.wantRecovered && tc.rewrite) {
+				t.Fatalf("binding rebound = %v for %q (pushed %s)", rebound, tc.name, ptr(run.LastPushedSHA))
+			}
+		})
 	}
 }

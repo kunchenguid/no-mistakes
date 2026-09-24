@@ -555,8 +555,9 @@ type PushRebind struct {
 // configured target was verified to hold after a rewrite outside the pipeline.
 // It is a single compare-and-swap over the exact binding and repo target the
 // caller verified (run status, pushed head, generation, target kind,
-// fingerprint, ref, no active push, no retired PR, and the repo's current
-// upstream and fork URLs) and reports whether it applied. head_sha follows only
+// fingerprint, ref, no active push, no retired PR, no other non-terminal run
+// on the same repo branch, and the repo's current upstream and fork URLs) and
+// reports whether it applied. head_sha follows only
 // when it equalled the old binding, so a custody-returned run keeps its own
 // recorded head.
 func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
@@ -565,9 +566,13 @@ func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
 		WHERE id = ? AND status = ? AND last_pushed_sha = ? AND COALESCE(push_generation, 0) = ?
 			AND push_target_kind = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0
 			AND COALESCE(pr_state, '') NOT IN ('merged', 'closed')
+			AND NOT EXISTS (SELECT 1 FROM runs other WHERE other.repo_id = runs.repo_id AND other.branch = runs.branch AND other.id <> runs.id
+				AND other.status NOT IN (?, ?, ?, ?))
 			AND EXISTS (SELECT 1 FROM repos WHERE repos.id = runs.repo_id AND repos.upstream_url = ? AND COALESCE(repos.fork_url, '') = ?)`,
 		rebind.Head, rebind.Head, now(), id, string(rebind.Status), rebind.ExpectedPushed, rebind.ExpectedGeneration,
-		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref, rebind.UpstreamURL, rebind.ForkURL,
+		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref,
+		string(types.RunCompleted), string(types.RunFailed), string(types.RunCancelled), string(types.RunCIMonitorInterrupted),
+		rebind.UpstreamURL, rebind.ForkURL,
 	)
 	if err != nil {
 		return false, fmt.Errorf("rebind run pushed head: %w", err)
