@@ -677,16 +677,17 @@ func (m *RunManager) closeSubscribers(runID string) {
 // that handed this daemon a gate under a different root - a hand-run CLI or a
 // direct IPC client - would otherwise re-resolve that id under this daemon's
 // own root, admitting or validating a foreign repository's push against local
-// state. The --gate value arrives resolved by
-// git rev-parse while the owned path is built from NM_HOME as configured, so
-// compare through samePath's symlink resolution (/var -> /private/var on macOS)
-// rather than textually.
+// state. The --gate value arrives absolute and symlink-resolved from git
+// rev-parse while the owned path is built from NM_HOME exactly as spelled, so
+// compare through canonicalRoot - this package's one definition of "same root",
+// which reconciles relative against absolute, symlinked against real
+// (/var -> /private/var on macOS), and case on Windows - rather than textually.
 func ownedGateRepoID(p *paths.Paths, gate string) (string, error) {
 	repoID, err := repoIDFromGatePath(gate)
 	if err != nil {
 		return "", err
 	}
-	if owned := p.RepoDir(repoID); !samePath(gate, owned) {
+	if owned := p.RepoDir(repoID); canonicalRoot(gate) != canonicalRoot(owned) {
 		return "", fmt.Errorf("gate %q does not belong to this daemon's home (this root owns %q)", gate, owned)
 	}
 	return repoID, nil

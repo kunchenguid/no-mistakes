@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -1667,5 +1668,40 @@ func TestAdmitPushRejectsGateFromAnotherHome(t *testing.T) {
 	var ok ipc.AdmitPushResult
 	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: p.RepoDir(repoID)}, &ok); err != nil {
 		t.Fatalf("admit for this daemon's own gate must still be classified: %v", err)
+	}
+}
+
+// TestOwnedGateAcceptsARelativeRootSpelling pins the guard against the root
+// spelling: NM_HOME may be relative, while the gate path always arrives
+// absolute from git rev-parse, so a textual compare would refuse every push to
+// the daemon's own gate.
+func TestOwnedGateAcceptsARelativeRootSpelling(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	const repoID = "relative-root-repo"
+	p := paths.WithRoot("nm")
+	if err := os.MkdirAll(p.RepoDir(repoID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	absGate, err := filepath.Abs(p.RepoDir(repoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absGate); err == nil {
+		absGate = resolved
+	}
+
+	got, err := ownedGateRepoID(p, absGate)
+	if err != nil {
+		t.Fatalf("the daemon's own gate under a relative root must be owned: %v", err)
+	}
+	if got != repoID {
+		t.Fatalf("repo id = %q, want %q", got, repoID)
+	}
+
+	foreign := filepath.Join(t.TempDir(), "repos", repoID+".git")
+	if _, err := ownedGateRepoID(p, foreign); err == nil {
+		t.Fatal("a gate under another root must still be refused")
 	}
 }
