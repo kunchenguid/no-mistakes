@@ -195,8 +195,14 @@ func runTeaStub(args []string) int {
 	if len(args) >= 2 && args[0] == "pulls" {
 		// `tea pulls <idx> --output json` (view a single PR by index). Merged
 		// on the first poll so the CI step's GetPRState exits without needing
-		// to model Gitea Actions runs.
+		// to model Gitea Actions runs. FAKEAGENT_TEA_PR_STATE=open keeps the
+		// PR open instead, so a journey can observe a run while its CI step is
+		// still monitoring an unmerged PR.
 		if _, err := strconv.Atoi(args[1]); err == nil {
+			if os.Getenv("FAKEAGENT_TEA_PR_STATE") == "open" {
+				fmt.Println(`{"index":99,"state":"open","hasMerged":false,"head":"","base":"main"}`)
+				return 0
+			}
 			fmt.Println(`{"index":99,"state":"closed","hasMerged":true,"head":"","base":"main"}`)
 			return 0
 		}

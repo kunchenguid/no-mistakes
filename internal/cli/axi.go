@@ -43,6 +43,7 @@ func newAxiCmd() *cobra.Command {
 	cmd.AddCommand(newAxiRunCmd())
 	cmd.AddCommand(newAxiRespondCmd())
 	cmd.AddCommand(newAxiStatusCmd())
+	cmd.AddCommand(newAxiFleetCmd())
 	cmd.AddCommand(newAxiSyncCmd())
 	cmd.AddCommand(newAxiLogsCmd())
 	cmd.AddCommand(newAxiAbortCmd())
@@ -64,6 +65,10 @@ type axiEnvOptions struct {
 	ensureDaemonConn                       bool
 	deferGlobalConfigErrorForRunningDaemon bool
 	explicitRunID                          string
+	// machineScoped skips resolving the current directory's repository. The
+	// fleet view reports every repository the daemon knows about, so it must
+	// also answer from a directory that belongs to no registered repository.
+	machineScoped bool
 }
 
 func (e *axiEnv) close() {
@@ -111,7 +116,10 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 		globalCfg = config.DefaultGlobalConfig()
 	}
 	env := &axiEnv{p: p, d: d, cfg: globalCfg, globalConfigErr: err}
-	if opts.explicitRunID != "" {
+	switch {
+	case opts.machineScoped:
+		// No repository is resolved: every repository is in scope.
+	case opts.explicitRunID != "":
 		run, lookupErr := d.GetRun(opts.explicitRunID)
 		if lookupErr != nil {
 			d.Close()
@@ -125,7 +133,7 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 			}
 			env.repo = repo
 		}
-	} else {
+	default:
 		repo, findErr := findRepo(d)
 		if findErr != nil {
 			d.Close()
@@ -150,6 +158,10 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 
 func openAxiQueryEnv(explicitRunID string) (*axiEnv, error) {
 	return openAxiEnvWithOptions(axiEnvOptions{explicitRunID: strings.TrimSpace(explicitRunID)})
+}
+
+func openAxiFleetEnv() (*axiEnv, error) {
+	return openAxiEnvWithOptions(axiEnvOptions{machineScoped: true})
 }
 
 // runAxiHome renders the content-first home view: tool identity, repo, daemon
