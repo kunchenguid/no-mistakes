@@ -454,16 +454,22 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	reportUnusableWorktreeRoots(d, layout)
 	leftover := leftoverRecordedRunWorktrees(d, p)
 
-	orphanProcStarted := time.Now()
-	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftover, activeWorktrees))
-	logStartupPhase("orphan_processes", orphanProcStarted)
-
 	global, cfgErr := config.LoadGlobal(p.ConfigFile())
 	if cfgErr != nil {
 		slog.Warn("failed to load global config for cleanup reaping, using defaults", "error", cfgErr)
 		global = nil
 	}
 	now := time.Now()
+	wtPolicy := worktreeReapPolicyFor(global)
+
+	// The retention decision is resolved before the process sweep so a
+	// default-tree worktree the policy is keeping is never treated as
+	// orphaned: RunActive alone (pending/running/CI-interrupted) says nothing
+	// about retention, and sweeping first would kill a process still using a
+	// checkout the operator configured to retain.
+	orphanProcStarted := time.Now()
+	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftover, activeWorktrees), retainedDefaultTreeRunIDs(d, p, wtPolicy, now))
+	logStartupPhase("orphan_processes", orphanProcStarted)
 
 	// reapWorktrees applies the operator's retention policy to the default
 	// <NM_HOME>/worktrees tree before cleanupOrphanWorktrees runs its
@@ -471,7 +477,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// disabled or wide retention window is honored on the default tree
 	// instead of being bypassed by startup cleanup.
 	worktreeStarted := time.Now()
-	reapWorktrees(d, p, worktreeReapPolicyFor(global), now)
+	reapWorktrees(d, p, wtPolicy, now)
 	cleanupOrphanWorktrees(d, p, leftover)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 
@@ -564,7 +570,12 @@ func isGitAncestor(ctx context.Context, dir, ancestor, descendant string) bool {
 // is limited to the directories our own run rows name, matching what cleanup
 // there may remove, and a placement the operator has since reconfigured away is
 // still swept because the run recorded it.
-func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Worktree) {
+//
+// retained is the set of default-tree run IDs worktreeReapCandidates decided
+// to keep (see retainedDefaultTreeRunIDs): a terminal run alone does not mean
+// orphaned once retention exists, so a run in this set is left alone here too,
+// exactly like the removal-scoped sweep reapWorktrees runs for itself later.
+func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Worktree, retained map[string]bool) {
 	ctx := context.Background()
 	wtRoot := p.WorktreesDir()
 	pathByRun := make(map[string]string, len(worktrees))
@@ -576,6 +587,9 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 		Worktrees:     worktrees,
 		MinAge:        orphanProcessMinAge,
 		RunActive: func(repoID, runID string) bool {
+			if retained[runID] {
+				return true
+			}
 			wtPath := pathByRun[runID]
 			if wtPath == "" {
 				wtPath = filepath.Join(wtRoot, repoID, runID)
@@ -584,6 +598,30 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 			return skip
 		},
 	}, "daemon_startup")
+}
+
+// retainedDefaultTreeRunIDs is the run IDs of default-tree worktrees the
+// worktree retention policy is keeping. The startup process sweep runs before
+// reapWorktrees decides what to remove, so it consults the same decision here
+// rather than treating "run is terminal" alone as orphaned - otherwise a
+// restart could kill a process still using a checkout the operator configured
+// to retain (see worktreeReapCandidates).
+func retainedDefaultTreeRunIDs(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time.Time) map[string]bool {
+	removable, _ := defaultTreeOrphanWorktrees(d, p)
+	if len(removable) == 0 {
+		return nil
+	}
+	removing := make(map[string]bool, len(removable))
+	for _, wt := range worktreeReapCandidates(removable, policy, now) {
+		removing[wt.runID] = true
+	}
+	retained := make(map[string]bool, len(removable))
+	for _, wt := range removable {
+		if !removing[wt.runID] {
+			retained[wt.runID] = true
+		}
+	}
+	return retained
 }
 
 // sweepableWorktrees is the procreap view of the run worktrees outside the
@@ -878,8 +916,9 @@ func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree
 }
 
 // removableOrphanWorktree combines the active-run guard with refusal retention.
-// This removal decision does not exempt retained terminal runs from the
-// independent startup process sweep or evidence expiry.
+// This removal decision does not exempt retained terminal runs from evidence
+// expiry (a separate, unrelated budget); the startup process sweep now applies
+// the same worktree retention policy through retainedDefaultTreeRunIDs.
 func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 	if skip, reason := skipWorktreeCleanup(context.Background(), d, wt.runID, wt.dir); skip {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)

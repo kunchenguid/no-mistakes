@@ -73,7 +73,41 @@ func reapWorktrees(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time
 	if len(removable) == 0 {
 		return
 	}
+	toRemove := worktreeReapCandidates(removable, policy, now)
+	if len(toRemove) == 0 {
+		return
+	}
 
+	// Only the directories actually selected for removal are swept: sweeping
+	// a retained worktree would kill processes still using a checkout the
+	// policy was meant to keep.
+	sweepable := make([]procreap.Worktree, 0, len(toRemove))
+	for _, wt := range toRemove {
+		sweepable = append(sweepable, procreap.Worktree{Dir: wt.dir, RepoID: wt.repoID, RunID: wt.runID})
+	}
+	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_reap")
+
+	removed := 0
+	for _, wt := range toRemove {
+		if removeOrphanWorktree(context.Background(), wt) {
+			removed++
+		}
+	}
+
+	if removed > 0 {
+		slog.Info("reaped leftover run worktrees", "removed", removed)
+	}
+}
+
+// worktreeReapCandidates applies policy to removable, oldest first, and
+// returns exactly the directories it selects for removal: an eligible
+// directory older than the retention window, plus whatever survives that cut
+// trimmed to the run ceiling. It is the single source of the removal
+// decision, shared by reapWorktrees and by the startup process sweep (see
+// retainedDefaultTreeRunIDs in daemon.go), so a worktree the policy is
+// keeping is never treated as orphaned by one caller while the other retains
+// it.
+func worktreeReapCandidates(removable []orphanWorktree, policy worktreeReapPolicy, now time.Time) []orphanWorktree {
 	type candidate struct {
 		wt      orphanWorktree
 		modTime time.Time
@@ -87,7 +121,7 @@ func reapWorktrees(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time
 		candidates = append(candidates, candidate{wt: wt, modTime: info.ModTime()})
 	}
 	if len(candidates) == 0 {
-		return
+		return nil
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -109,27 +143,9 @@ func reapWorktrees(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time
 		toRemove = append(toRemove, survivors[:len(survivors)-policy.MaxRuns]...)
 	}
 
-	if len(toRemove) == 0 {
-		return
-	}
-
-	// Only the directories actually selected for removal are swept: sweeping
-	// a retained worktree would kill processes still using a checkout the
-	// policy was meant to keep.
-	sweepable := make([]procreap.Worktree, 0, len(toRemove))
+	out := make([]orphanWorktree, 0, len(toRemove))
 	for _, c := range toRemove {
-		sweepable = append(sweepable, procreap.Worktree{Dir: c.wt.dir, RepoID: c.wt.repoID, RunID: c.wt.runID})
+		out = append(out, c.wt)
 	}
-	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_reap")
-
-	removed := 0
-	for _, c := range toRemove {
-		if removeOrphanWorktree(context.Background(), c.wt) {
-			removed++
-		}
-	}
-
-	if removed > 0 {
-		slog.Info("reaped leftover run worktrees", "removed", removed)
-	}
+	return out
 }
