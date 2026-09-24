@@ -198,6 +198,8 @@ func isDefaultRemotePort(scheme, port string) bool {
 		return port == "443"
 	case "ssh":
 		return port == "22"
+	case "git":
+		return port == "9418"
 	default:
 		return false
 	}

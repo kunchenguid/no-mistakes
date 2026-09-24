@@ -52,6 +52,8 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		{name: "uppercase git suffix", remote: "https://github.com/acme/widget.GIT", want: "github.com/acme/widget"},
 		{name: "SSH URL on a hosted forge", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "absolute SSH URL path", remote: "ssh://git@host/srv/git/team/widget.git", want: "host//srv/git/team/widget"},
+		{name: "Git protocol default port", remote: "git://host:9418/team/repo.git", want: "host/team/repo"},
+		{name: "Git protocol nondefault port", remote: "git://host:9419/team/repo.git", want: "host:9419/team/repo"},
 		{name: "scp-like SSH", remote: "git@GITHUB.com:Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "without suffix", remote: "https://github.com/acme/widget", want: "github.com/acme/widget"},
 		{name: "nested GitLab namespace", remote: "https://gitlab.example.com/group/sub/project.git", want: "gitlab.example.com/group/sub/project"},
@@ -138,6 +140,45 @@ func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
 				if got != candidate.want {
 					t.Errorf("remote %q fix subject = %q, want %q", candidate.remote, got, candidate.want)
 				}
+			}
+		})
+	}
+}
+
+func TestMergeForRemote_GitDefaultPortMatchesOmittedPort(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		configKey string
+		matching  string
+	}{
+		{
+			name:      "configured default port",
+			configKey: "git://host:9418/team/repo.git",
+			matching:  "git://host/team/repo.git",
+		},
+		{
+			name:      "registered default port",
+			configKey: "git://host/team/repo.git",
+			matching:  "git://host:9418/team/repo",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			global, err := LoadGlobalFromBytes([]byte("repository_overrides:\n  '" + tc.configKey + "':\n    commit:\n      fix_message: 'override {{.Summary}}'\n"))
+			if err != nil {
+				t.Fatalf("LoadGlobalFromBytes(): %v", err)
+			}
+			merged := MergeForRemote(global, &RepoConfig{}, tc.matching)
+			got, err := merged.Commit.RenderFixMessageForBranch(types.StepReview, "summary", "feature")
+			if err != nil {
+				t.Fatalf("remote %q: %v", tc.matching, err)
+			}
+			if got != "override summary" {
+				t.Fatalf("remote %q fix subject = %q, want override summary", tc.matching, got)
 			}
 		})
 	}
