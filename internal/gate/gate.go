@@ -113,6 +113,10 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		if err := validateForkRouting(ctx, upstreamURL, forkURL); err != nil {
 			return nil, false, err
 		}
+	} else if existing == nil || strings.TrimSpace(existing.ForkURL) == "" {
+		if err := refuseForkOriginMisrouting(ctx, absRoot); err != nil {
+			return nil, false, err
+		}
 	}
 
 	// Redact embedded credentials for everything that is persisted, logged, or

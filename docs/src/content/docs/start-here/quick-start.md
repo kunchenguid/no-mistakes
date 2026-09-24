@@ -50,6 +50,8 @@ no-mistakes init --fork-url git@github.com:you/my-repo.git
 
 The gate will push validated branches to the fork while opening PRs against the parent.
 
+If you instead cloned your own fork directly (`origin` is your fork, with an `upstream` remote for the parent), plain `init` detects that layout and refuses with the same `--fork-url` guidance instead of silently opening PRs inside your fork.
+
 ```
 $ no-mistakes init
   ✓ Gate initialized
