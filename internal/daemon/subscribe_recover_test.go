@@ -880,6 +880,17 @@ func TestSkipWorktreeCleanup_CIMonitorInterrupted(t *testing.T) {
 			t.Fatal("a non-git worktree dir for a ci-interrupted run must fail safe to preserve")
 		}
 	})
+
+	t.Run("reclaims worktree that is already gone", func(t *testing.T) {
+		runID, wtPath := newInterruptedWorktree(t, headSHA)
+		if err := os.RemoveAll(wtPath); err != nil {
+			t.Fatal(err)
+		}
+		skip, reason := skipWorktreeCleanup(ctx, d, runID, wtPath)
+		if skip {
+			t.Fatalf("a run whose worktree directory no longer exists has nothing unpushed to lose, so it should be reclaimed (skip=false), got skip=true: %s", reason)
+		}
+	})
 }
 
 // TestRecoverIsolatesGateRepoHooksPath covers issue #122 for existing

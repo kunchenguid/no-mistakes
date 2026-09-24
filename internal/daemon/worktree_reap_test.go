@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"context"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -186,5 +189,40 @@ func TestRunCleanupWorktreeReapIsSafeWithoutConfig(t *testing.T) {
 
 	if !f.exists(kept) {
 		t.Error("cleanup with no config removed a fresh leftover worktree")
+	}
+}
+
+// TestRemoveOrphanWorktreeReportsRemovalFailure pins the fix for the
+// inflated-count review finding: removeOrphanWorktree must report false, not
+// just log a warning, when both git worktree remove and its os.RemoveAll
+// fallback fail, so a caller counting removals (reapWorktrees) never claims a
+// directory is gone when it is still on disk.
+func TestRemoveOrphanWorktreeReportsRemovalFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits do not block removal the same way on windows")
+	}
+	tmp := t.TempDir()
+	wtDir := filepath.Join(tmp, "wt")
+	if err := os.MkdirAll(wtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtDir, "file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Strip write permission on the parent directory so os.RemoveAll cannot
+	// unlink wtDir's entry, after git.WorktreeRemove has already failed
+	// against the nonexistent gate repo below.
+	parent := filepath.Dir(wtDir)
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o755) })
+
+	wt := orphanWorktree{gateDir: filepath.Join(tmp, "nonexistent-gate"), dir: wtDir, repoID: "repo1", runID: "run1"}
+	if removeOrphanWorktree(context.Background(), wt) {
+		t.Fatal("removeOrphanWorktree reported success for a directory that is still on disk")
+	}
+	if _, err := os.Stat(wtDir); err != nil {
+		t.Fatalf("worktree directory should still exist after a failed removal: %v", err)
 	}
 }
