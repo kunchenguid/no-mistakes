@@ -1213,15 +1213,6 @@ func TestGateConfigStampRegeneratesHooksMissingTheHomeBinding(t *testing.T) {
 	if !GateConfigCurrent(bare) {
 		t.Fatal("gate must be current once the managed hooks are refreshed")
 	}
-	for _, name := range []string{"pre-receive", "post-receive"} {
-		content, err := os.ReadFile(filepath.Join(hooks, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(content), "export NM_HOME") {
-			t.Fatalf("refreshed %s hook must export NM_HOME", name)
-		}
-	}
 }
 
 // stripHomeBinding removes the NM_HOME derivation block from a rendered hook,

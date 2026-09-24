@@ -680,28 +680,6 @@ func repoIDFromGatePath(gatePath string) (string, error) {
 	return strings.TrimSuffix(base, ".git"), nil
 }
 
-// sameGatePath reports whether two gate paths name the same directory. The
-// --gate value arrives resolved by git rev-parse, while the comparison path is
-// built from NM_HOME as configured, so the two disagree textually wherever the
-// root sits behind a symlink (/var -> /private/var on macOS) even though they
-// name one directory. Compare resolved paths, falling back to the cleaned path
-// when a side does not resolve - a gate that is not there is not one this root
-// owns.
-func sameGatePath(a, b string) bool {
-	if filepath.Clean(a) == filepath.Clean(b) {
-		return true
-	}
-	return resolveGatePath(a) == resolveGatePath(b)
-}
-
-func resolveGatePath(path string) string {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	return resolved
-}
-
 // branchFromRef extracts the branch name from a full git ref.
 // "refs/heads/main" → "main", "main" → "main"
 func branchFromRef(ref string) string {
@@ -808,8 +786,11 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	// own root and validate a foreign repository's push against local worktree
 	// paths. Refuse a gate this root does not own instead of silently adopting
 	// it: the misroute is then an explicit error rather than a run whose paths
-	// fail somewhere far from the cause.
-	if owned := m.paths.RepoDir(repoID); !sameGatePath(params.Gate, owned) {
+	// fail somewhere far from the cause. The --gate value arrives resolved by
+	// git rev-parse while the owned path is built from NM_HOME as configured,
+	// so compare through samePath's symlink resolution (/var -> /private/var on
+	// macOS) rather than textually.
+	if owned := m.paths.RepoDir(repoID); !samePath(params.Gate, owned) {
 		return "", fmt.Errorf("gate %q does not belong to this daemon's home (this root owns %q)", params.Gate, owned)
 	}
 	repo, err := m.db.GetRepo(repoID)
