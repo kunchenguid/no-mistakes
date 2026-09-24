@@ -1377,6 +1377,7 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 	}
 	rebound, err := s.DB.RebindRunPushedHead(run.ID, db.PushRebind{
 		Status: run.Status, ExpectedPushed: superseded, ExpectedGeneration: generation,
+		ExpectedHead: run.HeadSHA, CustodyReturned: run.CustodyReturnedAt != nil,
 		UpstreamURL: repo.UpstreamURL, ForkURL: repo.ForkURL, TargetKind: targetKind(repo),
 		TargetFingerprint: TargetFingerprint(repo.PushURL()), Ref: fresh.Target.Ref, Head: live,
 	})
@@ -1385,7 +1386,8 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 	}
 	state, _, _ := s.inspect(ctx)
 	after, afterErr := s.DB.GetRun(run.ID)
-	if afterErr != nil || after == nil || ptr(after.LastPushedSHA) != live || value(after.PushGeneration) != generation+1 || state.Pipeline.RunID != run.ID {
+	if afterErr != nil || after == nil || ptr(after.LastPushedSHA) != live || value(after.PushGeneration) != generation+1 ||
+		state.Pipeline.RunID != run.ID || !reboundStateUsable(state) {
 		return blockedPlan(state, state.State, "blocked_recover_ownership_changed", fmt.Sprintf("the push binding was rebound to %s, but this run no longer owns the branch or its binding could not be confirmed; the superseded pipeline head stays anchored at %s", live, anchorRef)), true
 	}
 	state.Recovered = true
@@ -1395,6 +1397,21 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		RequiredHead: live, PreservedHead: superseded, ArchiveRef: anchorRef, Proof: anchoredIn,
 	}
 	return state, true
+}
+
+// reboundStateUsable reports whether post-rebind inspection classifies the
+// branch against the new binding as the operator's ordinary relation to it.
+// Pipeline ownership, an in-progress push, or any context/target refusal means
+// the rebind did not leave a usable binding, so recovery is not reported.
+// Divergence from a foreign rewrite is an ordinary relation with its own
+// next action, not a recovery failure.
+func reboundStateUsable(state State) bool {
+	switch state.State {
+	case StateSynchronized, StateBehind, StateLocalAhead, StateDiverged:
+		return true
+	default:
+		return false
+	}
 }
 
 // refuseUnverifiedPushBinding turns a fresh state that neither proves the push

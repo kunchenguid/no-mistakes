@@ -400,6 +400,13 @@ func TestRecoverOnPushedRunSucceedsOnlyForCommittedRebindOrVerifiedBinding(t *te
 			}
 			f.service.Repo = updated
 		}},
+		{name: "run head changed before the rebind", rewrite: true, setup: func(t *testing.T, f *syncFixture) {
+			f.service.beforeRecoverRebind = func() {
+				if err := f.db.UpdateRunHeadSHA(f.run.ID, f.old); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
 		{name: "rewritten remote while the run is active", rewrite: true, setup: func(t *testing.T, f *syncFixture) {
 			if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
 				t.Fatal(err)
@@ -443,5 +450,27 @@ func TestRecoverOnPushedRunSucceedsOnlyForCommittedRebindOrVerifiedBinding(t *te
 				t.Fatalf("binding rebound = %v for %q (pushed %s)", rebound, tc.name, ptr(run.LastPushedSHA))
 			}
 		})
+	}
+}
+
+func TestRecoverRewrittenRemoteRefusesWhenRunHeadChangesBeforeRebind(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	f.service.beforeRecoverRebind = func() {
+		if err := f.db.UpdateRunHeadSHA(f.run.ID, f.old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatalf("recover after the run head changed = %#v", state)
+	}
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ptr(run.LastPushedSHA) != f.pushed || value(run.PushGeneration) != value(f.run.PushGeneration) {
+		t.Fatalf("binding moved to %s generation %d while the run head changed", ptr(run.LastPushedSHA), value(run.PushGeneration))
 	}
 }

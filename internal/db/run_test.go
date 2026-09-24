@@ -1418,7 +1418,7 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	verified := PushRebind{
-		Status: types.RunCompleted, ExpectedPushed: "pushed", ExpectedGeneration: 1,
+		Status: types.RunCompleted, ExpectedPushed: "pushed", ExpectedGeneration: 1, ExpectedHead: "pushed",
 		UpstreamURL: "https://example.com/repo.git", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature", Head: "live",
 	}
 
@@ -1429,6 +1429,8 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 		"changed target":    func(r *PushRebind) { r.TargetFingerprint = "other-digest" },
 		"changed kind":      func(r *PushRebind) { r.TargetKind = "fork" },
 		"changed repo url":  func(r *PushRebind) { r.ForkURL = "https://example.com/fork.git" },
+		"changed run head":  func(r *PushRebind) { r.ExpectedHead = "submitted" },
+		"custody mismatch":  func(r *PushRebind) { r.CustodyReturned = true },
 	} {
 		attempt := verified
 		mutate(&attempt)
