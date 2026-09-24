@@ -21,6 +21,6 @@ Agent memory files (AGENTS.md and CLAUDE.md) are hands-off:
 // MemoryFilesConflictRule scopes the hands-off rule for the rebase and merge
 // conflict-resolution prompts. When a memory file is itself conflicted it
 // must still be resolved like any other file or the integration cannot
-// conclude, so the carve-out allows conflict-marker resolution only - never
-// content edits beyond the markers.
-const MemoryFilesConflictRule = `- Agent memory files AGENTS.md and CLAUDE.md stay hands-off beyond the conflict itself: resolve their conflict markers when they are among the conflicted files, and make no other edit to them - never add, rewrite, or restructure their content.`
+// conclude, so the carve-out allows resolving the conflict itself, including
+// marker-less conflicts, but no unrelated content edits.
+const MemoryFilesConflictRule = `- Agent memory files AGENTS.md and CLAUDE.md stay hands-off beyond the conflict itself: resolve their conflicts yourself whether they have conflict markers or are modify/delete or add/add conflicts. For modify/delete, decide whether to keep or remove the file based on the two sides; stage the resolution. Make no other edits to their content - never add, rewrite, or restructure it outside the conflict.`

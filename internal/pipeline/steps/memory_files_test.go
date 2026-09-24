@@ -26,15 +26,16 @@ import (
 // tests: they assert on the rendered prompt delivered to the agent, not on
 // source text.
 const (
-	memoryHandsOffProbe    = "Agent memory files (AGENTS.md and CLAUDE.md) are hands-off"
-	memoryHandsOffNoEdit   = "Do not create, modify, rename, or delete them"
-	memoryHandsOffNoFix    = "not even to correct or add content that looks stale, wrong, or missing"
-	memoryConflictProbe    = "stay hands-off beyond the conflict itself"
-	memoryConflictMarkers  = "resolve their conflict markers when they are among the conflicted files"
-	memoryDocCorrectOnly   = "Edit them only to correct or remove information that is factually wrong"
-	memoryDocNoAdditions   = "never add content because something is missing"
-	memoryDocNoCreate      = "never create them when absent"
-	memoryDocIncidentScope = "Do not add incident narratives or postmortems to AGENTS.md or CLAUDE.md"
+	memoryHandsOffProbe        = "Agent memory files (AGENTS.md and CLAUDE.md) are hands-off"
+	memoryHandsOffNoEdit       = "Do not create, modify, rename, or delete them"
+	memoryHandsOffNoFix        = "not even to correct or add content that looks stale, wrong, or missing"
+	memoryConflictProbe        = "stay hands-off beyond the conflict itself"
+	memoryConflictResolution   = "resolve their conflicts yourself whether they have conflict markers or are modify/delete or add/add conflicts"
+	memoryConflictNoOtherEdits = "Make no other edits to their content"
+	memoryDocCorrectOnly       = "Edit them only to correct or remove information that is factually wrong"
+	memoryDocNoAdditions       = "never add content because something is missing"
+	memoryDocNoCreate          = "never create them when absent"
+	memoryDocIncidentScope     = "Do not add incident narratives or postmortems to AGENTS.md or CLAUDE.md"
 )
 
 func requirePromptContains(t *testing.T, prompt string, wants ...string) {
@@ -250,7 +251,7 @@ func TestCIStep_RepairPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 
 // The rebase conflict resolver gets the scoped variant: it must still be able
 // to resolve a conflicted AGENTS.md, but may not touch the content otherwise.
-func TestRebaseStep_ConflictPromptScopesMemoryFilesToMarkers(t *testing.T) {
+func TestRebaseStep_ConflictPromptResolvesMemoryFileMarkers(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -261,20 +262,20 @@ func TestRebaseStep_ConflictPromptScopesMemoryFilesToMarkers(t *testing.T) {
 	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base content\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("base content\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "base commit")
 	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "main")
 
 	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("feature change\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("feature change\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "feature change")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	gitCmd(t, dir, "checkout", "main")
-	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("main change\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("main change\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "main conflict")
 	gitCmd(t, dir, "push", "origin", "main")
@@ -283,8 +284,8 @@ func TestRebaseStep_ConflictPromptScopesMemoryFilesToMarkers(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("resolved content\n"), 0o644)
-			cmd := exec.Command("git", "add", "shared.txt")
+			os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("resolved content\n"), 0o644)
+			cmd := exec.Command("git", "add", "AGENTS.md")
 			cmd.Dir = dir
 			cmd.Env = append(os.Environ(),
 				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
@@ -310,7 +311,7 @@ func TestRebaseStep_ConflictPromptScopesMemoryFilesToMarkers(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","file":"shared.txt","description":"merge conflict rebasing onto origin/main"}]}`
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","file":"AGENTS.md","description":"merge conflict rebasing onto origin/main"}]}`
 
 	if _, err := (&RebaseStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -319,29 +320,60 @@ func TestRebaseStep_ConflictPromptScopesMemoryFilesToMarkers(t *testing.T) {
 		t.Fatalf("expected 1 conflict-resolution call, got %d", len(ag.calls))
 	}
 	prompt := ag.calls[0].Prompt
-	requirePromptContains(t, prompt, memoryConflictProbe, memoryConflictMarkers)
+	requirePromptContains(t, prompt, "- AGENTS.md", memoryConflictProbe, memoryConflictResolution, memoryConflictNoOtherEdits)
 	// The conflict prompt must not carry the generic never-touch wording: a
 	// conflicted AGENTS.md has to be resolvable for the rebase to conclude.
 	requirePromptOmits(t, prompt, memoryHandsOffNoEdit, memoryHandsOffNoFix)
 }
 
-// The merge-strategy resolver shares the scoped variant.
-func TestRebaseStep_MergeStrategyConflictPromptScopesMemoryFilesToMarkers(t *testing.T) {
+// A modify/delete conflict has no conflict markers. The merge resolver must
+// still ask the agent to settle the conflicted memory file itself.
+func TestRebaseStep_MergeStrategyConflictPromptResolvesMemoryFileModifyDelete(t *testing.T) {
 	t.Parallel()
-	f := newMergeFixture(t, true)
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	writeFixtureFile(t, dir, "CLAUDE.md", "base\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	writeFixtureFile(t, dir, "CLAUDE.md", "feature change\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "main")
+	gitCmd(t, dir, "rm", "CLAUDE.md")
+	gitCmd(t, dir, "commit", "-m", "remove memory file")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
 
 	var prompt string
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			prompt = opts.Prompt
-			writeFixtureFile(t, f.dir, "shared.txt", "main line\nfeature line\n")
-			fixtureGit(t, f.dir, "add", "shared.txt")
-			fixtureGit(t, f.dir, "commit", "--no-edit")
+			if got := gitCmd(t, dir, "ls-files", "-u", "--", "CLAUDE.md"); got == "" {
+				t.Fatal("expected an unresolved modify/delete conflict in CLAUDE.md")
+			}
+			if content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md")); err != nil || strings.Contains(string(content), "<<<<<<<") {
+				t.Fatalf("expected marker-less modify/delete conflict, content %q: %v", content, err)
+			}
+			gitCmd(t, dir, "add", "CLAUDE.md")
+			gitCmd(t, dir, "commit", "--no-edit")
 			return &agent.Result{Output: json.RawMessage(`{"summary":"kept both sides"}`)}, nil
 		},
 	}
-	sctx := f.context(t, ag, config.RebaseStrategyMerge)
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.Rebase.Strategy = config.RebaseStrategyMerge
 	sctx.Fixing = true
 
 	if _, err := (&RebaseStep{}).Execute(sctx); err != nil {
@@ -350,7 +382,7 @@ func TestRebaseStep_MergeStrategyConflictPromptScopesMemoryFilesToMarkers(t *tes
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 conflict-resolution call, got %d", len(ag.calls))
 	}
-	requirePromptContains(t, prompt, memoryConflictProbe, memoryConflictMarkers)
+	requirePromptContains(t, prompt, "- CLAUDE.md", memoryConflictProbe, memoryConflictResolution, memoryConflictNoOtherEdits)
 	requirePromptOmits(t, prompt, memoryHandsOffNoEdit, memoryHandsOffNoFix)
 }
 
