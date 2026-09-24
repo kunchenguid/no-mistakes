@@ -53,9 +53,16 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		{name: "SSH URL", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "scp-like SSH", remote: "git@GITHUB.com:Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "without suffix", remote: "https://github.com/acme/widget", want: "github.com/acme/widget"},
-		{name: "nested repository path", remote: "https://github.com/acme/team/widget.git", wantErr: true},
+		{name: "nested GitLab namespace", remote: "https://gitlab.example.com/group/sub/project.git", want: "gitlab.example.com/group/sub/project"},
+		{name: "nested GitLab path with trailing slash", remote: "https://gitlab.example.com/group/sub/project.git/", want: "gitlab.example.com/group/sub/project"},
+		{name: "nested GitLab scp remote", remote: "git@gitlab.example.com:group/sub/project.git", want: "gitlab.example.com/group/sub/project"},
+		{name: "empty nested path segment", remote: "https://gitlab.example.com/group//sub/project.git", wantErr: true},
+		{name: "Azure DevOps HTTPS", remote: "https://dev.azure.com/Acme/Platform/_git/Widget", want: "dev.azure.com/acme/platform/widget"},
+		{name: "Azure DevOps SSH", remote: "git@ssh.dev.azure.com:v3/Acme/Platform/Widget", want: "dev.azure.com/acme/platform/widget"},
+		{name: "Azure DevOps legacy host", remote: "https://Acme.visualstudio.com/Platform/_git/Widget", want: "dev.azure.com/acme/platform/widget"},
 		{name: "encoded path separator", remote: "https://github.com/acme/widget%2Fother.git", wantErr: true},
 		{name: "whitespace in repository path", remote: "https://github.com/acme/my widget.git", wantErr: true},
+		{name: "single-segment repository path", remote: "https://github.com/widget.git", wantErr: true},
 		{name: "unsupported scheme", remote: "file:///tmp/widget.git", wantErr: true},
 	}
 	for _, tt := range tests {
@@ -200,6 +207,52 @@ pr:
 	}
 	if want := "global BUG-123: summary"; got != want {
 		t.Fatalf("non-matching commit subject = %q, want global default %q", got, want)
+	}
+}
+
+func TestMergeForRemote_MatchesNestedProviderRemotePaths(t *testing.T) {
+	t.Parallel()
+
+	global, err := LoadGlobalFromBytes([]byte(`repository_overrides:
+  https://gitlab.example.com/group/sub/project.git:
+    commit:
+      fix_message: 'gitlab {{.Branch}}: {{.Summary}}'
+  https://dev.azure.com/Acme/Platform/_git/Widget:
+    commit:
+      fix_message: 'azure {{.Branch}}: {{.Summary}}'
+`))
+	if err != nil {
+		t.Fatalf("LoadGlobalFromBytes() rejected nested provider remotes: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{name: "GitLab subgroup SSH remote", remote: "git@gitlab.example.com:group/sub/project.git", want: "gitlab feature/PROJ-123: summary"},
+		{name: "Azure DevOps SSH remote", remote: "git@ssh.dev.azure.com:v3/acme/platform/widget", want: "azure feature/PROJ-123: summary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			merged := MergeForRemote(global, &RepoConfig{}, tc.remote)
+			got, err := merged.Commit.RenderFixMessageForBranch(types.StepReview, "summary", "feature/PROJ-123")
+			if err != nil {
+				t.Fatalf("RenderFixMessageForBranch(%q): %v", tc.remote, err)
+			}
+			if got != tc.want {
+				t.Fatalf("remote %q rendered fix subject = %q, want %q", tc.remote, got, tc.want)
+			}
+		})
+	}
+
+	unmatched := MergeForRemote(global, &RepoConfig{}, "git@gitlab.example.com:group/other/project.git")
+	got, err := unmatched.Commit.RenderFixMessageForBranch(types.StepReview, "summary", "feature/PROJ-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "no-mistakes(review): summary"; got != want {
+		t.Fatalf("distinct GitLab subgroup rendered fix subject = %q, want default %q", got, want)
 	}
 }
 

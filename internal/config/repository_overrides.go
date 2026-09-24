@@ -29,21 +29,22 @@ func normalizeRepositoryOverrides(raw RepositoryOverrides) (RepositoryOverrides,
 	return overrides, nil
 }
 
-// normalizeRepositoryRemote identifies a Git remote by host and its
-// owner/repository path, independent of transport, username, case, or .git.
+// normalizeRepositoryRemote identifies a Git remote by host and its complete
+// repository path, independent of transport, username, case, or .git.
 func normalizeRepositoryRemote(remote string) (string, error) {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {
 		return "", fmt.Errorf("remote must not be empty")
 	}
 
-	var host, path string
+	var host, portSuffix, rawPath, scheme string
+	escapedPath := false
 	if strings.Contains(remote, "://") {
 		parsed, err := url.Parse(remote)
 		if err != nil {
 			return "", fmt.Errorf("remote URL is invalid")
 		}
-		scheme := strings.ToLower(parsed.Scheme)
+		scheme = strings.ToLower(parsed.Scheme)
 		switch scheme {
 		case "https", "http", "ssh", "git":
 		default:
@@ -54,16 +55,12 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		}
 		host = strings.ToLower(parsed.Hostname())
 		if port := parsed.Port(); port != "" && !isDefaultRemotePort(scheme, port) {
-			host += ":" + port
+			portSuffix = ":" + port
 		}
-		path = parsed.EscapedPath()
-		path = strings.TrimPrefix(path, "/")
-		path, err = url.PathUnescape(path)
-		if err != nil {
-			return "", fmt.Errorf("decode remote path: %w", err)
-		}
+		rawPath = parsed.EscapedPath()
+		escapedPath = true
 	} else {
-		// Git's scp-like SSH form is [user@]host:owner/repository.git.
+		// Git's scp-like SSH form is [user@]host:path.
 		hostPart, remotePath, found := strings.Cut(remote, ":")
 		if !found || strings.Contains(hostPart, "/") {
 			return "", fmt.Errorf("expected an HTTPS, HTTP, SSH, or scp-like Git remote")
@@ -72,22 +69,101 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 			hostPart = hostPart[at+1:]
 		}
 		host = strings.ToLower(hostPart)
-		path = remotePath
+		rawPath = remotePath
 	}
 
 	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
 		return "", fmt.Errorf("remote host is missing or invalid")
 	}
-	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("remote path must contain exactly owner/repository")
+	parts, err := normalizeRemotePath(rawPath, escapedPath)
+	if err != nil {
+		return "", err
 	}
-	owner := strings.ToLower(parts[0])
-	repository := strings.TrimSuffix(strings.ToLower(parts[1]), ".git")
-	if !validRemotePathPart(owner) || !validRemotePathPart(repository) {
-		return "", fmt.Errorf("remote path must contain non-empty owner and repository")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("remote path must contain at least owner/repository")
 	}
-	return host + "/" + owner + "/" + repository, nil
+	host, parts, err = normalizeAzureDevOpsRemote(host, parts)
+	if err != nil {
+		return "", err
+	}
+	return host + portSuffix + "/" + strings.Join(parts, "/"), nil
+}
+
+func normalizeRemotePath(rawPath string, escaped bool) ([]string, error) {
+	rawPath = strings.TrimPrefix(rawPath, "/")
+	if strings.HasSuffix(rawPath, "/") {
+		rawPath = strings.TrimSuffix(rawPath, "/")
+	}
+	if rawPath == "" {
+		return nil, fmt.Errorf("remote path must not be empty")
+	}
+	rawParts := strings.Split(rawPath, "/")
+	parts := make([]string, 0, len(rawParts))
+	for _, rawPart := range rawParts {
+		if rawPart == "" {
+			return nil, fmt.Errorf("remote path must not contain empty segments")
+		}
+		part := rawPart
+		if escaped {
+			decoded, err := url.PathUnescape(rawPart)
+			if err != nil {
+				return nil, fmt.Errorf("decode remote path: %w", err)
+			}
+			part = decoded
+		}
+		if !validRemotePathPart(part) {
+			return nil, fmt.Errorf("remote path contains an invalid segment")
+		}
+		parts = append(parts, strings.ToLower(part))
+	}
+	last := len(parts) - 1
+	parts[last] = strings.TrimSuffix(parts[last], ".git")
+	if !validRemotePathPart(parts[last]) {
+		return nil, fmt.Errorf("remote path must end in a repository name")
+	}
+	return parts, nil
+}
+
+// normalizeAzureDevOpsRemote maps Azure DevOps HTTPS and SSH routing forms to
+// one host and org/project/repository path. Other providers keep their complete
+// nested namespace unchanged.
+func normalizeAzureDevOpsRemote(host string, parts []string) (string, []string, error) {
+	azure := false
+	sshAlias := false
+	switch {
+	case host == "dev.azure.com":
+		azure = true
+	case host == "ssh.dev.azure.com", host == "vs-ssh.visualstudio.com":
+		azure = true
+		sshAlias = true
+	case strings.HasSuffix(host, ".visualstudio.com"):
+		organization := strings.TrimSuffix(host, ".visualstudio.com")
+		if organization != "" {
+			parts = append([]string{organization}, parts...)
+			azure = true
+		}
+	}
+	if !azure {
+		return host, parts, nil
+	}
+
+	if sshAlias && len(parts) > 0 && parts[0] == "v3" {
+		parts = parts[1:]
+	}
+	for i, part := range parts {
+		if part != "_git" {
+			continue
+		}
+		if i == 0 || i+2 != len(parts) {
+			return "", nil, fmt.Errorf("Azure DevOps remote has an invalid _git path")
+		}
+		parts = append(parts[:i], parts[i+1:]...)
+		break
+	}
+	if len(parts) < 3 {
+		return "", nil, fmt.Errorf("Azure DevOps remote path must identify an organization, project, and repository")
+	}
+	return "dev.azure.com", parts, nil
 }
 
 func isDefaultRemotePort(scheme, port string) bool {
@@ -104,7 +180,7 @@ func isDefaultRemotePort(scheme, port string) bool {
 }
 
 func validRemotePathPart(part string) bool {
-	if part == "" || part == "." || part == ".." || strings.Contains(part, "\\") {
+	if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "/\\") {
 		return false
 	}
 	return strings.IndexFunc(part, func(r rune) bool { return r <= ' ' || r == 0x7f }) < 0

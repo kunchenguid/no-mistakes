@@ -867,9 +867,10 @@ A repository `commit.branch_pattern` override disables this machine-local replac
 
 ### repository_overrides
 
-Machine-local settings scoped to one repository by remote host and `owner/repository` path.
+Machine-local settings scoped to one repository by remote host and full repository path.
 This lets one machine apply ticket conventions to a single repository without adding settings to that repository.
 Remote keys are matched against the registered upstream remote, case-insensitively by host and repository path.
+GitLab subgroup paths are preserved, and Azure DevOps HTTPS and SSH routes normalize to the same organization/project/repository identity.
 HTTPS and SSH URLs match across transports, including scp-like SSH remotes and an optional trailing `.git`.
 
 ```yaml
