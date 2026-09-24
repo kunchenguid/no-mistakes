@@ -60,8 +60,13 @@ const fixerRemovalRule = `
 Removal-first rule:
 - When a problem can be solved by removing a code path that is not strictly required to satisfy the intent - an extra acceptance or matching branch, a fallback, an alias, a second definition of something the code already defines once, or handling for an input nobody intends - fix it by removing that path, not by validating, hardening, or documenting it. Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose. Later recorded human fix decisions supersede conflicting original intent. Removal is the smallest fix for such a path: hardening it leaves the unrequired path in place for the next review to find another hole in.`
 
+// fixerPrompt wraps every shared fix-turn prompt with the two rules that apply
+// to all of them: the removal-first rule and the agent-memory-files hands-off
+// rule. Review, Test, Lint, and custom-gate fix turns route through
+// executeFixMode, and the Lint agent pass and the CI repair wrap their prompts
+// the same way, so this is the single insertion point for fix-turn invariants.
 func fixerPrompt(prompt string) string {
-	return prompt + fixerRemovalRule
+	return prompt + fixerRemovalRule + agent.MemoryFilesRule
 }
 
 var commitSummarySchema = json.RawMessage(fmt.Sprintf(`{

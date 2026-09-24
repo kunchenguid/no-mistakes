@@ -371,9 +371,9 @@ Repository-specific documentation ownership policy for the document step.
 | Type | `string` (multiline) |
 | Default | Empty (built-in placement policy only) |
 
-The document step always applies a built-in placement policy: every fact has exactly one authoritative owner document, stale duplicates are removed or reduced to pointers instead of synchronized, no new documentation surfaces are created merely to close perceived gaps, and incident lessons live as invariants near their owner (with a pointer to the regression test), never as AGENTS.md postmortems.
+The document step always applies a built-in placement policy: every fact has exactly one authoritative owner document, stale duplicates are removed or reduced to pointers instead of synchronized, no new documentation surfaces are created merely to close perceived gaps, incident lessons live as invariants near their owner (with a pointer to the regression test), never as AGENTS.md postmortems, and `AGENTS.md`/`CLAUDE.md` are agent memory files the step edits only to correct or remove factually wrong content - never to add content because something is missing.
 `document.instructions` states this repository's ownership map or extra placement rules (for example, which file owns which class of facts).
-It augments or clarifies the built-in policy; it cannot disable documentation integrity.
+It augments or clarifies the built-in policy; it cannot disable documentation integrity, and it cannot turn the memory files into an automated documentation surface - instructions that encourage additions to `AGENTS.md` or `CLAUDE.md` do not take effect over the built-in correction-only rule.
 
 Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
 

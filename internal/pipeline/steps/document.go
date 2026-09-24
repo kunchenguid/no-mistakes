@@ -29,8 +29,8 @@ const documentPlacementPolicy = `Documentation placement policy (fail-safe defau
 - Every fact or contract has exactly one authoritative owner document. Update the owner; never synchronize prose copies of the same fact.
 - When this change leaves an existing duplicate stale, remove the duplicate or reduce it to a short pointer to the owner instead of updating another full copy.
 - Do not create a new documentation surface merely to close a perceived gap.
-- Do not add incident narratives or postmortems to AGENTS.md. For a durable incident lesson, preserve the operative invariant in its owner document and point to the regression test or authoritative implementation.
-- AGENTS.md is only for high-value project-intrinsic knowledge useful to almost every future session.
+- Do not add incident narratives or postmortems to AGENTS.md or CLAUDE.md. For a durable incident lesson, preserve the operative invariant in its owner document and point to the regression test or authoritative implementation.
+- AGENTS.md and CLAUDE.md are agent memory files loaded into every future agent session, so their content is a human decision, not automated pipeline output. Edit them only to correct or remove information that is factually wrong; never add content because something is missing, never create them when absent, and never restructure or expand them. Formatter and lint passes must not touch them either.
 - README.md owns the user-facing product introduction and common usage.
 - CONTRIBUTING.md owns contribution mechanics, not product or architecture inventories.
 - Code comments own non-obvious local intent, safety invariants, and external constraints - never prose that merely restates code.

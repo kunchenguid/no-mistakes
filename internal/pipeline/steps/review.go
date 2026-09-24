@@ -355,7 +355,7 @@ Risk assessment (after listing all findings):
 - Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
 - Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
 - Provide a one-sentence risk_rationale explaining why you chose that risk level.
-- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s%s`,
+- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s%s%s`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -364,6 +364,7 @@ Risk assessment (after listing all findings):
 		ignorePatterns,
 		historySection,
 		pathInstructions,
+		agent.MemoryFilesRule,
 	)
 
 	// Every review turn - the initial review and every post-fix rereview -
