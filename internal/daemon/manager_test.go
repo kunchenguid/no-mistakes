@@ -1629,3 +1629,39 @@ func TestPushReceivedRejectsGateFromAnotherHome(t *testing.T) {
 		t.Fatal("expected a run for the owned gate")
 	}
 }
+
+// TestAdmitPushRejectsGateFromAnotherHome guards the same ownership invariant on
+// the admit leg, which is the ref-mutation boundary: a pre-receive hook that
+// reached the wrong daemon would otherwise be classified against that daemon's
+// own PID chain and active steps, so a push made inside another root's
+// validation step reads as unnested and is admitted.
+func TestAdmitPushRejectsGateFromAnotherHome(t *testing.T) {
+	p, d := startTestDaemon(t)
+
+	const repoID = "cross-home-admit-repo"
+	setupTestGitRepo(t, p, d, repoID)
+
+	foreignHome := t.TempDir()
+	foreignGate := filepath.Join(foreignHome, "repos", repoID+".git")
+	if err := os.MkdirAll(foreignGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: foreignGate}, &result); err == nil {
+		t.Fatal("daemon classified a push to a gate under another home; it must refuse")
+	} else if !strings.Contains(err.Error(), "does not belong to this daemon's home") {
+		t.Fatalf("refusal must name the cause, got: %v", err)
+	}
+
+	var ok ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: p.RepoDir(repoID)}, &ok); err != nil {
+		t.Fatalf("admit for this daemon's own gate must still be classified: %v", err)
+	}
+}

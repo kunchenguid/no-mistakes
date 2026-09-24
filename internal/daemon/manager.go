@@ -670,6 +670,27 @@ func (m *RunManager) closeSubscribers(runID string) {
 	}
 }
 
+// ownedGateRepoID extracts the repo id from a gate path and refuses a gate this
+// root does not own. Defense in depth behind the hook's NM_HOME binding: the
+// gate path carries the root that owns it, but repoIDFromGatePath keeps only
+// the basename, so a hook call that reached the wrong daemon - a stale hook
+// generated before the binding, or a hand-run CLI - would otherwise re-resolve
+// that id under this daemon's own root, admitting or validating a foreign
+// repository's push against local state. The --gate value arrives resolved by
+// git rev-parse while the owned path is built from NM_HOME as configured, so
+// compare through samePath's symlink resolution (/var -> /private/var on macOS)
+// rather than textually.
+func ownedGateRepoID(p *paths.Paths, gate string) (string, error) {
+	repoID, err := repoIDFromGatePath(gate)
+	if err != nil {
+		return "", err
+	}
+	if owned := p.RepoDir(repoID); !samePath(gate, owned) {
+		return "", fmt.Errorf("gate %q does not belong to this daemon's home (this root owns %q)", gate, owned)
+	}
+	return repoID, nil
+}
+
 // repoIDFromGatePath extracts the repo ID from a gate bare repo path.
 // Gate paths look like: <root>/repos/<id>.git
 func repoIDFromGatePath(gatePath string) (string, error) {
@@ -775,23 +796,9 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		return "", fmt.Errorf("ref deletion push, no pipeline to run")
 	}
 
-	repoID, err := repoIDFromGatePath(params.Gate)
+	repoID, err := ownedGateRepoID(m.paths, params.Gate)
 	if err != nil {
 		return "", err
-	}
-	// Defense in depth behind the hook's NM_HOME binding. The gate path carries
-	// the root that owns it, but repoIDFromGatePath keeps only the basename, so
-	// a notify that reached the wrong daemon - a stale hook generated before the
-	// binding, or a hand-run CLI - would re-resolve that id under this daemon's
-	// own root and validate a foreign repository's push against local worktree
-	// paths. Refuse a gate this root does not own instead of silently adopting
-	// it: the misroute is then an explicit error rather than a run whose paths
-	// fail somewhere far from the cause. The --gate value arrives resolved by
-	// git rev-parse while the owned path is built from NM_HOME as configured,
-	// so compare through samePath's symlink resolution (/var -> /private/var on
-	// macOS) rather than textually.
-	if owned := m.paths.RepoDir(repoID); !samePath(params.Gate, owned) {
-		return "", fmt.Errorf("gate %q does not belong to this daemon's home (this root owns %q)", params.Gate, owned)
 	}
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
