@@ -1117,6 +1117,9 @@ func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
+	if strings.Contains(out, "\nerror:") || !strings.Contains(out, "note: local and pipeline-pushed histories have diverged") {
+		t.Errorf("successful rebind must keep divergence in branch_sync.note without a top-level error:\n%s", out)
+	}
 	anchor := "refs/no-mistakes/recover-rewritten/" + f.runID + "/1"
 	for _, want := range []string{"recovered: true", "changed: false", "source: remote_rewritten", "pushed_head: " + rewritten, "preserved_head: " + f.pushed, "archive_ref: " + anchor, "proof: worktree"} {
 		if !strings.Contains(out, want) {

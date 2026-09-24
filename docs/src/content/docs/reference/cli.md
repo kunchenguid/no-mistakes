@@ -299,7 +299,7 @@ no-mistakes axi sync --adopt-published
 | Flag                 | Type     | Default | Description                                                                  |
 | -------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
 | `--check`            | `bool`   | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or perform `recover_remote_rewritten` |
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree   |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact evidence for a keep-local recovery; never creates or moves a Git ref |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
@@ -320,7 +320,7 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 When a fresh check finds the configured push target no longer equals the persisted push binding and the bound head is not its ancestor (the branch was force-rewritten outside the pipeline), it reports `state: remote_rewritten` and `safety: blocked_remote_rewritten` and never adopts the rewrite on its own. While the owning run is still active the next action is `continue_active_run`. Once that run is terminal the next action is `next_action.code: recover_remote_rewritten` with the exact command `no-mistakes axi sync --recover`.
 
-That recovery re-reads the live target, anchors the superseded pipeline head under `refs/no-mistakes/recover-rewritten/<run>/<push_generation>` in the worktree or, when only the gate has it, the local gate, confirms the live head did not change again, and then compare-and-swaps the persisted push binding (`pushed_head`, the run head, and `push_generation`) to the verified live head. It reports `recovered: true` with `recovery.source: remote_rewritten`, never changes the worktree, a branch, the gate branch, or the remote, and does not return custody. `--keep-local`, an unanchorable superseded head, a live head that moved again, or a binding or run that changed during recovery refuse without rebinding. Afterwards, follow the ordinary `next_action` reported against the new binding.
+That recovery re-reads the live target, anchors the superseded pipeline head under `refs/no-mistakes/recover-rewritten/<run>/<push_generation>` in the worktree or, when only the gate has it, the local gate, confirms the live head did not change again, and then compare-and-swaps the persisted push binding (`pushed_head`, the run head, and `push_generation`) to the verified live head. It reports `recovered: true` with `recovery.source: remote_rewritten`, never changes the worktree, a branch, the gate branch, or the remote, and does not return custody. `--keep-local`, a merged or closed PR (no action is offered there), an unanchorable superseded head, a live head that moved again, or a binding, run, or configured push target that changed during recovery refuse without rebinding. A successful rebind exits `0` without a top-level `error`; any relation to the new binding, such as divergence, is reported in `branch_sync.note` and `next_action`. Afterwards, follow the ordinary `next_action` reported against the new binding.
 
 ### Published-rebase gate recovery
 
@@ -501,7 +501,7 @@ no-mistakes sync --adopt-published
 | -------------------- | -------- | ------- | --------------------------------------------------------------- |
 | `--check`            | `bool`   | `false` | Verify and print the fresh plan without changing `HEAD`         |
 | `-y`, `--yes`        | `bool`   | `false` | Apply an eligible guarded synchronization without an interactive prompt |
-| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or perform `recover_remote_rewritten` |
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact keep-local recovery evidence without changing Git refs |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |

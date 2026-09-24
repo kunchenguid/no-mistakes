@@ -536,17 +536,38 @@ func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 	return nil
 }
 
+// PushRebind is the exact verified state a rewritten-remote recovery may
+// rebind from and the live head it rebinds to. UpstreamURL and ForkURL are the
+// repo target the live head was verified against.
+type PushRebind struct {
+	Status             types.RunStatus
+	ExpectedPushed     string
+	ExpectedGeneration int64
+	UpstreamURL        string
+	ForkURL            string
+	TargetKind         string
+	TargetFingerprint  string
+	Ref                string
+	Head               string
+}
+
 // RebindRunPushedHead moves a terminal run's push binding to a head the
 // configured target was verified to hold after a rewrite outside the pipeline.
-// It is a compare-and-swap on the exact binding the caller verified (status,
-// pushed head, generation, target, ref, and no active push) and reports
-// whether it applied. head_sha follows only when it equalled the old binding,
-// so a custody-returned run keeps its own recorded head.
-func (d *DB) RebindRunPushedHead(id string, status types.RunStatus, expectedPushed string, expectedGeneration int64, fingerprint, ref, head string) (bool, error) {
+// It is a single compare-and-swap over the exact binding and repo target the
+// caller verified (run status, pushed head, generation, target kind,
+// fingerprint, ref, no active push, no retired PR, and the repo's current
+// upstream and fork URLs) and reports whether it applied. head_sha follows only
+// when it equalled the old binding, so a custody-returned run keeps its own
+// recorded head.
+func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
 	result, err := d.sql.Exec(
 		`UPDATE runs SET head_sha = CASE WHEN head_sha = last_pushed_sha THEN ? ELSE head_sha END, last_pushed_sha = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ?
-		WHERE id = ? AND status = ? AND last_pushed_sha = ? AND COALESCE(push_generation, 0) = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0`,
-		head, head, now(), id, string(status), expectedPushed, expectedGeneration, fingerprint, ref,
+		WHERE id = ? AND status = ? AND last_pushed_sha = ? AND COALESCE(push_generation, 0) = ?
+			AND push_target_kind = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0
+			AND COALESCE(pr_state, '') NOT IN ('merged', 'closed')
+			AND EXISTS (SELECT 1 FROM repos WHERE repos.id = runs.repo_id AND repos.upstream_url = ? AND COALESCE(repos.fork_url, '') = ?)`,
+		rebind.Head, rebind.Head, now(), id, string(rebind.Status), rebind.ExpectedPushed, rebind.ExpectedGeneration,
+		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref, rebind.UpstreamURL, rebind.ForkURL,
 	)
 	if err != nil {
 		return false, fmt.Errorf("rebind run pushed head: %w", err)

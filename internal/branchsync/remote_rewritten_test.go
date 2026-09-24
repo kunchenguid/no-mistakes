@@ -1,6 +1,7 @@
 package branchsync
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -201,4 +202,55 @@ func assertRewrittenBindingUntouched(t *testing.T, f *syncFixture) {
 
 func gitRunOptional(f *syncFixture, dir string, args ...string) (string, error) {
 	return gitpkg.Run(f.ctx, dir, args...)
+}
+
+func TestRecoverRewrittenRemoteRefusesWhenPushTargetChangesBeforeRebind(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	other := filepath.Join(t.TempDir(), "fork.git")
+	mustRun(t, filepath.Dir(other), "init", "--bare", other)
+	calls := 0
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		calls++
+		if calls == 2 {
+			// The configured target changes after recovery read the repo
+			// record and while it performs its final live check.
+			if _, err := f.db.UpdateRepoForkURL(f.repo.ID, other); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return gitpkg.LsRemote(ctx, dir, remote, ref)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if calls != 2 {
+		t.Fatalf("ls-remote calls = %d, want the refresh and the final live check", calls)
+	}
+	if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recover across a push target change = %#v", state)
+	}
+	assertRewrittenBindingUntouched(t, f)
+}
+
+func TestRewrittenRemoteOnRetiredPRIsNotRecoverable(t *testing.T) {
+	t.Parallel()
+
+	for _, prState := range []string{"merged", "closed"} {
+		t.Run(prState, func(t *testing.T) {
+			t.Parallel()
+			f, _ := newRemoteRewrittenFixture(t)
+			if err := f.db.UpdateRunPRState(f.run.ID, prState); err != nil {
+				t.Fatal(err)
+			}
+			refreshed := f.service.Refresh(f.ctx)
+			if refreshed.NextAction != nil {
+				t.Fatalf("retired %s PR must not offer an action, got %#v", prState, refreshed.NextAction)
+			}
+			state := f.service.Recover(f.ctx, false)
+			if state.Recovered {
+				t.Fatalf("retired %s PR recover = %#v", prState, state)
+			}
+			assertRewrittenBindingUntouched(t, f)
+		})
+	}
 }

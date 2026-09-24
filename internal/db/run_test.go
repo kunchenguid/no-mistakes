@@ -1417,32 +1417,43 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
 		t.Fatal(err)
 	}
+	verified := PushRebind{
+		Status: types.RunCompleted, ExpectedPushed: "pushed", ExpectedGeneration: 1,
+		UpstreamURL: "https://example.com/repo.git", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature", Head: "live",
+	}
 
-	for name, attempt := range map[string]func() (bool, error){
-		"stale pushed head": func() (bool, error) {
-			return d.RebindRunPushedHead(run.ID, types.RunCompleted, "other", 1, "digest", "refs/heads/feature", "live")
-		},
-		"stale generation": func() (bool, error) {
-			return d.RebindRunPushedHead(run.ID, types.RunCompleted, "pushed", 2, "digest", "refs/heads/feature", "live")
-		},
-		"changed status": func() (bool, error) {
-			return d.RebindRunPushedHead(run.ID, types.RunFailed, "pushed", 1, "digest", "refs/heads/feature", "live")
-		},
-		"changed target": func() (bool, error) {
-			return d.RebindRunPushedHead(run.ID, types.RunCompleted, "pushed", 1, "other-digest", "refs/heads/feature", "live")
-		},
+	for name, mutate := range map[string]func(*PushRebind){
+		"stale pushed head": func(r *PushRebind) { r.ExpectedPushed = "other" },
+		"stale generation":  func(r *PushRebind) { r.ExpectedGeneration = 2 },
+		"changed status":    func(r *PushRebind) { r.Status = types.RunFailed },
+		"changed target":    func(r *PushRebind) { r.TargetFingerprint = "other-digest" },
+		"changed kind":      func(r *PushRebind) { r.TargetKind = "fork" },
+		"changed repo url":  func(r *PushRebind) { r.ForkURL = "https://example.com/fork.git" },
 	} {
-		applied, err := attempt()
+		attempt := verified
+		mutate(&attempt)
+		applied, err := d.RebindRunPushedHead(run.ID, attempt)
 		if err != nil || applied {
 			t.Fatalf("%s: applied = %v, err = %v", name, applied, err)
 		}
+	}
+	for _, prState := range []string{"merged", "closed"} {
+		if _, err := d.sql.Exec(`UPDATE runs SET pr_state = ? WHERE id = ?`, prState, run.ID); err != nil {
+			t.Fatal(err)
+		}
+		if applied, err := d.RebindRunPushedHead(run.ID, verified); err != nil || applied {
+			t.Fatalf("retired %s PR: applied = %v, err = %v", prState, applied, err)
+		}
+	}
+	if _, err := d.sql.Exec(`UPDATE runs SET pr_state = 'open' WHERE id = ?`, run.ID); err != nil {
+		t.Fatal(err)
 	}
 	got, _ := d.GetRun(run.ID)
 	if got.HeadSHA != "pushed" || *got.LastPushedSHA != "pushed" || *got.PushGeneration != 1 {
 		t.Fatalf("refused rebind changed run: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
 	}
 
-	applied, err := d.RebindRunPushedHead(run.ID, types.RunCompleted, "pushed", 1, "digest", "refs/heads/feature", "live")
+	applied, err := d.RebindRunPushedHead(run.ID, verified)
 	if err != nil || !applied {
 		t.Fatalf("verified rebind: applied = %v, err = %v", applied, err)
 	}

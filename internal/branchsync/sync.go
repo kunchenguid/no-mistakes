@@ -375,7 +375,10 @@ func (s *Service) Refresh(ctx context.Context) State {
 			// A rewrite is never adopted implicitly. A terminal run offers the
 			// explicit guarded rebind (see recoverRemoteRewritten); an active
 			// run still owns its binding and must finish first.
-			if terminalRunStatus(freshRun.Status) {
+			// A merged or closed PR retired the branch: nothing is rebound.
+			if state.PRState == "merged" || state.PRState == "closed" {
+				state.NextAction = nil
+			} else if terminalRunStatus(freshRun.Status) {
 				state.NextAction = &NextAction{Code: "recover_remote_rewritten", Command: "no-mistakes axi sync --recover"}
 			} else {
 				state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
@@ -1355,7 +1358,11 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
 		return blocked, true
 	}
-	rebound, err := s.DB.RebindRunPushedHead(run.ID, run.Status, superseded, generation, TargetFingerprint(repo.PushURL()), fresh.Target.Ref, live)
+	rebound, err := s.DB.RebindRunPushedHead(run.ID, db.PushRebind{
+		Status: run.Status, ExpectedPushed: superseded, ExpectedGeneration: generation,
+		UpstreamURL: repo.UpstreamURL, ForkURL: repo.ForkURL, TargetKind: targetKind(repo),
+		TargetFingerprint: TargetFingerprint(repo.PushURL()), Ref: fresh.Target.Ref, Head: live,
+	})
 	if err != nil || !rebound {
 		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", fmt.Sprintf("the run or its push binding changed before it could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef)), true
 	}
