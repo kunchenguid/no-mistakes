@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.83.0](https://github.com/kunchenguid/no-mistakes/compare/v1.82.0...v1.83.0) (2026-09-24)
+
+
+### Features
+
+* **config:** per-repository machine-local commit and title overrides ([#1179](https://github.com/kunchenguid/no-mistakes/issues/1179)) ([15a6204](https://github.com/kunchenguid/no-mistakes/commit/15a62047b61d6dee0532823a79b987f29671ce5f))
+
+
+### Bug Fixes
+
+* **gate:** detect fork-as-origin layout and refuse with --fork-url guidance ([#1183](https://github.com/kunchenguid/no-mistakes/issues/1183)) ([a7ab68b](https://github.com/kunchenguid/no-mistakes/commit/a7ab68b144de59baf11595b8a463370072aaf62a))
+* **pipeline:** resolve branch base against freshly fetched base-branch tip ([#1147](https://github.com/kunchenguid/no-mistakes/issues/1147)) ([de50789](https://github.com/kunchenguid/no-mistakes/commit/de5078977e24f8752d88b8527221d8e15a1b9bcf))
+* **scm:** read jobless action_required workflow runs as awaiting maintainer approval ([#1185](https://github.com/kunchenguid/no-mistakes/issues/1185)) ([95c1ec7](https://github.com/kunchenguid/no-mistakes/commit/95c1ec78a8df491283196ae7dd6c648e7a3b521f)), closes [#1182](https://github.com/kunchenguid/no-mistakes/issues/1182)
+
 ## [1.82.0](https://github.com/kunchenguid/no-mistakes/compare/v1.81.0...v1.82.0) (2026-09-23)
 
 
