@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -252,5 +253,30 @@ func TestRewrittenRemoteOnRetiredPRIsNotRecoverable(t *testing.T) {
 			}
 			assertRewrittenBindingUntouched(t, f)
 		})
+	}
+}
+
+func TestRecoverDoesNotReportSuccessWhenLiveVerificationFails(t *testing.T) {
+	t.Parallel()
+
+	f, _ := newRemoteRewrittenFixture(t)
+	if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(f.remote, f.remote+".offline"); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_offline" {
+		t.Fatalf("recover without a verifiable live target = %#v", state)
+	}
+	assertRewrittenBindingUntouched(t, f)
+
+	// Once the target is reachable again the rewrite is verified and rebound.
+	if err := os.Rename(f.remote+".offline", f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if rebound := f.service.Recover(f.ctx, false); !rebound.Recovered || rebound.Recovery == nil || rebound.Recovery.Source != "remote_rewritten" {
+		t.Fatalf("recover after the target returned = %#v", rebound)
 	}
 }

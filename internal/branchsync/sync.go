@@ -1323,12 +1323,21 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 // head did not move again, then compare-and-swaps the persisted push binding
 // to the verified live head. It never touches the worktree, a branch ref, the
 // gate branch, or the remote, and stamps no custody. handled is false when no
-// verified rewrite exists, leaving the caller's ordinary recovery in charge.
+// verified rewrite exists, leaving the caller's ordinary recovery in charge;
+// an attempted live check that failed is handled as a refusal.
 func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepLocal bool) (State, bool) {
 	if run == nil || !terminalRunStatus(run.Status) || run.LastPushedSHA == nil {
 		return State{}, false
 	}
 	fresh := s.Refresh(ctx)
+	// A live check that was attempted but could not complete proves nothing
+	// about the binding, so no later cached no-op may report success.
+	switch fresh.Safety {
+	case "blocked_offline", "blocked_remote_changed_during_refresh", "blocked_binding_changed":
+		blocked := blockedPlan(fresh, fresh.State, fresh.Safety, "the live push target could not be verified, so nothing was recovered; no files or refs were changed")
+		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --recover"}
+		return blocked, true
+	}
 	if fresh.Safety != "blocked_remote_rewritten" || fresh.Pipeline.RunID != run.ID || fresh.Remote.Freshness != "live" ||
 		fresh.Remote.ObservedHead == "" || fresh.NextAction == nil || fresh.NextAction.Code != "recover_remote_rewritten" {
 		return State{}, false
