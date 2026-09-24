@@ -894,17 +894,21 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 }
 
 // removeOrphanWorktree removes one run worktree directory its caller has
-// already decided on and swept (see cleanupOrphanWorktrees).
-func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) {
+// already decided on and swept (see cleanupOrphanWorktrees). It reports
+// whether the directory was actually removed, since git worktree remove and
+// its os.RemoveAll fallback can both fail and merely log a warning.
+func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) bool {
 	gateDir, wtPath := wt.gateDir, wt.dir
 	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 		if err := os.RemoveAll(wtPath); err != nil {
 			slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
+			return false
 		}
 	} else {
 		slog.Info("removed orphaned worktree", "path", wtPath)
 	}
+	return true
 }
 
 // skipWorktreeCleanup reports whether the worktree directory for runID must
@@ -937,6 +941,14 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
 	}
 	if run != nil && run.Status == types.RunCIMonitorInterrupted {
+		if _, statErr := os.Stat(wtPath); errors.Is(statErr, os.ErrNotExist) {
+			// The worktree directory is already gone (e.g. reaped by
+			// reapWorktrees/cleanupOrphanWorktrees, both of which apply this
+			// same guard before removing it). With no local checkout left,
+			// there is nothing unpushed to lose, so this is not the
+			// "unreadable HEAD" ambiguity below - it is safe to proceed.
+			return false, ""
+		}
 		head, err := git.HeadSHA(ctx, wtPath)
 		if err != nil {
 			return true, fmt.Sprintf("run %s ci monitor interrupted; worktree head unreadable (%v); preserving", runID, err)

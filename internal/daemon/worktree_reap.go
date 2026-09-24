@@ -105,8 +105,9 @@ func reapWorktrees(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time
 	for _, c := range candidates {
 		expired := policy.Retention > 0 && now.Sub(c.modTime) > policy.Retention
 		if expired {
-			removeOrphanWorktree(context.Background(), c.wt)
-			removed++
+			if removeOrphanWorktree(context.Background(), c.wt) {
+				removed++
+			}
 			continue
 		}
 		survivors = append(survivors, c)
@@ -114,8 +115,9 @@ func reapWorktrees(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time
 
 	if policy.MaxRuns > 0 && len(survivors) > policy.MaxRuns {
 		for _, c := range survivors[:len(survivors)-policy.MaxRuns] {
-			removeOrphanWorktree(context.Background(), c.wt)
-			removed++
+			if removeOrphanWorktree(context.Background(), c.wt) {
+				removed++
+			}
 		}
 	}
 
