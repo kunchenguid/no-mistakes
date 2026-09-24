@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.83.1](https://github.com/kunchenguid/no-mistakes/compare/v1.83.0...v1.83.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **paths:** resolve gate hook helpers' NM_HOME from the gate, not the environment ([#1187](https://github.com/kunchenguid/no-mistakes/issues/1187)) ([416215c](https://github.com/kunchenguid/no-mistakes/commit/416215ce03ef5bd93b3e685d79ff76a8dacb0a9c))
+* **pipeline:** keep agent memory files out of automated edits ([#1189](https://github.com/kunchenguid/no-mistakes/issues/1189)) ([a2ba538](https://github.com/kunchenguid/no-mistakes/commit/a2ba538bfd28b597b47aad0a309726e095d55722))
+
 ## [1.83.0](https://github.com/kunchenguid/no-mistakes/compare/v1.82.0...v1.83.0) (2026-09-24)
 
 
