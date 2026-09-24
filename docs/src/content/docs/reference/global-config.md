@@ -872,7 +872,7 @@ This lets one machine apply ticket conventions to a single repository without ad
 Remote hosts are matched case-insensitively.
 For `github.com`, `gitlab.com`, and `bitbucket.org`, repository paths are also matched case-insensitively and without a trailing `.git`, across equivalent HTTPS, SSH URL, and scp-style remotes.
 On every other host, repository path case and a trailing `.git` are significant.
-GitLab subgroup paths are preserved, and Azure DevOps HTTPS and SSH routes normalize to the same organization/project/repository identity when their path spelling agrees.
+GitLab subgroup paths are preserved.
 On other SSH hosts, rooted paths (`host:/...` or `ssh://host/...`) remain distinct from home-relative scp paths (`host:...`).
 
 ```yaml

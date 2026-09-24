@@ -69,9 +69,6 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		{name: "hosted GitLab folds case and suffix", remote: "https://gitlab.com/Group/Sub/Project.GIT", want: "gitlab.com/group/sub/project"},
 		{name: "hosted Bitbucket folds case and suffix", remote: "git@bitbucket.org:Team/Widget.GIT", want: "bitbucket.org/team/widget"},
 		{name: "empty nested path segment", remote: "https://gitlab.example.com/group//sub/project.git", wantErr: true},
-		{name: "Azure DevOps HTTPS preserves path case", remote: "https://dev.azure.com/Acme/Platform/_git/Widget", want: "dev.azure.com/Acme/Platform/Widget"},
-		{name: "Azure DevOps SSH preserves path case", remote: "git@ssh.dev.azure.com:v3/Acme/Platform/Widget", want: "dev.azure.com/Acme/Platform/Widget"},
-		{name: "Azure DevOps legacy host preserves path case", remote: "https://Acme.visualstudio.com/Platform/_git/Widget", want: "dev.azure.com/acme/Platform/Widget"},
 		{name: "encoded path separator", remote: "https://github.com/acme/widget%2Fother.git", wantErr: true},
 		{name: "whitespace in repository path", remote: "https://github.com/acme/my widget.git", wantErr: true},
 		{name: "single-segment repository path", remote: "https://github.com/widget.git", wantErr: true},
@@ -465,16 +462,13 @@ pr:
 	}
 }
 
-func TestMergeForRemote_MatchesNestedProviderRemotePaths(t *testing.T) {
+func TestMergeForRemote_MatchesNestedGitLabPaths(t *testing.T) {
 	t.Parallel()
 
 	global, err := LoadGlobalFromBytes([]byte(`repository_overrides:
   https://gitlab.example.com/group/sub/project.git:
     commit:
       fix_message: 'gitlab {{.Branch}}: {{.Summary}}'
-  https://dev.azure.com/Acme/Platform/_git/Widget:
-    commit:
-      fix_message: 'azure {{.Branch}}: {{.Summary}}'
 `))
 	if err != nil {
 		t.Fatalf("LoadGlobalFromBytes() rejected nested provider remotes: %v", err)
@@ -486,7 +480,6 @@ func TestMergeForRemote_MatchesNestedProviderRemotePaths(t *testing.T) {
 		want   string
 	}{
 		{name: "GitLab subgroup SSH remote", remote: "git@gitlab.example.com:group/sub/project.git", want: "gitlab feature/PROJ-123: summary"},
-		{name: "Azure DevOps SSH remote", remote: "git@ssh.dev.azure.com:v3/Acme/Platform/Widget", want: "azure feature/PROJ-123: summary"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -199,19 +197,10 @@ func TestPerRepositoryMachineLocalFixCommitJourney(t *testing.T) {
 	if out, err := h.Run("init"); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
-
-	database, err := db.Open(paths.WithRoot(h.NMHome).DB())
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	repo, err := database.GetRepo(h.repoID())
-	if err != nil || repo == nil {
-		t.Fatalf("get registered repository: repo=%v err=%v", repo, err)
-	}
 	const remote = "https://example.invalid/acme/widget.git"
-	if _, err := database.ReplaceRepoURLs(repo.ID, remote, ""); err != nil {
-		t.Fatalf("set registered test remote: %v", err)
+	configureGitURLRewrite(t, h, remote, h.UpstreamDir)
+	if out, err := h.runGit(context.Background(), h.WorkDir, "remote", "set-url", "origin", remote); err != nil {
+		t.Fatalf("set forge-shaped origin: %v\n%s", err, out)
 	}
 
 	const branch = "feature/PROJ-123-machine-local"

@@ -30,8 +30,8 @@ func normalizeRepositoryOverrides(raw RepositoryOverrides) (RepositoryOverrides,
 	return overrides, nil
 }
 
-// normalizeRepositoryRemote identifies a Git remote by host and its complete
-// repository path, independent of transport, username, case, or .git.
+// normalizeRepositoryRemote identifies a Git remote by host and repository path,
+// applying provider-specific case and suffix equivalence.
 func normalizeRepositoryRemote(remote string) (string, error) {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {
@@ -85,10 +85,6 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 	}
 	if len(parts) < 2 {
 		return "", fmt.Errorf("remote path must contain at least owner/repository")
-	}
-	host, parts, err = normalizeAzureDevOpsRemote(host, parts)
-	if err != nil {
-		return "", err
 	}
 	pathPrefix := "/"
 	if absolutePath && !repositoryNamespaceHost(host) {
@@ -179,48 +175,6 @@ func normalizeRemotePath(rawPath string, escaped, caseInsensitive bool) ([]strin
 	return parts, nil
 }
 
-// normalizeAzureDevOpsRemote maps Azure DevOps HTTPS and SSH routing forms to
-// one host and org/project/repository path. Other providers keep their complete
-// nested namespace unchanged.
-func normalizeAzureDevOpsRemote(host string, parts []string) (string, []string, error) {
-	azure := false
-	sshAlias := false
-	switch {
-	case host == "dev.azure.com":
-		azure = true
-	case host == "ssh.dev.azure.com", host == "vs-ssh.visualstudio.com":
-		azure = true
-		sshAlias = true
-	case strings.HasSuffix(host, ".visualstudio.com"):
-		organization := strings.TrimSuffix(host, ".visualstudio.com")
-		if organization != "" {
-			parts = append([]string{organization}, parts...)
-			azure = true
-		}
-	}
-	if !azure {
-		return host, parts, nil
-	}
-
-	if sshAlias && len(parts) > 0 && parts[0] == "v3" {
-		parts = parts[1:]
-	}
-	for i, part := range parts {
-		if part != "_git" {
-			continue
-		}
-		if i == 0 || i+2 != len(parts) {
-			return "", nil, fmt.Errorf("Azure DevOps remote has an invalid _git path")
-		}
-		parts = append(parts[:i], parts[i+1:]...)
-		break
-	}
-	if len(parts) < 3 {
-		return "", nil, fmt.Errorf("Azure DevOps remote path must identify an organization, project, and repository")
-	}
-	return "dev.azure.com", parts, nil
-}
-
 func caseInsensitiveRepositoryPathHost(host string) bool {
 	switch host {
 	case "github.com", "gitlab.com", "bitbucket.org":
@@ -231,16 +185,8 @@ func caseInsensitiveRepositoryPathHost(host string) bool {
 }
 
 func repositoryNamespaceHost(host string) bool {
-	switch {
-	case host == "github.com" || strings.HasSuffix(host, ".github.com"):
-		return true
-	case host == "gitlab.com" || strings.HasSuffix(host, ".gitlab.com"):
-		return true
-	case host == "bitbucket.org" || strings.HasSuffix(host, ".bitbucket.org"):
-		return true
-	case host == "dev.azure.com" || strings.HasSuffix(host, ".dev.azure.com"):
-		return true
-	case strings.HasSuffix(host, ".visualstudio.com"), host == "codeberg.org":
+	switch host {
+	case "github.com", "gitlab.com", "bitbucket.org":
 		return true
 	default:
 		return false
