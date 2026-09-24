@@ -63,6 +63,8 @@ Give a bare ASCII hostname or IP address, with an optional port that is ignored,
 
 The variable only widens which SSH origins belong to the instance `FORGEJO_BASE_URL` already names, so it does nothing while that variable is unset or invalid. The upstream path prefix must still match, and HTTPS origins are unaffected. GitHub, GitLab, Bitbucket, and Azure DevOps hosts, plus any host configured in `glab`, `gh`, or `tea`, are all matched before the declared domain; against the remaining hostname guesses, the declared domain carries exactly the weight a `FORGEJO_BASE_URL` match already carries.
 
+If you worked around a split host by adding a `tea` login for it, delete that login when you set this variable. Because tea's configured hosts are matched first, a login whose `url` host or `ssh_host` equals the origin's host keeps the repository on the Gitea provider: the PR and CI steps keep running through `tea` instead of forgejo-axi, and where `tea` is not installed or not logged in, the PR step is skipped. Find the login with `tea logins list` and remove it with `tea logins delete <name>`.
+
 ## `FORGEJO_TOKEN_<HOST_KEY>`
 
 Preferred host-scoped token used by forgejo-axi for Forgejo PR and CI operations.
