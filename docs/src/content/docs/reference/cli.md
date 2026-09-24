@@ -259,6 +259,7 @@ If the implicit current-branch lookup itself fails, status returns that error in
 Detached-`HEAD` help offers deliberate `--run <id>` inspection or checking out a branch; it does not offer `axi run`, which requires a branch.
 With `--run <id>`, inspect exactly that run regardless of branch; when its branch differs from a known current branch, it is rendered under `other_branch_run:` instead of `run:`, alongside a top-level `current_branch`, so a parser keyed on `run:` never picks up a run proven to be on another branch.
 An explicit `--run <id>` rendered under `run:` while the current branch is unknown (detached `HEAD` or a branch-lookup failure) encodes no branch relationship.
+While an active run's CI step is `running` and persisted CI readiness is set, status reports `outcome: checks-passed` alongside the selected run's `id`, exact recorded `pr` URL, and full `head_sha`. If readiness comes from the trusted default branch's no-CI declaration rather than green checks, it also reports `no_ci: true`. This read-only result disappears if readiness is cleared or the CI step stops running. The run still monitors its PR; callers must compare its recorded head with the current PR head before acting on it.
 
 ```sh
 no-mistakes axi status
@@ -531,7 +532,7 @@ no-mistakes runs [--limit <n>]
 | --------- | ----- | ------- | --------------------------------- |
 | `--limit` | `int` | `10`    | Maximum number of runs to display |
 
-Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
+Shows runs newest-first with branch, status (styled), short SHA, timestamp, durable `id:<run-id>`, and PR URL as the last field if set. Use that ID with read-only `axi status --run <id>` for the full recorded head and CI readiness.
 
 ## no-mistakes eval
 

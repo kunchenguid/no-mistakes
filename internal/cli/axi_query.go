@@ -104,6 +104,11 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 		} else {
 			fields = append(fields, gateFields(gate)...)
 		}
+	} else if rv.Status == string(types.RunRunning) && ciReadyToMerge(rv) {
+		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
+		if rv.CIReadyNoCI {
+			fields = append(fields, toon.Field{Key: "no_ci", Value: true})
+		}
 	} else if terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeForRun(rv)})
 		if run.Error != nil && *run.Error != "" {

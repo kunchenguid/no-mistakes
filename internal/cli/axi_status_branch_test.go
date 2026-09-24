@@ -19,15 +19,21 @@ import (
 // that is provably not this worktree's under `other_branch_run:`.
 type statusDoc struct {
 	CurrentBranch string `toon:"current_branch"`
+	Outcome       string `toon:"outcome"`
+	NoCI          bool   `toon:"no_ci"`
 	Run           struct {
-		ID     string `toon:"id"`
-		Branch string `toon:"branch"`
-		Status string `toon:"status"`
+		ID      string `toon:"id"`
+		Branch  string `toon:"branch"`
+		Status  string `toon:"status"`
+		HeadSHA string `toon:"head_sha"`
+		PR      string `toon:"pr"`
 	} `toon:"run"`
 	OtherBranchRun struct {
-		ID     string `toon:"id"`
-		Branch string `toon:"branch"`
-		Status string `toon:"status"`
+		ID      string `toon:"id"`
+		Branch  string `toon:"branch"`
+		Status  string `toon:"status"`
+		HeadSHA string `toon:"head_sha"`
+		PR      string `toon:"pr"`
 	} `toon:"other_branch_run"`
 }
 
@@ -122,6 +128,77 @@ func TestAxiStatusReportsThisBranchesOwnRun(t *testing.T) {
 	}
 	if doc.OtherBranchRun.ID != "" {
 		t.Fatalf("status marked this branch's own run as another branch's:\n%s", out)
+	}
+}
+
+func TestAxiStatusReportsPersistedChecksPassedForExactRun(t *testing.T) {
+	repoDir, _, database, repo := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "feature/readiness")
+	chdir(t, repoDir)
+
+	headSHA := strings.Repeat("a", 40)
+	prURL := "https://github.com/kunchenguid/no-mistakes/pull/123"
+	selected, err := database.InsertRun(repo.ID, "feature/readiness", headSHA, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(selected.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(selected.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	ci, err := database.InsertStepResult(selected.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(ci.ID, types.StepStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunCIReady(selected.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := decodeStatusDoc(t, axiStatusOutput(t, selected.ID))
+	if doc.Run.ID != selected.ID || doc.Run.Status != "running" || doc.Run.HeadSHA != headSHA || doc.Run.PR != prURL || doc.Outcome != "checks-passed" || doc.NoCI {
+		t.Fatalf("read-only CI-ready status = %+v", doc)
+	}
+	if err := database.SetRunCIReadyWithReason(selected.ID, true, true); err != nil {
+		t.Fatal(err)
+	}
+	declaredNoCI := decodeStatusDoc(t, axiStatusOutput(t, selected.ID))
+	if declaredNoCI.Run.ID != selected.ID || declaredNoCI.Outcome != "checks-passed" || !declaredNoCI.NoCI {
+		t.Fatalf("read-only declared no-CI status = %+v", declaredNoCI)
+	}
+
+	if err := database.SetRunCIReady(selected.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)).Outcome; got != "" {
+		t.Fatalf("cleared readiness outcome = %q, want none", got)
+	}
+	if err := database.SetRunCIReady(selected.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(ci.ID, types.StepStatusFixing); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)).Outcome; got != "" {
+		t.Fatalf("fixing CI outcome = %q, want none", got)
+	}
+	if err := database.UpdateStepStatus(ci.ID, types.StepStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repoDir, "git", "checkout", "-b", "observer")
+	foreign := decodeStatusDoc(t, axiStatusOutput(t, selected.ID))
+	if foreign.Run.ID != "" || foreign.OtherBranchRun.ID != selected.ID || foreign.OtherBranchRun.HeadSHA != headSHA || foreign.OtherBranchRun.PR != prURL || foreign.Outcome != "checks-passed" {
+		t.Fatalf("explicit other-branch CI-ready status = %+v", foreign)
+	}
+	if err := database.UpdateRunStatus(selected.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)).Outcome; got == "checks-passed" {
+		t.Fatalf("terminal run outcome = %q, want terminal outcome", got)
 	}
 }
 
