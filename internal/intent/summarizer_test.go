@@ -107,8 +107,12 @@ func TestAgentSummarizer_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 		"Do not create, modify, rename, or delete them",
 		"not even to correct or add content that looks stale, wrong, or missing",
 	} {
-		if !strings.Contains(fa.lastPrompt, want) {
+		idx := strings.Index(fa.lastPrompt, want)
+		if idx < 0 {
 			t.Fatalf("summarizer prompt missing memory-file rule %q:\n%s", want, fa.lastPrompt)
+		}
+		if boundary := strings.Index(fa.lastPrompt, "Transcript begins below the line."); boundary < 0 || idx > boundary {
+			t.Fatalf("memory-file rule %q must precede the untrusted transcript boundary:\n%s", want, fa.lastPrompt)
 		}
 	}
 }
