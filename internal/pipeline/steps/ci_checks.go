@@ -48,6 +48,28 @@ func hasPendingChecks(checks []scm.Check) bool {
 	return false
 }
 
+// hasExecutingPendingChecks returns true if any CI check is still running or
+// queued on its own. A check the provider holds for maintainer approval is
+// pending but will not finish without a human, so it never defers escalation
+// of the other checks' failures.
+func hasExecutingPendingChecks(checks []scm.Check) bool {
+	for _, c := range checks {
+		if c.Pending() && !c.AwaitingApproval {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAwaitingApprovalChecks(checks []scm.Check) bool {
+	for _, c := range checks {
+		if c.AwaitingApproval && c.Pending() {
+			return true
+		}
+	}
+	return false
+}
+
 func hasUnresolvedChecks(checks []scm.Check) bool {
 	for _, c := range checks {
 		switch c.Bucket {

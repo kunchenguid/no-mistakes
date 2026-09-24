@@ -558,12 +558,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// checksPending is the narrow execution state: only checks that are
 			// actively running or queued block a rerun or issue escalation. A
 			// provider-cancelled check is terminal enough to enter the transient
-			// rerun policy, even though it is not a verdict on the code.
-			checksPending := hasPendingChecks(checks)
+			// rerun policy, even though it is not a verdict on the code. A
+			// check held for maintainer approval will not finish on its own,
+			// so it does not defer the other checks' issues.
+			checksPending := hasExecutingPendingChecks(checks)
 			// readinessPending is deliberately broader: any state that is not a
 			// conclusive pass, failure, or skip must keep the PR non-ready. This
-			// includes cancelled and unknown provider states.
-			readinessPending := checksPending || hasUnresolvedChecks(checks)
+			// includes cancelled, held, and unknown provider states.
+			readinessPending := hasPendingChecks(checks) || hasUnresolvedChecks(checks)
 			failing := failingCheckNames(checks)
 
 			// A rerun the provider has answered is no longer outstanding. This
@@ -696,6 +698,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						reruns:              s.transientReruns.used,
 						botComments:         reviewBotComments(sctx, host, pr, checks),
 					})
+					if hasAwaitingApprovalChecks(checks) {
+						sctx.Log(ciChecksAwaitingApprovalMsg)
+					}
 					sctx.Log(fmt.Sprintf("issues detected: %s", findings.Summary))
 					return ciObservationOutcome(findings), nil
 				}
@@ -751,10 +756,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 // describes work that does not exist and hides the one thing that would move
 // the run along. Anything else is an ordinary wait on checks in flight.
 func ciWaitingMessage(checks []scm.Check) string {
-	for _, c := range checks {
-		if c.AwaitingApproval && c.Pending() {
-			return ciChecksAwaitingApprovalMsg
-		}
+	if hasAwaitingApprovalChecks(checks) {
+		return ciChecksAwaitingApprovalMsg
 	}
 	return ciChecksRunningMsg
 }
