@@ -24,6 +24,8 @@ When set, everything else moves under this root:
 - Local evaluation cases and registry: `$NM_HOME/eval/` (created by automatic collection or an explicit `no-mistakes eval` command)
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 
+A gate's managed `pre-receive` and `post-receive` hooks bind themselves to the root that owns them. Git does not set `NM_HOME` for a hook, so the hooks derive the owning root from the gate's own location (`$NM_HOME/repos/<id>.git`) and export it before calling the CLI, rather than inheriting whatever the pushing shell exported. A push to a gate under one root therefore always reaches that root's daemon, even when `NM_HOME` is unset or names a different root. `pre-receive` refuses the push if the owning root cannot be derived; `post-receive` stays non-blocking and records the skipped notification in the gate's `notify-push.log`.
+
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 
 Override how long a CLI client waits for an existing daemon socket to accept a connection before failing instead of hanging.

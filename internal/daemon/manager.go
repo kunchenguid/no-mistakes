@@ -680,6 +680,28 @@ func repoIDFromGatePath(gatePath string) (string, error) {
 	return strings.TrimSuffix(base, ".git"), nil
 }
 
+// sameGatePath reports whether two gate paths name the same directory. The
+// --gate value arrives resolved by git rev-parse, while the comparison path is
+// built from NM_HOME as configured, so the two disagree textually wherever the
+// root sits behind a symlink (/var -> /private/var on macOS) even though they
+// name one directory. Compare resolved paths, falling back to the cleaned path
+// when a side does not resolve - a gate that is not there is not one this root
+// owns.
+func sameGatePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	return resolveGatePath(a) == resolveGatePath(b)
+}
+
+func resolveGatePath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return resolved
+}
+
 // branchFromRef extracts the branch name from a full git ref.
 // "refs/heads/main" → "main", "main" → "main"
 func branchFromRef(ref string) string {
@@ -778,6 +800,17 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	repoID, err := repoIDFromGatePath(params.Gate)
 	if err != nil {
 		return "", err
+	}
+	// Defense in depth behind the hook's NM_HOME binding. The gate path carries
+	// the root that owns it, but repoIDFromGatePath keeps only the basename, so
+	// a notify that reached the wrong daemon - a stale hook generated before the
+	// binding, or a hand-run CLI - would re-resolve that id under this daemon's
+	// own root and validate a foreign repository's push against local worktree
+	// paths. Refuse a gate this root does not own instead of silently adopting
+	// it: the misroute is then an explicit error rather than a run whose paths
+	// fail somewhere far from the cause.
+	if owned := m.paths.RepoDir(repoID); !sameGatePath(params.Gate, owned) {
+		return "", fmt.Errorf("gate %q does not belong to this daemon's home (this root owns %q)", params.Gate, owned)
 	}
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {

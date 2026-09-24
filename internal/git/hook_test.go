@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,8 +199,11 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	}
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
-	if err := os.MkdirAll(bare, 0o755); err != nil {
+	// Lay the fixture out as a real gate (<home>/repos/<id>.git) with the hook
+	// in its own hooks dir: the managed hooks derive the NM_HOME they bind the
+	// CLI call to from this shape, and skip the notify when it does not hold.
+	bare := filepath.Join(base, "repos", "test.git")
+	if err := InitBare(context.Background(), bare); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +214,10 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hookPath := filepath.Join(base, "post-receive")
+	hookPath := filepath.Join(bare, "hooks", "post-receive")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +354,9 @@ func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
 	ctx := context.Background()
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
+	// Lay the fixture out as a real gate (<home>/repos/<id>.git): the managed
+	// hooks derive the NM_HOME they bind the CLI call to from this shape.
+	bare := filepath.Join(base, "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +422,9 @@ func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
 	ctx := context.Background()
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
+	// Lay the fixture out as a real gate (<home>/repos/<id>.git): the managed
+	// hooks derive the NM_HOME they bind the CLI call to from this shape.
+	bare := filepath.Join(base, "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +516,9 @@ func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
 	ctx := context.Background()
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
+	// Lay the fixture out as a real gate (<home>/repos/<id>.git): the managed
+	// hooks derive the NM_HOME they bind the CLI call to from this shape.
+	bare := filepath.Join(base, "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -964,4 +978,263 @@ func TestInstallPostReceiveHookCreatesDir(t *testing.T) {
 	if _, err := os.Stat(hookPath); err != nil {
 		t.Fatalf("hook file not found: %v", err)
 	}
+}
+
+// installNMHomeProbeGate builds a gate at <root>/repos/<id>.git whose managed
+// hook calls a fake no-mistakes that records the NM_HOME it was handed. It
+// returns the gate dir and the path the probe writes its observation to.
+func installNMHomeProbeGate(t *testing.T, root, id, hookName string, render func(string) string) (string, string) {
+	t.Helper()
+	gate := filepath.Join(root, "repos", id+".git")
+	if err := InitBare(context.Background(), gate); err != nil {
+		t.Fatal(err)
+	}
+	observed := filepath.Join(t.TempDir(), "observed.txt")
+	probe := filepath.Join(t.TempDir(), "fake-no-mistakes")
+	script := "#!/bin/sh\nprintf 'NM_HOME=%s\\n' \"$NM_HOME\" >> " + shellSingleQuote(observed) + "\nexit 0\n"
+	if err := os.WriteFile(probe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(gate, "hooks", hookName)
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(render(probe)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return gate, observed
+}
+
+// TestReceiveHooksBindNMHomeToTheOwningGate covers the cross-home routing bug:
+// both managed hooks shell out to the CLI, which resolves its daemon root from
+// NM_HOME. Git never sets NM_HOME for a hook, so before this binding the
+// ambient value - usually unset, meaning the default ~/.no-mistakes root -
+// chose the daemon, and every gate under any other root talked to a daemon that
+// did not own it. The hook must derive the owning root from the gate's own
+// location and ignore whatever the pushing shell exported.
+func TestReceiveHooksBindNMHomeToTheOwningGate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("managed receive hooks are /bin/sh-only")
+	}
+
+	hooks := map[string]struct {
+		name   string
+		render func(string) string
+		stdin  string
+	}{
+		"pre-receive":  {name: "pre-receive", render: preReceiveHookScript, stdin: ""},
+		"post-receive": {name: "post-receive", render: postReceiveHookScript, stdin: "oldrev newrev refs/heads/main\n"},
+	}
+	inherited := map[string][]string{
+		"inherited home is a different root": {"NM_HOME=" + filepath.Join(t.TempDir(), "other-root")},
+		"inherited home is unset":            nil,
+	}
+
+	for hookLabel, hook := range hooks {
+		for envLabel, extraEnv := range inherited {
+			t.Run(hookLabel+"/"+envLabel, func(t *testing.T) {
+				root := t.TempDir()
+				gate, observed := installNMHomeProbeGate(t, root, "cross-home", hook.name, hook.render)
+
+				cmd := exec.Command("/bin/sh", filepath.Join(gate, "hooks", hook.name))
+				cmd.Dir = gate
+				cmd.Stdin = strings.NewReader(hook.stdin)
+				cmd.Env = append(os.Environ(), "NM_HOME=")
+				if extraEnv != nil {
+					cmd.Env = append(os.Environ(), extraEnv...)
+				}
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("run %s hook: %v: %s", hook.name, err, out)
+				}
+
+				got, err := os.ReadFile(observed)
+				if err != nil {
+					t.Fatalf("hook did not invoke the CLI at all: %v", err)
+				}
+				want := "NM_HOME=" + resolvedPath(t, root) + "\n"
+				if normalizeObservedHome(t, string(got)) != want {
+					t.Fatalf("CLI saw %q, want %q - the hook must bind NM_HOME to the root that owns the gate, not inherit it", got, want)
+				}
+			})
+		}
+	}
+}
+
+// resolvedPath mirrors the hook's own path resolution: the hook derives the
+// home from git's absolute gate dir, which is symlink-resolved, so a t.TempDir
+// under /var compares against /private/var on macOS.
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return resolved
+}
+
+func normalizeObservedHome(t *testing.T, observed string) string {
+	t.Helper()
+	value := strings.TrimPrefix(strings.TrimSpace(observed), "NM_HOME=")
+	return "NM_HOME=" + resolvedPath(t, value) + "\n"
+}
+
+// TestPreReceiveHookFailsClosedWhenGateHomeCannotBeDerived: admission is a
+// security boundary, so a gate that is not laid out as <home>/repos/<id>.git
+// must refuse the push rather than ask whichever daemon the ambient NM_HOME
+// happens to name.
+func TestPreReceiveHookFailsClosedWhenGateHomeCannotBeDerived(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("managed receive hooks are /bin/sh-only")
+	}
+	base := t.TempDir()
+	gate := filepath.Join(base, "unresolvable.git")
+	if err := InitBare(context.Background(), gate); err != nil {
+		t.Fatal(err)
+	}
+	observed := filepath.Join(base, "observed.txt")
+	probe := filepath.Join(base, "fake-no-mistakes")
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\ntouch "+shellSingleQuote(observed)+"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(gate, "hooks", "pre-receive")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(preReceiveHookScript(probe)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("/bin/sh", hook)
+	cmd.Dir = gate
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("pre-receive must reject a push whose gate home cannot be derived; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "cannot derive the gate home") {
+		t.Fatalf("refusal must name the cause, got:\n%s", out)
+	}
+	if _, statErr := os.Stat(observed); statErr == nil {
+		t.Fatal("pre-receive must not invoke admit-push when the owning home is unknown")
+	}
+}
+
+// TestPostReceiveHookStaysNonBlockingWhenGateHomeCannotBeDerived: git has
+// already accepted the push by post-receive, so an underivable home logs and
+// skips the notify instead of failing.
+func TestPostReceiveHookStaysNonBlockingWhenGateHomeCannotBeDerived(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("managed receive hooks are /bin/sh-only")
+	}
+	base := t.TempDir()
+	gate := filepath.Join(base, "unresolvable.git")
+	if err := InitBare(context.Background(), gate); err != nil {
+		t.Fatal(err)
+	}
+	observed := filepath.Join(base, "observed.txt")
+	probe := filepath.Join(base, "fake-no-mistakes")
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\ntouch "+shellSingleQuote(observed)+"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(gate, "hooks", "post-receive")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(postReceiveHookScript(probe)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("/bin/sh", hook)
+	cmd.Dir = gate
+	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("post-receive must never fail the push: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "cannot derive the gate home") {
+		t.Fatalf("skipped notify must be surfaced on stderr, got:\n%s", out)
+	}
+	if _, statErr := os.Stat(observed); statErr == nil {
+		t.Fatal("post-receive must not invoke notify-push when the owning home is unknown")
+	}
+	log, err := os.ReadFile(filepath.Join(gate, "notify-push.log"))
+	if err != nil {
+		t.Fatalf("skipped notify must be recorded in notify-push.log: %v", err)
+	}
+	if !strings.Contains(string(log), "cannot derive the gate home") {
+		t.Fatalf("notify-push.log = %q", log)
+	}
+}
+
+// TestGateConfigStampRegeneratesHooksMissingTheHomeBinding: the drift stamp
+// hashes the rendered hooks, so changing the template already makes every
+// existing install stale without bumping the version marker - the marker tracks
+// the non-hook config contract, which this change does not touch. Guard that,
+// so installs carrying a pre-binding hook are actually migrated rather than
+// silently kept forever.
+func TestGateConfigStampRegeneratesHooksMissingTheHomeBinding(t *testing.T) {
+	bare := t.TempDir()
+	hooks := filepath.Join(bare, "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stand in for a gate installed before the binding landed: the managed
+	// hooks are byte-for-byte today's minus the NM_HOME derivation, and the
+	// stamp is the one that install would have written for itself.
+	oldPre := stripHomeBinding(PreReceiveHookScript())
+	oldPost := stripHomeBinding(PostReceiveHookScript())
+	if oldPre == PreReceiveHookScript() || oldPost == PostReceiveHookScript() {
+		t.Fatal("fixture did not remove the home binding; the managed hooks must export NM_HOME")
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "pre-receive"), []byte(oldPre), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "post-receive"), []byte(oldPost), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("gate-config-v2\x00" + oldPre + "\x00" + oldPost))
+	if err := os.WriteFile(filepath.Join(bare, gateConfigStampFile), []byte(fmt.Sprintf("v2:%x\n", sum)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if GateConfigCurrent(bare) {
+		t.Fatal("a gate whose hooks predate the NM_HOME binding must be reported stale so migration regenerates them")
+	}
+
+	if _, err := RefreshManagedPreReceiveHook(bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshManagedPostReceiveHook(bare); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkGateConfigCurrent(bare); err != nil {
+		t.Fatal(err)
+	}
+	if !GateConfigCurrent(bare) {
+		t.Fatal("gate must be current once the managed hooks are refreshed")
+	}
+	for _, name := range []string{"pre-receive", "post-receive"} {
+		content, err := os.ReadFile(filepath.Join(hooks, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(content), "export NM_HOME") {
+			t.Fatalf("refreshed %s hook must export NM_HOME", name)
+		}
+	}
+}
+
+// stripHomeBinding removes the NM_HOME derivation block from a rendered hook,
+// reconstructing the pre-fix template without keeping a second copy of it.
+func stripHomeBinding(script string) string {
+	start := strings.Index(script, "NM_HOME=\ncase \"$GATE_DIR\" in")
+	if start < 0 {
+		return script
+	}
+	const marker = "export NM_HOME\n"
+	end := strings.Index(script[start:], marker)
+	if end < 0 {
+		return script
+	}
+	return script[:start] + script[start+end+len(marker):]
 }

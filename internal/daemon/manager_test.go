@@ -1573,3 +1573,59 @@ func logLaunchEvidence(t *testing.T, label string, value any) {
 	}
 	t.Logf("launch-evidence %s: %s", label, encoded)
 }
+
+// TestPushReceivedRejectsGateFromAnotherHome is defense in depth behind the
+// managed hooks' NM_HOME binding. A gate path names the root that owns it, but
+// the daemon keeps only the repo id from it, so a notify that reached the wrong
+// daemon - a stale hook generated before the binding, or a hand-run CLI - used
+// to re-resolve that id under this daemon's own root and validate a foreign
+// repository's push against local worktree paths. The misroute must surface as
+// an explicit refusal instead.
+func TestPushReceivedRejectsGateFromAnotherHome(t *testing.T) {
+	p, d := startTestDaemon(t)
+
+	const repoID = "cross-home-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+
+	// Same repo id, a different NM_HOME: exactly what the default root's daemon
+	// received when a second root's hook shelled out without NM_HOME set.
+	foreignHome := t.TempDir()
+	foreignGate := filepath.Join(foreignHome, "repos", repoID+".git")
+	if err := os.MkdirAll(foreignGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: foreignGate,
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil {
+		t.Fatalf("daemon started run %q for a gate under another home; it must refuse", result.RunID)
+	}
+	if !strings.Contains(err.Error(), "does not belong to this daemon's home") {
+		t.Fatalf("refusal must name the cause, got: %v", err)
+	}
+
+	// The guard must not cost the ordinary case: this root's own gate still runs.
+	var ok ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repoID),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &ok); err != nil {
+		t.Fatalf("push to this daemon's own gate must still be accepted: %v", err)
+	}
+	if ok.RunID == "" {
+		t.Fatal("expected a run for the owned gate")
+	}
+}
