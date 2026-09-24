@@ -51,25 +51,27 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		{name: "HTTPS with user, case, and git suffix", remote: "https://token@GitHub.COM/Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "uppercase git suffix", remote: "https://github.com/acme/widget.GIT", want: "github.com/acme/widget"},
 		{name: "SSH URL on a hosted forge", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
-		{name: "absolute SSH URL path", remote: "ssh://git@host/srv/git/team/widget.git", want: "host//srv/git/team/widget"},
-		{name: "absolute IPv6 scp path", remote: "git@[2001:db8::1]:/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget"},
-		{name: "relative IPv6 scp path", remote: "git@[2001:db8::1]:srv/git/team/widget.git", want: "[2001:db8::1]/srv/git/team/widget"},
-		{name: "expanded IPv6 scp address", remote: "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget"},
-		{name: "expanded IPv6 SSH URL address", remote: "ssh://git@[2001:0db8:0:0:0:0:0:1]/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget"},
-		{name: "IPv6 URL port", remote: "ssh://git@[2001:db8::1]:2222/team/repo.git", want: "[2001:db8::1]:2222//team/repo"},
-		{name: "IPv6 address ending in port digits", remote: "ssh://git@[2001:db8::1:2222]/team/repo.git", want: "[2001:db8::1:2222]//team/repo"},
+		{name: "absolute SSH URL path", remote: "ssh://git@host/srv/git/team/widget.git", want: "host//srv/git/team/widget.git"},
+		{name: "absolute IPv6 scp path", remote: "git@[2001:db8::1]:/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget.git"},
+		{name: "relative IPv6 scp path", remote: "git@[2001:db8::1]:srv/git/team/widget.git", want: "[2001:db8::1]/srv/git/team/widget.git"},
+		{name: "expanded IPv6 scp address", remote: "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget.git"},
+		{name: "expanded IPv6 SSH URL address", remote: "ssh://git@[2001:0db8:0:0:0:0:0:1]/srv/git/team/widget.git", want: "[2001:db8::1]//srv/git/team/widget.git"},
+		{name: "IPv6 URL port", remote: "ssh://git@[2001:db8::1]:2222/team/repo.git", want: "[2001:db8::1]:2222//team/repo.git"},
+		{name: "IPv6 address ending in port digits", remote: "ssh://git@[2001:db8::1:2222]/team/repo.git", want: "[2001:db8::1:2222]//team/repo.git"},
 		{name: "malformed IPv6 scp authority", remote: "git@[2001:db8::1:/srv/git/team/widget.git", wantErr: true},
-		{name: "Git protocol default port", remote: "git://host:9418/team/repo.git", want: "host/team/repo"},
-		{name: "Git protocol nondefault port", remote: "git://host:9419/team/repo.git", want: "host:9419/team/repo"},
+		{name: "Git protocol default port", remote: "git://host:9418/team/repo.git", want: "host/team/repo.git"},
+		{name: "Git protocol nondefault port", remote: "git://host:9419/team/repo.git", want: "host:9419/team/repo.git"},
 		{name: "scp-like SSH", remote: "git@GITHUB.com:Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "without suffix", remote: "https://github.com/acme/widget", want: "github.com/acme/widget"},
-		{name: "nested GitLab namespace", remote: "https://gitlab.example.com/group/sub/project.git", want: "gitlab.example.com/group/sub/project"},
-		{name: "nested GitLab path with trailing slash", remote: "https://gitlab.example.com/group/sub/project.git/", want: "gitlab.example.com/group/sub/project"},
-		{name: "nested GitLab scp remote", remote: "git@gitlab.example.com:group/sub/project.git", want: "gitlab.example.com/group/sub/project"},
+		{name: "nested generic GitLab namespace retains suffix", remote: "https://gitlab.example.com/group/sub/project.git", want: "gitlab.example.com/group/sub/project.git"},
+		{name: "nested generic GitLab path with trailing slash", remote: "https://gitlab.example.com/group/sub/project.git/", want: "gitlab.example.com/group/sub/project.git"},
+		{name: "nested generic GitLab scp remote", remote: "git@gitlab.example.com:group/sub/project.git", want: "gitlab.example.com/group/sub/project.git"},
+		{name: "hosted GitLab folds case and suffix", remote: "https://gitlab.com/Group/Sub/Project.GIT", want: "gitlab.com/group/sub/project"},
+		{name: "hosted Bitbucket folds case and suffix", remote: "git@bitbucket.org:Team/Widget.GIT", want: "bitbucket.org/team/widget"},
 		{name: "empty nested path segment", remote: "https://gitlab.example.com/group//sub/project.git", wantErr: true},
-		{name: "Azure DevOps HTTPS", remote: "https://dev.azure.com/Acme/Platform/_git/Widget", want: "dev.azure.com/acme/platform/widget"},
-		{name: "Azure DevOps SSH", remote: "git@ssh.dev.azure.com:v3/Acme/Platform/Widget", want: "dev.azure.com/acme/platform/widget"},
-		{name: "Azure DevOps legacy host", remote: "https://Acme.visualstudio.com/Platform/_git/Widget", want: "dev.azure.com/acme/platform/widget"},
+		{name: "Azure DevOps HTTPS preserves path case", remote: "https://dev.azure.com/Acme/Platform/_git/Widget", want: "dev.azure.com/Acme/Platform/Widget"},
+		{name: "Azure DevOps SSH preserves path case", remote: "git@ssh.dev.azure.com:v3/Acme/Platform/Widget", want: "dev.azure.com/Acme/Platform/Widget"},
+		{name: "Azure DevOps legacy host preserves path case", remote: "https://Acme.visualstudio.com/Platform/_git/Widget", want: "dev.azure.com/acme/Platform/Widget"},
 		{name: "encoded path separator", remote: "https://github.com/acme/widget%2Fother.git", wantErr: true},
 		{name: "whitespace in repository path", remote: "https://github.com/acme/my widget.git", wantErr: true},
 		{name: "single-segment repository path", remote: "https://github.com/widget.git", wantErr: true},
@@ -96,6 +98,74 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 	}
 }
 
+func TestMergeForRemote_RepositoryPathCaseAndSuffixPolicy(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		configKey string
+		matching  string
+		distinct  string
+	}{
+		{
+			name:      "GitHub aliases case and suffix across transports",
+			configKey: "git@github.com:Acme/Widget.GIT",
+			matching:  "ssh://git@github.com/acme/widget.git",
+			distinct:  "git@github.com:acme/other.git",
+		},
+		{
+			name:      "GitLab aliases case and suffix across transports",
+			configKey: "https://gitlab.com/Group/Sub/Project.GIT",
+			matching:  "ssh://git@gitlab.com/group/sub/project.git",
+			distinct:  "ssh://git@gitlab.com/group/sub/other.git",
+		},
+		{
+			name:      "Bitbucket aliases case and suffix across transports",
+			configKey: "git@bitbucket.org:Team/Widget.GIT",
+			matching:  "https://bitbucket.org/team/widget.git",
+			distinct:  "https://bitbucket.org/team/other.git",
+		},
+		{
+			name:      "generic host preserves path case",
+			configKey: "ssh://git@code.example/Team/Widget.git",
+			matching:  "ssh://git@code.example/Team/Widget.git",
+			distinct:  "ssh://git@code.example/team/widget.git",
+		},
+		{
+			name:      "generic host preserves git suffix",
+			configKey: "git@code.example:Team/Widget.git",
+			matching:  "git@code.example:Team/Widget.git",
+			distinct:  "git@code.example:Team/Widget",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			global, err := LoadGlobalFromBytes([]byte("repository_overrides:\n  '" + tc.configKey + "':\n    commit:\n      fix_message: 'override {{.Summary}}'\n"))
+			if err != nil {
+				t.Fatalf("LoadGlobalFromBytes(): %v", err)
+			}
+			for _, candidate := range []struct {
+				remote string
+				want   string
+			}{
+				{remote: tc.matching, want: "override summary"},
+				{remote: tc.distinct, want: "no-mistakes(review): summary"},
+			} {
+				merged := MergeForRemote(global, &RepoConfig{}, candidate.remote)
+				got, err := merged.Commit.RenderFixMessageForBranch(types.StepReview, "summary", "feature")
+				if err != nil {
+					t.Fatalf("remote %q: %v", candidate.remote, err)
+				}
+				if got != candidate.want {
+					t.Errorf("remote %q fix subject = %q, want %q", candidate.remote, got, candidate.want)
+				}
+			}
+		})
+	}
+}
+
 func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
 	t.Parallel()
 
@@ -108,49 +178,49 @@ func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
 		{
 			name:      "absolute scp config key matches absolute SSH URL",
 			configKey: "git@host:/srv/git/team/widget.git",
-			matching:  "ssh://git@host/srv/git/team/widget",
+			matching:  "ssh://git@host/srv/git/team/widget.git",
 			distinct:  "git@host:srv/git/team/widget.git",
 		},
 		{
 			name:      "absolute SSH URL config key matches absolute scp",
 			configKey: "ssh://git@host/srv/git/team/widget.git",
-			matching:  "git@host:/srv/git/team/widget",
+			matching:  "git@host:/srv/git/team/widget.git",
 			distinct:  "git@host:srv/git/team/widget.git",
 		},
 		{
 			name:      "relative scp config key rejects absolute SSH URL",
 			configKey: "git@host:srv/git/team/widget.git",
-			matching:  "git@host:srv/git/team/widget",
+			matching:  "git@host:srv/git/team/widget.git",
 			distinct:  "ssh://git@host/srv/git/team/widget.git",
 		},
 		{
 			name:      "absolute IPv6 scp config key matches absolute SSH URL",
 			configKey: "git@[2001:db8::1]:/srv/git/team/widget.git",
-			matching:  "ssh://git@[2001:db8::1]/srv/git/team/widget",
+			matching:  "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
 			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
 		},
 		{
 			name:      "absolute IPv6 SSH URL config key matches absolute scp",
 			configKey: "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
-			matching:  "git@[2001:db8::1]:/srv/git/team/widget",
+			matching:  "git@[2001:db8::1]:/srv/git/team/widget.git",
 			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
 		},
 		{
 			name:      "relative IPv6 scp config key rejects absolute SSH URL",
 			configKey: "git@[2001:db8::1]:srv/git/team/widget.git",
-			matching:  "git@[2001:db8::1]:srv/git/team/widget",
+			matching:  "git@[2001:db8::1]:srv/git/team/widget.git",
 			distinct:  "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
 		},
 		{
 			name:      "expanded IPv6 scp config key matches compressed SSH URL",
 			configKey: "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git",
-			matching:  "ssh://git@[2001:db8::1]/srv/git/team/widget",
+			matching:  "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
 			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
 		},
 		{
 			name:      "compressed IPv6 SSH URL config key matches expanded scp",
 			configKey: "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
-			matching:  "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget",
+			matching:  "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git",
 			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
 		},
 	} {
@@ -194,13 +264,13 @@ func TestMergeForRemote_IPv6HostPortKeysRemainDistinct(t *testing.T) {
 		{
 			name:      "URL port differs from address suffix",
 			configKey: "ssh://git@[2001:db8::1]:2222/team/repo.git",
-			matching:  "ssh://git@[2001:db8::1]:2222/team/repo",
+			matching:  "ssh://git@[2001:db8::1]:2222/team/repo.git",
 			distinct:  "ssh://git@[2001:db8::1:2222]/team/repo.git",
 		},
 		{
 			name:      "scp IPv6 address differs from URL port",
 			configKey: "git@[2001:db8::1:2222]:/srv/git/team/widget.git",
-			matching:  "ssh://git@[2001:db8::1:2222]/srv/git/team/widget",
+			matching:  "ssh://git@[2001:db8::1:2222]/srv/git/team/widget.git",
 			distinct:  "ssh://git@[2001:db8::1]:2222/srv/git/team/widget.git",
 		},
 	} {
@@ -248,7 +318,7 @@ func TestMergeForRemote_GitDefaultPortMatchesOmittedPort(t *testing.T) {
 		{
 			name:      "registered default port",
 			configKey: "git://host/team/repo.git",
-			matching:  "git://host:9418/team/repo",
+			matching:  "git://host:9418/team/repo.git",
 		},
 	} {
 		tc := tc
@@ -416,7 +486,7 @@ func TestMergeForRemote_MatchesNestedProviderRemotePaths(t *testing.T) {
 		want   string
 	}{
 		{name: "GitLab subgroup SSH remote", remote: "git@gitlab.example.com:group/sub/project.git", want: "gitlab feature/PROJ-123: summary"},
-		{name: "Azure DevOps SSH remote", remote: "git@ssh.dev.azure.com:v3/acme/platform/widget", want: "azure feature/PROJ-123: summary"},
+		{name: "Azure DevOps SSH remote", remote: "git@ssh.dev.azure.com:v3/Acme/Platform/Widget", want: "azure feature/PROJ-123: summary"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

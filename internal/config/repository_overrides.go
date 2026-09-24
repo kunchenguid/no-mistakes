@@ -79,7 +79,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
 		return "", fmt.Errorf("remote host is missing or invalid")
 	}
-	parts, err := normalizeRemotePath(rawPath, escapedPath)
+	parts, err := normalizeRemotePath(rawPath, escapedPath, caseInsensitiveRepositoryPathHost(host))
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +139,7 @@ func parseSCPRemote(remote string) (string, string, error) {
 	return hostPart, remotePath, nil
 }
 
-func normalizeRemotePath(rawPath string, escaped bool) ([]string, error) {
+func normalizeRemotePath(rawPath string, escaped, caseInsensitive bool) ([]string, error) {
 	rawPath = strings.TrimPrefix(rawPath, "/")
 	if strings.HasSuffix(rawPath, "/") {
 		rawPath = strings.TrimSuffix(rawPath, "/")
@@ -164,10 +164,15 @@ func normalizeRemotePath(rawPath string, escaped bool) ([]string, error) {
 		if !validRemotePathPart(part) {
 			return nil, fmt.Errorf("remote path contains an invalid segment")
 		}
-		parts = append(parts, strings.ToLower(part))
+		if caseInsensitive {
+			part = strings.ToLower(part)
+		}
+		parts = append(parts, part)
 	}
 	last := len(parts) - 1
-	parts[last] = strings.TrimSuffix(parts[last], ".git")
+	if caseInsensitive {
+		parts[last] = strings.TrimSuffix(parts[last], ".git")
+	}
 	if !validRemotePathPart(parts[last]) {
 		return nil, fmt.Errorf("remote path must end in a repository name")
 	}
@@ -214,6 +219,15 @@ func normalizeAzureDevOpsRemote(host string, parts []string) (string, []string, 
 		return "", nil, fmt.Errorf("Azure DevOps remote path must identify an organization, project, and repository")
 	}
 	return "dev.azure.com", parts, nil
+}
+
+func caseInsensitiveRepositoryPathHost(host string) bool {
+	switch host {
+	case "github.com", "gitlab.com", "bitbucket.org":
+		return true
+	default:
+		return false
+	}
 }
 
 func repositoryNamespaceHost(host string) bool {

@@ -869,9 +869,10 @@ A repository `commit.branch_pattern` override disables this machine-local replac
 
 Machine-local settings scoped to one repository by remote host and full repository path.
 This lets one machine apply ticket conventions to a single repository without adding settings to that repository.
-Remote keys are matched against the registered upstream remote, case-insensitively by host and repository path.
-GitLab subgroup paths are preserved, and Azure DevOps HTTPS and SSH routes normalize to the same organization/project/repository identity.
-On hosted-forge domains, HTTPS and SSH remotes match across transports, including scp-like SSH remotes and an optional trailing `.git`.
+Remote hosts are matched case-insensitively.
+For `github.com`, `gitlab.com`, and `bitbucket.org`, repository paths are also matched case-insensitively and without a trailing `.git`, across equivalent HTTPS, SSH URL, and scp-style remotes.
+On every other host, repository path case and a trailing `.git` are significant.
+GitLab subgroup paths are preserved, and Azure DevOps HTTPS and SSH routes normalize to the same organization/project/repository identity when their path spelling agrees.
 On other SSH hosts, rooted paths (`host:/...` or `ssh://host/...`) remain distinct from home-relative scp paths (`host:...`).
 
 ```yaml
