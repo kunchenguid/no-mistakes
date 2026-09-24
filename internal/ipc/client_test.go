@@ -59,3 +59,50 @@ func TestDialConnectTimeoutFailsFastAndNamesSocket(t *testing.T) {
 		t.Fatalf("Dial error = %q, want socket path %q", err.Error(), socketPath)
 	}
 }
+
+// TestDialUsesTheConnectTimeoutOfTheRootItDials pins the timeout to the root
+// that owns the socket. A receive hook resolves its root from the gate it was
+// handed and runs with no NM_HOME, so reading the ambient root's config would
+// dial one daemon under another root's timeout.
+func TestDialUsesTheConnectTimeoutOfTheRootItDials(t *testing.T) {
+	writeRoot := func(root, timeout string) string {
+		t.Helper()
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cfg := filepath.Join(root, "config.yaml")
+		if err := os.WriteFile(cfg, []byte("daemon_connect_timeout: \""+timeout+"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(root, "socket")
+	}
+
+	base := t.TempDir()
+	ambient := filepath.Join(base, "ambient")
+	writeRoot(ambient, "1s")
+	t.Setenv("NM_HOME", ambient)
+
+	const want = 7 * time.Second
+	socketPath := writeRoot(filepath.Join(base, "owning"), want.String())
+	if runtime.GOOS == "windows" {
+		endpoint := fmt.Sprintf("127.0.0.1:1\ntoken\n%d", os.Getpid())
+		if err := os.WriteFile(socketPath, []byte(endpoint), 0o600); err != nil {
+			t.Fatalf("write endpoint file: %v", err)
+		}
+	}
+
+	var got time.Duration
+	originalDial := dialNetworkWithTimeout
+	dialNetworkWithTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		got = timeout
+		return nil, timeoutDialError{}
+	}
+	t.Cleanup(func() { dialNetworkWithTimeout = originalDial })
+
+	if _, err := Dial(socketPath); err == nil {
+		t.Fatal("expected the dial to the dead socket to fail")
+	}
+	if got != want {
+		t.Fatalf("dial timeout = %v, want %v (the owning root's, not the ambient root's)", got, want)
+	}
+}

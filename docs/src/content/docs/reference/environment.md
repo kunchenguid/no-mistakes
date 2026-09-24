@@ -35,7 +35,7 @@ Override how long a CLI client waits for an existing daemon socket to accept a c
 | Type    | `string` (Go duration)                                                                            |
 | Default | unset (falls back to the `daemon_connect_timeout` global config value, itself defaulting to `3s`) |
 
-Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead.
+Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead. The config value is read from the root whose socket is being dialed, not from the root `NM_HOME` names, so a push handled by the root that owns the gate also waits for the timeout that root configured.
 
 ## `FORGEJO_BASE_URL`
 
