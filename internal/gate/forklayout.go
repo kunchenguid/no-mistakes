@@ -73,6 +73,13 @@ func refuseForkOriginMisrouting(ctx context.Context, absRoot string) error {
 	if scm.DetectProviderContext(ctx, upstreamRemoteURL) != scm.ProviderGitHub {
 		return nil
 	}
+	// scm.ProviderGitHub covers any GitHub Enterprise host, not just
+	// github.com, so an origin/upstream pair on different hosts must be
+	// rejected explicitly - matching owner/name alone is not proof they name
+	// the same repository.
+	if !strings.EqualFold(scm.ResolveHost(ctx, originURL), scm.ResolveHost(ctx, upstreamRemoteURL)) {
+		return nil
+	}
 
 	originOwner, originName, ok := splitRepoSlug(github.RepoSlug(originURL))
 	if !ok {
