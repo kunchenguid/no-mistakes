@@ -1574,11 +1574,11 @@ func logLaunchEvidence(t *testing.T, label string, value any) {
 	t.Logf("launch-evidence %s: %s", label, encoded)
 }
 
-// TestPushReceivedRejectsGateFromAnotherHome is defense in depth behind the
-// managed hooks' NM_HOME binding. A gate path names the root that owns it, but
-// the daemon keeps only the repo id from it, so a notify that reached the wrong
-// daemon - a stale hook generated before the binding, or a hand-run CLI - used
-// to re-resolve that id under this daemon's own root and validate a foreign
+// TestPushReceivedRejectsGateFromAnotherHome is defense in depth behind
+// paths.ForGate's gate-derived root. A gate path names the root that owns it,
+// but the daemon keeps only the repo id from it, so a notify carrying a gate
+// under a different root - from a hand-run CLI or a direct IPC client - used to
+// re-resolve that id under this daemon's own root and validate a foreign
 // repository's push against local worktree paths. The misroute must surface as
 // an explicit refusal instead.
 func TestPushReceivedRejectsGateFromAnotherHome(t *testing.T) {
@@ -1635,10 +1635,10 @@ func TestPushReceivedRejectsGateFromAnotherHome(t *testing.T) {
 }
 
 // TestAdmitPushRejectsGateFromAnotherHome guards the same ownership invariant on
-// the admit leg, which is the ref-mutation boundary: a pre-receive hook that
-// reached the wrong daemon would otherwise be classified against that daemon's
-// own PID chain and active steps, so a push made inside another root's
-// validation step reads as unnested and is admitted.
+// the admit leg, which is the ref-mutation boundary: an admit call that reached
+// the wrong daemon would otherwise be classified against that daemon's own PID
+// chain and active steps, so a push made inside another root's validation step
+// reads as unnested and is admitted.
 func TestAdmitPushRejectsGateFromAnotherHome(t *testing.T) {
 	p, d := startTestDaemon(t)
 

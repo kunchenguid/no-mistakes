@@ -671,12 +671,13 @@ func (m *RunManager) closeSubscribers(runID string) {
 }
 
 // ownedGateRepoID extracts the repo id from a gate path and refuses a gate this
-// root does not own. Defense in depth behind the hook's NM_HOME binding: the
-// gate path carries the root that owns it, but repoIDFromGatePath keeps only
-// the basename, so a hook call that reached the wrong daemon - a stale hook
-// generated before the binding, or a hand-run CLI - would otherwise re-resolve
-// that id under this daemon's own root, admitting or validating a foreign
-// repository's push against local state. The --gate value arrives resolved by
+// root does not own. Defense in depth behind paths.ForGate, which resolves a
+// hook call's root from the gate path itself: the gate path carries the root
+// that owns it, but repoIDFromGatePath keeps only the basename, so a caller
+// that handed this daemon a gate under a different root - a hand-run CLI or a
+// direct IPC client - would otherwise re-resolve that id under this daemon's
+// own root, admitting or validating a foreign repository's push against local
+// state. The --gate value arrives resolved by
 // git rev-parse while the owned path is built from NM_HOME as configured, so
 // compare through samePath's symlink resolution (/var -> /private/var on macOS)
 // rather than textually.

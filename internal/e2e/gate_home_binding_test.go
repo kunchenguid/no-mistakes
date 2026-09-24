@@ -60,67 +60,18 @@ func TestGateHookBindsPushToTheHomeThatOwnsTheGate(t *testing.T) {
 	run := h.WaitForRun(branch, 90*time.Second)
 	t.Logf("owning daemon run: id=%s branch=%s status=%s", run.ID, run.Branch, run.Status)
 
-	// The other root must never have been dialed: no daemon socket, no db.
-	for _, name := range []string{"daemon.sock", "no-mistakes.db"} {
-		if _, statErr := os.Stat(filepath.Join(other, name)); statErr == nil {
-			t.Fatalf("push created %s under the NM_HOME the shell exported; the hook must bind to the gate's own root", name)
-		}
+	// The other root must never have been dialed: it still holds only the one
+	// directory it was created with, so nothing resolved a path against it.
+	entries, err := os.ReadDir(other)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// TestDaemonRefusesGateFromAnotherHome drives the two hook-invoked CLI legs
-// straight at a live daemon with a gate under a different root - what a stale
-// pre-binding hook or a hand-run CLI produces - and requires an explicit
-// refusal on both, including the admit leg that authorizes the ref mutation.
-func TestDaemonRefusesGateFromAnotherHome(t *testing.T) {
-	h := NewHarness(t, SetupOpts{Agent: "claude"})
-	if out, err := h.Run("init"); err != nil {
-		t.Fatalf("init: %v\n%s", err, out)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
 	}
-
-	ownedGate := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
-	if _, err := os.Stat(ownedGate); err != nil {
-		t.Fatalf("expected gate at %s: %v", ownedGate, err)
-	}
-	other := decoyHome(t)
-	foreignGate := filepath.Join(other, "repos", h.repoID()+".git")
-	if out, err := h.runGit(context.Background(), other, "init", "--bare", foreignGate); err != nil {
-		t.Fatalf("init foreign gate: %v\n%s", err, out)
-	}
-	head := h.WorktreeRefSHA("HEAD")
-
-	legs := []struct {
-		name string
-		args []string
-	}{
-		{"admit-push", []string{"daemon", "admit-push", "--gate", foreignGate}},
-		{"notify-push", []string{
-			"daemon", "notify-push",
-			"--gate", foreignGate,
-			"--ref", "refs/heads/main",
-			"--old", "0000000000000000000000000000000000000000",
-			"--new", head,
-		}},
-	}
-	for _, leg := range legs {
-		t.Run(leg.name, func(t *testing.T) {
-			out, err := h.RunInDir(h.WorkDir, leg.args...)
-			if err == nil {
-				t.Fatalf("%s accepted a gate under another home:\n%s", leg.name, out)
-			}
-			if !strings.Contains(out, "does not belong to this daemon's home") {
-				t.Fatalf("%s refusal must name the cause, got:\n%s", leg.name, out)
-			}
-			t.Logf("%s refusal:\n%s", leg.name, strings.TrimSpace(out))
-		})
-	}
-
-	// The guard must not cost the ordinary case: this root's own gate is still
-	// admitted by the same live daemon.
-	if out, err := h.RunInDir(h.WorkDir, "daemon", "admit-push", "--gate", ownedGate); err != nil {
-		t.Fatalf("admit-push for the owned gate must still be authorized: %v\n%s", err, out)
-	} else {
-		t.Logf("owned gate admit-push accepted (no output expected): %q", strings.TrimSpace(out))
+	if len(names) != 1 || names[0] != "repos" {
+		t.Fatalf("push created state under the NM_HOME the shell exported: %v; the push must resolve its root from the gate", names)
 	}
 }
 
