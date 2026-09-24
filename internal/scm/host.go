@@ -186,6 +186,14 @@ type Check struct {
 	// it can never be true for a genuine test or lint failure, whose job cleared
 	// setup and failed a later step.
 	PreRunFailure bool
+	// AwaitingApproval marks a check the provider is holding until a human
+	// approves it - GitHub holds a first-time contributor's workflows that
+	// way, concluding the run action_required without running a single job.
+	// Nothing about the commit produced it and no rerun can clear it, so it
+	// is a wait on a maintainer rather than a verdict on the code: such a
+	// check is reported pending, never failing, so the CI step waits for the
+	// approval instead of spending auto-fix rounds on work that never ran.
+	AwaitingApproval bool
 	// App identifies the provider application that published the check, when
 	// the provider reports one: on GitHub it is the check suite's app slug
 	// ("github-actions" for every Actions job, "greptile-apps" for Greptile's

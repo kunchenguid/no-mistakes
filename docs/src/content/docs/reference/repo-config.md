@@ -601,6 +601,9 @@ With a positive budget, a rerun is requested when the provider attributes the ou
 The remaining outcomes are the job's own verdict on the commit and are never re-run:
 
 - `failure`, `error`, `action_required`, and `startup_failure` (after any repository step ran) are the job's verdict, so they escalate on the first failure with no added latency.
+  One GitHub outcome is not a verdict at all: a workflow run that concluded `action_required` without running a single job is the forge holding a first-time contributor's workflows until a maintainer approves them.
+  Nothing ran, so there is nothing to escalate and no rerun that could clear it; that run is reported as pending, and the monitor names the hold and keeps waiting for the maintainer instead of spending auto-fix rounds on work that never executed.
+  The distinction is read from the run's own job list, so a run that concluded `action_required` after executing jobs keeps escalating as before, and a run whose jobs cannot be read fails closed to the same unchanged behavior.
 - `timed_out` means the job exceeded its own `timeout-minutes`, which is usually the branch's own code hanging. Re-running it burns another full timeout window reproducing the same failure, so it is treated as a genuine failure and is not opt-in.
 - `stale` is already treated as skipped rather than failed, so it never reaches this decision.
 - An outcome no-mistakes recognizes as none of the above never earns a rerun either.
