@@ -38,6 +38,23 @@ func TestFixtureRootFromRepoRoot(t *testing.T) {
 	}
 }
 
+func TestLoginShellPathSeedCoversInteractiveZsh(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(t.TempDir(), "bin")
+	h := &Harness{t: t, HomeDir: home, BinDir: bin}
+	h.writeLoginShellPathSeed()
+
+	for _, name := range []string{".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".profile"} {
+		seed, err := os.ReadFile(filepath.Join(home, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if got := string(seed); !strings.Contains(got, "export PATH=") || !strings.Contains(got, bin) {
+			t.Fatalf("%s seed = %q, want PATH prefix for %s", name, got, bin)
+		}
+	}
+}
+
 func TestDaemonStartTimeoutLeavesRoomForLoginShellProbe(t *testing.T) {
 	timeout, err := time.ParseDuration(e2eDaemonStartTimeout)
 	if err != nil {

@@ -37,7 +37,7 @@ Safest local verification sequence after non-trivial changes:
 
 **GitHub user-attachments (`internal/scm/github/attachments.go`)**
 
-- GitHub.com/GHEC image and video evidence is uploaded at PR render time via the unofficial `POST https://uploads.github.com/user-attachments/assets` endpoint gh 2.99.0 uses. The comments in `attachments.go` own the request shape, token-class allowlist, GHES refusal, and size/type rules. Fail closed: any upload error keeps today's PR rendering. Collection and the orphan evidence branch are unchanged. Setting: `test.evidence.attach_media` (default true), OR `store_in_repo` (both links when both apply). Regressions: `internal/scm/github/attachments_test.go`, `internal/pipeline/steps/pr_attach_media_test.go`.
+- GitHub.com/GHEC image and video evidence is uploaded at PR render time via the unofficial `POST .../user-attachments/assets` endpoint gh uses. The request runs through host-scoped `gh api`; no-mistakes must never invoke `gh auth token`, read the raw credential, or assemble an authorization header. The comments in `attachments.go` own the request shape, GHES refusal, and size/type rules. Fail closed: any upload error keeps today's PR rendering. Collection and the orphan evidence branch are unchanged. Setting: `test.evidence.attach_media` (default true), OR `store_in_repo` (both links when both apply). Regressions: `internal/scm/github/attachments_test.go`, `internal/pipeline/steps/pr_attach_media_test.go`.
 
 **OpenCode Adapter Failure Reporting (`internal/agent/opencode*.go`)**
 

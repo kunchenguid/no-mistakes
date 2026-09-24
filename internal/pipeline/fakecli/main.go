@@ -46,6 +46,8 @@ func handleFakeCLI(mode string) {
 	switch mode {
 	case "gh":
 		fakeGHHandler(args)
+	case "gh-protected-attachments":
+		fakeGHProtectedAttachmentsHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
 	case "record-success":
@@ -132,6 +134,32 @@ func fakeRecordSuccessHandler() {
 		}
 	}
 	os.Exit(0)
+}
+
+func fakeGHProtectedAttachmentsHandler(args []string) {
+	joined := strings.Join(args, " ")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "token" {
+		fmt.Fprintln(os.Stderr, "Automic Vault: Secret Disclosure is not permitted")
+		os.Exit(86)
+	}
+	if len(args) >= 2 && args[0] == "api" && strings.Contains(joined, "repository(owner:$owner,name:$name){databaseId viewerPermission}") {
+		fmt.Print(`{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`)
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "api" && strings.Contains(joined, "/user-attachments/assets?") {
+		body, err := readFakeBody()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if len(body) == 0 {
+			fmt.Fprintln(os.Stderr, "attachment body was empty")
+			os.Exit(1)
+		}
+		fmt.Print(`{"url":"https://github.com/user-attachments/assets/c919a728-162d-435e-83a4-a8636a76a8aa"}`)
+		os.Exit(0)
+	}
+	fakeGHHandler(args)
 }
 
 func fakeGHHandler(args []string) {
