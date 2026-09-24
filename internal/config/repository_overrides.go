@@ -83,7 +83,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		return "", fmt.Errorf("remote path must contain exactly owner/repository")
 	}
 	owner := strings.ToLower(parts[0])
-	repository := strings.ToLower(strings.TrimSuffix(parts[1], ".git"))
+	repository := strings.TrimSuffix(strings.ToLower(parts[1]), ".git")
 	if !validRemotePathPart(owner) || !validRemotePathPart(repository) {
 		return "", fmt.Errorf("remote path must contain non-empty owner and repository")
 	}

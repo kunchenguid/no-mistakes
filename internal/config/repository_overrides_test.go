@@ -49,6 +49,7 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "HTTPS with user, case, and git suffix", remote: "https://token@GitHub.COM/Acme/Widget.git", want: "github.com/acme/widget"},
+		{name: "uppercase git suffix", remote: "https://github.com/acme/widget.GIT", want: "github.com/acme/widget"},
 		{name: "SSH URL", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "scp-like SSH", remote: "git@GITHUB.com:Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "without suffix", remote: "https://github.com/acme/widget", want: "github.com/acme/widget"},
@@ -215,7 +216,7 @@ func TestMergeForRemote_RenderFixCommitMatchingAndDefault(t *testing.T) {
 	t.Parallel()
 
 	global, err := LoadGlobalFromBytes([]byte(`repository_overrides:
-  https://github.com/acme/widget.git:
+  https://github.com/acme/widget.GIT:
     commit:
       branch_pattern: '([A-Z]+-[0-9]+)'
       fix_message: '{{.Branch}}: {{.Summary}}'
@@ -226,6 +227,8 @@ func TestMergeForRemote_RenderFixCommitMatchingAndDefault(t *testing.T) {
 
 	for _, remote := range []string{
 		"https://github.com/acme/widget",
+		"https://github.com/acme/widget.git",
+		"https://github.com/acme/widget.GIT",
 		"https://GitHub.com/ACME/Widget.git",
 		"ssh://git@github.com/Acme/Widget.git",
 		"git@github.com:acme/widget.git",
