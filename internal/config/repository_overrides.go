@@ -55,7 +55,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		if parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 			return "", fmt.Errorf("remote URL must not contain opaque data, query, or fragment")
 		}
-		host = strings.ToLower(parsed.Hostname())
+		host = parsed.Hostname()
 		if port := parsed.Port(); port != "" && !isDefaultRemotePort(scheme, port) {
 			portSuffix = ":" + port
 		}
@@ -68,10 +68,14 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		host = strings.ToLower(host)
 		absolutePath = strings.HasPrefix(rawPath, "/")
 	}
 
+	if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+		host = ip.String()
+	} else {
+		host = strings.ToLower(host)
+	}
 	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
 		return "", fmt.Errorf("remote host is missing or invalid")
 	}

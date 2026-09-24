@@ -54,6 +54,8 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 		{name: "absolute SSH URL path", remote: "ssh://git@host/srv/git/team/widget.git", want: "host//srv/git/team/widget"},
 		{name: "absolute IPv6 scp path", remote: "git@[2001:db8::1]:/srv/git/team/widget.git", want: "2001:db8::1//srv/git/team/widget"},
 		{name: "relative IPv6 scp path", remote: "git@[2001:db8::1]:srv/git/team/widget.git", want: "2001:db8::1/srv/git/team/widget"},
+		{name: "expanded IPv6 scp address", remote: "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git", want: "2001:db8::1//srv/git/team/widget"},
+		{name: "expanded IPv6 SSH URL address", remote: "ssh://git@[2001:0db8:0:0:0:0:0:1]/srv/git/team/widget.git", want: "2001:db8::1//srv/git/team/widget"},
 		{name: "malformed IPv6 scp authority", remote: "git@[2001:db8::1:/srv/git/team/widget.git", wantErr: true},
 		{name: "Git protocol default port", remote: "git://host:9418/team/repo.git", want: "host/team/repo"},
 		{name: "Git protocol nondefault port", remote: "git://host:9419/team/repo.git", want: "host:9419/team/repo"},
@@ -136,6 +138,18 @@ func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
 			configKey: "git@[2001:db8::1]:srv/git/team/widget.git",
 			matching:  "git@[2001:db8::1]:srv/git/team/widget",
 			distinct:  "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
+		},
+		{
+			name:      "expanded IPv6 scp config key matches compressed SSH URL",
+			configKey: "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget.git",
+			matching:  "ssh://git@[2001:db8::1]/srv/git/team/widget",
+			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
+		},
+		{
+			name:      "compressed IPv6 SSH URL config key matches expanded scp",
+			configKey: "ssh://git@[2001:db8::1]/srv/git/team/widget.git",
+			matching:  "git@[2001:0db8:0:0:0:0:0:1]:/srv/git/team/widget",
+			distinct:  "git@[2001:db8::1]:srv/git/team/widget.git",
 		},
 	} {
 		tc := tc
