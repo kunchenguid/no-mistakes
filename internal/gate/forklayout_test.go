@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -165,6 +166,59 @@ func TestInitProceedsWhenUpstreamNamesAnUnrelatedRepo(t *testing.T) {
 
 	if _, _, err := Init(context.Background(), d, p, work); err != nil {
 		t.Fatalf("init with an unrelated upstream remote should succeed: %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("resolveForkParent called %d times, want 0", *calls)
+	}
+}
+
+// writeGhHostsConfig writes a synthetic gh hosts.yml naming hosts and points
+// GH_CONFIG_DIR at it, so scm.DetectProviderContext recognizes each as GitHub
+// Enterprise Server via ghKnowsHost without depending on the real machine's gh
+// config. Mirrors internal/scm's own writeGhConfig test helper.
+func writeGhHostsConfig(t *testing.T, hosts ...string) {
+	t.Helper()
+	var body strings.Builder
+	for _, host := range hosts {
+		body.WriteString(host)
+		body.WriteString(":\n  git_protocol: https\n")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(body.String()), 0o644); err != nil {
+		t.Fatalf("write hosts.yml: %v", err)
+	}
+	t.Setenv("GH_CONFIG_DIR", dir)
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+}
+
+func TestInitProceedsWhenUpstreamSharesOwnerAndNameOnADifferentHost(t *testing.T) {
+	// A GitHub fork and its parent always share a host (forking across
+	// instances does not exist), so a same-named "parent-owner/no-mistakes"
+	// on a DIFFERENT Enterprise Server instance from origin can never
+	// actually be origin's parent - even though owner and name read
+	// identically. This must be rejected on host alone, without ever calling
+	// gh (Greptile finding on PR #1183).
+	writeGhHostsConfig(t, "ghe-a.example.com", "ghe-b.example.com")
+
+	originURL := "https://ghe-a.example.com/fork-owner/no-mistakes.git"
+	upstreamURL := "https://ghe-b.example.com/parent-owner/no-mistakes.git"
+	work := setupForkLayoutRepo(t, originURL, upstreamURL)
+
+	calls := stubResolveForkParent(t, func(context.Context, string) (string, bool, error) {
+		t.Fatal("resolveForkParent must not be called when origin and upstream are on different hosts")
+		return "", false, nil
+	})
+
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+
+	if _, _, err := Init(context.Background(), d, p, work); err != nil {
+		t.Fatalf("init with a cross-host upstream should succeed: %v", err)
 	}
 	if *calls != 0 {
 		t.Fatalf("resolveForkParent called %d times, want 0", *calls)
