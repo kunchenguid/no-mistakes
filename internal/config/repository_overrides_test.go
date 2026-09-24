@@ -50,7 +50,8 @@ func TestNormalizeRepositoryRemote(t *testing.T) {
 	}{
 		{name: "HTTPS with user, case, and git suffix", remote: "https://token@GitHub.COM/Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "uppercase git suffix", remote: "https://github.com/acme/widget.GIT", want: "github.com/acme/widget"},
-		{name: "SSH URL", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
+		{name: "SSH URL on a hosted forge", remote: "ssh://git@github.com/Acme/Widget.git", want: "github.com/acme/widget"},
+		{name: "absolute SSH URL path", remote: "ssh://git@host/srv/git/team/widget.git", want: "host//srv/git/team/widget"},
 		{name: "scp-like SSH", remote: "git@GITHUB.com:Acme/Widget.git", want: "github.com/acme/widget"},
 		{name: "without suffix", remote: "https://github.com/acme/widget", want: "github.com/acme/widget"},
 		{name: "nested GitLab namespace", remote: "https://gitlab.example.com/group/sub/project.git", want: "gitlab.example.com/group/sub/project"},
@@ -96,16 +97,22 @@ func TestMergeForRemote_SCPAbsoluteAndRelativePathsStayDistinct(t *testing.T) {
 		distinct  string
 	}{
 		{
-			name:      "absolute config key",
+			name:      "absolute scp config key matches absolute SSH URL",
 			configKey: "git@host:/srv/git/team/widget.git",
+			matching:  "ssh://git@host/srv/git/team/widget",
+			distinct:  "git@host:srv/git/team/widget.git",
+		},
+		{
+			name:      "absolute SSH URL config key matches absolute scp",
+			configKey: "ssh://git@host/srv/git/team/widget.git",
 			matching:  "git@host:/srv/git/team/widget",
 			distinct:  "git@host:srv/git/team/widget.git",
 		},
 		{
-			name:      "relative config key",
+			name:      "relative scp config key rejects absolute SSH URL",
 			configKey: "git@host:srv/git/team/widget.git",
 			matching:  "git@host:srv/git/team/widget",
-			distinct:  "git@host:/srv/git/team/widget.git",
+			distinct:  "ssh://git@host/srv/git/team/widget.git",
 		},
 	} {
 		tc := tc

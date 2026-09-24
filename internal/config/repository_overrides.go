@@ -39,7 +39,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 
 	var host, portSuffix, rawPath, scheme string
 	escapedPath := false
-	absoluteScpPath := false
+	absolutePath := false
 	if strings.Contains(remote, "://") {
 		parsed, err := url.Parse(remote)
 		if err != nil {
@@ -60,6 +60,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		}
 		rawPath = parsed.EscapedPath()
 		escapedPath = true
+		absolutePath = scheme == "ssh" && strings.HasPrefix(rawPath, "/")
 	} else {
 		// Git's scp-like SSH form is [user@]host:path.
 		hostPart, remotePath, found := strings.Cut(remote, ":")
@@ -71,7 +72,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		}
 		host = strings.ToLower(hostPart)
 		rawPath = remotePath
-		absoluteScpPath = strings.HasPrefix(remotePath, "/")
+		absolutePath = strings.HasPrefix(remotePath, "/")
 	}
 
 	if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
@@ -89,7 +90,7 @@ func normalizeRepositoryRemote(remote string) (string, error) {
 		return "", err
 	}
 	pathPrefix := "/"
-	if absoluteScpPath {
+	if absolutePath && !repositoryNamespaceHost(host) {
 		pathPrefix = "//"
 	}
 	return host + portSuffix + pathPrefix + strings.Join(parts, "/"), nil
@@ -170,6 +171,23 @@ func normalizeAzureDevOpsRemote(host string, parts []string) (string, []string, 
 		return "", nil, fmt.Errorf("Azure DevOps remote path must identify an organization, project, and repository")
 	}
 	return "dev.azure.com", parts, nil
+}
+
+func repositoryNamespaceHost(host string) bool {
+	switch {
+	case host == "github.com" || strings.HasSuffix(host, ".github.com"):
+		return true
+	case host == "gitlab.com" || strings.HasSuffix(host, ".gitlab.com"):
+		return true
+	case host == "bitbucket.org" || strings.HasSuffix(host, ".bitbucket.org"):
+		return true
+	case host == "dev.azure.com" || strings.HasSuffix(host, ".dev.azure.com"):
+		return true
+	case strings.HasSuffix(host, ".visualstudio.com"), host == "codeberg.org":
+		return true
+	default:
+		return false
+	}
 }
 
 func isDefaultRemotePort(scheme, port string) bool {
