@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,8 +21,12 @@ import (
 type statusDoc struct {
 	CurrentBranch string `toon:"current_branch"`
 	Outcome       string `toon:"outcome"`
-	NoCI          bool   `toon:"no_ci"`
-	Run           struct {
+	CIReadiness   struct {
+		LastObserved   string `toon:"last_observed"`
+		ObservedAtUnix int64  `toon:"observed_at_unix"`
+		Basis          string `toon:"basis"`
+	} `toon:"ci_readiness"`
+	Run struct {
 		ID      string `toon:"id"`
 		Branch  string `toon:"branch"`
 		Status  string `toon:"status"`
@@ -131,7 +136,7 @@ func TestAxiStatusReportsThisBranchesOwnRun(t *testing.T) {
 	}
 }
 
-func TestAxiStatusReportsPersistedChecksPassedForExactRun(t *testing.T) {
+func TestAxiStatusReportsPersistedCIReadinessForExactRun(t *testing.T) {
 	repoDir, _, database, repo := setupAxiQueryRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/readiness")
 	chdir(t, repoDir)
@@ -159,23 +164,29 @@ func TestAxiStatusReportsPersistedChecksPassedForExactRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	doc := decodeStatusDoc(t, axiStatusOutput(t, selected.ID))
-	if doc.Run.ID != selected.ID || doc.Run.Status != "running" || doc.Run.HeadSHA != headSHA || doc.Run.PR != prURL || doc.Outcome != "checks-passed" || doc.NoCI {
-		t.Fatalf("read-only CI-ready status = %+v", doc)
+	stored, err := database.GetRun(selected.ID)
+	if err != nil || stored == nil || stored.CIReadyAt == nil {
+		t.Fatalf("stored CI readiness = %+v, %v", stored, err)
+	}
+	for _, runID := range []string{"", selected.ID} {
+		doc := decodeStatusDoc(t, axiStatusOutput(t, runID))
+		if doc.Run.ID != selected.ID || doc.Run.Status != "running" || doc.Run.HeadSHA != headSHA || doc.Run.PR != prURL || doc.Outcome != "" || doc.CIReadiness.LastObserved != "checks-passed" || doc.CIReadiness.ObservedAtUnix != *stored.CIReadyAt || doc.CIReadiness.Basis != "green-checks" {
+			t.Fatalf("read-only CI observation = %+v", doc)
+		}
 	}
 	if err := database.SetRunCIReadyWithReason(selected.ID, true, true); err != nil {
 		t.Fatal(err)
 	}
 	declaredNoCI := decodeStatusDoc(t, axiStatusOutput(t, selected.ID))
-	if declaredNoCI.Run.ID != selected.ID || declaredNoCI.Outcome != "checks-passed" || !declaredNoCI.NoCI {
+	if declaredNoCI.Run.ID != selected.ID || declaredNoCI.Outcome != "" || declaredNoCI.CIReadiness.LastObserved != "checks-passed" || declaredNoCI.CIReadiness.Basis != "trusted-no-ci-declaration" {
 		t.Fatalf("read-only declared no-CI status = %+v", declaredNoCI)
 	}
 
 	if err := database.SetRunCIReady(selected.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)).Outcome; got != "" {
-		t.Fatalf("cleared readiness outcome = %q, want none", got)
+	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)).CIReadiness.LastObserved; got != "" {
+		t.Fatalf("cleared readiness observation = %q, want none", got)
 	}
 	if err := database.SetRunCIReady(selected.ID, true); err != nil {
 		t.Fatal(err)
@@ -183,22 +194,62 @@ func TestAxiStatusReportsPersistedChecksPassedForExactRun(t *testing.T) {
 	if err := database.UpdateStepStatus(ci.ID, types.StepStatusFixing); err != nil {
 		t.Fatal(err)
 	}
-	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)).Outcome; got != "" {
-		t.Fatalf("fixing CI outcome = %q, want none", got)
+	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)); got.Outcome != "" || got.CIReadiness.LastObserved != "checks-passed" {
+		t.Fatalf("fixing CI observation = %+v", got)
 	}
 	if err := database.UpdateStepStatus(ci.ID, types.StepStatusRunning); err != nil {
 		t.Fatal(err)
 	}
 	run(t, repoDir, "git", "checkout", "-b", "observer")
 	foreign := decodeStatusDoc(t, axiStatusOutput(t, selected.ID))
-	if foreign.Run.ID != "" || foreign.OtherBranchRun.ID != selected.ID || foreign.OtherBranchRun.HeadSHA != headSHA || foreign.OtherBranchRun.PR != prURL || foreign.Outcome != "checks-passed" {
+	if foreign.Run.ID != "" || foreign.OtherBranchRun.ID != selected.ID || foreign.OtherBranchRun.HeadSHA != headSHA || foreign.OtherBranchRun.PR != prURL || foreign.Outcome != "" || foreign.CIReadiness.LastObserved != "checks-passed" {
 		t.Fatalf("explicit other-branch CI-ready status = %+v", foreign)
 	}
 	if err := database.UpdateRunStatus(selected.ID, types.RunCompleted); err != nil {
 		t.Fatal(err)
 	}
-	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)).Outcome; got == "checks-passed" {
-		t.Fatalf("terminal run outcome = %q, want terminal outcome", got)
+	if got := decodeStatusDoc(t, axiStatusOutput(t, selected.ID)); got.Outcome == "checks-passed" || got.CIReadiness.LastObserved != "checks-passed" {
+		t.Fatalf("terminal run status = %+v", got)
+	}
+}
+
+func TestAxiStatusStaleOfflineDatabaseReportsDatedEvidence(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "feature/offline")
+	chdir(t, repoDir)
+
+	headSHA := strings.Repeat("b", 40)
+	prURL := "https://github.com/kunchenguid/no-mistakes/pull/456"
+	selected, err := database.InsertRun(repo.ID, "feature/offline", headSHA, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(selected.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(selected.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	ci, err := database.InsertStepResult(selected.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(ci.ID, types.StepStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	staleAt := int64(1_600_000_000)
+	connection, err := sql.Open("sqlite", p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Exec("UPDATE runs SET ci_ready_at = ? WHERE id = ?", staleAt, selected.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := decodeStatusDoc(t, axiStatusOutput(t, selected.ID))
+	if doc.Run.ID != selected.ID || doc.Run.PR != prURL || doc.Run.HeadSHA != headSHA || doc.Outcome != "" || doc.CIReadiness.LastObserved != "checks-passed" || doc.CIReadiness.ObservedAtUnix != staleAt || doc.CIReadiness.Basis != "green-checks" {
+		t.Fatalf("stale offline observation = %+v", doc)
 	}
 }
 

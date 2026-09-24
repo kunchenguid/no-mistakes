@@ -88,6 +88,17 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 		fields = append(fields, toon.Field{Key: "current_branch", Value: branch})
 	}
 	fields = append(fields, runObjectFieldWithKey(runKey, rv))
+	if run.CIReadyAt != nil {
+		basis := "green-checks"
+		if run.CIReadyNoCI {
+			basis = "trusted-no-ci-declaration"
+		}
+		fields = append(fields, toon.Field{Key: "ci_readiness", Value: toon.NewObject(
+			toon.Field{Key: "last_observed", Value: "checks-passed"},
+			toon.Field{Key: "observed_at_unix", Value: *run.CIReadyAt},
+			toon.Field{Key: "basis", Value: basis},
+		)})
+	}
 	if syncField := cachedBranchSyncField(cmd, run.ID); syncField != nil {
 		fields = append(fields, *syncField)
 	}
@@ -103,11 +114,6 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 			fields = append(fields, inspectionOnlyGateFields(gate, run.ID)...)
 		} else {
 			fields = append(fields, gateFields(gate)...)
-		}
-	} else if rv.Status == string(types.RunRunning) && ciReadyToMerge(rv) {
-		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
-		if rv.CIReadyNoCI {
-			fields = append(fields, toon.Field{Key: "no_ci", Value: true})
 		}
 	} else if terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeForRun(rv)})
