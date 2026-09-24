@@ -124,3 +124,40 @@ func TestGetChecksKeepsGenuineWorkflowRunFailureFailing(t *testing.T) {
 		t.Fatalf("failed workflow run = %+v, want fail bucket and AwaitingApproval false", got)
 	}
 }
+
+// Only a PRESENT, empty job list is evidence that the run executed nothing.
+// A response whose `jobs` key is missing, or explicitly null, carries no job
+// data at all: that is unreadable, not proof of a hold, so the run keeps the
+// failing classification it had before this behaviour existed.
+func TestGetChecksKeepsActionRequiredWorkflowRunFailingWhenJobsAreAbsent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"jobs key missing", `{}` + "\n"},
+		{"jobs explicitly null", `{"jobs":null}` + "\n"},
+		{"jobs missing alongside other fields", `{"databaseId":101}` + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			host := New(githubTestCmdFactory(heldWorkflowRunResponses(heldWorkflowRun, map[string]githubTestResponse{
+				"gh run view 101 --repo test/repo --json jobs": {stdout: tc.body},
+			})), nil, "", "test/repo")
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+			if err != nil {
+				t.Fatalf("GetChecks() error = %v", err)
+			}
+			if len(checks) != 1 {
+				t.Fatalf("GetChecks() returned %d checks, want 1: %+v", len(checks), checks)
+			}
+			if got := checks[0]; got.Bucket != scm.CheckBucketFail || got.AwaitingApproval {
+				t.Fatalf("action_required run with absent job data = %+v, want fail bucket and AwaitingApproval false", got)
+			}
+		})
+	}
+}

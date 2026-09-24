@@ -888,11 +888,13 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		// ACTION_REQUIRED after executing jobs, which keeps its failing
 		// classification. It is read from the run itself, and only for a run
 		// already reporting ACTION_REQUIRED, so no other conclusion pays for
-		// it. The read is positive evidence: a run whose jobs cannot be read
-		// stays a failure rather than being guessed as a hold.
+		// it. The read is positive evidence, and only a PRESENT and empty job
+		// list is that evidence: a failed read, and a response carrying no job
+		// list at all, are unreadable job data and leave the run a failure
+		// rather than being guessed as a hold.
 		awaitingApproval := false
 		if bucket == scm.CheckBucketFail && state == "ACTION_REQUIRED" {
-			if jobs, jobsErr := h.runJobs(ctx, strconv.FormatInt(run.ID, 10)); jobsErr == nil && len(jobs) == 0 {
+			if jobs, present, jobsErr := h.runJobs(ctx, strconv.FormatInt(run.ID, 10)); jobsErr == nil && present && len(jobs) == 0 {
 				awaitingApproval = true
 				bucket = scm.CheckBucketPending
 			}
@@ -1044,28 +1046,38 @@ func (h *Host) PreRunFailures(ctx context.Context, checks []scm.Check) ([]bool, 
 	return result, nil
 }
 
-// runJobs reads a run's jobs (with their steps) from Actions, reporting why a
-// read failed. A caller that must tell "this run ran no jobs" from "this run's
-// jobs could not be read" - the two are the same empty slice - reads this one.
-func (h *Host) runJobs(ctx context.Context, runID string) ([]githubRunJob, error) {
+// runJobs reads a run's jobs (with their steps) from Actions, reporting both
+// why a read failed and whether the response carried a job list at all. A
+// caller that must tell "this run executed no jobs" from "this run's job data
+// is not there" reads this one: an error, an absent list, and a present empty
+// list are three different answers that all look like an empty slice.
+//
+// present is true only for a job array the response actually carried. A
+// missing "jobs" key and an explicit null both decode to a nil pointer and
+// report false, so absent job data is never mistaken for a run that ran
+// nothing.
+func (h *Host) runJobs(ctx context.Context, runID string) (jobs []githubRunJob, present bool, err error) {
 	viewArgs := append([]string{"run", "view", runID}, h.repoArgs()...)
 	viewArgs = append(viewArgs, "--json", "jobs")
 	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("gh run view %s: %w", runID, err)
+		return nil, false, fmt.Errorf("gh run view %s: %w", runID, err)
 	}
-	var payload githubRunView
+	var payload githubRunJobsView
 	if err := json.Unmarshal(out, &payload); err != nil {
-		return nil, fmt.Errorf("parse jobs for run %s: %w", runID, err)
+		return nil, false, fmt.Errorf("parse jobs for run %s: %w", runID, err)
 	}
-	return payload.Jobs, nil
+	if payload.Jobs == nil {
+		return nil, false, nil
+	}
+	return *payload.Jobs, true, nil
 }
 
 // fetchRunJobs reads a run's jobs (with their steps) from Actions. A run it
 // cannot read yields no jobs, so every check on it fails closed to a genuine
 // failure rather than being guessed as infrastructure.
 func (h *Host) fetchRunJobs(ctx context.Context, runID string) []githubRunJob {
-	jobs, err := h.runJobs(ctx, runID)
+	jobs, _, err := h.runJobs(ctx, runID)
 	if err != nil {
 		return nil
 	}
@@ -1250,6 +1262,14 @@ type githubRun struct {
 
 type githubRunView struct {
 	Jobs []githubRunJob `json:"jobs"`
+}
+
+// githubRunJobsView decodes the same response as githubRunView, but keeps
+// whether the "jobs" key was there. The pointer is nil for both a missing key
+// and an explicit null, and non-nil for a present array including an empty
+// one, which is the distinction runJobs reports as present.
+type githubRunJobsView struct {
+	Jobs *[]githubRunJob `json:"jobs"`
 }
 
 type githubRunJob struct {
