@@ -166,7 +166,7 @@ func TestReviewStep_NonSchemaFailuresAreNotRetried(t *testing.T) {
 				<-ctx.Done()
 				return rejectedStructuredOutputError{message: `pi output parse: JSON output missing required field "risk_level"`}
 			},
-			wantError: "reached its absolute wall-clock limit after 20ms",
+			wantError: "reached its invocation budget after 20ms",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

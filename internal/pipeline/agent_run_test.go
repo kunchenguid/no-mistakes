@@ -1,9 +1,13 @@
 package pipeline
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +63,127 @@ func TestRunAgent_HangingAgentFailsAfterTimeout(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("hung for %s, want a bounded fail", elapsed)
+	}
+}
+
+func TestAgentTimeoutHardCapAndIdleGrace(t *testing.T) {
+	t.Parallel()
+	if got := AgentTimeoutHardCap(30 * time.Minute); got != 60*time.Minute {
+		t.Fatalf("hard cap for 30m = %s, want 60m", got)
+	}
+	if got := AgentTimeoutIdleGrace(30 * time.Minute); got != config.DefaultStepQuietWarning {
+		t.Fatalf("idle grace for 30m = %s, want %s", got, config.DefaultStepQuietWarning)
+	}
+	if got := AgentTimeoutIdleGrace(20 * time.Millisecond); got != 20*time.Millisecond {
+		t.Fatalf("idle grace for 20ms = %s, want 20ms", got)
+	}
+}
+
+func TestRunAgent_StreamingPastStallBudgetSucceeds(t *testing.T) {
+	t.Parallel()
+	const stall = 80 * time.Millisecond
+	done := time.NewTimer(stall + stall/2)
+	defer done.Stop()
+	ag := &hangingAgent{
+		name: "slow-but-working",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(5 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-done.C:
+					return &agent.Result{Text: "finished after stall budget"}, nil
+				case <-tick.C:
+					opts.OnChunk("working\n")
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err != nil {
+		t.Fatalf("working agent cut at the stall budget: %v", err)
+	}
+	if result == nil || result.Text != "finished after stall budget" {
+		t.Fatalf("result = %+v, want the turn that finished after the stall budget", result)
+	}
+}
+
+func TestRunAgent_SilentAgentDoesNotWaitForHardCap(t *testing.T) {
+	t.Parallel()
+	const stall = 250 * time.Millisecond
+	ag := &hangingAgent{
+		name: "mute",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= AgentTimeoutHardCap(stall) {
+		t.Fatalf("silent agent hung for %s, want a cancel at the %s stall budget not the %s hard cap", elapsed, stall, AgentTimeoutHardCap(stall))
+	}
+}
+
+func TestRunAgent_StreamingAgentHitsHardCap(t *testing.T) {
+	t.Parallel()
+	const stall = 40 * time.Millisecond
+	ag := &hangingAgent{
+		name: "never-finishes",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(2 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-tick.C:
+					opts.OnChunk("still going\n")
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "last produced output") {
+		t.Fatalf("error = %q, want a busy-agent diagnosis at the hard cap", err)
+	}
+	if !strings.Contains(err.Error(), "agent timed out at its 80ms hard cap (twice the 40ms stall budget") {
+		t.Fatalf("error = %q, want the hard cap named as the bound", err)
+	}
+	if elapsed < stall {
+		t.Fatalf("busy agent cut after %s, want to pass the %s stall budget", elapsed, stall)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("busy agent hung for %s, want a bounded hard-cap fail", elapsed)
 	}
 }
 
@@ -652,4 +777,276 @@ func TestExecutor_DirectAgentRunUnderACallerDeadlineRefusesLateWork(t *testing.T
 	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
 		t.Fatal("expected the expired caller deadline to fail the run")
 	}
+}
+
+func TestRunAgent_OperatorAbortWithACauseIsNotDressedUpAsABudgetCut(t *testing.T) {
+	t.Parallel()
+	aborted := errors.New(types.RunCancelReasonAbortedByUser)
+	parent, cancel := context.WithCancelCause(context.Background())
+	ag := &hangingAgent{
+		name: "aborted",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			opts.OnChunk("working\n")
+			<-ctx.Done()
+			return nil, errors.New("signal: killed")
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    parent,
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: time.Minute},
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel(aborted)
+	}()
+
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if !errors.Is(err, aborted) || err.Error() != aborted.Error() {
+		t.Fatalf("error = %v, want the operator's abort cause verbatim", err)
+	}
+	if errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, an abort must not match the agent budget", err)
+	}
+}
+
+func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "suite-runner",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// A quiet agent blocked on a long tool call: after its startup
+			// output it announces the call and spawns the child at once, and
+			// that child runs past the stall budget while the agent itself
+			// writes nothing.
+			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+				opts.OnChunk("init\n")
+				time.Sleep(300 * time.Millisecond)
+				opts.OnChunk("running the suite\n")
+				started()
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err != nil {
+		t.Fatalf("agent waiting on a live child cut after %s: %v", time.Since(start), err)
+	}
+	if result == nil || result.Text != "done" {
+		t.Fatalf("result = %+v, want the finished turn", result)
+	}
+}
+
+func TestRunAgent_ToolAfterAnOnlyOutputBeforeAnySampleStillExtends(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "early-talker",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The agent's only observed output lands right at launch, before
+			// any child sample settles; its later bytes are throttled away, and
+			// the long tool it starts afterwards is the only sign of work.
+			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+				opts.OnChunk("init\n")
+				time.Sleep(200 * time.Millisecond)
+				started()
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err != nil {
+		t.Fatalf("agent waiting on a live child cut after %s: %v", time.Since(start), err)
+	}
+	if result == nil || result.Text != "done" {
+		t.Fatalf("result = %+v, want the finished turn", result)
+	}
+}
+
+func TestRunAgent_ToolAnnouncedByTheFirstOutputOutlastsTheStallBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "first-word-is-a-tool",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The agent's very first output only announces a tool call, and
+			// the tool starts at once and runs quietly past the stall budget.
+			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+				time.Sleep(1200 * time.Millisecond)
+				opts.OnChunk("running the suite\n")
+				started()
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err != nil {
+		t.Fatalf("agent whose first output announced a live tool cut after %s: %v", time.Since(start), err)
+	}
+	if result == nil || result.Text != "done" {
+		t.Fatalf("result = %+v, want the finished turn", result)
+	}
+}
+
+func TestRunAgent_HelperStartedBeforeTheFirstOutputDoesNotExtendTheBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "hung-after-init",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// A stdio MCP server or an acpx inner agent starts after launch,
+			// the agent's first output follows, and then the provider hangs.
+			return runLaunchedShell(ctx, opts, "sleep 0.3; sleep 6 & echo ready; read go; wait", func(_, ready func()) {
+				ready()
+				time.Sleep(1200 * time.Millisecond)
+				opts.OnChunk("init\n")
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= AgentTimeoutHardCap(stall) {
+		t.Fatalf("hung agent with a helper started before its first output ran %s, want a cut before the %s hard cap", elapsed, AgentTimeoutHardCap(stall))
+	}
+}
+
+func TestRunAgent_HelperStartedBeforeTheLastOutputDoesNotExtendTheBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "wedged-with-helper",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// A long-lived helper (an ACP agent under acpx, a stdio MCP server)
+			// starts with the agent, which then talks and hangs.
+			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(_, _ func()) {
+				time.Sleep(1200 * time.Millisecond)
+				opts.OnChunk("thinking\n")
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= AgentTimeoutHardCap(stall) {
+		t.Fatalf("hung agent with a pre-output helper ran %s, want a cut before the %s hard cap", elapsed, AgentTimeoutHardCap(stall))
+	}
+	if !strings.Contains(err.Error(), "stall budget") {
+		t.Fatalf("error = %q, want the stall budget named as the bound", err)
+	}
+}
+
+func TestRunAgent_LaunchedAgentWithoutAChildIsCutAtTheStallBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = time.Second
+	ag := &hangingAgent{
+		name: "wedged",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return runLaunchedShell(ctx, opts, "exec sleep 10", nil)
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= AgentTimeoutHardCap(stall) {
+		t.Fatalf("childless agent ran %s, want a cut at the %s stall budget", elapsed, stall)
+	}
+	if !strings.Contains(err.Error(), "stall budget") {
+		t.Fatalf("error = %q, want the stall budget named as the bound", err)
+	}
+}
+
+// runLaunchedShell stands in for a native adapter: it launches script as the
+// agent subprocess, reports its start, runs drive while the script is alive
+// (drive may call started to send the script one line on stdin, or ready to
+// wait for one line from its stdout), and reports the exit when the script
+// ends.
+func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string, drive func(started, ready func())) (*agent.Result, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	opts.OnLifecycle(agent.LifecycleEvent{Phase: agent.LifecyclePhaseStart, PID: cmd.Process.Pid})
+	if drive != nil {
+		lines := bufio.NewReader(stdout)
+		drive(func() { _, _ = io.WriteString(stdin, "go\n") }, func() { _, _ = lines.ReadString('\n') })
+	}
+	err = cmd.Wait()
+	opts.OnLifecycle(agent.LifecycleEvent{Phase: agent.LifecyclePhaseExit, PID: cmd.Process.Pid})
+	if err != nil {
+		return nil, err
+	}
+	return &agent.Result{Text: "done"}, nil
 }
