@@ -162,6 +162,7 @@ Previous lint findings to address:
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
 	output, exitCode, err := runStepShellCommand(sctx, lintCmd)
 	if err != nil {
+		logConfiguredCommandOutput(sctx, output, types.StepLint)
 		return nil, fmt.Errorf("run lint command: %w", err)
 	}
 

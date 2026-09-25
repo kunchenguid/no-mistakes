@@ -133,6 +133,7 @@ Previous test findings to address:
 		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
 		output, exitCode, err := runStepShellCommand(sctx, testCmd)
 		if err != nil {
+			logConfiguredCommandOutput(sctx, output, types.StepTest)
 			return nil, fmt.Errorf("run test command: %w", err)
 		}
 		tested = append(tested, testCmd)
