@@ -31,8 +31,9 @@ jobs:
   # is macOS-only). Signing happens before archiving and before the checksums job
   # so the published tarball and its SHA-256 both cover the signed binary. The
   # signing certificate is gated behind the release-signing environment and never
-  # leaves the runner. The "macOS Release Signing" section of AGENTS.md owns the
-  # permanent-identity invariant and the full signing contract.
+  # leaves the runner. The "macOS Release Signing" section of
+  # .agents/skills/release-signing/SKILL.md owns the permanent-identity invariant
+  # and the full signing contract.
   build-darwin:
     runs-on: macos-latest
     environment: release-signing
