@@ -940,7 +940,10 @@ type Eval struct {
 // that still sets one keeps parsing under the strict known-fields rule. Both
 // are pointers so a set key is distinguishable from an absent one and can be
 // reported as deprecated at load time; neither configures anything. Any other
-// subkey under jev: is rejected like any unknown field.
+// subkey under jev: is rejected like any unknown field. Do not repurpose the
+// jev key. The pre-brief was retired because its candidate generator excluded
+// changed files by construction while nearly every finding lands in one;
+// records and method notes stay in benchmarks/issue-1055 and issue-1125.
 type retiredJev struct {
 	ReviewAssist          *bool `yaml:"review_assist"`
 	CandidateExcerptBytes *int  `yaml:"candidate_excerpt_bytes"`

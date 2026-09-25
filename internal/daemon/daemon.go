@@ -188,7 +188,8 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	// bound, and held for the rest of the process lifetime - otherwise a
 	// second daemon racing to start against the same root can mark another
 	// live daemon's active runs as crashed and delete worktrees out from
-	// under it (see AGENTS.md "Daemon Singleton Lock").
+	// under it (see "Daemon Singleton Lock" in
+	// .agents/skills/daemon-runtime/SKILL.md).
 	lock, err := acquireSingletonLock(p)
 	if err != nil {
 		return err

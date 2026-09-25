@@ -1,6 +1,6 @@
 ---
 name: pr-publication-safety
-description: Use when changing PR body rendering, home-path redaction, artifact path publication, or pipeline-attestation markers.
+description: Use when changing PR body rendering, home-path redaction, artifact path publication, pipeline-attestation markers, or pre-push attestation.
 user-invocable: false
 metadata:
   internal: true
@@ -16,3 +16,7 @@ metadata:
 - A CI repair that publishes a new head rewrites only that live marker's `head_sha` in the current PR body (`restampPublishedAttestation`) and does not send a title. It never inserts a marker that was not already there. Hosts without a PR content reader skip the restamp instead of failing the push. Regressions: `TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes`, `TestCIStep_PublishRepairDoesNotMintAttestation`, `TestCIStep_PublishRepairSkipsRestampWithoutReader`, `TestRestampPRAttestation_PreservesContentEditedWhilePreparingRewrite`, `TestUpdatePROmitsTitleWhenEmpty`.
 - Neutralize at the assembly choke point (`appendGeneratedSectionsToCleanBodyWithinLimit` plus the two intent paths), never per render path. `pipelineMD` alone carries the real marker and is left intact; `BuildPipelineSummaryFor` neutralizes its own step-detail blocks, which quote agent text. A first attempt put this in `escapePipelineFoldMarkers` - per-render-path - and shipped three live foreign markers to #831 anyway. Regressions: `TestPRStep_ForeignAttestationsInEveryComponentDoNotShadowTheRealOne` (all components at once), plus the per-component guards in `pr_test.go`.
 - Regressions: `internal/safepath/redact_test.go`, `internal/pipeline/steps/pr_homepath_test.go`.
+
+**Pre-Push Pipeline Attestation**
+
+- `publishRunHead` must write an existing PR attestation for the proposed head before pushing it on every supported provider with raw content reads. `docs/src/content/docs/reference/repo-config.md` (`pr.template`) owns provider-specific ownership/budget and visible Bitbucket metadata caveats. The protocol has single-publisher scope because the daemon enforces one active run per repository branch; do not add cross-publisher coordination without a separate requirement. Detailed behavior is owned by `docs/src/content/docs/reference/pipeline-steps.md`; local rationale lives in `attestHeadBeforePush` and `publishRunHead`. Regressions: `TestPushStep_AttestsHeadBeforePush`, `TestPushStep_AttestationWriteFailureAbortsBeforePush`, `TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed`, `TestPushStep_PushFailureAfterAttestationLeavesBodyAhead`, and `TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes`.

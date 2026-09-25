@@ -248,6 +248,7 @@ type opencodeStreamState struct {
 	// toolInvoked records that the turn invoked at least one tool. Unlike
 	// pendingStepSeparator it is never cleared: it is the durable evidence
 	// that a failed turn may have left side effects behind, which is what
-	// decides whether the turn can be retried in a fresh session.
+	// decides whether the turn can be retried in a fresh session. A
+	// step-finish alone never sets it: every turn emits one.
 	toolInvoked bool
 }

@@ -1,6 +1,6 @@
 ---
 name: pr-enforcement-action
-description: Use when changing or migrating the shared require-no-mistakes PR-enforcement action or its workflow caller.
+description: Use when changing or migrating the shared require-no-mistakes PR-enforcement action, its live PR lookup, or its workflow caller.
 user-invocable: false
 metadata:
   internal: true
@@ -15,3 +15,8 @@ metadata:
 - All callers use the T2 trigger set (`opened`, `edited`, `synchronize`, `reopened`). Since the pre-push attestation change (#994), `synchronize` is the event that judges a pipeline-pushed head, so it is restored rather than dropped after `head_sha` binding.
 - Migrating a repository is rarely a one-file swap. Repos whose tests extract and execute the inline `run:` block (an `extractGateScript()` helper and its gate test) break at import once the block is gone, and repo-level `AGENTS.md` notes that tell agents to hand-copy the gate from a sibling repository must be rewritten - that copying is the drift the shared action exists to remove.
 - Regressions: `require_no_mistakes_action_test.go` executes `verify.py` the way a runner does (verdicts, exemption surface, event-payload binding); `workflow_no_mistakes_required_test.go` owns the CALLER - immutable-SHA pin, single delegating step, exemptions, triggers, concurrency identity, fork boundary - and drives the real action through the event payload.
+
+**Stale Actions Event Replay Can Resurrect a Superseded Check (`require-no-mistakes`)**
+
+- `.github/actions/require-no-mistakes/verify.py` reads the PR body/head SHA it verifies from a **live** GitHub REST API lookup first (via `live_pr_facts`, a direct `urllib.request` GET to `{GITHUB_API_URL}/repos/{repo}/pulls/{number}` with the forwarded `github-token` as a Bearer token, no `gh` CLI), not from `GITHUB_EVENT_PATH`, whenever a caller forwards no explicit `pr-body`/`pr-head-sha` (the documented zero-input integration every caller actually uses). A GitHub Actions job **rerun** replays the event payload archived at the run's *original* trigger rather than delivering a fresh one; re-running an old, already-superseded failed run therefore used to reproduce its stale verdict with a brand-new check-run timestamp, which both GitHub's own required-check view and `collapseLatestByName` (`internal/scm/github/github.go`) treat as current - pinning a stale FAILURE next to an already-green commit with no clean recovery short of a new SHA. When a required live lookup is unavailable (no `pull-requests: read`, no token, or the API call fails), the gate fails closed rather than certifying compliance from the possibly-stale event payload; explicit `pr-body`/`pr-head-sha` inputs always skip the live lookup and win, unchanged.
+- Tests: `require_no_mistakes_action_test.go` (`TestRequireActionLiveLookupOverridesStaleArchivedEvent` and siblings).

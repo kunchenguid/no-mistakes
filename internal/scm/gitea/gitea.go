@@ -101,6 +101,10 @@ func (h *Host) Available(ctx context.Context) error {
 	return nil
 }
 
+// giteaPRListItem is one element of `tea pulls list --output json`, which
+// renders every field (index included) as a JSON string. The single-PR view
+// renders the same fields with native JSON types (giteaPRView), so the two
+// shapes are deliberately separate structs; do not unify them.
 type giteaPRListItem struct {
 	Index string `json:"index"`
 	State string `json:"state"`

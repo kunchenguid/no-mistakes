@@ -1,6 +1,6 @@
 ---
 name: documentation-guidance
-description: Use when changing documentation ownership, generated agent guidance, or review auto-fix guidance.
+description: Use when changing documentation ownership, generated agent guidance, review auto-fix guidance, the combined document+lint housekeeping pass, or the agent memory-file prompt rules.
 user-invocable: false
 metadata:
   internal: true
@@ -19,3 +19,9 @@ metadata:
 - Agent-driving guidance is owned by the skill body and the live `axi` output strings (`internal/cli/axi*.go`); `docs/src/content/docs/guides/agents.md` carries only the canonical invariant sentences pinned by `internal/cli/axi_guidance_test.go` plus a pointer to the skill. When you change driving guidance, change the skill body and the point-of-use `axi` strings together; that drift test is the sync check.
 - The shared default test-quality rule lives in `internal/testguidance`; render it only into the task-first skill and pipeline roles that can author, repair, or review tests. Its fake-agent prompt tests are the intentional generated-interface contract, not source-text checks.
 - Review auto-fix is disabled by default (`auto_fix.review: 0` in `config.go` `autoFixDefaults`), so blocking and ask-user review findings park for an agent decision; keep the skill, the live `axi` gate `note`, and docs qualified if you touch review auto-fix.
+
+**Combined Document+Lint Housekeeping Pass**
+
+- When `commands.lint` is empty, the document step performs both duties in one agent invocation and stashes the lint half on `RunShared` (consume-once); the lint step consumes it instead of paying a second cold pass. Neither duty is ever silently dropped: a skipped pass, untrusted structured output, or a lint fix round falls back to lint's own agent pass. Configured `commands.lint` stays a first-class deterministic gate. Uncategorized findings fail safe to the stricter documentation gate.
+- The document prompt enforces the placement policy (one owner per fact, stale duplicates become pointers, no AGENTS.md postmortems, scope limited to docs the change made stale). Do not reintroduce exhaustive-corpus-sweep language; it caused doc commits in 90 of 121 audited PRs. Contract test: `TestDocumentStep_PromptAppliesPlacementPolicy`; behavior tests: `internal/pipeline/steps/housekeeping_test.go`.
+- Agent memory files are hands-off for every step prompt: `agent.MemoryFilesRule` (`internal/agent/memory_files.go`) is appended to the review/test/lint/PR/intent prompts and through `fixerPrompt` to every shared fix turn and the CI repair; the rebase/merge conflict resolvers use `agent.MemoryFilesConflictRule` so a conflicted AGENTS.md stays resolvable; the document prompt instead carries a correction-only exception (correct factually wrong content only - never add because something is missing). This is a prompt contract, not a file guard. Prompt-contract tests: `internal/pipeline/steps/memory_files_test.go`, `internal/intent/*_test.go`.

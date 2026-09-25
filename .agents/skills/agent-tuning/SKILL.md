@@ -1,6 +1,6 @@
 ---
 name: agent-tuning
-description: Use when changing agent model or effort configuration, adapter mappings, or eval candidate profiles.
+description: Use when changing agent model or effort configuration, per-run Pi profile pins, adapter mappings, or eval candidate profiles.
 user-invocable: false
 metadata:
   internal: true
@@ -15,3 +15,7 @@ metadata:
 - Eval candidates are `agent,model=<model>[,effort=<level>]` (the previous `agent+model` spelling is refused with a migration message), effort is part of the persisted candidate identity, and `agentNeutralGlobalConfig` strips `agent`, `agent_args_override`, and `agent_config` so a replay never inherits the capturing machine's pins.
 - Keep eval replay identity comparison centralized in `agentcfg.ServedMatchesRequested`; do not compare an adapter's reported model directly at call sites. The user-facing normalization semantics and candidate guidance live in [`docs/src/content/docs/reference/eval.md`](../../../docs/src/content/docs/reference/eval.md).
 - Regressions: `internal/agentcfg`, `internal/agent/profile_test.go`, `internal/config/config_agent_config_test.go`, `internal/daemon/pipeline_agent_profile_test.go`, `TestParseCandidate*`, `TestReplayPinsCandidateModelAndEffortOnTheHarness`, `TestCaptureStripsEveryHarnessPinFromThePinnedConfig`, `TestServedMatchesRequested`, `TestReplayPiModelIdentityComparison`.
+
+**Per-Run Pi Profile Pin**
+
+- A per-run Pi pin (`axi run` / `rerun` `--model`/`--effort`) is immutable once the run exists (`runs.pi_profile`, plus an immutability trigger) and must be fully validated **before** it supersedes an active validation: `startRunWithIntentSourceLocked` resolves it against global `agent`/`review_agents`/`agent_args_override.pi` and re-checks the merged trusted default-branch `agent` selection (`ResolvePiProfile`, `validatePiProfileAgentsBeforeCancel`), while the post-merge `ValidatePiProfileAgents`/`ApplyPiProfile` pass at worktree setup and `ApplyPiProfile` in `loadRecoveredConfig` remain the enforcement after cancellation. User semantics are owned by `docs/src/content/docs/reference/global-config.md` (Per-run Pi profiles). Regressions: `internal/config/pi_profile_test.go`, `internal/daemon/pi_profile_test.go` (`TestPiProfileInvalidLaunchDoesNotSupersedeActiveRun`, `TestPiProfileTrustedRepoAgentOverrideDoesNotSupersedeActiveRun`, `TestPiProfileRecoveryUsesPersistedPinAndLegacyUsesLiveConfig`), `internal/db/pi_profile_test.go`, `internal/cli/pi_profile_test.go`, e2e `TestPiRunProfileSurvivesGlobalChangesAcrossEveryDuty`.

@@ -1,6 +1,6 @@
 ---
 name: release-signing
-description: Use when changing macOS release signing, release artifact verification, or the release workflow.
+description: Use when changing macOS release signing, release artifact verification, the release workflow, or the self-update channel manifest.
 user-invocable: false
 metadata:
   internal: true
@@ -14,3 +14,7 @@ metadata:
 - Signing happens before tarball creation and checksum generation, and the verify gate fails the release closed on any missing or ambiguous signature, wrong Team ID, non-permanent identifier, content-based (`cdhash`) requirement, missing hardened runtime or timestamp, or wrong architecture.
 - Mechanics live in `.github/workflows/release.yml`; the contract is pinned by the root `TestReleaseWorkflow*` static tests in `workflow_release_signing_test.go`, and secret values are never recorded here or in any test fixture.
 - Notarization, stapling, a PKG, Homebrew, and universal binaries are intentionally out of scope for this phase.
+
+**Self-update channel manifest (`internal/update`)**
+
+- `no-mistakes update` reads version metadata exclusively from `channels.json` on the GitHub release-asset CDN (`releases/download/channels/channels.json`), not `api.github.com`; a token is never required. Publisher: `cmd/publish-channels`, invoked from `.github/workflows/publish-channels.yml` (reusable `workflow_call`, plus `workflow_dispatch` / `on: release` backstops). `release.yml` calls it after `finalize` because GitHub does not cascade `GITHUB_TOKEN` `release` events, so release-please (pre)releases would otherwise leave the channel stale. Regressions: `internal/update/channels_test.go`, `workflow_publish_channels_test.go`, `TestReleaseWorkflowCallsPublishChannelsAfterFinalize`.

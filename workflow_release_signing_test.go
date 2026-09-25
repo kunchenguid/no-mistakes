@@ -17,7 +17,8 @@ import (
 // guarded here. Against the pre-signing workflow these fail because the darwin
 // legs cross-compile on ubuntu with no codesign (arm64 ad-hoc, amd64 unsigned) -
 // that failing run is the reproduction. The permanent-identity invariant and the
-// signing contract are owned by the "macOS Release Signing" section of AGENTS.md.
+// signing contract are owned by the "macOS Release Signing" section of
+// .agents/skills/release-signing/SKILL.md.
 
 // The permanent signing identity. These MUST NEVER change once the first signed
 // release ships: the executable identifier and Team ID are the invariant part of

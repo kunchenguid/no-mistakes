@@ -2905,7 +2905,8 @@ func TestAdoptPublishedFetchHonorsTheRemoteTimeout(t *testing.T) {
 // The budget has to clear the cost of the one real network operation left in
 // the path: FetchRemoteRef spawns `git fetch` and then `git rev-parse`. That
 // pair costs ~50ms on Linux and macOS but roughly 10x that on the Windows leg,
-// which is process-spawn bound rather than compute bound (see AGENTS.md). A
+// which is process-spawn bound rather than compute bound (see
+// .agents/skills/testing-conventions/SKILL.md). A
 // sub-second budget sits on top of the Windows cost with no margin and fails
 // there as soon as anything perturbs spawn latency, so the budget is kept a
 // whole multiple of the slowest platform's cost.

@@ -688,8 +688,8 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 // same gate check, and the rollup keeps both the old FAILURE and the new
 // SUCCESS forever. Without this collapse the superseded failure stays
 // visible even after the later run at the same head turns green, which
-// manufactures an unrecoverable auto-fix loop (see AGENTS.md "CI Monitor
-// Lifecycle"). This restores the semantics `gh pr checks` already applies
+// manufactures an unrecoverable auto-fix loop (see "CI Monitor Lifecycle" in
+// .agents/skills/ci-monitor/SKILL.md). This restores the semantics `gh pr checks` already applies
 // (collapse by startedAt) to the commit-rollup path, which never had it.
 //
 // Must run AFTER appendUnrepresentedWorkflowRuns, never before: that call
