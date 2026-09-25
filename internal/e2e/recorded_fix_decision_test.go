@@ -239,9 +239,11 @@ func TestRecordedDecisionDocumentEditAfterRevalidationPublishes(t *testing.T) {
 		}
 		t.Fatalf("run did not pass after document edit on the revalidation pass:\n%s\nrun error: %s", out, detail)
 	}
-	if got := h.UpstreamBranchSHA(branch); got == "" {
+	upstreamHead := h.UpstreamBranchSHA(branch)
+	if upstreamHead == "" {
 		t.Fatal("run passed but the branch was not published upstream")
 	}
+	t.Logf("operator CLI result:\n%s\nupstream %s head: %s", out, branch, upstreamHead)
 	// The housekeeping agent ran only on the first pass: the revalidation
 	// pass's Review certified the head it started on and the earlier
 	// housekeeping pass was clean, so Document and Lint did not re-invoke a
@@ -262,4 +264,5 @@ func TestRecordedDecisionDocumentEditAfterRevalidationPublishes(t *testing.T) {
 	if testEvidence < 2 {
 		t.Fatalf("test evidence invocations = %d, want Test to re-run on the revalidated head", testEvidence)
 	}
+	t.Logf("pipeline invocations: Test evidence %d, document/lint housekeeping %d", testEvidence, housekeeping)
 }

@@ -222,17 +222,17 @@ func revalidationPassStartHead(sctx *pipeline.StepContext) (string, error) {
 }
 
 // settledRevalidationOutcome reports a clean outcome without re-running this
-// step when a re-run would only repeat clean work on this exact tree. On a
-// recorded-decision revalidation pass whose Review certified the head it
-// started on without committing, the tree Push is about to publish is the one
-// this step already processed; re-running it adds no coverage and a step that
-// edits again is the repeated-mutation loop the Push guard refuses. Only an
-// earlier pass that ended with no findings qualifies: any finding - including
-// an approved one or a failed configured command, both of which always carry
-// one - makes the step re-run and re-enter its own gate, since the restart
-// reset the step result that recorded that decision. A fix round always
-// re-runs: an operator answer could have changed the tree since. nil reports
-// that the step must run normally.
+// step when the revalidation head is unchanged and its earlier pass was clean.
+// On a recorded-decision revalidation pass whose Review certified the head it
+// started on without committing, the current head has not moved since that
+// Review. The earlier clean housekeeping pass already ran before Push requested
+// revalidation; re-running it could recreate the repeated-mutation loop that
+// the Push guard refuses. Only an earlier pass that ended with no findings
+// qualifies: any finding - including an approved one or a failed configured
+// command, both of which always carry one - makes the step re-run and re-enter
+// its own gate, since the restart reset the result recording that decision.
+// A fix round always re-runs: an operator answer could have changed the tree.
+// nil reports that the step must run normally.
 func settledRevalidationOutcome(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if sctx == nil || sctx.Run == nil || sctx.Fixing {
 		return nil, nil
