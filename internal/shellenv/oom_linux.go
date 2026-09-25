@@ -12,8 +12,8 @@ import (
 )
 
 // ErrOutOfMemory is returned when a step process is SIGKILLed and the
-// enclosing cgroup's oom_kill count rose while it ran. The executor turns
-// this into "step <name> failed: ran out of memory".
+// enclosing cgroup's oom_kill count rose while it ran. Callers wrap it with
+// %w so errors.Is identifies it.
 var ErrOutOfMemory = errors.New("ran out of memory")
 
 // stepOOMScoreAdj is the highest unprivileged preference for being chosen
