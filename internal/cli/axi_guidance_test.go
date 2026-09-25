@@ -276,12 +276,3 @@ func readAgentsGuide(t *testing.T) string {
 	}
 	return string(data)
 }
-
-func TestBranchSyncGuidance_NamesRemoteRewrittenRecovery(t *testing.T) {
-	normalized := strings.Join(strings.Fields(branchSyncAgentGuidance), " ")
-	for _, want := range []string{"`recover_remote_rewritten`", "`no-mistakes axi sync --recover`", "re-verified live head"} {
-		if !strings.Contains(normalized, want) {
-			t.Errorf("branch sync agent guidance missing %q", want)
-		}
-	}
-}

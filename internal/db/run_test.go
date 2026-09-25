@@ -1417,9 +1417,11 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
 		t.Fatal(err)
 	}
+	prState := "none"
+	openPRState := "open"
 	verified := PushRebind{
 		Status: types.RunCompleted, ExpectedPushed: "pushed", ExpectedGeneration: 1, ExpectedHead: "pushed",
-		UpstreamURL: "https://example.com/repo.git", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature", Head: "live",
+		PRState: &prState, UpstreamURL: "https://example.com/repo.git", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature", Head: "live",
 	}
 
 	for name, mutate := range map[string]func(*PushRebind){
@@ -1431,6 +1433,7 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 		"changed repo url":  func(r *PushRebind) { r.ForkURL = "https://example.com/fork.git" },
 		"changed run head":  func(r *PushRebind) { r.ExpectedHead = "submitted" },
 		"custody mismatch":  func(r *PushRebind) { r.CustodyReturned = true },
+		"changed PR state":  func(r *PushRebind) { r.PRState = &openPRState },
 	} {
 		attempt := verified
 		mutate(&attempt)
@@ -1450,6 +1453,10 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 	if _, err := d.sql.Exec(`UPDATE runs SET pr_state = 'open' WHERE id = ?`, run.ID); err != nil {
 		t.Fatal(err)
 	}
+	if applied, err := d.RebindRunPushedHead(run.ID, verified); err != nil || applied {
+		t.Fatalf("PR changed from none to open: applied = %v, err = %v", applied, err)
+	}
+	verified.PRState = &openPRState
 	got, _ := d.GetRun(run.ID)
 	if got.HeadSHA != "pushed" || *got.LastPushedSHA != "pushed" || *got.PushGeneration != 1 {
 		t.Fatalf("refused rebind changed run: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)

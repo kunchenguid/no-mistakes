@@ -1112,12 +1112,11 @@ func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
 			t.Errorf("rewritten check missing %q:\n%s", want, out)
 		}
 	}
-
 	out, err = executeCmd("axi", "sync", "--recover")
 	if err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
 	}
-	if strings.Contains(out, "\nerror:") || !strings.Contains(out, "note: local and pipeline-pushed histories have diverged") {
+	if strings.Contains(out, "\nerror:") || !strings.Contains(out, "the superseded pipeline head was anchored at "+"refs/no-mistakes/recover-rewritten/"+f.runID+"/1") || !strings.Contains(out, "the branch, worktree, and remote were not changed") || !strings.Contains(out, "local and pipeline-pushed histories have diverged") || strings.Contains(out, "no files or refs were changed") {
 		t.Errorf("successful rebind must keep divergence in branch_sync.note without a top-level error:\n%s", out)
 	}
 	anchor := "refs/no-mistakes/recover-rewritten/" + f.runID + "/1"

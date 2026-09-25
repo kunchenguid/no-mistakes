@@ -160,6 +160,36 @@ func TestRecoverRewrittenRemoteRefusesWhenRemoteChangesAgain(t *testing.T) {
 	}
 }
 
+func TestRecoverRewrittenRemoteRefusesChangedInvokingWorktreeBeforeRebind(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*testing.T, *syncFixture)
+	}{
+		{"head", func(t *testing.T, f *syncFixture) {
+			mustRun(t, f.local, "commit", "--allow-empty", "-m", "moved during recovery")
+		}},
+		{"dirty", func(t *testing.T, f *syncFixture) {
+			mustWrite(t, filepath.Join(f.local, "during-recovery.txt"), "changed\n")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := newRemoteRewrittenFixture(t)
+			f.service.beforeRecoverRebind = func() { tc.change(t, f) }
+			state := f.service.Recover(f.ctx, false)
+			if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
+				t.Fatalf("recover after changed %s = %#v", tc.name, state)
+			}
+			run, err := f.db.GetRun(f.run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ptr(run.LastPushedSHA) != f.pushed || run.HeadSHA != f.pushed || value(run.PushGeneration) != value(f.run.PushGeneration) {
+				t.Fatalf("binding changed after %s: last_pushed %s head %s generation %d", tc.name, ptr(run.LastPushedSHA), run.HeadSHA, value(run.PushGeneration))
+			}
+		})
+	}
+}
+
 func TestRecoverRewrittenRemoteRefusesWhenSupersededHeadCannotBeAnchored(t *testing.T) {
 	t.Parallel()
 

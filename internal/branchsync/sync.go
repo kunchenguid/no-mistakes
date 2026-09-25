@@ -1375,9 +1375,13 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
 		return blocked, true
 	}
+	recheck, _, ok := s.inspect(ctx)
+	if !ok || recheck.Local.Branch != fresh.Local.Branch || recheck.Local.Head != fresh.Local.Head || !recheck.Local.Clean {
+		return blockedPlan(recheck, StateAmbiguousContext, "blocked_recover_assumptions_changed", fmt.Sprintf("the invoking worktree changed before the push binding could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef)), true
+	}
 	rebound, err := s.DB.RebindRunPushedHead(run.ID, db.PushRebind{
 		Status: run.Status, ExpectedPushed: superseded, ExpectedGeneration: generation,
-		ExpectedHead: run.HeadSHA, CustodyReturned: run.CustodyReturnedAt != nil,
+		ExpectedHead: run.HeadSHA, PRState: run.PRState, CustodyReturned: run.CustodyReturnedAt != nil,
 		UpstreamURL: repo.UpstreamURL, ForkURL: repo.ForkURL, TargetKind: targetKind(repo),
 		TargetFingerprint: TargetFingerprint(repo.PushURL()), Ref: fresh.Target.Ref, Head: live,
 	})
@@ -1396,6 +1400,11 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		Source: "remote_rewritten", RepositoryID: s.Repo.ID, RunID: run.ID, Branch: fresh.Local.Branch,
 		RequiredHead: live, PreservedHead: superseded, ArchiveRef: anchorRef, Proof: anchoredIn,
 	}
+	note := fmt.Sprintf("the superseded pipeline head was anchored at %s; the branch, worktree, and remote were not changed", anchorRef)
+	if state.Error != "" {
+		note += "; " + strings.TrimSuffix(state.Error, "; no files or refs were changed")
+	}
+	state.Error = note
 	return state, true
 }
 

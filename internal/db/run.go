@@ -544,6 +544,7 @@ type PushRebind struct {
 	ExpectedPushed     string
 	ExpectedGeneration int64
 	ExpectedHead       string
+	PRState            *string
 	CustodyReturned    bool
 	UpstreamURL        string
 	ForkURL            string
@@ -569,13 +570,13 @@ func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
 		WHERE id = ? AND status = ? AND last_pushed_sha = ? AND COALESCE(push_generation, 0) = ?
 			AND head_sha = ? AND (custody_returned_at IS NOT NULL) = ?
 			AND push_target_kind = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0
-			AND COALESCE(pr_state, '') NOT IN ('merged', 'closed')
+			AND pr_state IS ? AND COALESCE(pr_state, '') NOT IN ('merged', 'closed')
 			AND NOT EXISTS (SELECT 1 FROM runs other WHERE other.repo_id = runs.repo_id AND other.branch = runs.branch AND other.id <> runs.id
 				AND other.status NOT IN (?, ?, ?, ?))
 			AND EXISTS (SELECT 1 FROM repos WHERE repos.id = runs.repo_id AND repos.upstream_url = ? AND COALESCE(repos.fork_url, '') = ?)`,
 		rebind.Head, rebind.Head, now(), id, string(rebind.Status), rebind.ExpectedPushed, rebind.ExpectedGeneration,
 		rebind.ExpectedHead, rebind.CustodyReturned,
-		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref,
+		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref, rebind.PRState,
 		string(types.RunCompleted), string(types.RunFailed), string(types.RunCancelled), string(types.RunCIMonitorInterrupted),
 		rebind.UpstreamURL, rebind.ForkURL,
 	)
