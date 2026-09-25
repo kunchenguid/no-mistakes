@@ -1507,7 +1507,7 @@ func TestReviewStep_PathInstructionsLeaveUnconfiguredPromptUnchanged(t *testing.
 	matched := reviewPromptFor(t, []config.PathInstruction{
 		{Path: "*.txt", Instructions: "Fixture files carry no product behavior."},
 	})
-	// The hands-off memory-file rule always trails the prompt, so the matched
+	// The memory-file edit-scope rule always trails the prompt, so the matched
 	// prompt is the unconfigured one with the path section inserted before it.
 	base := strings.TrimSuffix(unconfigured, agent.MemoryFilesRule)
 	want := base + wantSection(wantBlock("*.txt", "feature.txt", "Fixture files carry no product behavior.")) + agent.MemoryFilesRule
