@@ -20,11 +20,18 @@ import (
 // the PR attestation as live_validation for a consumer that must decide
 // whether this change was live validated without reading prose.
 
-// collectTestingScenarios returns the scenarios recorded for the test step,
-// reading the same findings payload the rest of the Testing section reads so a
-// step whose final findings were cleared by a fix still renders the evidence
+// testingEvidenceFindings parses the one findings payload the whole Testing
+// section reads, so every field below comes from the same record rather than
+// from five independent parses that could in principle disagree.
+// testingEvidenceFindingsJSON yields at most one payload: the step's own final
+// findings when they carry evidence metadata, else the last round that did, so
+// a step whose final findings were cleared by a fix still renders the evidence
 // its last round captured.
-func collectTestingScenarios(sr *db.StepResult, rounds []*db.StepRound) []types.TestScenario {
+//
+// collectTestingArtifacts deliberately stays separate: it needs the rendering
+// options and its own de-duplication, and it consumes the raw payload rather
+// than one field of it.
+func testingEvidenceFindings(sr *db.StepResult, rounds []*db.StepRound) types.Findings {
 	for _, raw := range testingEvidenceFindingsJSON(sr, rounds) {
 		if raw == nil || strings.TrimSpace(*raw) == "" {
 			continue
@@ -33,37 +40,58 @@ func collectTestingScenarios(sr *db.StepResult, rounds []*db.StepRound) []types.
 		if err != nil {
 			continue
 		}
-		if len(findings.Scenarios) > 0 {
-			return findings.Scenarios
-		}
+		return findings
 	}
-	return nil
+	// The zero value answers "nothing recorded" for every caller below.
+	return types.Findings{}
+}
+
+// collectTestingScenarios returns the scenarios recorded for the test step.
+func collectTestingScenarios(sr *db.StepResult, rounds []*db.StepRound) []types.TestScenario {
+	findings := testingEvidenceFindings(sr, rounds)
+	return findings.Scenarios
 }
 
 // collectTestingVerdict returns the test step's recorded verdict, or an empty
 // string when the step predates the contract or recorded none.
 func collectTestingVerdict(sr *db.StepResult, rounds []*db.StepRound) string {
-	for _, raw := range testingEvidenceFindingsJSON(sr, rounds) {
-		if raw == nil || strings.TrimSpace(*raw) == "" {
-			continue
-		}
-		findings, err := types.ParseFindingsJSON(*raw)
-		if err != nil {
-			continue
-		}
-		if types.IsKnownTestVerdict(findings.Verdict) {
-			return findings.Verdict
-		}
+	findings := testingEvidenceFindings(sr, rounds)
+	if types.IsKnownTestVerdict(findings.Verdict) {
+		return findings.Verdict
 	}
 	return ""
 }
 
+// collectTestingEvidenceReason returns the Test step's recorded account of
+// which path its diff-class gate took, or "" for a step that predates the gate.
+func collectTestingEvidenceReason(sr *db.StepResult, rounds []*db.StepRound) string {
+	findings := testingEvidenceFindings(sr, rounds)
+	return strings.TrimSpace(findings.EvidenceReason)
+}
+
+// collectTestingEvidenceSource returns the Test step's recorded evidence
+// source, or "" for a step recorded with the gate off or before it existed.
+func collectTestingEvidenceSource(sr *db.StepResult, rounds []*db.StepRound) string {
+	findings := testingEvidenceFindings(sr, rounds)
+	return strings.TrimSpace(findings.EvidenceSource)
+}
+
 // renderLiveValidationLine is the one-line answer to "was this live
-// validated": the verdict plus how much of the scenario list was actually
-// driven against the product. It returns "" when neither is recorded.
-func renderLiveValidationLine(scenarios []types.TestScenario, verdict string) string {
+// validated": the verdict, how much of the scenario list was actually driven
+// against the product, and - because a verdict the agent never re-derived
+// reads identically otherwise - which path the diff-class gate took to get
+// it. It returns "" when none of the three is recorded.
+//
+// evidenceSource is what keeps the count honest. A reused verdict's scenarios
+// were driven live, but in an EARLIER run, and this line is read as a claim
+// about the commit the PR is showing. So a reuse says so in the sentence
+// rather than leaving "driven live against the product" to be read as this
+// run's work; the attestation makes the same distinction by omitting
+// live_validation for a head no agent drove.
+func renderLiveValidationLine(scenarios []types.TestScenario, verdict, evidenceReason, evidenceSource string) string {
 	live, total := types.LiveScenarioCounts(scenarios)
-	if !types.IsKnownTestVerdict(verdict) && total == 0 {
+	evidenceReason = strings.TrimSpace(evidenceReason)
+	if !types.IsKnownTestVerdict(verdict) && total == 0 && evidenceReason == "" {
 		return ""
 	}
 	var b strings.Builder
@@ -76,7 +104,14 @@ func renderLiveValidationLine(scenarios []types.TestScenario, verdict string) st
 		b.WriteString("no verdict recorded")
 	}
 	if total > 0 {
-		b.WriteString(fmt.Sprintf(" - %d of %d scenarios driven live against the product", live, total))
+		if strings.TrimSpace(evidenceSource) == types.TestEvidenceSourceReused {
+			b.WriteString(fmt.Sprintf(" - %d of %d scenarios driven live against the product in the earlier run this verdict comes from, not in this run", live, total))
+		} else {
+			b.WriteString(fmt.Sprintf(" - %d of %d scenarios driven live against the product", live, total))
+		}
+	}
+	if evidenceReason != "" {
+		b.WriteString(" (" + evidenceReason + ")")
 	}
 	return b.String()
 }

@@ -294,6 +294,30 @@ func (s stepView) findingCount() int {
 	return len(parsed.Items)
 }
 
+// liveEvidenceSource reports which path the Test step's diff-class gate took
+// for this run, so an agent reading a green Test step can tell a fresh
+// live-evidence turn from a reused verdict or a diff with no product file in
+// it. Empty for a run without a Test step, or one recorded before the gate.
+func (rv runView) liveEvidenceSource() string {
+	for _, s := range rv.Steps {
+		if s.Name != string(types.StepTest) || s.FindingsJSON == "" {
+			continue
+		}
+		parsed, err := types.ParseFindingsJSON(s.FindingsJSON)
+		if err != nil {
+			continue
+		}
+		if parsed.EvidenceSource == "" {
+			return ""
+		}
+		if reason := strings.TrimSpace(parsed.EvidenceReason); reason != "" {
+			return parsed.EvidenceSource + ": " + reason
+		}
+		return parsed.EvidenceSource
+	}
+	return ""
+}
+
 // findingsTally summarizes a run's findings across all steps by action, so an
 // agent sees the shape of outstanding work without a follow-up call.
 func (rv runView) findingsTally() string {
@@ -510,6 +534,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})
 	}
 	fields = append(fields, toon.Field{Key: "findings", Value: rv.findingsTally()})
+	if source := rv.liveEvidenceSource(); source != "" {
+		fields = append(fields, toon.Field{Key: "live_evidence", Value: source})
+	}
 
 	rows := make([]stepRow, 0, len(rv.Steps))
 	sharedRows := make([]sharedWorkRow, 0, 1)
