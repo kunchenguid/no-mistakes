@@ -23,7 +23,7 @@ import (
 // clauses cover the whole rule: whole-root searches are disallowed by name
 // (including the exact observed shape and the `-maxdepth` misconception),
 // bounded worktree/evidence/repo-local reads must survive, and the missing-tool
-// fallback must allow local setup before reporting, without searching the host.
+// fallback must tell the agent to report and stop instead of searching.
 var hostSearchBoundaryClauses = []string{
 	"Do not search the host filesystem",
 	"Never run a filesystem-wide search such as `find /` or `mdfind /`",
@@ -33,10 +33,7 @@ var hostSearchBoundaryClauses = []string{
 	"external evidence path a prompt explicitly names",
 	"repository-local path you were given remain fine",
 	"not on PATH and no repository-local path is supplied",
-	"do not search the machine for it",
-	"obtain, install, or build it inside the disposable worktree and use it there",
-	"never install it system-wide or globally",
-	"If no workspace-local route works, report the missing tool and the work it blocked in your normal result",
+	"report the missing tool and the work it blocked in your normal result",
 }
 
 // testOnlyUntestedFallback is the Test-step half of the missing-tool rule. Only
@@ -48,7 +45,7 @@ const testOnlyUntestedFallback = `report the affected scenario as "untested"`
 // through the real daemon and inspects the prompts the daemon delivered to the
 // agent process. It proves the incident's fix at the user-facing boundary: the
 // step the agent actually froze in (Test) now carries the bounded-search rule
-// and the local-setup-instead-of-hunt fallback, every other steering-wrapped step
+// and the report-instead-of-hunt fallback, every other steering-wrapped step
 // carries the same shared rule, and bounded repository/evidence reads remain
 // allowed rather than the rule becoming a blanket ban on reading outside the
 // worktree.
@@ -117,8 +114,11 @@ func TestHostSearchBoundaryReachesEveryPipelinePrompt(t *testing.T) {
 		}
 	}
 
-	// Role neutrality: a review finding is not a list of scenarios, so the
-	// Test-only wording must not leak into the review prompt.
+	// Role neutrality: only Test may set up disposable tools and has a
+	// scenario-shaped untested result; neither belongs in Review.
+	if strings.Contains(reviewPrompt, "obtain, install, or build the tool inside the disposable workspace") {
+		t.Errorf("review prompt leaked Test-only tool setup permission:\n%s", truncate(reviewPrompt, 4000))
+	}
 	if strings.Contains(reviewPrompt, testOnlyUntestedFallback) {
 		t.Errorf("review prompt leaked the Test-only scenario untested fallback:\n%s", truncate(reviewPrompt, 4000))
 	}

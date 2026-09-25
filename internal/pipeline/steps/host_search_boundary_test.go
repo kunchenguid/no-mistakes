@@ -36,10 +36,8 @@ func assertRoleNeutralHostSearchBoundary(t *testing.T, prompt string) {
 		"repository-local path you were given remain fine",
 		// Role-neutral missing-tool fallback.
 		"not on PATH and no repository-local path is supplied",
-		"do not search the machine for it",
-		"obtain, install, or build it inside the disposable worktree and use it there",
-		"never install it system-wide or globally",
-		"If no workspace-local route works, report the missing tool and the work it blocked in your normal result",
+		"report the missing tool and the work it blocked in your normal result",
+		"with the concrete reason, and stop there",
 	} {
 		if !strings.Contains(normalized, want) {
 			t.Errorf("emitted pipeline prompt missing role-neutral host-search boundary %q:\n%s", want, prompt)
@@ -99,7 +97,11 @@ func TestReviewPromptCarriesBoundedHostSearchBoundary(t *testing.T) {
 		t.Fatalf("review prompt does not lead with the workspace-boundary preamble from agent.WorktreeSteering:\n%s", prompt)
 	}
 	assertRoleNeutralHostSearchBoundary(t, prompt)
-	// Review has no scenarios, so the Test-only fallback must not leak in.
+	// Review has no scenarios or disposable-tool cleanup duty. The Test-only
+	// permission to install a tool must not leak into its delivered prompt.
+	if strings.Contains(prompt, "obtain, install, or build the tool inside the disposable workspace") {
+		t.Errorf("review prompt carries the Test-only tool setup permission:\n%s", prompt)
+	}
 	if strings.Contains(prompt, `report the affected scenario as "untested"`) {
 		t.Errorf("review prompt carries the Test-only scenario untested fallback:\n%s", prompt)
 	}
