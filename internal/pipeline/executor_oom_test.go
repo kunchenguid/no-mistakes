@@ -1,23 +1,34 @@
 package pipeline
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestOOMFailureKeepsRestorationDetail(t *testing.T) {
+func TestExecutor_OutOfMemoryFailureReasonKeepsRestorationDetail(t *testing.T) {
+	database, p, run, repo := setupTest(t)
 	const snapshot = "/tmp/nm-recovery-snapshot"
-	orig := fmt.Errorf("restore worktree: %w; retained snapshot %s", shellenv.ErrOutOfMemory, snapshot)
-	got := keepOOMDetail(orig)
-	if !errors.Is(got, shellenv.ErrOutOfMemory) {
-		t.Fatal("joined error must still be an out-of-memory error")
+	stepErr := fmt.Errorf("restore worktree failed; retained snapshot %s: %w", snapshot, shellenv.ErrOutOfMemory)
+
+	exec := NewExecutor(database, p, nil, nil, []Step{newFailStep(types.StepTest, stepErr)}, nil)
+	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-	text := got.Error()
-	if !strings.Contains(text, "restore worktree") || !strings.Contains(text, snapshot) {
-		t.Fatalf("error dropped restoration detail: %s", text)
+
+	dbSteps, _ := database.GetStepsByRun(run.ID)
+	if dbSteps[0].Error == nil {
+		t.Fatal("failed step has no recorded reason")
+	}
+	reason := *dbSteps[0].Error
+	for _, want := range []string{"restore worktree failed", snapshot, shellenv.ErrOutOfMemory.Error()} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("step failure reason %q is missing %q", reason, want)
+		}
 	}
 }

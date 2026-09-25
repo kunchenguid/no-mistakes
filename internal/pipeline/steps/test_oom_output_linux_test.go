@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv/memscopetest"
 )
 
 // TestTestStep_OutOfMemoryKeepsTheCommandOutputInTheStepLog runs under a
@@ -24,18 +26,12 @@ func TestTestStep_OutOfMemoryKeepsTheCommandOutputInTheStepLog(t *testing.T) {
 		runTestStepOOMInner(t)
 		return
 	}
-	for _, bin := range []string{"systemd-run", "python3"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skip(err)
-		}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip(err)
 	}
-	probe := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--",
-		"sh", "-c", `cat "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.max"`)
-	if out, err := probe.CombinedOutput(); err != nil {
-		t.Skipf("no usable systemd user scope with memory.max: %v\n%s", err, out)
-	}
+	memscopetest.RequireDelegatedMemoryLimit(t, testStepOOMScopeMiB)
 	cmd := exec.Command("systemd-run", "--user", "--scope", "--quiet",
-		"-p", "MemoryMax=256M",
+		"-p", "MemoryMax="+strconv.Itoa(testStepOOMScopeMiB)+"M",
 		"-p", "MemorySwapMax=0",
 		"-p", "OOMPolicy=continue",
 		"--",
@@ -49,6 +45,8 @@ func TestTestStep_OutOfMemoryKeepsTheCommandOutputInTheStepLog(t *testing.T) {
 		t.Fatalf("inner test did not confirm the logged output:\n%s", out)
 	}
 }
+
+const testStepOOMScopeMiB = 256
 
 func runTestStepOOMInner(t *testing.T) {
 	t.Helper()
