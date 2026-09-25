@@ -1,0 +1,92 @@
+=== RUN   TestRecordedDecisionDocumentEditAfterRevalidationPublishes
+    recorded_fix_decision_test.go:246: operator CLI result:
+        run: running
+          intent: completed
+          rebase: completed
+          review: fixing
+          review: completed
+          test: running
+          test: completed
+          document: running
+          document: completed
+          lint: running
+          lint: completed
+          push: running
+          review: running
+          review: completed
+          test: running
+          test: completed
+          document: running
+          document: completed
+          lint: running
+          lint: completed
+          push: completed
+          pr: running
+          pr: skipped
+          ci: running
+          ci: skipped
+        run: completed
+        run:
+          id: "01M3C4GB33CTHPQ66PA521FPW8"
+          branch: feature/doc-after-revalidation
+          status: completed
+          head: b918d2f1
+          head_sha: b918d2f174a80a1f0de475dc34c7c5d2245b8d33
+          verification_plan: none
+          findings: none
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,130
+            review,completed,0,65
+            test,completed,0,58
+            document,completed,0,5
+            lint,completed,0,5
+            push,completed,0,260
+            pr,skipped,0,5
+            ci,skipped,0,5
+          automatic_skips[2]{step,reason}:
+            pr,provider unknown is not supported yet
+            ci,provider unknown is not supported yet
+          shared_work[1]{attributed_to,scope,duration_ms}:
+            document,document+lint housekeeping,5
+        branch_sync:
+          state: behind
+          changed: false
+          local:
+            branch: feature/doc-after-revalidation
+            head: 9b42ec43299c593013275874392c8ad6c172f48e
+            clean: true
+          pipeline:
+            run: "01M3C4GB33CTHPQ66PA521FPW8"
+            status: completed
+            phase: ""
+            submitted_head: 9b42ec43299c593013275874392c8ad6c172f48e
+            current_head: b918d2f174a80a1f0de475dc34c7c5d2245b8d33
+            pushed_head: b918d2f174a80a1f0de475dc34c7c5d2245b8d33
+            pushed_at: 1790335005
+            push_generation: 1
+          target:
+            kind: upstream
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/nm-e2e-1791930397/upstream.git
+            ref: refs/heads/feature/doc-after-revalidation
+          remote:
+            observed_head: b918d2f174a80a1f0de475dc34c7c5d2245b8d33
+            freshness: pipeline_push
+            observed_at: 1790335005
+          relation: behind
+          safety: refresh_required
+          pr_state: none
+          next_action:
+            code: sync
+            command: no-mistakes axi sync
+        outcome: passed-with-skips
+        fixes[1]{step,summary}:
+          review,changes applied
+        help[5]: Publication or CI verification did not run (see `run.automatic_skips` and `run.head_sha`). Report the missing evidence and its cause; this outcome does not establish CI readiness or a code failure.,"Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.",The pipeline fixed findings the original change missed (see `fixes`) - acknowledge the misses and list each fix so the user can review them.,"Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.","Before a post-pipeline local commit or fresh run, follow the exact structured `branch_sync.next_action.command`. A `sync` action may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics. A `recover_custody` action may be ordinary `no-mistakes axi sync --recover` when unpublished pipeline commits are preserved in the local gate, or exact `no-mistakes axi sync --recover --keep-local` when a bound archive preserves a divergent later head while custody returns at the reported required head, or when that preserved head is unavailable and you are explicitly discarding the missing commits; never substitute one recovery command for the other. An `adopt_published` action is exact `no-mistakes axi sync --adopt-published`: it verifies the configured push target already has the exact rebased local head, then updates only the stale gate lane. A `user_owned` state means cancellation released the branch before changing the submitted head: the exact branch and head are yours, immediately usable, and no sync action is needed. Process blocked or pipeline-owned states instead of improvising reset, stash, merge, rebase, force, or branch replacement."
+        
+        upstream feature/doc-after-revalidation head: b918d2f174a80a1f0de475dc34c7c5d2245b8d33
+    recorded_fix_decision_test.go:267: pipeline invocations: Test evidence 2, document/lint housekeeping 1
+--- PASS: TestRecordedDecisionDocumentEditAfterRevalidationPublishes (4.64s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2e	4.986s

@@ -1,0 +1,19 @@
+=== RUN   TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation
+=== RUN   TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation/settled_pass_still_refuses_a_later_mutation
+=== RUN   TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation/non-settled_pass_revalidates_a_tail_change_again
+=== RUN   TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation/unsettled_when_the_pass_review_has_no_recorded_start
+--- PASS: TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation (0.33s)
+    --- PASS: TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation/settled_pass_still_refuses_a_later_mutation (0.17s)
+    --- PASS: TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation/non-settled_pass_revalidates_a_tail_change_again (0.09s)
+    --- PASS: TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation/unsettled_when_the_pass_review_has_no_recorded_start (0.07s)
+=== RUN   TestSettledRevalidation_SkipsCleanHousekeepingAndRerunsTest
+--- PASS: TestSettledRevalidation_SkipsCleanHousekeepingAndRerunsTest (0.27s)
+=== RUN   TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate
+--- PASS: TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate (0.33s)
+=== RUN   TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping
+--- PASS: TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping (0.43s)
+=== RUN   TestSettledRevalidation_ReenteredLintFixRequestsRevalidation
+2026/09/25 04:17:00 INFO step fix requested, re-executing step=lint
+--- PASS: TestSettledRevalidation_ReenteredLintFixRequestsRevalidation (0.61s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	2.483s
