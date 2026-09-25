@@ -68,7 +68,7 @@ func setupRunWithCIRepairEvidence(t *testing.T, ctx context.Context, selected, o
 		if repairSummary != "" {
 			summary = &repairSummary
 		}
-		if _, err := sourceDB.InsertStepRoundWithRepair(ciStep.ID, 2, "auto_fix", nil, summary, repairPublished, 40); err != nil {
+		if _, err := sourceDB.InsertStepRoundWithRepair(ciStep.ID, 2, "auto_fix", nil, summary, repairPublished, "", 40); err != nil {
 			t.Fatal(err)
 		}
 	}

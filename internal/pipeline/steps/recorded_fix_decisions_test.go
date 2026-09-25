@@ -352,25 +352,68 @@ func (settledReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutc
 }
 
 // revalidationRequestingPushStep asks for one recorded-decision revalidation
-// and publishes on its next pass, as Push does after downstream edits.
-type revalidationRequestingPushStep struct{ calls int }
+// and publishes on its next pass, as Push does after downstream edits. With
+// formatOnRequest it first commits a formatter change, as Push's configured
+// formatter does. With checkDecisions its later passes apply Push's real
+// recorded-decision check to the head, requesting revalidation when needed.
+type revalidationRequestingPushStep struct {
+	calls           int
+	formatOnRequest bool
+	checkDecisions  bool
+	needsReview     []bool
+}
 
 func (*revalidationRequestingPushStep) Name() types.StepName { return types.StepPush }
 
-func (s *revalidationRequestingPushStep) Execute(*pipeline.StepContext) (*pipeline.StepOutcome, error) {
+func (s *revalidationRequestingPushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	s.calls++
-	if s.calls > 1 {
+	request, _ := json.Marshal(Findings{Summary: recordedDecisionReviewRequest})
+	if s.calls == 1 {
+		if s.formatOnRequest {
+			if err := os.WriteFile(filepath.Join(sctx.WorkDir, "formatted.txt"), []byte("formatted\n"), 0o644); err != nil {
+				return nil, err
+			}
+			if err := stagePipelineChanges(sctx); err != nil {
+				return nil, err
+			}
+			if err := commitPipelineCorrection(sctx.Ctx, sctx.WorkDir, "no-mistakes: apply agent fixes", sctx.Log); err != nil {
+				return nil, err
+			}
+			head, err := stepGitRun(sctx, "rev-parse", "HEAD")
+			if err != nil {
+				return nil, err
+			}
+			if err := recordAgentFixHead(sctx, s.Name(), strings.TrimSpace(head)); err != nil {
+				return nil, err
+			}
+		}
+		return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: string(request)}, nil
+	}
+	if !s.checkDecisions {
 		return &pipeline.StepOutcome{}, nil
 	}
-	request, _ := json.Marshal(Findings{Summary: recordedDecisionReviewRequest})
-	return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: string(request)}, nil
+	head, err := stepGitRun(sctx, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	needsReview, err := recordedDecisionsNeedReview(sctx, strings.TrimSpace(head))
+	if err != nil {
+		return nil, err
+	}
+	s.needsReview = append(s.needsReview, needsReview)
+	if needsReview {
+		return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: string(request)}, nil
+	}
+	return &pipeline.StepOutcome{}, nil
 }
 
-// runSettledRevalidation drives Review, Test, Document, Lint, and a Push that
-// requests one recorded-decision revalidation through the real executor. The
-// revalidating Review certifies its starting head unchanged, so the second
-// pass is settled. Every parked gate is approved.
-func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutput string) (push *revalidationRequestingPushStep, testCalls, housekeepingCalls int, approvals map[types.StepName]int) {
+// runSettledRevalidation drives Review, Test, Document, Lint, and the given
+// Push through the real executor. The revalidating Review certifies its
+// starting head unchanged, so each revalidation pass is settled. Every parked
+// gate is approved except Lint's fixLintGate-th gate (1-based; 0 for none),
+// which selects Fix for the configured lint failure; the Lint fixer then
+// commits lint-fixed.txt.
+func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutput string, push *revalidationRequestingPushStep, fixLintGate int) (testCalls, housekeepingCalls int, approvals map[types.StepName]int) {
 	t.Helper()
 	workDir, baseSHA, headSHA := setupGitRepo(t)
 	ensureHermeticOrigin(t, workDir)
@@ -399,17 +442,23 @@ func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutp
 				calls["test"]++
 				return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
 			}
+			if strings.Contains(opts.Prompt, "Fix the lint issues") {
+				if err := os.WriteFile(filepath.Join(opts.CWD, "lint-fixed.txt"), []byte("fixed\n"), 0o644); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint"}`)}, nil
+			}
 			calls["housekeeping"]++
 			return &agent.Result{Output: json.RawMessage(housekeepingOutput)}, nil
 		},
 	}
-	push = &revalidationRequestingPushStep{}
 	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), &config.Config{Agent: types.AgentClaude, Commands: cmds}, ag,
 		[]pipeline.Step{settledReviewStep{}, &TestStep{}, &DocumentStep{}, &LintStep{}, push}, nil)
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 
 	approvals = map[types.StepName]int{}
+	gates := map[types.StepName]int{}
 	deadline := time.After(30 * time.Second)
 	for {
 		select {
@@ -419,12 +468,19 @@ func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutp
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			return push, calls["test"], calls["housekeeping"], approvals
+			return calls["test"], calls["housekeeping"], approvals
 		case <-deadline:
 			t.Fatal("executor timed out")
 		case <-time.After(10 * time.Millisecond):
 			for _, step := range []types.StepName{types.StepDocument, types.StepLint} {
+				if step == types.StepLint && gates[step]+1 == fixLintGate {
+					if exec.Respond(step, types.ActionFix, []string{"lint-1"}) == nil {
+						gates[step]++
+					}
+					continue
+				}
 				if exec.Respond(step, types.ActionApprove, nil) == nil {
+					gates[step]++
 					approvals[step]++
 				}
 			}
@@ -437,7 +493,8 @@ func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutp
 // run publishes without re-invoking a housekeeping step that could commit
 // again.
 func TestSettledRevalidation_SkipsCleanHousekeepingAndRerunsTest(t *testing.T) {
-	push, testCalls, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{}, `{"findings":[],"summary":"clean"}`)
+	push := &revalidationRequestingPushStep{}
+	testCalls, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{}, `{"findings":[],"summary":"clean"}`, push, 0)
 	if push.calls != 2 {
 		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
 	}
@@ -457,7 +514,8 @@ func TestSettledRevalidation_SkipsCleanHousekeepingAndRerunsTest(t *testing.T) {
 // recorded that decision, so Lint re-runs its command and re-enters its gate.
 func TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "lint-runs")
-	push, _, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: "echo run >> '" + marker + "'; exit 3"}, `{"findings":[],"summary":"clean"}`)
+	push := &revalidationRequestingPushStep{}
+	_, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: "echo run >> '" + marker + "'; exit 3"}, `{"findings":[],"summary":"clean"}`, push, 0)
 	if push.calls != 2 {
 		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
 	}
@@ -473,5 +531,57 @@ func TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate(t *testing
 	}
 	if approvals[types.StepDocument] != 0 || housekeepingCalls != 1 {
 		t.Fatalf("document approvals = %d, calls = %d; want clean Document skipped on the settled pass", approvals[types.StepDocument], housekeepingCalls)
+	}
+}
+
+// A clean housekeeping pass covers only the tree it ended on. When Push's
+// formatter commits after it, the revalidated head is a tree Document and Lint
+// never examined, so the settled pass re-runs both instead of skipping them.
+func TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "lint-runs")
+	push := &revalidationRequestingPushStep{formatOnRequest: true}
+	testCalls, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: "echo run >> '" + marker + "'"}, `{"findings":[],"summary":"clean"}`, push, 0)
+	if push.calls != 2 {
+		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
+	}
+	if testCalls != 2 {
+		t.Fatalf("test evidence calls = %d, want Test to re-run on the revalidated head", testCalls)
+	}
+	if housekeepingCalls != 2 {
+		t.Fatalf("document calls = %d, want Document re-run on the formatter-changed head", housekeepingCalls)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs := strings.Count(string(raw), "run"); runs != 2 {
+		t.Fatalf("lint command runs = %d, want Lint re-run on the formatter-changed head", runs)
+	}
+	if len(approvals) != 0 {
+		t.Fatalf("approvals = %v, want no gate to park", approvals)
+	}
+}
+
+// An approved failing Lint re-runs on the settled pass and re-enters its gate.
+// When the operator selects Fix there and Lint commits a repair, that newer
+// human decision sends the repaired head through another revalidation rather
+// than being refused as a mutation after a settled pass, and the run then
+// publishes it.
+func TestSettledRevalidation_ReenteredLintFixRequestsRevalidation(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "lint-runs")
+	push := &revalidationRequestingPushStep{checkDecisions: true}
+	_, _, approvals := runSettledRevalidation(t, config.Commands{Lint: "echo run >> '" + marker + "'; test -f lint-fixed.txt || exit 3"}, `{"findings":[],"summary":"clean"}`, push, 2)
+	if approvals[types.StepLint] != 1 {
+		t.Fatalf("lint approvals = %d, want only the first pass approved", approvals[types.StepLint])
+	}
+	if push.calls != 3 || len(push.needsReview) != 2 || !push.needsReview[0] || push.needsReview[1] {
+		t.Fatalf("push calls = %d, revalidation checks = %v; want the Lint repair revalidated and then published", push.calls, push.needsReview)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs := strings.Count(string(raw), "run"); runs != 3 {
+		t.Fatalf("lint command runs = %d, want the failing pass, the re-entered pass, and its fix round", runs)
 	}
 }

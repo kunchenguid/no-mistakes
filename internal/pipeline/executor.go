@@ -995,8 +995,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// Execute with possible fix loop
 rounds:
 	for {
-		reviewStartingHeadSHA := run.HeadSHA
-		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
+		roundStartingHeadSHA := run.HeadSHA
+		sctx.ReviewStartingHeadSHA = roundStartingHeadSHA
 		outcome, err := step.Execute(sctx)
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
@@ -1069,12 +1069,11 @@ rounds:
 		var inserted *db.StepRound
 		var dbErr error
 		roundTrigger := nextTrigger
+		// Every round records the head it started on, not only eval-provenance
+		// review captures: a recorded-decision revalidation pass compares the
+		// revalidating Review's start against the head it certified, and a
+		// clean tail step's end against the start of the round that followed it.
 		if stepName == types.StepReview {
-			// Every review round records the head it started on, not only
-			// eval-provenance captures: a recorded-decision revalidation pass
-			// compares that start against the certified head to tell whether
-			// the revalidating Review moved the tree (its tail must re-run) or
-			// approved it unchanged (a clean tail step's earlier coverage stands).
 			var trustedConfigSHA string
 			var globalConfigYAML, repoConfigYAML []byte
 			if e.config != nil && e.config.CaptureEvalProvenance {
@@ -1082,9 +1081,9 @@ rounds:
 				globalConfigYAML = e.config.ReplayGlobalYAML
 				repoConfigYAML = e.config.ReplayRepoYAML
 			}
-			inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, trustedConfigSHA, globalConfigYAML, repoConfigYAML, roundDuration)
+			inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, roundStartingHeadSHA, trustedConfigSHA, globalConfigYAML, repoConfigYAML, roundDuration)
 		} else {
-			inserted, dbErr = e.db.InsertStepRoundWithRepair(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, outcome.RepairPublished, roundDuration)
+			inserted, dbErr = e.db.InsertStepRoundWithRepair(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, outcome.RepairPublished, roundStartingHeadSHA, roundDuration)
 		}
 		if dbErr != nil {
 			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)
