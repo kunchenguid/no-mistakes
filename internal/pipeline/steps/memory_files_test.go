@@ -16,20 +16,20 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// The agent-memory-file contract these tests pin: AGENTS.md and CLAUDE.md are
-// loaded into every future agent session, so what they contain stays a
-// deliberate human decision. Every pipeline step whose agent can write to the
-// worktree carries the hands-off rule in its prompt; the rebase and merge
-// conflict resolvers carry a scoped variant because a conflicted memory file
-// still has to be resolved for the integration to conclude; the document step
-// carries a correction-only exception instead. These are prompt-contract
-// tests: they assert on the rendered prompt delivered to the agent, not on
-// source text.
+// These prompt-contract tests pin the intended scope: pipeline agents may not
+// initiate unrelated memory-file edits, but changes under review are reviewed
+// normally and a fix turn may address a finding or recorded human decision.
+// Conflict resolution and document correction retain their narrower rules.
+// Tests assert on rendered prompts delivered to agents, not source text.
 const (
-	memoryHandsOffProbe        = "Agent memory files (AGENTS.md and CLAUDE.md) are hands-off"
-	memoryHandsOffNoEdit       = "Do not create, modify, rename, or delete them"
-	memoryHandsOffNoFix        = "not even to correct or add content that looks stale, wrong, or missing"
-	memoryConflictProbe        = "stay hands-off beyond the conflict itself"
+	memoryHandsOffProbe        = "Agent memory files (AGENTS.md and CLAUDE.md) - limits on your own changes"
+	memoryHandsOffNoEdit       = "Do not independently create, modify, rename, or delete these files"
+	memoryHandsOffNoFix        = "do not add or rewrite their content just because something seems missing, stale, or wrong"
+	memoryReviewNormally       = "review their changes like any other file"
+	memoryReviewNoTouchFinding = "Never flag them merely for being changed"
+	memoryReviewAccuracy       = "you may report inaccurate content as you would in any other file"
+	memoryFixPrompted          = "when a finding or recorded human fix decision concerns memory-file content"
+	memoryConflictProbe        = "make no independent content edits beyond resolving the conflict itself"
 	memoryConflictResolution   = "resolve their conflicts yourself whether they have conflict markers or are modify/delete or add/add conflicts"
 	memoryConflictNoOtherEdits = "Make no other edits to their content"
 	memoryDocCorrectOnly       = "Edit them only to correct or remove information that is factually wrong"
@@ -57,7 +57,8 @@ func requirePromptOmits(t *testing.T, prompt string, forbiddens ...string) {
 }
 
 // The review analyzer is a read-and-report turn, but its agent holds write
-// tools in the worktree, so its prompt carries the generic hands-off rule.
+// tools in the worktree, so its prompt limits independently initiated edits
+// and explicitly says changes under review are not findings by themselves.
 func TestReviewStep_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -77,7 +78,7 @@ func TestReviewStep_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	if len(ag.calls) == 0 {
 		t.Fatal("expected the review analyzer to run")
 	}
-	requirePromptContains(t, ag.calls[0].Prompt, memoryHandsOffProbe, memoryHandsOffNoEdit, memoryHandsOffNoFix)
+	requirePromptContains(t, ag.calls[0].Prompt, memoryHandsOffProbe, memoryHandsOffNoEdit, memoryHandsOffNoFix, memoryReviewNormally, memoryReviewNoTouchFinding, memoryReviewAccuracy)
 }
 
 // The shared fixer wrapper covers every fix turn (review, test, lint, custom
@@ -102,12 +103,13 @@ func TestReviewStep_FixPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"main.go","description":"possible nil deref","action":"auto-fix"}],"summary":"1 issue"}`
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"AGENTS.md","description":"incorrect repository setup command","action":"auto-fix"}],"summary":"1 issue"}`
 
 	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
-	requirePromptContains(t, ag.calls[0].Prompt, memoryHandsOffProbe, memoryHandsOffNoEdit, memoryHandsOffNoFix)
+	requirePromptContains(t, ag.calls[0].Prompt, memoryHandsOffProbe, memoryHandsOffNoEdit, memoryHandsOffNoFix, memoryFixPrompted)
+	requirePromptContains(t, ag.calls[0].Prompt, "Do not make unrelated or otherwise unprompted memory-file edits")
 }
 
 // The test evidence turn can write to the worktree (building scratch surfaces
@@ -321,8 +323,8 @@ func TestRebaseStep_ConflictPromptResolvesMemoryFileMarkers(t *testing.T) {
 	}
 	prompt := ag.calls[0].Prompt
 	requirePromptContains(t, prompt, "- AGENTS.md", memoryConflictProbe, memoryConflictResolution, memoryConflictNoOtherEdits)
-	// The conflict prompt must not carry the generic never-touch wording: a
-	// conflicted AGENTS.md has to be resolvable for the rebase to conclude.
+	// The conflict prompt must not carry the generic independent-edit wording:
+	// a conflicted AGENTS.md has to be resolvable for the rebase to conclude.
 	requirePromptOmits(t, prompt, memoryHandsOffNoEdit, memoryHandsOffNoFix)
 }
 
@@ -464,11 +466,9 @@ func TestPRStep_TemplateNarrativePromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	requirePromptContains(t, ag.calls[0].Prompt, memoryHandsOffProbe, memoryHandsOffNoEdit, memoryHandsOffNoFix)
 }
 
-// The document step is the single exception: it may edit the memory files to
-// correct factually wrong content, but must never add to them because
-// something is missing - so its prompt carries the correction-only wording
-// and must not carry the generic never-touch rule, which would block
-// legitimate corrections.
+// The document step has its own correction-only policy: it may edit memory
+// files to correct factually wrong content, but never add because something is
+// missing. Its prompt must not carry the generic independent-edit rule.
 func TestDocumentStep_PromptScopesMemoryFilesToCorrections(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -495,8 +495,7 @@ func TestDocumentStep_PromptScopesMemoryFilesToCorrections(t *testing.T) {
 		memoryDocIncidentScope,
 	)
 	requirePromptOmits(t, prompt,
-		// The generic rule would forbid the corrections the step is allowed
-		// to make.
+		// The generic rule is replaced by the document step's narrower policy.
 		memoryHandsOffNoEdit,
 		memoryHandsOffNoFix,
 		// The pre-change framing invited proactive additions.
