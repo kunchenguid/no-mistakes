@@ -414,7 +414,7 @@ func (s *revalidationRequestingPushStep) Execute(sctx *pipeline.StepContext) (*p
 // gate is approved except Lint's fixLintGate-th gate (1-based; 0 for none),
 // which selects Fix for the configured lint failure; the Lint fixer then
 // commits lint-fixed.txt.
-func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutput string, push *revalidationRequestingPushStep, fixLintGate int) (testCalls, housekeepingCalls int, approvals map[types.StepName]int) {
+func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutput string, push *revalidationRequestingPushStep, fixLintGate int) (testCalls, housekeepingCalls, lintRounds int, approvals map[types.StepName]int) {
 	t.Helper()
 	workDir, baseSHA, headSHA := setupGitRepo(t)
 	ensureHermeticOrigin(t, workDir)
@@ -467,9 +467,22 @@ func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutp
 			if err != nil {
 				t.Fatalf("execute: %v", err)
 			}
+			steps, err := database.GetStepsByRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range steps {
+				if step.StepName == types.StepLint {
+					rounds, err := database.GetRoundsByStep(step.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					lintRounds = len(rounds)
+				}
+			}
 			mu.Lock()
 			defer mu.Unlock()
-			return calls["test"], calls["housekeeping"], approvals
+			return calls["test"], calls["housekeeping"], lintRounds, approvals
 		case <-deadline:
 			t.Fatal("executor timed out")
 		case <-time.After(10 * time.Millisecond):
@@ -495,7 +508,7 @@ func runSettledRevalidation(t *testing.T, cmds config.Commands, housekeepingOutp
 // again.
 func TestSettledRevalidation_SkipsCleanHousekeepingAndRerunsTest(t *testing.T) {
 	push := &revalidationRequestingPushStep{}
-	testCalls, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{}, `{"findings":[],"summary":"clean"}`, push, 0)
+	testCalls, housekeepingCalls, _, approvals := runSettledRevalidation(t, config.Commands{}, `{"findings":[],"summary":"clean"}`, push, 0)
 	if push.calls != 2 {
 		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
 	}
@@ -510,44 +523,38 @@ func TestSettledRevalidation_SkipsCleanHousekeepingAndRerunsTest(t *testing.T) {
 	}
 }
 
-// lintMarkerCommand uses the shell that runStepShellCommand selects on this OS.
-// Keep the marker outside the git worktree so lint runs cannot create a commit.
-func lintMarkerCommand(marker, check string) string {
-	command := `echo run >> "` + marker + `"`
+// lintCheckCommand returns only a status; the executor's persisted rounds
+// provide the run count without shell redirection or platform-specific paths.
+func lintCheckCommand(check string) string {
 	if runtime.GOOS == "windows" {
 		switch check {
 		case "fail":
-			return command + " && exit /b 3"
+			return "exit /b 3"
 		case "fixed":
-			return command + " && if not exist lint-fixed.txt exit /b 3"
+			return "if exist lint-fixed.txt (exit /b 0) else (exit /b 3)"
 		}
-	} else {
-		switch check {
-		case "fail":
-			return command + " && exit 3"
-		case "fixed":
-			return command + " && test -f lint-fixed.txt"
-		}
+		return "exit /b 0"
 	}
-	return command
+	switch check {
+	case "fail":
+		return "exit 3"
+	case "fixed":
+		return "test -f lint-fixed.txt"
+	}
+	return "true"
 }
 
 // A Lint whose earlier pass failed its configured command and was approved
 // is not skipped on a settled pass: the restart reset the step result that
 // recorded that decision, so Lint re-runs its command and re-enters its gate.
 func TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "lint-runs")
 	push := &revalidationRequestingPushStep{}
-	_, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: lintMarkerCommand(marker, "fail")}, `{"findings":[],"summary":"clean"}`, push, 0)
+	_, housekeepingCalls, lintRounds, approvals := runSettledRevalidation(t, config.Commands{Lint: lintCheckCommand("fail")}, `{"findings":[],"summary":"clean"}`, push, 0)
 	if push.calls != 2 {
 		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
 	}
-	raw, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runs := strings.Count(string(raw), "run"); runs != 2 {
-		t.Fatalf("lint command runs = %d, want a re-run on the settled pass", runs)
+	if lintRounds != 2 {
+		t.Fatalf("lint rounds = %d, want a re-run on the settled pass", lintRounds)
 	}
 	if approvals[types.StepLint] != 2 {
 		t.Fatalf("lint approvals = %d, want the gate re-entered on the settled pass", approvals[types.StepLint])
@@ -561,9 +568,8 @@ func TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate(t *testing
 // formatter commits after it, the revalidated head is a tree Document and Lint
 // never examined, so the settled pass re-runs both instead of skipping them.
 func TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "lint-runs")
 	push := &revalidationRequestingPushStep{formatOnRequest: true}
-	testCalls, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: lintMarkerCommand(marker, "")}, `{"findings":[],"summary":"clean"}`, push, 0)
+	testCalls, housekeepingCalls, lintRounds, approvals := runSettledRevalidation(t, config.Commands{Lint: lintCheckCommand("")}, `{"findings":[],"summary":"clean"}`, push, 0)
 	if push.calls != 2 {
 		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
 	}
@@ -573,12 +579,8 @@ func TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping(t *testing.T)
 	if housekeepingCalls != 2 {
 		t.Fatalf("document calls = %d, want Document re-run on the formatter-changed head", housekeepingCalls)
 	}
-	raw, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runs := strings.Count(string(raw), "run"); runs != 2 {
-		t.Fatalf("lint command runs = %d, want Lint re-run on the formatter-changed head", runs)
+	if lintRounds != 2 {
+		t.Fatalf("lint rounds = %d, want Lint re-run on the formatter-changed head", lintRounds)
 	}
 	if len(approvals) != 0 {
 		t.Fatalf("approvals = %v, want no gate to park", approvals)
@@ -591,20 +593,15 @@ func TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping(t *testing.T)
 // than being refused as a mutation after a settled pass, and the run then
 // publishes it.
 func TestSettledRevalidation_ReenteredLintFixRequestsRevalidation(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "lint-runs")
 	push := &revalidationRequestingPushStep{checkDecisions: true}
-	_, _, approvals := runSettledRevalidation(t, config.Commands{Lint: lintMarkerCommand(marker, "fixed")}, `{"findings":[],"summary":"clean"}`, push, 2)
+	_, _, lintRounds, approvals := runSettledRevalidation(t, config.Commands{Lint: lintCheckCommand("fixed")}, `{"findings":[],"summary":"clean"}`, push, 2)
 	if approvals[types.StepLint] != 1 {
 		t.Fatalf("lint approvals = %d, want only the first pass approved", approvals[types.StepLint])
 	}
 	if push.calls != 3 || len(push.needsReview) != 2 || !push.needsReview[0] || push.needsReview[1] {
 		t.Fatalf("push calls = %d, revalidation checks = %v; want the Lint repair revalidated and then published", push.calls, push.needsReview)
 	}
-	raw, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runs := strings.Count(string(raw), "run"); runs != 3 {
-		t.Fatalf("lint command runs = %d, want the failing pass, the re-entered pass, and its fix round", runs)
+	if lintRounds != 4 {
+		t.Fatalf("lint rounds = %d, want the failing pass, the re-entered pass, its fix round, and the final pass", lintRounds)
 	}
 }
