@@ -151,3 +151,106 @@ func TestRecordedFixDecisionSurvivesTestAutoFix(t *testing.T) {
 		t.Fatal("fixture did not exercise Test auto-fix")
 	}
 }
+
+// A post-review step that commits again on a recorded-decision revalidation
+// pass must not dead-end the run at Push's guard. The revalidating Review
+// re-certifies the head Push asked to publish; when it leaves that head
+// unchanged the tail's own earlier coverage stands, so re-running it is what
+// produced the repeated-mutation loop this guards against regressing into.
+//
+// The fixture's housekeeping action appends a line on every invocation, so
+// the document step produces a real commit on the revalidation pass too -
+// the exact shape that previously refused publication with
+// "refusing to repeat validation or publish an unreviewed tree".
+func TestRecordedDecisionDocumentEditAfterRevalidationPublishes(t *testing.T) {
+	scenario := axiScenario(t)
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
+	h.CommitChange("init-doc-loop", "seed.txt", "seed\n", "seed")
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	const branch = "feature/doc-after-revalidation"
+	h.CommitChange(branch, "feature.txt", "original\n", "add feature")
+	h.CommitChange(branch, "docs/NOTES.md", "# notes\n\n<!-- nm-e2e -->\n", "add notes doc")
+	operator := h.AddWorktree(branch)
+	out, err := h.RunInDir(operator, "axi", "run", "--intent", "Add the feature and keep its notes accurate")
+	if err != nil || !strings.Contains(out, "axi-1") {
+		t.Fatalf("initial decision gate: %v\n%s", err, out)
+	}
+	run := h.ActiveRun(branch)
+
+	// Second-pass scenario: the review fixer edits feature.txt and the
+	// combined document+lint housekeeping pass appends a line to the notes
+	// file on every pass, so it commits on the revalidation pass as well.
+	content := `actions:
+  - match: "Investigate previous review findings"
+    edits:
+      - path: feature.txt
+        new: "decided\n"
+    structured:
+      summary: "use the decided prefix"
+  - match: "combined documentation and lint housekeeping pass"
+    edits:
+      - path: docs/NOTES.md
+        old: "<!-- nm-e2e -->"
+        new: "<!-- nm-e2e -->\nnote"
+    structured:
+      findings: []
+      summary: "update notes"
+  - structured:
+      findings: []
+      summary: "clean"
+      risk_level: low
+      risk_rationale: "clean"
+      risk_scope: source-or-external
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fixture validation"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
+      artifacts: []
+      title: "fix: preserve decided prefix"
+      body: "Preserve the recorded decision."
+`
+	if err := os.WriteFile(scenario, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err = h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "axi-1", "--instructions", "Use decided as the identifier prefix.")
+	if err != nil {
+		info := h.RunInfo(run.ID)
+		detail := ""
+		if info != nil && info.Error != nil {
+			detail = *info.Error
+		}
+		t.Fatalf("respond drive failed: %v\n%s\nrun error: %s", err, out, detail)
+	}
+	if !strings.Contains(out, "outcome: passed") {
+		info := h.RunInfo(run.ID)
+		detail := ""
+		if info != nil && info.Error != nil {
+			detail = *info.Error
+		}
+		t.Fatalf("run did not pass after document edit on the revalidation pass:\n%s\nrun error: %s", out, detail)
+	}
+	if got := h.UpstreamBranchSHA(branch); got == "" {
+		t.Fatal("run passed but the branch was not published upstream")
+	}
+	// The housekeeping agent ran only on the first pass: the revalidation
+	// pass's Review certified the head it started on, so the settled tail
+	// completed without re-invoking a step that would have committed again.
+	housekeeping := 0
+	for _, invocation := range h.AgentInvocations() {
+		if strings.Contains(invocation.Prompt, "combined documentation and lint housekeeping pass") {
+			housekeeping++
+		}
+	}
+	if housekeeping != 1 {
+		t.Fatalf("housekeeping agent invocations = %d, want exactly one (settled revalidation must not re-run Document)", housekeeping)
+	}
+}

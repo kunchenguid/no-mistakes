@@ -230,42 +230,89 @@ func TestRecordedFixDecisions_StaleIDsDoNotInventRequirements(t *testing.T) {
 	}
 }
 
+// A downstream change after a recorded-decision revalidation is bounded only
+// when the revalidating Review certified the head it started on. A settled
+// pass has no new pipeline work for its tail to cover, so a later change is
+// Push's own commit machinery or an out-of-band write and is refused. When
+// the revalidating Review committed a fix of its own, the tail legitimately
+// re-ran and the changed tree goes back through revalidation instead.
 func TestRecordedDecisionsNeedReview_BoundsRepeatedDownstreamMutation(t *testing.T) {
-	dir, base, head := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
-	sr, _ := recordFixDecision(t, sctx, types.StepReview, db.RoundSelectionSourceUser)
-	recordReviewApproval(t, sctx, head)
-	if _, err := sctx.DB.InsertReviewStepRound(sr.ID, 2, "auto_fix", nil, nil, head, 1); err != nil {
-		t.Fatal(err)
+	newRun := func(t *testing.T) (string, *pipeline.StepContext, *db.StepResult) {
+		dir, base, head := setupGitRepo(t)
+		sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+		sr, _ := recordFixDecision(t, sctx, types.StepReview, db.RoundSelectionSourceUser)
+		push, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepPush)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, _ := json.Marshal(Findings{Summary: recordedDecisionReviewRequest})
+		raw := string(request)
+		if _, err := sctx.DB.InsertStepRound(push.ID, 1, "initial", &raw, nil, 1); err != nil {
+			t.Fatal(err)
+		}
+		return dir, sctx, sr
 	}
-	push, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepPush)
-	if err != nil {
-		t.Fatal(err)
+	commitDownstream := func(t *testing.T, dir, content string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "doc.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "add", "-A")
+		gitCmd(t, dir, "commit", "-m", "document changes again")
+		return gitCmd(t, dir, "rev-parse", "HEAD")
 	}
-	request, _ := json.Marshal(Findings{Summary: recordedDecisionReviewRequest})
-	raw := string(request)
-	if _, err := sctx.DB.InsertStepRound(push.ID, 1, "initial", &raw, nil, 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertReviewStepRound(sr.ID, 3, "initial", nil, nil, head, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "doc.txt"), []byte("another downstream edit"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "document changes again")
-	later := gitCmd(t, dir, "rev-parse", "HEAD")
-	if got, err := recordedDecisionsNeedReview(sctx, later); err == nil || got || !strings.Contains(err.Error(), "refusing to repeat") {
-		t.Fatalf("repeated restart: %v, %v", got, err)
-	}
-	if got, err := recordedDecisionsNeedReview(sctx, head); err != nil || got {
-		t.Fatalf("settled tree refused: %v, %v", got, err)
-	}
-	recordFixDecision(t, sctx, types.StepTest, db.RoundSelectionSourceUser)
-	if got, err := recordedDecisionsNeedReview(sctx, later); err != nil || !got {
-		t.Fatalf("new decision cannot be reviewed: %v, %v", got, err)
-	}
+
+	t.Run("settled pass still refuses a later mutation", func(t *testing.T) {
+		dir, sctx, sr := newRun(t)
+		head := sctx.Run.HeadSHA
+		recordReviewApproval(t, sctx, head)
+		// The revalidation pass's Review started on the head Push asked it to
+		// certify and approved that same head - it committed nothing.
+		if _, err := sctx.DB.InsertReviewStepRoundWithProvenance(sr.ID, 2, "initial", nil, nil, head, head, "", nil, nil, 1); err != nil {
+			t.Fatal(err)
+		}
+		later := commitDownstream(t, dir, "downstream edit one")
+		if got, err := recordedDecisionsNeedReview(sctx, later); err == nil || got || !strings.Contains(err.Error(), "refusing to repeat") {
+			t.Fatalf("settled pass mutation: %v, %v", got, err)
+		}
+		if got, err := recordedDecisionsNeedReview(sctx, head); err != nil || got {
+			t.Fatalf("settled tree refused: %v, %v", got, err)
+		}
+		// A newer human decision still permits a fresh revalidation.
+		recordFixDecision(t, sctx, types.StepTest, db.RoundSelectionSourceUser)
+		if got, err := recordedDecisionsNeedReview(sctx, later); err != nil || !got {
+			t.Fatalf("new decision cannot be reviewed: %v, %v", got, err)
+		}
+	})
+
+	t.Run("non-settled pass revalidates a tail change again", func(t *testing.T) {
+		dir, sctx, sr := newRun(t)
+		head := sctx.Run.HeadSHA
+		// The revalidation pass's Review started on the requested head but
+		// committed a fix, so it certified a descendant, not the start head.
+		fixed := commitDownstream(t, dir, "review fix output")
+		recordReviewApproval(t, sctx, fixed)
+		if _, err := sctx.DB.InsertReviewStepRoundWithProvenance(sr.ID, 2, "auto_fix", nil, nil, fixed, head, "", nil, nil, 1); err != nil {
+			t.Fatal(err)
+		}
+		later := commitDownstream(t, dir, "downstream edit two")
+		if got, err := recordedDecisionsNeedReview(sctx, later); err != nil || !got {
+			t.Fatalf("non-settled pass tail change must revalidate: %v, %v", got, err)
+		}
+	})
+
+	t.Run("unsettled when the pass review has no recorded start", func(t *testing.T) {
+		dir, sctx, sr := newRun(t)
+		head := sctx.Run.HeadSHA
+		recordReviewApproval(t, sctx, head)
+		if _, err := sctx.DB.InsertReviewStepRound(sr.ID, 2, "initial", nil, nil, head, 1); err != nil {
+			t.Fatal(err)
+		}
+		later := commitDownstream(t, dir, "downstream edit three")
+		if got, err := recordedDecisionsNeedReview(sctx, later); err != nil || !got {
+			t.Fatalf("unproven settle state must revalidate, not refuse: %v, %v", got, err)
+		}
+	})
 }
 
 // Canned reviewers in unrelated orchestration tests must explicitly stand in

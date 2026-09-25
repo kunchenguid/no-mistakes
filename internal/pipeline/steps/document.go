@@ -89,6 +89,14 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	settled, err := revalidationSettled(sctx)
+	if err != nil {
+		return nil, err
+	}
+	if settled {
+		sctx.Log("recorded-decision revalidation left the tree unchanged; skipping redundant housekeeping pass")
+		return &pipeline.StepOutcome{}, nil
+	}
 	ctx := sctx.Ctx
 	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	if err != nil {

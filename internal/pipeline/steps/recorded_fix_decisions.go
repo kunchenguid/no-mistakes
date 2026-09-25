@@ -160,6 +160,85 @@ func recordedDecisionFindings(decisions []recordedFixDecision, reviews []types.D
 	return findings
 }
 
+// revalidationPassStartHead returns the head on which the in-flight
+// recorded-decision revalidation pass began: the starting head of the first
+// Review round after the most recent Push-requested revalidation. "" reports
+// that no such pass is in flight - either no request exists yet or this is
+// still the pass that produced it.
+func revalidationPassStartHead(sctx *pipeline.StepContext) (string, error) {
+	if sctx == nil || sctx.DB == nil || sctx.Run == nil || sctx.Run.ID == "" {
+		return "", nil
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return "", fmt.Errorf("find recorded-decision revalidation pass: %w", err)
+	}
+	var lastRequest string
+	for _, step := range steps {
+		if step.StepName != types.StepPush {
+			continue
+		}
+		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
+		if err != nil {
+			return "", fmt.Errorf("find recorded-decision revalidation pass: %w", err)
+		}
+		for _, round := range rounds {
+			if round.FindingsJSON == nil {
+				continue
+			}
+			findings, err := types.ParseFindingsJSON(*round.FindingsJSON)
+			if err != nil {
+				return "", fmt.Errorf("read recorded-decision review request: %w", err)
+			}
+			if findings.Summary == recordedDecisionReviewRequest && round.ID > lastRequest {
+				lastRequest = round.ID
+			}
+		}
+	}
+	if lastRequest == "" {
+		return "", nil
+	}
+	for _, step := range steps {
+		if step.StepName != types.StepReview {
+			continue
+		}
+		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
+		if err != nil {
+			return "", fmt.Errorf("find recorded-decision revalidation pass: %w", err)
+		}
+		for _, round := range rounds {
+			// Round IDs are monotonic ULIDs, so the first Review round newer
+			// than the request is the revalidation pass's initial review; its
+			// starting head is the head Push asked that pass to certify.
+			if round.ID > lastRequest {
+				if round.StartingHeadSHA == nil {
+					return "", nil
+				}
+				return strings.TrimSpace(*round.StartingHeadSHA), nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// revalidationSettled reports whether this step's re-run would reproduce work
+// it already did on this exact tree. On a recorded-decision revalidation pass
+// whose Review certified the head it started on without committing, the tree
+// Push is about to publish is the one the post-review steps already
+// processed; re-running them adds no coverage and a step that edits again is
+// the repeated-mutation loop the Push guard used to dead-end on. A fix round
+// always re-runs: an operator answer could have changed the tree since.
+func revalidationSettled(sctx *pipeline.StepContext) (bool, error) {
+	if sctx == nil || sctx.Run == nil || sctx.Fixing {
+		return false, nil
+	}
+	start, err := revalidationPassStartHead(sctx)
+	if err != nil || start == "" {
+		return false, err
+	}
+	return sctx.Run.HeadSHA == start, nil
+}
+
 // Push already commits the final local tree, including Test/evidence and
 // formatter edits. Reuse the executor's existing Review restart only when
 // positive decisions exist and either that tree or the decisions are newer
@@ -213,7 +292,20 @@ func recordedDecisionsNeedReview(sctx *pipeline.StepContext, head string) (bool,
 	latestDecision := decisions[len(decisions)-1].roundID
 	needsReview := treeChanged || latestDecision >= lastReview
 	if needsReview && lastRequest > latestDecision {
-		return false, fmt.Errorf("post-review steps changed the tree again after recorded fix decisions were revalidated; refusing to repeat validation or publish an unreviewed tree - inspect the later Test/Document/Lint/formatter changes before retrying")
+		passStart, err := revalidationPassStartHead(sctx)
+		if err != nil {
+			return false, err
+		}
+		// A revalidation pass whose Review certified the head it started on
+		// settled the tree: its post-review steps had nothing new to cover and
+		// did not re-run, so a change found here came from Push's own commit
+		// machinery or an out-of-band write - refuse rather than loop forever
+		// or publish an unreviewed tree. When that pass's Review committed a
+		// fix of its own, its tail legitimately re-ran, so the changed tree
+		// goes back through one more revalidation instead of dead-ending.
+		if passStart != "" && passStart == approved {
+			return false, fmt.Errorf("post-review steps changed the tree again after recorded fix decisions were revalidated; refusing to repeat validation or publish an unreviewed tree - inspect the later Test/Document/Lint/formatter changes before retrying")
+		}
 	}
 	return needsReview, nil
 }

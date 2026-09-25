@@ -28,6 +28,14 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	settled, err := revalidationSettled(sctx)
+	if err != nil {
+		return nil, err
+	}
+	if settled {
+		sctx.Log("recorded-decision revalidation left the tree unchanged; prior Test coverage stands")
+		return &pipeline.StepOutcome{}, nil
+	}
 	decisions, err := loadRecordedFixDecisions(sctx)
 	if err != nil {
 		return nil, err

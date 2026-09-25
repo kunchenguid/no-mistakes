@@ -1070,11 +1070,19 @@ rounds:
 		var dbErr error
 		roundTrigger := nextTrigger
 		if stepName == types.StepReview {
+			// Every review round records the head it started on, not only
+			// eval-provenance captures: a recorded-decision revalidation pass
+			// compares that start against the certified head to tell whether
+			// the revalidating Review moved the tree (its tail must re-run) or
+			// approved it unchanged (the tail's earlier coverage stands).
+			var trustedConfigSHA string
+			var globalConfigYAML, repoConfigYAML []byte
 			if e.config != nil && e.config.CaptureEvalProvenance {
-				inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, e.config.TrustedConfigSHA, e.config.ReplayGlobalYAML, e.config.ReplayRepoYAML, roundDuration)
-			} else {
-				inserted, dbErr = e.db.InsertReviewStepRound(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, roundDuration)
+				trustedConfigSHA = e.config.TrustedConfigSHA
+				globalConfigYAML = e.config.ReplayGlobalYAML
+				repoConfigYAML = e.config.ReplayRepoYAML
 			}
+			inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, trustedConfigSHA, globalConfigYAML, repoConfigYAML, roundDuration)
 		} else {
 			inserted, dbErr = e.db.InsertStepRoundWithRepair(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, outcome.RepairPublished, roundDuration)
 		}
