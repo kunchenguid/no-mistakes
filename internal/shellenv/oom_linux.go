@@ -26,9 +26,9 @@ func OwnOOMScoreScript(script string) string {
 	return "printf '%s\\n' " + stepOOMScoreAdj + " > /proc/self/oom_score_adj 2>/dev/null; " + script
 }
 
-// raiseStepOOMScore raises pid's oom_score_adj. An unprivileged process may
+// RaiseStepOOMScore raises pid's oom_score_adj. An unprivileged process may
 // raise the value; failure is ignored so a missing /proc does not fail the step.
-func raiseStepOOMScore(pid int) {
+func RaiseStepOOMScore(pid int) {
 	if pid <= 0 {
 		return
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // managedServerOutput holds the writer used for managed-server stdout and
@@ -89,6 +90,7 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 		slog.Warn("managed agent server failed to start", "agent", agentName, "error", err)
 		return nil, fmt.Errorf("start server %s: %w", bin, err)
 	}
+	shellenv.RaiseStepOOMScore(cmd.Process.Pid)
 	slog.Info("managed agent server started", "agent", agentName, "pid", cmd.Process.Pid)
 
 	pidFile := writeServerPIDFile(currentServerPIDsDir(), ServerPIDInfo{

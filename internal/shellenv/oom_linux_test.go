@@ -66,6 +66,7 @@ func TestOOMKillAttributesTheAllocatingCommandAndSparesItsNeighbor(t *testing.T)
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip(err)
 	}
+	requireDelegatedMemoryScope(t)
 	cmd := exec.Command("systemd-run", "--user", "--scope",
 		"-p", "MemoryMax=160M",
 		"-p", "MemorySwapMax=0",
@@ -79,6 +80,16 @@ func TestOOMKillAttributesTheAllocatingCommandAndSparesItsNeighbor(t *testing.T)
 	}
 	if !strings.Contains(string(out), "neighbor-still-alive") {
 		t.Fatalf("neighbor did not survive:\n%s", out)
+	}
+}
+
+func requireDelegatedMemoryScope(t *testing.T) {
+	t.Helper()
+	probe := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--",
+		"sh", "-c", `cat "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.max"`)
+	out, err := probe.CombinedOutput()
+	if err != nil {
+		t.Skipf("no usable systemd user scope with memory.max: %v\n%s", err, out)
 	}
 }
 

@@ -10,7 +10,7 @@ var ErrOutOfMemory = errors.New("ran out of memory")
 
 func OwnOOMScoreScript(script string) string { return script }
 
-func raiseStepOOMScore(int) {}
+func RaiseStepOOMScore(int) {}
 
 func OOMKillBaseline() (uint64, bool) { return 0, false }
 
