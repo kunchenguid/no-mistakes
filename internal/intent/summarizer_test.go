@@ -92,8 +92,7 @@ func TestAgentSummarizer_PropagatesCWD(t *testing.T) {
 }
 
 // The summarizer runs with worktree CWD and can write files, so its prompt
-// carries the same agent-memory-files hands-off rule as the pipeline steps:
-// AGENTS.md and CLAUDE.md must never be created or edited by automation.
+// limits independently initiated changes to agent memory files.
 func TestAgentSummarizer_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	fa := &fakeAgent{output: `{"summary": "x"}`}
 	s := NewAgentSummarizer(fa, "/work/dir")
@@ -103,9 +102,9 @@ func TestAgentSummarizer_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 		t.Fatalf("summarize: %v", err)
 	}
 	for _, want := range []string{
-		"Agent memory files (AGENTS.md and CLAUDE.md) are hands-off",
-		"Do not create, modify, rename, or delete them",
-		"not even to correct or add content that looks stale, wrong, or missing",
+		"Agent memory files (AGENTS.md and CLAUDE.md) - limits on your own changes",
+		"Do not independently create, modify, rename, or delete these files",
+		"do not add or rewrite their content just because something seems missing, stale, or wrong",
 	} {
 		idx := strings.Index(fa.lastPrompt, want)
 		if idx < 0 {
