@@ -155,8 +155,9 @@ func TestRecordedFixDecisionSurvivesTestAutoFix(t *testing.T) {
 // A post-review step that commits again on a recorded-decision revalidation
 // pass must not dead-end the run at Push's guard. The revalidating Review
 // re-certifies the head Push asked to publish; when it leaves that head
-// unchanged the tail's own earlier coverage stands, so re-running it is what
-// produced the repeated-mutation loop this guards against regressing into.
+// unchanged, Test re-runs on it while Document and Lint keep their earlier
+// outcome on that exact tree, so re-running them is what produced the
+// repeated-mutation loop this guards against regressing into.
 //
 // The fixture's housekeeping action appends a line on every invocation, so
 // the document step produces a real commit on the revalidation pass too -
@@ -242,15 +243,23 @@ func TestRecordedDecisionDocumentEditAfterRevalidationPublishes(t *testing.T) {
 		t.Fatal("run passed but the branch was not published upstream")
 	}
 	// The housekeeping agent ran only on the first pass: the revalidation
-	// pass's Review certified the head it started on, so the settled tail
-	// completed without re-invoking a step that would have committed again.
-	housekeeping := 0
+	// pass's Review certified the head it started on, so Document and Lint
+	// kept their earlier outcome without re-invoking a step that would have
+	// committed again. Test validated both the pre-decision head and the
+	// revalidated head.
+	housekeeping, testEvidence := 0, 0
 	for _, invocation := range h.AgentInvocations() {
 		if strings.Contains(invocation.Prompt, "combined documentation and lint housekeeping pass") {
 			housekeeping++
 		}
+		if strings.Contains(invocation.Prompt, "You are validating a code change by driving the product itself") {
+			testEvidence++
+		}
 	}
 	if housekeeping != 1 {
 		t.Fatalf("housekeeping agent invocations = %d, want exactly one (settled revalidation must not re-run Document)", housekeeping)
+	}
+	if testEvidence < 2 {
+		t.Fatalf("test evidence invocations = %d, want Test to re-run on the revalidated head", testEvidence)
 	}
 }

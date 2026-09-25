@@ -125,6 +125,10 @@ type StepOutcome struct {
 	// CI repairs use it when policy requires revalidation or continuity cannot be
 	// proven, sending the new local head back through review before push.
 	RestartFrom types.StepName
+	// Settled marks Findings as this step's already-decided final outcome,
+	// restated from an earlier pass over the same tree. The executor records
+	// them as the step's result without auto-fixing or parking its gate again.
+	Settled bool
 	// FixSummary, when non-empty, records the result of a fix attempt.
 	FixSummary      string
 	RepairPublished bool

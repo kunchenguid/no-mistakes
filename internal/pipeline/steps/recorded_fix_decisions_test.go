@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -336,4 +338,132 @@ func satisfiedDecisionReviews(t *testing.T, prompt string) []types.DecisionRevie
 		reviews = append(reviews, types.DecisionReview{DecisionID: decision.ID, Result: "satisfied", Evidence: "fixture: selected behavior is preserved"})
 	}
 	return reviews
+}
+
+// settledReviewStep certifies the head it starts on without committing, the
+// shape of a revalidating Review that finds nothing new to change.
+type settledReviewStep struct{}
+
+func (settledReviewStep) Name() types.StepName { return types.StepReview }
+
+func (settledReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
+}
+
+// revalidationRequestingPushStep asks for one recorded-decision revalidation
+// and publishes on its next pass, as Push does after downstream edits.
+type revalidationRequestingPushStep struct{ calls int }
+
+func (*revalidationRequestingPushStep) Name() types.StepName { return types.StepPush }
+
+func (s *revalidationRequestingPushStep) Execute(*pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	s.calls++
+	if s.calls > 1 {
+		return &pipeline.StepOutcome{}, nil
+	}
+	request, _ := json.Marshal(Findings{Summary: recordedDecisionReviewRequest})
+	return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: string(request)}, nil
+}
+
+// A settled revalidation pass re-runs Test on the revalidated head but keeps
+// the Document and Lint gate decisions from their earlier pass over the same
+// tree: findings approved at those gates stay reported and the steps do not
+// re-park or re-invoke the housekeeping agent.
+func TestSettledRevalidation_RerunsTestAndKeepsApprovedHousekeepingFindings(t *testing.T) {
+	workDir, baseSHA, headSHA := setupGitRepo(t)
+	ensureHermeticOrigin(t, workDir)
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(workDir, "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "refs/heads/feature", headSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	housekeepingCalls, testCalls := 0, 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "combined documentation and lint housekeeping pass") {
+				housekeepingCalls++
+				return &agent.Result{Output: json.RawMessage(`{"findings":[` +
+					`{"id":"doc-1","severity":"warning","file":"README.md","description":"doc needs a decision","action":"ask-user","category":"documentation"},` +
+					`{"id":"lint-1","severity":"warning","file":"main.go","description":"lint needs a decision","action":"ask-user","category":"lint"}` +
+					`],"summary":"housekeeping"}`)}, nil
+			}
+			testCalls++
+			return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+		},
+	}
+	push := &revalidationRequestingPushStep{}
+	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), &config.Config{Agent: types.AgentClaude}, ag,
+		[]pipeline.Step{settledReviewStep{}, &TestStep{}, &DocumentStep{}, &LintStep{}, push}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+
+	approve := func(step types.StepName) {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			err := exec.Respond(step, types.ActionApprove, nil)
+			if err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s gate never parked: %v", step, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	approve(types.StepDocument)
+	approve(types.StepLint)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("executor timed out; a settled pass must not re-park an approved gate")
+	}
+
+	if push.calls != 2 {
+		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
+	}
+	if testCalls != 2 {
+		t.Fatalf("test evidence calls = %d, want Test to re-run on the revalidated head", testCalls)
+	}
+	if housekeepingCalls != 1 {
+		t.Fatalf("housekeeping calls = %d, want the settled pass to keep the earlier outcome", housekeepingCalls)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[types.StepName]string{types.StepDocument: "doc-1", types.StepLint: "lint-1"}
+	for _, sr := range steps {
+		id, ok := want[sr.StepName]
+		if !ok {
+			continue
+		}
+		if sr.Status != types.StepStatusCompleted || sr.FindingsJSON == nil {
+			t.Fatalf("%s = %s with findings %v, want completed with its approved findings", sr.StepName, sr.Status, sr.FindingsJSON)
+		}
+		findings, err := types.ParseFindingsJSON(*sr.FindingsJSON)
+		if err != nil || len(findings.Items) != 1 || findings.Items[0].ID != id {
+			t.Fatalf("%s findings = %+v, %v; want approved %s kept", sr.StepName, findings, err, id)
+		}
+		rounds, err := database.GetRoundsByStep(sr.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line, _ := buildStepEntry(sr, rounds, prBodyMarkdown); !strings.Contains(line, "⚠️") {
+			t.Fatalf("%s attestation line = %q, want the approved finding reported, not a clean or fixed pass", sr.StepName, line)
+		}
+	}
 }
