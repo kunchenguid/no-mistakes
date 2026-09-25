@@ -1112,6 +1112,25 @@ func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
 			t.Errorf("rewritten check missing %q:\n%s", want, out)
 		}
 	}
+	t.Logf("operator check before recovery:\n%s", out)
+	previousInteractive := syncInteractive
+	syncInteractive = func() bool { return true }
+	t.Cleanup(func() { syncInteractive = previousInteractive })
+	human := newRootCmd()
+	humanOut := new(bytes.Buffer)
+	human.SetOut(humanOut)
+	human.SetErr(humanOut)
+	human.SetIn(strings.NewReader("no\n"))
+	human.SetArgs([]string{"sync", "--recover"})
+	if err := human.Execute(); err != nil {
+		t.Fatalf("human recovery confirmation: %v\n%s", err, humanOut.String())
+	}
+	for _, want := range []string{"anchors the superseded pipeline head in a ref", "rebinds the recorded", "push binding to the verified live head without moving the worktree", "Cancelled"} {
+		if !strings.Contains(humanOut.String(), want) {
+			t.Errorf("human recovery confirmation missing %q:\n%s", want, humanOut.String())
+		}
+	}
+	t.Logf("human confirmation (declined):\n%s", humanOut.String())
 	out, err = executeCmd("axi", "sync", "--recover")
 	if err != nil {
 		t.Fatalf("recover: %v\n%s", err, out)
@@ -1130,6 +1149,7 @@ func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
 			t.Errorf("recover output missing %s %s:\n%s", key, sha, out)
 		}
 	}
+	t.Logf("operator recovery result:\n%s", out)
 	if got := cliGit(t, f.local, "rev-parse", anchor); got != f.pushed {
 		t.Fatalf("anchor = %s, want superseded pipeline head %s", got, f.pushed)
 	}
@@ -1144,6 +1164,7 @@ func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
 	if strings.Contains(out, "blocked_remote_rewritten") || !toonHasValue(out, "pushed_head", rewritten) {
 		t.Fatalf("post-recover check still stranded:\n%s", out)
 	}
+	t.Logf("operator check after recovery:\n%s", out)
 }
 
 // toonHasValue reports whether TOON output renders key with value, which the
