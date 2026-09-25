@@ -313,7 +313,7 @@ func runShellCommandWithProcessEnv(ctx context.Context, dir string, env []string
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd.exe", "/c", cmdStr)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
+		cmd = exec.CommandContext(ctx, "sh", "-c", shellenv.OwnOOMScoreScript(cmdStr))
 	}
 	shellenv.ConfigureCooperativeShellCommand(cmd)
 	cmd.Dir = dir

@@ -120,6 +120,10 @@ Description=no-mistakes background daemon
 
 [Service]
 Type=simple
+# continue: a step the kernel OOM-kills must not SIGTERM the rest of the unit.
+# stop (the default) terminates every process in the service, which is how one
+# step's allocation used to fail every other in-flight run.
+OOMPolicy=continue
 ExecStart=%s
 WorkingDirectory=%s
 %s

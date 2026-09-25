@@ -82,6 +82,9 @@ func TestRenderSystemdUnitIncludesManagedPath(t *testing.T) {
 	home := "/home/test"
 
 	unit := renderSystemdUnit("/usr/local/bin/no-mistakes", p, home)
+	if !strings.Contains(unit, "OOMPolicy=continue") {
+		t.Fatalf("systemd unit missing OOMPolicy=continue:\n%s", unit)
+	}
 	pathValue := extractSystemdEnvironmentValue(t, unit, "PATH")
 	for _, want := range []string{
 		"/opt/homebrew/bin",
