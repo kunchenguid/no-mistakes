@@ -269,8 +269,8 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			result = "refused"
 			return &exitError{code: 1}
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
 		if keepLocal {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
 			if state.Recovery != nil && state.Recovery.KeepLocal {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible Git change is moving the local gate branch to the exact required")
 				fmt.Fprintln(cmd.OutOrStdout(), "  head; the worktree and verified divergent archive are never touched.")
@@ -280,11 +280,19 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 				fmt.Fprintln(cmd.OutOrStdout(), "  the worktree is never touched.")
 			}
 		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a fast-forward of this clean behind branch, or")
+			fmt.Fprintln(cmd.OutOrStdout(), "  Recovery may return custody from the terminal run. The possible worktree")
+			fmt.Fprintln(cmd.OutOrStdout(), "  change is a fast-forward of this clean behind branch, or")
 			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change;")
-			fmt.Fprintln(cmd.OutOrStdout(), "  unproven divergence refuses, and --keep-local keeps the current head.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  unproven divergence refuses. If the live remote was rewritten, recovery")
+			fmt.Fprintln(cmd.OutOrStdout(), "  anchors the superseded pipeline head in a ref and rebinds the recorded")
+			fmt.Fprintln(cmd.OutOrStdout(), "  push binding to the verified live head without moving the worktree.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  --keep-local keeps the current head for custody recovery.")
 		}
-		fmt.Fprint(cmd.OutOrStdout(), "  Return custody of this branch? [y/N] ")
+		if keepLocal {
+			fmt.Fprint(cmd.OutOrStdout(), "  Return custody of this branch? [y/N] ")
+		} else {
+			fmt.Fprint(cmd.OutOrStdout(), "  Proceed with this recovery? [y/N] ")
+		}
 		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 		if readErr != nil && strings.TrimSpace(line) == "" {
 			return readErr
