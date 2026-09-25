@@ -68,7 +68,7 @@ func TestOOMKillAttributesTheAllocatingCommandAndSparesItsNeighbor(t *testing.T)
 	}
 	requireDelegatedMemoryScope(t)
 	cmd := exec.Command("systemd-run", "--user", "--scope",
-		"-p", "MemoryMax=160M",
+		"-p", "MemoryMax="+oomScopeMemoryMax,
 		"-p", "MemorySwapMax=0",
 		"-p", "OOMPolicy=continue",
 		"--",
@@ -83,13 +83,22 @@ func TestOOMKillAttributesTheAllocatingCommandAndSparesItsNeighbor(t *testing.T)
 	}
 }
 
+const oomScopeMemoryMax = "160M"
+
 func requireDelegatedMemoryScope(t *testing.T) {
 	t.Helper()
-	probe := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--",
+	probe := exec.Command("systemd-run", "--user", "--scope", "--quiet",
+		"-p", "MemoryMax="+oomScopeMemoryMax,
+		"-p", "MemorySwapMax=0",
+		"--",
 		"sh", "-c", `cat "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.max"`)
 	out, err := probe.CombinedOutput()
 	if err != nil {
 		t.Skipf("no usable systemd user scope with memory.max: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != strconv.Itoa(160*1024*1024) {
+		t.Skipf("scope memory.max = %q, want %d", got, 160*1024*1024)
 	}
 }
 

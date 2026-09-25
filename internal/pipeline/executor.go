@@ -769,6 +769,16 @@ func (e *Executor) autoFixLimit(stepName types.StepName) int {
 	return e.config.AutoFixLimit(stepName)
 }
 
+// keepOOMDetail leaves a step's own failure text in place, including a
+// restore error and any recovery snapshot path, and joins the
+// out-of-memory sentinel so errors.Is can still find it.
+func keepOOMDetail(err error) error {
+	if err == nil || !errors.Is(err, shellenv.ErrOutOfMemory) {
+		return err
+	}
+	return errors.Join(shellenv.ErrOutOfMemory, err)
+}
+
 // executeStep runs a single step with approval coordination.
 // Returns whether to skip the remainder, an optional earlier restart step,
 // and any execution error.
@@ -1006,10 +1016,7 @@ rounds:
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
 			durationMS := executionMS + roundDuration
-			if errors.Is(err, shellenv.ErrOutOfMemory) {
-				// "step <name> failed: ran out of memory" names the step.
-				err = shellenv.ErrOutOfMemory
-			}
+			err = keepOOMDetail(err)
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
