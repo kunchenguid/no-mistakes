@@ -36,8 +36,10 @@ func assertRoleNeutralHostSearchBoundary(t *testing.T, prompt string) {
 		"repository-local path you were given remain fine",
 		// Role-neutral missing-tool fallback.
 		"not on PATH and no repository-local path is supplied",
-		"report the missing tool and the work it blocked in your normal result",
-		"with the concrete reason, and stop there",
+		"do not search the machine for it",
+		"obtain, install, or build it inside the disposable worktree and use it there",
+		"never install it system-wide or globally",
+		"If no workspace-local route works, report the missing tool and the work it blocked in your normal result",
 	} {
 		if !strings.Contains(normalized, want) {
 			t.Errorf("emitted pipeline prompt missing role-neutral host-search boundary %q:\n%s", want, prompt)
@@ -53,10 +55,10 @@ func assertTestScenarioUntestedFallback(t *testing.T, prompt string) {
 	normalized := strings.Join(strings.Fields(prompt), " ")
 	for _, want := range []string{
 		"not on PATH and has no repository-local path",
-		"must not be searched for or installed",
-		"driven live through another route you already have",
-		`report the affected scenario as "untested"`,
-		"instead of searching the machine for the tool",
+		"do not search the host machine for it or install it system-wide or globally",
+		"Try another available route or obtain, install, or build the tool inside the disposable workspace and use it there",
+		`Only if no workspace-local route can drive the scenario live, report the affected scenario as "untested"`,
+		"with what you tried and why it could not work",
 	} {
 		if !strings.Contains(normalized, want) {
 			t.Errorf("emitted test prompt missing scenario untested fallback %q:\n%s", want, prompt)
