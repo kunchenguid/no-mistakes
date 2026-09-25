@@ -53,6 +53,8 @@ func assertTestScenarioUntestedFallback(t *testing.T, prompt string) {
 	normalized := strings.Join(strings.Fields(prompt), " ")
 	for _, want := range []string{
 		"not on PATH and has no repository-local path",
+		"must not be searched for or installed",
+		"driven live through another route you already have",
 		`report the affected scenario as "untested"`,
 		"instead of searching the machine for the tool",
 	} {

@@ -17,8 +17,10 @@ import (
 
 // TestTestStep_PromptDerivesScenariosAndMarksLive pins the live-validation
 // prompt contract: the step asks for named scenarios driven against the real
-// product, an explicit live marking that a unit test cannot claim, an honest
-// untested result with a reason instead of a guessed pass, and a verdict. The
+// product, agent-owned workarounds (disposable, isolated setups it builds
+// itself) to get each scenario live, an explicit live marking that a unit test
+// cannot claim, untested reserved for scenarios that are truly impossible to
+// drive live with a reason saying what was tried, and a verdict. The
 // pre-contract framing that let a green unit-test run stand in for driving the
 // product must be gone.
 func TestTestStep_PromptDerivesScenariosAndMarksLive(t *testing.T) {
@@ -52,10 +54,22 @@ func TestTestStep_PromptDerivesScenariosAndMarksLive(t *testing.T) {
 		"a live UI check silently becomes a fake",
 		`Mark a scenario "live": true ONLY when you drove it against the real product in this run`,
 		"A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live",
-		// Untested is honest and cheap; a guessed pass is not.
-		`return it with result "untested" and a reason naming the specific tool, credential, permission, or authority`,
+		// The agent owns workarounds to get each scenario live, and whatever
+		// it builds for that stays disposable and isolated.
+		"Getting every scenario live is your responsibility",
+		"build a disposable one yourself",
+		"point the real product at it through whatever isolation the product supports",
+		"A missing environment is a problem to solve, not a reason to skip the scenario",
+		"a fixture that stands in for the product itself is not",
+		"Everything you build must stay disposable and isolated",
+		"never read or write the operator's real data, real configuration, or shared services",
+		// Untested is reserved for the truly impossible and says what was tried.
+		`Return a scenario with result "untested" only when live validation is truly impossible here`,
+		"state what you tried in order to drive it live and why each attempt cannot work",
+		"naming the specific tool, credential, permission, or authority that is out of reach and how to provide it",
+		`"No environment was provided" is not such a reason while you could have built a disposable one`,
 		"Never guess a pass",
-		"an honest \"untested\" costs nothing and a guessed \"pass\" costs everything",
+		"an honest \"untested\" after exhausting your workarounds costs nothing and a guessed \"pass\" costs everything",
 		"reported as an untested scenario with its reason, NOT as a finding",
 		// The verdict and what it does.
 		`Return a "verdict"`,
@@ -76,9 +90,37 @@ func TestTestStep_PromptDerivesScenariosAndMarksLive(t *testing.T) {
 	for _, forbidden := range []string{
 		"run the smallest relevant tests yourself",
 		"Look for existing tests that would generate sufficient evidence",
+		// The old contract let any missing capability justify untested.
+		"When a scenario cannot be driven live here",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Errorf("evidence prompt still carries pre-contract framing %q", forbidden)
+		}
+	}
+
+	var schema struct {
+		Properties struct {
+			Scenarios struct {
+				Items struct {
+					Properties struct {
+						Reason struct {
+							Description string `json:"description"`
+						} `json:"reason"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"scenarios"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(ag.calls[0].JSONSchema, &schema); err != nil {
+		t.Fatalf("decode delivered evidence schema: %v", err)
+	}
+	reason := schema.Properties.Scenarios.Items.Properties.Reason.Description
+	for _, want := range []string{
+		"what was tried to drive this scenario live and why live validation is impossible",
+		"why there is no live-validatable surface",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("delivered schema's untested reason description = %q, want it to contain %q", reason, want)
 		}
 	}
 }
@@ -533,7 +575,7 @@ func TestTestStep_InvalidAnalyzerPayloadTriggersCorrectionRound(t *testing.T) {
 		{
 			name:       "untested without a reason",
 			invalid:    untestedWithoutReasonFindingsJSON,
-			wantPrompt: `scenario 1: result "untested" without a reason - name the specific tool, credential, permission, or authority that stopped you, and how to provide it`,
+			wantPrompt: `scenario 1: result "untested" without a reason - state what was tried to drive it live and why live validation is impossible, naming the specific tool, credential, permission, or authority out of reach and how to provide it`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
