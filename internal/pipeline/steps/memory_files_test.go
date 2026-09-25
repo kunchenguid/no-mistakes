@@ -86,8 +86,24 @@ func TestReviewStep_PromptKeepsMemoryFilesHandsOff(t *testing.T) {
 // agent definitely writes.
 func TestReviewStep_FixPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	writeFixtureFile(t, dir, "AGENTS.md", "Run make lint to check the repository.\n")
+	gitCmd(t, dir, "add", "AGENTS.md")
+	gitCmd(t, dir, "commit", "-m", "base instructions")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	writeFixtureFile(t, dir, "AGENTS.md", "Run make nonexistent to check the repository.\n")
+	gitCmd(t, dir, "add", "AGENTS.md")
+	gitCmd(t, dir, "commit", "-m", "change instructions")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	if got := fullReviewCoverage(t, dir, baseSHA); len(got) != 1 || got[0] != "AGENTS.md" {
+		t.Fatalf("reviewable diff = %v, want modified AGENTS.md", got)
+	}
 
 	callCount := 0
 	ag := &mockAgent{
@@ -97,19 +113,25 @@ func TestReviewStep_FixPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 			if callCount == 1 {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
 			}
-			j, _ := json.Marshal(cleanReviewFindings())
+			findings := cleanReviewFindings()
+			findings.ReviewedPaths = []string{"AGENTS.md"}
+			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"AGENTS.md","description":"incorrect repository setup command","action":"auto-fix"}],"summary":"1 issue"}`
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"AGENTS.md","description":"AGENTS.md incorrectly recommends make nonexistent; restore make lint","action":"auto-fix"}],"summary":"1 issue"}`
 
-	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	requirePromptContains(t, ag.calls[0].Prompt, memoryHandsOffProbe, memoryHandsOffNoEdit, memoryHandsOffNoFix, memoryFixPrompted)
-	requirePromptContains(t, ag.calls[0].Prompt, "Do not make unrelated or otherwise unprompted memory-file edits")
+	if len(outcome.ReviewablePaths) != 1 || outcome.ReviewablePaths[0] != "AGENTS.md" {
+		t.Fatalf("reviewable paths = %v, want AGENTS.md", outcome.ReviewablePaths)
+	}
+	requirePromptContains(t, ag.calls[0].Prompt, memoryHandsOffProbe, memoryHandsOffNoEdit, memoryHandsOffNoFix, memoryFixPrompted,
+		"AGENTS.md incorrectly recommends make nonexistent; restore make lint", "Do not make unrelated or otherwise unprompted memory-file edits")
 }
 
 // The test evidence turn can write to the worktree (building scratch surfaces
