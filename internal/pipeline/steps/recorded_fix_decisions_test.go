@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -509,13 +510,35 @@ func TestSettledRevalidation_SkipsCleanHousekeepingAndRerunsTest(t *testing.T) {
 	}
 }
 
+// lintMarkerCommand uses the shell that runStepShellCommand selects on this OS.
+// Keep the marker outside the git worktree so lint runs cannot create a commit.
+func lintMarkerCommand(marker, check string) string {
+	command := `echo run >> "` + marker + `"`
+	if runtime.GOOS == "windows" {
+		switch check {
+		case "fail":
+			return command + " && exit /b 3"
+		case "fixed":
+			return command + " && if not exist lint-fixed.txt exit /b 3"
+		}
+	} else {
+		switch check {
+		case "fail":
+			return command + " && exit 3"
+		case "fixed":
+			return command + " && test -f lint-fixed.txt"
+		}
+	}
+	return command
+}
+
 // A Lint whose earlier pass failed its configured command and was approved
 // is not skipped on a settled pass: the restart reset the step result that
 // recorded that decision, so Lint re-runs its command and re-enters its gate.
 func TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "lint-runs")
 	push := &revalidationRequestingPushStep{}
-	_, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: "echo run >> '" + marker + "'; exit 3"}, `{"findings":[],"summary":"clean"}`, push, 0)
+	_, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: lintMarkerCommand(marker, "fail")}, `{"findings":[],"summary":"clean"}`, push, 0)
 	if push.calls != 2 {
 		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
 	}
@@ -540,7 +563,7 @@ func TestSettledRevalidation_ApprovedLintFailureRerunsAndReentersGate(t *testing
 func TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "lint-runs")
 	push := &revalidationRequestingPushStep{formatOnRequest: true}
-	testCalls, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: "echo run >> '" + marker + "'"}, `{"findings":[],"summary":"clean"}`, push, 0)
+	testCalls, housekeepingCalls, approvals := runSettledRevalidation(t, config.Commands{Lint: lintMarkerCommand(marker, "")}, `{"findings":[],"summary":"clean"}`, push, 0)
 	if push.calls != 2 {
 		t.Fatalf("push calls = %d, want the request pass and the publishing pass", push.calls)
 	}
@@ -570,7 +593,7 @@ func TestSettledRevalidation_PushFormatterCommitRerunsHousekeeping(t *testing.T)
 func TestSettledRevalidation_ReenteredLintFixRequestsRevalidation(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "lint-runs")
 	push := &revalidationRequestingPushStep{checkDecisions: true}
-	_, _, approvals := runSettledRevalidation(t, config.Commands{Lint: "echo run >> '" + marker + "'; test -f lint-fixed.txt || exit 3"}, `{"findings":[],"summary":"clean"}`, push, 2)
+	_, _, approvals := runSettledRevalidation(t, config.Commands{Lint: lintMarkerCommand(marker, "fixed")}, `{"findings":[],"summary":"clean"}`, push, 2)
 	if approvals[types.StepLint] != 1 {
 		t.Fatalf("lint approvals = %d, want only the first pass approved", approvals[types.StepLint])
 	}
