@@ -1074,7 +1074,7 @@ rounds:
 			// eval-provenance captures: a recorded-decision revalidation pass
 			// compares that start against the certified head to tell whether
 			// the revalidating Review moved the tree (its tail must re-run) or
-			// approved it unchanged (the tail's earlier coverage stands).
+			// approved it unchanged (a clean tail step's earlier coverage stands).
 			var trustedConfigSHA string
 			var globalConfigYAML, repoConfigYAML []byte
 			if e.config != nil && e.config.CaptureEvalProvenance {
@@ -1139,7 +1139,7 @@ rounds:
 			}
 		}
 
-		if outcome.Settled || !outcome.NeedsApproval && !hasAskUserFindingsJSON(effectiveFindings) && !hasBlockingFindingsJSON(effectiveFindings) && (!carryFindings || !hasSelectedFindingsJSON(effectiveFindings, selectedOutstandingIDs)) {
+		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(effectiveFindings) && !hasBlockingFindingsJSON(effectiveFindings) && (!carryFindings || !hasSelectedFindingsJSON(effectiveFindings, selectedOutstandingIDs)) {
 			// Step completed without needing approval.
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.

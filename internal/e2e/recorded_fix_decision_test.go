@@ -155,9 +155,9 @@ func TestRecordedFixDecisionSurvivesTestAutoFix(t *testing.T) {
 // A post-review step that commits again on a recorded-decision revalidation
 // pass must not dead-end the run at Push's guard. The revalidating Review
 // re-certifies the head Push asked to publish; when it leaves that head
-// unchanged, Test re-runs on it while Document and Lint keep their earlier
-// outcome on that exact tree, so re-running them is what produced the
-// repeated-mutation loop this guards against regressing into.
+// unchanged, Test re-runs on it while Document and Lint, whose earlier pass
+// on that exact tree was clean, are not re-run; re-running them is what
+// produced the repeated-mutation loop this guards against regressing into.
 //
 // The fixture's housekeeping action appends a line on every invocation, so
 // the document step produces a real commit on the revalidation pass too -
@@ -243,10 +243,10 @@ func TestRecordedDecisionDocumentEditAfterRevalidationPublishes(t *testing.T) {
 		t.Fatal("run passed but the branch was not published upstream")
 	}
 	// The housekeeping agent ran only on the first pass: the revalidation
-	// pass's Review certified the head it started on, so Document and Lint
-	// kept their earlier outcome without re-invoking a step that would have
-	// committed again. Test validated both the pre-decision head and the
-	// revalidated head.
+	// pass's Review certified the head it started on and the earlier
+	// housekeeping pass was clean, so Document and Lint did not re-invoke a
+	// step that would have committed again. Test validated both the
+	// pre-decision head and the revalidated head.
 	housekeeping, testEvidence := 0, 0
 	for _, invocation := range h.AgentInvocations() {
 		if strings.Contains(invocation.Prompt, "combined documentation and lint housekeeping pass") {

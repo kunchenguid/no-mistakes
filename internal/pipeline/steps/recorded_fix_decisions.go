@@ -221,16 +221,18 @@ func revalidationPassStartHead(sctx *pipeline.StepContext) (string, error) {
 	return "", nil
 }
 
-// settledRevalidationOutcome restates this step's final outcome from the
-// earlier pass when a re-run would reproduce work it already did on this exact
-// tree. On a recorded-decision revalidation pass whose Review certified the
-// head it started on without committing, the tree Push is about to publish is
-// the one this step already processed; re-running it adds no coverage and a
-// step that edits again is the repeated-mutation loop the Push guard refuses.
-// The restated findings keep the gate decisions made on them (approved
-// findings stay reported) instead of reading as a clean pass. A fix round
-// always re-runs: an operator answer could have changed the tree since. nil
-// reports that the step must run normally.
+// settledRevalidationOutcome reports a clean outcome without re-running this
+// step when a re-run would only repeat clean work on this exact tree. On a
+// recorded-decision revalidation pass whose Review certified the head it
+// started on without committing, the tree Push is about to publish is the one
+// this step already processed; re-running it adds no coverage and a step that
+// edits again is the repeated-mutation loop the Push guard refuses. Only an
+// earlier pass that ended with no findings qualifies: any finding - including
+// an approved one or a failed configured command, both of which always carry
+// one - makes the step re-run and re-enter its own gate, since the restart
+// reset the step result that recorded that decision. A fix round always
+// re-runs: an operator answer could have changed the tree since. nil reports
+// that the step must run normally.
 func settledRevalidationOutcome(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if sctx == nil || sctx.Run == nil || sctx.Fixing {
 		return nil, nil
@@ -241,17 +243,19 @@ func settledRevalidationOutcome(sctx *pipeline.StepContext) (*pipeline.StepOutco
 	}
 	rounds, err := sctx.DB.GetRoundsByStep(sctx.StepResultID)
 	if err != nil {
-		return nil, fmt.Errorf("restore settled step outcome: %w", err)
+		return nil, fmt.Errorf("read earlier step outcome: %w", err)
 	}
 	if len(rounds) == 0 {
 		return nil, nil
 	}
-	outcome := &pipeline.StepOutcome{Settled: true}
 	if last := rounds[len(rounds)-1]; last.FindingsJSON != nil {
-		outcome.Findings = *last.FindingsJSON
+		findings, err := types.ParseFindingsJSON(*last.FindingsJSON)
+		if err != nil || len(findings.Items) > 0 {
+			return nil, nil
+		}
 	}
-	sctx.Log("recorded-decision revalidation left the tree unchanged; keeping this step's earlier outcome")
-	return outcome, nil
+	sctx.Log("recorded-decision revalidation left the tree unchanged and this step's earlier pass was clean; not re-running it")
+	return &pipeline.StepOutcome{}, nil
 }
 
 // Push already commits the final local tree, including Test/evidence and
