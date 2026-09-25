@@ -2,13 +2,12 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
+	"github.com/kunchenguid/no-mistakes/internal/scm/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -288,153 +288,195 @@ func fakeGHWithBase(t *testing.T, prViewURL, prBase string) (env []string, logFi
 	return env, logFile
 }
 
-type fakeBitbucketPRAPI struct {
-	server         *httptest.Server
-	listCalls      int
-	createCalls    int
-	updateCalls    int
-	lastAuthHeader string
-	lastCreateBody string
-	lastUpdateBody string
-	existingPRID   int
-	existingPRURL  string
-	createdPRURL   string
+// fakeBitbucketAPI is the twg-CLI-backed stand-in for Bitbucket Cloud used by
+// pipeline-step tests. State lives in a JSON file (rather than in memory)
+// because each fake `twg` invocation is a fresh subprocess; see
+// internal/pipeline/fakecli's bbFakeState for the file's shape. Call counts
+// are recovered from the fake CLI's invocation log (FAKE_CLI_LOG), which
+// internal/pipeline/fakecli writes unconditionally for every mode.
+type fakeBitbucketAPI struct {
+	t           *testing.T
+	binDir      string
+	logFile     string
+	statePath   string
+	env         map[string]string
+	existingID  int
+	existingURL string
 }
 
-func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketPRAPI {
+// newFakeBitbucketAPI wires up a fake `twg` binary on PATH. existingPRID == 0
+// means no PR exists yet (the PR step should create one); a nonzero id seeds
+// query/get with an already-open PR at existingPRURL.
+func newFakeBitbucketAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketAPI {
 	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "twg")
 
-	api := &fakeBitbucketPRAPI{
-		existingPRID:  existingPRID,
-		existingPRURL: existingPRURL,
-		createdPRURL:  "https://bitbucket.org/test/repo/pull-requests/99",
+	statePath := filepath.Join(t.TempDir(), "bb-state.json")
+	state := bbFakeStateForTest{Exists: existingPRID != 0, ID: existingPRID, URL: existingPRURL}
+	if state.Exists {
+		// GetPRContent (the author-preserving read-before-write path) rejects
+		// an empty title as an incomplete response, so a seeded pre-existing
+		// PR needs one - mirroring what the old HTTP fake always returned.
+		state.Title = "Existing title"
+		state.Description = "Existing unconfigured description"
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.lastAuthHeader = r.Header.Get("Authorization")
+	return &fakeBitbucketAPI{
+		t:           t,
+		binDir:      binDir,
+		logFile:     filepath.Join(t.TempDir(), "twg.log"),
+		statePath:   statePath,
+		env:         map[string]string{},
+		existingID:  existingPRID,
+		existingURL: existingPRURL,
+	}
+}
 
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
-			api.listCalls++
-			w.Header().Set("Content-Type", "application/json")
-			if api.existingPRID == 0 {
-				fmt.Fprint(w, `{"values":[]}`)
-				return
-			}
-			fmt.Fprintf(w, `{"values":[{"id":%d,"links":{"html":{"href":%q}}}]}`,
-				api.existingPRID,
-				api.existingPRURL,
-			)
-		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			fmt.Fprintf(w, `{"id":%d,"title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
-		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
-			api.createCalls++
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("read create body: %v", err)
-			}
-			api.lastCreateBody = string(body)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"id":99,"links":{"html":{"href":%q}}}`,
-				api.createdPRURL,
-			)
-		case r.Method == http.MethodPut && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			api.updateCalls++
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("read update body: %v", err)
-			}
-			api.lastUpdateBody = string(body)
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":%d,"links":{"html":{"href":%q}}}`,
-				api.existingPRID,
-				api.existingPRURL,
-			)
-		default:
-			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
-		}
-	}))
-	t.Cleanup(api.server.Close)
+// env builds the StepContext.Env entries for this fake.
+func (api *fakeBitbucketAPI) Env() []string {
+	vars := map[string]string{
+		"FAKE_CLI_MODE":          "twg",
+		"FAKE_CLI_LOG":           api.logFile,
+		"FAKE_CLI_BB_STATE_FILE": api.statePath,
+	}
+	for k, v := range api.env {
+		vars[k] = v
+	}
+	return fakeCLIEnv(api.binDir, vars)
+}
 
+// withPRState sets the PR lifecycle state ("get" reads it back).
+func (api *fakeBitbucketAPI) withPRState(state string) *fakeBitbucketAPI {
+	api.env["FAKE_CLI_BB_PR_STATE"] = state
+	api.updateState(func(s *bbFakeStateForTest) { s.State = state })
 	return api
 }
 
-func fakeBitbucketEnv(apiBaseURL string) []string {
-	return []string{
-		"NO_MISTAKES_BITBUCKET_EMAIL=test@example.com",
-		"NO_MISTAKES_BITBUCKET_API_TOKEN=test-token",
-		"NO_MISTAKES_BITBUCKET_API_BASE_URL=" + apiBaseURL,
-	}
-}
-
-type fakeBitbucketCIAPI struct {
-	server         *httptest.Server
-	prState        string
-	statusesJSON   string
-	pipelinesJSON  string
-	stepsJSON      string
-	stepLog        string
-	stepsByPath    map[string]string
-	stepLogsByPath map[string]string
-	prSourceSHA    string
-	prStateCalls   int
-	statusesCalls  int
-	pipelinesCalls int
-	stepsCalls     int
-	stepLogCalls   int
-	lastAuthHeader string
-	lastStatusesQ  string
-	lastPipelineQ  string
-}
-
-func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitbucketCIAPI {
-	t.Helper()
-
-	api := &fakeBitbucketCIAPI{
-		prState:      prState,
-		statusesJSON: statusesJSON,
-	}
-
-	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.lastAuthHeader = r.Header.Get("Authorization")
-
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
-			api.prStateCalls++
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}}}`, api.prState, api.prSourceSHA)
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
-			api.statusesCalls++
-			api.lastStatusesQ = r.URL.Query().Get("q")
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, api.statusesJSON)
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines" && api.pipelinesJSON != "":
-			api.pipelinesCalls++
-			api.lastPipelineQ = r.URL.Query().Get("target.commit.hash")
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, api.pipelinesJSON)
-		case r.Method == http.MethodGet && api.stepsByPath[r.URL.Path] != "":
-			api.stepsCalls++
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, api.stepsByPath[r.URL.Path])
-		case r.Method == http.MethodGet && api.stepLogsByPath[r.URL.Path] != "":
-			api.stepLogCalls++
-			fmt.Fprint(w, api.stepLogsByPath[r.URL.Path])
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps" && api.stepsJSON != "":
-			api.stepsCalls++
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, api.stepsJSON)
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps/{step-1}/log" && api.stepLog != "":
-			api.stepLogCalls++
-			fmt.Fprint(w, api.stepLog)
-		default:
-			t.Fatalf("unexpected Bitbucket CI API request: %s %s", r.Method, r.URL.String())
-		}
-	}))
-	t.Cleanup(api.server.Close)
-
+// withStatuses seeds the `_statuses` array `pull-requests get --statuses` returns.
+func (api *fakeBitbucketAPI) withStatuses(statusesJSON string) *fakeBitbucketAPI {
+	api.env["FAKE_CLI_BB_STATUSES_JSON"] = statusesJSON
 	return api
+}
+
+// withPipelineLog seeds the failed-step log text `pipeline get --pipeline
+// <buildNumber>` returns. buildNumber == "" sets the default log used when no
+// build-number-specific log is configured.
+func (api *fakeBitbucketAPI) withPipelineLog(buildNumber, log string) *fakeBitbucketAPI {
+	key := "FAKE_CLI_BB_PIPELINE_LOG"
+	if buildNumber != "" {
+		key += "_" + buildNumber
+	}
+	api.env[key] = log
+	return api
+}
+
+type bbFakeStateForTest struct {
+	Exists      bool   `json:"exists"`
+	ID          int    `json:"id"`
+	URL         string `json:"url"`
+	State       string `json:"state"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Puts        int    `json:"puts"`
+}
+
+func (api *fakeBitbucketAPI) updateState(mutate func(*bbFakeStateForTest)) {
+	api.t.Helper()
+	data, err := os.ReadFile(api.statePath)
+	if err != nil {
+		api.t.Fatal(err)
+	}
+	var state bbFakeStateForTest
+	if err := json.Unmarshal(data, &state); err != nil {
+		api.t.Fatal(err)
+	}
+	mutate(&state)
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		api.t.Fatal(err)
+	}
+	if err := os.WriteFile(api.statePath, encoded, 0o644); err != nil {
+		api.t.Fatal(err)
+	}
+}
+
+func (api *fakeBitbucketAPI) readState(t *testing.T) bbFakeStateForTest {
+	t.Helper()
+	data, err := os.ReadFile(api.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state bbFakeStateForTest
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func (api *fakeBitbucketAPI) title(t *testing.T) string { return api.readState(t).Title }
+
+func (api *fakeBitbucketAPI) puts(t *testing.T) int { return api.readState(t).Puts }
+
+func (api *fakeBitbucketAPI) setTitle(t *testing.T, title string) {
+	api.updateState(func(s *bbFakeStateForTest) { s.Title = title })
+}
+
+func (api *fakeBitbucketAPI) setDescription(t *testing.T, description string) {
+	api.updateState(func(s *bbFakeStateForTest) { s.Description = description })
+}
+
+// lastDescription reads the description twg's most recent create/update
+// invocation wrote to the fake's on-disk state.
+func (api *fakeBitbucketAPI) lastDescription(t *testing.T) string {
+	t.Helper()
+	return api.readState(t).Description
+}
+
+// logCount returns how many recorded twg invocations contain substr,
+// recovering call counts the old HTTP fake tracked with explicit counters.
+func (api *fakeBitbucketAPI) logCount(substr string) int {
+	api.t.Helper()
+	data, err := os.ReadFile(api.logFile)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, substr) {
+			count++
+		}
+	}
+	return count
+}
+
+// fakeBitbucketCmdFactory builds a bitbucket.CmdFactory that runs api's fake
+// twg binary directly, for tests that construct a bitbucket.Host outside a
+// full StepContext.
+func fakeBitbucketCmdFactory(t *testing.T, api *fakeBitbucketAPI) bitbucket.CmdFactory {
+	t.Helper()
+	env := api.Env()
+	binName := "twg"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	binPath := filepath.Join(api.binDir, binName)
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		bin := binPath
+		if name != "twg" {
+			bin = name
+		}
+		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Env = env
+		return cmd
+	}
 }
 
 func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {

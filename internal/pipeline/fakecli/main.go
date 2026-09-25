@@ -80,6 +80,8 @@ func handleFakeCLI(mode string) {
 		fakeCIGlabSequenceHandler(args)
 	case "ci-gh-reconcile":
 		fakeCIGHReconcileHandler(args)
+	case "twg":
+		fakeTWGHandler(args)
 	case "ci-gh-with-intervening-push":
 		// A single step invocation can need both a faked gh (for the PR
 		// attestation write) and a faked git (to inject a push-time race) in
@@ -429,6 +431,15 @@ func fakeCLIFlagValue(args []string, flag string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func fakeCLIHasFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func extractTrailingNumber(rawURL string) int {
@@ -1058,6 +1069,201 @@ func printFakeReviewThreads(raw string) {
 		os.Exit(1)
 	}
 	fmt.Println(string(encoded))
+}
+
+// bbFakeState is the on-disk state a fake `twg bb pull-requests` invocation
+// reads and mutates. It is a file (path from FAKE_CLI_BB_STATE_FILE) rather
+// than in-memory state because each fake invocation is a fresh subprocess,
+// mirroring how the ci-gh-seq/ci-glab-seq fakes track a cursor through a file.
+type bbFakeState struct {
+	Exists      bool   `json:"exists"`
+	ID          int    `json:"id"`
+	URL         string `json:"url"`
+	State       string `json:"state"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Puts        int    `json:"puts"`
+}
+
+func loadBBState() bbFakeState {
+	path := os.Getenv("FAKE_CLI_BB_STATE_FILE")
+	if path == "" {
+		return bbFakeState{}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return bbFakeState{}
+	}
+	var state bbFakeState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return bbFakeState{}
+	}
+	return state
+}
+
+func saveBBState(state bbFakeState) {
+	path := os.Getenv("FAKE_CLI_BB_STATE_FILE")
+	if path == "" {
+		return
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func fakeTWGHandler(args []string) {
+	if len(args) >= 1 && args[0] == "whoami" {
+		if authErr := os.Getenv("FAKE_CLI_AUTH_ERR"); authErr != "" {
+			fmt.Fprintln(os.Stderr, authErr)
+			os.Exit(1)
+		}
+		fmt.Println("Fake User")
+		os.Exit(0)
+	}
+	if len(args) < 2 || args[0] != "bb" {
+		fmt.Fprintln(os.Stderr, "unsupported twg argv:", strings.Join(args, " "))
+		os.Exit(1)
+	}
+	switch args[1] {
+	case "pull-requests":
+		fakeTWGPullRequests(args[2:])
+	case "pipeline":
+		fakeTWGPipeline(args[2:])
+	default:
+		fmt.Fprintln(os.Stderr, "unsupported twg bb argv:", strings.Join(args, " "))
+		os.Exit(1)
+	}
+}
+
+func fakeTWGPRJSON(state bbFakeState) string {
+	prState := state.State
+	if prState == "" {
+		prState = "OPEN"
+	}
+	payload := map[string]any{
+		"id":    state.ID,
+		"state": prState,
+		"links": map[string]any{"html": map[string]string{"href": state.URL}},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return string(encoded)
+}
+
+func fakeTWGPullRequests(args []string) {
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	sub, rest := args[0], args[1:]
+	state := loadBBState()
+
+	switch sub {
+	case "query":
+		if !state.Exists {
+			fmt.Println("[]")
+			os.Exit(0)
+		}
+		fmt.Println("[" + fakeTWGPRJSON(state) + "]")
+		os.Exit(0)
+	case "get":
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "twg bb pull-requests get: missing id")
+			os.Exit(1)
+		}
+		payload := map[string]any{
+			"id":          state.ID,
+			"title":       state.Title,
+			"description": state.Description,
+			"state":       state.State,
+			"links":       map[string]any{"html": map[string]string{"href": state.URL}},
+		}
+		if payload["state"] == "" {
+			payload["state"] = "OPEN"
+		}
+		if fakeCLIHasFlag(rest, "--statuses") {
+			statuses := os.Getenv("FAKE_CLI_BB_STATUSES_JSON")
+			if statuses == "" {
+				statuses = "[]"
+			}
+			payload["_statuses"] = json.RawMessage(statuses)
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(string(encoded))
+		os.Exit(0)
+	case "create":
+		title, _ := fakeCLIFlagValue(rest, "--title")
+		descFile, _ := fakeCLIFlagValue(rest, "--description-file")
+		description := fakeReadDescriptionFile(descFile)
+		state.Exists = true
+		if state.ID == 0 {
+			state.ID = 99
+		}
+		if state.URL == "" {
+			state.URL = fmt.Sprintf("https://bitbucket.org/test/repo/pull-requests/%d", state.ID)
+		}
+		state.Title = title
+		state.Description = description
+		saveBBState(state)
+		fmt.Println(fakeTWGPRJSON(state))
+		os.Exit(0)
+	case "update":
+		if title, ok := fakeCLIFlagValue(rest, "--title"); ok {
+			if os.Getenv("FAKE_CLI_BB_REJECT_TITLE_ON_UPDATE") != "" {
+				fmt.Fprintln(os.Stderr, "author title would be overwritten")
+				os.Exit(1)
+			}
+			state.Title = title
+		}
+		descFile, _ := fakeCLIFlagValue(rest, "--description-file")
+		state.Description = fakeReadDescriptionFile(descFile)
+		state.Puts++
+		saveBBState(state)
+		fmt.Println(fakeTWGPRJSON(state))
+		os.Exit(0)
+	default:
+		fmt.Fprintln(os.Stderr, "unsupported twg bb pull-requests argv:", strings.Join(args, " "))
+		os.Exit(1)
+	}
+}
+
+func fakeReadDescriptionFile(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return string(data)
+}
+
+func fakeTWGPipeline(args []string) {
+	if len(args) == 0 || args[0] != "get" {
+		fmt.Fprintln(os.Stderr, "unsupported twg bb pipeline argv:", strings.Join(args, " "))
+		os.Exit(1)
+	}
+	rest := args[1:]
+	build, _ := fakeCLIFlagValue(rest, "--pipeline")
+	log := os.Getenv("FAKE_CLI_BB_PIPELINE_LOG_" + build)
+	if log == "" {
+		log = os.Getenv("FAKE_CLI_BB_PIPELINE_LOG")
+	}
+	fmt.Println(log)
+	os.Exit(0)
 }
 
 func fakeGraphQLRepo(args []string) string {

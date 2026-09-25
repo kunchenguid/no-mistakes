@@ -28,8 +28,8 @@ What you do not get is PR automation and CI monitoring.
 
 | Step | GitHub | GitLab | Forgejo | Bitbucket Cloud | Azure DevOps | Gitea |
 | --- | --- | --- | --- | --- | --- | --- |
-| **PR** (create/update) | `gh` CLI, authenticated | `glab` CLI, authenticated | `forgejo-axi`, authenticated | `NO_MISTAKES_BITBUCKET_EMAIL` + `NO_MISTAKES_BITBUCKET_API_TOKEN` | `az` CLI + `azure-devops` extension, authenticated | `tea` CLI, authenticated |
-| **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | `forgejo-axi` | same env vars | `az` CLI | `tea` CLI |
+| **PR** (create/update) | `gh` CLI, authenticated | `glab` CLI, authenticated | `forgejo-axi`, authenticated | `twg` CLI, authenticated | `az` CLI + `azure-devops` extension, authenticated | `tea` CLI, authenticated |
+| **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | `forgejo-axi` | `twg` CLI | `az` CLI | `tea` CLI |
 | **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
 | **Mergeability polling** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
 | **Failed check log fetching** | `gh` CLI | `glab` CLI | `forgejo-axi` when runtime routes are available | supported | not yet | supported |
@@ -148,17 +148,17 @@ Fork PR routing is not implemented for Forgejo; a configured `fork_url` makes th
 
 ## Bitbucket Cloud
 
-Bitbucket Cloud uses the REST API directly rather than a provider CLI. Set two environment variables (and optionally a third):
+Install [`twg`](https://developer.atlassian.com/platform/teamwork-graph-cli/) and log in:
 
 ```sh
-export NO_MISTAKES_BITBUCKET_EMAIL=you@example.com
-export NO_MISTAKES_BITBUCKET_API_TOKEN=your-api-token
-
-# Optional: override the API base URL
-export NO_MISTAKES_BITBUCKET_API_BASE_URL=https://api.bitbucket.org/2.0
+twg login
 ```
 
-Get an API token from [Bitbucket account settings](https://bitbucket.org/account/settings/app-passwords/).
+`twg` owns Bitbucket Cloud authentication itself (credentials live in `~/.config/twg/auth.conf`), the same way `gh`/`glab`/`tea` own auth for their providers - no-mistakes never reads or holds a Bitbucket token directly. Verify without touching a real repository:
+
+```sh
+twg whoami
+```
 
 **What you get:**
 
