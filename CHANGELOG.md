@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.83.2](https://github.com/kunchenguid/no-mistakes/compare/v1.83.1...v1.83.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **pipeline:** reconcile mirrors from a run's last published head ([#1193](https://github.com/kunchenguid/no-mistakes/issues/1193)) ([fd89fe8](https://github.com/kunchenguid/no-mistakes/commit/fd89fe842a6bdc4bf731e8f20599436581b274e6))
+* **pipeline:** require workarounds before marking Test scenarios untested ([#1201](https://github.com/kunchenguid/no-mistakes/issues/1201)) ([e15cfad](https://github.com/kunchenguid/no-mistakes/commit/e15cfad17e91fbdcc2864ac641f568598eacb336))
+* **pipeline:** review memory-file changes without blocking them ([#1203](https://github.com/kunchenguid/no-mistakes/issues/1203)) ([844ac2f](https://github.com/kunchenguid/no-mistakes/commit/844ac2fe2d2115f66ab9617e0ab191a837b4280a))
+
 ## [1.83.1](https://github.com/kunchenguid/no-mistakes/compare/v1.83.0...v1.83.1) (2026-09-24)
 
 
