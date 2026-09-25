@@ -192,7 +192,9 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// stepGitRunRaw preserves NUL-delimited paths and porcelain status columns.
+// stepGitRunRaw preserves NUL-delimited paths and porcelain status columns, and
+// is what callers reading blob content need: trimming would silently rewrite a
+// first line's indentation and drop a trailing separator.
 func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)

@@ -578,7 +578,8 @@ type AutoFixRaw struct {
 // CIRaw is the YAML representation of CI-step settings.
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type CIRaw struct {
-	RerunTransient *int `yaml:"rerun_transient"`
+	RerunTransient *int      `yaml:"rerun_transient"`
+	DecisionChecks *[]string `yaml:"decision_checks"`
 	// RevalidateRepairs is a pointer so an explicit `false` in a repository's
 	// config can override a global `true`, which a plain bool could not
 	// express (it would be indistinguishable from "not set").
@@ -593,6 +594,14 @@ type CI struct {
 	// an approval gate. 0 disables reruns and restores the behavior of
 	// escalating every failure on sight.
 	RerunTransient int
+	// DecisionChecks names the checks whose red state means a human decision
+	// is outstanding rather than that something is broken - a reviewed-workflow
+	// pin, a signed-manifest gate, a policy attestation. The CI step never
+	// hands one of these to the fix agent, in either direction: it is not
+	// offered as a fix target, its logs never reach the fix prompt, and the run
+	// parks for a person instead. Patterns are shell globs matched
+	// case-insensitively against the provider's check name.
+	DecisionChecks []string
 	// RevalidateRepairs selects what happens after the CI step's fix agent
 	// produces a real repair commit.
 	//
@@ -1222,6 +1231,15 @@ auto_fix:
 # default branch overrides this value.
 ci:
   rerun_transient: 0
+  # Checks whose red state means a human decision is outstanding rather than
+  # that something is broken - a reviewed-workflow pin, a signed manifest, a
+  # policy attestation. The CI fix agent is never asked to repair one of these
+  # and never sees its logs; the run parks for a person instead. Shell globs,
+  # matched case-insensitively against the provider's check name. Set this on
+  # the repository's own trusted default branch to protect its guards: a pushed
+  # branch cannot remove a check from the set.
+  # decision_checks:
+  #   - "workflow pin*"
   # Whether EVERY CI repair must re-pass the whole pipeline before it is
   # published, or only the ones whose continuity with the reviewed head cannot
   # be proven. Defaults to false: a repair that descends from the reviewed head
@@ -2141,6 +2159,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateTestRaw(raw.Test); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateCIRaw(raw.CI); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 	if err := validateEvalRaw(raw.Eval); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
@@ -2422,6 +2443,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		cfg.ProtectedPaths[i] = pattern
 	}
 	if err := validateTestRaw(cfg.Test); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateCIRaw(cfg.CI); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateGates(cfg.Gates); err != nil {
@@ -2959,6 +2983,9 @@ func validateRebaseRaw(r RebaseRaw) error {
 // inverting the bound, and anything above MaxCIRerunTransient is capped so a
 // typo cannot keep a run polling one commit indefinitely.
 func applyCIOverrides(dst *CI, src *CIRaw) {
+	if src.DecisionChecks != nil {
+		dst.DecisionChecks = normalizeDecisionChecks(*src.DecisionChecks)
+	}
 	if src.RerunTransient != nil {
 		dst.RerunTransient = min(max(*src.RerunTransient, 0), MaxCIRerunTransient)
 	}
@@ -2969,6 +2996,74 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	if src.RevalidateRepairs != nil {
 		dst.RevalidateRepairs = *src.RevalidateRepairs
 	}
+}
+
+// normalizeDecisionChecks trims and drops empty patterns, and preserves the
+// declared order so a refusal names them the way the maintainer wrote them.
+func normalizeDecisionChecks(patterns []string) []string {
+	var out []string
+	for _, pattern := range patterns {
+		if trimmed := strings.TrimSpace(pattern); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// validateCIRaw fails the config closed on a decision_checks entry Go's glob
+// matcher would reject. A pattern that never matches would silently leave the
+// check it names inside the fix agent's reach, which is the failure this
+// setting exists to make impossible - so a typo has to be loud at load time.
+func validateCIRaw(ci CIRaw) error {
+	if ci.DecisionChecks == nil {
+		return nil
+	}
+	for _, pattern := range *ci.DecisionChecks {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == "" {
+			continue
+		}
+		if _, err := flatGlobMatch(trimmed, ""); err != nil {
+			return fmt.Errorf("ci.decision_checks: invalid pattern %q: %w", pattern, err)
+		}
+	}
+	return nil
+}
+
+// flatGlobMatch matches a shell glob against a check name as one flat string.
+// path.Match refuses to let "*" cross a "/", which is wrong here: a forge check
+// name such as "workflow pin / verify (pull_request)" is a label, not a path,
+// and a maintainer writing "workflow pin*" means all of it. Swapping the
+// separator for a byte no glob metacharacter can be keeps path.Match's syntax
+// (and its ErrBadPattern) while removing the path semantics.
+func flatGlobMatch(pattern, name string) (bool, error) {
+	const flat = "\x00"
+	return path.Match(strings.ReplaceAll(pattern, "/", flat), strings.ReplaceAll(name, "/", flat))
+}
+
+// MatchesDecisionCheck reports whether a provider check name is declared as a
+// human-decision check. Matching is case-insensitive so a maintainer does not
+// have to reproduce a forge's capitalisation exactly, and it is glob-based so a
+// workflow's job suffix ("pin / verify (pull_request)") can be covered by one
+// entry.
+func (c CI) MatchesDecisionCheck(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, pattern := range c.DecisionChecks {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			continue
+		}
+		if pattern == name {
+			return true
+		}
+		if ok, err := flatGlobMatch(pattern, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // applyAutoFixOverrides applies non-nil raw values onto resolved defaults.

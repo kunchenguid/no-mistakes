@@ -50,6 +50,11 @@ const (
 // A feature branch cannot self-declare that value. When checks exist, their
 // actual states are always processed normally - even on a declared no-CI repo.
 type CIStep struct {
+	// authorizedRefusal is the last decision-reversion refusal shown at a gate.
+	// A fix response authorises that refusal and nothing wider; it is per
+	// process, so a daemon restart simply re-parks rather than inheriting an
+	// authorisation nobody in this process ever saw given.
+	authorizedRefusal    *decisionReversionError
 	lastFixedChecks      string                    // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
 	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
 	observedCompletedAt  map[string]checkFreshness // terminally failed check freshness at the observation whose findings a fix round may repair
@@ -686,6 +691,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// decision, and a poll with only ask-user findings (a
 					// transient check no rerun will replace, a review bot's
 					// comments) never starts a round.
+					// A check the maintainer declared in ci.decision_checks
+					// leaves the fix agent's reach entirely: its red state
+					// means a person must act, and a fix round is the pipeline
+					// making that decision itself. Parking before the
+					// observation is classified is what keeps it from ever
+					// becoming an auto-fix finding, out of the fix prompt and
+					// out of FetchFailedCheckLogs.
+					if decisionChecks, _ := splitDecisionChecks(failing, ciConfig(sctx)); len(decisionChecks) > 0 {
+						sctx.Log(fmt.Sprintf("issues detected: %s - declared as requiring a human decision, parking without a fix round...", strings.Join(decisionChecks, ", ")))
+						return ciDecisionCheckOutcome(decisionChecks), nil
+					}
 					s.lastFixedChecks = ""
 					s.lastFixedCompletedAt = nil
 					sctx.DeferredFindings = ""

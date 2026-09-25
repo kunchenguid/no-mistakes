@@ -44,12 +44,14 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 ` + ciFixerClassRules + `
 		- Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires.
 		- Do not refactor beyond what is needed for that root-cause fix.
-		- Verify the fix by running the most relevant commands locally before finishing.`
+		- Verify the fix by running the most relevant commands locally before finishing.
+		- Never repair a check by undoing work this branch deliberately did: do not delete content a guard is meant to cover, and do not put back code a recorded decision removed. If the only way to make a check green is to undo such a decision, make no change to it and say so - a red check can mean a person's decision is outstanding rather than that something is broken.`
 
 const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 ` + ciFixerClassRules + `
-		- Verify the rebase completes cleanly before finishing.`
+		- Verify the rebase completes cleanly before finishing.
+		- Never repair a check by undoing work this branch deliberately did: do not delete content a guard is meant to cover, and do not put back code a recorded decision removed. If the only way to make a check green is to undo such a decision, make no change to it and say so - a red check can mean a person's decision is outstanding rather than that something is broken.`
 
 // repairFromFindings runs one CI fix round over the findings the executor
 // selected for it (sctx.PreviousFindings): the auto-fix subset of the last
@@ -75,6 +77,19 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	if targets.empty() {
 		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
 		return nil, nil
+	}
+	// A declared decision check re-parks even under an explicit fix response.
+	// The declaration is the maintainer's standing statement, recorded on the
+	// trusted default branch, that this check's red state means a person must
+	// act; a run-time gate answer, which any agent driving the pipeline can
+	// give, must not dissolve it.
+	var selectedNames []string
+	for _, target := range targets.Checks {
+		selectedNames = append(selectedNames, target.Name)
+	}
+	if decisionChecks, _ := splitDecisionChecks(selectedNames, ciConfig(sctx)); len(decisionChecks) > 0 {
+		sctx.Log(fmt.Sprintf("fix requested for %s, which this repository declares as requiring a human decision - parking without a fix round...", strings.Join(decisionChecks, ", ")))
+		return ciDecisionCheckOutcome(decisionChecks), nil
 	}
 	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
 		expectedHeadSHA, err := stepGitHeadSHA(sctx)
@@ -102,6 +117,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
+	}
+	if outcome := ciFixReversionOutcome(sctx, issueDesc, err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
@@ -572,6 +590,48 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
+	// The decision-reversion guard runs first, before anything is staged and
+	// before either commit path is chosen, so a refusal leaves the branch head,
+	// the index, and the recorded run state exactly as they were and keeps the
+	// proposed changes in the worktree for a person to look at. Running it here
+	// rather than beside the commit is what covers a fix agent that committed
+	// its own work: both paths below are measured from the same pre-repair head.
+	//
+	// The guard runs on EVERY round, including one a person asked for. A fix
+	// response does not commit the repair they read: it launches a fresh agent
+	// turn on the retained worktree, which is free to produce something else
+	// entirely, so skipping the guard there would wave an uninspected reversion
+	// through under an authorisation given for a different one. Instead the
+	// refusal they were shown is remembered, and a later round is allowed only
+	// while its evidence stays within it - see decisionReversionError.authorizes.
+	//
+	// This is the opposite of the ci.decision_checks policy in ci.go, which no
+	// gate answer dissolves at all: that one is the maintainer's standing
+	// declaration about which checks a fix round may touch, made on the trusted
+	// default branch, while this one is a question about one concrete repair the
+	// answerer can see in full.
+	evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
+	var refusal *decisionReversionError
+	switch {
+	case detectErr != nil:
+		refusal = &decisionReversionError{reason: detectErr.Error()}
+	case len(evidence) > 0:
+		refusal = newReversionRefusal(evidence)
+	}
+	if refusal != nil {
+		if !sctx.Fixing || !s.authorizedRefusal.authorizes(refusal) {
+			s.authorizedRefusal = refusal
+			return ciRepairResult{}, refusal
+		}
+		// Spent on use. The person authorised the round they were looking at,
+		// not a standing permission: a CI repair restarts validation from
+		// Review and this step runs again, so a later fix response - for some
+		// unrelated failure, at a gate that never showed this reversion - must
+		// not inherit it.
+		s.authorizedRefusal = nil
+		sctx.Log("committing a repair whose reversion of branch work was explicitly authorised at the gate")
+	}
+
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("check CI changes: %w", err)
