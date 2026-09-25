@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -41,6 +42,17 @@ func TestOwnOOMScoreScriptRaisesBeforeThePayload(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != stepOOMScoreAdj {
 		t.Fatalf("score = %q, want %s", strings.TrimSpace(string(out)), stepOOMScoreAdj)
+	}
+}
+
+func TestOwnOOMScoreScriptUnwritableScoreAddsNoOutput(t *testing.T) {
+	unopenable := filepath.Join(t.TempDir(), "missing", "oom_score_adj")
+	out, err := exec.Command("sh", "-c", ownOOMScoreScript(unopenable, "echo payload")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if string(out) != "payload\n" {
+		t.Fatalf("output = %q, want only the payload", out)
 	}
 }
 

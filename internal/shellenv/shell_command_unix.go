@@ -95,7 +95,7 @@ func StartShellCommand(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	// The child raises its own score (inherited by grandchildren) so a later
+	// The parent raises the child's score (inherited by grandchildren) so a later
 	// cgroup OOM prefers this step over the daemon. Linux only; a no-op elsewhere.
 	if cmd.Process != nil {
 		RaiseStepOOMScore(cmd.Process.Pid)

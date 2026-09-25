@@ -23,7 +23,14 @@ const stepOOMScoreAdj = "1000"
 // OwnOOMScoreScript prefixes a shell command so the shell raises its own
 // oom_score_adj before the payload runs. Grandchildren inherit the score.
 func OwnOOMScoreScript(script string) string {
-	return "printf '%s\\n' " + stepOOMScoreAdj + " > /proc/self/oom_score_adj 2>/dev/null; " + script
+	return ownOOMScoreScript("/proc/self/oom_score_adj", script)
+}
+
+// ownOOMScoreScript silences the whole write, including a failed open of
+// scorePath, so a sandbox without a writable /proc adds nothing to the
+// command output that step logs and agents read.
+func ownOOMScoreScript(scorePath, script string) string {
+	return "{ printf '%s\\n' " + stepOOMScoreAdj + " > " + scorePath + "; } 2>/dev/null; " + script
 }
 
 // RaiseStepOOMScore raises pid's oom_score_adj. An unprivileged process may
