@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -461,7 +462,10 @@ func TestExecutor_StepError_FailsRun(t *testing.T) {
 func TestExecutor_OutOfMemoryFailureReasonKeepsRestorationDetail(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	const snapshot = "/tmp/nm-recovery-snapshot"
-	stepErr := fmt.Errorf("restore worktree failed; retained snapshot %s: %w", snapshot, shellenv.ErrOutOfMemory)
+	stepErr := errors.Join(
+		fmt.Errorf("run prepare command: %w", shellenv.ErrOutOfMemory),
+		fmt.Errorf("restore pre-preparation changes; recovery snapshot retained at %s: %w", snapshot, errors.New("git stash apply failed")),
+	)
 
 	exec := NewExecutor(database, p, nil, nil, []Step{newFailStep(types.StepTest, stepErr)}, nil)
 	err := exec.Execute(context.Background(), run, repo, t.TempDir())
@@ -474,7 +478,7 @@ func TestExecutor_OutOfMemoryFailureReasonKeepsRestorationDetail(t *testing.T) {
 		t.Fatal("failed step has no recorded reason")
 	}
 	reason := *dbSteps[0].Error
-	for _, want := range []string{"restore worktree failed", snapshot, shellenv.ErrOutOfMemory.Error()} {
+	for _, want := range []string{"git stash apply failed", snapshot, shellenv.ErrOutOfMemory.Error()} {
 		if !strings.Contains(reason, want) {
 			t.Fatalf("step failure reason %q is missing %q", reason, want)
 		}
