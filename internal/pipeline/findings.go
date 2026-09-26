@@ -518,19 +518,27 @@ func normalizeCoveredPath(value string) string {
 //
 // This is the only way a selected-and-fixed finding leaves the outstanding set
 // besides an explicit operator action (approve/skip/abort). A file the round
-// did not list, a missing coverage record, a finding with no file, a round
-// that re-reports the defect, or a round that reports ANY OTHER finding in the
-// same file all leave the item in place. Any file-less finding in the current
-// round also blocks verification of every selected file-anchored item in that
-// round: silence, or a round that did not look, is never resolution, and
-// neither is an ambiguous report that might be the same defect shifted to
-// another line or reworded. Without this last check, a fix that moves a defect
-// within the same file and a rereview that describes it differently would both
-// fail the exact-match and content-match checks, so the defect would silently
-// clear as "not reported" even though it is still present, just relocated or
-// restated. That is the P1 this closes - the predecessor dropped a selected
-// finding the moment its fix was requested, so a no-op fix could let the run
-// complete with the defect unresolved.
+// did not list, a missing coverage record, a round that re-reports the defect,
+// or a round that reports ANY OTHER finding in the same file all leave the
+// item in place. Any file-less finding in the current round also blocks
+// verification of every selected file-anchored item in that round: silence, or
+// a round that did not look, is never resolution, and neither is an ambiguous
+// report that might be the same defect shifted to another line or reworded.
+// Without this last check, a fix that moves a defect within the same file and
+// a rereview that describes it differently would both fail the exact-match and
+// content-match checks, so the defect would silently clear as "not reported"
+// even though it is still present, just relocated or restated. That is the P1
+// this closes - the predecessor dropped a selected finding the moment its fix
+// was requested, so a no-op fix could let the run complete with the defect
+// unresolved.
+//
+// One compat carve-out: a SELECTED finding with no file anchor can never match
+// a coverage record, so it clears on a positive verification round that no
+// longer reports it - the round must still hold a valid coverage record and
+// report no unanchored finding. Runs parked before the recorded-decision
+// review machinery was removed can carry such items (a synthesized decision
+// finding whose source finding had no file), and without this rule a fix
+// selection could never clear them.
 func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string) string {
 	if outstandingRaw == "" || len(pendingIDs) == 0 || len(reviewedPaths) == 0 {
 		return outstandingRaw
@@ -585,7 +593,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	result := types.FindingsMetadata(outstanding)
 	for _, item := range outstanding.Items {
 		file := normalizeCoveredPath(item.File)
-		if pending[item.ID] && !hasUnanchoredFinding && covered[file] && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
+		if pending[item.ID] && !hasUnanchoredFinding && (file == "" || covered[file]) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
 			continue
 		}
 		result.Items = append(result.Items, item)

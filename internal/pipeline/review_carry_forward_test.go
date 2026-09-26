@@ -900,15 +900,56 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 	}
 }
 
-// TestResolveVerifiedFindingsJSON_FilelessFindingIsNeverVerifiedAway pins the
-// other half of the same rule for findings the reviewer could not anchor to a
-// file: no coverage record can ever match them, so only an operator action
-// clears them.
-func TestResolveVerifiedFindingsJSON_FilelessFindingIsNeverVerifiedAway(t *testing.T) {
+// TestResolveVerifiedFindingsJSON_FilelessPendingFinding pins the upgrade
+// compat carve-out for findings the reviewer could not anchor to a file: no
+// coverage record can ever match them, so a SELECTED file-less item clears on
+// a positive verification round that no longer reports it - and stays on
+// silence alone, an unanchored rereport, or a round that is not a positive
+// verification. Runs parked before the recorded-decision review machinery was
+// removed carry such items, and a fix selection could otherwise never clear
+// them.
+func TestResolveVerifiedFindingsJSON_FilelessPendingFinding(t *testing.T) {
 	outstanding := `{"findings":[{"id":"review-1","severity":"warning","description":"finding with no file anchor","action":"ask-user"}],"summary":"1 finding"}`
-	got := resolveVerifiedFindingsJSON(outstanding, []string{"review-1"}, []string{"service.go", "cache.go"}, []string{"service.go", "cache.go"}, "")
-	if !strings.Contains(got, "review-1") {
-		t.Fatalf("file-less finding was verified away by an unrelated coverage record: %s", got)
+	reported := `{"findings":[{"id":"review-9","severity":"warning","description":"finding with no file anchor","action":"ask-user"}],"summary":"1 finding"}`
+	unrelatedUnanchored := `{"findings":[{"id":"review-9","severity":"info","description":"unanchored observation","action":"no-op"}],"summary":"1 finding"}`
+	unrelatedAnchored := `{"findings":[{"id":"review-9","severity":"info","file":"service.go","line":5,"description":"unrelated anchored observation","action":"no-op"}],"summary":"1 finding"}`
+
+	cases := []struct {
+		name        string
+		thisRound   string
+		reviewed    []string
+		pending     []string
+		wantCleared bool
+	}{
+		{name: "not selected stays outstanding", thisRound: "", reviewed: []string{"service.go"}, pending: nil},
+		{name: "no coverage record stays outstanding", thisRound: "", reviewed: nil, pending: []string{"review-1"}},
+		{name: "out-of-scope coverage stays outstanding", thisRound: "", reviewed: []string{"unrelated.go"}, pending: []string{"review-1"}},
+		{name: "positive verification not reporting it clears", thisRound: "", reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "unrelated anchored finding still clears", thisRound: unrelatedAnchored, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "re-reported under a new id stays outstanding", thisRound: reported, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "unrelated unanchored finding stays outstanding", thisRound: unrelatedUnanchored, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveVerifiedFindingsJSON(outstanding, tc.pending, tc.reviewed, []string{"service.go", "cache.go"}, tc.thisRound)
+			if tc.wantCleared {
+				if got != "" {
+					parsed, err := types.ParseFindingsJSON(got)
+					if err == nil {
+						for _, item := range parsed.Items {
+							if item.ID == "review-1" {
+								t.Fatalf("selected file-less finding survived a positive verification that did not report it: %s", got)
+							}
+						}
+					}
+				}
+				return
+			}
+			if !strings.Contains(got, "review-1") {
+				t.Fatalf("file-less finding was verified away: %s", got)
+			}
+		})
 	}
 }
 
