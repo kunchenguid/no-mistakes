@@ -115,9 +115,14 @@ jobs:
         if: runner.os == 'Windows' && matrix.shard == 'git'
         run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
 
+      # Bitbucket coverage in this shard shells out to a fake `twg` binary per
+      # call (subprocess-spawn bound, like the git-heavy shard) instead of the
+      # in-process HTTP fakes it used before twg replaced the hand-rolled
+      # Bitbucket API client, pushing this shard past a 15m -timeout on
+      # Windows even though it finishes in well under a minute on Linux/macOS.
       - name: Test on Windows (pipeline/steps)
         if: runner.os == 'Windows' && matrix.shard == 'steps'
-        run: go test -v -timeout=15m ./internal/pipeline/steps/...
+        run: go test -v -timeout=20m ./internal/pipeline/steps/...
 
       - name: Test on Windows (core)
         if: runner.os == 'Windows' && matrix.shard == 'core'
