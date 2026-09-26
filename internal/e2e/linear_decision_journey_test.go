@@ -95,7 +95,7 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 	branch := "feature/linear-decision"
 	h.CommitChange(branch, "feature.txt", "incorrect feature\n", "feature")
 	worktree := h.AddWorktree(branch)
-	gate, err := h.RunInDir(worktree, "axi", "run", "--intent", "Correct the feature and document it")
+	gate, err := h.RunInDir(worktree, "axi", "run", "--intent", "Preserve the original feature value and document it")
 	if err != nil || !strings.Contains(gate, "fix-feature") {
 		t.Fatalf("initial review gate: %v\n%s", err, gate)
 	}
@@ -119,24 +119,17 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 		if strings.Contains(inv.Prompt, "Review the code changes and return structured findings") {
 			reviewCount++
 		}
-		// Each post-review step's agent prompt must carry the recorded human
-		// decision - the review round's selected fix with its description -
-		// plus the respect-and-never-revert instruction, so a later step
-		// cannot quietly undo what a person chose.
+		// The selected correction contradicts the original intent. Each later
+		// prompt must carry the fix, precedence over intent, and guidance not
+		// to undo what the human chose.
 		if strings.Contains(inv.Prompt, "You are validating a code change by driving the product itself") {
-			testDecision = strings.Contains(inv.Prompt, "review round 1 user chose to fix") &&
-				strings.Contains(inv.Prompt, "Correct the feature value") &&
-				strings.Contains(inv.Prompt, "Never revert, undo, or work around a recorded human decision")
+			testDecision = hasJourneyDecisionContext(inv.Prompt)
 		}
 		if strings.Contains(inv.Prompt, "Find what this change made stale") {
-			documentDecision = strings.Contains(inv.Prompt, "review round 1 user chose to fix") &&
-				strings.Contains(inv.Prompt, "Correct the feature value") &&
-				strings.Contains(inv.Prompt, "Never revert, undo, or work around a recorded human decision")
+			documentDecision = hasJourneyDecisionContext(inv.Prompt)
 		}
 		if strings.Contains(inv.Prompt, "Fix the lint issues in this repository") {
-			lintDecision = strings.Contains(inv.Prompt, "review round 1 user chose to fix") &&
-				strings.Contains(inv.Prompt, "Correct the feature value") &&
-				strings.Contains(inv.Prompt, "Never revert, undo, or work around a recorded human decision")
+			lintDecision = hasJourneyDecisionContext(inv.Prompt)
 		}
 	}
 	if reviewCount != 2 {
@@ -167,4 +160,19 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 		t.Errorf("published lint fix = %q, error %v", lintSentinel, err)
 	}
 	t.Logf("completed run %s; review turns %d; selected fix %q; post-review documentation %q; decision in Test %v, Document %v, Lint %v; published head %s", run.ID, reviewCount, feature, doc, testDecision, documentDecision, lintDecision, run.HeadSHA)
+}
+
+func hasJourneyDecisionContext(prompt string) bool {
+	for _, part := range []string{
+		"Preserve the original feature value",
+		"review round 1 user chose to fix",
+		"Correct the feature value",
+		"A recorded decision SUPERSEDES conflicting user-intent wording",
+		"Never revert, undo, or work around a recorded human decision",
+	} {
+		if !strings.Contains(prompt, part) {
+			return false
+		}
+	}
+	return true
 }
