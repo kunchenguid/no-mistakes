@@ -534,11 +534,11 @@ func normalizeCoveredPath(value string) string {
 //
 // One compat carve-out: a SELECTED finding with no file anchor can never match
 // a coverage record, so it clears on a positive verification round that no
-// longer reports it - the round must still hold a valid coverage record and
-// report no unanchored finding. Runs parked before the recorded-decision
-// review machinery was removed can carry such items (a synthesized decision
-// finding whose source finding had no file), and without this rule a fix
-// selection could never clear them.
+// longer reports it - the round's coverage record must list every reviewable
+// path, and the round must report no unanchored finding. Runs parked before
+// the recorded-decision review machinery was removed can carry such items (a
+// synthesized decision finding whose source finding had no file), and without
+// this rule a fix selection could never clear them.
 func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string) string {
 	if outstandingRaw == "" || len(pendingIDs) == 0 || len(reviewedPaths) == 0 {
 		return outstandingRaw
@@ -576,6 +576,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	if len(covered) == 0 {
 		return outstandingRaw
 	}
+	fullyCovered := len(covered) == len(reviewable)
 	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
 	reported := make(map[types.Finding]bool, len(thisRound.Items))
 	reportedFiles := make(map[string]bool, len(thisRound.Items))
@@ -593,7 +594,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	result := types.FindingsMetadata(outstanding)
 	for _, item := range outstanding.Items {
 		file := normalizeCoveredPath(item.File)
-		if pending[item.ID] && !hasUnanchoredFinding && (file == "" || covered[file]) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
+		if pending[item.ID] && !hasUnanchoredFinding && (covered[file] || file == "" && fullyCovered) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
 			continue
 		}
 		result.Items = append(result.Items, item)

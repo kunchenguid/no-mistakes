@@ -903,9 +903,9 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 // TestResolveVerifiedFindingsJSON_FilelessPendingFinding pins the upgrade
 // compat carve-out for findings the reviewer could not anchor to a file: no
 // coverage record can ever match them, so a SELECTED file-less item clears on
-// a positive verification round that no longer reports it - and stays on
-// silence alone, an unanchored rereport, or a round that is not a positive
-// verification. Runs parked before the recorded-decision review machinery was
+// a positive verification round that covers every reviewable path and no
+// longer reports it - and stays on partial coverage, an unanchored rereport,
+// or a round that is not a positive verification. Runs parked before the recorded-decision review machinery was
 // removed carry such items, and a fix selection could otherwise never clear
 // them.
 func TestResolveVerifiedFindingsJSON_FilelessPendingFinding(t *testing.T) {
@@ -921,13 +921,14 @@ func TestResolveVerifiedFindingsJSON_FilelessPendingFinding(t *testing.T) {
 		pending     []string
 		wantCleared bool
 	}{
-		{name: "not selected stays outstanding", thisRound: "", reviewed: []string{"service.go"}, pending: nil},
+		{name: "not selected stays outstanding", thisRound: "", reviewed: []string{"service.go", "cache.go"}, pending: nil},
 		{name: "no coverage record stays outstanding", thisRound: "", reviewed: nil, pending: []string{"review-1"}},
 		{name: "out-of-scope coverage stays outstanding", thisRound: "", reviewed: []string{"unrelated.go"}, pending: []string{"review-1"}},
-		{name: "positive verification not reporting it clears", thisRound: "", reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
-		{name: "unrelated anchored finding still clears", thisRound: unrelatedAnchored, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
-		{name: "re-reported under a new id stays outstanding", thisRound: reported, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
-		{name: "unrelated unanchored finding stays outstanding", thisRound: unrelatedUnanchored, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "partial coverage not reporting it stays outstanding", thisRound: "", reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "full coverage not reporting it clears", thisRound: "", reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "unrelated anchored finding still clears", thisRound: unrelatedAnchored, reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "re-reported under a new id stays outstanding", thisRound: reported, reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}},
+		{name: "unrelated unanchored finding stays outstanding", thisRound: unrelatedUnanchored, reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}},
 	}
 
 	for _, tc := range cases {
