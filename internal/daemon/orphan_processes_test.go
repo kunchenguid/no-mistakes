@@ -168,13 +168,80 @@ func TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne(t *testing.T)
 	activePID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, activeRun.ID))
 	leakedPID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, finishedRun.ID))
 
-	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftoverRecordedRunWorktrees(d, p), activeRecordedRunWorktrees(d, p)))
+	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftoverRecordedRunWorktrees(d, p), activeRecordedRunWorktrees(d, p)), nil)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived the startup sweep", leakedPID)
 	}
 	if !processIsAlive(activePID) {
 		t.Fatalf("orphan %d in an active run's worktree must not be swept", activePID)
+	}
+}
+
+// TestSweepOrphanRunProcessesSparesWorktreesRetentionIsKeeping is the
+// Greptile P1 on #1188: the startup sweep runs before reapWorktrees decides
+// what the retention policy will remove, so a terminal run alone must not be
+// treated as orphaned - a process still standing in a worktree the policy
+// is keeping (inside the retention window) must survive, while one in a
+// worktree the policy has already decided to remove is still reaped.
+func TestSweepOrphanRunProcessesSparesWorktreesRetentionIsKeeping(t *testing.T) {
+	orig := orphanProcessMinAge
+	orphanProcessMinAge = 0
+	t.Cleanup(func() { orphanProcessMinAge = orig })
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepoWithID("repo1", "/nonexistent/work", "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retainedRun, err := d.InsertRun(repo.ID, "retained-branch", "headsha1", "basesha1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(retainedRun.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	expiredRun, err := d.InsertRun(repo.ID, "expired-branch", "headsha2", "basesha2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(expiredRun.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	retainedDir := p.WorktreeDir(repo.ID, retainedRun.ID)
+	expiredDir := p.WorktreeDir(repo.ID, expiredRun.ID)
+	retainedPID := startOrphanInWorktree(t, retainedDir)
+	expiredPID := startOrphanInWorktree(t, expiredDir)
+
+	fresh := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(retainedDir, fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(expiredDir, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := worktreeReapPolicy{Retention: 14 * 24 * time.Hour}
+	retained := retainedDefaultTreeRunIDs(d, p, policy, time.Now())
+	sweepOrphanRunProcesses(d, p, nil, retained)
+
+	if !processIsAlive(retainedPID) {
+		t.Fatalf("orphan %d in a worktree the retention policy is keeping was swept", retainedPID)
+	}
+	if !pidGoneWithin(expiredPID, 10*time.Second) {
+		t.Fatalf("orphan %d in a worktree past the retention window survived the startup sweep", expiredPID)
 	}
 }
 
@@ -237,7 +304,7 @@ func TestSweepOrphanRunProcessesReachesRecordedWorktreeAndSparesUnclaimedOnes(t 
 	operatorPID := startOrphanInWorktree(t, filepath.Join(abandonedRoot, "scratch-checkout"))
 	unclaimedPID := startOrphanInWorktree(t, filepath.Join(abandonedRoot, "01JZ8XQ7V6K9M3B0T5N2R4C8YD"))
 
-	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftoverRecordedRunWorktrees(d, p), activeRecordedRunWorktrees(d, p)))
+	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftoverRecordedRunWorktrees(d, p), activeRecordedRunWorktrees(d, p)), nil)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in a recorded worktree the config no longer names survived the startup sweep", leakedPID)

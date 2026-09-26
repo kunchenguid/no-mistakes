@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -370,6 +371,11 @@ func TestCleanupOrphanWorktrees_UnconfiguredRepoUsesDefaultRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The default-tree removal decision belongs to reapWorktrees (retention
+	// aware); force every eligible directory past the retention window
+	// regardless of its actual mtime, mirroring recoverOnStartup's order.
+	future := time.Now().Add(365 * 24 * time.Hour)
+	reapWorktrees(d, p, worktreeReapPolicy{Retention: time.Nanosecond}, future)
 	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(terminalWT); !os.IsNotExist(err) {
