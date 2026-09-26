@@ -1,0 +1,188 @@
+=== RUN   TestFilelessSelectedReviewFindingRequiresCompleteVerification
+=== RUN   TestFilelessSelectedReviewFindingRequiresCompleteVerification/full_coverage_clears
+    fileless_review_carry_test.go:109: selected unanchored finding cleared; run=01M3E4REEHRA2M2W19TK61Q91M CLI status:
+        run:
+          id: "01M3E4REEHRA2M2W19TK61Q91M"
+          branch: feature/fileless-review
+          status: completed
+          head: c6e9d52f
+          head_sha: c6e9d52f6265bdbc1a4e9a6ecc44d49fe5ebda88
+          verification_plan: none
+          findings: none
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,133
+            review,completed,0,451
+            test,completed,0,59
+            document,completed,0,76
+            lint,completed,0,46
+            push,completed,0,243
+            pr,skipped,0,6
+            ci,skipped,0,6
+          automatic_skips[2]{step,reason}:
+            pr,provider unknown is not supported yet
+            ci,provider unknown is not supported yet
+          shared_work[1]{attributed_to,scope,duration_ms}:
+            document,document+lint housekeeping,76
+        branch_sync:
+          state: behind
+          changed: false
+          local:
+            branch: feature/fileless-review
+            head: f3cd2f95b86e342e29e64be397cf9936ffab2854
+            clean: true
+          pipeline:
+            run: "01M3E4REEHRA2M2W19TK61Q91M"
+            status: completed
+            phase: ""
+            submitted_head: f3cd2f95b86e342e29e64be397cf9936ffab2854
+            current_head: c6e9d52f6265bdbc1a4e9a6ecc44d49fe5ebda88
+            pushed_head: c6e9d52f6265bdbc1a4e9a6ecc44d49fe5ebda88
+            pushed_at: 1790402379
+            push_generation: 1
+          target:
+            kind: upstream
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/nm-e2e-3114111865/upstream.git
+            ref: refs/heads/feature/fileless-review
+          remote:
+            observed_head: c6e9d52f6265bdbc1a4e9a6ecc44d49fe5ebda88
+            freshness: pipeline_push
+            observed_at: 1790402379
+          relation: behind
+          safety: refresh_required
+          pr_state: none
+          next_action:
+            code: sync
+            command: no-mistakes axi sync
+        outcome: passed-with-skips
+=== RUN   TestFilelessSelectedReviewFindingRequiresCompleteVerification/partial_coverage_parks
+    fileless_review_carry_test.go:117: selected unanchored finding still parked; run=01M3E4RHBMXVWAJRN566WARATP status:
+        run:
+          id: "01M3E4RHBMXVWAJRN566WARATP"
+          branch: feature/fileless-review
+          status: running
+          awaiting_agent: parked 0s
+          head: e07dfe9d
+          head_sha: e07dfe9da479b73f2d961e63db2e80bcc7d822a7
+          verification_plan: none
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,135
+            review,fix_review,1,200
+            test,pending,0,0
+            document,pending,0,0
+            lint,pending,0,0
+            push,pending,0,0
+            pr,pending,0,0
+            ci,pending,0,0
+        branch_sync:
+          state: pipeline_owned
+          changed: false
+          local:
+            branch: feature/fileless-review
+            head: 70e2644238a001124a6a67c0c010a14d4cd8a0d2
+            clean: true
+          pipeline:
+            run: "01M3E4RHBMXVWAJRN566WARATP"
+            status: running
+            phase: pre_push
+            submitted_head: 70e2644238a001124a6a67c0c010a14d4cd8a0d2
+            current_head: e07dfe9da479b73f2d961e63db2e80bcc7d822a7
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/nm-e2e-2389152250/upstream.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: blocked_pipeline_owned
+          pr_state: none
+          note: the pipeline head has moved but has not been successfully pushed; do not make local follow-up commits yet
+          next_action:
+            code: continue_active_run
+            command: no-mistakes axi status
+        gate:
+          step: review
+          status: fix_review
+          summary: one concern
+          risk: medium
+          note: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+          findings[1]{id,severity,file,action,description}:
+            legacy-unanchored,warning,"",ask-user,Unanchored legacy concern
+        help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+=== RUN   TestFilelessSelectedReviewFindingRequiresCompleteVerification/rereported_finding_parks
+    fileless_review_carry_test.go:117: selected unanchored finding still parked; run=01M3E4RKGCTA5B4FB61ZP4X05G status:
+        run:
+          id: "01M3E4RKGCTA5B4FB61ZP4X05G"
+          branch: feature/fileless-review
+          status: running
+          awaiting_agent: parked 1s
+          head: ea555070
+          head_sha: ea5550701f18532b5039546ee2f60ab3d9169643
+          verification_plan: none
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,131
+            review,fix_review,1,204
+            test,pending,0,0
+            document,pending,0,0
+            lint,pending,0,0
+            push,pending,0,0
+            pr,pending,0,0
+            ci,pending,0,0
+        branch_sync:
+          state: pipeline_owned
+          changed: false
+          local:
+            branch: feature/fileless-review
+            head: cee29adade6c95db96bd19a5f281b6d7fdef9809
+            clean: true
+          pipeline:
+            run: "01M3E4RKGCTA5B4FB61ZP4X05G"
+            status: running
+            phase: pre_push
+            submitted_head: cee29adade6c95db96bd19a5f281b6d7fdef9809
+            current_head: ea5550701f18532b5039546ee2f60ab3d9169643
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/nm-e2e-2502074378/upstream.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: blocked_pipeline_owned
+          pr_state: none
+          note: the pipeline head has moved but has not been successfully pushed; do not make local follow-up commits yet
+          next_action:
+            code: continue_active_run
+            command: no-mistakes axi status
+        gate:
+          step: review
+          status: fix_review
+          summary: one concern
+          risk: medium
+          note: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+          findings[1]{id,severity,file,action,description}:
+            legacy-unanchored,warning,"",ask-user,Unanchored legacy concern
+        help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+--- PASS: TestFilelessSelectedReviewFindingRequiresCompleteVerification (8.64s)
+    --- PASS: TestFilelessSelectedReviewFindingRequiresCompleteVerification/full_coverage_clears (4.22s)
+    --- PASS: TestFilelessSelectedReviewFindingRequiresCompleteVerification/partial_coverage_parks (2.21s)
+    --- PASS: TestFilelessSelectedReviewFindingRequiresCompleteVerification/rereported_finding_parks (2.21s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2e	8.962s
