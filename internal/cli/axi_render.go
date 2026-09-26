@@ -22,13 +22,12 @@ import (
 // can pin the clock when asserting how long a run has been parked.
 var nowUnix = func() int64 { return time.Now().Unix() }
 
-// maxFindingDesc caps a finding description rendered inline. Findings are the
-// decision content at a gate, so the limit is generous; only pathological
-// descriptions get truncated, with the full length disclosed.
-const (
-	maxFindingDesc = 600
-	maxGateSummary = 1200
-)
+// maxGateSummary bounds a step summary in default views. A Test, Lint, or
+// repository gate summary carries up to 64 KiB of command output whose complete
+// copy lives in the step log, so `axi logs --full` is the full-read path.
+// Finding descriptions are deliberately never bounded: they are the decision
+// content a driver must relay verbatim for ask-user findings.
+const maxGateSummary = 1200
 
 // Row types carry `toon` tags so the encoder renders a []row slice as a
 // tabular array (name[N]{cols}:) with one comma-delimited line per element.
@@ -579,7 +578,7 @@ func gateFields(gate stepView) []toon.Field {
 	}
 	return gateFieldsWithHelp(gate, append(help,
 		skip,
-		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, "")),
+		fmt.Sprintf("Run `%s` to read the complete step summary and log", axiLogsFullCommand(gate.Name, "")),
 		"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.",
 		preserveGateFixCommitsGuidance,
 	))
@@ -588,7 +587,7 @@ func gateFields(gate stepView) []toon.Field {
 func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
 	return gateFieldsWithHelp(gate, []string{
 		fmt.Sprintf("The explicitly selected gate for run %s is inspection-only; no run-scoped response command exists", runID),
-		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, runID)),
+		fmt.Sprintf("Run `%s` to read the complete step summary and log", axiLogsFullCommand(gate.Name, runID)),
 	})
 }
 
@@ -610,22 +609,53 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	if gate.Name == string(types.StepReview) {
 		gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
 	}
-	rows := make([]findingRow, 0, len(parsed.Items))
-	for _, f := range parsed.Items {
-		rows = append(rows, findingRow{
-			ID:          f.ID,
-			Severity:    f.Severity,
-			File:        f.File,
-			Action:      f.Action,
-			Description: truncate(f.Description, maxFindingDesc),
-		})
-	}
-	gfields = append(gfields, toon.Field{Key: "findings", Value: rows})
+	gfields = append(gfields, toon.Field{Key: "findings", Value: findingRows(parsed.Items)})
 
 	return []toon.Field{
 		{Key: "gate", Value: toon.NewObject(gfields...)},
 		{Key: "help", Value: help},
 	}
+}
+
+func findingRows(items []types.Finding) []findingRow {
+	rows := make([]findingRow, 0, len(items))
+	for _, f := range items {
+		rows = append(rows, findingRow{
+			ID:          f.ID,
+			Severity:    f.Severity,
+			File:        f.File,
+			Action:      f.Action,
+			Description: f.Description,
+		})
+	}
+	return rows
+}
+
+// recordedFindingsFields renders a step's persisted summary and findings for
+// `axi logs`, which keeps them readable after the gate resolves and for any
+// explicitly selected run. It reports whether the summary was bounded.
+func recordedFindingsFields(findingsJSON string, full bool) ([]toon.Field, bool) {
+	if findingsJSON == "" {
+		return nil, false
+	}
+	parsed, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil {
+		return nil, false
+	}
+	var fields []toon.Field
+	bounded := false
+	if parsed.Summary != "" {
+		summary := parsed.Summary
+		if !full {
+			summary = truncate(summary, maxGateSummary)
+			bounded = summary != parsed.Summary
+		}
+		fields = append(fields, toon.Field{Key: "summary", Value: summary})
+	}
+	if len(parsed.Items) > 0 {
+		fields = append(fields, toon.Field{Key: "findings", Value: findingRows(parsed.Items)})
+	}
+	return fields, bounded
 }
 
 func axiLogsFullCommand(step, runID string) string {

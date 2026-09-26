@@ -323,7 +323,7 @@ Each row reports the whole step's elapsed time as `active_for`, the displayed ex
 `round_active_for` resets when a fix round starts; older active runs created before this timing was recorded show it as empty.
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
-Gate summaries and finding descriptions are bounded in this default status view; truncated values disclose their original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.
+Finding descriptions are always rendered in full, so an `ask-user` finding can be relayed verbatim. Gate summaries are bounded in this default status view because a command gate's summary carries its command output; a truncated summary discloses its original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.
 Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
 Cached home and status rendering performs no network read and labels the remote observation `pipeline_push`; only explicit sync check or apply reports `live` freshness.
 
@@ -397,7 +397,7 @@ On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pi
 
 ## no-mistakes axi logs
 
-Show the log output of one pipeline step.
+Show one pipeline step's recorded findings and log output.
 
 ```sh
 no-mistakes axi logs --step review
@@ -406,16 +406,17 @@ no-mistakes axi logs --step review --run <id>
 no-mistakes axi logs --step gate.test.mutation-budget
 ```
 
-| Flag     | Type     | Default            | Description                             |
-| -------- | -------- | ------------------ | --------------------------------------- |
-| `--step` | `string` | (none)             | Step name; required                     |
-| `--run`  | `string` | current-branch run | Run ID to inspect                       |
-| `--full` | `bool`   | `false`            | Show the entire log instead of the tail |
+| Flag     | Type     | Default            | Description                                                                          |
+| -------- | -------- | ------------------ | ------------------------------------------------------------------------------------ |
+| `--step` | `string` | (none)             | Step name; required                                                                  |
+| `--run`  | `string` | current-branch run | Run ID to inspect                                                                    |
+| `--full` | `bool`   | `false`            | Show the complete summary and the entire log instead of the bounded summary and tail |
 
 When `--run` is omitted, the run is resolved the same way as [`axi status`](#no-mistakes-axi-status): this branch's run, never another branch's.
 With `--run <id>`, logs are read from exactly that run regardless of branch.
 An unknown explicit run ID exits nonzero with `error: run "<id>" not found` instead of reporting that the current branch has no run.
-Without `--full`, long logs show the last 40 lines and a help hint for the full log; when `--run <id>` selected the log, that hint retains the same run ID.
+When the step recorded findings, the output leads with its `summary` and a `findings` table whose descriptions are always complete, including after the step's gate was resolved.
+Without `--full`, the summary is bounded like the gate's and long logs show the last 40 lines; when either is cut, a help hint names the `--full` command, retaining the run ID when `--run <id>` selected the log.
 Step logs include native subprocess agent lifecycle lines such as `codex started pid=4242`, `codex exited pid=4242 status=success`, and transient retry messages when the selected agent supports lifecycle events.
 They also include fix-loop markers such as `auto-fix round 1/3 starting after round 1` and `user-fix round starting after round 2`.
 `--step` accepts the nine core step names and valid repository gate names such as `gate.test.mutation-budget`. Use the exact gate name shown by `axi status`.
