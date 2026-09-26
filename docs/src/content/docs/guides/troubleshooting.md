@@ -305,10 +305,9 @@ Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 Symptom: `no-mistakes axi status` shows an active step with `last_activity` prefixed by `quiet`, or a review/test/lint step appears to run for longer than expected.
 
 `quiet` means the step has not recorded a step-log line or native-agent lifecycle event for longer than [`step_quiet_warning`](/no-mistakes/reference/global-config/#step_quiet_warning).
-It is only a liveness signal.
 It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
 
-A quiet Review step still ends on its own: each fixer or reviewer invocation is independently bounded by [`review_agent_timeout`](/no-mistakes/reference/global-config/#review_agent_timeout), after which the run fails with a timeout diagnostic in the step log. This is an absolute wall-clock limit, not an activity-reset idle timer: an invocation that emitted output reports measured last-activity evidence, while a no-output invocation reports its measured no-output duration. `step_quiet_warning` remains status-only.
+While the daemon is running, a quiet Review step still ends on its own: each fixer or reviewer invocation is independently bounded by [`review_agent_timeout`](/no-mistakes/reference/global-config/#review_agent_timeout), after which the run fails with a timeout diagnostic in the step log. This is an absolute wall-clock limit, not an activity-reset idle timer: an invocation that emitted output reports measured last-activity evidence, while a no-output invocation reports its measured no-output duration. `step_quiet_warning` remains status-only.
 A quiet Test step is bounded the same way by [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout), covering the post-test evidence-gathering agent and a Test-repair turn.
 An expired Test budget parks for a decision rather than failing the run as a code defect; raise that setting when targeted tests or evidence gathering routinely approach the default 30m.
 A Review cut deliberately still fails the run rather than parking, because an approved Review park would let Push ship a half-finished, unreviewed fix; parking Review cuts as well is left to a separate follow-up.

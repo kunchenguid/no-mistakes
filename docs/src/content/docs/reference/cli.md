@@ -303,6 +303,7 @@ If the implicit current-branch lookup itself fails, status returns that error in
 Detached-`HEAD` help offers deliberate `--run <id>` inspection or checking out a branch; it does not offer `axi run`, which requires a branch.
 With `--run <id>`, inspect exactly that run regardless of branch; when its branch differs from a known current branch, it is rendered under `other_branch_run:` instead of `run:`, alongside a top-level `current_branch`, so a parser keyed on `run:` never picks up a run proven to be on another branch.
 An explicit `--run <id>` rendered under `run:` while the current branch is unknown (detached `HEAD` or a branch-lookup failure) encodes no branch relationship.
+When persisted CI readiness is set, status reports `ci_readiness.last_observed: checks-passed`, `observed_at_unix`, and `basis` (`green-checks` or `trusted-no-ci-declaration`) alongside the selected run's exact `id`, recorded `pr` URL, and full `head_sha`. `observed_at_unix` is the Unix timestamp in seconds when the stored readiness state was established, not a fresh poll time. This evidence disappears when readiness is cleared. Status reads the local database, so a recorded `running` run or CI step does not prove its monitor is live or that checks remain green. Verify the current PR head and provider checks before acting on this evidence.
 
 ```sh
 no-mistakes axi status
@@ -314,14 +315,14 @@ no-mistakes axi status --run <id>
 | `--run` | `string` | current-branch run | Inspect a specific run ID |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
-The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
+The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one recorded as running, fixing, or watching CI.
 A pinned run also includes `pi_profile` with `model` and `effort`; see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles).
 Status offers branch-scoped `axi respond` commands only for the current branch's implicitly resolved run. An explicitly selected gate stays inspection-only even when its branch matches, because a newer active run on that branch could receive the bare response command instead; the gate remains visible and its log commands retain `--run <id>`.
 When a repository has no configured lint command and Document performs the combined Document/Lint housekeeping invocation, the run object includes `shared_work` evidence naming its `document+lint housekeeping` scope and the duration attributed to Document; Lint's own duration remains the cached-result handoff time.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
 Each row reports the whole step's elapsed time as `active_for`, the displayed execution or fix round's elapsed time as `round_active_for`, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
 `round_active_for` resets when a fix round starts; older active runs created before this timing was recorded show it as empty.
-If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
+If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this records an activity gap, does not prove the daemon or CI monitor is live, and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
 Gate summaries and finding descriptions are bounded in this default status view; truncated values disclose their original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.
 Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
@@ -575,7 +576,7 @@ no-mistakes runs [--limit <n>]
 | --------- | ----- | ------- | --------------------------------- |
 | `--limit` | `int` | `10`    | Maximum number of runs to display |
 
-Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
+Shows runs newest-first with branch, status (styled), short SHA, timestamp, durable `id:<run-id>`, and PR URL as the last field if set. Use that ID with read-only `axi status --run <id>` for the full recorded head and last-observed CI readiness.
 
 ## no-mistakes eval
 
