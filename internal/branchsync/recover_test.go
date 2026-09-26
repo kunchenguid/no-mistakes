@@ -1138,6 +1138,132 @@ func TestRecoverUsesTerminalAnchorWhenGateBranchLags(t *testing.T) {
 	}
 }
 
+// TestFailedReviewAfterRebaseKeepsTheRebasedHeadReachable covers the custody
+// boundary that caused Persea run 01M2HNR7VNSZTZ6R1ZMSG4GJYS: a rebase can
+// replace the submitted commit with a sibling history before the first review
+// turn fails. Terminalization must anchor that rebased head before cleanup
+// removes the managed worktree. A no-op rebase has no pipeline-only content,
+// so it deliberately releases the branch as user-owned instead.
+func TestFailedReviewAfterRebaseKeepsTheRebasedHeadReachable(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name            string
+		advanceMain     bool
+		wantState       string
+		wantRecoverable bool
+	}{
+		{name: "no-op rebase", wantState: StateUserOwned},
+		{name: "content-changing rebase", advanceMain: true, wantState: StatePipelineOwned, wantRecoverable: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newUnmovedRecoverFixture(t, types.RunPending)
+			if tt.advanceMain {
+				mustRun(t, f.local, "checkout", "main")
+				mustWrite(t, filepath.Join(f.local, "main.txt"), "new upstream work\n")
+				mustRun(t, f.local, "add", "main.txt")
+				mustRun(t, f.local, "commit", "-m", "upstream main advance")
+				mustRun(t, f.local, "push", f.gate, "HEAD:refs/heads/main")
+				mustRun(t, f.local, "checkout", "feature/recover")
+			} else {
+				mustRun(t, f.local, "push", f.gate, f.base+":refs/heads/main")
+			}
+
+			managed := filepath.Join(t.TempDir(), "managed")
+			if err := gitpkg.WorktreeAdd(f.ctx, f.gate, managed, f.submitted); err != nil {
+				t.Fatal(err)
+			}
+			configureIdentity(t, managed)
+			rebase := &rebaseThenFailStep{target: "refs/heads/main"}
+			executor := pipelinepkg.NewExecutor(f.db, paths.WithRoot(t.TempDir()), nil, nil, []pipelinepkg.Step{
+				rebase,
+				&reviewFailureStep{},
+			}, nil)
+			if err := executor.Execute(f.ctx, f.run, f.repo, managed); err == nil {
+				t.Fatal("expected review-agent failure")
+			}
+
+			terminal, err := f.db.GetRun(f.run.ID)
+			if err != nil || terminal == nil {
+				t.Fatalf("terminal run = %#v, %v", terminal, err)
+			}
+			if terminal.Status != types.RunFailed || terminal.TerminalHeadVerifiedAt == nil {
+				t.Fatalf("terminal run = %#v", terminal)
+			}
+			if tt.advanceMain {
+				if terminal.HeadSHA == f.submitted || rebase.head != terminal.HeadSHA {
+					t.Fatalf("content-changing rebase head = %q, terminal = %#v", rebase.head, terminal)
+				}
+				if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != terminal.HeadSHA {
+					t.Fatalf("terminal recovery anchor = %s, want rebased %s", got, terminal.HeadSHA)
+				}
+			} else if terminal.HeadSHA != f.submitted || rebase.head != f.submitted {
+				t.Fatalf("no-op rebase changed terminal head: rebase=%s terminal=%s submitted=%s", rebase.head, terminal.HeadSHA, f.submitted)
+			}
+
+			if err := gitpkg.WorktreeRemove(f.ctx, f.gate, managed); err != nil {
+				t.Fatal(err)
+			}
+			if tt.advanceMain {
+				if _, err := gitpkg.Run(f.ctx, f.gate, "cat-file", "-e", terminal.HeadSHA+"^{commit}"); err != nil {
+					t.Fatalf("cleanup lost anchored rebased head: %v", err)
+				}
+				base := mustRun(t, f.gate, "merge-base", f.submitted, terminal.HeadSHA)
+				if _, err := gitpkg.Run(f.ctx, f.gate, "merge-tree", "--write-tree", "--merge-base", base, terminal.HeadSHA, f.submitted); err != nil {
+					t.Skipf("requires Git merge-tree --write-tree --merge-base for the custody-proof assertion: %v", err)
+				}
+			} else if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", f.anchorRef()); err == nil {
+				t.Fatal("no-op rebase created a recovery anchor")
+			}
+
+			state := f.service.InspectCached(f.ctx)
+			if state.State != tt.wantState {
+				t.Fatalf("post-cleanup state = %#v, want %s", state, tt.wantState)
+			}
+			if tt.wantRecoverable {
+				if state.Safety != "blocked_pipeline_owned_recoverable" || state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover" {
+					t.Fatalf("post-cleanup custody action = %#v", state)
+				}
+			} else if state.NextAction != nil {
+				t.Fatalf("no-op rebase offered recovery = %#v", state.NextAction)
+			}
+		})
+	}
+}
+
+type rebaseThenFailStep struct {
+	target string
+	head   string
+}
+
+func (*rebaseThenFailStep) Name() types.StepName { return types.StepRebase }
+
+func (s *rebaseThenFailStep) Execute(sctx *pipelinepkg.StepContext) (*pipelinepkg.StepOutcome, error) {
+	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "rebase", s.target); err != nil {
+		return nil, err
+	}
+	head, err := gitpkg.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	s.head = head
+	if head != sctx.Run.HeadSHA {
+		sctx.Run.HeadSHA = head
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, head); err != nil {
+			return nil, err
+		}
+	}
+	return &pipelinepkg.StepOutcome{}, nil
+}
+
+type reviewFailureStep struct{}
+
+func (*reviewFailureStep) Name() types.StepName { return types.StepReview }
+
+func (*reviewFailureStep) Execute(*pipelinepkg.StepContext) (*pipelinepkg.StepOutcome, error) {
+	return nil, errors.New("review agent usage limit")
+}
+
 func TestInspectOffersKeepLocalWhenRecordedHeadIsMissing(t *testing.T) {
 	t.Parallel()
 
