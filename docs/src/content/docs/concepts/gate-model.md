@@ -209,7 +209,7 @@ can also end early after `rebase` if the branch has no diff against the default
 branch, marking the remaining steps as skipped.
 
 1. Execute the step
-2. If the step finds `action: auto-fix` findings, the step result is auto-fixable, and auto-fix is enabled, loop back with the agent to fix them (up to the configured limit)
+2. If the step finds `action: auto-fix` findings, the step result is auto-fixable, and auto-fix is enabled, loop back with the agent to fix them (up to the configured limit). A finding that an earlier fix round of the same step already addressed coming back stops the loop instead, parking a `repeat finding: diagnose` gate (see [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/#repeat-findings-stop-the-fixer))
 3. If blocking findings remain, any finding has `action: ask-user`, or Review has a selected finding still awaiting positive rereview verification, pause and wait for user action. The Review carry-forward rule is detailed in the [pipeline-step reference](/no-mistakes/reference/pipeline-steps/#review).
 4. `action: no-op` findings are informational only unless a Review finding was selected for fixing and remains outstanding; the user can approve, fix selected findings, skip, or cancel the run when the step pauses
 

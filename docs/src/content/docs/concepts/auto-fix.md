@@ -30,6 +30,19 @@ flowchart TD
    - If issues remain, the step pauses for user approval
    - If no step-specific outstanding condition remains, the step completes and the pipeline moves on
 
+## Repeat findings stop the fixer
+
+A fix round that did not hold is not retried on the same brief. When a step's round reports a finding that an earlier fix round of the same step in the same run was already dispatched for - whether `auto_fix` selected it or an operator or driving agent chose it with `f` / `no-mistakes axi respond --action fix` - the executor does not start another fix round, even with `auto_fix` attempts left.
+Instead the gate parks with one extra `ask-user` finding, `repeat-finding`, whose description (and the gate summary) starts `repeat finding: diagnose` and names each repeated finding with the rounds it appeared in, followed by the ladder to work through after diagnosing why the fix did not hold:
+
+1. prerequisite or brief - supply what the fix was missing, or sharpen the brief;
+2. change family - take a different kind of change rather than another variant of the same one;
+3. stronger model - rerun the fix with a stronger model at high effort (for example Opus 5.5 high).
+
+New findings in the same round do not trigger the stop on their own, but they do not start a fix round beside a repeat either. At the stop, approve, skip, and abort work as usual; a fix is accepted only when it carries the diagnosis as per-finding instructions or an added finding (`--instructions` / `--add-finding`, or a TUI note), and a bare fix is refused. AXI `--yes` and TUI yolo mode leave the gate for a human. The `repeat-finding` marker itself is never handed to the fix agent.
+
+A finding counts as the same when it carries the same agent-chosen ID (never a pipeline-assigned positional ID such as `review-1` or `lint-2`, which only names a slot in one round's output), or when it names the same file with the same description after case and whitespace normalization. A reworded finding under a fresh positional ID is not treated as a repeat. The check reads the step's recorded fix selections, so it holds across a daemon restart. The CI step's repair loop is not covered.
+
 Review has an additional step-specific outstanding condition during carry-forward verification; missing coverage or silence can keep its gate parked even when no blocking-severity finding is reported. A clean review that omits its coverage record parks for approval the same way rather than certifying the head. See the [Review step reference](/no-mistakes/reference/pipeline-steps/#review) for the authoritative carry-forward contract.
 
 The document step applies fixes during its initial pass instead of relying on a follow-up automatic fix loop.

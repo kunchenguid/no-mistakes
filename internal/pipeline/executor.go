@@ -67,6 +67,7 @@ type Executor struct {
 	waiting                bool                  // true when blocked on approval
 	waitingStep            types.StepName        // which step is currently awaiting approval
 	waitingApprovalRefusal string                // non-empty: why Approve is rejected at the waiting gate
+	waitingFixRefusal      string                // non-empty: why a fix without a diagnosis is rejected at the waiting gate
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
@@ -202,6 +203,11 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	}
 	if action == types.ActionApprove && e.waitingApprovalRefusal != "" {
 		refusal := e.waitingApprovalRefusal
+		e.mu.Unlock()
+		return errors.New(refusal)
+	}
+	if action == types.ActionFix && e.waitingFixRefusal != "" && !carriesFixDiagnosis(instructions, addedFindings) {
+		refusal := e.waitingFixRefusal
 		e.mu.Unlock()
 		return errors.New(refusal)
 	}
@@ -504,6 +510,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.waiting = true
 	e.waitingStep = gate.step.Name()
 	e.waitingApprovalRefusal = approvalRefusal(gate.step.Name(), gate.findings)
+	e.waitingFixRefusal = repeatFixRefusal(gate.step.Name(), gate.findings)
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsAndError(
 		ipc.EventStepCompleted,
@@ -612,7 +619,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			e.emitStepEvent(ipc.EventStepStarted, run, repo, gate.step.Name(), string(types.StepStatusRunning))
 		} else {
 			telemetry.Track("fix", e.fixTelemetryFields("user", gate.step.Name(), selectedFindingCount(gate.findings, response.findingIDs), 0))
-			selected := filterFindingsJSON(gate.findings, response.findingIDs)
+			selected := dropRepeatFindingStopJSON(filterFindingsJSON(gate.findings, response.findingIDs))
 			merged := mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
 			selectedForPersistence := merged
 			outstandingFindings := gate.findings
@@ -648,7 +655,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", nil)
 			state.fixing = true
 			state.previousFindings = merged
-			state.deferredFindings = removeMatchingFindingsJSON(gate.findings, selected)
+			state.deferredFindings = removeMatchingFindingsJSON(dropRepeatFindingStopJSON(gate.findings), selected)
 			state.outstandingFindings = outstandingFindings
 			state.selectedOutstandingIDs = selectedOutstandingIDs
 		}
@@ -963,8 +970,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// a later round positively verifies it (outcome.ReviewedPaths) or the
 	// operator resolves it at a gate. pendingVerificationIDs names the
 	// selection that later rounds may verify. The loop itself is bounded only by
-	// auto_fix.review (the automatic-round budget) and the human/agent gate,
-	// same as upstream. Repeated user selections remain operator/driver-owned,
+	// auto_fix.review (the automatic-round budget), the repeat-finding stop
+	// (which keys on a fixed finding coming back, never on a round count), and
+	// the human/agent gate. Repeated user selections remain operator/driver-owned,
 	// rather than receiving a separate code-level round cap. Unused by every other step.
 	carryFindings := stepName == types.StepReview
 	outstandingFindings := ""
@@ -1161,7 +1169,7 @@ rounds:
 			// answered-and-verified finding would stay outstanding for a reason
 			// that has nothing to do with it.
 			verificationFindings := dropReviewQuestionFindingsJSON(roundFindings)
-			outstandingFindings = dropReviewQuestionFindingsJSON(outstandingFindings)
+			outstandingFindings = dropRepeatFindingStopJSON(dropReviewQuestionFindingsJSON(outstandingFindings))
 			// An answer round retracts by naming ids, never by silence - and
 			// ONLY an answer round. A fix round is held to the coverage rule,
 			// so a retraction it claimed would clear a selected finding no
@@ -1183,6 +1191,20 @@ rounds:
 			effectiveFindings = mergeOutstandingFindingsJSON(outstandingFindings, roundFindings, outcome.ReviewedPaths)
 			outstandingFindings = effectiveFindings
 			effectiveFindings = recordWithdrawnFindingsJSON(effectiveFindings, withdrawn)
+		}
+
+		// A finding a fix round was already dispatched for is back: the fix
+		// did not hold, and another round of the same fixer on the same brief
+		// is the loop the repeat stop exists to break. Decided before the
+		// round is persisted so the parked round and the step carry the same
+		// findings, which is what gate recovery checks.
+		repeatStopped := false
+		if stepName != types.StepCI {
+			if repeats := e.repeatedFixedFindings(sr.ID, roundFindings, roundNum); len(repeats) > 0 {
+				repeatStopped = true
+				effectiveFindings = withRepeatFindingStopJSON(effectiveFindings, repeats)
+				writeLog(repeatFindingStopDescription(repeats))
+			}
 		}
 
 		if effectiveFindings != "" {
@@ -1241,7 +1263,7 @@ rounds:
 		// Only auto-fix findings whose action is "auto-fix".
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
-		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
+		if !repeatStopped && outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
 			fixableFindings := autoFixableFindingsJSON(roundFindings)
 			if carryFindings {
 				fixableFindings = remapFindingIDsJSON(effectiveFindings, fixableFindings)
@@ -1311,6 +1333,7 @@ rounds:
 			e.waiting = true
 			e.waitingStep = stepName
 			e.waitingApprovalRefusal = approvalRefusal(stepName, effectiveFindings)
+			e.waitingFixRefusal = repeatFixRefusal(stepName, effectiveFindings)
 			e.mu.Unlock()
 
 			// Parking starts before the gate becomes observable. This includes the
@@ -1402,10 +1425,12 @@ rounds:
 				// round before it was an answer replay that suppressed one.
 				sctx.FinalizingAnswers = false
 				sctx.SkipFixExecution = false
-				selectedFindings := filterFindingsJSON(effectiveFindings, response.findingIDs)
+				// The repeat stop's marker is guidance for the operator, never
+				// work for the fixer.
+				selectedFindings := dropRepeatFindingStopJSON(filterFindingsJSON(effectiveFindings, response.findingIDs))
 				mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
 				sctx.PreviousFindings = mergedFindings
-				sctx.DeferredFindings = removeMatchingFindingsJSON(effectiveFindings, selectedFindings)
+				sctx.DeferredFindings = removeMatchingFindingsJSON(dropRepeatFindingStopJSON(effectiveFindings), selectedFindings)
 				selectedForPersistence := mergedFindings
 				if carryFindings {
 					// APPEND-ONLY: the selection is additionally handed to the fixer
@@ -1520,6 +1545,24 @@ done:
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, restartFrom, nil
+}
+
+// repeatedFixedFindings reads the step's durable fix selections and returns the
+// findings in this round's own output that a fix round was already dispatched
+// for. The rounds are read from the database rather than kept in the loop so a
+// selection made before a daemon restart or through a recovered gate counts
+// the same as one made in this process. A read failure fails open: the stop is
+// a guard against wasted rounds, and the gate still parks on what it parks on.
+func (e *Executor) repeatedFixedFindings(stepResultID, roundFindings string, roundNum int) []repeatedFinding {
+	if roundFindings == "" {
+		return nil
+	}
+	rounds, err := e.db.GetRoundsByStep(stepResultID)
+	if err != nil {
+		slog.Warn("failed to read step rounds for the repeat-finding check", "error", err)
+		return nil
+	}
+	return repeatedFixedFindings(roundFindings, fixedFindingsFromRounds(rounds), roundNum)
 }
 
 // recordDeclinedRound persists an approve, skip, or abort resolution as a real

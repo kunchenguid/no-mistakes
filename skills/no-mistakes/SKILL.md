@@ -344,6 +344,13 @@ not skip Test, which would publish that work. Ask the operator to choose:
 `--action fix` spends another agent budget to validate the work, and
 `no-mistakes axi abort` stops the run.
 
+A `repeat-finding` finding (summary `repeat finding: diagnose`) means a
+finding came back after a fix round already addressed it, so the pipeline
+stopped instead of fixing again. `--yes` stops at that gate without
+responding. Relay the repeated findings and the ladder it lists; a bare
+`--action fix` is refused there until it carries the diagnosis through
+`--instructions` or `--add-finding`.
+
 ## Inspecting state
 
 ```sh

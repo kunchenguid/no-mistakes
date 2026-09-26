@@ -1024,3 +1024,69 @@ func TestDriveRun_YesLeavesAnUnreadableQuestionHistoryAwaitingAHuman(t *testing.
 		})
 	}
 }
+
+// A repeat-finding stop exists to prevent the next fix round, so --yes has no
+// standing consent to send fix there, and approving would ship the finding
+// undiagnosed.
+func TestDriveRun_YesLeavesARepeatFindingStopAwaitingAHuman(t *testing.T) {
+	socketPath := filepath.Join(makeSocketSafeTempDir(t), "repeat-finding.sock")
+	srv := ipc.NewServer()
+	var responses atomic.Int32
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		responses.Add(1)
+		return nil, errors.New("unexpected automatic response to a repeat-finding stop")
+	})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(socketPath) }()
+	t.Cleanup(func() {
+		srv.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("IPC server did not stop")
+		}
+	})
+	var client *ipc.Client
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		client, err = ipc.Dial(socketPath)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if client == nil {
+		t.Fatal("IPC server did not become ready")
+	}
+	defer client.Close()
+
+	findings := `{"findings":[` +
+		`{"id":"f1","severity":"error","file":"lib.go","description":"coverage absent","action":"auto-fix"},` +
+		`{"id":"repeat-finding","severity":"error","description":"repeat finding: diagnose - f1 (rounds 1, 2)","action":"ask-user"}` +
+		`],"summary":"repeat finding: diagnose"}`
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			parked := &ipc.RunInfo{
+				ID: "run-1", Status: types.RunRunning,
+				Steps: []ipc.StepResultInfo{{StepName: types.StepReview, Status: status, FindingsJSON: &findings}},
+			}
+			source := &scriptedRunStateSource{
+				subscriptions: []scriptedSubscription{{events: make(chan ipc.Event)}},
+				runs:          []*ipc.RunInfo{parked},
+			}
+			reconciler := newRunReconciler(source, parked.ID)
+			defer reconciler.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var progress bytes.Buffer
+			run, ciReady, err := driveRunWithReconciler(ctx, &progress, client, reconciler, parked.ID, true)
+			if err != nil || run != parked || ciReady || responses.Load() != 0 {
+				t.Fatalf("--yes resolved a repeat-finding stop: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, responses.Load(), err)
+			}
+			if !strings.Contains(progress.String(), "repeat finding: diagnose") {
+				t.Fatalf("progress does not name the stop: %s", progress.String())
+			}
+		})
+	}
+}

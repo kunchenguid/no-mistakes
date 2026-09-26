@@ -469,3 +469,29 @@ func footerContains(plain string, needles ...string) bool {
 	}
 	return false
 }
+
+// Yolo stands aside at a repeat-finding stop: fixing again is the round the
+// stop prevents, and approving would ship the finding undiagnosed.
+func TestModel_Yolo_RepeatFindingStopSendsNoAutomaticResponse(t *testing.T) {
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			sock, client, snapshot := captureRespond(t)
+			run := testRun()
+			fj := `{"findings":[{"id":"f1","severity":"error","file":"lib.go","description":"coverage absent","action":"auto-fix"},{"id":"repeat-finding","severity":"error","description":"repeat finding: diagnose - f1 (rounds 1, 2)","action":"ask-user"}],"summary":"repeat finding: diagnose"}`
+			run.Steps = []ipc.StepResultInfo{{StepName: types.StepReview, Status: status, FindingsJSON: &fj}}
+			m := NewModel(sock, client, run)
+			m.yoloMode = true
+			m.stepDiffLoaded[types.StepReview] = true
+			for range 2 {
+				if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+					if msg := cmd(); msg != nil {
+						t.Fatalf("automatic response failed: %v", msg)
+					}
+				}
+			}
+			if calls := snapshot(); len(calls) != 0 {
+				t.Fatalf("a repeat-finding stop was auto-resolved: %+v", calls)
+			}
+		})
+	}
+}

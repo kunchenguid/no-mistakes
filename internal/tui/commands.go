@@ -126,6 +126,11 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if pipeline.HasUnreadableReviewQuestionHistory(m.stepFindings[step.StepName]) {
 		return nil
 	}
+	// A finding came back after a fix round: another fix is what the gate
+	// stops, and approving it would ship the finding undiagnosed.
+	if pipeline.HasRepeatFindingStop(m.stepFindings[step.StepName]) {
+		return nil
+	}
 	if !m.approvalReady(step) {
 		return nil
 	}
