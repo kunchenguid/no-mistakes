@@ -264,9 +264,10 @@ func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) boo
 }
 
 // privateCommitsAbsentFromLive names private-only commits lacking matching
-// per-file patches. When tree survival cannot be proven either, it names only
-// those unmatched commits, or the entire private-only range when every commit
-// matched and so none is individually to blame.
+// per-file patches, or the entire private-only range when final-tree survival
+// cannot be proven. A clean merge of the private head into the live head that
+// leaves the live tree unchanged proves every commit contained, including a
+// rebased copy whose patch ID differs only by context the base moved.
 //
 // The private side is computed first so the live scan can be bounded to the
 // paths the private commits actually touch. Comparison stops at the first
@@ -281,6 +282,9 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 	}
 	if len(privateOnly) == 0 {
 		return nil, nil
+	}
+	if contained, err := mergeLeavesTree(ctx, repoDir, liveHead, privateHead); err != nil || contained {
+		return nil, err
 	}
 
 	type privateCommit struct {
@@ -345,12 +349,6 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 	if survives {
 		return atRisk, nil
 	}
-	// Survival is unproven, so the push is refused either way. When some
-	// commits lack a patch match, they alone are named: the rebased
-	// equivalents beside them are not what the live head is missing.
-	if len(atRisk) > 0 {
-		return atRisk, nil
-	}
 	return privateOnly, nil
 }
 
@@ -359,12 +357,12 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 const maxSurvivalCandidates = 64
 
 // privateTreeSurvives proves the private head's changes are present in the
-// live history. The direct proof is a clean three-way merge of the private head
-// into the live head that leaves the live tree unchanged.
+// live history once the direct proof, a clean three-way merge of the private
+// head into the live head that leaves the live tree unchanged, has failed.
 //
 // A rebased branch whose later live commits edit the lines the private commits
-// wrote fails that proof by conflicting although nothing was dropped, so a
-// second proof has two halves. Resolving each conflicting hunk toward the live
+// wrote fails that proof by conflicting although nothing was dropped, so this
+// proof has two halves. Resolving each conflicting hunk toward the live
 // head must still leave the live tree unchanged, so every private hunk that
 // merges cleanly is already live and a change the live head reverted or lacks
 // still refuses. And some first-parent live commit touching the private paths
@@ -372,9 +370,6 @@ const maxSurvivalCandidates = 64
 // history. First-parent only, so a merge that discarded a side branch never
 // serves as that point.
 func privateTreeSurvives(ctx context.Context, repoDir, liveHead, privateHead string, paths map[string]bool) (bool, error) {
-	if ok, err := mergeLeavesTree(ctx, repoDir, liveHead, privateHead); err != nil || ok {
-		return ok, err
-	}
 	if len(paths) == 0 {
 		return false, nil
 	}

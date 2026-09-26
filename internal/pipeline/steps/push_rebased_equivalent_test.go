@@ -17,7 +17,7 @@ import (
 // not run-owned, so Decision 41-A does not apply and the preservation proof
 // must: the rebased copies carry the same stable patch IDs, so the push goes
 // through, while a commit whose content the live head genuinely lacks still
-// refuses, and is the only commit named.
+// refuses, naming the whole private-only range.
 func TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead(t *testing.T) {
 	for _, variant := range []string{"rebased_equivalents", "dropped_commits", "mixed"} {
 		t.Run(variant, func(t *testing.T) {
@@ -93,11 +93,8 @@ func TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead(t *testing.T)
 				if !strings.Contains(err.Error(), published) || !strings.Contains(err.Error(), "docs: widget notes") {
 					t.Fatalf("refusal did not name the dropped commit %s: %v", published, err)
 				}
-				if variant == "mixed" && strings.Contains(err.Error(), widget) {
-					t.Fatalf("refusal named the rebased-equivalent commit %s: %v", widget, err)
-				}
-				if variant == "dropped_commits" && !strings.Contains(err.Error(), widget) {
-					t.Fatalf("refusal did not name the rewritten commit %s: %v", widget, err)
+				if !strings.Contains(err.Error(), widget) {
+					t.Fatalf("refusal did not name the whole private-only range: %v", err)
 				}
 				for _, repo := range []string{upstream, gateDir} {
 					if got := gitCmd(t, repo, "rev-parse", "refs/heads/feature"); got != published {

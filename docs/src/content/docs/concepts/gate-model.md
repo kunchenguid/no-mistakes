@@ -100,7 +100,10 @@ ordinary push. Reconciliation compares exact commit heads and per-file
 `git patch-id --stable` identities; commit messages are not evidence. Historical
 patch matches also require a clean three-way merge of the private head into the
 live head whose resulting tree equals the live tree. This prevents changes
-discarded by a merge or revert from being counted as surviving content.
+discarded by a merge or revert from being counted as surviving content. That
+clean, tree-preserving merge also proves every private commit contained on its
+own, so a rebased copy whose patch ID changed only because the new base edited
+nearby context lines is not at risk.
 
 A rebased branch whose later commits edit the lines the private commits wrote
 (for example a new run on a branch an earlier run already published) makes that
@@ -112,8 +115,8 @@ commit on the live head's first-parent history touching the private paths must
 pass the clean-merge check, placing all of the private content in the live
 history. A side branch discarded by a merge never serves as that point.
 
-If survival cannot be proven, the commits without a patch match are reported as
-at risk; when every commit matched, the whole private-only range is.
+If survival cannot be proven, the whole private-only range is reported as at
+risk.
 
 **Accepted Decision 41-A (issue #983):** pipeline publication may replace a
 private mirror head that is **exactly equal to a head the publishing run itself
@@ -136,8 +139,7 @@ creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
 head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
 unproven private content refuses before upstream publication, leaves the
-private branch untouched, and names every at-risk commit, never a rebased
-equivalent beside it. An ancestor already
+private branch untouched, and names every at-risk commit. An ancestor already
 supports an ordinary fast-forward. A gate head that is a newer descendant of
 the published head stays untouched, including through the detached worktree's
 shared branch refs.

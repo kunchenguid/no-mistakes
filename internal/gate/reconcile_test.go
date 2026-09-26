@@ -534,12 +534,6 @@ func TestReconcileStaleBranchDecision41AExactLastPushedHead(t *testing.T) {
 				if err != nil || plan.Reconcile {
 					t.Fatalf("newer descendant was not preserved: plan=%+v err=%v", plan, err)
 				}
-			case "submitted_only", "abbreviated", "fresh_submission":
-				// The pipeline fix is a patch-equivalent of the live one, so
-				// only the conflict-rewritten commit is named.
-				if err == nil || plan.Reconcile || !strings.Contains(err.Error(), "refusing to reconcile") || !strings.Contains(err.Error(), submittedHead) || strings.Contains(err.Error(), publishedHead) {
-					t.Fatalf("mirror head %s bypassed the preservation proof or named its equivalent: plan=%+v err=%v", privateHead, plan, err)
-				}
 			default:
 				if err == nil || plan.Reconcile || !strings.Contains(err.Error(), "refusing to reconcile") || !strings.Contains(err.Error(), privateHead) {
 					t.Fatalf("mirror head %s bypassed the preservation proof: plan=%+v err=%v", privateHead, plan, err)
@@ -690,4 +684,59 @@ func TestReconcileStaleBranchRebasedEquivalentsSurviveALaterEdit(t *testing.T) {
 func reconcileGitAllowFail(dir string, args ...string) (string, error) {
 	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// TestReconcileStaleBranchRebasedAcrossContextDrift covers a private commit
+// rebased cleanly onto a base that edited its file within diff context. The
+// rebased copy's stable patch ID differs, but merging the private head into the
+// live head is clean and leaves the live tree unchanged, which proves it
+// contained. A live head that then reverted the rebased copy still refuses.
+func TestReconcileStaleBranchRebasedAcrossContextDrift(t *testing.T) {
+	for _, later := range []string{"kept", "reverted"} {
+		t.Run(later, func(t *testing.T) {
+			work := initReconcileRepo(t)
+			commit := func(content, message string) string {
+				t.Helper()
+				writeReconcileFile(t, work, "widget.txt", content)
+				reconcileGit(t, work, "add", "-A")
+				reconcileGit(t, work, "commit", "-m", message)
+				return reconcileGit(t, work, "rev-parse", "HEAD")
+			}
+			base := commit("a\nb\nc\nd\ne\nf\ng\n", "widget")
+			privateHead := commit("a\nb\nc\nd\ne\nNEW\nf\ng\n", "feat: widget line")
+			reconcileGit(t, work, "checkout", "--detach", base)
+			commit("a\nb\nC\nd\ne\nf\ng\n", "main edits nearby")
+			liveHead := commit("a\nb\nC\nd\ne\nNEW\nf\ng\n", "feat: widget line, rebased")
+			if later == "reverted" {
+				reconcileGit(t, work, "revert", "--no-edit", "HEAD")
+				liveHead = reconcileGit(t, work, "rev-parse", "HEAD")
+			}
+			patchID := func(commit string) string {
+				t.Helper()
+				cmd := exec.Command("sh", "-c", "git -C \"$1\" diff-tree -p \"$2\" | git patch-id --stable", "sh", work, commit)
+				out, err := cmd.Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			if later == "kept" && strings.Fields(patchID(privateHead))[0] == strings.Fields(patchID(liveHead))[0] {
+				t.Fatal("fixture must give the rebased copy different context")
+			}
+
+			gateDir := filepath.Join(t.TempDir(), "gate.git")
+			reconcileGit(t, "", "init", "--bare", gateDir)
+			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			if later == "reverted" {
+				if err == nil || result.Reconciled || !strings.Contains(err.Error(), privateHead) {
+					t.Fatalf("reverted content was reconciled or not named: result=%+v err=%v", result, err)
+				}
+				return
+			}
+			if err != nil || !result.Reconciled {
+				t.Fatalf("rebased copy across context drift was refused: result=%+v err=%v", result, err)
+			}
+		})
+	}
 }
