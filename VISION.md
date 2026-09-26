@@ -34,12 +34,24 @@ Unattended operation is real and useful, but it is always explicit consent for a
 Automation of judgment may expand only by explicit user opt-in as trust is earned, never by a silent default flip.
 The ambition is to shrink human attention per change toward the few decisions that genuinely need a human, not to remove the human from decisions that are theirs.
 
+## The pipeline runs forward
+
+Validation is a straight line: each step runs once in its fixed order, takes what every earlier step produced, and hands its result forward; a run never sends itself back through a step it has completed.
+A step may iterate on its own findings inside its own bounded fix budget; that loop stays inside the step and is the only loop the gate contains by default.
+A later step is kept from undoing earlier work by what it is told, not by what runs after it: every step that can change the tree receives the run's record so far, above all every human decision, with the instruction to respect it, and its own gate parks when it cannot comply.
+A decision a human makes at any gate is a fact of the run from then on: every later step sees it, treats it as outranking the original intent and any test, fix, or tidy-up that contradicts it, and never reverses it; only a later human ruling on the same concern can.
+Each step answers for its own edits at its own gate - a fix Review wrote is rereviewed by Review, a fix Test wrote is retested by Test, a documentation or lint edit is judged by the step that made it - and no step's edit is grounds to send the run back to Review.
+Neither a deterministic boundary on what a step may touch nor a rigid guard bolted on after it belongs in the gate: code is unstructured data arranged differently in every repository, so such rules fail where an instruction adapts and bandage poor agent judgment instead of fixing it; when a step still errs despite what it was told, the answer is better context and instruction for that step and a PR that shows the human what it did.
+Re-running completed steps on a changed tree has no honest end, because steps that edit by nature edit on every pass; a design that sends a run backward to re-check a later step's work is refused as a default and as a remedy, however bounded or rare it claims to be.
+A second pass through the line exists only as an explicit opt-in the user turns on, admitted case by case and never as a pattern; it buys a stronger guarantee the user chose to pay for, never the cure for a later step's defect.
+After publication, a CI repair whose continuity with the reviewed head cannot be proven is a new change, not an increment on a validated one: it enters the line again under the CI budget, and nothing before publication qualifies.
+
 ## Independent, adversarial validation
 
 Validation runs in a fresh context against the actual branch, never inside the authoring session, because an author is biased toward believing its own work is correct.
 Validation must not hold the author hostage: runs happen in disposable isolation so the working tree stays untouched and the next task can start immediately.
 Reviewer and fixer are separate roles with separate memory; the reviewer never inherits the fixer's rationale, and every review pass covers the complete change.
-The pipeline's own fixes are author code: a change the gate wrote is reviewed with the same independence as a change the author wrote, and a reviewer never certifies its own prescription.
+The pipeline's own fixes are author code: a change the gate wrote is held to the same standard as a change the author wrote, judged at the gate of the step that wrote it, and a reviewer never certifies its own prescription.
 The author's intent, with its provenance, is part of what review checks the diff against; agent confidence is not evidence.
 The pushed branch is untrusted input: nothing on it may choose what executes with the owner's credentials, and gate agents never adopt the identity or instructions of the code under validation.
 
@@ -68,5 +80,5 @@ It is not a CI system, not an agent orchestrator, not a code host, and not a tea
 Where a repository genuinely has no outer gate, the inner gate may take on more of that duty by the user's explicit choice.
 The gate assumes as little as possible about what a repository contains: code or not, a change is a change, and the gate's question is always whether it is safe to share.
 Every change to this repository must pass through its own gate; dogfooding is the first calibration loop, and field incidents become regression tests before they become memories.
-A change aligns when it catches more real mistakes earlier, cuts wall-clock or babysitting without moving judgment away from the human, serves the individual operator across everything they own, or strengthens a refusal path.
-Changes should be resisted when they weaken what a pass means, trade data safety for convenience, spend deep complexity on a niche workflow, freeze one vendor or model into the product's identity, or grow the gate into an always-on service the user did not ask for.
+A change aligns when it catches more real mistakes earlier, cuts wall-clock or babysitting without moving judgment away from the human, serves the individual operator across everything they own, makes a human decision visible to every step that comes after it, or strengthens a refusal path.
+Changes should be resisted when they weaken what a pass means, trade data safety for convenience, send a run back through steps it has completed except by explicit opt-in, spend deep complexity on a niche workflow, freeze one vendor or model into the product's identity, or grow the gate into an always-on service the user did not ask for.
