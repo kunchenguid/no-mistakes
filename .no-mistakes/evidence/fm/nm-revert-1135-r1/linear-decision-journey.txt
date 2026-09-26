@@ -1,0 +1,5 @@
+=== RUN   TestSelectedFixFollowedByDocumentEditDoesNotRestartReview
+    linear_decision_journey_test.go:109: completed run 01M3E1FZ0NNMMH9R64BBH2PXNK; review turns 2; selected fix "corrected feature\n"; post-review documentation "# Corrected feature documentation\n"; decision in Test true, Document true; published head 3ca3dc4bfb350e2ccc0ad6efcfebadc131c2b078
+--- PASS: TestSelectedFixFollowedByDocumentEditDoesNotRestartReview (4.19s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2e	4.502s
