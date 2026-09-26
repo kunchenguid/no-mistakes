@@ -13,9 +13,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// Drive a selected review fix followed by a documentation edit through the
-// real CLI, hook, daemon, worktree, and push. The canned agent supplies only
-// responses and edits, not pipeline decisions.
+// Drive a selected review fix followed by a documentation edit and a lint
+// fix turn through the real CLI, hook, daemon, worktree, and push. The canned
+// agent supplies only responses and edits, not pipeline decisions.
 func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "linear.yaml")
 	content := `actions:
@@ -53,6 +53,12 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
     structured:
       findings: []
       summary: "documentation updated"
+  - match: "Fix the lint issues in this repository"
+    edits:
+      - path: lint.ok
+        new: "lint clean\n"
+    structured:
+      summary: "create lint sentinel"
   - text: "no issues found"
     structured:
       findings: []
@@ -82,6 +88,10 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 	if out, err := h.RunInDir(initDir, "init"); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
+	// A trusted lint command that fails until the fix turn creates its
+	// sentinel gives the Lint step a gate and a fix turn of its own, so the
+	// journey can check that step's rendered prompt too.
+	pushMainRepoConfig(t, h, "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: true\ncommands:\n  lint: 'test -f lint.ok'\n")
 	branch := "feature/linear-decision"
 	h.CommitChange(branch, "feature.txt", "incorrect feature\n", "feature")
 	worktree := h.AddWorktree(branch)
@@ -93,29 +103,47 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selected fix: %v\n%s", err, result)
 	}
+	gated := waitForStepStatus(t, h, branch, types.StepLint, types.StepStatusAwaitingApproval, 90*time.Second)
+	if gated == nil {
+		t.Fatal("lint step never parked on the failing lint command")
+	}
+	h.Respond(gated.ID, types.StepLint, types.ActionFix)
 	run := h.WaitForRun(branch, 90*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run status %s, error %v, response %s", run.Status, run.Error, result)
 	}
 	invocations := h.AgentInvocations()
 	var reviewCount int
-	var testDecision, documentDecision bool
+	var testDecision, documentDecision, lintDecision bool
 	for _, inv := range invocations {
 		if strings.Contains(inv.Prompt, "Review the code changes and return structured findings") {
 			reviewCount++
 		}
-		if strings.Contains(inv.Prompt, "You are validating a code change by driving the product itself") && strings.Contains(inv.Prompt, "Correct the feature value") {
-			testDecision = true
+		// Each post-review step's agent prompt must carry the recorded human
+		// decision - the review round's selected fix with its description -
+		// plus the respect-and-never-revert instruction, so a later step
+		// cannot quietly undo what a person chose.
+		if strings.Contains(inv.Prompt, "You are validating a code change by driving the product itself") {
+			testDecision = strings.Contains(inv.Prompt, "review round 1 user chose to fix") &&
+				strings.Contains(inv.Prompt, "Correct the feature value") &&
+				strings.Contains(inv.Prompt, "Never revert, undo, or work around a recorded human decision")
 		}
-		if strings.Contains(inv.Prompt, "Find what this change made stale") && strings.Contains(inv.Prompt, "Correct the feature value") {
-			documentDecision = true
+		if strings.Contains(inv.Prompt, "Find what this change made stale") {
+			documentDecision = strings.Contains(inv.Prompt, "review round 1 user chose to fix") &&
+				strings.Contains(inv.Prompt, "Correct the feature value") &&
+				strings.Contains(inv.Prompt, "Never revert, undo, or work around a recorded human decision")
+		}
+		if strings.Contains(inv.Prompt, "Fix the lint issues in this repository") {
+			lintDecision = strings.Contains(inv.Prompt, "review round 1 user chose to fix") &&
+				strings.Contains(inv.Prompt, "Correct the feature value") &&
+				strings.Contains(inv.Prompt, "Never revert, undo, or work around a recorded human decision")
 		}
 	}
 	if reviewCount != 2 {
 		t.Errorf("review turns = %d, want initial and fix rereview only", reviewCount)
 	}
-	if !testDecision || !documentDecision {
-		t.Errorf("decision reached subsequent steps: test=%v document=%v", testDecision, documentDecision)
+	if !testDecision || !documentDecision || !lintDecision {
+		t.Errorf("decision plus respect guidance reached subsequent steps: test=%v document=%v lint=%v", testDecision, documentDecision, lintDecision)
 	}
 	if got := h.UpstreamBranchSHA(branch); got != run.HeadSHA {
 		t.Errorf("published head %s, want %s", got, run.HeadSHA)
@@ -134,5 +162,9 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 	if err != nil || string(feature) != "corrected feature\n" {
 		t.Errorf("published selected fix = %q, error %v", feature, err)
 	}
-	t.Logf("completed run %s; review turns %d; selected fix %q; post-review documentation %q; decision in Test %v, Document %v; published head %s", run.ID, reviewCount, feature, doc, testDecision, documentDecision, run.HeadSHA)
+	lintSentinel, err := h.runGit(context.Background(), h.UpstreamDir, "show", "refs/heads/"+branch+":lint.ok")
+	if err != nil || string(lintSentinel) != "lint clean\n" {
+		t.Errorf("published lint fix = %q, error %v", lintSentinel, err)
+	}
+	t.Logf("completed run %s; review turns %d; selected fix %q; post-review documentation %q; decision in Test %v, Document %v, Lint %v; published head %s", run.ID, reviewCount, feature, doc, testDecision, documentDecision, lintDecision, run.HeadSHA)
 }
