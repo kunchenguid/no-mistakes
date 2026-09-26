@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -293,11 +292,7 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 			// lets the carried finding leave the outstanding set. A rereview that
 			// reports nothing new without covering the file would leave it
 			// outstanding and park the run again.
-			findings := cleanReviewFindings()
-			findings.ReviewedPaths = []string{"feature.txt"}
-			findings.DecisionReviews = satisfiedDecisionReviews(t, opts.Prompt)
-			output, _ := json.Marshal(findings)
-			return &agent.Result{Output: output}
+			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`)}
 		default:
 			return &agent.Result{Output: []byte(`{"summary":"apply decision"}`)}
 		}

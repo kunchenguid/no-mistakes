@@ -159,15 +159,11 @@ func hasSelectedFinding(raw *string) bool {
 // InsertStepRound creates a new round record for a step result. fixSummary may
 // be nil for non-fix rounds or when the agent produced no summary.
 func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, durationMS int64) (*StepRound, error) {
-	return d.InsertStepRoundWithRepair(stepResultID, round, trigger, findingsJSON, fixSummary, false, "", durationMS)
+	return d.InsertStepRoundWithRepair(stepResultID, round, trigger, findingsJSON, fixSummary, false, durationMS)
 }
 
-func (d *DB) InsertStepRoundWithRepair(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, repairPublished bool, startingHeadSHA string, durationMS int64) (*StepRound, error) {
-	var starting *string
-	if startingHeadSHA != "" {
-		starting = &startingHeadSHA
-	}
-	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, starting, nil, nil, nil, repairPublished, durationMS)
+func (d *DB) InsertStepRoundWithRepair(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, repairPublished bool, durationMS int64) (*StepRound, error) {
+	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, nil, nil, nil, nil, repairPublished, durationMS)
 }
 
 // InsertReviewStepRound persists a review round's examined commit as a

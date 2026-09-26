@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -196,6 +197,19 @@ func reviewAnswersPromptSection(conv reviewqa.Conversation) string {
 		}
 	}
 	return b.String()
+}
+
+// reviewSchemaForFinalize declares the retraction list, and only a finalize
+// turn with the conversation on may have it: the property is meaningless to
+// any other turn, which is never told what a carried finding is, and declaring
+// it anyway left an opt-in feature visible in the agent contract of every
+// repository that had not turned the conversation on.
+func reviewSchemaForFinalize(finalizing bool) json.RawMessage {
+	if !finalizing {
+		return reviewFindingsSchema
+	}
+	property := `"withdrawn_findings":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"reason":{"type":"string"}},"required":["id","reason"]},"description":"Answer rounds only: carried findings that no longer hold now the questions are answered. A carried finding you omit here is kept."},`
+	return json.RawMessage(strings.Replace(string(reviewFindingsSchema), `"tested":`, property+`"tested":`, 1))
 }
 
 // carriedFindingsPromptSection makes an answer round re-adjudicate what it

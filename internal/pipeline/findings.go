@@ -511,11 +511,10 @@ func normalizeCoveredPath(value string) string {
 
 // resolveVerifiedFindingsJSON returns outstandingRaw minus every finding whose
 // ID is in pendingIDs and for which this round is a POSITIVE verification
-// record. An ordinary finding still requires trusted ReviewedPaths coverage
-// of its file and no current finding in that file. A synthesized recorded-
-// decision finding instead requires exactly one current satisfied assessment
-// for its durable decision identity, with nonblank evidence; file coverage
-// cannot express verification for ignored, absent, or file-less decisions.
+// record: the round listed the finding's file in its ReviewedPaths coverage,
+// that path is in the trusted reviewable set, and the round's own output
+// (thisRoundRaw) neither re-reports the defect nor
+// reports anything else at all in that same file.
 //
 // This is the only way a selected-and-fixed finding leaves the outstanding set
 // besides an explicit operator action (approve/skip/abort). A file the round
@@ -533,7 +532,7 @@ func normalizeCoveredPath(value string) string {
 // finding the moment its fix was requested, so a no-op fix could let the run
 // complete with the defect unresolved.
 func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string) string {
-	if outstandingRaw == "" || len(pendingIDs) == 0 {
+	if outstandingRaw == "" || len(pendingIDs) == 0 || len(reviewedPaths) == 0 {
 		return outstandingRaw
 	}
 	outstanding, err := types.ParseFindingsJSON(outstandingRaw)
@@ -555,33 +554,26 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 			reviewable[normalized] = true
 		}
 	}
-	coverageValid := len(reviewable) > 0 && len(reviewedPaths) > 0
+	if len(reviewable) == 0 {
+		return outstandingRaw
+	}
 	covered := make(map[string]bool, len(reviewedPaths))
 	for _, reviewed := range reviewedPaths {
 		normalized := normalizeCoveredPath(reviewed)
 		if normalized == "" || !reviewable[normalized] {
-			coverageValid = false
-			continue
+			return outstandingRaw
 		}
 		covered[normalized] = true
 	}
 	if len(covered) == 0 {
-		coverageValid = false
+		return outstandingRaw
 	}
 	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
-	decisionReviews := make(map[string][]types.DecisionReview, len(thisRound.DecisionReviews))
-	for _, review := range thisRound.DecisionReviews {
-		decisionReviews[review.DecisionID] = append(decisionReviews[review.DecisionID], review)
-	}
 	reported := make(map[types.Finding]bool, len(thisRound.Items))
 	reportedFiles := make(map[string]bool, len(thisRound.Items))
-	reportedDecisionIDs := make(map[string]bool, len(thisRound.Items))
 	hasUnanchoredFinding := false
 	for _, item := range thisRound.Items {
 		reported[findingKey(item)] = true
-		if item.DecisionID != "" {
-			reportedDecisionIDs[item.DecisionID] = true
-		}
 		if normalized := normalizeCoveredPath(item.File); normalized != "" {
 			reportedFiles[normalized] = true
 		} else {
@@ -590,24 +582,10 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	}
 	outstandingCounts := countFindingFingerprints(outstanding.Items)
 	thisRoundCounts := countFindingFingerprints(thisRound.Items)
-	decisionFindingCounts := make(map[string]int)
-	for _, item := range outstanding.Items {
-		if item.DecisionID != "" {
-			decisionFindingCounts[item.DecisionID]++
-		}
-	}
 	result := types.FindingsMetadata(outstanding)
 	for _, item := range outstanding.Items {
-		if pending[item.ID] && item.DecisionID != "" {
-			reviews := decisionReviews[item.DecisionID]
-			if decisionFindingCounts[item.DecisionID] == 1 && len(reviews) == 1 && reviews[0].Result == "satisfied" && strings.TrimSpace(reviews[0].Evidence) != "" && !reportedDecisionIDs[item.DecisionID] {
-				continue
-			}
-			result.Items = append(result.Items, item)
-			continue
-		}
 		file := normalizeCoveredPath(item.File)
-		if pending[item.ID] && coverageValid && !hasUnanchoredFinding && covered[file] && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
+		if pending[item.ID] && !hasUnanchoredFinding && covered[file] && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
 			continue
 		}
 		result.Items = append(result.Items, item)
@@ -633,8 +611,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 // outstanding item already holds, and the outstanding item's ID is what
 // `axi respond --findings <id>` selects, so the colliding NEW item is
 // re-minted instead), and the merged payload carries this round's coverage
-// and decision-assessment records rather than the outstanding set's stale
-// copies.
+// record rather than the outstanding set's stale copy.
 //
 // Identity is still content-derived: a reworded restatement of an existing
 // finding does not match its original and is appended as a second item. That
@@ -642,10 +619,6 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 // anything, and stable finding identity is a separate design pass (Parts 2+3
 // of the scout report).
 func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPaths []string) string {
-	var currentDecisionReviews []types.DecisionReview
-	if current, err := types.ParseFindingsJSON(additionalRaw); err == nil {
-		currentDecisionReviews = append([]types.DecisionReview(nil), current.DecisionReviews...)
-	}
 	if additionalRaw == "" {
 		if existingRaw == "" {
 			return ""
@@ -655,7 +628,6 @@ func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPat
 			return existingRaw
 		}
 		findings.ReviewedPaths = append([]string(nil), reviewedPaths...)
-		findings.DecisionReviews = currentDecisionReviews
 		findings.WithdrawnFindings = nil
 		encoded, err := types.MarshalFindingsJSON(findings)
 		if err != nil {
@@ -672,20 +644,7 @@ func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPat
 		return mergedRaw
 	}
 	merged.ReviewedPaths = append([]string(nil), reviewedPaths...)
-	merged.DecisionReviews = currentDecisionReviews
 	merged.WithdrawnFindings = nil
-	seenDecisionIDs := make(map[string]bool)
-	items := merged.Items[:0]
-	for _, item := range merged.Items {
-		if item.DecisionID != "" {
-			if seenDecisionIDs[item.DecisionID] {
-				continue
-			}
-			seenDecisionIDs[item.DecisionID] = true
-		}
-		items = append(items, item)
-	}
-	merged.Items = items
 	seen := make(map[string]bool, len(merged.Items))
 	for i := range merged.Items {
 		id := merged.Items[i].ID

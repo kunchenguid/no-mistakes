@@ -189,7 +189,6 @@ func KnownTestVerdicts() []string { return slices.Clone(knownTestVerdicts) }
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
 	ID               string `json:"id,omitempty"`
-	DecisionID       string `json:"decision_id,omitempty"`
 	Severity         string `json:"severity"`
 	File             string `json:"file,omitempty"`
 	Line             int    `json:"line,omitempty"`
@@ -267,7 +266,6 @@ type TestArtifact struct {
 
 type findingWire struct {
 	ID                  string `json:"id,omitempty"`
-	DecisionID          string `json:"decision_id,omitempty"`
 	Severity            string `json:"severity"`
 	File                string `json:"file,omitempty"`
 	Line                int    `json:"line,omitempty"`
@@ -280,14 +278,6 @@ type findingWire struct {
 	Check               string `json:"check,omitempty"`
 	CheckID             string `json:"check_id,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
-}
-
-// DecisionReview records the existing independent review's assessment of one
-// positive human fix decision from the same run.
-type DecisionReview struct {
-	DecisionID string `json:"decision_id"`
-	Result     string `json:"result"`
-	Evidence   string `json:"evidence"`
 }
 
 // WithdrawnFinding is one carried finding an answer round retracted, naming
@@ -304,9 +294,8 @@ type WithdrawnFinding struct {
 // written before the contract existed, so an older recorded run still parses
 // and simply renders no scenario table.
 type Findings struct {
-	DecisionReviews []DecisionReview `json:"decision_reviews,omitempty"`
-	Items           []Finding        `json:"findings"`
-	Summary         string           `json:"summary"`
+	Items   []Finding `json:"findings"`
+	Summary string    `json:"summary"`
 	// ReviewedPaths is the review step's coverage record: the changed files the
 	// review turn actually examined and judged. It is the positive-verification
 	// signal that lets a finding the operator selected for a fix leave the
@@ -336,7 +325,6 @@ type Findings struct {
 }
 
 type findingsWire struct {
-	DecisionReviews     []DecisionReview   `json:"decision_reviews"`
 	Items               []Finding          `json:"findings"`
 	Legacy              []Finding          `json:"items"`
 	Summary             string             `json:"summary"`
@@ -370,7 +358,6 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		Summary:             wire.Summary,
 		ReviewedPaths:       wire.ReviewedPaths,
 		WithdrawnFindings:   wire.WithdrawnFindings,
-		DecisionReviews:     wire.DecisionReviews,
 		Tested:              wire.Tested,
 		TestingSummary:      wire.TestingSummary,
 		Artifacts:           wire.Artifacts,
@@ -486,9 +473,6 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	counter := 0
 	appended := false
 	for _, item := range added {
-		// DecisionID is reserved for findings synthesized by the pipeline after
-		// independent Review. User-authored findings cannot claim that identity.
-		item.DecisionID = ""
 		item.Source = FindingSourceUser
 		if item.Action == "" {
 			item.Action = ActionAutoFix
@@ -627,7 +611,6 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	f.ID = wire.ID
-	f.DecisionID = wire.DecisionID
 	f.Severity = wire.Severity
 	f.File = wire.File
 	f.Line = wire.Line

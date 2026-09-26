@@ -24,14 +24,6 @@ type ReviewStep struct {
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	decisions, err := loadRecordedFixDecisions(sctx)
-	if err != nil {
-		return nil, err
-	}
-	decisionSection, err := recordedFixDecisionSection(decisions)
-	if err != nil {
-		return nil, err
-	}
 	planSection, err := verificationPlanPromptSection(sctx)
 	if err != nil {
 		return nil, err
@@ -138,7 +130,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
-		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + planSection + decisionSection + testguidance.Rule
+		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + planSection + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones.
 
@@ -217,7 +209,7 @@ Previous review findings to address:
 	changed := changedPathList(changedFiles)
 
 	reviewable := reviewablePaths(changed, sctx.Config.IgnorePatterns)
-	if len(reviewable) == 0 && len(decisions) == 0 {
+	if len(reviewable) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -261,10 +253,6 @@ Previous review findings to address:
 		return nil, err
 	}
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + settledQuestionsPromptSection(sctx) + supersededReviewHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + planSection + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
-
-	if len(decisions) > 0 {
-		historySection += decisionSection + recordedDecisionReviewRule
-	}
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -463,7 +451,7 @@ Risk assessment (after listing all findings):
 		Prompt:     turnPrompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
-		JSONSchema: reviewSchemaForDecisions(decisions, sctx.FinalizingAnswers && convDir != ""),
+		JSONSchema: reviewSchemaForFinalize(sctx.FinalizingAnswers && convDir != ""),
 		OnChunk:    sctx.LogChunk,
 		Purpose:    "review",
 		Workload:   workload,
@@ -520,8 +508,6 @@ Risk assessment (after listing all findings):
 		}
 		findings.Items = append(findings.Items, questionFindings...)
 	}
-
-	findings.Items = append(findings.Items, recordedDecisionFindings(decisions, findings.DecisionReviews)...)
 	needsApproval := hasBlockingFindings(findings.Items)
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 		// A clean round certifies the whole head, so it is held to a positive
@@ -589,10 +575,6 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 		return findings, errors.New("review analyzer findings invalid risk scope")
 	}
 	for i := range findings.Items {
-		// A recorded-decision identity is pipeline-owned metadata. The review
-		// agent assesses decisions separately; only recordedDecisionFindings
-		// below may attach an identity to a finding.
-		findings.Items[i].DecisionID = ""
 		if !types.IsKnownFindingSeverity(findings.Items[i].Severity) {
 			return findings, fmt.Errorf("review analyzer finding %d missing severity", i)
 		}
