@@ -353,7 +353,7 @@ no-mistakes axi sync --check  # freshly verify an offered synchronization plan
 no-mistakes axi sync          # apply only an offered guarded synchronization
 no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi sync --adopt-published  # adopt an exactly published rebased head into its stale gate lane
-no-mistakes axi logs --step <name> --full   # full log output of one step
+no-mistakes axi logs --step <name> --full   # one step's recorded findings, complete summary, and full log
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 ```
@@ -380,7 +380,7 @@ help[6]:
   Run `no-mistakes axi respond --action approve` to accept this step and continue
   Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)
   Run `no-mistakes axi respond --action skip` to skip this step
-  Run `no-mistakes axi logs --step review --full` to read the full step log
+  Run `no-mistakes axi logs --step review --full` to read the complete step summary and log
   A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
   Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
 ```
