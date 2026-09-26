@@ -1403,3 +1403,71 @@ func TestGetRunGatesForUnknownRun(t *testing.T) {
 		t.Errorf("gates for unknown run = %q, want empty", pinned)
 	}
 }
+
+func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-rebind", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPublication(run.ID, PushBinding{HeadSHA: "pushed", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	prState := "none"
+	openPRState := "open"
+	verified := PushRebind{
+		Status: types.RunCompleted, ExpectedPushed: "pushed", ExpectedGeneration: 1, ExpectedHead: "pushed",
+		PRState: &prState, UpstreamURL: "https://example.com/repo.git", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature", Head: "live",
+	}
+
+	for name, mutate := range map[string]func(*PushRebind){
+		"stale pushed head": func(r *PushRebind) { r.ExpectedPushed = "other" },
+		"stale generation":  func(r *PushRebind) { r.ExpectedGeneration = 2 },
+		"changed status":    func(r *PushRebind) { r.Status = types.RunFailed },
+		"changed target":    func(r *PushRebind) { r.TargetFingerprint = "other-digest" },
+		"changed kind":      func(r *PushRebind) { r.TargetKind = "fork" },
+		"changed repo url":  func(r *PushRebind) { r.ForkURL = "https://example.com/fork.git" },
+		"changed run head":  func(r *PushRebind) { r.ExpectedHead = "submitted" },
+		"custody mismatch":  func(r *PushRebind) { r.CustodyReturned = true },
+		"changed PR state":  func(r *PushRebind) { r.PRState = &openPRState },
+	} {
+		attempt := verified
+		mutate(&attempt)
+		applied, err := d.RebindRunPushedHead(run.ID, attempt)
+		if err != nil || applied {
+			t.Fatalf("%s: applied = %v, err = %v", name, applied, err)
+		}
+	}
+	for _, prState := range []string{"merged", "closed"} {
+		if _, err := d.sql.Exec(`UPDATE runs SET pr_state = ? WHERE id = ?`, prState, run.ID); err != nil {
+			t.Fatal(err)
+		}
+		if applied, err := d.RebindRunPushedHead(run.ID, verified); err != nil || applied {
+			t.Fatalf("retired %s PR: applied = %v, err = %v", prState, applied, err)
+		}
+	}
+	if _, err := d.sql.Exec(`UPDATE runs SET pr_state = 'open' WHERE id = ?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := d.RebindRunPushedHead(run.ID, verified); err != nil || applied {
+		t.Fatalf("PR changed from none to open: applied = %v, err = %v", applied, err)
+	}
+	verified.PRState = &openPRState
+	got, _ := d.GetRun(run.ID)
+	if got.HeadSHA != "pushed" || *got.LastPushedSHA != "pushed" || *got.PushGeneration != 1 {
+		t.Fatalf("refused rebind changed run: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
+	}
+
+	applied, err := d.RebindRunPushedHead(run.ID, verified)
+	if err != nil || !applied {
+		t.Fatalf("verified rebind: applied = %v, err = %v", applied, err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.HeadSHA != "live" || *got.LastPushedSHA != "live" || *got.PushGeneration != 2 {
+		t.Fatalf("rebind result: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
+	}
+}
