@@ -24,8 +24,8 @@ metadata:
 **Repeat-Finding Stop (`internal/pipeline/repeat_finding.go`)**
 
 - A round's own output (never the review carry set) that re-reports a finding an earlier auto-fix OR operator fix round of the review step was dispatched for parks the gate on the ask-user `repeat-finding` marker instead of dispatching another fix round; new findings beside it are not auto-fixed either. The check re-reads the durable round selections (`fixedFindingsFromRounds`), so restart recovery and operator fixes count, and it runs before the round is persisted so the parked round and the step agree on findings (gate recovery requires it). Review step only; other steps are unaffected.
-- Identity: same agent-chosen ID (positional `<step>-N` IDs never match alone) or same file plus normalized description. Every automatic resolver reads `HasRepeatFindingStop`; `RespondWithOverrides` refuses a fix without instructions or an added finding (`repeatFixRefusal`); the marker is dropped from the fixer's input and from the review carry set (`dropRepeatFindingStopJSON`). User semantics: `docs/src/content/docs/concepts/auto-fix.md`.
-- Regressions: `internal/pipeline/repeat_finding_test.go`, `TestDriveRun_YesLeavesARepeatFindingStopAwaitingAHuman`, `TestModel_Yolo_RepeatFindingStopSendsNoAutomaticResponse`, `TestExecutor_AutoFixRespectsMaxAttempts` (distinct findings per round).
+- Identity: same file AND either the same agent-chosen ID (positional `<step>-N` IDs never match) or the same normalized description; an ID never matches alone (`sameFindingAcrossRounds`). Every automatic resolver reads `HasRepeatFindingStop`; `RespondWithOverrides` refuses a fix without instructions or an added finding (`repeatFixRefusal`); the marker is dropped from the fixer's input and from the review carry set (`dropRepeatFindingStopJSON`). User semantics: `docs/src/content/docs/concepts/auto-fix.md`.
+- Regressions: `internal/pipeline/repeat_finding_test.go`, `TestDriveRun_YesLeavesARepeatFindingStopAwaitingAHuman`, `TestModel_Yolo_RepeatFindingStopSendsNoAutomaticResponse`.
 
 **Uncertified Review Provenance (`internal/pipeline/uncertified.go`)**
 
