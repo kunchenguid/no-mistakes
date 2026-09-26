@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.84.0](https://github.com/kunchenguid/no-mistakes/compare/v1.83.2...v1.84.0) (2026-09-26)
+
+
+### Features
+
+* **cli:** attach verification plans to new runs ([#1186](https://github.com/kunchenguid/no-mistakes/issues/1186)) ([f95ff57](https://github.com/kunchenguid/no-mistakes/commit/f95ff57a29c1ede8cbde54b7456b5a603a5eb37a))
+* **pipeline:** let the reviewer ask questions behind review.conversation ([#1104](https://github.com/kunchenguid/no-mistakes/issues/1104)) ([0e46580](https://github.com/kunchenguid/no-mistakes/commit/0e46580f4202547903d0c6e2470c11063818dfa1))
+* **pipeline:** prepare dependencies for agent-only tests ([#1216](https://github.com/kunchenguid/no-mistakes/issues/1216)) ([28b4833](https://github.com/kunchenguid/no-mistakes/commit/28b48335efc1b92ae4bf355248594c8761e25eb8))
+
+
+### Bug Fixes
+
+* **pipeline:** preserve human decisions in later step prompts ([#1224](https://github.com/kunchenguid/no-mistakes/issues/1224)) ([178e678](https://github.com/kunchenguid/no-mistakes/commit/178e67844cdb407dd0457099f71f48eb4d943049))
+* **pipeline:** prevent recorded-decision revalidation loops ([#1206](https://github.com/kunchenguid/no-mistakes/issues/1206)) ([677b2f5](https://github.com/kunchenguid/no-mistakes/commit/677b2f5177479647ddfb94a367ac2ba4e125009c))
+* **pipeline:** remove decision revalidation and unblock file-less review findings ([#1221](https://github.com/kunchenguid/no-mistakes/issues/1221)) ([7e00a9d](https://github.com/kunchenguid/no-mistakes/commit/7e00a9d200c5300317ea40120812bb031d5a8bb1))
+* **shellenv:** fail only the step that runs out of memory, not the daemon ([#1199](https://github.com/kunchenguid/no-mistakes/issues/1199)) ([1740b30](https://github.com/kunchenguid/no-mistakes/commit/1740b30ab3a7fab0f3297a11000adca1deeb8b90))
+
 ## [1.83.2](https://github.com/kunchenguid/no-mistakes/compare/v1.83.1...v1.83.2) (2026-09-25)
 
 
