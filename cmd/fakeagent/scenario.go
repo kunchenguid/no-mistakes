@@ -61,6 +61,25 @@ type Action struct {
 
 	// DelayMS pauses before responding, for e2e tests that need an observable active run.
 	DelayMS int `yaml:"delay_ms,omitempty"`
+
+	// AskQuestions are raw questions.ndjson lines the fake reviewer appends to
+	// the run's review conversation before responding, which is how a real
+	// reviewer asks while it works. The directory is read out of the prompt
+	// (see conversation.go), never from the scenario, so this cannot write
+	// anywhere the product did not name.
+	AskQuestions []string `yaml:"ask_questions,omitempty"`
+
+	// WriteEvidence are test-evidence files written into the run's evidence
+	// directory, which the test prompt names and which lives outside the
+	// worktree by design.
+	WriteEvidence []EvidenceFile `yaml:"write_evidence,omitempty"`
+}
+
+// EvidenceFile is one test-evidence file written under the evidence directory
+// the prompt names, relative to it.
+type EvidenceFile struct {
+	Path    string `yaml:"path"`
+	Content string `yaml:"content"`
 }
 
 // Edit performs a Replace of Old with New in Path. If Old is empty the
@@ -143,47 +162,10 @@ func (s *Scenario) Match(prompt string) Action {
 func (s *Scenario) MatchInDir(wd, prompt string) Action {
 	for _, a := range s.Actions {
 		if a.Match == "" || strings.Contains(prompt, a.Match) {
-			return withRecordedDecisionCoverage(prompt, withReviewCoverage(wd, prompt, a))
+			return withReviewCoverage(wd, prompt, a)
 		}
 	}
 	return Action{Text: "no matching scenario"}
-}
-
-// Like path coverage, canned clean reviews stand in for a model's explicit
-// decision assessments. A scenario-provided field (including null or empty)
-// always wins so missing or adverse assessments remain testable.
-func withRecordedDecisionCoverage(prompt string, a Action) Action {
-	if !strings.Contains(prompt, reviewPromptMarker) || a.StructuredRaw != "" || a.Structured == nil {
-		return a
-	}
-	if _, present := a.Structured["decision_reviews"]; present {
-		return a
-	}
-	_, section, ok := strings.Cut(prompt, "BEGIN RECORDED FIX DECISIONS\n")
-	if !ok {
-		return a
-	}
-	raw, _, ok := strings.Cut(section, "\nEND RECORDED FIX DECISIONS")
-	if !ok {
-		return a
-	}
-	var decisions []struct {
-		ID string `json:"decision_id"`
-	}
-	if json.Unmarshal([]byte(raw), &decisions) != nil {
-		return a
-	}
-	reviews := make([]map[string]any, 0, len(decisions))
-	for _, decision := range decisions {
-		reviews = append(reviews, map[string]any{"decision_id": decision.ID, "result": "satisfied", "evidence": "fakeagent: simulated decision assessment"})
-	}
-	cloned := make(map[string]any, len(a.Structured)+1)
-	for key, value := range a.Structured {
-		cloned[key] = value
-	}
-	cloned["decision_reviews"] = reviews
-	a.Structured = cloned
-	return a
 }
 
 // reviewPromptMarker opens every review turn's prompt (initial review and

@@ -471,6 +471,98 @@ func TestReconcileStaleBranchDecision41AExactSubmittedHeadOnly(t *testing.T) {
 	}
 }
 
+// After a run's first publication the mirror carries its last pushed head, not
+// the submitted one. Decision 41-A exempts that exact head too, so a reviewed
+// conflict rebase of a published run can replace it; everything else on the
+// mirror keeps the full preservation proof.
+func TestReconcileStaleBranchDecision41AExactLastPushedHead(t *testing.T) {
+	for _, variant := range []string{"exact", "submitted_only", "abbreviated", "external_on_published", "divergent", "descendant_of_live", "fresh_submission"} {
+		t.Run(variant, func(t *testing.T) {
+			work := initReconcileRepo(t)
+			base := reconcileGit(t, work, "rev-parse", "HEAD")
+			commit := func(name, content, message string) string {
+				t.Helper()
+				writeReconcileFile(t, work, name, content)
+				reconcileGit(t, work, "add", "-A")
+				reconcileGit(t, work, "commit", "-m", message)
+				return reconcileGit(t, work, "rev-parse", "HEAD")
+			}
+			submittedHead := commit("feature.txt", "submitted resolution\n", "submitted work")
+			publishedHead := commit("pipeline.txt", "pipeline fix\n", "no-mistakes(lint): pipeline fix")
+
+			// The reviewed rebase resolves a conflict, so no patch of the
+			// published range survives unchanged into the live head.
+			reconcileGit(t, work, "checkout", "--detach", base)
+			commit("feature.txt", "upstream neighbour\n", "advance base")
+			commit("feature.txt", "upstream neighbour\nsubmitted resolution\n", "rebased with resolved conflict")
+			liveHead := commit("pipeline.txt", "pipeline fix\n", "no-mistakes(lint): pipeline fix")
+
+			privateHead := publishedHead
+			ownedHeads := []string{submittedHead, publishedHead}
+			switch variant {
+			case "submitted_only":
+				ownedHeads = []string{submittedHead, ""}
+			case "abbreviated":
+				ownedHeads = []string{submittedHead, publishedHead[:12]}
+			case "external_on_published":
+				reconcileGit(t, work, "checkout", "--detach", publishedHead)
+				privateHead = commit("external.txt", "external work\n", "external work")
+			case "divergent":
+				reconcileGit(t, work, "checkout", "--detach", base)
+				privateHead = commit("external.txt", "external work\n", "external work")
+			case "descendant_of_live":
+				reconcileGit(t, work, "checkout", "--detach", liveHead)
+				privateHead = commit("external.txt", "newer work\n", "newer work")
+			}
+			gateDir := filepath.Join(t.TempDir(), "gate.git")
+			reconcileGit(t, "", "init", "--bare", gateDir)
+			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+
+			var plan StaleBranchPlan
+			var err error
+			if variant == "fresh_submission" {
+				plan, err = PlanStaleBranchReconciliation(context.Background(), gateDir, work, "feature", liveHead, "")
+			} else {
+				plan, err = PlanMirrorPublicationReconciliation(context.Background(), gateDir, work, "feature", liveHead, ownedHeads...)
+			}
+			switch variant {
+			case "exact":
+				if err != nil || !plan.Reconcile || plan.PreviousHead != publishedHead {
+					t.Fatalf("exact last-pushed head was not exempted: plan=%+v err=%v", plan, err)
+				}
+			case "descendant_of_live":
+				if err != nil || plan.Reconcile {
+					t.Fatalf("newer descendant was not preserved: plan=%+v err=%v", plan, err)
+				}
+			default:
+				if err == nil || plan.Reconcile || !strings.Contains(err.Error(), "refusing to reconcile") || !strings.Contains(err.Error(), privateHead) {
+					t.Fatalf("mirror head %s bypassed the preservation proof: plan=%+v err=%v", privateHead, plan, err)
+				}
+			}
+			if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
+				t.Fatalf("planning moved mirror to %s, want %s", got, privateHead)
+			}
+			if got := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); got != "" {
+				t.Fatalf("planning archived head: %s", got)
+			}
+			if variant != "exact" {
+				return
+			}
+			result, err := ApplyStaleBranchReconciliation(context.Background(), gateDir, plan)
+			if err != nil || !result.Reconciled {
+				t.Fatalf("apply = %+v, err = %v", result, err)
+			}
+			if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag); got != publishedHead {
+				t.Fatalf("archive = %s, want exact last-pushed head %s", got, publishedHead)
+			}
+			reconcileGit(t, work, "push", gateDir, liveHead+":refs/heads/feature")
+			if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != liveHead {
+				t.Fatalf("ordinary push = %s, want %s", got, liveHead)
+			}
+		})
+	}
+}
+
 func TestReconcileStaleBranchRefusesPatchesDiscardedByOursMerge(t *testing.T) {
 	for _, change := range []string{"add", "modify", "delete"} {
 		t.Run(change, func(t *testing.T) {

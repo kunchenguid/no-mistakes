@@ -72,6 +72,9 @@ func (p *Paths) Socket() string     { return filepath.Join(p.root, "socket") }
 func (p *Paths) PIDFile() string    { return filepath.Join(p.root, "daemon.pid") }
 func (p *Paths) ConfigFile() string { return filepath.Join(p.root, "config.yaml") }
 
+// RunInputsDir holds private immutable input snapshots, separate from publishable evidence.
+func (p *Paths) RunInputsDir() string { return filepath.Join(p.root, "run-inputs") }
+
 // LockFile is the OS-level advisory lock used to enforce a single live daemon
 // per NM_HOME (see the singleton lock in internal/daemon). Distinct from
 // PIDFile, which is an informational record a live daemon writes for

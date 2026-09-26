@@ -196,7 +196,7 @@ func scenarioContractIssues(i int, scenario testScenarioContractFields) []string
 		issues = append(issues, fmt.Sprintf("scenario %d: result %q but live=false - if you did not drive this against the live product, mark it result %q with a reason instead of %q", n, result, types.ScenarioResultUntested, result))
 	}
 	if result == types.ScenarioResultUntested && scenario.Reason != nil && strings.TrimSpace(*scenario.Reason) == "" {
-		issues = append(issues, fmt.Sprintf("scenario %d: result %q without a reason - name the specific tool, credential, permission, or authority that stopped you, and how to provide it", n, result))
+		issues = append(issues, fmt.Sprintf("scenario %d: result %q without a reason - state what was tried to drive it live and why live validation is impossible, naming the specific tool, credential, permission, or authority out of reach and how to provide it", n, result))
 	}
 	return issues
 }
@@ -282,7 +282,7 @@ var testFindingsSchema = json.RawMessage(`{
 					"result": {"type": "string", "enum": ["pass", "fail", "untested"]},
 					"live": {"type": "boolean", "description": "true ONLY when this scenario was driven against the real running product in this run; a unit test, stub, recorded fixture, or code reading is not live"},
 					"evidence": {"type": "string", "description": "the command, artifact label, or evidence file that shows this result"},
-					"reason": {"type": "string", "description": "required for untested: the specific tool, credential, permission, or authority that was missing, and how to provide it"}
+					"reason": {"type": "string", "description": "required for untested: what was tried to drive this scenario live and why live validation is impossible, naming the specific tool, credential, permission, or authority out of reach and how to provide it; under no-surface, why there is no live-validatable surface"}
 				},
 				"required": ["name", "result", "live", "evidence", "reason"]
 			}

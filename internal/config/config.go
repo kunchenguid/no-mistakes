@@ -326,11 +326,13 @@ type RepoConfig struct {
 	// weaken documentation rules for its own review.
 	Document DocumentRaw `yaml:"document"`
 	// Review carries the repository's review-step settings. Its
-	// path_instructions steer the review gate prompt, so they are honored
-	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (see
-	// EffectiveRepoConfig), regardless of allow_repo_commands: a contributor's
-	// pushed branch must not be able to inject or weaken the guidance that
-	// reviews it.
+	// path_instructions steer the review gate prompt and its conversation flag
+	// decides whether that gate may park for a human answer, so the whole
+	// block is honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig), regardless of
+	// allow_repo_commands: a contributor's pushed branch must not be able to
+	// inject or weaken the guidance that reviews it, nor to turn the
+	// conversation on or off for its own review.
 	Review ReviewRaw `yaml:"review"`
 	// Gates are repository-declared extra checks that run immediately after
 	// their anchor core step. They are additive only: a gate cannot skip,
@@ -378,6 +380,19 @@ type DocumentRaw struct {
 
 // ReviewRaw is the YAML representation of review-step settings.
 type ReviewRaw struct {
+	// Conversation turns the review conversation on: the reviewer may emit the
+	// larger questions it cannot settle itself, keep reviewing while they are
+	// open, and be resumed with the answers. Off (the default), the review step
+	// is a monologue exactly as it was before the setting existed.
+	//
+	// Like the rest of this block it is honored ONLY from the trusted
+	// default-branch copy, and for a stronger reason than path_instructions:
+	// an open question PARKS the gate for a human, so a pushed branch must not
+	// be able to make its own review wait on an answer - or, once a maintainer
+	// has asked for the conversation, to turn it off for its own review.
+	// A plain bool so a missing key or a YAML/JSON null is falsy and preserves
+	// today's behavior, exactly like no_ci and disable_project_settings.
+	Conversation bool `yaml:"conversation"`
 	// PathInstructions scope extra review guidance to the paths a change
 	// actually touches. The review step appends the blocks whose glob matches
 	// at least one changed file; a run that touches nothing matching leaves
@@ -807,16 +822,26 @@ type Document struct {
 	Instructions string
 }
 
-// Review is the resolved review-step config. PathInstructions come from the
-// trusted default-branch repo config and scope extra review guidance to the
-// changed paths each glob matches.
+// Review is the resolved review-step config. Both fields come from the trusted
+// default-branch repo config: PathInstructions scope extra review guidance to
+// the changed paths each glob matches, and Conversation decides whether the
+// reviewer may ask questions while it works.
 type Review struct {
+	// Conversation is true when the reviewer may ask the operator questions
+	// mid-pass. It gates the whole protocol: the prompt section, the
+	// conversation files, the question findings that park the gate, the
+	// reviewer session a finalize turn resumes, and `no-mistakes axi answer`.
+	Conversation     bool
 	PathInstructions []PathInstruction
 }
 
 // TestRaw is the YAML representation of test-step settings.
 type TestRaw struct {
 	Evidence EvidenceRaw `yaml:"evidence"`
+	// Prepare eagerly runs commands.prepare before agent-only Test, including
+	// repair turns. Repository-only and trusted-only regardless of
+	// allow_repo_commands; a pushed branch cannot authorize this trigger.
+	Prepare bool `yaml:"prepare"`
 	// Instructions is the repository's live-validation runbook: how to stand
 	// the product up in an isolated environment so the test step can drive
 	// end-user scenarios against the real thing. It is injected into the test
@@ -869,10 +894,11 @@ type EvidenceRaw struct {
 	MaxRuns   *int    `yaml:"max_runs"`
 }
 
-// Test is the resolved test-step config. Instructions and
+// Test is the resolved test-step config. Prepare, Instructions and
 // AllowApproveOverFailure come from the trusted default-branch repo config
 // only (see TestRaw).
 type Test struct {
+	Prepare                 bool
 	Evidence                Evidence
 	Instructions            string
 	AllowApproveOverFailure string
@@ -941,7 +967,10 @@ type Eval struct {
 // that still sets one keeps parsing under the strict known-fields rule. Both
 // are pointers so a set key is distinguishable from an absent one and can be
 // reported as deprecated at load time; neither configures anything. Any other
-// subkey under jev: is rejected like any unknown field.
+// subkey under jev: is rejected like any unknown field. Do not repurpose the
+// jev key. The pre-brief was retired because its candidate generator excluded
+// changed files by construction while nearly every finding lands in one;
+// records and method notes stay in benchmarks/issue-1055 and issue-1125.
 type retiredJev struct {
 	ReviewAssist          *bool `yaml:"review_assist"`
 	CandidateExcerptBytes *int  `yaml:"candidate_excerpt_bytes"`
@@ -2560,10 +2589,11 @@ func validatePathInstructionGlob(pattern string) error {
 // PR title format, and providers) are always taken from the pushed copy, matching prior behavior,
 // since they cannot run arbitrary shell, select a process, or spend the
 // maintainer's CI minutes.
-// The exceptions inside test are evidence.branch, which names a git ref the
-// daemon pushes to, instructions, which steers the gate that validates the
-// pushed branch, and allow_approve_over_failure, which waives the required
-// check for an approved-over-failure commands.test. All three are trusted-only.
+// The exceptions inside test are prepare, which eagerly runs setup before an
+// agent-only Test, evidence.branch, which names a git ref the daemon pushes to,
+// instructions, which steers the gate that validates the pushed branch, and
+// allow_approve_over_failure, which waives the required check for an
+// approved-over-failure commands.test. All four are trusted-only.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -2577,7 +2607,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// regardless of allow_repo_commands: a contributor must not be able to
 		// inject rules into their own review, and enabling the commands opt-in
 		// must not silently drop the maintainer's review rules when the pushed
-		// branch happens to carry no review block.
+		// branch happens to carry no review block. review.conversation rides
+		// the same whole-block assignment and needs it at least as much: an
+		// open question parks the gate for a human, so a pushed branch must
+		// not be able to make its own review wait on an answer, or to decline
+		// the conversation a maintainer asked for.
 		effective.Review = trusted.Review
 		// gates define what validating the pushed branch means - they execute
 		// shell on the daemon host - so they are
@@ -2628,6 +2662,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// must not be able to rewrite or weaken the guidance that steers the
 		// gate validating their own branch.
 		effective.Test.Instructions = trusted.Test.Instructions
+		// The eager setup trigger is trusted-only even when executable command
+		// values may come from the pushed branch.
+		effective.Test.Prepare = trusted.Test.Prepare
 		// test.allow_approve_over_failure opts the required check into
 		// accepting a Test step approved over a failing commands.test. It is
 		// trusted-only for the same reason no_ci is: a pushed branch must not
@@ -2655,6 +2692,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Rebase = RebaseRaw{}
 		effective.Test.Evidence.Branch = nil
 		effective.Test.Instructions = ""
+		effective.Test.Prepare = false
 		effective.Test.AllowApproveOverFailure = ""
 		if !allowRepoCommands {
 			effective.PR.BaseBranch = ""
@@ -3071,6 +3109,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	// the repository only - never from global config, which has no repository
 	// to describe. repo here is the EffectiveRepoConfig result, so this value
 	// is already trusted-only.
+	test.Prepare = repo.Test.Prepare
 	test.Instructions = strings.TrimSpace(repo.Test.Instructions)
 	test.AllowApproveOverFailure = strings.TrimSpace(repo.Test.AllowApproveOverFailure)
 
@@ -3153,10 +3192,17 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:             pr,
-		ForgeProfiles:  global.ForgeProfiles,
-		Providers:      providers,
+		// repo is the EffectiveRepoConfig result, so both values are already
+		// trusted-only. Like document.instructions and test.instructions, the
+		// review block is resolved from the repository alone - global config
+		// carries no review block to overlay.
+		Review: Review{
+			Conversation:     repo.Review.Conversation,
+			PathInstructions: resolvePathInstructions(repo.Review.PathInstructions),
+		},
+		PR:            pr,
+		ForgeProfiles: global.ForgeProfiles,
+		Providers:     providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

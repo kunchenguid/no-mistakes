@@ -285,9 +285,8 @@ func TestAgentDisambiguatorReturnsCleanupErrorAfterAgentError(t *testing.T) {
 }
 
 // The disambiguator runs with worktree CWD and can write files before its
-// snapshot/restore cleanup, so its prompt carries the agent-memory-files
-// hands-off rule: AGENTS.md and CLAUDE.md must never be created or edited by
-// automation.
+// snapshot/restore cleanup, so its prompt limits independently initiated
+// changes to agent memory files.
 func TestAgentDisambiguatorPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	repo := initDisambiguatorTestRepo(t)
 	var prompt string
@@ -306,9 +305,9 @@ func TestAgentDisambiguatorPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 		t.Fatalf("disambiguate: %v", err)
 	}
 	for _, want := range []string{
-		"Agent memory files (AGENTS.md and CLAUDE.md) are hands-off",
-		"Do not create, modify, rename, or delete them",
-		"not even to correct or add content that looks stale, wrong, or missing",
+		"Agent memory files (AGENTS.md and CLAUDE.md) - limits on your own changes",
+		"Do not independently create, modify, rename, or delete these files",
+		"do not add or rewrite their content just because something seems missing, stale, or wrong",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("disambiguator prompt missing memory-file rule %q:\n%s", want, prompt)

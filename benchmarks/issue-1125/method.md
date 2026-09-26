@@ -12,7 +12,7 @@
 > tree.
 
 Follow-up to merged PR https://github.com/kunchenguid/no-mistakes/pull/1120 (issue #1055).
-That delivery published an off/on method under `benchmarks/issue-1055/`, but the implementing environment could not complete a real TypeSafe run because it lacked `TYPESAFE_API_KEY`.
+That delivery published an off/on method under `benchmarks/issue-1055/` and included a live TypeSafe run recorded in `benchmarks/issue-1055/results.md`; only the separate test phase lacked `TYPESAFE_API_KEY`.
 This directory is the operator-credentialed live re-run: real TypeSafe System One (`jev-1.13.0`) plus an honest off/on billed-token and wall-time comparison of cold reviews.
 
 ## Question

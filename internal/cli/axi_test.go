@@ -1210,3 +1210,115 @@ func TestSkillExitCodeGuidanceDistinguishesDecisionGates(t *testing.T) {
 		t.Fatal("skill should explicitly identify decision gates as normal exit 0 stops")
 	}
 }
+
+// TestAxiHomeLeadsWithAnsweringWhenTheGateHasAnOpenQuestion pins the home
+// view's answering branch, which was unpinned before the rendering it used to
+// read was deleted.
+//
+// The condition now comes from pipeline.HasUnansweredReviewQuestion - the same
+// predicate the two auto-resolve carve-outs read - rather than from
+// string-splitting the finding's prose, so it is keyed on the review-question
+// CATEGORY. A gate parked on ordinary findings must still be told to respond,
+// not to answer.
+func TestAxiHomeLeadsWithAnsweringWhenTheGateHasAnOpenQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		finding   types.Finding
+		wantsHome bool
+	}{
+		{
+			name: "open question",
+			finding: types.Finding{
+				ID: "question-q1", Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+				Category:    types.FindingCategoryReviewQuestion,
+				Description: "Review question awaiting an answer: keep the legacy route?",
+			},
+			wantsHome: true,
+		},
+		{
+			// Same ID shape, no category: an ordinary gate, so the home view
+			// tells the operator to clear the gate rather than to answer it.
+			name: "question-shaped id without the category",
+			finding: types.Finding{
+				ID: "question-q1", Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+				Description: "not actually a review question",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir := t.TempDir()
+			nmHome := t.TempDir()
+			t.Setenv("NM_HOME", nmHome)
+			run(t, repoDir, "git", "init")
+			run(t, repoDir, "git", "config", "user.email", "test@test.com")
+			run(t, repoDir, "git", "config", "user.name", "Test")
+			run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+			run(t, repoDir, "git", "checkout", "-b", "feature/current")
+			rawRoot, err := filepath.EvalSymlinks(repoDir)
+			if err != nil {
+				rawRoot = repoDir
+			}
+			chdir(t, rawRoot)
+
+			p := paths.WithRoot(nmHome)
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatalf("ensure dirs: %v", err)
+			}
+			database, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			defer database.Close()
+			repo, err := database.InsertRepoWithID("repo-1", rawRoot, "origin", "main")
+			if err != nil {
+				t.Fatalf("insert repo: %v", err)
+			}
+			active, err := database.InsertRun(repo.ID, "feature/current", "head-1", "base")
+			if err != nil {
+				t.Fatalf("insert run: %v", err)
+			}
+			if err := database.UpdateRunStatus(active.ID, types.RunRunning); err != nil {
+				t.Fatalf("mark run running: %v", err)
+			}
+			step, err := database.InsertStepResult(active.ID, types.StepReview)
+			if err != nil {
+				t.Fatalf("insert step: %v", err)
+			}
+			if err := database.UpdateStepStatus(step.ID, types.StepStatusAwaitingApproval); err != nil {
+				t.Fatalf("mark step awaiting: %v", err)
+			}
+			if err := database.SetStepFindings(step.ID, findingsJSON(t, []types.Finding{tc.finding}, "1 issue")); err != nil {
+				t.Fatalf("set findings: %v", err)
+			}
+
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			cmd.SetOut(&out)
+			if err := runAxiHome(cmd); err != nil {
+				t.Fatalf("runAxiHome: %v", err)
+			}
+			// The HOME-level help line, not the gate block's - the gate still
+			// offers approve/fix either way, because a human may knowingly
+			// approve over an open question.
+			const homeAnswerHelp = "for each question in the gate; the reviewer resumes when none are open"
+			const homeGateHelp = "to clear the current gate"
+			got := out.String()
+			if tc.wantsHome {
+				if !strings.Contains(got, homeAnswerHelp) {
+					t.Fatalf("home help does not lead with answering:\n%s", got)
+				}
+				if strings.Contains(got, homeGateHelp) {
+					t.Fatalf("home help offered a verdict for an open question:\n%s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, homeGateHelp) {
+				t.Fatalf("ordinary gate lost its home-level verdict help:\n%s", got)
+			}
+			if strings.Contains(got, homeAnswerHelp) {
+				t.Fatalf("a question-shaped ID summoned the answering help:\n%s", got)
+			}
+		})
+	}
+}

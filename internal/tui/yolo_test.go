@@ -57,6 +57,98 @@ func TestModel_Yolo_RefusalGatesSendNoAutomaticResponse(t *testing.T) {
 	}
 }
 
+// TestModel_Yolo_OpenReviewQuestionSendsNoAutomaticResponse is the TUI half of
+// the carve-out `axi --yes` has. An open question is an ask-user finding on the
+// ordinary channel, so without the guard stepHasActionableFindings counts it,
+// the selection picks it up, and the FIXER receives the question text as work -
+// then the rereview re-emits the still-open question and yolo approves the
+// fix_review gate as already-fixed. Both loop iterations matter: the first is
+// the fix that must not be sent, the second the approve that must not follow.
+//
+// It runs both gate statuses because the bug reached the approve through the
+// fix_review status specifically.
+func TestModel_Yolo_OpenReviewQuestionSendsNoAutomaticResponse(t *testing.T) {
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			sock, client, snapshot := captureRespond(t)
+			run := testRun()
+			fj := `{"findings":[{"id":"question-q1","severity":"warning","description":"Review question awaiting an answer: keep the legacy route?","action":"ask-user","category":"review-question"}],"summary":"one open question"}`
+			run.Steps = []ipc.StepResultInfo{{StepName: types.StepReview, Status: status, FindingsJSON: &fj}}
+			m := NewModel(sock, client, run)
+			m.yoloMode = true
+			m.stepDiffLoaded[types.StepReview] = true
+			for range 2 {
+				if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+					if msg := cmd(); msg != nil {
+						t.Fatalf("automatic response failed: %v", msg)
+					}
+				}
+			}
+			if calls := snapshot(); len(calls) != 0 {
+				t.Fatalf("an open review question was auto-resolved: %+v", calls)
+			}
+			if m.yoloFixed[types.StepReview] || m.yoloApproved[types.StepReview] {
+				t.Fatal("an open question consumed yolo bookkeeping without an answer")
+			}
+		})
+	}
+}
+
+// TestModel_Yolo_UnreadableQuestionHistorySendsNoAutomaticResponse is the TUI
+// half of the second carve-out. The unreadable-history marker carries no
+// review-question category on purpose - an answer is what the daemon refuses
+// there - so the question guard above does not cover it, and without its own
+// predicate yolo selected it as ordinary work, handed the FIXER "decide this
+// gate yourself", and then approved the fix_review gate as already-fixed.
+func TestModel_Yolo_UnreadableQuestionHistorySendsNoAutomaticResponse(t *testing.T) {
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			sock, client, snapshot := captureRespond(t)
+			run := testRun()
+			fj := `{"findings":[{"id":"review-questions-unreadable","severity":"warning","description":"The reviewer's question history could not be read in full. Decide this gate yourself.","action":"ask-user"}],"summary":"unreadable question history"}`
+			run.Steps = []ipc.StepResultInfo{{StepName: types.StepReview, Status: status, FindingsJSON: &fj}}
+			m := NewModel(sock, client, run)
+			m.yoloMode = true
+			m.stepDiffLoaded[types.StepReview] = true
+			for range 2 {
+				if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+					if msg := cmd(); msg != nil {
+						t.Fatalf("automatic response failed: %v", msg)
+					}
+				}
+			}
+			if calls := snapshot(); len(calls) != 0 {
+				t.Fatalf("an unreadable question history was auto-resolved: %+v", calls)
+			}
+			if m.yoloFixed[types.StepReview] || m.yoloApproved[types.StepReview] {
+				t.Fatal("an unreadable question history consumed yolo bookkeeping without a human decision")
+			}
+		})
+	}
+}
+
+// A review gate carrying ORDINARY findings is still yolo's to fix, so the guard
+// must key on the question category and nothing broader.
+func TestModel_Yolo_OrdinaryReviewFindingsAreStillFixed(t *testing.T) {
+	sock, client, snapshot := captureRespond(t)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	fj := `{"findings":[{"id":"review-1","severity":"warning","description":"design choice","action":"ask-user"}],"summary":"1 issue"}`
+	run.Steps[0].FindingsJSON = &fj
+	m := NewModel(sock, client, run)
+	m.yoloMode = true
+
+	if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+		if msg := cmd(); msg != nil {
+			t.Fatalf("automatic response failed: %v", msg)
+		}
+	}
+	calls := snapshot()
+	if len(calls) != 1 || calls[0].Action != types.ActionFix {
+		t.Fatalf("ordinary review findings were not fixed: %+v", calls)
+	}
+}
+
 func TestModel_Update_YoloKeyTogglesMode(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

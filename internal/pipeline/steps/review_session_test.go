@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -83,7 +82,9 @@ func (a *sessionFallbackTimeoutAgent) Run(ctx context.Context, opts agent.RunOpt
 
 // reviewSessionHarness wires a real executor around real steps with a
 // session-capable mock agent and real git worktree.
-func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline.Step) (*pipeline.Executor, *db.DB, *db.Run, *db.Repo, string) {
+// tweaks adjust the run's effective config before the executor is built, for
+// the tests of a setting the harness must not turn on by default.
+func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline.Step, tweaks ...func(*config.Config)) (*pipeline.Executor, *db.DB, *db.Run, *db.Repo, string) {
 	t.Helper()
 	workDir, baseSHA, headSHA := setupGitRepo(t)
 	ensureHermeticOrigin(t, workDir)
@@ -107,6 +108,9 @@ func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline
 		Agent:        types.AgentClaude,
 		AutoFix:      config.AutoFix{Review: 3},
 		SessionReuse: true,
+	}
+	for _, tweak := range tweaks {
+		tweak(cfg)
 	}
 	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), cfg, mock, steps, nil)
 	return exec, database, run, repo, workDir
@@ -288,11 +292,7 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 			// lets the carried finding leave the outstanding set. A rereview that
 			// reports nothing new without covering the file would leave it
 			// outstanding and park the run again.
-			findings := cleanReviewFindings()
-			findings.ReviewedPaths = []string{"feature.txt"}
-			findings.DecisionReviews = satisfiedDecisionReviews(t, opts.Prompt)
-			output, _ := json.Marshal(findings)
-			return &agent.Result{Output: output}
+			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`)}
 		default:
 			return &agent.Result{Output: []byte(`{"summary":"apply decision"}`)}
 		}

@@ -21,7 +21,8 @@ var (
 )
 
 // ensurePrepared runs the trusted preparation command before the first
-// configured Test, Lint, or Format command. Successful preparation is shared
+// configured Test, Lint, or Format command, or an opted-in agent-only Test.
+// Successful preparation is shared
 // for the executor lifetime. Only ignored materialization (for example
 // node_modules) survives preparation; its tracked and ordinary untracked
 // mutations are removed so setup cannot ride into a later pipeline fix commit.

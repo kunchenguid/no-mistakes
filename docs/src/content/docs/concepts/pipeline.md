@@ -80,7 +80,7 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 You can't reorder steps. You *can*:
 
 - Swap the agent, or configure an ordered fallback list, globally or per-repo.
-- Set explicit `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite), with `commands.prepare` when their dependencies must be materialized once in the isolated worktree.
+- Set explicit `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite), with the [repository preparation settings](/no-mistakes/reference/repo-config/#commandsprepare) when the isolated worktree needs dependencies for configured commands or agent-only Test.
 - Store test evidence locally, upload GitHub.com/GHEC image/video attachments at PR time, and optionally publish an orphan evidence branch with `test.evidence`.
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.

@@ -1536,7 +1536,14 @@ func TestProofLaunchFallbackInheritsOnlyLivePRIdentity(t *testing.T) {
 				}
 				return waitForRunTerminalState(t, d, result.Receipt.RunID)
 			}
-			prior := launch("prior-nonce", "")
+			// Seed history without racing a prior run's worktree removal against the new launch.
+			prior, err := d.InsertRun(repo.ID, "main", head, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateRunStatus(prior.ID, types.RunCompleted); err != nil {
+				t.Fatal(err)
+			}
 			const prURL = "https://github.com/test/repo/pull/42"
 			if err := d.UpdateRunPRURL(prior.ID, prURL); err != nil {
 				t.Fatal(err)

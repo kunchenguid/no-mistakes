@@ -97,6 +97,7 @@ func (s *CustomGateStep) executeCommand(sctx *pipeline.StepContext, fixSummary s
 	sctx.Log(fmt.Sprintf("running gate %q: %s", s.Gate.Name, command))
 	output, exitCode, err := runStepShellCommand(sctx, command)
 	if err != nil {
+		logConfiguredCommandOutput(sctx, output, s.Name())
 		return nil, fmt.Errorf("run gate %q command: %w", s.Gate.Name, err)
 	}
 	if exitCode == 0 {

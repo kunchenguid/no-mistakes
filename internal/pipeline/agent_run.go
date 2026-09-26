@@ -456,7 +456,7 @@ func bindAgentDeadline(parent context.Context, timeout time.Duration, cause erro
 	if cause == nil {
 		cause = ErrAgentTimeout
 	}
-	budget := &agentBudget{timeout: timeout, cause: cause, start: time.Now()}
+	budget := &agentBudget{timeout: timeout, cause: cause, start: agentBudgetStart(parent)}
 	activity.enableChildTracking()
 	hardCap := AgentTimeoutHardCap(timeout)
 	idle := AgentTimeoutIdleGrace(timeout)
@@ -473,6 +473,27 @@ func bindAgentDeadline(parent context.Context, timeout time.Duration, cause erro
 	}
 	go watchAgentDeadline(ctx, stop, timeout, idle, cause, activity, cancelCause)
 	return ctx, cancel, budget
+}
+
+type agentBudgetStartKey struct{}
+
+// WithAgentBudgetStart measures a stall budget from start instead of the
+// wall clock. Review tests advance ReviewStep.now across a parked wait; a
+// real run leaves this unset and the budget starts at time.Now.
+func WithAgentBudgetStart(ctx context.Context, start time.Time) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, agentBudgetStartKey{}, start)
+}
+
+func agentBudgetStart(ctx context.Context) time.Time {
+	if ctx != nil {
+		if start, ok := ctx.Value(agentBudgetStartKey{}).(time.Time); ok && !start.IsZero() {
+			return start
+		}
+	}
+	return time.Now()
 }
 
 func watchAgentDeadline(ctx context.Context, stop <-chan struct{}, timeout, idle time.Duration, cause error, activity *agentActivity, cancelCause context.CancelCauseFunc) {

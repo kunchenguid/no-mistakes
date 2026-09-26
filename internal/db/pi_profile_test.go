@@ -12,7 +12,7 @@ func TestRunPiProfileImmutableAndReceiptBound(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo(t.TempDir(), "https://example.com/repo.git", "main")
 	pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "nonce", "gen", "digest", "", false, pin)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "nonce", "gen", "digest", "", false, nil, pin)
 	if err != nil {
 		t.Fatal(err)
 	}

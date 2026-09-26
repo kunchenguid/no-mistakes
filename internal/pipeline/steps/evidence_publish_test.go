@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -220,5 +221,40 @@ func TestPublishRunEvidence_DisabledDoesNotTouchTheRemote(t *testing.T) {
 	}
 	if refs := gitCmd(t, remote, "for-each-ref", "--format=%(refname)"); refs != "refs/heads/main" {
 		t.Errorf("remote refs changed: %q", refs)
+	}
+}
+
+// TestPublishRunEvidence_NeverPublishesTheReviewConversation is the end-to-end
+// half of the exclusion: internal/evidence enforces it, but only for the names
+// its caller supplies, and this step is that caller.
+//
+// The conversation shares the run's evidence directory with publishable test
+// evidence, so with test.evidence.store_in_repo and review.conversation both on
+// the reviewer's questions and the operator's answers - full text, and who
+// answered - would be committed to the orphan branch verbatim and permanently,
+// with none of the bounding or home-path redaction the PR-body rendering
+// applies. Real test evidence beside it must still publish, so the assertion is
+// not simply "nothing was published".
+func TestPublishRunEvidence_NeverPublishesTheReviewConversation(t *testing.T) {
+	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
+	writeRunEvidence(t, sctx, map[string]string{
+		"cli-run.txt": "it works\n",
+		filepath.ToSlash(filepath.Join(reviewqa.DirName, reviewqa.QuestionsFile)): `{"id":"q1","question":"is publishing this intended?"}`,
+		filepath.ToSlash(filepath.Join(reviewqa.DirName, reviewqa.AnswersFile)):   `{"id":"q1","answer":"no","answered_by":"captain"}`,
+	})
+
+	links := publishRunEvidence(sctx)
+	if links == nil {
+		t.Fatal("the real test evidence beside the conversation must still publish")
+	}
+
+	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence"))
+	if !strings.Contains(tree, "cli-run.txt") {
+		t.Fatalf("the real test evidence did not publish:\n%s", tree)
+	}
+	for _, unwanted := range []string{reviewqa.DirName + "/", reviewqa.QuestionsFile, reviewqa.AnswersFile, "answered_by"} {
+		if strings.Contains(tree, unwanted) {
+			t.Fatalf("the review conversation reached the evidence branch (%q):\n%s", unwanted, tree)
+		}
 	}
 }

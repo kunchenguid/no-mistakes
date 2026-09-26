@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 	"github.com/spf13/cobra"
 )
 
@@ -113,14 +114,15 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	PiProfile   *agentcfg.PiProfile
-	ID          string
-	Branch      string
-	Status      string
-	HeadSHA     string
-	PRURL       string
-	CIReady     bool
-	CIReadyNoCI bool
+	PiProfile        *agentcfg.PiProfile
+	VerificationPlan *verificationplan.Snapshot
+	ID               string
+	Branch           string
+	Status           string
+	HeadSHA          string
+	PRURL            string
+	CIReady          bool
+	CIReadyNoCI      bool
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -146,6 +148,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		CIOverrideReason:   r.CIOverrideReason,
 		TestOverrideReason: r.TestOverrideReason,
 		PiProfile:          r.PiProfile,
+		VerificationPlan:   r.VerificationPlan,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -184,6 +187,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 	rv := runView{
 		PiProfile:          r.PiProfile,
+		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
@@ -486,6 +490,16 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	if rv.TestOverrideReason != "" {
 		fields = append(fields, toon.Field{Key: "test_override_reason", Value: rv.TestOverrideReason})
 	}
+	if p := rv.VerificationPlan; p != nil {
+		fields = append(fields, toon.Field{Key: "verification_plan", Value: toon.NewObject(
+			toon.Field{Key: "path", Value: p.Path},
+			toon.Field{Key: "sha256", Value: p.SHA256},
+			toon.Field{Key: "source_path", Value: p.SourcePath},
+			toon.Field{Key: "captured_at", Value: p.CapturedAt},
+		)})
+	} else {
+		fields = append(fields, toon.Field{Key: "verification_plan", Value: "none"})
+	}
 	if rv.PiProfile != nil {
 		fields = append(fields, toon.Field{Key: "pi_profile", Value: toon.NewObject(
 			toon.Field{Key: "model", Value: rv.PiProfile.Model},
@@ -535,6 +549,19 @@ func gateFields(gate stepView) []toon.Field {
 	help := []string{
 		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
 		"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
+	}
+	// A review parked in waiting-on-answers is not asking for a verdict: its
+	// reviewer asked questions and cannot finish without them. Approving or
+	// fixing would discard the pass it paused, so answering leads the help.
+	// Keyed on the shared predicate, the same one the two auto-resolve paths
+	// read, rather than on a second rendering of the questions: each open
+	// question is already a finding in the rows below, carrying its id and the
+	// options the reviewer stated.
+	if pipeline.HasUnansweredReviewQuestion(gate.FindingsJSON) {
+		help = append([]string{
+			"This review is waiting on answers to the question(s) its reviewer asked; each is a `question-<id>` finding below. Answer each with `no-mistakes axi answer --question <id> --answer \"<one of its options>\"` and the same reviewer resumes and finishes its pass",
+			"Do not approve or fix to get past a review question: that throws away the paused review pass instead of answering it",
+		}, help...)
 	}
 	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
 		help = []string{

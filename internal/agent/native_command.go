@@ -83,6 +83,7 @@ func startNativeAgentCommand(cmd *exec.Cmd, activity func()) (*nativeAgentComman
 
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
+	oomBase, oomOK := shellenv.OOMKillBaseline()
 	if err := shellenv.StartShellCommand(cmd); err != nil {
 		_ = stdoutR.Close()
 		_ = stdoutW.Close()
@@ -102,7 +103,7 @@ func startNativeAgentCommand(cmd *exec.Cmd, activity func()) (*nativeAgentComman
 	started.stdout = &nativeAgentPipe{file: stdoutR, done: started.markPipeDone, activity: activity}
 	started.stderr = &nativeAgentPipe{file: stderrR, done: started.markPipeDone, activity: activity}
 	go func() {
-		err := cmd.Wait()
+		err := shellenv.AttributeOOMKill(oomBase, oomOK, cmd.Wait())
 		started.terminate()
 		started.waitCh <- started.waitForPipes(err)
 	}()

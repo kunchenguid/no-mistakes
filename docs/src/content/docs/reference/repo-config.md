@@ -8,12 +8,12 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.prepare`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -39,9 +39,11 @@ document:
   instructions: |
     docs/ owns detailed product guidance; README.md owns the introduction.
 
-# Optional extra review guidance, scoped to the paths a change touches.
-# Read only from the trusted default branch.
+# Optional review settings, read only from the trusted default branch:
+# whether the reviewer may ask you questions while it works (off by default),
+# and extra guidance scoped to the paths a change touches.
 review:
+  conversation: true
   path_instructions:
     - path: "internal/scm/**"
       instructions: |
@@ -315,7 +317,7 @@ Optional dependency-preparation command for isolated run worktrees. Run via the 
 | Type | `string` |
 | Default | Empty (no preparation command) |
 
-When set, no-mistakes runs this command before the first configured `commands.test`, `commands.lint`, or `commands.format` command that the pipeline reaches. It is a lazy command hook, not an additional pipeline step: `commands.prepare` alone does nothing when no configured command needs it. A successful result is shared by all later configured commands in that isolated worktree, including after daemon recovery. The dependent step log records the preparation command, output, and elapsed preparation time. A non-zero exit or launch failure fails that step before its command runs.
+When set, no-mistakes runs this command before the first configured `commands.test`, `commands.lint`, or `commands.format` command that the pipeline reaches. By default, it is a lazy command hook rather than an additional pipeline step: when no configured command needs it and [`test.prepare`](#testprepare) is false, `commands.prepare` alone does nothing. Trusted `test.prepare: true` instead triggers it eagerly before agent-only Test while leaving `commands.test` unset. A successful result is shared by all later configured commands in that isolated worktree, including after daemon recovery. The dependent step log records the preparation command, output, and elapsed preparation time. A non-zero exit or launch failure fails that step before its command runs.
 
 Use this for deterministic dependency materialization such as `npm ci --prefer-offline`. The run worktree starts with tracked files only, so ignored dependency directories such as `node_modules` are otherwise absent. no-mistakes keeps ignored files produced by preparation, while removing its tracked, ordinary untracked, and nested-repository mutations before continuing. Earlier pending tracked and ordinary untracked pipeline changes are restored exactly, so preparation can run before a later configured command without admitting setup artifacts into a fix commit.
 
@@ -376,6 +378,29 @@ The document step always applies a built-in placement policy: every fact has exa
 It augments or clarifies the built-in policy; it cannot disable documentation integrity, and it cannot turn the memory files into an automated documentation surface - instructions that encourage additions to `AGENTS.md` or `CLAUDE.md` do not take effect over the built-in correction-only rule.
 
 Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
+
+### review.conversation
+
+Whether the reviewer may ask you questions while it reviews, instead of turning every undecidable point into a finding you answer with a verdict. The [Review conversation](/no-mistakes/concepts/review-conversation/) concept page owns the protocol, the state machine, and what is persisted.
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+review:
+  conversation: true
+```
+
+**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out, in either direction. A contributor must not be able to make their own review park for a human answer, and once you have asked for the conversation a pushed branch must not be able to decline it.
+
+**On**, the review step gains a question channel. The reviewer emits each larger question the moment it has one, keeps reviewing while it is open, and re-reads answers at its own checkpoints. A pass that ends with an unanswered question parks with one `ask-user` warning per question; you answer each with [`no-mistakes axi answer`](/no-mistakes/reference/cli/#no-mistakes-axi-answer), and once none are open the reviewer finishes its pass with your answers - resuming that same session when [`session_reuse`](/no-mistakes/reference/global-config/#session_reuse) is on, cold otherwise. Answers are recorded per branch, reach every later cold reviewer as settled, and are published in the PR body.
+
+**Off (the default)**, the review step is the monologue it has always been: the reviewer is told nothing about a channel, no conversation files are written, no question findings are produced, and the PR body grows no conversation group. A repository that never opted in cannot have a conversation on disk, so for it every review turn also runs session-free and `no-mistakes axi answer` refuses and names this setting. A question asked while the setting was on stays answerable if you turn it off mid-run - see [Turning the setting off does not strand a question already asked](/no-mistakes/concepts/review-conversation/). Upgrading no-mistakes never starts a conversation under a repository that did not ask for one.
+
+The trade-off is latency against precision. A question costs the run a park - tens of minutes to hours of wall clock, waiting on you - and buys a review that decided the point instead of handing you a finding to rule on. Repositories whose changes rarely turn on product intent will not get much for that wait; repositories where the reviewer regularly cannot tell deliberate from accidental will.
 
 ### review.path_instructions
 
@@ -770,6 +795,24 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+
+### test.prepare
+
+**Type:** boolean. **Default:** `false`. Repository-only, trusted-default-branch-only, even with `allow_repo_commands: true`.
+
+```yaml
+commands:
+  prepare: "npm ci --prefer-offline"
+test:
+  prepare: true
+# commands.test remains unset: Test is agent-driven.
+```
+
+Opts agent-only Test into running `commands.prepare` before its first agent turn (including a repair turn). Uses the same successful-worktree receipt, cleanup/restoration, failure reporting, and recovery behavior as configured Test/Lint/Format; later configured commands do not install again. A new worktree prepares separately. Existing dependencies or an agent's claim that installation succeeded do not count as managed preparation. An empty `commands.prepare` remains a no-op, and configured `commands.test` retains its existing preparation behavior.
+
+This is **eager**, not on-demand: opted-in repositories pay setup cost even when the evidence agent subsequently reports `no-surface`. Leave it off to retain lazy command-only preparation. Preparation does not replace fresh Test evidence or change verdict/approval policy. Failures stop Test before the agent launches and never record successful preparation.
+
+The trigger always comes from the trusted default branch; pushed-branch text cannot enable it. The executable `commands.prepare` value separately follows the existing `allow_repo_commands` policy.
 
 ### test.instructions
 

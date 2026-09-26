@@ -27,11 +27,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
-	decisions, err := loadRecordedFixDecisions(sctx)
-	if err != nil {
-		return nil, err
-	}
-	decisionSection, err := recordedFixDecisionSection(decisions)
+	planSection, err := verificationPlanPromptSection(sctx)
 	if err != nil {
 		return nil, err
 	}
@@ -40,6 +36,15 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	if err != nil {
 		return nil, err
+	}
+
+	// Agent-only preparation is an explicit eager opt-in, not a claim from
+	// the agent that dependencies exist. Use the same worktree receipt and
+	// restoration lifecycle as configured commands, before even a repair turn.
+	if sctx.Config.Commands.Test == "" && sctx.Config.Test.Prepare {
+		if err := ensurePrepared(sctx, s.Name()); err != nil {
+			return nil, fmt.Errorf("prepare test dependencies: %w", err)
+		}
 	}
 
 	// In fix mode, ask agent to fix test failures first.
@@ -65,7 +70,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		sctx.Log("fix selection holds only the Test agent budget cut; re-running validation without a repair turn...")
 		fixSummary = NoChangesAppliedSummary
 	} else if sctx.Fixing {
-		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + decisionSection + testguidance.Rule
+		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + planSection + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
 			`Fix the failing tests in this repository. Reproduce the specific failure, identify the root cause, and fix either the tests or the code so that failure passes.
 
@@ -136,6 +141,7 @@ Previous test findings to address:
 		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
 		output, exitCode, err := runStepShellCommand(sctx, testCmd)
 		if err != nil {
+			logConfiguredCommandOutput(sctx, output, types.StepTest)
 			return nil, fmt.Errorf("run test command: %w", err)
 		}
 		tested = append(tested, testCmd)
@@ -169,7 +175,7 @@ Previous test findings to address:
 	} else {
 		sctx.Log("baseline tests passed, asking agent to gather live evidence...")
 	}
-	reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + decisionSection + testguidance.Rule
+	reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + planSection + testguidance.Rule
 	evidenceGuidance := fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree: %s", evidenceDir)
 	if sctx.Config.Test.Evidence.StoreInRepo {
 		evidenceGuidance = fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree; they are published to the repository's %s branch automatically and linked from the PR: %s", sctx.Config.Test.Evidence.Branch, evidenceDir)
@@ -183,6 +189,12 @@ Previous test findings to address:
 		}
 	}
 	trustedRunbook := trustedTestInstructionsSection(sctx) + budgetCutGuidanceSection(sctx)
+	fallbackGuidance := `- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible.
+- If sufficient evidence is not possible, report a warning finding explaining what evidence is missing and why the user needs to decide what to do. When the blocker is a host capability or OS permission the agent's own process lacks (for example, the Screen Recording permission macOS requires to capture a native GUI application), name the specific capability or permission and how to grant it so the user can enable it and re-run, instead of retrying blindly or failing opaquely.`
+	if sctx.Run.VerificationPlan != nil {
+		fallbackGuidance = `- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, perform repeatable product verification and retain its artifact, or report the scenario untested with the missing capability and how to provide it.
+- Follow repository testing rules before changing permanent tests. A missing-test finding must name the observable failure, why existing checks and product evidence do not cover it, and the independent expected result.`
+	}
 	evidencePrompt := fmt.Sprintf(
 		`You are validating a code change by driving the product itself. Derive the scenarios this change must satisfy, then run each one against the real running product.
 
@@ -200,12 +212,16 @@ Derive the scenarios:
 
 Drive each scenario:
 - Stand the product up the way an end user runs it, in an isolated environment, and drive each scenario end-to-end against that running product.
+- Getting every scenario live is your responsibility. When a scenario needs something that is not already provided - an environment, an instance, an account, records, a data set, an endpoint - find a workaround: build a disposable one yourself (throwaway fixtures, data, configuration, or a local instance), point the real product at it through whatever isolation the product supports (a separate root, home, or data directory, a temporary config, a local port, a sandbox or test mode), and drive the scenario there. A missing environment is a problem to solve, not a reason to skip the scenario. A scenario driven by the real product against a disposable setup you built is live; a fixture that stands in for the product itself is not.
+- Everything you build must stay disposable and isolated: never read or write the operator's real data, real configuration, or shared services, and tear it down before finishing unless it is evidence.
 - When a live scenario drives a TUI through a pseudo-terminal, give the pty a non-zero window size (TIOCSWINSZ) before the TUI reads its grid, and drain the master. A 0x0 grid makes the TUI exit immediately with a symptom such as "terminal reported a zero-sized grid" and never register, so a live UI check silently becomes a fake. Bare script(1) and pty.fork() from a non-tty parent typically yield that 0x0 grid.
 - Mark a scenario "live": true ONLY when you drove it against the real product in this run. A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live.
-- When a scenario cannot be driven live here, return it with result "untested" and a reason naming the specific tool, credential, permission, or authority that stopped you, and how to provide it. A tool that is not on PATH and has no repository-local path is one of these: report the affected scenario as "untested" with that reason instead of searching the machine for the tool. Never guess a pass, and never mark a scenario live because you believe it would work.
+- Return a scenario with result "untested" only when live validation is truly impossible here: every workaround you could find within the workspace boundary still cannot drive it. Its reason must state what you tried in order to drive it live and why each attempt cannot work, naming the specific tool, credential, permission, or authority that is out of reach and how to provide it. "No environment was provided" is not such a reason while you could have built a disposable one.
+- If a needed tool is not on PATH and has no repository-local path, do not search the host machine for it or install it system-wide or globally. Try another available route or obtain, install, or build the tool inside the disposable workspace and use it there. Only if no workspace-local route can drive the scenario live, report the affected scenario as "untested" with what you tried and why it could not work.
+- Never guess a pass, and never mark a scenario live because you believe it would work.
 - Report every scenario in the "scenarios" array with name, result ("pass", "fail", or "untested"), live, evidence, and reason.
 - Return a "verdict": "go" when every scenario you could drive passed and nothing untested puts the intent in doubt, "no-go" when a scenario failed or the change is not safe to ship, "inconclusive" when the change has a live-exercisable product surface but too little could be driven live to judge, "no-surface" when this change has no runtime product surface no-mistakes can drive live (a CI-workflow-only change, a docs-only change, a pure non-runtime refactor, or anything else with no live-exercisable scenario).
-- A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" costs nothing and a guessed "pass" costs everything.
+- A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" after exhausting your workarounds costs nothing and a guessed "pass" costs everything.
 - A single scenario you could not drive live is reported as an untested scenario with its reason, NOT as a finding. Report a finding only when the step as a whole cannot demonstrate the user intent.
 
 Evidence:
@@ -220,8 +236,7 @@ Evidence:
 - Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior. Generic pass/fail, coverage, or clean-worktree output is not sufficient evidence.
 - If an existing automated test already drives a scenario end-to-end, run that test as the scenario and cite it as the evidence.
 - Do NOT run the complete repository test suite. Local Test is targeted validation of the requested intent; remote CI owns broad regression and remains mandatory before a PR is ready.
-- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible.
-- If sufficient evidence is not possible, report a warning finding explaining what evidence is missing and why the user needs to decide what to do. When the blocker is a host capability or OS permission the agent's own process lacks (for example, the Screen Recording permission macOS requires to capture a native GUI application), name the specific capability or permission and how to grant it so the user can enable it and re-run, instead of retrying blindly or failing opaquely.
+%s
 - Include a concise "testing_summary" sentence describing what you exercised and the overall result.
 - The "testing_summary" must account for the complete test step: baseline commands that already ran, scenarios driven, manual or evidence-producing checks, artifacts gathered, and the overall result.
 - Record the exact tests, manual checks, and evidence-producing steps you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
@@ -246,6 +261,7 @@ Rules:
 		configuredTestCommand,
 		trustedRunbook,
 		evidenceGuidance,
+		fallbackGuidance,
 		reassessHistory,
 		agent.MemoryFilesRule,
 	)

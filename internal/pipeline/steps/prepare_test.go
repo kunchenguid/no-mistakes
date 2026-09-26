@@ -639,7 +639,7 @@ func ignoreTestDependencies(t *testing.T, dir string) {
 
 func preparationCommand() string {
 	if runtime.GOOS == "windows" {
-		return `if not exist .deps mkdir .deps & echo prepared>>.deps\count & echo temporary>prepare.tmp & echo changed>base.txt`
+		return `(if not exist .deps mkdir .deps) & echo prepared>>.deps\count & echo temporary>prepare.tmp & echo changed>base.txt`
 	}
 	return `mkdir -p .deps && echo prepared >> .deps/count && echo temporary > prepare.tmp && echo changed > base.txt`
 }
@@ -653,7 +653,7 @@ func dependencyExistsCommand() string {
 
 func nestedRepositoryPreparationCommand() string {
 	if runtime.GOOS == "windows" {
-		return `if not exist .deps mkdir .deps & echo prepared>>.deps\count & mkdir generated & git -C generated init & git -C generated config user.name test & git -C generated config user.email test@example.com & echo generated>generated\file.txt & git -C generated add file.txt & git -C generated commit -m generated`
+		return `(if not exist .deps mkdir .deps) & echo prepared>>.deps\count & mkdir generated & git -C generated init & git -C generated config user.name test & git -C generated config user.email test@example.com & echo generated>generated\file.txt & git -C generated add file.txt & git -C generated commit -m generated`
 	}
 	return `mkdir -p .deps && echo prepared >> .deps/count && mkdir generated && git -C generated init && git -C generated config user.name test && git -C generated config user.email test@example.com && echo generated > generated/file.txt && git -C generated add file.txt && git -C generated commit -m generated`
 }

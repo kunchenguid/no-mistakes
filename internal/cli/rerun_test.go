@@ -22,6 +22,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 )
 
 func TestRerunCallerHeadDoesNotCombineDifferentGitStates(t *testing.T) {
@@ -183,10 +184,18 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			}
 			srv := ipc.NewServer()
 			commitDuringWait := make(chan struct{}, 1)
+			commitBeforePush := make(chan struct{}, 1)
 			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
 				return &ipc.HealthResult{Status: "ok"}, nil
 			})
-			srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
+			srv.Handle(ipc.MethodGetRunsForHead, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+				select {
+				case <-commitBeforePush:
+					if _, err := git.Run(ctx, dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "concurrent capture commit"); err != nil {
+						return nil, err
+					}
+				default:
+				}
 				return &ipc.GetRunsResult{}, nil
 			})
 			srv.Handle(ipc.MethodProbeOmitIntent, func(context.Context, json.RawMessage) (interface{}, error) {
@@ -256,7 +265,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false)
+				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, "")
 				if err != nil || runID != "rerun-1" {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
@@ -265,6 +274,52 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 					t.Fatalf("AXI omitted known head: %v", params)
 				}
 				t.Logf("AXI no-op push fallback IPC request: %v; run_id=%s", params, runID)
+
+				for _, phase := range []string{"unchanged", "before_push", "during_wait"} {
+					t.Run("verification_plan_"+phase, func(t *testing.T) {
+						capturedHead := cliGit(t, dir, "rev-parse", "HEAD")
+						gateBefore := cliGit(t, gateDir, "show-ref")
+						source := filepath.Join(t.TempDir(), "plan.txt")
+						if err := os.WriteFile(source, []byte("Verify the launch result."), 0600); err != nil {
+							t.Fatal(err)
+						}
+						plan, err := verificationplan.Capture(p.RunInputsDir(), source, repo.ID, "main", capturedHead)
+						if err != nil {
+							t.Fatal(err)
+						}
+						switch phase {
+						case "before_push":
+							commitBeforePush <- struct{}{}
+						case "during_wait":
+							commitDuringWait <- struct{}{}
+						}
+						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+						defer cancel()
+						runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, plan.ID)
+						if phase == "unchanged" {
+							if err != nil || runID != "rerun-1" {
+								t.Fatalf("matching capture: run=%q err=%v", runID, err)
+							}
+							params := <-requests
+							if params["caller_head_sha"] != capturedHead || params["verification_plan_id"] != plan.ID {
+								t.Fatalf("capture binding lost: %v", params)
+							}
+							return
+						}
+						if err == nil || !strings.Contains(err.Error(), "verification plan capture does not match launch") || runID != "" {
+							t.Fatalf("drift accepted: run=%q err=%v", runID, err)
+						}
+						select {
+						case params := <-requests:
+							t.Fatalf("drift triggered rerun: %v", params)
+						default:
+						}
+						if got := cliGit(t, gateDir, "show-ref"); got != gateBefore {
+							t.Fatalf("drift mutated gate refs: %s, want %s", got, gateBefore)
+						}
+						cliGit(t, dir, "reset", "--hard", capturedHead)
+					})
+				}
 
 				for _, phase := range []string{"during_wait", "before_push"} {
 					t.Run("commit_"+phase, func(t *testing.T) {
@@ -277,7 +332,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						}
 						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 						defer cancel()
-						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false); err != nil {
+						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, ""); err != nil {
 							t.Fatal(err)
 						}
 						params := <-requests

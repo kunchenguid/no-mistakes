@@ -99,17 +99,26 @@ func TestHostSearchBoundaryReachesEveryPipelinePrompt(t *testing.T) {
 	}
 
 	// The Test step must add its own scenario-shaped fallback: the whole point
-	// of the fix is that a missing tool becomes an honest "untested" scenario
-	// rather than a 30-minute whole-host search.
+	// of the fix is that a missing tool triggers workspace-local setup before
+	// an honest "untested" scenario, never a 30-minute whole-host search.
 	if !strings.Contains(testPrompt, testOnlyUntestedFallback) {
 		t.Errorf("test prompt is missing the scenario untested fallback %q:\n%s", testOnlyUntestedFallback, truncate(testPrompt, 4000))
 	}
-	if !strings.Contains(testPrompt, "instead of searching the machine for the tool") {
-		t.Errorf("test prompt does not tell the agent to report instead of searching:\n%s", truncate(testPrompt, 4000))
+	for _, want := range []string{
+		"do not search the host machine for it or install it system-wide or globally",
+		"obtain, install, or build the tool inside the disposable workspace and use it there",
+		`Only if no workspace-local route can drive the scenario live, report the affected scenario as "untested"`,
+	} {
+		if !strings.Contains(testPrompt, want) {
+			t.Errorf("test prompt missing local-setup fallback %q:\n%s", want, truncate(testPrompt, 4000))
+		}
 	}
 
-	// Role neutrality: a review finding is not a list of scenarios, so the
-	// Test-only wording must not leak into the review prompt.
+	// Role neutrality: only Test may set up disposable tools and has a
+	// scenario-shaped untested result; neither belongs in Review.
+	if strings.Contains(reviewPrompt, "obtain, install, or build the tool inside the disposable workspace") {
+		t.Errorf("review prompt leaked Test-only tool setup permission:\n%s", truncate(reviewPrompt, 4000))
+	}
 	if strings.Contains(reviewPrompt, testOnlyUntestedFallback) {
 		t.Errorf("review prompt leaked the Test-only scenario untested fallback:\n%s", truncate(reviewPrompt, 4000))
 	}
