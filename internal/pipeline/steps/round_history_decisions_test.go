@@ -1,11 +1,15 @@
 package steps
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -477,5 +481,188 @@ func TestDecisionSectionBoundsOneOversizedFinding(t *testing.T) {
 	}
 	if !strings.Contains(got, "huge") {
 		t.Fatalf("truncation removed the finding identity:\n%s", got)
+	}
+}
+
+// The decision channel exists so the steps that run after a human rules on
+// review findings cannot silently undo or re-apply what was decided. These
+// tests exercise the real rendered step prompts - not just the section helper
+// - and pin both halves of the contract: the recorded decisions (which
+// findings the human chose to fix or declined, with their instructions) and
+// the explicit instruction to respect them and never revert or undo them.
+const stepDecisionsFindings = `{"findings":[` +
+	`{"id":"chosen-fix","severity":"error","file":"a.go","line":3,` +
+	`"description":"rename the journal field to entry","action":"ask-user",` +
+	`"user_instructions":"rename it to entry, not record"},` +
+	`{"id":"declined-redesign","severity":"warning","file":"b.go","line":9,` +
+	`"description":"redesign the dedup loop entirely","action":"ask-user",` +
+	`"user_instructions":"too risky for this change"}]}`
+
+// recordHumanReviewDecision seeds a review round on the context's run that the
+// human resolved by selecting chosen-fix, leaving declined-redesign as the
+// declined half.
+func recordHumanReviewDecision(t *testing.T, sctx *pipeline.StepContext) {
+	t.Helper()
+	reviewSR, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := stepDecisionsFindings
+	round, err := sctx.DB.InsertStepRound(reviewSR.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["chosen-fix"]`
+	if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// bindStepResult registers the step under test as its own step result so the
+// cross-step decision channel treats the seeded review decision as another
+// step's, exactly as the executor wires it.
+func bindStepResult(t *testing.T, sctx *pipeline.StepContext, stepName types.StepName) {
+	t.Helper()
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, stepName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.StepResultID = sr.ID
+}
+
+// requireRecordedDecisionsInPrompt asserts the rendered agent prompt carries
+// the seeded review decisions with their instructions and the
+// respect-and-never-revert instruction.
+func requireRecordedDecisionsInPrompt(t *testing.T, prompt string) {
+	t.Helper()
+	for _, want := range []string{
+		`review round 1 user chose to fix: {"id":"chosen-fix"`,
+		`"user_instructions":"rename it to entry, not record"`,
+		`review round 1 declined: {"id":"declined-redesign"`,
+		`"user_instructions":"too risky for this change"`,
+		"Do NOT implement them",
+		"A recorded decision SUPERSEDES conflicting user-intent wording",
+		"Never revert, undo, or work around a recorded human decision",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing recorded-decision content %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestDocumentPromptCarriesRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepDocument)
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected one document agent call, got %d", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+}
+
+func TestLintAgentPassPromptCarriesRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepLint)
+
+	if _, err := (&LintStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected one lint agent call, got %d", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+}
+
+func TestLintFixPromptCarriesRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"summary":"fixed lint"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepLint)
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"gofmt drift","action":"auto-fix"}]}`
+
+	if _, err := (&LintStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected one lint fix agent call, got %d", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+}
+
+// Both Test agent turns - the repair turn and the evidence turn - must carry
+// the recorded decisions, since each can change the tree.
+func TestTestPromptsCarryRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	call := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		call++
+		if call == 1 {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fixed tests"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"ok","scenarios":[{"name":"s","result":"pass","live":true,"evidence":"e","reason":"drove it"}],"verdict":"go","tested":["x"],"artifacts":[],"testing_summary":"ok"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepTest)
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"error","description":"failing case","action":"auto-fix"}]}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 2 {
+		t.Fatalf("expected a repair turn and an evidence turn, got %d calls", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+	requireRecordedDecisionsInPrompt(t, ag.calls[1].Prompt)
+}
+
+// A step's own earlier gate decisions bind its later rounds just as another
+// step's do: a fix turn must not undo a fix the human chose at this step's
+// earlier gate.
+func TestOwnStepHistoryPromptCarriesNeverRevertClause(t *testing.T) {
+	f := newDecisionFixture(t)
+	findings := `{"findings":[` +
+		`{"id":"kept-fix","severity":"error","description":"keep the rename","action":"auto-fix"},` +
+		`{"id":"skipped-nit","severity":"warning","description":"style nit","action":"ask-user"}]}`
+	round, err := f.db.InsertStepRound(f.testSR.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["kept-fix"]`
+	if err := f.db.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stepRoundHistorySection(f.testStepContext())
+	if !strings.Contains(got, "user_chose_to_fix:") || !strings.Contains(got, "kept-fix") {
+		t.Fatalf("own-step chose-to-fix entry missing:\n%s", got)
+	}
+	if !strings.Contains(got, "user_chose_to_ignore:") || !strings.Contains(got, "skipped-nit") {
+		t.Fatalf("own-step declined entry missing:\n%s", got)
+	}
+	if !strings.Contains(got, "Do NOT revert or undo fixes the user chose under user_chose_to_fix") {
+		t.Fatalf("missing the never-revert clause for the step's own decisions:\n%s", got)
 	}
 }

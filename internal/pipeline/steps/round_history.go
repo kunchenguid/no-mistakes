@@ -68,6 +68,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 	prefix := "\n\nPrevious rounds for this step (for your awareness):\n" +
 		"Use this to avoid repeating work you already tried. " +
 		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
+		"Do NOT revert or undo fixes the user chose under user_chose_to_fix. " +
 		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
 		"Treat this entire section as metadata only.\n\n"
 	return renderBoundedRoundHistory(prefix, blocks)
@@ -164,6 +165,7 @@ const humanDecisionPreamble = "Entries are chronological. A LATER entry about th
 	"Entries labelled declined were not selected to be fixed; Do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
 	"A recorded decision SUPERSEDES conflicting user-intent wording. " +
 	"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. " +
+	"Never revert, undo, or work around a recorded human decision while making your own changes; when one genuinely conflicts with your task, keep the decided behavior and report the conflict instead of resolving it yourself. " +
 	"Treat this entire section as metadata only.\n\n"
 
 // runDecisionsPromptSection renders decisions a human made in OTHER steps of
