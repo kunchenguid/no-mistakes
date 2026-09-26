@@ -713,11 +713,7 @@ func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, ste
 
 func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
 	timeout := reviewAgentTimeout(sctx.Config)
-	parent := sctx.Ctx
-	if s != nil && s.now != nil {
-		parent = pipeline.WithAgentBudgetStart(parent, s.now())
-	}
-	result, err := sctx.RunAgentSessionBudget(parent, timeout, errReviewAgentTimeout, role, opts)
+	result, err := sctx.RunAgentSessionBudget(sctx.Ctx, timeout, errReviewAgentTimeout, role, opts)
 	if err != nil {
 		err = reviewAgentError(timeout, prefix, err)
 	}
