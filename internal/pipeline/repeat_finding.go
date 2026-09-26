@@ -89,10 +89,12 @@ func fixedFindingsFromRounds(rounds []*db.StepRound) []fixedFinding {
 
 // sameFindingAcrossRounds is the repeat stop's identity rule. Finding IDs are
 // chosen by the agent and are NOT guaranteed stable across rounds, so two
-// findings are the same defect when either
+// findings are the same defect when
+// they name the same file and either
 //   - both carry the same agent-chosen ID (never a positional pipeline ID,
-//     which names a slot in one round's output), or
-//   - they name the same file with the same description after case and
+//     which names a slot in one round's output; an ID alone never matches,
+//     since agents often use per-round counters like F1), or
+//   - they carry the same description after case and
 //     whitespace normalization (line, severity, and action are ignored: a fix
 //     moves lines, and a rereview may re-grade what it reports again).
 //
@@ -100,11 +102,14 @@ func fixedFindingsFromRounds(rounds []*db.StepRound) []fixedFinding {
 // repeat: the stop must never halt the fixer on a finding it cannot show was
 // reported before.
 func sameFindingAcrossRounds(a, b types.Finding) bool {
+	if normalizeCoveredPath(a.File) != normalizeCoveredPath(b.File) {
+		return false
+	}
 	if a.ID != "" && a.ID == b.ID && !positionalFindingID.MatchString(a.ID) {
 		return true
 	}
 	desc := normalizeFindingText(a.Description)
-	return desc != "" && desc == normalizeFindingText(b.Description) && normalizeCoveredPath(a.File) == normalizeCoveredPath(b.File)
+	return desc != "" && desc == normalizeFindingText(b.Description)
 }
 
 func normalizeFindingText(value string) string {
@@ -246,12 +251,14 @@ func repeatFixRefusal(step types.StepName, findingsJSON string) string {
 
 // carriesFixDiagnosis reports whether a fix response brings anything the
 // previous fix round did not have.
-func carriesFixDiagnosis(instructions map[string]string, added []types.Finding) bool {
+// Only a note attached to a selected real finding counts: the marker is
+// dropped before the fixer runs, and its note with it.
+func carriesFixDiagnosis(findingIDs []string, instructions map[string]string, added []types.Finding) bool {
 	if len(added) > 0 {
 		return true
 	}
-	for _, note := range instructions {
-		if strings.TrimSpace(note) != "" {
+	for _, id := range findingIDs {
+		if id != RepeatFindingFindingID && strings.TrimSpace(instructions[id]) != "" {
 			return true
 		}
 	}

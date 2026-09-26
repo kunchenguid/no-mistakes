@@ -127,10 +127,10 @@ func TestExecutor_NewFindingAfterAutoFixStillAutoFixes(t *testing.T) {
 // stop names only the finding that came back.
 func TestExecutor_RepeatBesideANewFindingStillStops(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 3}}
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
 
 	calls := 0
-	step := &adaptiveCallStep{name: types.StepLint, fn: func(sctx *StepContext) (*StepOutcome, error) {
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
 		calls++
 		if calls == 1 {
 			return &StepOutcome{NeedsApproval: true, AutoFixable: true, Findings: `{"findings":[{"severity":"warning","file":"x.go","description":"unused import","action":"auto-fix"}],"summary":"1"}`}, nil
@@ -141,15 +141,15 @@ func TestExecutor_RepeatBesideANewFindingStillStops(t *testing.T) {
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
 	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
-	waitForStepStatus(t, database, run.ID, types.StepLint, types.StepStatusFixReview)
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 	if calls != 2 {
 		t.Fatalf("step ran %d times, want 2", calls)
 	}
-	marker := repeatMarker(stepFindingsFor(t, database, run.ID, types.StepLint))
-	if marker == nil || !strings.Contains(marker.Description, "lint-2 (rounds 1, 2)") || strings.Contains(marker.Description, "lint-1 (") {
+	marker := repeatMarker(stepFindingsFor(t, database, run.ID, types.StepReview))
+	if marker == nil || !strings.Contains(marker.Description, "review-2 (rounds 1, 2)") || strings.Contains(marker.Description, "review-1 (") {
 		t.Fatalf("marker must name only the repeated finding: %+v", marker)
 	}
-	if err := exec.Respond(types.StepLint, types.ActionApprove, nil); err != nil {
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	waitExecutorDone(t, done)
@@ -193,6 +193,9 @@ func TestExecutor_RepeatFindingAfterOperatorFixStops(t *testing.T) {
 	}
 	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err == nil {
 		t.Fatal("a bare fix at a repeat stop was accepted")
+	}
+	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{RepeatFindingFindingID}, map[string]string{RepeatFindingFindingID: "cover the empty-prefix case"}, nil, ""); err == nil {
+		t.Fatal("a fix whose only instruction is on the repeat marker was accepted")
 	}
 	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, map[string]string{"review-1": "cover the empty-prefix case"}, nil, ""); err != nil {
 		t.Fatalf("diagnosed fix refused: %v", err)
@@ -250,7 +253,8 @@ func TestSameFindingAcrossRounds(t *testing.T) {
 		a, b types.Finding
 		want bool
 	}{
-		{"same agent key, reworded", types.Finding{ID: "prefix-coverage", File: "a.go", Description: "x"}, types.Finding{ID: "prefix-coverage", File: "b.go", Description: "y"}, true},
+		{"same agent key, reworded", types.Finding{ID: "prefix-coverage", File: "a.go", Description: "x"}, types.Finding{ID: "prefix-coverage", File: "a.go", Description: "y"}, true},
+		{"same counter id, other file", types.Finding{ID: "F1", File: "a.go", Description: "unused import"}, types.Finding{ID: "F1", File: "b.go", Description: "shadowed err"}, false},
 		{"same positional id, different defect", types.Finding{ID: "review-1", File: "a.go", Description: "x"}, types.Finding{ID: "review-1", File: "a.go", Description: "y"}, false},
 		{"same text, moved line", types.Finding{ID: "review-1", File: "./a.go", Line: 3, Description: "Nil  deref"}, types.Finding{ID: "review-4", File: "a.go", Line: 9, Description: "nil deref"}, true},
 		{"same text, other file", types.Finding{File: "a.go", Description: "nil deref"}, types.Finding{File: "b.go", Description: "nil deref"}, false},
@@ -274,5 +278,66 @@ func TestRepeatFindingStopMarkerLeavesTheCarrySet(t *testing.T) {
 	}
 	if repeatFixRefusal(types.StepReview, dropped) != "" {
 		t.Fatal("fix refused without a repeat stop")
+	}
+}
+
+// An agent counter ID reused for an unrelated finding in another file is not
+// a repeat: the fixer keeps going.
+func TestExecutor_ReusedCounterIDInAnotherFileIsNotARepeat(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
+
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		switch calls {
+		case 1:
+			return &StepOutcome{NeedsApproval: true, AutoFixable: true, Findings: `{"findings":[{"id":"F1","severity":"error","file":"a.go","description":"unused import","action":"auto-fix"}],"summary":"1"}`}, nil
+		case 2:
+			return &StepOutcome{NeedsApproval: true, AutoFixable: true, ReviewedPaths: []string{"a.go", "b.go"}, ReviewablePaths: []string{"a.go", "b.go"}, Findings: `{"findings":[{"id":"F1","severity":"error","file":"b.go","description":"shadowed err","action":"auto-fix"}],"summary":"1"}`}, nil
+		}
+		return &StepOutcome{ReviewedPaths: []string{"a.go", "b.go"}, ReviewablePaths: []string{"a.go", "b.go"}}, nil
+	}}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+	waitExecutorDone(t, done)
+	if calls != 3 {
+		t.Fatalf("step ran %d times, want 3 (the reused F1 is a new finding)", calls)
+	}
+}
+
+// The stop is Review-only: the Test budget-cut gate re-emitting its fixed ID
+// after an operator fix parks as before and still accepts a bare fix.
+func TestExecutor_TestUnvalidatedWorkRepeatIsNotStopped(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	cfg := &config.Config{}
+
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepTest, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		if calls >= 3 {
+			return &StepOutcome{}, nil
+		}
+		return &StepOutcome{NeedsApproval: true, Findings: `{"findings":[{"id":"test-agent-unvalidated-work","severity":"error","description":"unvalidated work","action":"ask-user"}],"summary":"1"}`}, nil
+	}}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepTest, types.ActionFix, []string{"test-agent-unvalidated-work"}); err != nil {
+		t.Fatalf("first fix: %v", err)
+	}
+	waitForRounds(t, database, stepResultIDFor(t, database, run.ID, types.StepTest), 2)
+	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusFixReview)
+	if marker := repeatMarker(stepFindingsFor(t, database, run.ID, types.StepTest)); marker != nil {
+		t.Fatalf("Test gate carries a repeat marker: %+v", marker)
+	}
+	if err := exec.Respond(types.StepTest, types.ActionFix, []string{"test-agent-unvalidated-work"}); err != nil {
+		t.Fatalf("bare fix at the Test gate refused: %v", err)
+	}
+	waitExecutorDone(t, done)
+	if calls != 3 {
+		t.Fatalf("step ran %d times, want 3", calls)
 	}
 }

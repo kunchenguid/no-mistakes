@@ -206,7 +206,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		e.mu.Unlock()
 		return errors.New(refusal)
 	}
-	if action == types.ActionFix && e.waitingFixRefusal != "" && !carriesFixDiagnosis(instructions, addedFindings) {
+	if action == types.ActionFix && e.waitingFixRefusal != "" && !carriesFixDiagnosis(findingIDs, instructions, addedFindings) {
 		refusal := e.waitingFixRefusal
 		e.mu.Unlock()
 		return errors.New(refusal)
@@ -1199,7 +1199,7 @@ rounds:
 		// round is persisted so the parked round and the step carry the same
 		// findings, which is what gate recovery checks.
 		repeatStopped := false
-		if stepName != types.StepCI {
+		if stepName == types.StepReview {
 			if repeats := e.repeatedFixedFindings(sr.ID, roundFindings, roundNum); len(repeats) > 0 {
 				repeatStopped = true
 				effectiveFindings = withRepeatFindingStopJSON(effectiveFindings, repeats)

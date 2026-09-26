@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -134,13 +133,11 @@ func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 		name: types.StepLint,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
-			// Always return NeedsApproval to exhaust auto-fix attempts. Each
-			// round reports a NEW finding: the same one again would be a repeat
-			// finding, which stops the fixer before the budget runs out.
+			// Always return NeedsApproval to exhaust auto-fix attempts
 			return &StepOutcome{
 				NeedsApproval: true,
 				AutoFixable:   true,
-				Findings:      fmt.Sprintf(`{"findings":[{"severity":"warning","description":"style issue %d","action":"auto-fix"}],"summary":"lint issue"}`, callCount),
+				Findings:      `{"findings":[{"severity":"warning","description":"style issue","action":"auto-fix"}],"summary":"lint issue"}`,
 			}, nil
 		},
 	}
