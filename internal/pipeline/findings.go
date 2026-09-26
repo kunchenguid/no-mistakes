@@ -511,17 +511,18 @@ func normalizeCoveredPath(value string) string {
 
 // resolveVerifiedFindingsJSON returns outstandingRaw minus every finding whose
 // ID is in pendingIDs and for which this round is a POSITIVE verification
-// record: the round listed the finding's file in its ReviewedPaths coverage,
-// that path is in the trusted reviewable set, and the round's own output
-// (thisRoundRaw) neither re-reports the defect nor
-// reports anything else at all in that same file.
+// record: for a file-anchored finding, the round listed the finding's file in
+// its ReviewedPaths coverage, that path is in the trusted reviewable set, and
+// the round's own output (thisRoundRaw) neither re-reports the defect nor
+// reports anything else at all in that same file. The file-less exception
+// below requires coverage of the entire trusted reviewable set.
 //
 // This is the only way a selected-and-fixed finding leaves the outstanding set
 // besides an explicit operator action (approve/skip/abort). A file the round
 // did not list, a missing coverage record, a round that re-reports the defect,
 // or a round that reports ANY OTHER finding in the same file all leave the
 // item in place. Any file-less finding in the current round also blocks
-// verification of every selected file-anchored item in that round: silence, or
+// verification of every selected item in that round: silence, or
 // a round that did not look, is never resolution, and neither is an ambiguous
 // report that might be the same defect shifted to another line or reworded.
 // Without this last check, a fix that moves a defect within the same file and

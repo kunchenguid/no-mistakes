@@ -346,9 +346,9 @@ gives the reviewer no licence to soften a finding it did not ask about.
 ### The finalize turn re-adjudicates what it carried in
 
 That matters for the outstanding finding set. A review finding stays outstanding
-until a later round positively verifies it - covers its file in `reviewed_paths`
-and stops reporting it - and a fix round earns that right for the findings it
-dispatched to the fixer.
+until a later round positively verifies it under the
+[Review carry-forward rule](/no-mistakes/reference/pipeline-steps/#review),
+and a fix round earns that right for the findings it dispatched to the fixer.
 
 An answer round earns no pending-verification entries of its own, and the set it
 carries in is not given any. The one exception is inherited rather than earned
