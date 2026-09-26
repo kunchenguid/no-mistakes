@@ -241,14 +241,21 @@ Run the pipeline and decide on its findings as they come up:
      Report the missing evidence and its cause from ` + "`run.automatic_skips`" + `,
      bound to the full ` + "`run.head_sha`" + `. This is neither CI readiness nor a
      failing code verdict. Explicit per-run skips retain their existing behavior.
-   - ` + "`failed`" + ` or ` + "`cancelled`" + ` - they did not; read the output and address it.
-     Follow the custody guidance below before fixing whatever the output
-     points at (a failing test, a lint error, a finding you skipped). Commit the
-     fix on the same feature branch, then submit it with
+   - ` + "`failed`" + ` or ` + "`cancelled`" + ` - they did not; classify the terminal failure
+     against the authorized task before choosing a fix or retry.
+     Preserve failed evidence and prior fixes; follow the custody guidance below.
+     Keep unresolved deferred findings, their evidence and disposition, and any
+     affected delivery restrictions in force across terminal outcomes and
+     authorized retries until legitimately resolved.
+     Retry only work still required by that contract: make a bounded in-scope
+     fix, run focused verification, and otherwise explain the remaining
+     limitation. Honor the applicable policy owner's cumulative review limit
+     across restarts without resetting its count. In Firstmate-dispatched work,
+     Firstmate owns finding disposition and that limit.
+     Commit an authorized fix on the same feature branch, then submit it with
      ` + "`no-mistakes axi run --intent \"...\"`" + `. A fresh run or ` + "`rerun`" + ` is a
-     *between-runs* action, correct only after a terminal outcome like this -
-     never mid-run to circumvent a gate. Do not leave the user at a ` + "`failed`" + `
-     outcome without either retrying or explaining what blocks it.
+     *between-runs* action, correct only after a terminal outcome like this,
+     never mid-run to circumvent a gate.
 
 ` + "`no-mistakes rerun`" + ` keeps its existing head selection: the gate head, or the
 latest terminal run's verified unpublished preserved head while custody remains
