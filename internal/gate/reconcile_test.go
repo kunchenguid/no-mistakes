@@ -534,6 +534,12 @@ func TestReconcileStaleBranchDecision41AExactLastPushedHead(t *testing.T) {
 				if err != nil || plan.Reconcile {
 					t.Fatalf("newer descendant was not preserved: plan=%+v err=%v", plan, err)
 				}
+			case "submitted_only", "abbreviated", "fresh_submission":
+				// The pipeline fix is a patch-equivalent of the live one, so
+				// only the conflict-rewritten commit is named.
+				if err == nil || plan.Reconcile || !strings.Contains(err.Error(), "refusing to reconcile") || !strings.Contains(err.Error(), submittedHead) || strings.Contains(err.Error(), publishedHead) {
+					t.Fatalf("mirror head %s bypassed the preservation proof or named its equivalent: plan=%+v err=%v", privateHead, plan, err)
+				}
 			default:
 				if err == nil || plan.Reconcile || !strings.Contains(err.Error(), "refusing to reconcile") || !strings.Contains(err.Error(), privateHead) {
 					t.Fatalf("mirror head %s bypassed the preservation proof: plan=%+v err=%v", privateHead, plan, err)
@@ -612,4 +618,76 @@ func TestReconcileStaleBranchRefusesPatchesDiscardedByOursMerge(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReconcileStaleBranchRebasedEquivalentsSurviveALaterEdit covers a private
+// head whose commits were rebased onto a moved base and then edited by a later
+// live commit. Merging the private head into the live head conflicts, which
+// alone used to refuse every commit, although the rebased copies carry the
+// same stable patch IDs and the later commit only changed their lines. A later
+// commit that reverts the rebased copy instead still refuses: a hunk that
+// merges cleanly is content the live head lacks. So does a rebased copy found
+// only on a side branch an ours merge discarded while the mainline wrote the
+// same lines differently: survival is proven on first-parent history only.
+func TestReconcileStaleBranchRebasedEquivalentsSurviveALaterEdit(t *testing.T) {
+	for _, later := range []string{"edit", "revert", "merged_away"} {
+		t.Run(later, func(t *testing.T) {
+			work := initReconcileRepo(t)
+			base := reconcileGit(t, work, "rev-parse", "HEAD")
+			commit := func(name, content, message string) string {
+				t.Helper()
+				writeReconcileFile(t, work, name, content)
+				reconcileGit(t, work, "add", "-A")
+				reconcileGit(t, work, "commit", "-m", message)
+				return reconcileGit(t, work, "rev-parse", "HEAD")
+			}
+			const widget = "one\ntwo\nthree\n"
+			privateHead := commit("widget.txt", widget, "feat: widget")
+
+			reconcileGit(t, work, "checkout", "--detach", base)
+			advanced := commit("base.txt", "base advanced\n", "advance base")
+			rebased := commit("widget.txt", widget, "feat: widget, rebased")
+			var liveHead string
+			switch later {
+			case "merged_away":
+				reconcileGit(t, work, "checkout", "--detach", advanced)
+				commit("widget.txt", "one\nTWO\nthree\n", "feat: widget, written differently")
+				reconcileGit(t, work, "merge", "--no-ff", "-s", "ours", rebased, "-m", "discard the rebased copy")
+				liveHead = reconcileGit(t, work, "rev-parse", "HEAD")
+			case "edit":
+				liveHead = commit("widget.txt", "one\nTWO\nthree\n", "fix: widget")
+			case "revert":
+				reconcileGit(t, work, "revert", "--no-edit", "HEAD")
+				liveHead = reconcileGit(t, work, "rev-parse", "HEAD")
+			}
+			if _, err := reconcileGitAllowFail(work, "merge-tree", "--write-tree", liveHead, privateHead); later == "edit" && err == nil {
+				t.Fatal("fixture must make the direct merge conflict")
+			}
+
+			gateDir := filepath.Join(t.TempDir(), "gate.git")
+			reconcileGit(t, "", "init", "--bare", gateDir)
+			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			if later != "edit" {
+				if err == nil || result.Reconciled || !strings.Contains(err.Error(), privateHead) {
+					t.Fatalf("reverted content was reconciled or not named: result=%+v err=%v", result, err)
+				}
+				if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
+					t.Fatalf("refusal moved private ref: %s", got)
+				}
+				return
+			}
+			if err != nil || !result.Reconciled {
+				t.Fatalf("rebased equivalent was refused: result=%+v err=%v", result, err)
+			}
+			if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag); got != privateHead {
+				t.Fatalf("archive = %s, want %s", got, privateHead)
+			}
+		})
+	}
+}
+
+func reconcileGitAllowFail(dir string, args ...string) (string, error) {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }

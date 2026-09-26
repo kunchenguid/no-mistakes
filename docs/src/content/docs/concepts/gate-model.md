@@ -100,9 +100,20 @@ ordinary push. Reconciliation compares exact commit heads and per-file
 `git patch-id --stable` identities; commit messages are not evidence. Historical
 patch matches also require a clean three-way merge of the private head into the
 live head whose resulting tree equals the live tree. This prevents changes
-discarded by a merge or revert from being counted as surviving content. If that
-survival check cannot prove preservation, the private-only range is reported
-as at risk.
+discarded by a merge or revert from being counted as surviving content.
+
+A rebased branch whose later commits edit the lines the private commits wrote
+(for example a new run on a branch an earlier run already published) makes that
+merge conflict although nothing was dropped. Survival is then proven in two
+halves instead: merging with every conflicting hunk resolved toward the live
+head must still leave the live tree unchanged, so a private hunk that merges
+cleanly - content the live head reverted or never had - still refuses; and a
+commit on the live head's first-parent history touching the private paths must
+pass the clean-merge check, placing all of the private content in the live
+history. A side branch discarded by a merge never serves as that point.
+
+If survival cannot be proven, the commits without a patch match are reported as
+at risk; when every commit matched, the whole private-only range is.
 
 **Accepted Decision 41-A (issue #983):** pipeline publication may replace a
 private mirror head that is **exactly equal to a head the publishing run itself
@@ -125,7 +136,8 @@ creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
 head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
 unproven private content refuses before upstream publication, leaves the
-private branch untouched, and names every at-risk commit. An ancestor already
+private branch untouched, and names every at-risk commit, never a rebased
+equivalent beside it. An ancestor already
 supports an ordinary fast-forward. A gate head that is a newer descendant of
 the published head stays untouched, including through the detached worktree's
 shared branch refs.
