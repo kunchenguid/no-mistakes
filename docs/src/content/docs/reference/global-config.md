@@ -127,7 +127,7 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `devin`, `acp:<target>` |
+| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `devin`, `quota-auto`, `acp:<target>` |
 | Default | `auto`                                                                                      |
 
 `auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, `cursor`, then `devin`.
@@ -151,6 +151,55 @@ If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Fallback candidates share the invocation's existing bounded context and use only its remaining time; once that context expires or is cancelled, no further candidate is announced or started.
 Structured findings and schema/output validation problems do not trigger fallback.
+
+`quota-auto` picks the agent from [`agent_candidates`](#agent_candidates) by measured provider quota instead of pinning one:
+
+```yaml
+agent: quota-auto
+
+agent_candidates: [claude, codex, opencode@zai]
+```
+
+The mode is [global-only](#agent_candidates), and a repository's trusted `agent` override outranks it.
+
+### agent_candidates
+
+Ordered candidate list for [`agent: quota-auto`](#agent). Only meaningful with that mode; setting it alongside any other `agent` value is a config error rather than a silently ignored list.
+
+|         |                                                  |
+| ------- | ------------------------------------------------ |
+| Type    | `string[]`                                       |
+| Default | Empty                                            |
+
+Each entry is a harness name, optionally with an explicit evidence provider as `harness@provider`:
+
+- `claude`, `codex`, `grok`, `copilot`, `cursor`, `devin`, `antigravity` route through the provider of the same name (`antigravity` uses quota-axi's `agy`).
+- `opencode` routes through quota-axi's `opencode-go`, the harness's own subscription.
+- `pi`, `rovodev`, and `acp:<target>` have no provider of their own, because their quota belongs to whichever vendor you pointed them at. Write them explicitly (`pi@zai`) or pin the model they run (see below) to make them routable.
+- At most eight entries; duplicates are dropped.
+
+At every run start, and again before each later step, the daemon reads `quota-axi models --json` and applies the same three gates to the candidates in list order:
+
+1. **Eligibility** — the provider must be set up and its credential usable, and the harness binary must resolve.
+2. **Reasoning-class fit** — the step's class must be one the provider can serve. `review`, `test`, `rebase`, and `ci` need a high class; `document`, `lint`, `pr`, `push`, and `intent` accept a medium one, and an unknown step (a custom gate) is treated as high. The class comes from quota-axi's model catalog: either the provider's own catalog entries, or - when [`agent_config`](#agent_config) pins a model for that harness - that model's entry, which is also how a harness the catalog does not describe (for example `opencode`) becomes routable.
+3. **Runway feasibility** — the provider's projected runway must cover the step's configured ceiling (`agent_timeout`, or `review_agent_timeout` / `test_agent_timeout` for those steps). A runway quota-axi cannot project is refused, never assumed sufficient.
+
+Among the candidates that pass every gate, the best known standing wins: quota-axi's `spendPriority` first (a positive value means the allowance is otherwise on track to expire unused), then the remaining percentage, then the longer runway, and finally your list order.
+
+A harness already in use is kept when it still passes every gate, so an engine switch only happens when the harness in use can no longer serve the step ahead. Every decision - the opening one and each switch - is recorded on the run with the per-candidate evidence behind it.
+
+When no candidate passes, the run fails before the step with the reason each candidate was refused, and nothing is guessed. A repository whose trusted `.no-mistakes.yaml` pins `agent` gets that agent, and `agent_candidates` is inert for it.
+
+### quota_axi_path
+
+Executable used to read provider quota evidence for [`agent: quota-auto`](#agent).
+
+|         |               |
+| ------- | ------------- |
+| Type    | `string`      |
+| Default | `quota-axi`   |
+
+A bare name is resolved from the daemon's effective `PATH`; an explicit path is executed directly. The tool is invoked as `quota-axi models --json`, and its own caching applies, including `QUOTA_AXI_MAX_AGE`. See the [quota-axi project](https://github.com/kunchenguid/quota-axi) for the providers it can read.
 
 ### acpx_path
 

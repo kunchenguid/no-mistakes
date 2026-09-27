@@ -166,6 +166,27 @@ CREATE TABLE IF NOT EXISTS run_agent_sessions (
     PRIMARY KEY (run_id, role)
 );
 
+-- Every routing decision a quota-auto run made, appended in order. The opening
+-- selection and any mid-run switch are both here, so a run's engine can be read
+-- back after the fact instead of being reconstructed from logs: which harness
+-- ran, which provider's allowance backed it, and the per-candidate evidence the
+-- choice was made on.
+CREATE TABLE IF NOT EXISTS run_agent_selections (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step       TEXT NOT NULL,
+    reason     TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    provider   TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    evidence   TEXT NOT NULL,
+    report_at  INTEGER,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_agent_selections_run
+    ON run_agent_selections (run_id, id);
+
 -- User-attachment URLs are durable for the life of a run so restarting the
 -- pipeline from Review can render the same evidence without uploading another
 -- orphaned GitHub asset. The digest prevents reuse if a file is overwritten at

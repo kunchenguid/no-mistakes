@@ -71,6 +71,9 @@ type Executor struct {
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
 	onPRMerged            func(context.Context, string)
+	// stepBoundary is the run agent's re-selection hook (see
+	// SetStepBoundaryFunc). Nil for every selection mode that pins an engine.
+	stepBoundary func(context.Context, types.StepName) error
 }
 
 // SetOnPRMerged registers a best-effort hook invoked after a merged PR state
@@ -98,6 +101,23 @@ func (e *Executor) SetSkippedSteps(steps []types.StepName) {
 	for _, step := range steps {
 		e.skips[step] = true
 	}
+}
+
+// SetStepBoundaryFunc registers a hook the executor calls once per step, before
+// that step's agent chain is built.
+//
+// Step boundaries are the only points at which a run's harness may change, which
+// is what makes this a boundary hook rather than an agent decorator: within a step
+// the executor reuses one delegate across review rounds, fix turns and retries,
+// where a harness swap would drop the native session those turns are built on. An
+// error from the hook fails the run, which is how a quota-auto run that can no
+// longer route anywhere reports its per-candidate evidence instead of starting a
+// step on a harness that cannot serve it.
+func (e *Executor) SetStepBoundaryFunc(fn func(context.Context, types.StepName) error) {
+	if e == nil {
+		return
+	}
+	e.stepBoundary = fn
 }
 
 // NewExecutor creates a pipeline executor.
@@ -277,6 +297,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			state.outstandingFindings = ""
 			state.selectedOutstandingIDs = nil
 		}
+		if err := e.reassessStepBoundary(ctx, step.Name()); err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
 		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
@@ -308,6 +331,14 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
 	}
 	return nil
+}
+
+// reassessStepBoundary runs the run agent's re-selection hook, if the run has one.
+func (e *Executor) reassessStepBoundary(ctx context.Context, step types.StepName) error {
+	if e.stepBoundary == nil {
+		return nil
+	}
+	return e.stepBoundary(ctx, step)
 }
 
 func (e *Executor) stepIndex(name types.StepName) (int, error) {
@@ -769,6 +800,9 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if revalidating && e.steps[index].Name() == types.StepReview {
 			state.outstandingFindings = ""
 			state.selectedOutstandingIDs = nil
+		}
+		if err := e.reassessStepBoundary(ctx, e.steps[index].Name()); err != nil {
+			return e.failRun(run, repo, err, ctx)
 		}
 		skipRemaining, restartFrom, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, state)
 		if err != nil {
