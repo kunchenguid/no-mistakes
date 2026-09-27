@@ -381,8 +381,8 @@ Risk assessment (after listing all findings):
 		reviewScope,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
-		historySection,
 		reviewCoverageSection(reviewable),
+		historySection,
 		pathInstructions,
 		agent.MemoryFilesRule,
 		// LAST, so the on-prompt is the off-prompt plus this section and
