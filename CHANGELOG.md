@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.85.0](https://github.com/kunchenguid/no-mistakes/compare/v1.84.0...v1.85.0) (2026-09-27)
+
+
+### Features
+
+* **pipeline:** add configurable PR appendix modes ([#1228](https://github.com/kunchenguid/no-mistakes/issues/1228)) ([8635e4b](https://github.com/kunchenguid/no-mistakes/commit/8635e4b36e7bd0a1de2b9206ec741d485f7673ab))
+
 ## [1.84.0](https://github.com/kunchenguid/no-mistakes/compare/v1.83.2...v1.84.0) (2026-09-26)
 
 
