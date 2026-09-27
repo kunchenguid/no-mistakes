@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // These tests close the repeated partial reviewed_paths failure: a clean
@@ -349,5 +350,81 @@ func TestReviewStep_ReviewPromptEnumeratesTheCoverageContract(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "never treats an omission as clean") {
 		t.Fatal("the coverage contract must keep the honest-reporting rule")
+	}
+}
+
+// TestReviewStep_CoverageCompletionOverridesStaleRiskLabel proves the focused
+// completion turn's own risk assessment replaces a stale, lower one: the
+// first pass judged only feature.txt as clean and low-risk, but the
+// completion turn - reviewing the file the first pass never looked at -
+// finds a real defect and reports high risk. The merged round must carry the
+// completion turn's risk level and rationale, not the first pass's now-stale
+// "low"/"clean" label next to a newly-added error-severity finding.
+func TestReviewStep_CoverageCompletionOverridesStaleRiskLabel(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := twoFileRepo(t)
+	firstPass := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`
+	completion := `{"findings":[{"id":"c-1","severity":"error","file":"feature2.txt","line":1,"description":"unsafe write","action":"auto-fix"}],"risk_level":"high","risk_rationale":"feature2.txt has a serious defect","risk_scope":"source-or-external","reviewed_paths":["feature2.txt"]}`
+	ag := &mockAgent{name: "coverage-risk"}
+	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if strings.Contains(opts.Prompt, coverageCompletionMarker) {
+			return &agent.Result{Output: json.RawMessage(completion)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(firstPass)}, nil
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("the completion turn's error-severity finding must park the round")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	if findings.RiskLevel != "high" {
+		t.Fatalf("risk_level = %q, want the completion turn's higher \"high\", not the first pass's stale \"low\"", findings.RiskLevel)
+	}
+	if findings.RiskRationale != "feature2.txt has a serious defect" {
+		t.Fatalf("risk_rationale = %q, want the completion turn's rationale explaining the new finding", findings.RiskRationale)
+	}
+}
+
+// TestReviewStep_CoverageCompletionQuestionParksTheRound proves the focused
+// completion turn's own review-question protocol section is read back: that
+// turn can legitimately ask a substantiated question about the file it was
+// sent to cover, and the round must park on it exactly as if the initial
+// pass had asked it, instead of certifying a head with an unread open
+// question on disk.
+func TestReviewStep_CoverageCompletionQuestionParksTheRound(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := twoFileRepo(t)
+	var convDir string
+	firstPass := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`
+	ag := &mockAgent{name: "coverage-question"}
+	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if strings.Contains(opts.Prompt, coverageCompletionMarker) {
+			if err := appendAgentQuestionLine(convDir, `{"id":"q1","kind":"question","question":"is feature2.txt's fallback intended?","options":["yes","no"],"weight":"major","file":"feature2.txt","line":1}`); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean but a real question remains","risk_scope":"source-or-external","reviewed_paths":["feature2.txt"]}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(firstPass)}, nil
+	}
+	sctx := withReviewConversation(newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{}))
+	convDir = reviewConversationDir(sctx)
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("a question the completion turn asked must park the round, not certify the head")
+	}
+	if got := questionFindings(t, outcome.Findings); len(got) != 1 {
+		t.Fatalf("open question findings = %d, want 1 read back from the completion turn's own conversation write", len(got))
 	}
 }
