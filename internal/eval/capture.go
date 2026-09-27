@@ -432,7 +432,10 @@ func baselineForRound(invocations []db.AgentInvocation, round int) BaselineMetri
 	seen := false
 	complete := true
 	for _, inv := range invocations {
-		if inv.StepName != string(types.StepReview) || inv.Round != round || inv.Purpose != "review" {
+		if inv.StepName != string(types.StepReview) || inv.Round != round {
+			continue
+		}
+		if inv.Purpose != "review" && inv.Purpose != "review-coverage" {
 			continue
 		}
 		seen = true

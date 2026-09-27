@@ -361,15 +361,16 @@ func TestBaselineForRoundIncludesOnlyCompleteReviewInvocationMetrics(t *testing.
 	invocations := []db.AgentInvocation{
 		{StepName: string(types.StepReview), Round: 2, Purpose: "review-fix", DurationMS: 900, DeltaInputTokens: &input, DeltaOutputTokens: &output, DeltaCacheReadTokens: &cache},
 		{StepName: string(types.StepReview), Round: 2, Purpose: "review", DurationMS: 100, DeltaInputTokens: &input, DeltaOutputTokens: &output, DeltaCacheReadTokens: &cache},
+		{StepName: string(types.StepReview), Round: 2, Purpose: "review-coverage", DurationMS: 50, DeltaInputTokens: &input, DeltaOutputTokens: &output, DeltaCacheReadTokens: &cache},
 	}
 	baseline := baselineForRound(invocations, 2)
-	if baseline.DurationMS != 100 || !baseline.TokensReported || baseline.InputTokens != 100 || baseline.OutputTokens != 20 || baseline.CacheReadTokens != 30 || baseline.FreshInputTokens != 70 {
-		t.Fatalf("review baseline = %#v", baseline)
+	if baseline.DurationMS != 150 || !baseline.TokensReported || baseline.InputTokens != 200 || baseline.OutputTokens != 40 || baseline.CacheReadTokens != 60 || baseline.FreshInputTokens != 140 {
+		t.Fatalf("review baseline = %#v, want the focused coverage-completion turn's cost included alongside the initial review turn's, and the fix round's excluded", baseline)
 	}
 
 	invocations = append(invocations, db.AgentInvocation{StepName: string(types.StepReview), Round: 2, Purpose: "review", DurationMS: 50})
 	baseline = baselineForRound(invocations, 2)
-	if baseline.DurationMS != 150 || baseline.TokensReported || baseline.InputTokens != 0 || baseline.OutputTokens != 0 || baseline.CacheReadTokens != 0 || baseline.FreshInputTokens != 0 {
+	if baseline.DurationMS != 200 || baseline.TokensReported || baseline.InputTokens != 0 || baseline.OutputTokens != 0 || baseline.CacheReadTokens != 0 || baseline.FreshInputTokens != 0 {
 		t.Fatalf("incomplete review baseline = %#v", baseline)
 	}
 }
