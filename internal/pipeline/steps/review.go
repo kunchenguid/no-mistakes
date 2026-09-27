@@ -495,19 +495,8 @@ Risk assessment (after listing all findings):
 	// must not have a fresh review inherit questions an earlier run asked.
 	// Delivering an answer to a finalize turn is the read-side case and is
 	// handled above; this is the ask-side one.
-	conv, err := loadReviewConversation(sctx, askDir)
-	if err != nil {
+	if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
 		return nil, err
-	}
-	recordAnsweredQuestions(sctx, conv)
-	questionFindings := openReviewQuestionFindings(conv)
-	if len(questionFindings) > 0 {
-		if conv.QuestionsIncomplete {
-			sctx.Log("review parked: the reviewer's question history could not be read in full, so answers are refused and this gate needs a human decision")
-		} else {
-			sctx.Log(fmt.Sprintf("review is waiting on answers to %d question(s)", len(conv.Open())))
-		}
-		findings.Items = append(findings.Items, questionFindings...)
 	}
 	needsApproval := hasBlockingFindings(findings.Items)
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
@@ -527,7 +516,11 @@ Risk assessment (after listing all findings):
 		// nothing to fix. The completion turn keeps the operator out of that
 		// loop; whatever is still uncovered after it parks with the explicit
 		// remainder named, so a partial or fabricated record never approves.
-		findings = s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable)
+		completed, err := s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
+		if err != nil {
+			return nil, err
+		}
+		findings = completed
 		needsApproval = hasBlockingFindings(findings.Items)
 		if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 			sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
@@ -602,12 +595,12 @@ func reviewCoverageCompletionSection(missing []string) string {
 // keeps the strict coverage rule intact - the union is re-checked by
 // reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
 // still fails the round and is named in the park message.
-func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string) Findings {
+func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
 	missing := uncoveredReviewablePaths(findings.ReviewedPaths, reviewable)
 	if len(missing) == 0 {
 		// Nothing in-scope is missing; the park comes from out-of-scope
 		// reviewed_paths entries, which more review cannot cure.
-		return findings
+		return findings, nil
 	}
 	sctx.Log(fmt.Sprintf("review coverage incomplete; running one focused review pass over %d unverified file(s): %s", len(missing), strings.Join(missing, ", ")))
 	completionOpts := opts
@@ -616,16 +609,74 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 	result, err := s.runReviewAgent(sctx, "agent review coverage", role, completionOpts)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("focused coverage pass failed (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
-		return findings
+		return findings, nil
 	}
 	completion, err := parseReviewAnalyzerOutput(result)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("focused coverage pass returned invalid findings (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
-		return findings
+		return findings, nil
 	}
 	findings.Items = append(findings.Items, completion.Items...)
 	findings.ReviewedPaths = mergeReviewedPaths(findings.ReviewedPaths, completion.ReviewedPaths)
-	return findings
+	mergeReviewRisk(&findings, completion)
+	// The completion turn's prompt is the full review prompt, protocol section
+	// included, so it can legitimately ask its own substantiated question about
+	// the file it was sent to cover. That question lands in the same askDir
+	// this round already read once above; re-reading it here is the only way
+	// such a question is ever seen, since nothing reads the conversation again
+	// after this turn returns.
+	if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
+		return findings, err
+	}
+	return findings, nil
+}
+
+// mergeReviewRisk reconciles the round's risk assessment with a focused
+// completion turn's own assessment of the file(s) it covered. The two turns
+// judge disjoint parts of the same change, so the merged assessment is
+// whichever one is worse, taken as a whole triple: a completion turn that
+// finds a real defect the first pass missed must not leave the round
+// reporting the first pass's now-stale, lower risk level and rationale.
+func mergeReviewRisk(findings *Findings, completion Findings) {
+	if reviewRiskLevelRank(completion.RiskLevel) > reviewRiskLevelRank(findings.RiskLevel) {
+		findings.RiskLevel = completion.RiskLevel
+		findings.RiskRationale = completion.RiskRationale
+		findings.RiskScope = completion.RiskScope
+	}
+}
+
+func reviewRiskLevelRank(level string) int {
+	switch level {
+	case "high":
+		return 2
+	case "medium":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// appendOpenReviewQuestionFindings reads the review conversation the just-
+// finished turn left behind and appends one ask-user finding per still-open
+// question. Called after every turn whose prompt could have included the
+// question protocol (the initial pass and the focused coverage-completion
+// turn), since either can legitimately ask a new substantiated question.
+func (s *ReviewStep) appendOpenReviewQuestionFindings(sctx *pipeline.StepContext, askDir string, findings *Findings) error {
+	conv, err := loadReviewConversation(sctx, askDir)
+	if err != nil {
+		return err
+	}
+	recordAnsweredQuestions(sctx, conv)
+	questionFindings := openReviewQuestionFindings(conv)
+	if len(questionFindings) > 0 {
+		if conv.QuestionsIncomplete {
+			sctx.Log("review parked: the reviewer's question history could not be read in full, so answers are refused and this gate needs a human decision")
+		} else {
+			sctx.Log(fmt.Sprintf("review is waiting on answers to %d question(s)", len(conv.Open())))
+		}
+		findings.Items = append(findings.Items, questionFindings...)
+	}
+	return nil
 }
 
 // parseReviewAnalyzerOutput validates a review turn's structured findings. A
