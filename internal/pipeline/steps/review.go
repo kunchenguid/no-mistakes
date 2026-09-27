@@ -626,6 +626,17 @@ func reviewCoverageCompletionSection(missing []string) string {
 // reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
 // still fails the round and is named in the park message.
 func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
+	if sctx.EvalReplay {
+		// Eval replay scores the review's findings against captured gold and
+		// never consumes the reviewed_paths certification, so the completion
+		// turn - which exists only to satisfy that certification gate - must
+		// not run there. Spending it would add an agent invocation the
+		// captured baseline does not charge and double the candidate's
+		// recorded cost; replay runs exactly the captured review pass, schema
+		// retries included, and the strict coverage check below still parks
+		// the incomplete record.
+		return findings, nil
+	}
 	missing := uncoveredReviewablePaths(findings.ReviewedPaths, reviewable)
 	if len(missing) == 0 {
 		// Nothing in-scope is missing; the park comes from out-of-scope
@@ -684,18 +695,23 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 // finds a real defect the first pass missed must not leave the round
 // reporting the first pass's now-stale, lower risk level and rationale.
 //
-// An equal risk level is not automatically "no change": the completion turn
-// can find a defect in a file the first pass judged clean and still call the
-// change low risk, and keeping the first turn's "clean" rationale next to that
-// defect would misdescribe the round. When the levels tie, the completion
-// turn's assessment wins only if it reported a finding of its own; otherwise
-// the first turn's is still accurate and is kept.
+// A completion turn with no remaining finding of its own never moves the
+// assessment, whatever level it reports: the label has nothing behind it, and
+// its only findings may have been stripped as deferred pipeline-owned delivery
+// after the turn returned. With a surviving finding, the completion turn's
+// assessment wins when its level is at least as severe - an equal level still
+// replaces the first pass's now-stale "clean" rationale beside the new defect.
 func mergeReviewRisk(findings *Findings, completion Findings) {
-	firstRank, completionRank := reviewRiskLevelRank(findings.RiskLevel), reviewRiskLevelRank(completion.RiskLevel)
-	if completionRank < firstRank {
+	if len(completion.Items) == 0 {
+		// A completion turn that returned no remaining finding must not move the
+		// round's risk assessment, even when it labeled the change more severe.
+		// The label has no finding behind it, and its only findings may have
+		// been stripped as deferred pipeline-owned delivery after the turn
+		// returned, so adopting an elevated label here would let a dropped
+		// finding raise the risk level the round publishes.
 		return
 	}
-	if completionRank == firstRank && len(completion.Items) == 0 {
+	if reviewRiskLevelRank(completion.RiskLevel) < reviewRiskLevelRank(findings.RiskLevel) {
 		return
 	}
 	findings.RiskLevel = completion.RiskLevel

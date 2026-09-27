@@ -597,3 +597,84 @@ func TestReviewStep_CoverageCompletionReconcilesEqualRiskRationale(t *testing.T)
 		t.Fatalf("risk_rationale = %q, want the completion turn's rationale beside its own finding", findings.RiskRationale)
 	}
 }
+
+// TestReviewStep_CoverageCompletionDoesNotRaiseRiskWithoutARemainingFinding
+// pins the risk merge's fail-safe half: the completion turn's risk assessment
+// is evidence only when a finding of its own survives the merge. A completion
+// turn whose only finding was stripped as deferred pipeline-owned delivery
+// must not raise the round past the first pass's "low", or a dropped finding
+// would smuggle an elevated label onto a head the first pass judged clean.
+func TestReviewStep_CoverageCompletionDoesNotRaiseRiskWithoutARemainingFinding(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := twoFileRepo(t)
+	firstPass := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`
+	completion := `{"findings":[{"id":"c-1","severity":"error","file":"feature2.txt","line":1,"description":"PR is not open yet","action":"auto-fix","review_scope":"pipeline-owned-delivery"}],"risk_level":"high","risk_rationale":"delivery is missing","risk_scope":"source-or-external","reviewed_paths":["feature2.txt"]}`
+	ag := &mockAgent{name: "coverage-risk-stripped"}
+	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if strings.Contains(opts.Prompt, coverageCompletionMarker) {
+			return &agent.Result{Output: json.RawMessage(completion)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(firstPass)}, nil
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	var logs []string
+	sctx.Log = func(msg string) { logs = append(logs, msg) }
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("the deferred finding must be dropped and the completed coverage must certify the head")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	if findings.RiskLevel != "low" {
+		t.Fatalf("risk_level = %q, want the first pass's \"low\" kept; a completion turn with no remaining finding must not raise risk", findings.RiskLevel)
+	}
+	if findings.RiskRationale != "clean" {
+		t.Fatalf("risk_rationale = %q, want the first pass's clean rationale kept", findings.RiskRationale)
+	}
+}
+
+// TestReviewStep_EvalReplaySkipsTheCoverageCompletion pins the eval replay
+// contract: replay scores the review's findings against captured gold and
+// never consumes the reviewed_paths certification, so the focused completion
+// turn must not spend a second agent invocation there. The strict coverage
+// check still leaves the round parked on the incomplete record, so the
+// fail-closed guarantee is unchanged - replay simply does not pay for a gate
+// it never reads.
+func TestReviewStep_EvalReplaySkipsTheCoverageCompletion(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := twoFileRepo(t)
+	ag := newCoverageScriptedAgent(t, []coverageScript{
+		{onCompletion: false, output: coverageFindingJSON([]string{"feature.txt"})},
+		// Scripted so a pre-repair build actually spends the turn; the replay
+		// guard must never reach for it.
+		{onCompletion: true, output: coverageFindingJSON([]string{"feature2.txt"})},
+	})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.EvalReplay = true
+	var logs []string
+	sctx.Log = func(msg string) { logs = append(logs, msg) }
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("review invocations = %d, want 1 (replay must not spend the completion turn)", len(ag.calls))
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("replay's incomplete coverage must still park on the strict check")
+	}
+	if got := outcome.ReviewedPaths; len(got) != 1 || got[0] != "feature.txt" {
+		t.Fatalf("replay ReviewedPaths = %v, want the single reviewed file unchanged", got)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "review coverage is incomplete; parking for approval with 1 reviewable file(s) unverified: feature2.txt") {
+		t.Fatalf("the incomplete record must still be named explicitly; logs:\n%s", joined)
+	}
+}

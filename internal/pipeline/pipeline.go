@@ -29,6 +29,14 @@ type StepContext struct {
 	LogFile          func(string) // file-only log callback (not shown to user)
 	Fixing           bool         // true when re-executing after a "fix" action
 	SkipFixExecution bool         // replay an already-completed fix round's review turn only
+	// EvalReplay marks a review driven directly by `eval replay` rather than by
+	// the executor. Replay scores the review's findings against captured gold
+	// and never consumes the reviewed_paths certification, so ReviewStep skips
+	// its focused coverage-completion turn there: that turn exists only to
+	// satisfy the certification gate, and spending it in replay would add an
+	// agent invocation the captured baseline does not charge, doubling the
+	// candidate's recorded cost. Production never sets it.
+	EvalReplay bool
 	// FinalizingAnswers is true when re-executing after a types.ActionAnswer
 	// response: every question the reviewer left open has been answered, and
 	// the step resumes the SAME reviewer session with those answers so it can
