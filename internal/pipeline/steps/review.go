@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -544,6 +545,35 @@ Risk assessment (after listing all findings):
 // output that fails validation, including the first.
 const reviewAnalyzerMaxAttempts = 3
 
+// coveragePathLine renders one branch-controlled path as a single prompt line.
+// A git path may itself contain an embedded newline (changedPathList preserves
+// raw paths from the NUL-delimited diff), so printing one verbatim into a
+// bullet would let branch-controlled text escape the list and read as a
+// separate review instruction. Every line break and control character becomes
+// a visible backslash escape while ordinary bytes are kept, so the reviewer
+// still sees the exact path it must report in reviewed_paths but can never see
+// a second line the branch authored. A path that really contains one of those
+// characters therefore fails the coverage check loudly instead of silently
+// becoming prompt structure.
+func coveragePathLine(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case unicode.IsControl(r) || r == '\u2028' || r == '\u2029':
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // reviewCoverageSection enumerates the trusted reviewable changed-file set in
 // the review prompt. The coverage gate holds the round to exactly this set,
 // but the prompt used to leave its enumeration to the reviewer, which had to
@@ -557,7 +587,7 @@ func reviewCoverageSection(paths []string) string {
 	var b strings.Builder
 	b.WriteString("\nChanged files this review is held to (computed by the pipeline from the branch diff, minus ignored paths):\n")
 	for _, p := range paths {
-		fmt.Fprintf(&b, "- %s\n", p)
+		fmt.Fprintf(&b, "- %s\n", coveragePathLine(p))
 	}
 	b.WriteString("- A complete review pass examines every listed file and reports each one it actually read and judged in reviewed_paths.\n")
 	b.WriteString("- The pipeline treats any listed file missing from reviewed_paths as unreviewed and parks the head for approval; it never treats an omission as clean.\n")
@@ -573,7 +603,7 @@ func reviewCoverageCompletionSection(missing []string) string {
 	b.WriteString("\n\nFocused coverage completion:\n")
 	b.WriteString("- The review pass you just completed returned no blocking findings, but its reviewed_paths did not cover every changed file this review is held to. The files still unverified are:\n")
 	for _, p := range missing {
-		fmt.Fprintf(&b, "  - %s\n", p)
+		fmt.Fprintf(&b, "  - %s\n", coveragePathLine(p))
 	}
 	b.WriteString("- Review ONLY the files listed above in this turn: read each one's change in the branch diff, trace it, and judge it under the same rules as the rest of this review.\n")
 	b.WriteString("- Return the complete review JSON again. List in reviewed_paths exactly the files you examined in THIS turn; the pipeline merges your record with the earlier pass. Never list a file you did not examine.\n")
@@ -602,6 +632,13 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 		// reviewed_paths entries, which more review cannot cure.
 		return findings, nil
 	}
+	if hasInvalidReviewedPath(findings.ReviewedPaths) {
+		// The record already carries an entry that is not a path at all. That
+		// entry makes reviewedPathsCoverReviewable fail no matter what the
+		// completion turn covers, so the round can only park; running the turn
+		// would spend an agent call on an uncurable record.
+		return findings, nil
+	}
 	sctx.Log(fmt.Sprintf("review coverage incomplete; running one focused review pass over %d unverified file(s): %s", len(missing), strings.Join(missing, ", ")))
 	completionOpts := opts
 	completionOpts.Prompt = basePrompt + reviewCoverageCompletionSection(missing)
@@ -615,6 +652,15 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 	if err != nil {
 		sctx.Log(fmt.Sprintf("focused coverage pass returned invalid findings (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
 		return findings, nil
+	}
+	// The completion turn runs in the same pre-push phase as the first pass, so
+	// it is held to the same ownership boundary: a finding whose only claim is
+	// that this run's push, PR, or CI is not present yet is phase-invalid here
+	// exactly as it is there. Without this the merge re-imported the class the
+	// first pass had already dropped and parked the round on it.
+	if stripped, n := stripDeferredPipelineOwnedDeliveryFindings(completion); n > 0 {
+		sctx.Log(fmt.Sprintf("dropped %d deferred pipeline-owned delivery finding(s) from the focused coverage pass (owned by later push/PR/CI steps)", n))
+		completion = stripped
 	}
 	findings.Items = append(findings.Items, completion.Items...)
 	findings.ReviewedPaths = mergeReviewedPaths(findings.ReviewedPaths, completion.ReviewedPaths)
@@ -637,12 +683,24 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 // whichever one is worse, taken as a whole triple: a completion turn that
 // finds a real defect the first pass missed must not leave the round
 // reporting the first pass's now-stale, lower risk level and rationale.
+//
+// An equal risk level is not automatically "no change": the completion turn
+// can find a defect in a file the first pass judged clean and still call the
+// change low risk, and keeping the first turn's "clean" rationale next to that
+// defect would misdescribe the round. When the levels tie, the completion
+// turn's assessment wins only if it reported a finding of its own; otherwise
+// the first turn's is still accurate and is kept.
 func mergeReviewRisk(findings *Findings, completion Findings) {
-	if reviewRiskLevelRank(completion.RiskLevel) > reviewRiskLevelRank(findings.RiskLevel) {
-		findings.RiskLevel = completion.RiskLevel
-		findings.RiskRationale = completion.RiskRationale
-		findings.RiskScope = completion.RiskScope
+	firstRank, completionRank := reviewRiskLevelRank(findings.RiskLevel), reviewRiskLevelRank(completion.RiskLevel)
+	if completionRank < firstRank {
+		return
 	}
+	if completionRank == firstRank && len(completion.Items) == 0 {
+		return
+	}
+	findings.RiskLevel = completion.RiskLevel
+	findings.RiskRationale = completion.RiskRationale
+	findings.RiskScope = completion.RiskScope
 }
 
 func reviewRiskLevelRank(level string) int {
