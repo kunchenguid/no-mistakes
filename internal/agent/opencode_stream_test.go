@@ -6,740 +6,254 @@ import (
 )
 
 func TestOpencodeTokensToUsage(t *testing.T) {
+	reasoning := 7
 	tokens := &opencodeTokens{
-		Input:  100,
-		Output: 50,
-		Cache:  &opencodeCache{Read: 30, Write: 10},
+		Input:     100,
+		Output:    50,
+		Reasoning: &reasoning,
+		Cache:     &opencodeCache{Read: 20, Write: 10},
 	}
-	u := opencodeTokensToUsage(tokens)
-	if u.InputTokens != 100 {
-		t.Errorf("expected input 100, got %d", u.InputTokens)
+	usage := opencodeTokensToUsage(tokens)
+	if usage.InputTokens != 100 || usage.OutputTokens != 50 {
+		t.Errorf("input/output = %d/%d, want 100/50", usage.InputTokens, usage.OutputTokens)
 	}
-	if u.OutputTokens != 50 {
-		t.Errorf("expected output 50, got %d", u.OutputTokens)
+	if usage.CacheReadTokens != 20 || usage.CacheCreationTokens != 10 || !usage.CacheCreationReported {
+		t.Errorf("cache = %d/%d reported=%v, want 20/10 reported", usage.CacheReadTokens, usage.CacheCreationTokens, usage.CacheCreationReported)
 	}
-	if u.CacheReadTokens != 30 {
-		t.Errorf("expected cache read 30, got %d", u.CacheReadTokens)
+	if usage.ReasoningTokens != 7 || !usage.ReasoningReported {
+		t.Errorf("reasoning = %d reported=%v, want 7 reported", usage.ReasoningTokens, usage.ReasoningReported)
 	}
-	if u.CacheCreationTokens != 10 {
-		t.Errorf("expected cache creation 10, got %d", u.CacheCreationTokens)
+	if !usage.Reported {
+		t.Error("usage should be marked reported")
 	}
 }
 
-func TestOpencodeTokensToUsage_NoCache(t *testing.T) {
-	tokens := &opencodeTokens{Input: 100, Output: 50}
-	u := opencodeTokensToUsage(tokens)
-	if u.CacheReadTokens != 0 || u.CacheCreationTokens != 0 {
-		t.Error("expected zero cache tokens when cache is nil")
+func TestOpencodeTokensToUsage_NoCacheOrReasoning(t *testing.T) {
+	usage := opencodeTokensToUsage(&opencodeTokens{Input: 10, Output: 5})
+	if usage.CacheCreationReported {
+		t.Error("cache creation must not be reported without a cache block")
+	}
+	if usage.ReasoningReported {
+		t.Error("reasoning must not be reported when the shape omits it")
+	}
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
+		t.Errorf("input/output = %d/%d, want 10/5", usage.InputTokens, usage.OutputTokens)
 	}
 }
 
 func TestAccumulateUsage(t *testing.T) {
 	byMsg := map[string]TokenUsage{
-		"msg1": {InputTokens: 50, OutputTokens: 20},
-		"msg2": {InputTokens: 100, OutputTokens: 30, CacheReadTokens: 10},
+		"a": {InputTokens: 10, OutputTokens: 5, Reported: true},
+		"b": {InputTokens: 20, OutputTokens: 15, Reported: true},
 	}
 	total := accumulateUsage(byMsg)
-	if total.InputTokens != 150 {
-		t.Errorf("expected input 150, got %d", total.InputTokens)
-	}
-	if total.OutputTokens != 50 {
-		t.Errorf("expected output 50, got %d", total.OutputTokens)
-	}
-	if total.CacheReadTokens != 10 {
-		t.Errorf("expected cache read 10, got %d", total.CacheReadTokens)
+	if total.InputTokens != 30 || total.OutputTokens != 20 {
+		t.Errorf("total = %d/%d, want 30/20", total.InputTokens, total.OutputTokens)
 	}
 }
 
-func TestParseOpencodeSSE_PartDelta(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello "}}}
-
-data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"world"}}}
-
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello world"}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
+func frames(events ...string) string {
+	var b strings.Builder
+	for _, ev := range events {
+		b.WriteString("data: ")
+		b.WriteString(strings.ReplaceAll(ev, "{SID}", "s1"))
+		b.WriteString("\n\n")
 	}
+	return b.String()
+}
+
+func parseFrames(t *testing.T, input string) (*opencodeStreamState, []string) {
+	t.Helper()
 	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
+	state := newOpencodeStreamState("s1", func(text string) { chunks = append(chunks, text) })
+	if err := parseOpencodeSSE(strings.NewReader(input), state); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	return state, chunks
+}
+
+func TestParseOpencodeSSE_TextDeltasStreamAndEndedAddsNothing(t *testing.T) {
+	state, chunks := parseFrames(t, frames(
+		ocTextDelta("m1", 0, "hello "),
+		ocTextDelta("m1", 0, "world"),
+		ocTextEnded("m1", 0, "hello world"),
+		ocSucceeded(),
+	))
+	if strings.Join(chunks, "|") != "hello |world" {
+		t.Errorf("chunks = %q, want the two deltas and no re-emission", chunks)
 	}
-	if chunks[0] != "hello world" {
-		t.Errorf("expected chunk 'hello world', got %q", chunks[0])
+	if state.outputText() != "hello world" {
+		t.Errorf("outputText = %q, want %q", state.outputText(), "hello world")
 	}
-	if state.lastText != "hello world" {
-		t.Errorf("expected lastText 'hello world', got %q", state.lastText)
+	if state.outcome != opencodeOutcomeSucceeded {
+		t.Errorf("outcome = %q, want succeeded", state.outcome)
 	}
 }
 
-func TestParseOpencodeSSE_PartUpdated_TextStreamsChunk(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"streamed text"}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "streamed text" {
-		t.Errorf("expected streamed chunk 'streamed text', got %q", chunks[0])
+func TestParseOpencodeSSE_TextEndedWithoutDeltasStreamsWhole(t *testing.T) {
+	_, chunks := parseFrames(t, frames(ocTextEnded("m1", 0, "streamed text"), ocSucceeded()))
+	if len(chunks) != 1 || chunks[0] != "streamed text" {
+		t.Errorf("chunks = %q, want the whole text once", chunks)
 	}
 }
 
-func TestParseOpencodeSSE_PartUpdatedAfterDelta_StreamsOnlySuffix(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello"}}}
-
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello world"}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
+func TestParseOpencodeSSE_TextEndedNonPrefixSnapshotStreamsCorrectedText(t *testing.T) {
+	state, chunks := parseFrames(t, frames(
+		ocTextDelta("m1", 0, "helo"),
+		ocTextEnded("m1", 0, "hello"),
+		ocSucceeded(),
+	))
+	if strings.Join(chunks, "|") != "helo|hello" {
+		t.Errorf("chunks = %q, want the correction emitted whole", chunks)
 	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "hello world" {
-		t.Errorf("expected chunk 'hello world', got %q", chunks[0])
-	}
-	if state.lastText != "hello world" {
-		t.Errorf("expected lastText 'hello world', got %q", state.lastText)
-	}
-	if got := state.textParts["p1"]; got == nil || got.text != "hello world" {
-		t.Fatalf("expected cached part text 'hello world', got %#v", got)
+	if state.outputText() != "hello" {
+		t.Errorf("outputText = %q, want the corrected text", state.outputText())
 	}
 }
 
-func TestParseOpencodeSSE_DeltaAfterUpdated_AppendsFromLatestText(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello"}}}}
-
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello world"}}}}
-
-data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"!"}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
+func TestParseOpencodeSSE_StepEndedRecordsUsagePerAssistantMessage(t *testing.T) {
+	state, _ := parseFrames(t, frames(
+		ocStepEnded("m1", 10, 5),
+		ocStepEnded("m2", 20, 15),
+		ocStepEnded("m2", 30, 15), // a later snapshot of the same step replaces, not adds
+		ocSucceeded(),
+	))
+	if state.usage.InputTokens != 40 || state.usage.OutputTokens != 20 {
+		t.Errorf("usage = %d/%d, want 40/20", state.usage.InputTokens, state.usage.OutputTokens)
 	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "hello world!" {
-		t.Errorf("expected chunk 'hello world!', got %q", chunks[0])
-	}
-	if state.lastText != "hello world!" {
-		t.Errorf("expected lastText 'hello world!', got %q", state.lastText)
-	}
-	if got := state.textParts["p1"]; got == nil || got.text != "hello world!" {
-		t.Fatalf("expected cached part text 'hello world!', got %#v", got)
-	}
-}
-
-func TestParseOpencodeSSE_PartUpdated_NonPrefixSnapshotStreamsCorrectedText(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello world"}}}
-
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello there"}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "hello there" {
-		t.Errorf("expected corrected chunk 'hello there', got %q", chunks[0])
-	}
-	if state.lastText != "hello there" {
-		t.Errorf("expected lastText 'hello there', got %q", state.lastText)
-	}
-	if got := state.textParts["p1"]; got == nil || got.text != "hello there" {
-		t.Fatalf("expected cached part text 'hello there', got %#v", got)
-	}
-}
-
-func TestParseOpencodeSSE_PartUpdated_Text(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"final text","metadata":{"openai":{"phase":"final_answer"}}}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if state.lastFinalText != "final text" {
-		t.Errorf("expected lastFinalText 'final text', got %q", state.lastFinalText)
-	}
-	if state.lastText != "final text" {
-		t.Errorf("expected lastText 'final text', got %q", state.lastText)
-	}
-}
-
-func TestParseOpencodeSSE_StepFinish_Usage(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"step1","messageID":"msg1","type":"step-finish","tokens":{"input":100,"output":50,"cache":{"read":20,"write":5}}}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if state.usage.InputTokens != 100 {
-		t.Errorf("expected input 100, got %d", state.usage.InputTokens)
-	}
-	if state.usage.OutputTokens != 50 {
-		t.Errorf("expected output 50, got %d", state.usage.OutputTokens)
-	}
-	if state.usage.CacheReadTokens != 20 {
-		t.Errorf("expected cache read 20, got %d", state.usage.CacheReadTokens)
-	}
-}
-
-func TestParseOpencodeSSE_MessageUpdated_Usage(t *testing.T) {
-	input := `data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"msg1","role":"assistant","tokens":{"input":200,"output":80}}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if state.usage.InputTokens != 200 {
-		t.Errorf("expected input 200, got %d", state.usage.InputTokens)
-	}
-	if state.usage.OutputTokens != 80 {
-		t.Errorf("expected output 80, got %d", state.usage.OutputTokens)
+	if !state.usage.Reported {
+		t.Error("usage should be reported")
 	}
 }
 
 func TestParseOpencodeSSE_FiltersOtherSessions(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"other-session","field":"text","partID":"p1","delta":"should be ignored"}}}
-
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p2","messageID":"asst-msg","type":"text","text":"included"}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
+	other := strings.ReplaceAll(ocTextEnded("m9", 0, "not ours"), "{SID}", "s2")
+	otherEnd := strings.ReplaceAll(ocSucceeded(), "{SID}", "s2")
+	state, chunks := parseFrames(t, "data: "+other+"\n\ndata: "+otherEnd+"\n\n"+frames(ocTextEnded("m1", 0, "ours"), ocSucceeded()))
+	if len(chunks) != 1 || chunks[0] != "ours" {
+		t.Errorf("chunks = %q, want only this session's text", chunks)
 	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 || chunks[0] != "included" {
-		t.Errorf("expected 1 chunk 'included', got %v", chunks)
+	if state.outputText() != "ours" {
+		t.Errorf("outputText = %q", state.outputText())
 	}
 }
 
-func TestParseOpencodeSSE_FiltersUserMessageParts(t *testing.T) {
-	input := strings.Join([]string{
-		// User message comes first
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"this is the prompt"}}}}`,
-		``,
-		// Then assistant response
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Should only get the assistant response, not the user prompt
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "response" {
-		t.Errorf("expected 'response', got %q", chunks[0])
+func TestParseOpencodeSSE_SessionEventWithoutSessionIDIsNotOurs(t *testing.T) {
+	state, _ := parseFrames(t, frames(
+		ocEvent("session.execution.succeeded", `{}`),
+		ocTextEnded("m1", 0, "ours"),
+		ocSucceeded(),
+	))
+	if state.outputText() != "ours" {
+		t.Error("an unattributed execution end must not close this session's turn")
 	}
 }
 
-func TestParseOpencodeSSE_DoesNotLeakUserDeltasBeforeRoleIsKnown(t *testing.T) {
-	input := strings.Join([]string{
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":" details"}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "response" {
-		t.Fatalf("expected assistant response only, got %q", chunks[0])
-	}
-	if _, ok := state.textParts["p-user"]; ok {
-		t.Fatalf("expected user part to be dropped, got %#v", state.textParts["p-user"])
-	}
-	if state.lastText != "response" {
-		t.Fatalf("expected lastText to stay on assistant output, got %q", state.lastText)
-	}
-}
-
-func TestParseOpencodeSSE_DoesNotLeakUnknownDeltaBeforeUserRoleIsKnown(t *testing.T) {
-	input := strings.Join([]string{
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":"prompt"}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt details"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "response" {
-		t.Fatalf("expected assistant response only, got %q", chunks[0])
-	}
-}
-
-func TestParseOpencodeSSE_DoesNotClaimOrphanBeforeUserRoleArrives(t *testing.T) {
-	input := strings.Join([]string{
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":"prompt"}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "response" {
-		t.Fatalf("expected assistant response only, got %q", chunks[0])
-	}
-	if _, ok := state.textParts["p-user"]; ok {
-		t.Fatalf("expected user part to be dropped, got %#v", state.textParts["p-user"])
-	}
-	if state.lastText != "response" {
-		t.Fatalf("expected lastText to stay on assistant output, got %q", state.lastText)
-	}
-}
-
-func TestParseOpencodeSSE_DoesNotEmitDeltaOnlyAssistantWithoutOwnedPart(t *testing.T) {
-	input := strings.Join([]string{
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello "}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"world"}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:       "s1",
-		textParts:       make(map[string]*opencodeTextPart),
-		usageByMsg:      make(map[string]TokenUsage),
-		assistantMsgIDs: map[string]bool{"asst-msg": true},
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 0 {
-		t.Fatalf("expected no chunks, got %v", chunks)
-	}
-	if state.lastText != "" {
-		t.Fatalf("expected lastText to remain empty, got %q", state.lastText)
-	}
-	if got := state.textParts["p1"]; got == nil || got.text != "hello world" || got.messageID != "" {
-		t.Fatalf("expected cached part text 'hello world', got %#v", got)
-	}
-}
-
-func TestParseOpencodeSSE_SkipsUserDeltasAfterRoleIsKnown(t *testing.T) {
-	input := strings.Join([]string{
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":" more"}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 1 || chunks[0] != "response" {
-		t.Fatalf("expected assistant response only, got %v", chunks)
-	}
-}
-
-func TestParseOpencodeSSE_PreservesBufferedPartOrder(t *testing.T) {
-	input := strings.Join([]string{
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello "}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p2","messageID":"asst-msg","type":"text","text":"world"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	for i := 0; i < 200; i++ {
-		state := &opencodeStreamState{
-			sessionID:  "s1",
-			textParts:  make(map[string]*opencodeTextPart),
-			usageByMsg: make(map[string]TokenUsage),
-		}
-		var chunks []string
-		state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-		err := parseOpencodeSSE(strings.NewReader(input), state)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(chunks) != 2 {
-			t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
-		}
-		if chunks[0] != "hello " || chunks[1] != "world" {
-			t.Fatalf("expected buffered chunks in order, got %v on iteration %d", chunks, i)
-		}
-		if state.lastText != "world" {
-			t.Fatalf("expected lastText 'world', got %q on iteration %d", state.lastText, i)
-		}
-	}
-}
-
-func TestParseOpencodeSSE_SeparatesAfterToolStep(t *testing.T) {
-	input := strings.Join([]string{
-		// First assistant text
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"msg1","type":"text","text":"first"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"msg1","role":"assistant"}}}}`,
-		``,
-		// Tool step completes
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"step1","messageID":"msg1","type":"step-finish","tokens":{"input":10,"output":5}}}}}`,
-		``,
-		// Second assistant text
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p2","messageID":"msg1","type":"text","text":"second"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 3 {
-		t.Fatalf("expected 3 chunks (text, separator, text), got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "first" {
-		t.Errorf("expected 'first', got %q", chunks[0])
-	}
-	if chunks[1] != "\n\n" {
-		t.Errorf("expected separator '\\n\\n', got %q", chunks[1])
-	}
-	if chunks[2] != "second" {
-		t.Errorf("expected 'second', got %q", chunks[2])
+func TestParseOpencodeSSE_SeparatesTextAcrossSteps(t *testing.T) {
+	_, chunks := parseFrames(t, frames(
+		ocTextEnded("m1", 0, "first"),
+		ocStepEnded("m1", 10, 5),
+		ocToolCalled("m1"),
+		ocTextEnded("m2", 0, "second"),
+		ocSucceeded(),
+	))
+	if strings.Join(chunks, "|") != "first|\n\n|second" {
+		t.Errorf("chunks = %q, want text, separator, text", chunks)
 	}
 }
 
 func TestParseOpencodeSSE_DoesNotSeparateWhenToolStepPrecedesFirstText(t *testing.T) {
-	input := strings.Join([]string{
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"step1","messageID":"msg1","type":"step-finish","tokens":{"input":10,"output":5}}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"msg1","type":"text","text":"hello"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"msg1","role":"assistant"}}}}`,
-		``,
-		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"msg1","type":"text","text":"hello world"}}}}`,
-		``,
-		`data: {"payload":{"type":"session.idle"}}`,
-		``,
-		``,
-	}, "\n")
-
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
-	}
-	var chunks []string
-	state.onChunk = func(text string) { chunks = append(chunks, text) }
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks without separator, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "hello" {
-		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
-	}
-	if chunks[1] != " world" {
-		t.Errorf("expected suffix chunk ' world', got %q", chunks[1])
+	_, chunks := parseFrames(t, frames(
+		ocToolCalled("m1"),
+		ocStepEnded("m1", 10, 5),
+		ocTextDelta("m2", 0, "hello"),
+		ocTextEnded("m2", 0, "hello world"),
+		ocSucceeded(),
+	))
+	if strings.Join(chunks, "|") != "hello| world" {
+		t.Errorf("chunks = %q, want no leading separator", chunks)
 	}
 }
 
-func TestParseOpencodeSSE_MalformedEvents(t *testing.T) {
-	input := `data: not json at all
-
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"ok"}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-data: {"payload":{"type":"session.idle"}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
+func TestParseOpencodeSSE_ToolEventsMarkToolActivityAndStepEndAloneDoesNot(t *testing.T) {
+	state, _ := parseFrames(t, frames(ocStepEnded("m1", 1, 1), ocSucceeded()))
+	if state.toolInvoked {
+		t.Fatal("a step end alone is not tool activity: every turn emits one")
 	}
-
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if state.lastText != "ok" {
-		t.Errorf("expected lastText 'ok', got %q", state.lastText)
+	for _, ev := range []string{
+		ocToolCalled("m1"),
+		ocEvent("session.tool.success", `{"sessionID":"{SID}","assistantMessageID":"m1","id":"t1","content":[{"type":"text","text":"ok"}],"executed":false}`),
+		ocEvent("session.tool.failed", `{"sessionID":"{SID}","assistantMessageID":"m1","id":"t1","error":{"type":"tool.execution","message":"boom"},"executed":false}`),
+	} {
+		state, _ := parseFrames(t, frames(ev, ocSucceeded()))
+		if !state.toolInvoked {
+			t.Errorf("%s must count as tool activity", ev)
+		}
 	}
 }
 
-func TestParseOpencodeSSE_EmptyData(t *testing.T) {
-	input := "data: \n\ndata: {\"payload\":{\"type\":\"session.idle\"}}\n\n"
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
+func TestParseOpencodeSSE_ExecutionOutcomes(t *testing.T) {
+	failed, _ := parseFrames(t, frames(ocFailed(`{"type":"provider.rate-limit","message":"slow down","status":429}`)))
+	if failed.outcome != opencodeOutcomeFailed || failed.failure == nil || failed.failure.Type != "provider.rate-limit" || failed.failure.Status != 429 {
+		t.Errorf("failed outcome = %q failure = %+v", failed.outcome, failed.failure)
 	}
 
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	interrupted, _ := parseFrames(t, frames(ocInterrupted("shutdown")))
+	if interrupted.outcome != opencodeOutcomeInterrupted || interrupted.interruptReason != "shutdown" {
+		t.Errorf("interrupted outcome = %q reason = %q", interrupted.outcome, interrupted.interruptReason)
 	}
-	if state.lastText != "" {
-		t.Errorf("expected empty lastText, got %q", state.lastText)
+
+	// step.failed carries the error too; execution.failed's error wins when both arrive.
+	stepFailed, _ := parseFrames(t, frames(
+		ocEvent("session.step.failed", `{"sessionID":"{SID}","assistantMessageID":"m1","error":{"type":"provider.auth","message":"bad key","status":401}}`),
+		ocFailed(`{"type":"provider.auth","message":"bad key (execution)","status":401}`),
+	))
+	if stepFailed.failure == nil || stepFailed.failure.Message != "bad key (execution)" {
+		t.Errorf("failure = %+v, want the execution-level error", stepFailed.failure)
 	}
 }
 
-func TestParseOpencodeSSE_StreamEndWithoutIdle(t *testing.T) {
-	// Stream closes before session.idle - should not error
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"partial"}}}}
-
-data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
-
-`
-	state := &opencodeStreamState{
-		sessionID:  "s1",
-		textParts:  make(map[string]*opencodeTextPart),
-		usageByMsg: make(map[string]TokenUsage),
+func TestParseOpencodeSSE_StopsReadingAtExecutionEnd(t *testing.T) {
+	state, chunks := parseFrames(t, frames(
+		ocTextEnded("m1", 0, "done"),
+		ocSucceeded(),
+		ocTextEnded("m2", 0, "late"),
+	))
+	if len(chunks) != 1 || state.outputText() != "done" {
+		t.Errorf("events after the execution end must not be read: chunks=%q output=%q", chunks, state.outputText())
 	}
+}
 
-	err := parseOpencodeSSE(strings.NewReader(input), state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseOpencodeSSE_MalformedAndEmptyEventsAreSkipped(t *testing.T) {
+	input := "data: not json at all\n\ndata: \n\n" +
+		"data: {\"id\":\"e\",\"type\":\"session.text.ended\",\"data\":\"not an object\"}\n\n" +
+		frames(ocTextEnded("m1", 0, "ok"), ocSucceeded())
+	state, _ := parseFrames(t, input)
+	if state.outputText() != "ok" {
+		t.Errorf("outputText = %q, want %q", state.outputText(), "ok")
 	}
-	if state.lastText != "partial" {
-		t.Errorf("expected lastText 'partial', got %q", state.lastText)
+}
+
+func TestParseOpencodeSSE_IgnoresNonSessionAndV1Frames(t *testing.T) {
+	v1 := `{"payload":{"type":"session.idle","properties":{"sessionID":"s1"}}}`
+	input := "data: " + v1 + "\n\n" +
+		"data: " + ocEvent("project.updated", `{"id":"p"}`) + "\n\n" +
+		frames(ocTextEnded("m1", 0, "ok"))
+	state, _ := parseFrames(t, input)
+	if state.outcome != "" {
+		t.Errorf("a v1 idle frame must not end a v2 turn, outcome = %q", state.outcome)
+	}
+	if state.outputText() != "ok" {
+		t.Errorf("outputText = %q", state.outputText())
+	}
+}
+
+func TestParseOpencodeSSE_StreamEndWithoutExecutionEndLeavesOutcomeEmpty(t *testing.T) {
+	state, _ := parseFrames(t, frames(ocTextEnded("m1", 0, "partial")))
+	if state.outcome != "" {
+		t.Errorf("outcome = %q, want empty for a stream that ended early", state.outcome)
+	}
+	if state.outputText() != "partial" {
+		t.Errorf("outputText = %q", state.outputText())
 	}
 }

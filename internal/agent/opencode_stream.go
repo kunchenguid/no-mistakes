@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -17,6 +18,10 @@ func opencodeTokensToUsage(t *opencodeTokens) TokenUsage {
 		u.CacheCreationTokens = t.Cache.Write
 		u.CacheCreationReported = true
 	}
+	if t.Reasoning != nil {
+		u.ReasoningTokens = *t.Reasoning
+		u.ReasoningReported = true
+	}
 	return u
 }
 
@@ -28,136 +33,100 @@ func accumulateUsage(byMsg map[string]TokenUsage) TokenUsage {
 	return total
 }
 
-// parseOpencodeSSE processes the SSE stream from OpenCode's /global/event endpoint.
+// parseOpencodeSSE processes the SSE stream from opencode's GET /api/event
+// endpoint for one session until the turn's agent loop ends. It returns nil
+// both when a session.execution.* event closed the turn (state.outcome is
+// then set) and when the stream simply ended (state.outcome stays empty); the
+// caller tells the two apart, because a stream that died mid-turn is not a
+// turn that finished.
+//
+// The stream is global to the server, so every event is filtered by
+// sessionID first. Events of other kinds (project.*, model.*, ...) and
+// session events the adapter has no use for are skipped.
 func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
-	var sawIdle bool
-	var streamErr error
-	err := parseSSE(r, func(ev sseEvent) bool {
+	return parseSSE(r, func(ev sseEvent) bool {
 		if ev.Data == "" {
 			return true
 		}
 
-		var event opencodeStreamEvent
+		var event opencodeEvent
 		if err := json.Unmarshal([]byte(ev.Data), &event); err != nil {
 			return true // skip malformed events
 		}
-
-		payload := event.Payload
-		if payload == nil {
+		if !strings.HasPrefix(event.Type, "session.") {
 			return true
 		}
-		props := payload.Properties
-
-		// Filter by session ID
-		if props != nil && props.SessionID != "" && props.SessionID != state.sessionID {
+		var data opencodeEventData
+		if len(event.Data) > 0 {
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				return true
+			}
+		}
+		// Every session.* event names its session; one that does not, or
+		// names another session, is not this turn's.
+		if data.SessionID == "" || data.SessionID != state.sessionID {
 			return true
 		}
 
-		switch payload.Type {
-		case "session.error":
-			if props != nil && isThinkingToolChoiceConflict(props.Error) {
-				streamErr = errOpencodeThinkingToolChoiceConflict
-				return false
+		switch event.Type {
+		case "session.text.delta":
+			if data.Delta == "" {
+				break
 			}
-			if props != nil && isForcedToolChoiceUnsupported(props.Error) {
-				streamErr = errOpencodeForcedToolChoiceUnsupported
-				return false
+			part := state.part(data.AssistantMessageID, data.Ordinal)
+			part.text += data.Delta
+			state.emitTextPart(part)
+
+		case "session.text.ended":
+			part := state.part(data.AssistantMessageID, data.Ordinal)
+			part.text = data.Text
+			state.emitTextPart(part)
+
+		case "session.step.ended", "session.step.failed":
+			state.pendingStepSeparator = true
+			if data.AssistantMessageID != "" && data.Tokens != nil {
+				state.usageByMsg[data.AssistantMessageID] = opencodeTokensToUsage(data.Tokens)
+				state.usage = accumulateUsage(state.usageByMsg)
+			}
+			if event.Type == "session.step.failed" && data.Error != nil {
+				state.failure = data.Error
 			}
 
-		case "message.part.delta":
-			if props != nil && props.Field == "text" && props.PartID != "" && props.Delta != "" {
-				if state.filteredPartIDs[props.PartID] {
-					break
-				}
-				part := state.textParts[props.PartID]
-				if part == nil {
-					part = &opencodeTextPart{}
-					state.textParts[props.PartID] = part
-					state.trackTextPart(props.PartID)
-				}
-				part.text += props.Delta
-				state.emitTextPartChunk(part, props.PartID)
-			}
+		case "session.tool.called", "session.tool.success", "session.tool.failed":
+			state.toolInvoked = true
 
-		case "message.part.updated":
-			if props != nil && props.Part != nil {
-				p := props.Part
-				if p.Type == "text" && p.ID != "" {
-					phase := ""
-					if p.Metadata != nil && p.Metadata.OpenAI != nil {
-						phase = p.Metadata.OpenAI.Phase
-					}
-					part := state.textParts[p.ID]
-					if part == nil {
-						part = &opencodeTextPart{}
-						state.textParts[p.ID] = part
-						state.trackTextPart(p.ID)
-					}
-					part.text = p.Text
-					part.phase = phase
-					if p.MessageID != "" {
-						part.messageID = p.MessageID
-					}
-					if part.messageID != "" && state.userMsgIDs[part.messageID] {
-						state.markPartFiltered(p.ID)
-						delete(state.textParts, p.ID)
-						break
-					}
-					state.emitTextPartChunk(part, p.ID)
-				}
-				if isOpencodeToolPart(p.Type) {
-					state.toolInvoked = true
-				}
-				if p.Type == "step-finish" {
-					state.pendingStepSeparator = true
-					if p.MessageID != "" && p.Tokens != nil {
-						state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
-						state.usage = accumulateUsage(state.usageByMsg)
-					}
-				}
-			}
+		case "session.execution.succeeded":
+			state.outcome = opencodeOutcomeSucceeded
+			return false
 
-		case "message.updated":
-			if props != nil && props.Info != nil {
-				if props.Info.Role == "user" {
-					if state.userMsgIDs == nil {
-						state.userMsgIDs = make(map[string]bool)
-					}
-					state.userMsgIDs[props.Info.ID] = true
-					state.dropMessageParts(props.Info.ID)
-				}
-				if props.Info.Role == "assistant" {
-					if state.assistantMsgIDs == nil {
-						state.assistantMsgIDs = make(map[string]bool)
-					}
-					state.assistantMsgIDs[props.Info.ID] = true
-					state.emitBufferedMessageParts(props.Info.ID)
-				}
-				if props.Info.Role == "assistant" && props.Info.Tokens != nil {
-					state.usageByMsg[props.Info.ID] = opencodeTokensToUsage(props.Info.Tokens)
-					state.usage = accumulateUsage(state.usageByMsg)
-				}
+		case "session.execution.failed":
+			state.outcome = opencodeOutcomeFailed
+			if data.Error != nil {
+				state.failure = data.Error
 			}
+			return false
 
-		case "session.idle":
-			sawIdle = true
+		case "session.execution.interrupted":
+			state.outcome = opencodeOutcomeInterrupted
+			state.interruptReason = data.Reason
 			return false
 		}
 
 		return true
 	})
+}
 
-	if err != nil {
-		return err
+// part returns the text block for one assistant message ordinal, creating
+// and ordering it on first sight.
+func (s *opencodeStreamState) part(messageID string, ordinal int) *opencodeTextPart {
+	key := messageID + "/" + strconv.Itoa(ordinal)
+	part := s.textParts[key]
+	if part == nil {
+		part = &opencodeTextPart{}
+		s.textParts[key] = part
+		s.textPartOrder = append(s.textPartOrder, key)
 	}
-	if streamErr != nil {
-		return streamErr
-	}
-	if !sawIdle {
-		// Stream ended without session.idle — not an error if message response
-		// will provide the final result
-	}
-	return nil
+	return part
 }
 
 func (s *opencodeStreamState) emitSeparatorIfNeeded() {
@@ -170,8 +139,13 @@ func (s *opencodeStreamState) emitSeparatorIfNeeded() {
 	s.pendingStepSeparator = false
 }
 
-func (s *opencodeStreamState) emitTextPartChunk(part *opencodeTextPart, partID string) {
-	if part == nil || !s.shouldEmitTextPart(part) {
+// emitTextPart streams whatever of the part's text has not been shown yet.
+// A delta appends, so the new suffix is emitted; a session.text.ended
+// snapshot normally equals what the deltas built, and emits nothing, but a
+// snapshot that is not a prefix extension is a correction and is emitted
+// whole.
+func (s *opencodeStreamState) emitTextPart(part *opencodeTextPart) {
+	if part == nil {
 		return
 	}
 	chunk := ""
@@ -180,70 +154,23 @@ func (s *opencodeStreamState) emitTextPartChunk(part *opencodeTextPart, partID s
 	} else if part.text != "" {
 		chunk = part.text
 	}
-	s.updateText(part.text, part.phase)
 	if s.onChunk != nil && chunk != "" {
 		s.emitSeparatorIfNeeded()
 		s.onChunk(chunk)
 		s.hasEmittedText = true
 	}
 	part.emittedText = part.text
-	s.textParts[partID] = part
 }
 
-func (s *opencodeStreamState) shouldEmitTextPart(part *opencodeTextPart) bool {
-	if part == nil {
-		return false
-	}
-	if part.messageID == "" {
-		return false
-	}
-	if s.userMsgIDs[part.messageID] {
-		return false
-	}
-	return s.assistantMsgIDs[part.messageID]
-}
-
-func (s *opencodeStreamState) dropMessageParts(messageID string) {
-	for partID, part := range s.textParts {
-		if part != nil && part.messageID == messageID {
-			s.markPartFiltered(partID)
-			delete(s.textParts, partID)
+// outputText joins the streamed text blocks in order, one blank line between
+// them. It is the fallback for the message list when that cannot be read
+// after a turn the stream saw finish.
+func (s *opencodeStreamState) outputText() string {
+	var parts []string
+	for _, key := range s.textPartOrder {
+		if part := s.textParts[key]; part != nil && strings.TrimSpace(part.text) != "" {
+			parts = append(parts, part.text)
 		}
 	}
-}
-
-func (s *opencodeStreamState) emitBufferedMessageParts(messageID string) {
-	for _, partID := range s.textPartOrder {
-		part := s.textParts[partID]
-		if part != nil && part.messageID == messageID {
-			s.emitTextPartChunk(part, partID)
-		}
-	}
-}
-
-func (s *opencodeStreamState) trackTextPart(partID string) {
-	for _, existingPartID := range s.textPartOrder {
-		if existingPartID == partID {
-			return
-		}
-	}
-	s.textPartOrder = append(s.textPartOrder, partID)
-}
-
-func (s *opencodeStreamState) markPartFiltered(partID string) {
-	if s.filteredPartIDs == nil {
-		s.filteredPartIDs = make(map[string]bool)
-	}
-	s.filteredPartIDs[partID] = true
-}
-
-func (s *opencodeStreamState) updateText(text, phase string) {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return
-	}
-	s.lastText = text
-	if phase == "final_answer" {
-		s.lastFinalText = text
-	}
+	return strings.Join(parts, "\n\n")
 }

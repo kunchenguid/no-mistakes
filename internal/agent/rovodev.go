@@ -95,7 +95,7 @@ func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string, env []strin
 		return "", fmt.Errorf("rovodev port: %w", err)
 	}
 	args := buildRovodevServeArgs(a.extraArgs, port)
-	srv, err := startServerWithPort(ctx, "rovodev", a.bin, args, cwd, "/healthcheck", port, a.overlay(), env)
+	srv, err := startServerWithPort(ctx, "rovodev", a.bin, args, cwd, healthProbe{path: "/healthcheck"}, port, a.overlay(), env)
 	if err != nil {
 		return "", fmt.Errorf("rovodev server: %w", err)
 	}
