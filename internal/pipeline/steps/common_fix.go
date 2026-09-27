@@ -115,6 +115,42 @@ func reviewedPathsCoverReviewable(reviewedPaths, reviewablePaths []string) bool 
 	return true
 }
 
+// uncoveredReviewablePaths returns the reviewable paths that no reviewed_paths
+// entry covers, in reviewable order. Out-of-scope entries cannot cover
+// anything, so they are ignored here; the strict
+// reviewedPathsCoverReviewable check still fails the round for them.
+func uncoveredReviewablePaths(reviewedPaths, reviewablePaths []string) []string {
+	covered := make(map[string]bool, len(reviewedPaths))
+	for _, reviewed := range reviewedPaths {
+		covered[normalizeReviewedPath(reviewed)] = true
+	}
+	var missing []string
+	for _, candidate := range reviewablePaths {
+		if !covered[normalizeReviewedPath(candidate)] {
+			missing = append(missing, candidate)
+		}
+	}
+	return missing
+}
+
+// mergeReviewedPaths unions two coverage records, keeping each path's first
+// spelling and order. It is the deterministic merge behind the focused
+// coverage pass: the round's record is what its turns actually examined
+// together, and the strict coverage check re-runs on the union.
+func mergeReviewedPaths(first, second []string) []string {
+	seen := make(map[string]bool, len(first)+len(second))
+	var merged []string
+	for _, path := range append(append([]string(nil), first...), second...) {
+		key := normalizeReviewedPath(path)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		merged = append(merged, path)
+	}
+	return merged
+}
+
 // uncoveredReviewMessage names why a clean review round is parked instead of
 // certifying the head: the reviewable files its reviewed_paths did not cover
 // (or the whole set when the field was omitted), and any path it claimed that

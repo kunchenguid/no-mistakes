@@ -343,7 +343,7 @@ Task:
 - Treat security issues, performance regressions, breaking changes, insufficient error handling, and a computation that returns a wrong value, label, or set without failing as risks.
 - Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.
 - Report reviewed_paths as the exact set of changed files you actually read and judged in this pass. It is a coverage record, not a summary: list a changed file only if your findings verdict for it is current, and never list a file you did not examine. A file you omit is treated as unreviewed by the pipeline, never as clean.
-
+%s
 Rules:
 - Anchor every finding to a specific file and one-indexed line number in the changed code when possible.
 - When you report a defect, enumerate in that same finding every other place in the changed code where the same invariant is violated or must hold (another axis, direction, or representation; a sibling call path, command, action, or state transition; another consumer of the same input, field, or record), each as file:line with a few words. Report the class once, anchored at the primary site, instead of one site now and its siblings after the next fix. When the defect is incomplete validation of an input, response, or record, list every consumed field that is still unvalidated in that one finding.
@@ -382,6 +382,7 @@ Risk assessment (after listing all findings):
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
 		historySection,
+		reviewCoverageSection(reviewable),
 		pathInstructions,
 		agent.MemoryFilesRule,
 		// LAST, so the on-prompt is the off-prompt plus this section and
@@ -515,10 +516,23 @@ Risk assessment (after listing all findings):
 		// reviewed_paths is not a legacy pass: the field is optional in the
 		// schema only so an older payload still parses, and an absent list is
 		// the same missing evidence as an empty or partial one (VISION.md R4:
-		// every review pass covers the complete change). The head parks for
-		// approval instead, and the log names what was left unverified.
-		sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
-		needsApproval = true
+		// every review pass covers the complete change).
+		//
+		// Before parking, one focused completion turn reviews exactly the
+		// uncovered files and merges its record into this round's. Self-reported
+		// coverage is lossy in exactly this way on real multi-file diffs (a
+		// 15-file branch saw three consecutive zero-finding rounds each omit a
+		// different file), and the only non-waiver path used to be a full
+		// re-review that re-rolled the same dice after a fixer round with
+		// nothing to fix. The completion turn keeps the operator out of that
+		// loop; whatever is still uncovered after it parks with the explicit
+		// remainder named, so a partial or fabricated record never approves.
+		findings = s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable)
+		needsApproval = hasBlockingFindings(findings.Items)
+		if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
+			sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
+			needsApproval = true
+		}
 	}
 	findingsJSON, _ := json.Marshal(findings)
 
@@ -536,6 +550,83 @@ Risk assessment (after listing all findings):
 // reviewAnalyzerMaxAttempts bounds the review turns one Execute spends on
 // output that fails validation, including the first.
 const reviewAnalyzerMaxAttempts = 3
+
+// reviewCoverageSection enumerates the trusted reviewable changed-file set in
+// the review prompt. The coverage gate holds the round to exactly this set,
+// but the prompt used to leave its enumeration to the reviewer, which had to
+// reconstruct it from its own diff reading and then retype it into
+// reviewed_paths - a lossy round trip that dropped a different handful of
+// files on each of three consecutive real rounds. Handing the reviewer the
+// canonical list turns the coverage record into a checklist it can verify
+// itself before returning; the honest-reporting rules are unchanged, so a
+// file the reviewer did not examine still must not be listed.
+func reviewCoverageSection(paths []string) string {
+	var b strings.Builder
+	b.WriteString("\nChanged files this review is held to (computed by the pipeline from the branch diff, minus ignored paths):\n")
+	for _, p := range paths {
+		fmt.Fprintf(&b, "- %s\n", p)
+	}
+	b.WriteString("- A complete review pass examines every listed file and reports each one it actually read and judged in reviewed_paths.\n")
+	b.WriteString("- The pipeline treats any listed file missing from reviewed_paths as unreviewed and parks the head for approval; it never treats an omission as clean.\n")
+	return b.String()
+}
+
+// reviewCoverageCompletionSection is the focused coverage pass's only extra
+// prompt input. It rides the FULL review prompt (the same context the first
+// turn saw, plus any finalize-turn answers), so a cold or resumed completion
+// turn can act on it without any other memory of the pass.
+func reviewCoverageCompletionSection(missing []string) string {
+	var b strings.Builder
+	b.WriteString("\n\nFocused coverage completion:\n")
+	b.WriteString("- The review pass you just completed returned no blocking findings, but its reviewed_paths did not cover every changed file this review is held to. The files still unverified are:\n")
+	for _, p := range missing {
+		fmt.Fprintf(&b, "  - %s\n", p)
+	}
+	b.WriteString("- Review ONLY the files listed above in this turn: read each one's change in the branch diff, trace it, and judge it under the same rules as the rest of this review.\n")
+	b.WriteString("- Return the complete review JSON again. List in reviewed_paths exactly the files you examined in THIS turn; the pipeline merges your record with the earlier pass. Never list a file you did not examine.\n")
+	b.WriteString("- Report any defect you find in those files as a finding in the same JSON. If they are clean, return an empty findings array.\n")
+	return b.String()
+}
+
+// completeCoverageGaps runs at most one focused review turn over exactly the
+// reviewable files the just-finished pass did not cover, and merges its
+// findings and coverage record into the round's. It runs only on a round that
+// would otherwise park SOLELY on a coverage gap (zero blocking findings), so
+// a healthy full-coverage review costs nothing extra and a round with
+// findings parks unchanged.
+//
+// Every failure of the completion turn is fail-closed to today's explicit
+// park, never to an approval and never to a failed run: the first turn's
+// review was readable, and an optional completion that crashes must not turn
+// it into either a certification it did not earn or a lost verdict. The merge
+// keeps the strict coverage rule intact - the union is re-checked by
+// reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
+// still fails the round and is named in the park message.
+func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string) Findings {
+	missing := uncoveredReviewablePaths(findings.ReviewedPaths, reviewable)
+	if len(missing) == 0 {
+		// Nothing in-scope is missing; the park comes from out-of-scope
+		// reviewed_paths entries, which more review cannot cure.
+		return findings
+	}
+	sctx.Log(fmt.Sprintf("review coverage incomplete; running one focused review pass over %d unverified file(s): %s", len(missing), strings.Join(missing, ", ")))
+	completionOpts := opts
+	completionOpts.Prompt = basePrompt + reviewCoverageCompletionSection(missing)
+	completionOpts.Purpose = "review-coverage"
+	result, err := s.runReviewAgent(sctx, "agent review coverage", role, completionOpts)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("focused coverage pass failed (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
+		return findings
+	}
+	completion, err := parseReviewAnalyzerOutput(result)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("focused coverage pass returned invalid findings (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
+		return findings
+	}
+	findings.Items = append(findings.Items, completion.Items...)
+	findings.ReviewedPaths = mergeReviewedPaths(findings.ReviewedPaths, completion.ReviewedPaths)
+	return findings
+}
 
 // parseReviewAnalyzerOutput validates a review turn's structured findings. A
 // review that produced no structured output, or one whose risk assessment is
