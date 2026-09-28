@@ -129,10 +129,11 @@ absent or the lane no longer matches the exact submitted head, the ordinary
 at-risk refusal remains.
 
 Reconciliation requires direct private branch and archive refs; symbolic refs,
-including dangling symbolic refs, are refused before containment checks. Ref
-creation and deletion use exact names without dereferencing and expected old
-values. Before deleting a reconciled branch ref, the gate archives its exact
-head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A
+including dangling symbolic refs, are refused before containment checks. A
+pre-existing archive ref must already name the exact head that would be
+archived. Ref creation and deletion use exact names without dereferencing and
+expected old values. Before deleting a reconciled branch ref, the gate archives
+its exact head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A
 and the returned-custody stale-submission containment path, unproven private
 content refuses before upstream publication, leaves the private branch
 untouched, and names every at-risk commit. An ancestor already supports an

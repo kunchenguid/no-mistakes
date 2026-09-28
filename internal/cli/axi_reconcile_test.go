@@ -303,6 +303,9 @@ func TestCustodyReturnedStatusRejectsUnplannableGateRefs(t *testing.T) {
 		{
 			name: "conflicting archive",
 			mutate: func(t *testing.T, f returnedCustodyStaleSubmissionFixture) {
+				// The replacement commit is intentionally not reachable from the stale
+				// gate lane, so import its object before installing the conflicting ref.
+				cliGit(t, f.gateDir, "fetch", f.local, f.localHead)
 				archiveRef := "refs/tags/no-mistakes-abandoned/" + f.branch + "/" + f.submitted
 				cliGit(t, f.gateDir, "update-ref", archiveRef, f.localHead)
 			},
