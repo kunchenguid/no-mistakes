@@ -881,6 +881,11 @@ func gitlabTestCmdFactory(responses map[string]gitlabTestResponse) CmdFactory {
 		}
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestGitlabHelperProcess", "--", key)
 		cmd.Env = append(os.Environ(),
+			// This helper only writes its response synchronously. Avoid the race
+			// runtime's one-second exit sleep on every fake provider command;
+			// descendant rechecks otherwise exhaust the package test timeout.
+			// Keep race detection and all other inherited race options intact.
+			"GORACE="+os.Getenv("GORACE")+" atexit_sleep_ms=0",
 			"GITLAB_TEST_HELPER=1",
 			"GITLAB_TEST_STDOUT="+response.stdout,
 			"GITLAB_TEST_STDERR="+response.stderr,
