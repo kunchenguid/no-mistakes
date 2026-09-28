@@ -265,7 +265,9 @@ func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) boo
 
 // privateCommitsAbsentFromLive names private-only commits lacking matching
 // per-file patches, or the entire private-only range when final-tree survival
-// cannot be proven.
+// cannot be proven. A clean merge of the private head into the live head that
+// leaves the live tree unchanged proves every commit contained, including a
+// rebased copy whose patch ID differs only by context the base moved.
 //
 // The private side is computed first so the live scan can be bounded to the
 // paths the private commits actually touch. Comparison stops at the first
@@ -280,6 +282,9 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 	}
 	if len(privateOnly) == 0 {
 		return nil, nil
+	}
+	if contained, err := mergeLeavesTree(ctx, repoDir, liveHead, privateHead); err != nil || contained {
+		return nil, err
 	}
 
 	type privateCommit struct {
@@ -337,18 +342,76 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 			livePatches[patch] = count
 		}
 	}
-	mergedTree, mergeErr := git.Run(ctx, repoDir, "merge-tree", "--write-tree", liveHead, privateHead)
-	if mergeErr != nil {
-		return privateOnly, nil
-	}
-	liveTree, err := git.Run(ctx, repoDir, "rev-parse", "--verify", liveHead+"^{tree}")
+	survives, err := privateTreeSurvives(ctx, repoDir, liveHead, privateHead, paths)
 	if err != nil {
 		return nil, err
 	}
-	if mergedTree != liveTree {
-		return privateOnly, nil
+	if survives {
+		return atRisk, nil
 	}
-	return atRisk, nil
+	return privateOnly, nil
+}
+
+// maxSurvivalCandidates bounds the first-parent live commits tried as
+// survival points. Past it the proof fails closed.
+const maxSurvivalCandidates = 64
+
+// privateTreeSurvives proves the private head's changes are present in the
+// live history once the direct proof, a clean three-way merge of the private
+// head into the live head that leaves the live tree unchanged, has failed.
+//
+// A rebased branch whose later live commits edit the lines the private commits
+// wrote fails that proof by conflicting although nothing was dropped, so this
+// proof has two halves. Resolving each conflicting hunk toward the live
+// head must still leave the live tree unchanged, so every private hunk that
+// merges cleanly is already live and a change the live head reverted or lacks
+// still refuses. And some first-parent live commit touching the private paths
+// must pass the direct proof, placing all of the private content in the live
+// history. First-parent only, so a merge that discarded a side branch never
+// serves as that point.
+func privateTreeSurvives(ctx context.Context, repoDir, liveHead, privateHead string, paths map[string]bool) (bool, error) {
+	if len(paths) == 0 {
+		return false, nil
+	}
+	if ok, err := mergeLeavesTree(ctx, repoDir, liveHead, privateHead, "-X", "ours"); err != nil || !ok {
+		return false, err
+	}
+	args := []string{"--first-parent", liveHead, "^" + privateHead, "--"}
+	for path := range paths {
+		args = append(args, ":(literal)"+path)
+	}
+	candidates, err := commitList(ctx, repoDir, args...)
+	if err != nil {
+		return false, err
+	}
+	for i, candidate := range candidates {
+		if i == maxSurvivalCandidates {
+			break
+		}
+		if candidate == liveHead {
+			continue
+		}
+		if ok, err := mergeLeavesTree(ctx, repoDir, candidate, privateHead); err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
+}
+
+// mergeLeavesTree reports whether merging privateHead into liveCommit with the
+// given merge options is clean and leaves liveCommit's tree unchanged. A Git
+// too old for an option fails the merge, and so the proof.
+func mergeLeavesTree(ctx context.Context, repoDir, liveCommit, privateHead string, options ...string) (bool, error) {
+	args := append([]string{"merge-tree", "--write-tree"}, options...)
+	mergedTree, mergeErr := git.Run(ctx, repoDir, append(args, liveCommit, privateHead)...)
+	if mergeErr != nil {
+		return false, nil
+	}
+	liveTree, err := git.Run(ctx, repoDir, "rev-parse", "--verify", liveCommit+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	return mergedTree == liveTree, nil
 }
 
 // liveSidePatchIDs collects per-file patch identities from the live-only
