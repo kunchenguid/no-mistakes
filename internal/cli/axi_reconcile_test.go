@@ -164,6 +164,39 @@ func gitHead(ctx context.Context, dir, ref string) (string, error) {
 	return git.Run(ctx, dir, "rev-parse", ref+"^{commit}")
 }
 
+func startProofRunTriggerServer(t *testing.T, p *paths.Paths, f returnedCustodyStaleSubmissionFixture, launchNonce, generation, intent string) *ipc.Client {
+	t.Helper()
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodClaimLaunchReceipt, func(context.Context, json.RawMessage) (interface{}, error) {
+		if head, err := gitHead(context.Background(), f.gateDir, "refs/heads/"+f.branch); err == nil && head == f.localHead {
+			return &ipc.ClaimLaunchReceiptResult{Receipt: &ipc.LaunchReceipt{
+				RunID: "proof-run", Disposition: "started", LaunchNonce: launchNonce,
+				ValidationGeneration: generation, Branch: f.branch, HeadSHA: f.localHead,
+				SubmittedHeadSHA: f.localHead, IntentDigest: digestLaunchIntent(intent),
+			}}, nil
+		}
+		return &ipc.ClaimLaunchReceiptResult{}, nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(p.Socket()) }()
+	t.Cleanup(func() { srv.Close(); <-done })
+	var client *ipc.Client
+	var err error
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		client, err = ipc.Dial(p.Socket())
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
 func TestTriggerRunReconcilesReturnedCustodySubmittedMirrorForContentPreservingReplacement(t *testing.T) {
 	f := newReturnedCustodyStaleSubmissionFixture(t, false)
 	status, err := executeCmd("axi", "status")
@@ -195,6 +228,101 @@ func TestTriggerRunReconcilesReturnedCustodySubmittedMirrorForContentPreservingR
 	}
 	if got := cliGit(t, f.gateDir, "rev-parse", "refs/no-mistakes/recover/"+f.runID+"^{commit}"); got != f.preserved {
 		t.Fatalf("pipeline recovery ref = %s, want %s", got, f.preserved)
+	}
+}
+
+func TestTriggerProofRunReconcilesReturnedCustodySubmittedMirrorForContentPreservingReplacement(t *testing.T) {
+	f := newReturnedCustodyStaleSubmissionFixture(t, false)
+	const (
+		launchNonce = "proof-nonce"
+		generation  = "proof-generation"
+		intent      = "intent"
+	)
+	client := startProofRunTriggerServer(t, f.p, f, launchNonce, generation, intent)
+	env := &axiEnv{p: f.p, d: f.d, repo: f.repo, cfg: config.DefaultGlobalConfig(), client: client}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	receipt, err := triggerProofRun(ctx, env, f.branch, f.localHead, nil, intent, "", false, launchNonce, generation, "")
+	if err != nil || receipt == nil || receipt.RunID != "proof-run" {
+		t.Fatalf("trigger strict fresh run: receipt=%+v err=%v", receipt, err)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/heads/"+f.branch); got != f.localHead {
+		t.Fatalf("gate branch = %s, want replacement head %s", got, f.localHead)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/tags/no-mistakes-abandoned/"+f.branch+"/"+f.submitted); got != f.submitted {
+		t.Fatalf("submitted head archive = %s, want %s", got, f.submitted)
+	}
+}
+
+func TestTriggerProofRunRejectedPushRestoresReturnedCustodyMirror(t *testing.T) {
+	f := newReturnedCustodyStaleSubmissionFixture(t, false)
+	if err := os.WriteFile(filepath.Join(f.gateDir, "hooks", "pre-receive"), []byte("#!/bin/sh\necho submission-rejected >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		launchNonce = "proof-nonce"
+		generation  = "proof-generation"
+		intent      = "intent"
+	)
+	client := startProofRunTriggerServer(t, f.p, f, launchNonce, generation, intent)
+	env := &axiEnv{p: f.p, d: f.d, repo: f.repo, cfg: config.DefaultGlobalConfig(), client: client}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	receipt, err := triggerProofRun(ctx, env, f.branch, f.localHead, nil, intent, "", false, launchNonce, generation, "")
+	if err == nil || receipt != nil || !strings.Contains(err.Error(), "submission-rejected") {
+		t.Fatalf("rejected strict submission: receipt=%+v err=%v", receipt, err)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/heads/"+f.branch); got != f.submitted {
+		t.Fatalf("failed strict submission left mirror at %s, want restored %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/tags/no-mistakes-abandoned/"+f.branch+"/"+f.submitted); got != f.submitted {
+		t.Fatalf("archive = %s, want %s", got, f.submitted)
+	}
+}
+
+func TestCustodyReturnedStatusRejectsUnplannableGateRefs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, f returnedCustodyStaleSubmissionFixture)
+	}{
+		{
+			name: "symbolic branch",
+			mutate: func(t *testing.T, f returnedCustodyStaleSubmissionFixture) {
+				cliGit(t, f.gateDir, "update-ref", "refs/heads/symbolic-target", f.submitted)
+				cliGit(t, f.gateDir, "symbolic-ref", "refs/heads/"+f.branch, "refs/heads/symbolic-target")
+			},
+		},
+		{
+			name: "symbolic archive",
+			mutate: func(t *testing.T, f returnedCustodyStaleSubmissionFixture) {
+				cliGit(t, f.gateDir, "update-ref", "refs/heads/archive-target", f.submitted)
+				archiveRef := "refs/tags/no-mistakes-abandoned/" + f.branch + "/" + f.submitted
+				cliGit(t, f.gateDir, "symbolic-ref", archiveRef, "refs/heads/archive-target")
+			},
+		},
+		{
+			name: "conflicting archive",
+			mutate: func(t *testing.T, f returnedCustodyStaleSubmissionFixture) {
+				archiveRef := "refs/tags/no-mistakes-abandoned/" + f.branch + "/" + f.submitted
+				cliGit(t, f.gateDir, "update-ref", archiveRef, f.localHead)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReturnedCustodyStaleSubmissionFixture(t, false)
+			tt.mutate(t, f)
+			status, err := executeCmd("axi", "status")
+			if err != nil {
+				t.Fatalf("status: %v\n%s", err, status)
+			}
+			if strings.Contains(status, "safety: stale_mirror_reconcilable") || strings.Contains(status, "code: run_pipeline") {
+				t.Fatalf("status offered reconciliation for an unplannable gate ref:\n%s", status)
+			}
+			if !strings.Contains(status, "code: adopt_published") {
+				t.Fatalf("status did not retain the safe fallback:\n%s", status)
+			}
+		})
 	}
 }
 

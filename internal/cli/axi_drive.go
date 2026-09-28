@@ -756,11 +756,25 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if opt := formatOmitIntentPushOption(omitIntent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+	ownershipState := inspectAxiBranchSync(ctx, env)
+	if state := freshRunBranchOwnershipBlock(ownershipState); state != nil {
 		return nil, &branchOwnershipError{state: *state}
+	}
+	reconciliation, err := reconcileFreshRunPrivateMirror(ctx, env, branch, headSHA, returnedCustodySubmittedHeadForFreshRun(ownershipState, branch))
+	if err != nil {
+		return nil, fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	if opt := formatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
 	}
 	pushErr := git.PushCommitWithOptionsSkippingHooks(ctx, ".", gate.RemoteName, headSHA, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
+		restoreErr := gate.RestoreReconciledBranch(restoreCtx, env.p.RepoDir(env.repo.ID), branch, reconciliation)
+		cancel()
+		if restoreErr != nil {
+			return nil, fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
+		}
 		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 			return nil, &branchOwnershipError{state: *state}
 		}

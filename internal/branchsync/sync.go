@@ -2557,14 +2557,17 @@ func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 	if state.Relation == RelationDiverged {
 		branchRef := "refs/heads/" + state.Local.Branch
 		if strings.TrimSpace(s.GateDir) != "" {
-			gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", branchRef+"^{commit}")
-			if err == nil {
+			gateHead, exists, err := git.DirectRefTarget(ctx, s.GateDir, branchRef)
+			if err == nil && exists {
 				if gateHead == state.Local.Head {
 					state.Safety = "gate_ready"
 					state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 					return
 				}
-				if state.Local.Clean && state.Pipeline.PushedHead == "" && gateHead == state.Pipeline.SubmittedHead && gate.HeadContentContained(ctx, s.workDir(), gateHead, state.Local.Head) {
+				archiveRef := "refs/tags/no-mistakes-abandoned/" + state.Local.Branch + "/" + gateHead
+				archivedHead, archived, archiveErr := git.DirectRefTarget(ctx, s.GateDir, archiveRef)
+				archiveReady := archiveErr == nil && (!archived || archivedHead == gateHead)
+				if state.Local.Clean && state.Pipeline.PushedHead == "" && gateHead == state.Pipeline.SubmittedHead && archiveReady && gate.HeadContentContained(ctx, s.workDir(), gateHead, state.Local.Head) {
 					state.Safety = "stale_mirror_reconcilable"
 					state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 					return
