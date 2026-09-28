@@ -81,6 +81,8 @@ func TestMain(m *testing.M) {
 	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
 	// t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
+	os.Unsetenv("NO_MISTAKES_COWTREE")
+	os.Unsetenv("ATER_COW_COWTREE")
 	os.Exit(m.Run())
 }
 

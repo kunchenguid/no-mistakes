@@ -1458,7 +1458,17 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("record_worktree_placement")
 		return "", fmt.Errorf("record worktree placement: %w", err)
 	}
-	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
+	cowtree := os.Getenv("NO_MISTAKES_COWTREE")
+	if cowtree == "" {
+		cowtree = os.Getenv("ATER_COW_COWTREE")
+	}
+	var worktreeErr error
+	if cowtree != "" {
+		worktreeErr = git.WorktreeAddCoW(ctx, gateDir, wtDir, headSHA, repo.WorkingPath, cowtree)
+	} else {
+		worktreeErr = git.WorktreeAdd(ctx, gateDir, wtDir, headSHA)
+	}
+	if err := worktreeErr; err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
 		return "", fmt.Errorf("create worktree: %w", err)

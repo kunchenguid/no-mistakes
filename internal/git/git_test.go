@@ -472,3 +472,39 @@ func TestWorktreeAddRemoveOnBareRepoUnderSafeBareRepositoryExplicit(t *testing.T
 		t.Fatalf("worktree remove from bare repo: %v", err)
 	}
 }
+
+func TestWorktreeAddCoWFromIndependentCheckout(t *testing.T) {
+	cowtree := os.Getenv("NM_TEST_COWTREE")
+	if runtime.GOOS != "darwin" || cowtree == "" {
+		t.Skip("requires an APFS cowtree binary supplied by NM_TEST_COWTREE")
+	}
+	setSafeBareRepositoryExplicit(t)
+	ctx := context.Background()
+	work := initTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	run(t, work, "git", "push", bare, "HEAD:refs/heads/main")
+	sha := run(t, work, "git", "rev-parse", "HEAD")
+	donor := filepath.Join(t.TempDir(), "linked-donor")
+	if err := WorktreeAdd(ctx, work, donor, sha); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "worktree")
+	if err := WorktreeAddCoW(ctx, bare, wt, sha, donor, cowtree); err != nil {
+		t.Fatalf("CoW worktree add from bare gate: %v", err)
+	}
+	if got := run(t, wt, "git", "rev-parse", "HEAD"); got != sha {
+		t.Fatalf("worktree head = %q, want %q", got, sha)
+	}
+	if got := run(t, wt, "git", "status", "--porcelain"); got != "" {
+		t.Fatalf("CoW worktree is dirty: %s", got)
+	}
+	if err := WorktreeRemove(ctx, bare, wt); err != nil {
+		t.Fatalf("remove CoW worktree: %v", err)
+	}
+	if err := WorktreeRemove(ctx, work, donor); err != nil {
+		t.Fatalf("remove donor: %v", err)
+	}
+}

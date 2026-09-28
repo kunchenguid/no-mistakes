@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -79,6 +80,30 @@ func TestPrepareDaemonEnvironment_PreservesExistingNMHome(t *testing.T) {
 	}
 	if got := os.Getenv("PATH"); got != "/resolved/bin" {
 		t.Fatalf("PATH = %q, want %q", got, "/resolved/bin")
+	}
+}
+
+func TestPrepareDaemonEnvironment_PreservesExplicitCoWSettings(t *testing.T) {
+	t.Setenv("NO_MISTAKES_COWTREE", "/pinned/cowtree")
+	t.Setenv("ATER_COW_COWTREE", "/launcher/cowtree")
+	t.Setenv("ATER_COW_ORIGINAL_PATH", "/real/git/bin")
+
+	oldApply := applyShellEnvToProcess
+	defer func() { applyShellEnvToProcess = oldApply }()
+	applyShellEnvToProcess = func(excluded ...string) error {
+		protected := make(map[string]bool, len(excluded))
+		for _, key := range excluded {
+			protected[key] = true
+		}
+		for _, key := range []string{"NO_MISTAKES_COWTREE", "ATER_COW_COWTREE", "ATER_COW_ORIGINAL_PATH"} {
+			if !protected[key] {
+				return fmt.Errorf("%s was not protected from login-shell environment", key)
+			}
+		}
+		return nil
+	}
+	if err := prepareDaemonEnvironment(); err != nil {
+		t.Fatal(err)
 	}
 }
 

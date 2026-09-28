@@ -134,13 +134,18 @@ func prepareDaemonEnvironment() error {
 }
 
 // applyLoginShellEnvironment applies a login-shell probe to the process and
-// keeps the service-supplied NM_HOME authoritative over anything the shell's
-// rc files export.
+// keeps explicitly supplied daemon settings authoritative over shell rc files.
 func applyLoginShellEnvironment(apply func(...string) error, nmHome string) error {
+	var protected []string
 	if nmHome != "" {
-		return apply("NM_HOME")
+		protected = append(protected, "NM_HOME")
 	}
-	return apply()
+	for _, key := range []string{"NO_MISTAKES_COWTREE", "ATER_COW_COWTREE", "ATER_COW_ORIGINAL_PATH"} {
+		if os.Getenv(key) != "" {
+			protected = append(protected, key)
+		}
+	}
+	return apply(protected...)
 }
 
 // logDaemonPathSummary records the effective PATH at daemon startup so that
