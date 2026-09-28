@@ -205,10 +205,11 @@ func isContentContainedHead(ctx context.Context, repoDir, gateHead, liveHead str
 	return false
 }
 
-// HeadContentContained proves, by an executable three-way merge, that merging
-// containedHead into containingHead would leave containingHead's final tree
-// unchanged. It is content containment evidence for narrow recovery paths, not
-// a general substitute for private mirror patch-identity proof.
+// HeadContentContained proves, by an executable merge using Git's complete
+// merge-base semantics, that merging containedHead into containingHead would
+// leave containingHead's final tree unchanged. It is content containment
+// evidence for narrow recovery paths, not a general substitute for private
+// mirror patch-identity proof.
 func HeadContentContained(ctx context.Context, repoDir, containedHead, containingHead string) bool {
 	containedHead = strings.TrimSpace(containedHead)
 	containingHead = strings.TrimSpace(containingHead)
@@ -221,11 +222,7 @@ func HeadContentContained(ctx context.Context, repoDir, containedHead, containin
 	if _, err := git.Run(ctx, repoDir, "merge-base", "--is-ancestor", containedHead, containingHead); err == nil {
 		return true
 	}
-	base, err := git.Run(ctx, repoDir, "merge-base", containedHead, containingHead)
-	if err != nil || base == "" {
-		return false
-	}
-	mergedTree, err := git.Run(ctx, repoDir, "merge-tree", "--write-tree", "--merge-base", base, containingHead, containedHead)
+	mergedTree, err := git.Run(ctx, repoDir, "merge-tree", "--write-tree", containingHead, containedHead)
 	if err != nil {
 		return false
 	}
