@@ -42,6 +42,7 @@ type approvalResponse struct {
 	instructions   map[string]string
 	addedFindings  []types.Finding
 	approvalReason string
+	recheckResult  chan error // recheck is synchronous and may leave this gate parked
 }
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
@@ -187,9 +188,12 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	// refuses the handler's own release, and the gate parks forever with every
 	// question answered.
 	switch action {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionAnswer:
+	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionAnswer, types.ActionRecheck:
 	default:
-		return fmt.Errorf("unrecognized approval action %q (valid: approve, fix, skip, abort, answer)", action)
+		return fmt.Errorf("unrecognized approval action %q (valid: approve, fix, skip, abort, answer, recheck)", action)
+	}
+	if action == types.ActionRecheck && (step != types.StepCI || len(findingIDs) != 0 || len(instructions) != 0 || len(addedFindings) != 0) {
+		return fmt.Errorf("recheck is CI-only and accepts no fix selections or instructions")
 	}
 	e.mu.Lock()
 	if !e.waiting {
@@ -205,15 +209,24 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		e.mu.Unlock()
 		return errors.New(refusal)
 	}
+	var recheckResult chan error
+	if action == types.ActionRecheck {
+		recheckResult = make(chan error, 1)
+	}
 	e.waiting = false
-	e.mu.Unlock()
-
+	// Queue while holding the lock so gate cancellation cannot drain before
+	// this claimed response arrives. The channel has one slot per waiting gate.
 	e.approvalCh <- approvalResponse{
 		action:         action,
 		findingIDs:     findingIDs,
 		instructions:   instructions,
 		addedFindings:  addedFindings,
 		approvalReason: approvalReason,
+		recheckResult:  recheckResult,
+	}
+	e.mu.Unlock()
+	if recheckResult != nil {
+		return <-recheckResult
 	}
 	return nil
 }
@@ -1725,35 +1738,49 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		// Drain any stale response that arrived after context cancellation or
 		// raced with an external reconciliation.
 		select {
-		case <-e.approvalCh:
+		case response := <-e.approvalCh:
+			if response.recheckResult != nil {
+				response.recheckResult <- fmt.Errorf("CI gate stopped before recheck completed")
+			}
 		default:
 		}
 	}()
 
 	_, reconciles := step.(ApprovalGateReconciler)
 	_, resumes := step.(ApprovalGateResumer)
-	if !reconciles && !resumes {
-		select {
-		case response := <-e.approvalCh:
-			return response, false, nil
-		case <-ctx.Done():
-			return approvalResponse{}, false, context.Cause(ctx)
-		}
-	}
-
 	delay := e.gateReconcileInterval
 	if immediate {
 		delay = 0
 	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
+	var reconcileTick <-chan time.Time
+	if reconciles || resumes {
+		reconcileTick = timer.C
+	}
 	for {
 		select {
 		case response := <-e.approvalCh:
-			return response, false, nil
+			if response.action != types.ActionRecheck {
+				return response, false, nil
+			}
+			err := e.recheckApprovalGate(ctx, step, sctx, findings)
+			if err != nil {
+				// Preserve the original findings, status and awaiting-agent timestamp.
+				e.mu.Lock()
+				e.waiting = true
+				e.mu.Unlock()
+				// Re-arm even when this request won a reconciliation race
+				// after that timer's previous tick was consumed.
+				timer.Reset(e.gateReconcileInterval)
+			}
+			response.recheckResult <- err
+			if err == nil {
+				return approvalResponse{}, true, nil
+			}
 		case <-ctx.Done():
 			return approvalResponse{}, false, context.Cause(ctx)
-		case <-timer.C:
+		case <-reconcileTick:
 			// A resumer runs first and returns a RESPONSE rather than a
 			// completion, so the gate re-enters its step exactly as it would
 			// for an operator's own action. Claiming the gate here is the same
@@ -1763,7 +1790,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 				if e.claimGateReconciliation() {
 					return approvalResponse{action: action}, false, nil
 				}
-				return <-e.approvalCh, false, nil
+				continue // consume the operator's already-claimed response above
 			} else if err != nil && ctx.Err() == nil {
 				if sctx != nil && sctx.Log != nil {
 					sctx.Log(fmt.Sprintf("warning: could not re-check parked %s gate; preserving it: %v", step.Name(), err))
@@ -1776,7 +1803,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 				if e.claimGateReconciliation() {
 					return approvalResponse{}, true, nil
 				}
-				return <-e.approvalCh, false, nil
+				continue // consume the operator's already-claimed response above
 			}
 			if errors.Is(err, ErrFatalGateReconciliation) {
 				return approvalResponse{}, false, err
@@ -1791,6 +1818,48 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 			timer.Reset(e.gateReconcileInterval)
 		}
 	}
+}
+
+// An explicit recheck completes only on fresh proof, never by an override or
+// by re-entering Execute (which could spend a repair round).
+func (e *Executor) recheckApprovalGate(ctx context.Context, step Step, sctx *StepContext, findings string) error {
+	checker, ok := step.(ApprovalGateRechecker)
+	if !ok || step.Name() != types.StepCI || HasProtectedPathRefusal(findings) {
+		return fmt.Errorf("this gate does not support a provider-only CI recheck")
+	}
+	timeout := e.gateReconcileTimeout
+	if timeout <= 0 {
+		timeout = defaultGateReconcileTimeout
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	copyCtx := *sctx
+	copyCtx.Ctx = checkCtx
+	summary, err := checker.RecheckApprovalGate(&copyCtx, findings)
+	if err != nil {
+		return fmt.Errorf("CI recheck left the gate unresolved: %w", err)
+	}
+	if err := checkCtx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(summary) == "" {
+		return fmt.Errorf("CI recheck returned no verification receipt")
+	}
+	// Round history retains the historical unreadability. The current step
+	// carries the fresh exact-head receipt, including on daemon recovery where
+	// the reconciliation logger is not the step's on-disk log. No decline or
+	// fix selection is recorded.
+	receipt, err := types.MarshalFindingsJSON(types.Findings{Summary: summary, Items: []types.Finding{}})
+	if err != nil {
+		return err
+	}
+	if err := e.db.SetStepFindings(sctx.StepResultID, receipt); err != nil {
+		return err
+	}
+	if sctx.Log != nil {
+		sctx.Log(summary)
+	}
+	return nil
 }
 
 func (e *Executor) claimGateReconciliation() bool {

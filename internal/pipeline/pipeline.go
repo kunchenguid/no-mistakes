@@ -200,6 +200,15 @@ type ApprovalGateReconciler interface {
 	ReconcileApprovalGate(sctx *StepContext) (resolved bool, err error)
 }
 
+// ApprovalGateRechecker handles an explicit, provider-only recheck. An error
+// preserves the parked gate; success supplies a durable verification summary
+// and completes it without an operator override. Implementations must verify
+// fresh evidence and perform no external writes.
+// Unlike reconciliation, this is never invoked by the periodic timer.
+type ApprovalGateRechecker interface {
+	RecheckApprovalGate(sctx *StepContext, findingsJSON string) (summary string, err error)
+}
+
 // ApprovalGateResumer is implemented by a step whose parked approval gate can
 // become ANSWERABLE rather than obsolete: the condition that parked it is gone,
 // but the right outcome is to run the step again rather than to complete it.

@@ -398,6 +398,13 @@ type Host interface {
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
 }
 
+// HeadCheckReader verifies checks for an exact expected PR head. It must bind
+// check discovery to that SHA and reject a moved or unreadable PR head before
+// returning. Providers without this proof cannot clear a provider-read gate.
+type HeadCheckReader interface {
+	GetChecksForHead(ctx context.Context, pr *PR, expectedHead string) ([]Check, error)
+}
+
 // PRBaseBranchReader is implemented by providers that can read the target
 // branch of an existing PR by its durable identity. CI uses it when a run is
 // resumed after repository configuration changes.

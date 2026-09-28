@@ -359,6 +359,7 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 		Summary: "CI checks could not be read from the provider",
 		Items: []Finding{{
 			Severity:    "warning",
+			Category:    types.FindingCategoryCIProviderRead,
 			Description: fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command. For GitHub errors involving 'pr checks --json', gh >= 2.50 is required.", err),
 			Action:      types.ActionAskUser,
 		}},

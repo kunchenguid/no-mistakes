@@ -272,6 +272,8 @@ type ApprovalAction string
 
 const (
 	ActionApprove ApprovalAction = "approve"
+	// ActionRecheck verifies a parked CI provider-read failure without a waiver or repair.
+	ActionRecheck ApprovalAction = "recheck"
 	ActionFix     ApprovalAction = "fix"
 	ActionSkip    ApprovalAction = "skip"
 	ActionAbort   ApprovalAction = "abort"

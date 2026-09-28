@@ -550,6 +550,9 @@ func gateFields(gate stepView) []toon.Field {
 		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
 		"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
 	}
+	if gate.Name == string(types.StepCI) && pipeline.CanRecheckCIProvider(gate.FindingsJSON) {
+		help = append([]string{"Run `no-mistakes axi respond --step ci --action recheck` to verify current-head CI without a waiver or repair; unsuccessful verification leaves this gate parked"}, help...)
+	}
 	// A review parked in waiting-on-answers is not asking for a verdict: its
 	// reviewer asked questions and cannot finish without them. Approving or
 	// fixing would discard the pass it paused, so answering leads the help.

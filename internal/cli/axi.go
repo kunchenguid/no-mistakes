@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -203,6 +204,7 @@ func runAxiHome(cmd *cobra.Command) error {
 
 	gated := false
 	gatedOnAnswers := false
+	gatedOnCIProvider := false
 	hasBranchSync := false
 	if currentActive != nil {
 		steps, _ := env.d.GetStepsByRun(currentActive.ID)
@@ -216,6 +218,7 @@ func runAxiHome(cmd *cobra.Command) error {
 		if gate, ok := rv.awaitingStep(); ok {
 			gated = true
 			gatedOnAnswers = pipeline.HasUnansweredReviewQuestion(gate.FindingsJSON)
+			gatedOnCIProvider = gate.Name == string(types.StepCI) && pipeline.CanRecheckCIProvider(gate.FindingsJSON)
 			fields = append(fields, gateFields(gate)...)
 		}
 	} else if otherActive != nil {
@@ -245,6 +248,8 @@ func runAxiHome(cmd *cobra.Command) error {
 		// A review parked on its reviewer's own questions wants an answer, not
 		// a verdict: approving would discard the pass it paused.
 		help = append(help, "Run `no-mistakes axi answer --question <id> --answer \"<one of its options>\"` for each question in the gate; the reviewer resumes when none are open")
+	case gatedOnCIProvider:
+		help = append(help, "Run `no-mistakes axi respond --step ci --action recheck` to verify current-head CI without a waiver or repair")
 	case gated:
 		help = append(help, "Run `no-mistakes axi respond --action approve` to clear the current gate")
 	default:

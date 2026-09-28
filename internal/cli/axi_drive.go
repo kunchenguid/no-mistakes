@@ -982,7 +982,7 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, ""); err != nil {
+			if err := sendRespond(ctx, client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, ""); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -1068,7 +1068,7 @@ func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, er
 }
 
 // sendRespond issues an approval action to the daemon for a step.
-func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) error {
+func sendRespond(ctx context.Context, client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) error {
 	params := &ipc.RespondParams{
 		RunID:          runID,
 		Step:           step,
@@ -1079,7 +1079,13 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 		ApprovalReason: approvalReason,
 	}
 	var result ipc.RespondResult
-	if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
+	timeout := time.Duration(0) // ordinary responses use the IPC default
+	if action == types.ActionRecheck {
+		// This response includes bounded provider verification, not just a
+		// queue acknowledgement. The drive context still owns --wait.
+		timeout = defaultAxiWait
+	}
+	if err := client.CallWithContext(ctx, ipc.MethodRespond, params, &result, timeout); err != nil {
 		return err
 	}
 	if !result.OK {
@@ -1218,8 +1224,11 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "respond",
 		Short: "Answer the current approval gate and continue the run",
-		Long: "Sends approve/fix/skip for the step currently awaiting approval, then\n" +
+		Long: "Sends approve/fix/skip/recheck for the step currently awaiting approval, then\n" +
 			"blocks until the next gate, CI-ready decision point, or final outcome.\n\n" +
+			"recheck verifies a CI provider-read gate without a waiver or repair.\n" +
+			"Only current-head green checks complete it; otherwise it returns an\n" +
+			"error and preserves the parked gate.\n\n" +
 			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
 			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
 			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
@@ -1246,7 +1255,7 @@ func newAxiRespondCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip (required)")
+	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip | recheck (required)")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
@@ -1281,13 +1290,16 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
 	switch act {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip:
+	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionRecheck:
 	case "":
 		return emitError(cmd, 2, "--action is required",
-			"Run `no-mistakes axi respond --action approve|fix|skip`")
+			"Run `no-mistakes axi respond --action approve|fix|skip|recheck`")
 	default:
 		return emitError(cmd, 2, fmt.Sprintf("unknown action %q", ra.action),
-			"Valid actions: approve, fix, skip")
+			"Valid actions: approve, fix, skip, recheck")
+	}
+	if act == types.ActionRecheck && (ra.autoYes || ra.findings != "" || ra.instructions != "" || ra.addFinding != "" || ra.reason != "" || (ra.step != "" && ra.step != string(types.StepCI))) {
+		return emitError(cmd, 2, "recheck is CI-only and cannot be combined with --yes, fix inputs, or an approval reason")
 	}
 
 	env, err := openAxiDaemonEnv()
@@ -1304,7 +1316,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	source := &ipcRunStateSource{socketPath: env.p.Socket()}
 	if err := source.callWithSlowReplyRetry(driveCtx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip|recheck")
 		}
 		return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 	}
@@ -1317,7 +1329,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	run, err := getRunInfo(driveCtx, env.p.Socket(), runID)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip|recheck")
 		}
 		return emitError(cmd, 1, fmt.Sprintf("load run: %v", err))
 	}
@@ -1336,6 +1348,9 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		stepName = types.StepName(gate.Name)
 	}
 
+	if act == types.ActionRecheck && stepName != types.StepCI {
+		return emitError(cmd, 2, "recheck applies only to the CI step")
+	}
 	if ra.reason != "" && (act != types.ActionApprove || stepName != types.StepTest) {
 		return emitError(cmd, 2, "--reason applies only to --action approve on the Test step")
 	}
@@ -1365,8 +1380,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		}
 	}
 
-	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added, ra.reason); err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
+	if err := sendRespond(driveCtx, env.client, runID, stepName, act, findingIDs, instructions, added, ra.reason); err != nil {
+		if isAxiWaitElapsed(ctx, driveCtx, err) {
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run")
+		}
+		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err), "Run `no-mistakes axi status` to inspect the current gate")
 	}
 
 	// Let the executor consume the response before we re-read state, so we

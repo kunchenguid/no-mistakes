@@ -243,11 +243,12 @@ no-mistakes axi respond --action approve
 no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional guidance"
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
 no-mistakes axi respond --action skip
+no-mistakes axi respond --step ci --action recheck
 ```
 
 | Flag             | Type     | Default       | Description                                                          |
 | ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
-| `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
+| `--action`       | `string` | (none)        | `approve`, `fix`, `skip`, or `recheck`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
 | `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`            |
@@ -255,6 +256,8 @@ no-mistakes axi respond --action skip
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
 | `--wait`         | `duration` | `8m`        | Maximum time for pre-drive reads and post-response driving before the caller must reattach |
+
+For a CI gate parked solely because provider checks could not be read, `--action recheck` performs a bounded, provider-only verification on the same run. GitHub and GitLab support exact-head verification; other providers refuse it. The PR must still be open, mergeability must be verified, the worktree must be clean at the run's recorded head, and nonempty checks must be green for that exact PR head. GitLab additionally verifies all same-head pipeline results, including children, and the MR pipeline's jobs and bridges. Missing, unreadable, pending, failing, or changed-head evidence returns an error and leaves the original gate unresolved, even with `no_ci: true`. No repair agent, job rerun, push, skip, or approval override occurs. Successful verification completes CI and continues the same run; it does not restart indefinite monitoring. The completed step records the verified head; historical findings remain in round history. Verification uses the configured `gate_reconcile_timeout`. Gates containing other findings still require their own decision. Recheck accepts neither `--yes` nor fix/approval inputs.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.

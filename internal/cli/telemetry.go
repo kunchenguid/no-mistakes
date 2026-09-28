@@ -28,7 +28,7 @@ func trackAxiSurface(command, path string, fields telemetry.Fields, fn func() er
 func sanitizeAxiTelemetryAction(action string) string {
 	action = strings.TrimSpace(action)
 	switch types.ApprovalAction(action) {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip:
+	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionRecheck:
 		return action
 	default:
 		return "invalid"
