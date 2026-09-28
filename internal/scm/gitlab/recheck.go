@@ -12,10 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
-// GetChecksForHead deliberately does not use `ci status --mr`: that command
-// does not prove which commit produced its jobs. Pin the MR pipeline and all
-// same-head pipeline results, including children (excluded by GitLab's default
-// list endpoint), then re-read the MR. No provider rerun or write is performed.
 func (h *Host) GetChecksForHead(ctx context.Context, pr *scm.PR, expectedHead string) ([]scm.Check, error) {
 	if strings.TrimSpace(expectedHead) == "" || h.projectPath == "" {
 		return nil, fmt.Errorf("missing exact head or GitLab project")
@@ -25,53 +21,28 @@ func (h *Host) GetChecksForHead(ctx context.Context, pr *scm.PR, expectedHead st
 		return nil, err
 	}
 	endpoint := "projects/" + url.PathEscape(h.projectPath) + "/pipelines"
-	var checks []scm.Check
-	found := false
-	for _, suffix := range []string{"", "&source=parent_pipeline"} {
-		out, err := h.cmd(ctx, "glab", "api", "--paginate", endpoint+"?sha="+url.QueryEscape(expectedHead)+suffix).Output()
-		if err != nil {
-			return nil, fmt.Errorf("read exact-head GitLab pipelines: %w", err)
-		}
-		decoder := json.NewDecoder(bytes.NewReader(out))
-		pages := 0
-		for {
-			var page []struct {
-				ID     int    `json:"id"`
-				SHA    string `json:"sha"`
-				Status string `json:"status"`
-			}
-			err := decoder.Decode(&page)
-			if err == io.EOF {
-				break
-			}
-			if err != nil || page == nil {
-				return nil, fmt.Errorf("unreadable GitLab pipeline page: %v", err)
-			}
-			pages++
-			for _, p := range page {
-				if p.ID <= 0 || p.SHA != expectedHead || p.Status == "" {
-					return nil, fmt.Errorf("GitLab pipeline is not bound to expected head %s", expectedHead)
-				}
-				if p.ID == pipelineID {
-					found = true
-				}
-				// A skipped/manual pipeline is not proof of green required checks.
-				bucket := scm.CheckBucketPending
-				if p.Status == "success" {
-					bucket = scm.CheckBucketPass
-				} else if p.Status == "failed" {
-					bucket = scm.CheckBucketFail
-				}
-				checks = append(checks, scm.Check{Name: fmt.Sprintf("pipeline %d", p.ID), Bucket: bucket, State: p.Status})
-			}
-		}
-		if pages == 0 {
-			return nil, fmt.Errorf("GitLab returned no pipeline pages")
-		}
+	out, err := h.cmd(ctx, "glab", "api", fmt.Sprintf("%s/%d", endpoint, pipelineID)).Output()
+	if err != nil {
+		return nil, fmt.Errorf("read current GitLab MR pipeline: %w", err)
 	}
-	if !found {
-		return nil, fmt.Errorf("current MR pipeline missing from exact-head results")
+	var p struct {
+		ID     int    `json:"id"`
+		SHA    string `json:"sha"`
+		Status string `json:"status"`
 	}
+	if err := json.Unmarshal(out, &p); err != nil {
+		return nil, fmt.Errorf("unreadable GitLab pipeline: %w", err)
+	}
+	if p.ID != pipelineID || p.SHA != expectedHead || p.Status == "" {
+		return nil, fmt.Errorf("current MR pipeline is not bound to expected head %s", expectedHead)
+	}
+	bucket := scm.CheckBucketPending
+	if p.Status == "success" {
+		bucket = scm.CheckBucketPass
+	} else if p.Status == "failed" {
+		bucket = scm.CheckBucketFail
+	}
+	checks := []scm.Check{{Name: fmt.Sprintf("pipeline %d", p.ID), Bucket: bucket, State: p.Status}}
 	// Retain the ordinary job verdicts as well as pipeline-level verdicts. A
 	// trigger-only root can have bridges instead of jobs; both are required reads.
 	var jobs []scm.Check
@@ -80,7 +51,7 @@ func (h *Host) GetChecksForHead(ctx context.Context, pr *scm.PR, expectedHead st
 		if err != nil {
 			return nil, fmt.Errorf("read GitLab pipeline %s: %w", kind, err)
 		}
-		parsed, err := recheckJobs(out, kind == "bridges", expectedHead)
+		parsed, err := recheckJobs(out, kind == "bridges")
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +73,7 @@ func (h *Host) GetChecksForHead(ctx context.Context, pr *scm.PR, expectedHead st
 
 // Unlike the older CLI job parser, REST recheck reads require an actual array
 // on every page. A missing, null, or corrupt later page cannot hide a check.
-func recheckJobs(out []byte, bridges bool, expectedHead string) ([]scm.Check, error) {
+func recheckJobs(out []byte, bridges bool) ([]scm.Check, error) {
 	decoder := json.NewDecoder(bytes.NewReader(out))
 	pages := 0
 	var checks []scm.Check
@@ -110,6 +81,7 @@ func recheckJobs(out []byte, bridges bool, expectedHead string) ([]scm.Check, er
 		var page []struct {
 			gitlabJob
 			Downstream *struct {
+				ID     int    `json:"id"`
 				SHA    string `json:"sha"`
 				Status string `json:"status"`
 			} `json:"downstream_pipeline"`
@@ -126,8 +98,8 @@ func recheckJobs(out []byte, bridges bool, expectedHead string) ([]scm.Check, er
 			if job.ID <= 0 || job.Name == "" || job.Status == "" {
 				return nil, fmt.Errorf("incomplete GitLab job result")
 			}
-			if bridges && job.Status == "success" && (job.Downstream == nil || job.Downstream.SHA != expectedHead || job.Downstream.Status != "success") {
-				return nil, fmt.Errorf("bridge %s has no successful downstream at the expected head", job.Name)
+			if bridges && (job.Status == "success" || job.Downstream != nil) && (job.Downstream == nil || job.Downstream.ID <= 0 || strings.TrimSpace(job.Downstream.SHA) == "" || job.Downstream.Status != "success") {
+				return nil, fmt.Errorf("bridge %s has no verified successful downstream", job.Name)
 			}
 			checks = append(checks, jobsToChecks([]gitlabJob{job.gitlabJob})...)
 		}
