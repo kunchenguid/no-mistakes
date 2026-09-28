@@ -655,7 +655,7 @@ Accepts any positive Go `time.ParseDuration` string. Global-only: there is no ma
 
 ### gate_reconcile_timeout
 
-Maximum wall time one parked approval-gate reconcile attempt may spend before the attempt stops, the gate stays parked, and the next interval wait begins. Covers host probes such as `gh auth status` that can hang without returning.
+Maximum wall time one parked approval-gate reconcile attempt or explicit [CI provider-only recheck](/no-mistakes/reference/cli/#no-mistakes-axi-respond) may spend. A timeout preserves the parked gate: periodic reconciliation waits for its next interval, while an explicit recheck returns an error. Covers host probes such as `gh auth status` and provider check reads that can hang without returning.
 
 |         |                        |
 | ------- | ---------------------- |

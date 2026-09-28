@@ -67,7 +67,25 @@ func TestAxiRespond_RecheckControlledGitLab(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			var executor *pipeline.Executor
-			fx := newAxiTimeoutFixture(t, axiTimeoutOpts{respond: func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+			completed := make(chan struct{})
+			var terminalEvent ipc.Event
+			fx := newAxiTimeoutFixture(t, axiTimeoutOpts{subscribe: func(ctx context.Context, _ json.RawMessage) (ipc.StreamFunc, error) {
+				// Forward the executor's actual terminal event to every subscriber.
+				// hangSubscribe discards it, leaving a completion racing the first
+				// snapshot dependent on a heartbeat beyond the CLI's wait budget.
+				return func(send func(interface{}) error) error {
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-completed:
+						if err := send(terminalEvent); err != nil {
+							return err
+						}
+						<-ctx.Done()
+						return nil
+					}
+				}, nil
+			}, respond: func(_ context.Context, raw json.RawMessage) (interface{}, error) {
 				var params ipc.RespondParams
 				if err := json.Unmarshal(raw, &params); err != nil {
 					return nil, err
@@ -137,6 +155,10 @@ func TestAxiRespond_RecheckControlledGitLab(t *testing.T) {
 			ag := &fakeSuggesterAgent{}
 			parked := make(chan struct{}, 1)
 			executor = pipeline.NewExecutor(database, p, &config.Config{}, ag, []pipeline.Step{&steps.CIStep{}}, func(ev ipc.Event) {
+				if ev.Type == ipc.EventRunCompleted {
+					terminalEvent = ev
+					close(completed)
+				}
 				if ev.Status != nil && *ev.Status == string(types.StepStatusAwaitingApproval) {
 					select {
 					case parked <- struct{}{}:
@@ -281,6 +303,7 @@ func TestAxiRespond_RecheckControlledGitLab(t *testing.T) {
 				if len(receipt.Items) != 0 || !strings.Contains(receipt.Summary, fx.head) {
 					t.Fatalf("wrong verification receipt: %+v", receipt)
 				}
+				t.Logf("persisted completion: run=%s status=%s ci=%s awaiting_agent=%v override=%v approval_reason=%v receipt=%s", current.ID, current.Status, step.Status, current.AwaitingAgentSince, step.OverrideReason, step.ApprovalReason, *step.FindingsJSON)
 			}
 			currentStats, err := database.StepRoundStats(row.ID)
 			must(err)
@@ -297,6 +320,7 @@ func TestAxiRespond_RecheckControlledGitLab(t *testing.T) {
 			if !unrelated && provider.grandchildReads == 0 {
 				t.Fatal("linked grandchild was never read")
 			}
+			t.Logf("isolated run observations: runs=%d repair_calls=%d rounds_unchanged=%t head_unchanged=true worktree_clean=true unexpected_provider_operations=%v grandchild_reads=%d", len(runs), ag.callCount(), currentStats == stats, provider.unexpected, provider.grandchildReads)
 		})
 	}
 }
