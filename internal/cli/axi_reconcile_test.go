@@ -319,11 +319,11 @@ func TestCustodyReturnedStatusRejectsUnplannableGateRefs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("status: %v\n%s", err, status)
 			}
-			if strings.Contains(status, "safety: stale_mirror_reconcilable") || strings.Contains(status, "code: run_pipeline") {
-				t.Fatalf("status offered reconciliation for an unplannable gate ref:\n%s", status)
+			if !strings.Contains(status, "safety: manual_reconciliation_required") {
+				t.Fatalf("status did not require manual reconciliation:\n%s", status)
 			}
-			if !strings.Contains(status, "code: adopt_published") {
-				t.Fatalf("status did not retain the safe fallback:\n%s", status)
+			if strings.Contains(status, "next_action:") {
+				t.Fatalf("status offered an impossible automated action:\n%s", status)
 			}
 		})
 	}
@@ -335,8 +335,11 @@ func TestTriggerRunRefusesReturnedCustodySubmittedMirrorWithUniqueAtRiskContent(
 	if err != nil {
 		t.Fatalf("status: %v\n%s", err, status)
 	}
-	if strings.Contains(status, "safety: stale_mirror_reconcilable") || strings.Contains(status, "code: run_pipeline") {
-		t.Fatalf("status treated missing submitted content as runnable:\n%s", status)
+	if !strings.Contains(status, "safety: manual_reconciliation_required") {
+		t.Fatalf("status did not require manual reconciliation for missing submitted content:\n%s", status)
+	}
+	if strings.Contains(status, "next_action:") {
+		t.Fatalf("status offered an automated action for missing submitted content:\n%s", status)
 	}
 
 	client := startFreshRunTriggerServer(t, f.p, f)

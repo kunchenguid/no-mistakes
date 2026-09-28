@@ -2572,10 +2572,16 @@ func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 					state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 					return
 				}
+				if gateHead == state.Pipeline.CurrentHead {
+					state.Safety = "recovery_required"
+					state.NextAction = &NextAction{Code: "adopt_published", Command: "no-mistakes axi sync --adopt-published"}
+					return
+				}
 			}
 		}
-		state.Safety = "recovery_required"
-		state.NextAction = &NextAction{Code: "adopt_published", Command: "no-mistakes axi sync --adopt-published"}
+		state.Safety = "manual_reconciliation_required"
+		state.Error = "the diverged gate lane cannot be reconciled automatically; inspect the local, submitted, pipeline, and gate heads manually"
+		state.NextAction = nil
 		return
 	}
 	state.Safety = "custody_returned"
