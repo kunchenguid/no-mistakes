@@ -12,9 +12,217 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+type returnedCustodyStaleSubmissionFixture struct {
+	p         *paths.Paths
+	d         *db.DB
+	repo      *db.Repo
+	local     string
+	gateDir   string
+	branch    string
+	runID     string
+	submitted string
+	preserved string
+	localHead string
+}
+
+func newReturnedCustodyStaleSubmissionFixture(t *testing.T, dropSubmittedLine bool) returnedCustodyStaleSubmissionFixture {
+	t.Helper()
+	root := t.TempDir()
+	p := paths.WithRoot(makeSocketSafeTempDir(t))
+	t.Setenv("NM_HOME", p.Root())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	remote := filepath.Join(root, "remote.git")
+	cliGit(t, root, "init", "--bare", remote)
+	local := filepath.Join(root, "operator")
+	cliGit(t, root, "init", "-b", "main", local)
+	cliGit(t, local, "config", "user.name", "Test")
+	cliGit(t, local, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(local, "report.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "report.txt")
+	cliGit(t, local, "commit", "-m", "base")
+	base := cliGit(t, local, "rev-parse", "HEAD")
+
+	branch := "feature/recover"
+	cliGit(t, local, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(local, "report.txt"), []byte("base\napproved one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "report.txt")
+	cliGit(t, local, "commit", "-m", "submitted report part one")
+	if err := os.WriteFile(filepath.Join(local, "report.txt"), []byte("base\napproved one\napproved two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "report.txt")
+	cliGit(t, local, "commit", "-m", "submitted report part two")
+	submitted := cliGit(t, local, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(local, "pipeline.txt"), []byte("pipeline-only cancelled work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "pipeline.txt")
+	cliGit(t, local, "commit", "-m", "no-mistakes(review): cancelled fix")
+	preserved := cliGit(t, local, "rev-parse", "HEAD")
+
+	cliGit(t, local, "reset", "--hard", base)
+	replacement := "base\napproved one\napproved two\n"
+	if dropSubmittedLine {
+		replacement = "base\napproved one\n"
+	}
+	if err := os.WriteFile(filepath.Join(local, "report.txt"), []byte(replacement), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "report.txt")
+	cliGit(t, local, "commit", "-m", "replacement history")
+	localHead := cliGit(t, local, "rev-parse", "HEAD")
+
+	registeredRoot, err := git.FindGitRoot(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.InsertRepo(registeredRoot, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, branch, submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunHeadSHA(run.ID, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCancelled, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunCustodyReturned(run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	gateDir := p.RepoDir(repo.ID)
+	cliGit(t, filepath.Dir(gateDir), "init", "--bare", gateDir)
+	cliGit(t, gateDir, "config", "receive.advertisePushOptions", "true")
+	cliGit(t, local, "remote", "add", gate.RemoteName, gateDir)
+	cliGit(t, local, "push", gateDir, submitted+":refs/heads/"+branch, preserved+":refs/no-mistakes/recover/"+run.ID)
+	chdir(t, local)
+	return returnedCustodyStaleSubmissionFixture{p: p, d: d, repo: repo, local: local, gateDir: gateDir, branch: branch, runID: run.ID, submitted: submitted, preserved: preserved, localHead: localHead}
+}
+
+func startFreshRunTriggerServer(t *testing.T, p *paths.Paths, f returnedCustodyStaleSubmissionFixture) *ipc.Client {
+	t.Helper()
+	srv := ipc.NewServer()
+	fresh := &ipc.RunInfo{ID: "fresh-run", RepoID: f.repo.ID, Branch: f.branch, HeadSHA: f.localHead, Status: types.RunRunning}
+	currentFreshRun := func() *ipc.RunInfo {
+		if head, err := gitHead(context.Background(), f.gateDir, "refs/heads/"+f.branch); err == nil && head == f.localHead {
+			return fresh
+		}
+		return nil
+	}
+	srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
+		if run := currentFreshRun(); run != nil {
+			return &ipc.GetRunsResult{Runs: []ipc.RunInfo{*run}}, nil
+		}
+		return &ipc.GetRunsResult{}, nil
+	})
+	srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.GetActiveRunResult{Run: currentFreshRun()}, nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(p.Socket()) }()
+	t.Cleanup(func() { srv.Close(); <-done })
+	var client *ipc.Client
+	var err error
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		client, err = ipc.Dial(p.Socket())
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+func gitHead(ctx context.Context, dir, ref string) (string, error) {
+	return git.Run(ctx, dir, "rev-parse", ref+"^{commit}")
+}
+
+func TestTriggerRunReconcilesReturnedCustodySubmittedMirrorForContentPreservingReplacement(t *testing.T) {
+	f := newReturnedCustodyStaleSubmissionFixture(t, false)
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	for _, want := range []string{"state: custody_returned", "relation: diverged", "safety: stale_mirror_reconcilable", "code: run_pipeline"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("status missing %q:\n%s", want, status)
+		}
+	}
+	if strings.Contains(status, "adopt_published") {
+		t.Fatalf("status offered the impossible adoption path:\n%s", status)
+	}
+
+	client := startFreshRunTriggerServer(t, f.p, f)
+	env := &axiEnv{p: f.p, d: f.d, repo: f.repo, cfg: config.DefaultGlobalConfig(), client: client}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runID, err := triggerRun(ctx, env, f.branch, nil, "intent", "", false, "")
+	if err != nil || runID != "fresh-run" {
+		t.Fatalf("trigger fresh run: run=%q err=%v", runID, err)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/heads/"+f.branch); got != f.localHead {
+		t.Fatalf("gate branch = %s, want replacement head %s", got, f.localHead)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/tags/no-mistakes-abandoned/"+f.branch+"/"+f.submitted); got != f.submitted {
+		t.Fatalf("submitted head archive = %s, want %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/no-mistakes/recover/"+f.runID+"^{commit}"); got != f.preserved {
+		t.Fatalf("pipeline recovery ref = %s, want %s", got, f.preserved)
+	}
+}
+
+func TestTriggerRunRefusesReturnedCustodySubmittedMirrorWithUniqueAtRiskContent(t *testing.T) {
+	f := newReturnedCustodyStaleSubmissionFixture(t, true)
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	if strings.Contains(status, "safety: stale_mirror_reconcilable") || strings.Contains(status, "code: run_pipeline") {
+		t.Fatalf("status treated missing submitted content as runnable:\n%s", status)
+	}
+
+	client := startFreshRunTriggerServer(t, f.p, f)
+	env := &axiEnv{p: f.p, d: f.d, repo: f.repo, cfg: config.DefaultGlobalConfig(), client: client}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runID, err := triggerRun(ctx, env, f.branch, nil, "intent", "", false, "")
+	if err == nil || runID != "" || !strings.Contains(err.Error(), "refusing to reconcile private mirror ref") || !strings.Contains(err.Error(), "at-risk") {
+		t.Fatalf("unique submitted content was not refused: run=%q err=%v", runID, err)
+	}
+	if got := cliGit(t, f.gateDir, "rev-parse", "refs/heads/"+f.branch); got != f.submitted {
+		t.Fatalf("refusal moved gate branch to %s, want submitted head %s", got, f.submitted)
+	}
+	if tags := cliGit(t, f.gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("refusal archived at-risk content for deletion: %s", tags)
+	}
+}
 
 func TestTriggerRunRejectedPushRestoresReconciledGateRef(t *testing.T) {
 	dir := t.TempDir()

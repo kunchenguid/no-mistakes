@@ -119,16 +119,26 @@ exception does not extend to another recorded head, an agent-created head, an
 abbreviated SHA, or an external, newer, or divergent private head. Fresh AXI
 submissions do not receive this exception.
 
+A separate fresh-submission path exists only after a terminal run has already
+returned custody without publishing and the private lane still names that run's
+exact submitted head. If a clean replacement `HEAD` is not published but an
+executable three-way merge proves it already contains that submitted content,
+`axi run` may archive the stale submitted head and submit the replacement. This
+is containment proof, not an ownership exception: if any submitted content is
+absent or the lane no longer matches the exact submitted head, the ordinary
+at-risk refusal remains.
+
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
-head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
-unproven private content refuses before upstream publication, leaves the
-private branch untouched, and names every at-risk commit. An ancestor already
-supports an ordinary fast-forward. A gate head that is a newer descendant of
-the published head stays untouched, including through the detached worktree's
-shared branch refs.
+head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A
+and the returned-custody stale-submission containment path, unproven private
+content refuses before upstream publication, leaves the private branch
+untouched, and names every at-risk commit. An ancestor already supports an
+ordinary fast-forward. A gate head that is a newer descendant of the published
+head stays untouched, including through the detached worktree's shared branch
+refs.
 
 Correction and CI-repair recording persist the agent-created worktree head in
 the run and database without moving a branch ref shared with the gate. Repairs

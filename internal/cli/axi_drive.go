@@ -576,6 +576,10 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
 	state := inspectAxiBranchSync(ctx, env)
+	return freshRunBranchOwnershipBlock(state)
+}
+
+func freshRunBranchOwnershipBlock(state branchsync.State) *branchsync.State {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		// The ownership block exists to keep a fresh push from discarding
@@ -593,6 +597,24 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 	default:
 		return nil
 	}
+}
+
+func returnedCustodySubmittedHeadForFreshRun(state branchsync.State, branch string) string {
+	if state.State != branchsync.StateCustodyReturned || state.Local.Branch != branch || !state.Local.Clean || state.Pipeline.PushedHead != "" || state.Pipeline.SubmittedHead == "" {
+		return ""
+	}
+	if !types.RunStatus(state.Pipeline.Status).Terminal() {
+		return ""
+	}
+	return state.Pipeline.SubmittedHead
+}
+
+func reconcileFreshRunPrivateMirror(ctx context.Context, env *axiEnv, branch, submissionHead, returnedCustodySubmittedHead string) (gate.StaleBranchReconciliation, error) {
+	gateDir := env.p.RepoDir(env.repo.ID)
+	if returnedCustodySubmittedHead != "" {
+		return gate.ReconcileReturnedCustodySubmission(ctx, gateDir, ".", branch, submissionHead, returnedCustodySubmittedHead)
+	}
+	return gate.ReconcileStaleBranch(ctx, gateDir, ".", branch, submissionHead, "")
 }
 
 // triggerRun starts a fresh run for branch: it pushes the current HEAD through
@@ -622,7 +644,8 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 		// a matching terminal run may predate this push, so do not attach to it.
 		priorRunIDs = nil
 	}
-	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+	ownershipState := inspectAxiBranchSync(ctx, env)
+	if state := freshRunBranchOwnershipBlock(ownershipState); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
 	// The ownership lookup above is an IPC boundary. Preserve AXI's existing
@@ -641,7 +664,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, submissionHead); err != nil {
 		return "", err
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	reconciliation, err := reconcileFreshRunPrivateMirror(ctx, env, branch, submissionHead, returnedCustodySubmittedHeadForFreshRun(ownershipState, branch))
 	if err != nil {
 		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
 	}

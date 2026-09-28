@@ -200,6 +200,57 @@ func TestReconcileStaleBranchArchivesRunOwnedHeadWithoutPatchEquivalence(t *test
 	}
 }
 
+func TestReturnedCustodySubmissionReconciliationUsesMergeContainmentProof(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	work := initReconcileRepo(t)
+	base := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	writeReconcileFile(t, work, "base.txt", "base\napproved one\n")
+	reconcileGit(t, work, "add", "base.txt")
+	reconcileGit(t, work, "commit", "-m", "submitted report part one")
+	writeReconcileFile(t, work, "base.txt", "base\napproved one\napproved two\n")
+	reconcileGit(t, work, "add", "base.txt")
+	reconcileGit(t, work, "commit", "-m", "submitted report part two")
+	submittedHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	reconcileGit(t, work, "reset", "--hard", base)
+	writeReconcileFile(t, work, "base.txt", "base\napproved one\napproved two\n")
+	writeReconcileFile(t, work, "operator.txt", "operator rewrite\n")
+	reconcileGit(t, work, "add", "base.txt", "operator.txt")
+	reconcileGit(t, work, "commit", "-m", "replacement preserves submitted content")
+	liveHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, submittedHead+":refs/heads/feature/reconcile")
+
+	if _, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, ""); err == nil {
+		t.Fatal("ordinary fresh reconciliation accepted a changed patch without the containment path")
+	}
+	plan, err := PlanReturnedCustodySubmissionReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, submittedHead)
+	if err != nil {
+		t.Fatalf("submitted content containment was refused: %v", err)
+	}
+	if !plan.Reconcile || plan.PreviousHead != submittedHead {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != submittedHead {
+		t.Fatalf("planning moved private branch to %s, want %s", got, submittedHead)
+	}
+
+	result, err := ApplyStaleBranchReconciliation(ctx, gateDir, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reconciled || result.PreviousHead != submittedHead {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag+"^{commit}"); got != submittedHead {
+		t.Fatalf("archive tag points at %s, want %s", got, submittedHead)
+	}
+}
+
 func TestPlanStaleBranchReconciliationMutatesNothingAndApplyRefusesMovedHead(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

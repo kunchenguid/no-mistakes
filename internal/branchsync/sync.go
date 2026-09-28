@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -2545,9 +2546,10 @@ func RunHeadUnmoved(state State) bool {
 }
 
 // classifyCustodyReturned reports a branch whose stranded terminal run was
-// explicitly recovered and never had a push binding. A diverged local head is
-// not ready to start a fresh run until the gate lane has safely adopted the
-// already-published rewrite; all other relationships remain informative only.
+// explicitly recovered. A diverged local head is not ready to start a fresh run
+// until the gate lane can safely accept it: either by adopting an already
+// published rewrite, or by proving an unpublished replacement still contains
+// the stale submitted head; all other relationships remain informative only.
 func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 	state.State = StateCustodyReturned
 	state.Error = ""
@@ -2556,10 +2558,17 @@ func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 		branchRef := "refs/heads/" + state.Local.Branch
 		if strings.TrimSpace(s.GateDir) != "" {
 			gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", branchRef+"^{commit}")
-			if err == nil && gateHead == state.Local.Head {
-				state.Safety = "gate_ready"
-				state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
-				return
+			if err == nil {
+				if gateHead == state.Local.Head {
+					state.Safety = "gate_ready"
+					state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+					return
+				}
+				if state.Local.Clean && state.Pipeline.PushedHead == "" && gateHead == state.Pipeline.SubmittedHead && gate.HeadContentContained(ctx, s.workDir(), gateHead, state.Local.Head) {
+					state.Safety = "stale_mirror_reconcilable"
+					state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+					return
+				}
 			}
 		}
 		state.Safety = "recovery_required"
