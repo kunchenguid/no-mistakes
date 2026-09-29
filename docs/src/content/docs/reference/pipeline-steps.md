@@ -9,7 +9,7 @@ This is the per-step reference. For the overview and rationale, see [Pipeline](/
 intent → rebase → review → test → document → lint → push → pr → ci
 ```
 
-Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Every step that scopes its work to the branch's changes (Review, Test, Document, Lint, PR drafting, CI repair, and repository gate fixes) first fetches the base branch's live remote tip and computes the branch base against it; if that fetch fails, the step fails instead of falling back to a possibly stale cached base ref. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
+Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Before Rebase, a run discovers its one matching open PR by exact source repository and branch, or reads its recorded PR. The live PR target wins over a configured or inherited target. With no PR, the run uses the prospective target selected for PR creation. The run fetches that target and pins its commit, merge base, and raw diff digest in a durable comparison receipt. Review, Test, Document, Lint, PR drafting, and CI repair use that comparison; a changed head or target invalidates later evidence and restarts validation. A failed fetch never falls back to a stale cached ref. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept.
 The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and Review runs a fresh review up to three times in total when no-mistakes rejects the reviewer's final output; exhausting either bound, and every other step's invalid analyzer output, still stops the affected step.
 Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
@@ -60,7 +60,7 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 
 Fetches the latest authoritative remote state, fetches the configured pushed-branch target, and integrates your branch with those refs - by rebasing onto them, or by merging them in when [`rebase.strategy: merge`](/no-mistakes/reference/repo-config/#rebasestrategy) is configured.
 
-The integration branch used below is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch): the repository's forge default branch, or the trusted [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when configured.
+The integration branch used below is the open PR's live base when one exists. Otherwise it is the prospective [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch): the repository's forge default branch or trusted [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when configured.
 
 **Behavior:**
 - Fetches `origin/<PR base branch>` from the remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history. A failed base-branch fetch fails the step before any rebase or head update, rather than integrating against a possibly stale cached `origin/<PR base branch>`; the post-integration empty-diff check reuses that same fetched ref
@@ -87,6 +87,8 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 ## Review
 
 AI code review of your diff. This is probabilistic evidence, not a security or compliance certification, and does not replace deterministic repository-owned authorization and privacy tests, static analysis, threat modeling, or human security review.
+
+Review findings carry typed support. A source claim must quote the current reviewed commit. A Test claim names the configured command that will own the result; a CI claim names an exact provider check identity on the current PR head. Pending Test and CI claims may pass the Review step provisionally, but they cannot certify the run until the named owner resolves them. A changed head, target, diff, or owner result invalidates that support. Unsupported claims do not become approval evidence.
 
 **Behavior:**
 
@@ -156,6 +158,7 @@ At entry to every repository gate and every core step from Test through CI, no-m
 Runs **targeted** local validation of the change and requested intent, then gathers evidence for that intent.
 Local Test is never a repository-wide regression-suite substitute; broad regression is owned by remote CI and remains mandatory before a PR is ready.
 [`commands.test`](/no-mistakes/reference/repo-config/#commandstest) owns the configuration contract for any explicit baseline command.
+When Review leaves a pending Test support claim, only the named configured command's completed result can resolve it. A skipped, failed, or different command leaves the claim unresolved and blocks publication.
 
 **Behavior:**
 
@@ -265,7 +268,7 @@ Creates or updates a pull request.
 **Behavior:**
 - Checks for an existing PR on the branch, matching by branch alone rather than filtering by base, so a still-open PR against a since-changed [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is found and updated instead of orphaned behind a duplicate
 - If one exists, updates it. If not, creates a new one against the configured base branch, or the per-run `--base-branch` override when set.
-- A per-run `--base-branch` that disagrees with an existing PR's live forge base retargets that PR (GitHub `gh pr edit --base`, GitLab `glab mr update --target-branch`, Gitea `tea api` PATCH) before updating title and body, but only the run's persisted PR URL or number after `GetPRState` proves it is still open. A sibling first-list-hit is ignored in favor of that identity; a closed or merged persisted identity, a run with no persisted identity, or a provider that cannot retarget, fails closed instead of moving another review object. A rerun inherits the selected run's PR URL only when that PR is not already merged or closed. A repo-config `pr.base_branch` change still does not retarget.
+- A fresh per-run `--base-branch` request may retarget only the run's recorded, exact-head open PR before Rebase; the new base is read back, and the request is consumed once. An inherited override, unrecorded PR, moved head, or repository config change does not retarget a PR. PR title and body updates use the target selected at the earlier comparison boundary. A rerun inherits the selected run's PR URL only when that PR is not already merged or closed.
 - If existing-PR discovery fails or its provider response cannot be decoded and validated as a PR listing for the configured repository, stops instead of treating the result as no PR and creating a duplicate.
 - Uses `gh` for GitHub, `glab` for GitLab, `forgejo-axi` for Forgejo, `tea` for Gitea, the Bitbucket API for Bitbucket Cloud, and `az` for Azure DevOps
 - For GitHub fork routing, keeps `gh --repo` pointed at the parent repository from `origin`, checks existing PRs with the bare branch name, filters matching PRs by head owner, and creates PRs with `--head <fork-owner>:<branch>`
@@ -320,6 +323,7 @@ The comment is intentionally data only. It does not declare any step required, p
 ## CI
 
 Monitors PR health after creation and auto-fixes CI failures. Mergeability polling and merge-conflict handling apply to GitHub, GitLab, Forgejo, and Azure DevOps.
+When Review leaves a pending CI support claim, only the named provider check on the current PR head can resolve it. A caller may explicitly transfer that proof duty to Controller's shipping workflow with `--external-ci-owner=controller-ship-pr` and exactly `--skip=push,pr,ci`. The resulting `pending-external-ci` outcome is a handoff, not a passed CI verdict or merge approval. The caller must read `axi ci-handoff --run <id>` and verify its claims against the live PR and checks before merge.
 
 **Active for GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps (`dev.azure.com` / `*.visualstudio.com`), and Gitea**.
 

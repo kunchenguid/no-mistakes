@@ -131,23 +131,29 @@ type runView struct {
 	// live check (see pipeline.ApprovalOverrideVerifier). outcomeForRun uses
 	// it to keep a deliberate override from reading identically to a
 	// genuinely green run in agent-facing output.
-	CIOverrideReason   string
-	TestOverrideReason string
+	CIOverrideReason      string
+	TestOverrideReason    string
+	ExternalCIOwner       string
+	PendingCISupport      []types.PendingCISupport
+	PendingCISupportError string
 }
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
-		ID:                 r.ID,
-		Branch:             r.Branch,
-		Status:             string(r.Status),
-		HeadSHA:            r.HeadSHA,
-		CIReady:            r.CIReady,
-		CIReadyNoCI:        r.CIReadyNoCI,
-		AwaitingAgentSince: r.AwaitingAgentSince,
-		CIOverrideReason:   r.CIOverrideReason,
-		TestOverrideReason: r.TestOverrideReason,
-		PiProfile:          r.PiProfile,
-		VerificationPlan:   r.VerificationPlan,
+		ID:                    r.ID,
+		Branch:                r.Branch,
+		Status:                string(r.Status),
+		HeadSHA:               r.HeadSHA,
+		CIReady:               r.CIReady,
+		CIReadyNoCI:           r.CIReadyNoCI,
+		AwaitingAgentSince:    r.AwaitingAgentSince,
+		CIOverrideReason:      r.CIOverrideReason,
+		TestOverrideReason:    r.TestOverrideReason,
+		ExternalCIOwner:       r.ExternalCIOwner,
+		PendingCISupport:      r.PendingCISupport,
+		PendingCISupportError: r.PendingCISupportError,
+		PiProfile:             r.PiProfile,
+		VerificationPlan:      r.VerificationPlan,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -192,6 +198,14 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
+		ExternalCIOwner:    r.ExternalCIOwner,
+	}
+	if database != nil {
+		if pending, err := database.PendingExternalCISupport(r); err == nil {
+			rv.PendingCISupport = pending
+		} else {
+			rv.PendingCISupportError = err.Error()
+		}
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -486,6 +500,15 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
+	if rv.ExternalCIOwner != "" {
+		fields = append(fields, toon.Field{Key: "external_ci_owner", Value: rv.ExternalCIOwner})
+		if len(rv.PendingCISupport) > 0 {
+			fields = append(fields, toon.Field{Key: "pending_ci_support", Value: rv.PendingCISupport})
+		}
+		if rv.PendingCISupportError != "" {
+			fields = append(fields, toon.Field{Key: "pending_ci_support_error", Value: rv.PendingCISupportError})
+		}
+	}
 	if rv.TestOverrideReason != "" {
 		fields = append(fields, toon.Field{Key: "test_override_reason", Value: rv.TestOverrideReason})
 	}

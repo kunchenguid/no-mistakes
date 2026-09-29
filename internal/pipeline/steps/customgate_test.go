@@ -162,6 +162,37 @@ func TestCustomGateStep_CommandGateFixRoundRepairsThenReChecks(t *testing.T) {
 	}
 }
 
+func TestCustomGateStep_FixUsesExistingPRTarget(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "mock", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(dir, "gate-satisfied.txt"), []byte("ok"), 0o644); err != nil {
+			return nil, err
+		}
+		return &agent.Result{Output: json.RawMessage(`{"summary":"satisfy target gate"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PRTarget = &pipeline.PRTargetSelection{TargetBranch: "develop"}
+	sctx.PRContext = &db.PRContext{PRContextCandidate: db.PRContextCandidate{
+		LocalHeadSHA: headSHA, TargetBranch: "develop", MergeBaseSHA: baseSHA,
+	}}
+	step := &CustomGateStep{Gate: config.Gate{
+		Name: "target-gate", After: types.StepTest, Command: fileGateCommand("gate-satisfied.txt"),
+	}}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() = %v", err)
+	}
+	if outcome.NeedsApproval || len(ag.calls) != 1 {
+		t.Fatalf("outcome = %+v, agent calls = %d; want repaired gate", outcome, len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "base commit: "+baseSHA) {
+		t.Fatalf("fix prompt did not use the PR target comparison: %s", ag.calls[0].Prompt)
+	}
+}
+
 // A fix turn that does not actually satisfy the gate must re-park, and the
 // re-parked verdict must come from re-running the check, not from replaying the
 // stale findings.

@@ -53,6 +53,19 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 // layer down. Callers return the error, which fails the step instead of
 // validating or drafting content against unverified base state.
 func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, error) {
+	if sctx.PRContext != nil {
+		if sctx.PRContext.TargetBranch != defaultBranch {
+			return "", fmt.Errorf("selected PR target %q differs from pinned receipt target %q", defaultBranch, sctx.PRContext.TargetBranch)
+		}
+		localHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return "", fmt.Errorf("read local head for pinned PR comparison: %w", err)
+		}
+		if localHead != sctx.PRContext.LocalHeadSHA {
+			return "", fmt.Errorf("local head %s differs from pinned PR comparison head %s", localHead, sctx.PRContext.LocalHeadSHA)
+		}
+		return sctx.PRContext.MergeBaseSHA, nil
+	}
 	// Eval replay has no upstream to fetch: it pins origin/<base> to the
 	// captured commit in its isolated worktree, which is the base to use.
 	if strings.TrimSpace(defaultBranch) != "" && !sctx.EvalReplay {

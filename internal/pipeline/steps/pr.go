@@ -75,7 +75,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	baseBranch := effectivePRBaseBranch(sctx)
+	baseBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return nil, err
+	}
 	if branch == baseBranch {
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
@@ -155,18 +158,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err != nil {
 				return nil, err
 			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
-				return nil, err
-			}
 			if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit); err != nil {
 				return nil, err
 			}
 		} else {
 			content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 			if err != nil {
-				return nil, err
-			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 				return nil, err
 			}
 			updated, err = host.UpdatePR(ctx, existing, scm.PRContent(content))
@@ -219,42 +216,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
-}
-
-// retargetExistingPRIfNeeded moves an already-open PR onto a per-run
-// --base-branch override when the live forge base disagrees. Repo-config
-// pr.base_branch changes still do not retarget: requested is empty in that
-// path, so title and body update in place and CI keeps following the live
-// forge base.
-func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, existing *scm.PR, requested string) error {
-	requested = strings.TrimSpace(requested)
-	if requested == "" || existing == nil {
-		return nil
-	}
-	actual := strings.TrimSpace(existing.BaseBranch)
-	if actual == requested {
-		return nil
-	}
-	if err := requireOwnedPRIdentity(sctx, existing); err != nil {
-		return err
-	}
-	retargeter, ok := host.(scm.PRBaseRetargeter)
-	if !ok {
-		if actual == "" {
-			return fmt.Errorf("existing pull request %s has no readable base branch, and this provider cannot retarget it to %s", describePR(existing), requested)
-		}
-		return fmt.Errorf("existing pull request %s targets %s, not %s, and this provider cannot retarget it", describePR(existing), actual, requested)
-	}
-	from := actual
-	if from == "" {
-		from = "its current base"
-	}
-	sctx.Log(fmt.Sprintf("retargeting existing pull request %s from %s to %s", describePR(existing), from, requested))
-	if err := retargeter.SetPRBaseBranch(sctx.Ctx, existing, requested); err != nil {
-		return fmt.Errorf("retarget pull request to %s: %w", requested, err)
-	}
-	existing.BaseBranch = requested
-	return nil
 }
 
 // bindExistingPR prefers the run's persisted PR URL over a branch-only
@@ -316,22 +277,6 @@ func prFromOwnedURL(owned string) *scm.PR {
 		pr.Number = n
 	}
 	return pr
-}
-
-// requireOwnedPRIdentity fails closed unless the PR about to be mutated is
-// proven to be the run's persisted review object. Retarget uses this before
-// any base move. Title/body update of a first-attach FindPR hit (no
-// persisted URL) still proceeds so a later pr.base_branch change updates
-// the open PR instead of opening a duplicate.
-func requireOwnedPRIdentity(sctx *pipeline.StepContext, existing *scm.PR) error {
-	owned := runPRURL(sctx)
-	if owned == "" {
-		return fmt.Errorf("refusing to retarget pull request %s: this run has no persisted PR identity", describePR(existing))
-	}
-	if samePRIdentity(owned, existing) {
-		return nil
-	}
-	return fmt.Errorf("discovered pull request %s does not match this run's persisted pull request %s", describePR(existing), owned)
 }
 
 func runPRURL(sctx *pipeline.StepContext) string {

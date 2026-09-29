@@ -34,7 +34,11 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 	ctx := sctx.Ctx
 	startHead := sctx.Run.HeadSHA
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	targetBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return nil, err
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, targetBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +135,8 @@ Previous test findings to address:
 	var baselineFindings []Finding
 	var baselineSummary string
 	var baselineExitCode int
+	var testCommandExit *int
+	var testCommandHead, testCommandObservedAt string
 	if testCmd != "" {
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
 			return nil, fmt.Errorf("prepare test dependencies: %w", err)
@@ -141,6 +147,9 @@ Previous test findings to address:
 			logConfiguredCommandOutput(sctx, output, types.StepTest)
 			return nil, fmt.Errorf("run test command: %w", err)
 		}
+		testCommandExit = &exitCode
+		testCommandHead = currentTestCommandHead(sctx)
+		testCommandObservedAt = supportObservationTime()
 		tested = append(tested, testCmd)
 
 		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
@@ -281,6 +290,14 @@ Rules:
 	}
 
 	findings.Items = append(findings.Items, verdictFindings(findings)...)
+	ownerResults, err := resolveTestReviewSupport(sctx, testCmd, testCommandExit, testCommandHead, testCommandObservedAt)
+	if err != nil {
+		if errors.Is(err, errReviewSupportHeadAdvanced) {
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+		return nil, fmt.Errorf("resolve Review test support: %w", err)
+	}
+	findings.Items = append(findings.Items, ownerResults...)
 
 	needsApproval := hasBlockingFindings(findings.Items)
 	autoFixable := needsApproval
@@ -378,6 +395,11 @@ func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
 		return Findings{}, err
 	}
 	for i := range findings.Items {
+		item := &findings.Items[i]
+		if item.Category == types.FindingCategoryReviewSupportResolved || item.Category == types.FindingCategoryReviewSupportUnresolved ||
+			(item.Support != nil && item.Support.OwnerResult != nil) {
+			return Findings{}, fmt.Errorf("test analyzer finding %d cannot supply Review support owner result", i)
+		}
 		if slices.Contains(testBudgetCutIDs, findings.Items[i].ID) {
 			findings.Items[i].ID = ""
 		}

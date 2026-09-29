@@ -1,0 +1,371 @@
+package pipeline
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+func TestExecutorResolvesPRTargetBeforeRebaseAndCarriesItToReview(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	var observed []types.StepName
+	steps := []Step{
+		newPassStep(types.StepIntent),
+		&adaptiveCallStep{name: types.StepRebase, fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if sctx.PRTarget == nil || sctx.PRTarget.TargetBranch != "develop" {
+				t.Fatalf("rebase target = %+v, want develop", sctx.PRTarget)
+			}
+			return &StepOutcome{}, nil
+		}},
+		&adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if sctx.PRTarget == nil || sctx.PRTarget.TargetBranch != "develop" {
+				t.Fatalf("review target = %+v, want develop", sctx.PRTarget)
+			}
+			return &StepOutcome{}, nil
+		}},
+	}
+	executor := NewExecutor(database, p, nil, nil, steps, nil)
+	executor.SetPRContextGuard(func(_ *StepContext, name types.StepName) (PRContextDecision, error) {
+		observed = append(observed, name)
+		return PRContextDecision{Target: PRTargetSelection{TargetBranch: "develop"}}, nil
+	})
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(observed, []types.StepName{types.StepRebase, types.StepRebase, types.StepReview, types.StepReview}) {
+		t.Fatalf("guard called at %v", observed)
+	}
+}
+
+func TestExecutorParkedApprovalRevalidatesPRTargetBeforeFinalStepCompletes(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	var observed []types.StepName
+	reviewRuns := 0
+	steps := []Step{
+		newPassStep(types.StepIntent),
+		&adaptiveCallStep{name: types.StepRebase, fn: func(*StepContext) (*StepOutcome, error) {
+			observed = append(observed, types.StepRebase)
+			return &StepOutcome{}, nil
+		}},
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			observed = append(observed, types.StepReview)
+			reviewRuns++
+			if reviewRuns == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: `{"findings":[{"severity":"warning","description":"old comparison","action":"ask-user"}]}`}, nil
+			}
+			return &StepOutcome{ReviewApprovedHeadSHA: "2222222222222222222222222222222222222222"}, nil
+		}},
+	}
+	executor := NewExecutor(database, p, nil, nil, steps, nil)
+	checks := 0
+	executor.SetPRContextGuard(func(_ *StepContext, name types.StepName) (PRContextDecision, error) {
+		checks++
+		if checks == 5 {
+			if err := database.ResetStepsFrom(run.ID, types.StepRebase.Order()); err != nil {
+				return PRContextDecision{}, err
+			}
+			return PRContextDecision{Target: PRTargetSelection{TargetBranch: "develop"}, RestartFrom: types.StepRebase}, nil
+		}
+		return PRContextDecision{Target: PRTargetSelection{TargetBranch: "develop"}}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- executor.Execute(ctx, run, repo, t.TempDir()) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := executor.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("review never parked for approval")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(observed, []types.StepName{types.StepRebase, types.StepReview, types.StepRebase, types.StepReview}) {
+		t.Fatalf("executed steps = %v, want fresh rebase and review", observed)
+	}
+}
+
+func TestExecutorAcceptsTerminalCIProofWithoutRequiringAnOpenPR(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	const head = "1111111111111111111111111111111111111111"
+	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	prURL := "https://github.com/acme/repo/pull/7"
+	_, err := database.BindRunPRContext(run.ID, db.PRContextCandidate{
+		PRURL: prURL, SourceRepo: "acme/repo", SourceBranch: run.Branch,
+		ForgeHeadSHA: head, LocalHeadSHA: head, TargetBranch: "develop",
+		TargetSHA:    "2222222222222222222222222222222222222222",
+		MergeBaseSHA: "2222222222222222222222222222222222222222",
+		DiffDigest:   "3333333333333333333333333333333333333333333333333333333333333333",
+	}, types.StepRebase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRState(run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepCI)}, nil)
+	executor.SetPRContextGuard(func(*StepContext, types.StepName) (PRContextDecision, error) {
+		return PRContextDecision{}, errors.New("closed PR cannot be read as open")
+	})
+	index, err := executor.checkPRContext(context.Background(), run, repo, t.TempDir(), types.StepCI, 0, true)
+	if err != nil || index != -1 {
+		t.Fatalf("terminal CI context = %d, %v", index, err)
+	}
+}
+
+func TestExecutorReviewPendingTestClaimAdvancesToOwnerStep(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	testRan := false
+	const pending = `{"findings":[{"severity":"warning","description":"old test output needs current proof","action":"no-op","category":"review-support-pending","support":{"claim_type":"test","test":{"command":"go test ./..."}}}]}`
+	executor := NewExecutor(database, p, nil, nil, []Step{
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: pending, ReviewApprovedHeadSHA: "1111111111111111111111111111111111111111"}, nil
+		}},
+		&adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+			testRan = true
+			return &StepOutcome{}, nil
+		}},
+	}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := executor.Execute(ctx, run, repo, t.TempDir()); err == nil {
+		t.Fatal("pending claim completed without current owner proof")
+	}
+	if !testRan {
+		t.Fatal("pending Test claim never reached Test")
+	}
+}
+
+func TestExecutorSkippedEvidenceOwnerCannotCompletePendingClaim(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	const pending = `{"findings":[{"severity":"warning","description":"old test output needs current proof","action":"no-op","category":"review-support-pending","support":{"claim_type":"test","test":{"command":"go test ./..."}}}]}`
+	executor := NewExecutor(database, p, nil, nil, []Step{
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: pending, ReviewApprovedHeadSHA: "1111111111111111111111111111111111111111"}, nil
+		}},
+		newPassStep(types.StepTest),
+	}, nil)
+	executor.SetSkippedSteps([]types.StepName{types.StepTest})
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("skipped Test owner completed a run with a pending test claim")
+	}
+}
+
+func TestExecutorCurrentOwnerProofCompletesPendingTestClaim(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	const head = "1111111111111111111111111111111111111111"
+	const target = "2222222222222222222222222222222222222222"
+	const digest = "3333333333333333333333333333333333333333333333333333333333333333"
+	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	run.HeadSHA = head
+	_, err := database.BindRunPRContext(run.ID, db.PRContextCandidate{
+		LocalHeadSHA: head, TargetBranch: "develop", TargetSHA: target,
+		MergeBaseSHA: target, DiffDigest: digest,
+	}, types.StepRebase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := database.GetRunPRContext(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := types.Finding{
+		ID: "review-claim-1", Severity: types.FindingSeverityWarning,
+		Description: "historical test failure", Action: types.ActionNoOp,
+		Category: "review-support-pending", Support: &types.FindingSupport{
+			ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: "go test ./..."},
+		},
+	}
+	claimJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{claim}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	resolved := claim
+	resolved.ID = types.ReviewSupportClaimID(claim)
+	resolved.Severity = types.FindingSeverityInfo
+	resolved.Category = types.FindingCategoryReviewSupportResolved
+	resolved.Support = &types.FindingSupport{
+		ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: "go test ./..."},
+		OwnerResult: &types.FindingOwnerResult{
+			ReviewFindingID: claim.ID, HeadSHA: head, TargetSHA: target,
+			DiffDigest: digest, Generation: receipt.Generation,
+			ObservedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+			Disposition: types.FindingSupportDispositionDisproven, ExitCode: &zero,
+		},
+	}
+	resolvedJSON, err := json.Marshal(types.Findings{Items: []types.Finding{resolved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(database, p, nil, nil, []Step{
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: claimJSON, ReviewApprovedHeadSHA: head}, nil
+		}},
+		&adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: string(resolvedJSON)}, nil
+		}},
+	}, nil)
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecutorUnresolvedTestClaimStopsBeforePublication(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	const pending = `{"findings":[{"id":"review-claim-1","severity":"warning","description":"old test output needs current proof","action":"no-op","category":"review-support-pending","support":{"claim_type":"test","test":{"command":"go test ./..."}}}]}`
+	pushRan := false
+	executor := NewExecutor(database, p, nil, nil, []Step{
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: pending, ReviewApprovedHeadSHA: "1111111111111111111111111111111111111111"}, nil
+		}},
+		newPassStep(types.StepTest),
+		&adaptiveCallStep{name: types.StepPush, fn: func(*StepContext) (*StepOutcome, error) {
+			pushRan = true
+			return &StepOutcome{}, nil
+		}},
+	}, nil)
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("unresolved Test claim completed a run")
+	}
+	if pushRan {
+		t.Fatal("unresolved Test claim reached Push")
+	}
+}
+
+func TestExecutorExplicitExternalCIOwnerCarriesPendingClaim(t *testing.T) {
+	database, p, baseRun, repo := setupTest(t)
+	const head = "1111111111111111111111111111111111111111"
+	run, err := database.InsertRunWithExternalCIOwner(repo.ID, "feature-external-ci", head, baseRun.BaseSHA,
+		nil, "", "", "", "develop", false, false, types.ExternalCIOwnerControllerShipPR, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.BindRunPRContext(run.ID, db.PRContextCandidate{
+		LocalHeadSHA: run.HeadSHA, TargetBranch: "develop",
+		TargetSHA:    "2222222222222222222222222222222222222222",
+		MergeBaseSHA: "2222222222222222222222222222222222222222",
+		DiffDigest:   "3333333333333333333333333333333333333333333333333333333333333333",
+	}, types.StepRebase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pending = `{"findings":[{"id":"review-ci-1","severity":"warning","description":"historical CI failure","action":"no-op","category":"review-support-pending","support":{"claim_type":"ci","ci":{"check_id":"old-check","head_sha":"1111111111111111111111111111111111111111"}}}]}`
+	executor := NewExecutor(database, p, nil, nil, []Step{
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: pending, ReviewApprovedHeadSHA: run.HeadSHA}, nil
+		}},
+		newPassStep(types.StepPush), newPassStep(types.StepPR), newPassStep(types.StepCI),
+	}, nil)
+	executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR, types.StepCI})
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatalf("explicit external CI handoff was refused: %v", err)
+	}
+	current, err := database.GetRun(run.ID)
+	if err != nil || current.Status != types.RunCompleted {
+		t.Fatalf("run = %+v, err = %v; want completed with pending external CI", current, err)
+	}
+}
+
+func TestExecutorRecoveredApprovalRevalidatesMovedPRTargetBeforeUsingParkedVerdict(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := database.InsertStepResult(run.ID, types.StepIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(intent.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	rebase, err := database.InsertStepResult(run.ID, types.StepRebase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(rebase.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	review, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(review.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"severity":"warning","description":"old comparison","action":"ask-user"}]}`
+	if err := database.SetStepFindings(review.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertReviewStepRound(review.ID, 1, "initial", &findings, nil, "1111111111111111111111111111111111111111", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(review.ID, types.StepStatusAwaitingApproval, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observed []types.StepName
+	steps := []Step{
+		newPassStep(types.StepIntent),
+		&adaptiveCallStep{name: types.StepRebase, fn: func(*StepContext) (*StepOutcome, error) {
+			observed = append(observed, types.StepRebase)
+			return &StepOutcome{}, nil
+		}},
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			observed = append(observed, types.StepReview)
+			return &StepOutcome{ReviewApprovedHeadSHA: "2222222222222222222222222222222222222222"}, nil
+		}},
+	}
+	executor := NewExecutor(database, p, nil, nil, steps, nil)
+	checks := 0
+	executor.SetPRContextGuard(func(_ *StepContext, name types.StepName) (PRContextDecision, error) {
+		checks++
+		if checks == 1 {
+			if err := database.ResetStepsFrom(run.ID, types.StepRebase.Order()); err != nil {
+				return PRContextDecision{}, err
+			}
+			return PRContextDecision{Target: PRTargetSelection{TargetBranch: "develop"}, RestartFrom: types.StepRebase}, nil
+		}
+		return PRContextDecision{Target: PRTargetSelection{TargetBranch: "develop"}}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := executor.Resume(ctx, run, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(observed, []types.StepName{types.StepRebase, types.StepReview}) {
+		t.Fatalf("executed steps = %v, want fresh rebase and review", observed)
+	}
+	recoveredReview, err := database.GetStepResult(review.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredReview.Status != types.StepStatusCompleted {
+		t.Fatalf("review status = %s", recoveredReview.Status)
+	}
+}

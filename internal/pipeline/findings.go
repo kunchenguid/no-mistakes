@@ -289,6 +289,30 @@ func hasBlockingFindingsJSON(raw string) bool {
 	return false
 }
 
+// A Review hypothesis owned by Test or CI is retained in Review's findings
+// but must advance to that evidence step. Only the trusted Review validator
+// emits this exact category and typed no-op support in production.
+func hasBlockingFindingsAtStepJSON(raw string, step types.StepName) bool {
+	if step != types.StepReview {
+		return hasBlockingFindingsJSON(raw)
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw != ""
+	}
+	for _, item := range findings.Items {
+		if item.Severity != types.FindingSeverityError && item.Severity != types.FindingSeverityWarning {
+			continue
+		}
+		if item.Category == "review-support-pending" && item.Action == types.ActionNoOp && item.Support != nil &&
+			(item.Support.ClaimType == types.FindingClaimTest || item.Support.ClaimType == types.FindingClaimCI) && item.Support.Validate() == nil {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func findingIDsFromSelectionJSON(raw string) []string {
 	if raw == "" {
 		return nil

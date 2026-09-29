@@ -83,6 +83,47 @@ func TestInsertRunWithIntent(t *testing.T) {
 	if got.PRBaseBranch == nil || *got.PRBaseBranch != "epic/feature" {
 		t.Fatalf("PRBaseBranch = %#v, want epic/feature", got.PRBaseBranch)
 	}
+	if !got.PRBaseBranchRequested {
+		t.Fatal("fresh base branch request was not persisted")
+	}
+}
+
+func TestInsertRunWithInheritedPRBaseBranchDoesNotRequestRetarget(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRunWithIntentAndLaunchNonceRequested(repo.ID, "feature", "head", "base", nil, "", "", "", "epic/feature", false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRBaseBranch == nil || *got.PRBaseBranch != "epic/feature" || got.PRBaseBranchRequested {
+		t.Fatalf("inherited target gained retarget authority: %+v", got)
+	}
+}
+
+func TestConsumePRBaseBranchRequestClearsDurableIntentOnce(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRunWithIntent(repo.ID, "feature", "head", "base", nil, "epic/feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ConsumePRBaseBranchRequest(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRBaseBranchRequested || got.PRBaseBranch == nil || *got.PRBaseBranch != "epic/feature" {
+		t.Fatalf("consume changed target or kept authority: %+v", got)
+	}
+	if err := d.ConsumePRBaseBranchRequest(run.ID); err != nil {
+		t.Fatalf("idempotent consume: %v", err)
+	}
 }
 
 func TestLaunchNonceBindingClaimsOnceAndPreservesLegacyRows(t *testing.T) {

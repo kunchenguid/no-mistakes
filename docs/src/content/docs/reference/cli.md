@@ -123,6 +123,7 @@ no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
+no-mistakes axi run --intent "the user's goal" --skip=push,pr,ci --external-ci-owner=controller-ship-pr
 no-mistakes axi run --intent "the user's goal" --no-publish-intent
 ```
 
@@ -133,6 +134,7 @@ no-mistakes axi run --intent "the user's goal" --no-publish-intent
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--external-ci-owner` | `string` | (none) | Explicit CI claim handoff to `controller-ship-pr`; requires exactly `--skip=push,pr,ci` |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
@@ -166,6 +168,7 @@ Only attached runs receive plan-aware guidance. Review and Test assess the propo
 
 `--base-branch` is persisted on the run so rebase, PR, and CI honor it after resume.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
+An existing open PR's actual target wins over the configured target. A fresh, explicit `--base-branch` request may retarget that exact PR before Rebase; the run reads the PR back before using the new target. A run without an owned PR keeps the selected branch as its prospective target. `--external-ci-owner` is persisted for the run and does not turn a skipped CI step into a passing check. When Review has pending CI support and Push, PR, and CI are explicitly skipped, the outcome is `pending-external-ci`. Read the typed handoff below and let the named external owner prove those claims before merge. Without that owner, pending claims block completion.
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
@@ -203,6 +206,16 @@ Report that missing evidence; this outcome does not establish CI readiness or a 
 Explicit per-run skips retain their existing behavior.
 If the run also has a Test or CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible.
 Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
+
+## no-mistakes axi ci-handoff
+
+Read a completed run's explicit external CI proof handoff as JSON:
+
+```sh
+no-mistakes axi ci-handoff --run <run-id>
+```
+
+This succeeds only for a completed run with `controller-ship-pr` ownership, exactly skipped Push, PR, and CI steps, and current pending Review CI claims. The JSON includes `outcome: pending-external-ci`, `run_id`, `external_ci_owner`, and each claim's provider check identity and PR comparison receipt. A missing, stale, or unreadable claim returns an error and a nonzero exit. The handoff is evidence to verify against the live PR; it does not assert that CI passed.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
 ### Strict launch receipts

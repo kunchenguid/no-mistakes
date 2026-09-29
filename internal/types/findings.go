@@ -207,6 +207,8 @@ type Finding struct {
 	// every non-CI finding.
 	Check   string `json:"check,omitempty"`
 	CheckID string `json:"check_id,omitempty"`
+	// Support is a typed, untrusted reference for later evidence validation.
+	Support *FindingSupport `json:"support,omitempty"`
 }
 
 // TestScenario is one named end-to-end scenario the test step derived from the
@@ -265,19 +267,20 @@ type TestArtifact struct {
 }
 
 type findingWire struct {
-	ID                  string `json:"id,omitempty"`
-	Severity            string `json:"severity"`
-	File                string `json:"file,omitempty"`
-	Line                int    `json:"line,omitempty"`
-	Description         string `json:"description"`
-	Action              string `json:"action"`
-	Source              string `json:"source,omitempty"`
-	UserInstructions    string `json:"user_instructions,omitempty"`
-	ReviewScope         string `json:"review_scope,omitempty"`
-	Category            string `json:"category,omitempty"`
-	Check               string `json:"check,omitempty"`
-	CheckID             string `json:"check_id,omitempty"`
-	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
+	ID                  string          `json:"id,omitempty"`
+	Severity            string          `json:"severity"`
+	File                string          `json:"file,omitempty"`
+	Line                int             `json:"line,omitempty"`
+	Description         string          `json:"description"`
+	Action              string          `json:"action"`
+	Source              string          `json:"source,omitempty"`
+	UserInstructions    string          `json:"user_instructions,omitempty"`
+	ReviewScope         string          `json:"review_scope,omitempty"`
+	Category            string          `json:"category,omitempty"`
+	Check               string          `json:"check,omitempty"`
+	CheckID             string          `json:"check_id,omitempty"`
+	Support             *FindingSupport `json:"support,omitempty"`
+	RequiresHumanReview *bool           `json:"requires_human_review,omitempty"`
 }
 
 // WithdrawnFinding is one carried finding an answer round retracted, naming
@@ -622,6 +625,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Category = wire.Category
 	f.Check = wire.Check
 	f.CheckID = wire.CheckID
+	f.Support = wire.Support
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

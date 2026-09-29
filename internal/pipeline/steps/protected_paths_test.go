@@ -108,7 +108,12 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			// environment across every step, but the executor this test drives
 			// resets StepContext.Env per step and this fixture only injects it
 			// explicitly via reconcileEnvStep.
-			steps := []pipeline.Step{&ReviewStep{}, &TestStep{}, reconcileEnvStep{step: &PushStep{}, env: green}, reconcileEnvStep{step: ci, env: green}}
+			steps := []pipeline.Step{
+				reconcileEnvStep{step: &ReviewStep{}, env: green},
+				reconcileEnvStep{step: &TestStep{}, env: green},
+				reconcileEnvStep{step: &PushStep{}, env: green},
+				reconcileEnvStep{step: ci, env: green},
+			}
 			reviews := 0
 			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 				findings := cleanReviewFindings()

@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -333,6 +334,23 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
+	defer func() {
+		if err != nil || outcome == nil || outcome.Skipped || outcome.RestartFrom != "" {
+			return
+		}
+		results, resolveErr := resolveCIReviewSupport(sctx, host, pr)
+		if resolveErr != nil {
+			if errors.Is(resolveErr, errReviewSupportHeadAdvanced) {
+				outcome, err = &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+				return
+			}
+			outcome, err = nil, fmt.Errorf("resolve Review CI support: %w", resolveErr)
+			return
+		}
+		if appendErr := appendOwnerSupportResults(outcome, results); appendErr != nil {
+			outcome, err = nil, fmt.Errorf("record Review CI support: %w", appendErr)
+		}
+	}()
 	if retryRefusal {
 		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 			return nil, err

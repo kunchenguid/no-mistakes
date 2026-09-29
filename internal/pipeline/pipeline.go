@@ -13,6 +13,16 @@ import (
 
 var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
+// PRTargetSelection is the read-only forge target selected before any pipeline
+// step can use a base branch. An empty PRURL means no existing PR was found.
+type PRTargetSelection struct {
+	PRURL        string
+	SourceRepo   string
+	SourceBranch string
+	ForgeHeadSHA string
+	TargetBranch string
+}
+
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
 	Ctx              context.Context
@@ -23,6 +33,8 @@ type StepContext struct {
 	Agent            agent.Agent
 	Config           *config.Config
 	ForgeContext     *forgecontext.Context
+	PRTarget         *PRTargetSelection
+	PRContext        *db.PRContext
 	DB               *db.DB
 	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
 	LogChunk         func(string) // raw streaming chunk (user-visible + file)

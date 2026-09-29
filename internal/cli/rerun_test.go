@@ -265,7 +265,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, "")
+				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, "", "")
 				if err != nil || runID != "rerun-1" {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
@@ -295,7 +295,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						}
 						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 						defer cancel()
-						runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, plan.ID)
+						runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, "", plan.ID)
 						if phase == "unchanged" {
 							if err != nil || runID != "rerun-1" {
 								t.Fatalf("matching capture: run=%q err=%v", runID, err)
@@ -332,7 +332,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						}
 						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 						defer cancel()
-						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, ""); err != nil {
+						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "", false, "", ""); err != nil {
 							t.Fatal(err)
 						}
 						params := <-requests

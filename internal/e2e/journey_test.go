@@ -401,7 +401,7 @@ func cleanReviewScenario(t *testing.T) string {
       risk_level: low
       risk_rationale: "documentation status only"
       risk_scope: source-or-external
-  - match: "branch: document-info"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-info"
     text: "documentation info finding"
     structured:
       findings:
@@ -438,10 +438,39 @@ func cleanReviewScenario(t *testing.T) string {
           line: 1
           description: "potential null pointer"
           action: ask-user
+          support:
+            claim_type: source
+            source:
+              path: "review-warning.txt"
+              line: 1
+              quote: "review warning"
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
       risk_scope: source-or-external
+  # Push commits the agent's edit, which changes the reviewed head. The next
+  # review must cover that newly changed path in its focused completion turn.
+  - match: "  - agent-edit.txt\n  - formatted-by-push.txt\n"
+    text: "reviewed both committed agent changes"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "committed agent changes are covered"
+      risk_scope: source-or-external
+      reviewed_paths:
+        - "agent-edit.txt"
+        - "formatted-by-push.txt"
+  - match: "  - agent-edit.txt\n"
+    text: "reviewed the committed agent edit"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "committed agent edit is covered"
+      risk_scope: source-or-external
+      reviewed_paths:
+        - "agent-edit.txt"
   - match: "branch: agent-edits"
     text: "agent edited a file"
     edits:
@@ -543,6 +572,12 @@ func cleanReviewScenario(t *testing.T) string {
           description: "looks good"
           action: no-op
           review_scope: source
+          support:
+            claim_type: source
+            source:
+              path: "hello.txt"
+              line: 1
+              quote: "hello world"
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
@@ -560,14 +595,7 @@ func cleanReviewScenario(t *testing.T) string {
   - match: "Review the code changes and return structured findings"
     text: "looks good"
     structured:
-      findings:
-        - id: "review-info"
-          severity: info
-          file: "hello.txt"
-          line: 1
-          description: "looks good"
-          action: no-op
-          review_scope: source
+      findings: []
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
@@ -1810,9 +1838,8 @@ func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("test-agent-new-test-file", "test-agent-new-test-file.txt", "test agent new test file\n", "add test agent new test file")
 	h.PushToGate("test-agent-new-test-file")
-	// Issue #140: a passing test run whose only finding is an informational
-	// "new test file written by agent" note must not gate on approval; the run
-	// proceeds automatically to completion.
+	// The agent's new test file must reach the pushed, re-reviewed head. Its
+	// provisional informational note is superseded when that head changes.
 	run := h.WaitForRun("test-agent-new-test-file", 60*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("test-agent-new-test-file run status = %s, want completed; error=%v", run.Status, deref(run.Error))
@@ -1831,21 +1858,15 @@ func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("parse new test file findings: %v", err)
 	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one new test file finding, got %+v", findings.Items)
+	if len(findings.Items) != 0 {
+		t.Fatalf("final Test retained provisional findings from an older head: %+v", findings.Items)
 	}
-	item := findings.Items[0]
-	if item.Severity != "info" {
-		t.Fatalf("new test file finding severity = %q, want info", item.Severity)
-	}
-	if item.Action != types.ActionNoOp {
-		t.Fatalf("new test file finding action = %q, want no-op", item.Action)
-	}
-	if item.File != "agent_test.py" {
-		t.Fatalf("new test file finding file = %q, want agent_test.py", item.File)
-	}
-	if !strings.Contains(item.Description, "new test file written by agent: agent_test.py") {
-		t.Fatalf("new test file finding description = %q", item.Description)
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("test-agent-new-test-file"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	content, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/test-agent-new-test-file:agent_test.py")
+	if err != nil || string(content) != "def test_agent():\n    pass\n" {
+		t.Fatalf("pushed agent test = %q, %v", content, err)
 	}
 }
 
@@ -1853,8 +1874,7 @@ func assertTestAgentStagedNewTestFileRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("test-agent-staged-new-test-file", "test-agent-staged-new-test-file.txt", "test agent staged new test file\n", "add test agent staged new test file")
 	h.PushToGate("test-agent-staged-new-test-file")
-	// Issue #140: same as the untracked case, but the agent stages the new test
-	// file. It is still purely informational, so the run proceeds automatically.
+	// The staged test file must also reach the pushed, re-reviewed head.
 	run := h.WaitForRun("test-agent-staged-new-test-file", 60*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("test-agent-staged-new-test-file run status = %s, want completed; error=%v", run.Status, deref(run.Error))
@@ -1873,21 +1893,15 @@ func assertTestAgentStagedNewTestFileRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("parse staged new test file findings: %v", err)
 	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one staged new test file finding, got %+v", findings.Items)
+	if len(findings.Items) != 0 {
+		t.Fatalf("final Test retained provisional findings from an older head: %+v", findings.Items)
 	}
-	item := findings.Items[0]
-	if item.Severity != "info" {
-		t.Fatalf("staged new test file finding severity = %q, want info", item.Severity)
-	}
-	if item.Action != types.ActionNoOp {
-		t.Fatalf("staged new test file finding action = %q, want no-op", item.Action)
-	}
-	if item.File != "agent_staged_test.go" {
-		t.Fatalf("staged new test file finding file = %q, want agent_staged_test.go", item.File)
-	}
-	if !strings.Contains(item.Description, "new test file written by agent: agent_staged_test.go") {
-		t.Fatalf("staged new test file finding description = %q", item.Description)
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("test-agent-staged-new-test-file"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	content, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/test-agent-staged-new-test-file:agent_staged_test.go")
+	if err != nil || string(content) != "package main\n" {
+		t.Fatalf("pushed staged agent test = %q, %v", content, err)
 	}
 }
 

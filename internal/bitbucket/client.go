@@ -333,10 +333,21 @@ type bitbucketPullRequest struct {
 	ID     int    `json:"id"`
 	State  string `json:"state"`
 	Source struct {
+		Branch struct {
+			Name string `json:"name"`
+		} `json:"branch"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
 		Commit struct {
 			Hash string `json:"hash"`
 		} `json:"commit"`
 	} `json:"source"`
+	Destination struct {
+		Branch struct {
+			Name string `json:"name"`
+		} `json:"branch"`
+	} `json:"destination"`
 	Links struct {
 		HTML struct {
 			Href string `json:"href"`

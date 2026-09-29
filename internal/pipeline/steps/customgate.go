@@ -45,7 +45,11 @@ func (s *CustomGateStep) runFixTurn(sctx *pipeline.StepContext) (string, error) 
 	if !sctx.Fixing {
 		return "", nil
 	}
-	baseSHA, err := resolveBranchBaseSHA(sctx.Ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	targetBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return "", err
+	}
+	baseSHA, err := resolveBranchBaseSHA(sctx.Ctx, sctx, sctx.Run.BaseSHA, targetBranch)
 	if err != nil {
 		return "", err
 	}
