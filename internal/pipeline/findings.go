@@ -69,6 +69,9 @@ func findingKey(item types.Finding) types.Finding {
 	item.Action = ""
 	item.Source = ""
 	item.UserInstructions = ""
+	// Support is proof for the current observation, not finding identity.
+	// Pointer equality here duplicated the same claim after JSON round trips.
+	item.Support = nil
 	return item
 }
 
@@ -154,6 +157,22 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	}
 	for _, item := range additional.Items {
 		if hasFindingMatch(item, seen, additionalCounts, existingCounts) {
+			if item.Support != nil {
+				key, fingerprint := findingKey(item), findingFingerprint(item)
+				uniqueFingerprint := additionalCounts[fingerprint] == 1 && existingCounts[fingerprint] == 1
+				for i := range merged.Items {
+					if findingKey(merged.Items[i]) == key || uniqueFingerprint && findingFingerprint(merged.Items[i]) == fingerprint {
+						merged.Items[i].Support = item.Support
+						merged.Items[i].File = item.File
+						merged.Items[i].Line = item.Line
+						seen = make(map[types.Finding]bool, len(merged.Items))
+						for _, current := range merged.Items {
+							seen[findingKey(current)] = true
+						}
+						break
+					}
+				}
+			}
 			continue
 		}
 		key := findingKey(item)

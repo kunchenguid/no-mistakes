@@ -14,9 +14,10 @@ import (
 )
 
 // GuardPRContext pins the exact target comparison before Rebase and checks it
-// at every later core-step boundary. A changed target restarts at Rebase; a
-// head changed by local pipeline work restarts at Review. The durable receipt
-// transaction revokes prior approval before this function asks for a restart.
+// at every later core-step boundary. A changed external comparison after a
+// completed boundary stops the run; a new run can validate that comparison
+// without replaying completed steps. A step's own forward edit advances the
+// receipt while retaining earlier evidence.
 func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.PRContextDecision, error) {
 	if sctx != nil && sctx.PRContextAfterStep && step == types.StepPR &&
 		sctx.DB != nil && sctx.Run != nil {
@@ -183,6 +184,10 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 			candidate.ForgeHeadSHA == localHead {
 			forward = true
 		}
+	}
+	if previous != nil && previous.PRContextCandidate != candidate && !forward &&
+		!sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() > resetFrom.Order() {
+		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed after %s; start a new run for the current target and head", resetFrom)
 	}
 	var bound db.PRContextBindResult
 	if forward {

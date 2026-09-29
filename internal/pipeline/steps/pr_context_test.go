@@ -24,7 +24,7 @@ func TestPRContextGuardExternalCIOwnerRejectsDifferentPRHead(t *testing.T) {
 	}
 }
 
-func TestPRContextGuardPinsActualTargetAndRestartsAfterTargetMoves(t *testing.T) {
+func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	dir, mainSHA, headSHA := setupGitRepo(t)
 	ensureLocalBranch(t, dir, "develop", mainSHA)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, mainSHA, headSHA, config.Commands{})
@@ -54,17 +54,17 @@ func TestPRContextGuardPinsActualTargetAndRestartsAfterTargetMoves(t *testing.T)
 	gitCmd(t, dir, "add", "target-move.txt")
 	gitCmd(t, dir, "commit", "-m", "move target")
 	gitCmd(t, dir, "checkout", "feature")
-	changed, err := guardPRContextWithSelection(sctx, types.StepTest, selection)
-	if err != nil || changed.RestartFrom != types.StepRebase {
-		t.Fatalf("target movement = %+v, %v, want Rebase restart", changed, err)
+	_, err = guardPRContextWithSelection(sctx, types.StepTest, selection)
+	if err == nil || !strings.Contains(err.Error(), "start a new run") {
+		t.Fatalf("target movement error = %v, want a new run", err)
 	}
 	updated, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || updated.ReviewApprovedHeadSHA != nil {
-		t.Fatalf("stale review authority remained: %+v, %v", updated, err)
+	if err != nil || updated.ReviewApprovedHeadSHA == nil {
+		t.Fatalf("completed review history was reset: %+v, %v", updated, err)
 	}
 	resetStep, err := sctx.DB.GetStepResult(step.ID)
-	if err != nil || resetStep.Status != types.StepStatusPending {
-		t.Fatalf("review step was not invalidated: %+v, %v", resetStep, err)
+	if err != nil || resetStep.Status != types.StepStatusCompleted {
+		t.Fatalf("review step was replayed: %+v, %v", resetStep, err)
 	}
 }
 

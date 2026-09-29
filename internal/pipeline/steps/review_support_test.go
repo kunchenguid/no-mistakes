@@ -3,6 +3,8 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,6 +57,37 @@ func TestReviewSupportSourceCanQuoteDeletedLineAtPinnedMergeBase(t *testing.T) {
 	ctx.PRContext.LocalHeadSHA = unchangedHead
 	if _, err := validateReviewFindingSupport(ctx, items, unchangedHead); err == nil {
 		t.Fatal("unchanged merge-base line accepted as removed source")
+	}
+}
+
+func TestReviewSupportDeletedLineUsesLiteralPathAndCRLF(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, content string
+	}{
+		{name: "CRLF", path: "crlf.txt", content: "broken\r\n"},
+		{name: "literal pathspec", path: "a[1].txt", content: "broken\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _, _ := setupGitRepo(t)
+			if err := os.WriteFile(filepath.Join(dir, tc.path), []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "--", ":(literal)"+tc.path)
+			gitCmd(t, dir, "commit", "-m", "add source")
+			base := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "rm", "--", ":(literal)"+tc.path)
+			gitCmd(t, dir, "commit", "-m", "remove source")
+			head := gitCmd(t, dir, "rev-parse", "HEAD")
+			ctx := newTestContext(t, nil, dir, base, head, config.Commands{})
+			ctx.PRContext = &db.PRContext{PRContextCandidate: db.PRContextCandidate{LocalHeadSHA: head, MergeBaseSHA: base}}
+			items := Findings{Items: []Finding{{Action: types.ActionAutoFix, Support: &types.FindingSupport{
+				ClaimType: types.FindingClaimSource,
+				Source:    &types.FindingSourceSupport{Path: tc.path, Line: 1, Quote: "broken", HeadSHA: base},
+			}}}}
+			if _, err := validateReviewFindingSupport(ctx, items, head); err != nil {
+				t.Fatalf("deleted source support: %v", err)
+			}
+		})
 	}
 }
 

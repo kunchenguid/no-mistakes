@@ -103,7 +103,7 @@ func validateRemovedSourceLine(sctx *pipeline.StepContext, base, head string, re
 		return fmt.Errorf("merge-base source line does not exist")
 	}
 	line := strings.TrimSuffix(string(lines[ref.Line-1]), "\r")
-	patch, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--no-ext-diff", "--no-textconv", "--unified=0", base, head, "--", ref.Path)
+	patch, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--no-ext-diff", "--no-textconv", "--unified=0", base, head, "--", ":(literal)"+ref.Path)
 	if err != nil {
 		return fmt.Errorf("read removed source diff: %w", err)
 	}
@@ -122,7 +122,7 @@ func validateRemovedSourceLine(sctx *pipeline.StepContext, base, head string, re
 			continue
 		}
 		if strings.HasPrefix(patchLine, "-") {
-			if oldLine == ref.Line && patchLine[1:] == line {
+			if oldLine == ref.Line && strings.TrimSuffix(patchLine[1:], "\r") == line {
 				return nil
 			}
 			oldLine++

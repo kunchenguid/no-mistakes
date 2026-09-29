@@ -216,6 +216,16 @@ no-mistakes axi ci-handoff --run <run-id>
 ```
 
 This succeeds only for a completed run with `controller-ship-pr` ownership, exactly skipped Push, PR, and CI steps, and current pending Review CI claims. The JSON includes `outcome: pending-external-ci`, `run_id`, `external_ci_owner`, the run's source repository and branch, and each claim's provider check identity and PR comparison receipt. A missing, stale, or unreadable claim returns an error and a nonzero exit. The caller verifies the source identity, PR comparison, and live checks before merge. The handoff does not assert that CI passed.
+
+## no-mistakes axi review-receipt
+
+Read the exact comparison recorded for a completed run as JSON:
+
+```sh
+no-mistakes axi review-receipt --run <run-id>
+```
+
+The command requires a verified terminal head and a current comparison receipt. It returns the run and source identity, any recorded PR URL and forge head, the local head, target branch and commit, merge base, raw diff digest, and receipt generation. It fails when the receipt is missing or points at a different head. The caller must reread the live PR and target immediately before publishing or merging; this stored receipt is evidence of what the run checked, not a claim that the forge still has those coordinates.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
 ### Strict launch receipts

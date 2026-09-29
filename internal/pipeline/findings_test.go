@@ -23,6 +23,18 @@ func TestMergeFindingsJSON_KeepsDistinctFindingsWithSameAutoID(t *testing.T) {
 	}
 }
 
+func TestMergeFindingsJSON_DeduplicatesSupportedClaimAndRefreshesProof(t *testing.T) {
+	existing := `{"findings":[{"id":"finding-1","severity":"warning","file":"feature.txt","line":1,"description":"unsafe value","action":"ask-user","support":{"claim_type":"source","source":{"path":"feature.txt","line":1,"quote":"old"}}}]}`
+	current := `{"findings":[{"id":"finding-1","severity":"warning","file":"feature.txt","line":1,"description":"unsafe value","action":"ask-user","support":{"claim_type":"source","source":{"path":"feature.txt","line":1,"quote":"current"}}}]}`
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(existing, current))
+	if err != nil || len(merged.Items) != 1 {
+		t.Fatalf("supported claim duplicated: %+v, %v", merged, err)
+	}
+	if got := merged.Items[0].Support.Source.Quote; got != "current" {
+		t.Fatalf("supported claim kept stale proof %q", got)
+	}
+}
+
 func TestRetainMatchingFindingsJSON_DropsFindingsMissingFromLatestReview(t *testing.T) {
 	existingRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"first"},{"id":"review-2","severity":"error","description":"second"}],"summary":"2 findings"}`
 	keepRaw := `{"findings":[{"id":"review-7","severity":"error","description":"second"},{"id":"review-8","severity":"warning","description":"third"}],"summary":"2 findings"}`
