@@ -77,3 +77,43 @@ func TestBuildReviewReceiptRequiresVerifiedTerminalComparison(t *testing.T) {
 		t.Fatal("receipt for a different head accepted")
 	}
 }
+
+func TestBuildReviewReceiptPreservesAzureCanonicalSourceIdentity(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	remote := "https://dev.azure.com/acme/trading/_git/controller"
+	repo, err := database.InsertRepo(filepath.Join(t.TempDir(), "repo"), remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("a", 40)
+	target := strings.Repeat("b", 40)
+	run, err := database.InsertRun(repo.ID, "feature", head, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := db.PRContextCandidate{PRURL: remote + "/pullrequest/1", SourceRepo: remote,
+		SourceBranch: "feature", ForgeHeadSHA: head, LocalHeadSHA: head,
+		TargetBranch: "main", TargetSHA: target, MergeBaseSHA: strings.Repeat("c", 40),
+		DiffDigest: strings.Repeat("d", 64)}
+	if _, err := database.BindRunPRContext(run.ID, candidate, types.StepRebase); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, head); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := buildReviewReceipt(database, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.SourceRepo != remote || receipt.SourceBranch != "feature" || receipt.PRURL != candidate.PRURL {
+		t.Fatalf("receipt source = %+v", receipt)
+	}
+}

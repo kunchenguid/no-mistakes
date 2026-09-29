@@ -7,6 +7,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -74,13 +75,24 @@ func buildReviewReceipt(database *db.DB, run *db.Run) (reviewReceipt, error) {
 	if repo == nil {
 		return reviewReceipt{}, fmt.Errorf("run source repository is missing")
 	}
-	sourceRepo := scm.RepoPath(repo.PushURL())
+	pushURL := repo.PushURL()
+	sourceRepo := scm.RepoPath(pushURL)
+	if canonical, err := azuredevops.CanonicalSourceRepository(pushURL); err == nil {
+		sourceRepo = canonical
+	}
 	sourceBranch := strings.TrimPrefix(run.Branch, "refs/heads/")
 	if sourceRepo == "" || sourceBranch == "" {
 		return reviewReceipt{}, fmt.Errorf("run source identity is unreadable")
 	}
-	if context.PRURL != "" && (context.SourceRepo != sourceRepo || context.SourceBranch != sourceBranch) {
-		return reviewReceipt{}, fmt.Errorf("run PR identity conflicts with source repository")
+	if context.PRURL != "" {
+		sameRepo := context.SourceRepo == sourceRepo
+		if scm.ExtractHost(pushURL) == "github.com" {
+			sameRepo = strings.EqualFold(context.SourceRepo, sourceRepo)
+		}
+		if !sameRepo || context.SourceBranch != sourceBranch {
+			return reviewReceipt{}, fmt.Errorf("run PR identity conflicts with source repository")
+		}
+		sourceRepo = context.SourceRepo
 	}
 	return reviewReceipt{RunID: run.ID, SourceRepo: sourceRepo, SourceBranch: sourceBranch,
 		PRURL: context.PRURL, ForgeHeadSHA: context.ForgeHeadSHA, LocalHeadSHA: context.LocalHeadSHA,
