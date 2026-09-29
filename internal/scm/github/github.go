@@ -147,8 +147,10 @@ func isHexSHA(s string) bool {
 // findPRByCommitSHA resolves a commit SHA to its pull request via the GitHub
 // API `GET /repos/{owner}/{repo}/commits/{sha}/pulls`. This is the correct
 // way to handle a SHA-only identifier: look up the PR number first, then
-// use that number for `gh pr view` / `gh pr checks`. It returns the first
-// associated PR.
+// use that number for `gh pr view` / `gh pr checks`. It refuses an
+// ambiguous match (multiple PRs for one SHA) rather than silently picking
+// by result order, so a SHA-only call to a write method cannot edit the
+// wrong PR and a read method cannot return the wrong PR's state.
 func (h *Host) findPRByCommitSHA(ctx context.Context, sha string) (*scm.PR, error) {
 	sha = strings.TrimSpace(sha)
 	repo := h.repoSlug()
@@ -176,6 +178,9 @@ func (h *Host) findPRByCommitSHA(ctx context.Context, sha string) (*scm.PR, erro
 	if len(pulls) == 0 {
 		return nil, fmt.Errorf("no pull request found for commit %s", sha)
 	}
+	if len(pulls) > 1 {
+		return nil, fmt.Errorf("multiple pull requests found for commit %s (%d matches); refusing to choose one implicitly", sha, len(pulls))
+	}
 	p := pulls[0]
 	if p.Number <= 0 {
 		return nil, fmt.Errorf("resolved PR for commit %s has no number", sha)
@@ -197,7 +202,13 @@ func (h *Host) findPRByCommitSHA(ctx context.Context, sha string) (*scm.PR, erro
 // resolveSHASelector returns selector unchanged unless it looks like a commit
 // SHA, in which case it resolves the SHA to its PR number via the API so the
 // subsequent `gh pr view` / `gh pr checks` call receives a valid selector.
+// A decimal PR number (all digits, e.g. 1000000) is also valid hex but must
+// not be misclassified as a SHA; such numeric selectors are returned
+// verbatim so they reach `gh pr view` / `gh pr checks` directly.
 func (h *Host) resolveSHASelector(ctx context.Context, selector string) (string, error) {
+	if isNumericID(strings.TrimSpace(selector)) {
+		return selector, nil
+	}
 	if !isHexSHA(selector) {
 		return selector, nil
 	}

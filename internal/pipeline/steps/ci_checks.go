@@ -394,7 +394,9 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 
 // isHexSHAInText reports whether text contains a 7-40 char hex SHA. Used to
 // distinguish a branch-not-found error caused by a SHA selector from a
-// genuine missing branch.
+// genuine missing branch. A purely decimal token (e.g. PR number 1000000)
+// is not considered a SHA even though decimal digits are hex digits, so
+// a large PR number does not trigger the SHA diagnostic.
 func isHexSHAInText(s string) bool {
 	for _, token := range strings.Fields(s) {
 		clean := strings.Trim(token, "`'\".,:;()[]{}<>")
@@ -402,14 +404,18 @@ func isHexSHAInText(s string) bool {
 			continue
 		}
 		isHex := true
+		allDigits := true
 		for _, r := range clean {
 			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+				if r < '0' || r > '9' {
+					allDigits = false
+				}
 				continue
 			}
 			isHex = false
 			break
 		}
-		if isHex {
+		if isHex && !allDigits {
 			return true
 		}
 	}
