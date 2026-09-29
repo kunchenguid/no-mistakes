@@ -634,13 +634,15 @@ func findingRows(items []types.Finding) []findingRow {
 // recordedFindingsFields renders a step's persisted summary and findings for
 // `axi logs`, which keeps them readable after the gate resolves and for any
 // explicitly selected run. It reports whether the summary was bounded.
+// Unparseable findings surface as a findings_error field rather than vanishing,
+// so a damaged record does not read as a step that recorded nothing.
 func recordedFindingsFields(findingsJSON string, full bool) ([]toon.Field, bool) {
 	if findingsJSON == "" {
 		return nil, false
 	}
 	parsed, err := types.ParseFindingsJSON(findingsJSON)
 	if err != nil {
-		return nil, false
+		return []toon.Field{{Key: "findings_error", Value: fmt.Sprintf("recorded findings could not be parsed: %v", err)}}, false
 	}
 	var fields []toon.Field
 	bounded := false

@@ -130,3 +130,47 @@ func TestAxiLogsRendersRecordedFindingsAfterTheGateResolves(t *testing.T) {
 		t.Fatalf("--full output has nothing left to expand, got help %v", complete.Help)
 	}
 }
+
+// A damaged findings record must be reported, not rendered as a step that
+// recorded no decision content.
+func TestAxiLogsReportsUnparseableRecordedFindings(t *testing.T) {
+	repoDir, _, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+
+	dbRun, err := database.InsertRun(repo.ID, "feature/findings", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	stepResult, err := database.InsertStepResult(dbRun.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	if err := database.SetStepFindings(stepResult.ID, `{"findings":[`); err != nil {
+		t.Fatalf("set findings: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiLogs(cmd, string(types.StepReview), dbRun.ID, false); err != nil {
+		t.Fatalf("axi logs: %v\n%s", err, out.String())
+	}
+	var doc struct {
+		FindingsError string              `toon:"findings_error"`
+		Findings      []decodedFindingRow `toon:"findings"`
+		Log           string              `toon:"log"`
+	}
+	if err := toon.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("decode logs: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(doc.FindingsError, "recorded findings could not be parsed") {
+		t.Fatalf("logs should report the unparseable findings record:\n%s", out.String())
+	}
+	if len(doc.Findings) != 0 {
+		t.Fatalf("no findings should render from a damaged record, got %v", doc.Findings)
+	}
+	if doc.Log == "" {
+		t.Fatalf("the log section should still render alongside the findings error:\n%s", out.String())
+	}
+}
