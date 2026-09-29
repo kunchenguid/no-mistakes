@@ -282,10 +282,62 @@ func (s *Service) InspectCached(ctx context.Context) State {
 	return state
 }
 
+// VerifyCustodyPublication resolves only the ambiguous, custody-returned
+// rewrite. Passive status stays offline; an explicit check or fresh launch
+// reads the configured push target without changing any ref.
+func (s *Service) VerifyCustodyPublication(ctx context.Context) State {
+	state, run, _ := s.inspect(ctx)
+	if state.State != StateCustodyReturned || state.Safety != "publication_unverified" || run == nil {
+		return state
+	}
+	repo, err := s.DB.GetRepo(s.Repo.ID)
+	if err != nil || repo == nil || TargetFingerprint(repo.PushURL()) != TargetFingerprint(s.Repo.PushURL()) {
+		return blockedPlan(state, StateCustodyReturned, "blocked_target_changed", "the configured push target changed before publication could be checked")
+	}
+	pushURL := s.resolvedPushURL(ctx, repo)
+	if strings.TrimSpace(pushURL) == "" {
+		return blockedPlan(state, StateCustodyReturned, "blocked_target_unavailable", "the configured push target is unavailable; no files or refs were changed")
+	}
+	branchRef := "refs/heads/" + state.Local.Branch
+	liveCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	live, err := s.runLsRemote(liveCtx, s.workDir(), pushURL, branchRef)
+	cancel()
+	if err != nil {
+		blocked := blockedPlan(state, StateCustodyReturned, "blocked_offline", "could not verify whether the corrected head is published; no files or refs were changed")
+		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
+		return blocked
+	}
+	// Remote I/O cannot justify a decision if local head, custody, gate, or
+	// configured target changed while the request was in flight.
+	recheck, currentRun, _ := s.inspect(ctx)
+	currentRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
+	if currentRun == nil || currentRun.ID != run.ID || currentRun.CustodyReturnedAt == nil ||
+		recheck.State != StateCustodyReturned || recheck.Safety != "publication_unverified" ||
+		recheck.Local.Branch != state.Local.Branch || recheck.Local.Head != state.Local.Head ||
+		currentRepo == nil || repoErr != nil || TargetFingerprint(currentRepo.PushURL()) != TargetFingerprint(repo.PushURL()) {
+		return blockedPlan(recheck, StateCustodyReturned, "blocked_assumptions_changed", "the branch, gate, custody, or push target changed during publication verification")
+	}
+	recheck.Remote.Freshness = "live"
+	recheck.Remote.ObservedAt = time.Now().Unix()
+	recheck.Remote.ObservedHead = live
+	if live == recheck.Local.Head {
+		recheck.Safety = "recovery_required"
+		recheck.NextAction = &NextAction{Code: "adopt_published", Command: "no-mistakes axi sync --adopt-published"}
+	} else {
+		recheck.Safety = "custody_returned"
+		recheck.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+	}
+	return recheck
+}
+
 // Refresh explicitly verifies the exact configured push ref into a private
-// no-mistakes ref. It never updates an ordinary remote-tracking ref.
+// no-mistakes ref for push-bound runs. An ambiguous custody-returned rewrite
+// instead checks the live target without writing any ref.
 func (s *Service) Refresh(ctx context.Context) State {
 	state, run, ok := s.inspect(ctx)
+	if state.State == StateCustodyReturned && state.Safety == "publication_unverified" {
+		return s.VerifyCustodyPublication(ctx)
+	}
 	if !ok || !refreshable(state) {
 		return state
 	}
@@ -2545,9 +2597,10 @@ func RunHeadUnmoved(state State) bool {
 }
 
 // classifyCustodyReturned reports a branch whose stranded terminal run was
-// explicitly recovered and never had a push binding. A diverged local head is
-// not ready to start a fresh run until the gate lane has safely adopted the
-// already-published rewrite; all other relationships remain informative only.
+// explicitly recovered and never had a push binding. A diverged local head
+// can be published regardless of its ancestry, so cached inspection cannot
+// authorize replacing an exact recovered gate head until an explicit live
+// target check distinguishes publication from an unpublished correction.
 func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 	state.State = StateCustodyReturned
 	state.Error = ""
@@ -2555,10 +2608,22 @@ func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 	if state.Relation == RelationDiverged {
 		branchRef := "refs/heads/" + state.Local.Branch
 		if strings.TrimSpace(s.GateDir) != "" {
-			gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", branchRef+"^{commit}")
-			if err == nil && gateHead == state.Local.Head {
+			gateHead, exists, err := git.DirectRefTarget(ctx, s.GateDir, branchRef)
+			if err == nil && exists && gateHead == state.Local.Head {
 				state.Safety = "gate_ready"
 				state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+				return
+			}
+			if err == nil && exists && gateHead == state.Pipeline.CurrentHead {
+				// Neither unchanged ancestry nor a rewritten history proves
+				// whether the corrected head was published to the target.
+				state.Safety = "publication_unverified"
+				state.NextAction = &NextAction{Code: "verify_publication", Command: "no-mistakes axi sync --check"}
+				return
+			}
+			if err == nil && exists && gateHead != state.Pipeline.CurrentHead {
+				state.Safety = "blocked_gate_moved"
+				state.Error = "private gate head changed after custody return; no fresh run was started"
 				return
 			}
 		}

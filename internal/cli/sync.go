@@ -571,7 +571,7 @@ func syncStateSuccessful(state branchsync.State, check bool) bool {
 	// A recovered branch has no pending synchronization: custody is with the
 	// operator and the next step is a fresh run, not a blocked exit code.
 	if state.State == branchsync.StateCustodyReturned {
-		return true
+		return state.Error == "" && state.Safety != "publication_unverified"
 	}
 	// A branch released by cancellation is the operator's with nothing to
 	// synchronize or recover; it must never surface as a blocked exit.

@@ -1256,11 +1256,20 @@ func TestAxiSyncAdoptPublishedRebasedLane(t *testing.T) {
 	for _, want := range []string{
 		"state: custody_returned",
 		"relation: diverged",
-		"code: adopt_published",
-		"command: no-mistakes axi sync --adopt-published",
+		"code: verify_publication",
+		"command: no-mistakes axi sync --check",
 	} {
 		if !strings.Contains(status, want) {
-			t.Errorf("rebased status missing %q:\n%s", want, status)
+			t.Errorf("cached status missing %q:\n%s", want, status)
+		}
+	}
+	checked, err := executeCmd("axi", "sync", "--check")
+	if err != nil {
+		t.Fatalf("read-only publication check: %v\n%s", err, checked)
+	}
+	for _, want := range []string{"state: custody_returned", "code: adopt_published", "command: no-mistakes axi sync --adopt-published"} {
+		if !strings.Contains(checked, want) {
+			t.Errorf("published rebase check missing %q:\n%s", want, checked)
 		}
 	}
 
@@ -1289,6 +1298,18 @@ func TestAxiSyncAdoptPublishedRebasedLane(t *testing.T) {
 func TestAxiSyncAdoptPublishedRefusesUnpublishedRebase(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	rebased := rebaseReturnedCustodyBranch(t, f, f.remote, false)
+
+	status, err := executeCmd("axi", "status")
+	if err != nil || !strings.Contains(status, "code: verify_publication") {
+		t.Fatalf("unpublished rewrite cached status: %v\n%s", err, status)
+	}
+	checked, err := executeCmd("axi", "sync", "--check")
+	if err != nil || !strings.Contains(checked, "code: run_pipeline") || !strings.Contains(checked, "freshness: live") {
+		t.Fatalf("unpublished rewrite live check: %v\n%s", err, checked)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("read-only publication check moved gate lane to %s", got)
+	}
 
 	out, err := executeCmd("axi", "sync", "--adopt-published")
 	var ee *exitError

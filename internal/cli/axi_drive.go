@@ -543,6 +543,9 @@ func (e *branchOwnershipError) Error() string {
 	if e.state.Error != "" {
 		return e.state.Error
 	}
+	if e.state.Safety == "recovery_required" && e.state.State == branchsync.StateCustodyReturned {
+		return "custody-returned branch requires explicit gate adoption before a fresh run"
+	}
 	return "the pipeline still owns this branch; no fresh run was started"
 }
 
@@ -562,8 +565,8 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 	return &exitError{code: 1}
 }
 
-func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
-	service := &branchsync.Service{
+func axiBranchSyncService(env *axiEnv) *branchsync.Service {
+	return &branchsync.Service{
 		DB:            env.d,
 		Repo:          env.repo,
 		WorkDir:       ".",
@@ -571,11 +574,27 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 		Paths:         env.p,
 		RemoteTimeout: env.cfg.BranchSyncRemoteTimeout,
 	}
-	return service.InspectCached(ctx)
+}
+
+func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
+	return axiBranchSyncService(env).InspectCached(ctx)
+}
+
+func inspectAxiFreshRunBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
+	service := axiBranchSyncService(env)
+	state := service.InspectCached(ctx)
+	if state.State == branchsync.StateCustodyReturned && state.Safety == "publication_unverified" {
+		return service.VerifyCustodyPublication(ctx)
+	}
+	return state
 }
 
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
-	state := inspectAxiBranchSync(ctx, env)
+	state := inspectAxiFreshRunBranchSync(ctx, env)
+	return freshRunBranchOwnershipRefusal(state)
+}
+
+func freshRunBranchOwnershipRefusal(state branchsync.State) *branchsync.State {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		// The ownership block exists to keep a fresh push from discarding
@@ -590,9 +609,34 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 		return &state
 	case branchsync.StatePushInProgress:
 		return &state
+	case branchsync.StateCustodyReturned:
+		if state.Relation == branchsync.RelationDiverged && state.Safety != "custody_returned" && state.Safety != "gate_ready" {
+			return &state // do not replace the gate without a safe, verified path
+		}
+		return nil
 	default:
 		return nil
 	}
+}
+
+// reconcileFreshRunGate applies the private-mirror safety policy shared by
+// ordinary and nonce-bound launches. A custody-returned run grants one narrow
+// exception: its exact terminal head may be archived when it still occupies
+// the gate branch. Recovery has already preserved that head and explicitly
+// returned ownership, so retaining it as the live gate ref must not contradict
+// the run_pipeline action reported by branch sync. Every other divergent head
+// still needs the reconciler's content proof or is refused.
+func reconcileFreshRunGate(ctx context.Context, env *axiEnv, branch, submissionHead string) (gate.StaleBranchReconciliation, error) {
+	state := inspectAxiFreshRunBranchSync(ctx, env)
+	if refusal := freshRunBranchOwnershipRefusal(state); refusal != nil {
+		return gate.StaleBranchReconciliation{}, &branchOwnershipError{state: *refusal}
+	}
+	releasedHead := ""
+	if state.State == branchsync.StateCustodyReturned && state.Local.Branch == branch && terminalStatus(state.Pipeline.Status) &&
+		(state.Relation != branchsync.RelationDiverged || state.Safety == "custody_returned") {
+		releasedHead = state.Pipeline.CurrentHead
+	}
+	return gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, releasedHead)
 }
 
 // triggerRun starts a fresh run for branch: it pushes the current HEAD through
@@ -641,8 +685,12 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, submissionHead); err != nil {
 		return "", err
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	reconciliation, err := reconcileFreshRunGate(ctx, env, branch, submissionHead)
 	if err != nil {
+		var ownershipErr *branchOwnershipError
+		if errors.As(err, &ownershipErr) {
+			return "", ownershipErr
+		}
 		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
 	}
 	// A reconciled branch is re-created by this push, so the hook reports no
@@ -733,11 +781,28 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if opt := formatOmitIntentPushOption(omitIntent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
-		return nil, &branchOwnershipError{state: *state}
+	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, headSHA); err != nil {
+		return nil, err
+	}
+	reconciliation, err := reconcileFreshRunGate(ctx, env, branch, headSHA)
+	if err != nil {
+		var ownershipErr *branchOwnershipError
+		if errors.As(err, &ownershipErr) {
+			return nil, ownershipErr
+		}
+		return nil, fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	if opt := formatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
 	}
 	pushErr := git.PushCommitWithOptionsSkippingHooks(ctx, ".", gate.RemoteName, headSHA, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
+		restoreErr := gate.RestoreReconciledBranch(restoreCtx, env.p.RepoDir(env.repo.ID), branch, reconciliation)
+		cancel()
+		if restoreErr != nil {
+			return nil, fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
+		}
 		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 			return nil, &branchOwnershipError{state: *state}
 		}
