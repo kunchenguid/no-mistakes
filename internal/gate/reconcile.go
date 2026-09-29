@@ -54,7 +54,7 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // owned by docs/src/content/docs/concepts/gate-model.md (Private mirror
 // reconciliation).
 func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, false, runOwnedHead)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, reconcilePolicy{runOwnedHeads: []string{runOwnedHead}})
 }
 
 // PlanMirrorPublicationReconciliation is the pipeline-publication variant of
@@ -65,10 +65,37 @@ func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 // agent-created head nor any other recorded head is eligible; every other
 // mirror head still needs the full preservation proof.
 func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, runOwnedHeads ...string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, true, runOwnedHeads...)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, reconcilePolicy{preserveDescendants: true, runOwnedHeads: runOwnedHeads})
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
+// PlanReturnedCustodySubmissionReconciliation is the fresh-submission variant
+// for a terminal run whose custody was already returned while the private lane
+// still names that run's exact submitted head. It keeps the ordinary
+// patch-identity preservation proof, and adds one narrow allowance: that exact
+// stale submitted head may also be archived when a three-way merge proves the
+// caller's live head already contains the submitted content. Genuinely absent
+// submitted work still follows the ordinary at-risk refusal.
+func PlanReturnedCustodySubmissionReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, submittedHead string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, reconcilePolicy{contentContainedHeads: []string{submittedHead}})
+}
+
+// ReconcileReturnedCustodySubmission plans and immediately applies the
+// returned-custody stale-submission reconciliation variant.
+func ReconcileReturnedCustodySubmission(ctx context.Context, gateDir, workDir, branch, liveHead, submittedHead string) (StaleBranchReconciliation, error) {
+	plan, err := PlanReturnedCustodySubmissionReconciliation(ctx, gateDir, workDir, branch, liveHead, submittedHead)
+	if err != nil || !plan.Reconcile {
+		return StaleBranchReconciliation{}, err
+	}
+	return ApplyStaleBranchReconciliation(ctx, gateDir, plan)
+}
+
+type reconcilePolicy struct {
+	preserveDescendants   bool
+	runOwnedHeads         []string
+	contentContainedHeads []string
+}
+
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, policy reconcilePolicy) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
@@ -120,13 +147,13 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 	if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateHead, liveHead); err == nil {
 		return plan, nil
 	}
-	if preserveDescendants {
+	if policy.preserveDescendants {
 		plan.PreserveDescendantOf = liveHead
 		if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", liveHead, gateHead); err == nil {
 			return plan, nil
 		}
 	}
-	if !isRunOwnedHead(gateHead, runOwnedHeads) {
+	if !isRunOwnedHead(gateHead, policy.runOwnedHeads) && !isContentContainedHead(ctx, gateDir, gateHead, liveHead, policy.contentContainedHeads) {
 		atRiskCommits, err := privateCommitsAbsentFromLive(ctx, gateDir, liveHead, gateHead)
 		if err != nil {
 			return plan, fmt.Errorf("compare private mirror content for %s: %w", branchRef, err)
@@ -167,6 +194,40 @@ func isRunOwnedHead(gateHead string, runOwnedHeads []string) bool {
 		}
 	}
 	return false
+}
+
+func isContentContainedHead(ctx context.Context, repoDir, gateHead, liveHead string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if candidate = strings.TrimSpace(candidate); candidate != "" && candidate == gateHead {
+			return HeadContentContained(ctx, repoDir, gateHead, liveHead)
+		}
+	}
+	return false
+}
+
+// HeadContentContained proves, by an executable merge using Git's complete
+// merge-base semantics, that merging containedHead into containingHead would
+// leave containingHead's final tree unchanged. It is content containment
+// evidence for narrow recovery paths, not a general substitute for private
+// mirror patch-identity proof.
+func HeadContentContained(ctx context.Context, repoDir, containedHead, containingHead string) bool {
+	containedHead = strings.TrimSpace(containedHead)
+	containingHead = strings.TrimSpace(containingHead)
+	if containedHead == "" || containingHead == "" {
+		return false
+	}
+	if containedHead == containingHead {
+		return true
+	}
+	if _, err := git.Run(ctx, repoDir, "merge-base", "--is-ancestor", containedHead, containingHead); err == nil {
+		return true
+	}
+	mergedTree, err := git.Run(ctx, repoDir, "merge-tree", "--write-tree", containingHead, containedHead)
+	if err != nil {
+		return false
+	}
+	containingTree, err := git.Run(ctx, repoDir, "rev-parse", containingHead+"^{tree}")
+	return err == nil && mergedTree == containingTree
 }
 
 // ApplyStaleBranchReconciliation archives the planned head and then removes the

@@ -413,6 +413,9 @@ func humanSyncSummary(state branchsync.State) string {
 		if state.Safety == "recovery_required" && state.NextAction != nil {
 			return "a rebased local head needs guarded gate-lane adoption before it can start a fresh run"
 		}
+		if state.Safety == "manual_reconciliation_required" {
+			return "the diverged gate lane requires manual reconciliation before a fresh run"
+		}
 		if state.Safety == "gate_ready" {
 			return "the published rebased head is present in this gate lane; start a fresh run when ready"
 		}

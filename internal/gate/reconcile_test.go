@@ -200,6 +200,108 @@ func TestReconcileStaleBranchArchivesRunOwnedHeadWithoutPatchEquivalence(t *test
 	}
 }
 
+func TestReturnedCustodySubmissionReconciliationUsesMergeContainmentProof(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	work := initReconcileRepo(t)
+	base := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	writeReconcileFile(t, work, "base.txt", "base\napproved one\n")
+	reconcileGit(t, work, "add", "base.txt")
+	reconcileGit(t, work, "commit", "-m", "submitted report part one")
+	writeReconcileFile(t, work, "base.txt", "base\napproved one\napproved two\n")
+	reconcileGit(t, work, "add", "base.txt")
+	reconcileGit(t, work, "commit", "-m", "submitted report part two")
+	submittedHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	reconcileGit(t, work, "reset", "--hard", base)
+	writeReconcileFile(t, work, "base.txt", "base\napproved one\napproved two\n")
+	writeReconcileFile(t, work, "operator.txt", "operator rewrite\n")
+	reconcileGit(t, work, "add", "base.txt", "operator.txt")
+	reconcileGit(t, work, "commit", "-m", "replacement preserves submitted content")
+	liveHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, submittedHead+":refs/heads/feature/reconcile")
+
+	if _, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, ""); err == nil {
+		t.Fatal("ordinary fresh reconciliation accepted a changed patch without the containment path")
+	}
+	plan, err := PlanReturnedCustodySubmissionReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, submittedHead)
+	if err != nil {
+		t.Fatalf("submitted content containment was refused: %v", err)
+	}
+	if !plan.Reconcile || plan.PreviousHead != submittedHead {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != submittedHead {
+		t.Fatalf("planning moved private branch to %s, want %s", got, submittedHead)
+	}
+
+	result, err := ApplyStaleBranchReconciliation(ctx, gateDir, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reconciled || result.PreviousHead != submittedHead {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag+"^{commit}"); got != submittedHead {
+		t.Fatalf("archive tag points at %s, want %s", got, submittedHead)
+	}
+}
+
+func TestReturnedCustodySubmissionReconciliationRefusesMissingContentWithMultipleMergeBases(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	work := initReconcileRepo(t)
+	base := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	writeReconcileFile(t, work, "shared.txt", "submitted content\n")
+	reconcileGit(t, work, "add", "shared.txt")
+	reconcileGit(t, work, "commit", "-m", "submitted side")
+	submittedSide := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	reconcileGit(t, work, "checkout", "--detach", base)
+	writeReconcileFile(t, work, "shared.txt", "replacement content\n")
+	reconcileGit(t, work, "add", "shared.txt")
+	reconcileGit(t, work, "commit", "-m", "replacement side")
+	replacementSide := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	// These reciprocal ours merges form a criss-cross history with both side
+	// commits as merge bases. The submitted merge keeps submitted content while
+	// the replacement merge omits it.
+	reconcileGit(t, work, "checkout", "--detach", submittedSide)
+	reconcileGit(t, work, "merge", "--no-ff", "-s", "ours", replacementSide, "-m", "submitted merge")
+	submittedHead := reconcileGit(t, work, "rev-parse", "HEAD")
+	reconcileGit(t, work, "checkout", "--detach", replacementSide)
+	reconcileGit(t, work, "merge", "--no-ff", "-s", "ours", submittedSide, "-m", "replacement merge")
+	liveHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	bases := strings.Fields(reconcileGit(t, work, "merge-base", "--all", submittedHead, liveHead))
+	if len(bases) != 2 {
+		t.Fatalf("fixture has %d merge bases, want 2: %v", len(bases), bases)
+	}
+	if reconcileGit(t, work, "rev-parse", submittedHead+"^{tree}") == reconcileGit(t, work, "rev-parse", liveHead+"^{tree}") {
+		t.Fatal("fixture replacement unexpectedly contains the submitted tree")
+	}
+
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, submittedHead+":refs/heads/feature/reconcile")
+
+	plan, err := PlanReturnedCustodySubmissionReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, submittedHead)
+	if err == nil || plan.Reconcile {
+		t.Fatalf("missing submitted content was reconcilable: plan=%+v err=%v", plan, err)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != submittedHead {
+		t.Fatalf("refusal moved private branch to %s, want %s", got, submittedHead)
+	}
+	if tags := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("refusal archived missing submitted content: %q", tags)
+	}
+}
+
 func TestPlanStaleBranchReconciliationMutatesNothingAndApplyRefusesMovedHead(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
