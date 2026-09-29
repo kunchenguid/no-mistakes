@@ -126,102 +126,6 @@ func prSelector(pr *scm.PR) (string, error) {
 	return "", errors.New("no PR number or URL known; refusing to run gh with a cwd-inferred branch")
 }
 
-// isHexSHA reports whether s looks like a bare commit SHA (7-40 hex
-// characters). A SHA is never a valid `gh pr view` selector, which only
-// accepts a PR number, URL, or branch name; passing a SHA makes gh fail
-// with "no pull requests found for branch <sha>".
-func isHexSHA(s string) bool {
-	s = strings.TrimSpace(s)
-	if len(s) < 7 || len(s) > 40 {
-		return false
-	}
-	for _, r := range s {
-		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// findPRByCommitSHA resolves a commit SHA to its pull request via the GitHub
-// API `GET /repos/{owner}/{repo}/commits/{sha}/pulls`. This is the correct
-// way to handle a SHA-only identifier: look up the PR number first, then
-// use that number for `gh pr view` / `gh pr checks`. It refuses an
-// ambiguous match (multiple PRs for one SHA) rather than silently picking
-// by result order, so a SHA-only call to a write method cannot edit the
-// wrong PR and a read method cannot return the wrong PR's state.
-func (h *Host) findPRByCommitSHA(ctx context.Context, sha string) (*scm.PR, error) {
-	sha = strings.TrimSpace(sha)
-	repo := h.repoSlug()
-	if repo == "" {
-		return nil, errors.New("cannot resolve PR from commit SHA without repository slug")
-	}
-	args := []string{"api"}
-	if h.host != "" {
-		args = append(args, "--hostname", h.host)
-	}
-	endpoint := "repos/" + repo + "/commits/" + sha + "/pulls"
-	args = append(args, endpoint)
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("gh api commits/%s/pulls: %s: %w", sha, strings.TrimSpace(string(out)), err)
-	}
-	var pulls []struct {
-		Number  int    `json:"number"`
-		HTMLURL string `json:"html_url"`
-		URL     string `json:"url"`
-	}
-	if err := json.Unmarshal(out, &pulls); err != nil {
-		return nil, fmt.Errorf("parse commits/%s/pulls: %w", sha, err)
-	}
-	if len(pulls) == 0 {
-		return nil, fmt.Errorf("no pull request found for commit %s", sha)
-	}
-	if len(pulls) > 1 {
-		return nil, fmt.Errorf("multiple pull requests found for commit %s (%d matches); refusing to choose one implicitly", sha, len(pulls))
-	}
-	p := pulls[0]
-	if p.Number <= 0 {
-		return nil, fmt.Errorf("resolved PR for commit %s has no number", sha)
-	}
-	prURL := strings.TrimSpace(p.HTMLURL)
-	if prURL == "" {
-		prURL = strings.TrimSpace(p.URL)
-	}
-	if prURL == "" {
-		host := strings.TrimSpace(h.host)
-		if host == "" {
-			host = "github.com"
-		}
-		prURL = fmt.Sprintf("https://%s/%s/pull/%d", host, repo, p.Number)
-	}
-	return &scm.PR{Number: strconv.Itoa(p.Number), URL: prURL}, nil
-}
-
-// resolveSHASelector returns selector unchanged unless it looks like a commit
-// SHA, in which case it resolves the SHA to its PR number via the API so the
-// subsequent `gh pr view` / `gh pr checks` call receives a valid selector.
-// A decimal PR number (all digits, e.g. 1000000) is also valid hex but must
-// not be misclassified as a SHA; such numeric selectors are returned
-// verbatim so they reach `gh pr view` / `gh pr checks` directly.
-func (h *Host) resolveSHASelector(ctx context.Context, selector string) (string, error) {
-	if isNumericID(strings.TrimSpace(selector)) {
-		return selector, nil
-	}
-	if !isHexSHA(selector) {
-		return selector, nil
-	}
-	pr, err := h.findPRByCommitSHA(ctx, selector)
-	if err != nil {
-		return "", fmt.Errorf("selector %q looks like a commit SHA, not a PR number; failed to resolve PR for commit %s: %w (hint: gh pr view only accepts number/URL/branch — use `gh pr list --search <sha>` or `gh api repos/{owner}/{repo}/commits/<sha>/pulls` to find the PR first)", selector, selector, err)
-	}
-	if pr.Number != "" {
-		return pr.Number, nil
-	}
-	return pr.URL, nil
-}
-
 func (h *Host) headRef(branch string) string {
 	if h.forkOwner == "" {
 		return branch
@@ -447,30 +351,7 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
-		if pr != nil && isHexSHA(strings.TrimSpace(pr.HeadSHA)) {
-			if resolved, rerr := h.findPRByCommitSHA(ctx, pr.HeadSHA); rerr == nil {
-				selector = resolved.Number
-				if selector == "" {
-					selector = resolved.URL
-				}
-				if selector != "" {
-					err = nil
-				} else {
-					return nil, err
-				}
-			} else {
-				return nil, fmt.Errorf("%w; also failed to resolve PR from commit %s: %v", err, strings.TrimSpace(pr.HeadSHA), rerr)
-			}
-		} else {
-			return nil, err
-		}
-	}
-	if selector != "" {
-		if rs, rerr := h.resolveSHASelector(ctx, selector); rerr != nil {
-			return nil, rerr
-		} else {
-			selector = rs
-		}
+		return nil, err
 	}
 	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
 	if strings.TrimSpace(content.Title) != "" {
@@ -490,30 +371,7 @@ var _ scm.PRContentReader = (*Host)(nil)
 func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
-		if pr != nil && isHexSHA(strings.TrimSpace(pr.HeadSHA)) {
-			if resolved, rerr := h.findPRByCommitSHA(ctx, pr.HeadSHA); rerr == nil {
-				selector = resolved.Number
-				if selector == "" {
-					selector = resolved.URL
-				}
-				if selector != "" {
-					err = nil
-				} else {
-					return scm.PRContent{}, err
-				}
-			} else {
-				return scm.PRContent{}, fmt.Errorf("%w; also failed to resolve PR from commit %s: %v", err, strings.TrimSpace(pr.HeadSHA), rerr)
-			}
-		} else {
-			return scm.PRContent{}, err
-		}
-	}
-	if selector != "" {
-		if rs, rerr := h.resolveSHASelector(ctx, selector); rerr != nil {
-			return scm.PRContent{}, rerr
-		} else {
-			selector = rs
-		}
+		return scm.PRContent{}, err
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "title,body")
@@ -537,30 +395,7 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
 	selector, err := prSelector(pr)
 	if err != nil {
-		if pr != nil && isHexSHA(strings.TrimSpace(pr.HeadSHA)) {
-			if resolved, rerr := h.findPRByCommitSHA(ctx, pr.HeadSHA); rerr == nil {
-				selector = resolved.Number
-				if selector == "" {
-					selector = resolved.URL
-				}
-				if selector != "" {
-					err = nil
-				} else {
-					return err
-				}
-			} else {
-				return fmt.Errorf("%w; also failed to resolve PR from commit %s: %v", err, strings.TrimSpace(pr.HeadSHA), rerr)
-			}
-		} else {
-			return err
-		}
-	}
-	if selector != "" {
-		if rs, rerr := h.resolveSHASelector(ctx, selector); rerr != nil {
-			return rerr
-		} else {
-			selector = rs
-		}
+		return err
 	}
 	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
 	args = append(args, "--base", baseBranch)
@@ -574,30 +409,7 @@ func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch strin
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
-		if pr != nil && isHexSHA(strings.TrimSpace(pr.HeadSHA)) {
-			if resolved, rerr := h.findPRByCommitSHA(ctx, pr.HeadSHA); rerr == nil {
-				selector = resolved.Number
-				if selector == "" {
-					selector = resolved.URL
-				}
-				if selector != "" {
-					err = nil
-				} else {
-					return "", err
-				}
-			} else {
-				return "", fmt.Errorf("%w; also failed to resolve PR from commit %s: %v", err, strings.TrimSpace(pr.HeadSHA), rerr)
-			}
-		} else {
-			return "", err
-		}
-	}
-	if selector != "" {
-		if rs, rerr := h.resolveSHASelector(ctx, selector); rerr != nil {
-			return "", rerr
-		} else {
-			selector = rs
-		}
+		return "", err
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "state", "--jq", ".state")
@@ -612,30 +424,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
-		if pr != nil && isHexSHA(strings.TrimSpace(pr.HeadSHA)) {
-			if resolved, rerr := h.findPRByCommitSHA(ctx, pr.HeadSHA); rerr == nil {
-				selector = resolved.Number
-				if selector == "" {
-					selector = resolved.URL
-				}
-				if selector != "" {
-					err = nil
-				} else {
-					return "", err
-				}
-			} else {
-				return "", fmt.Errorf("%w; also failed to resolve PR from commit %s: %v", err, strings.TrimSpace(pr.HeadSHA), rerr)
-			}
-		} else {
-			return "", err
-		}
-	}
-	if selector != "" {
-		if rs, rerr := h.resolveSHASelector(ctx, selector); rerr != nil {
-			return "", rerr
-		} else {
-			selector = rs
-		}
+		return "", err
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "baseRefName", "--jq", ".baseRefName")
@@ -649,37 +438,7 @@ func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
-		if pr != nil && isHexSHA(strings.TrimSpace(pr.HeadSHA)) {
-			if resolved, rerr := h.findPRByCommitSHA(ctx, pr.HeadSHA); rerr == nil {
-				selector = resolved.Number
-				if selector == "" {
-					selector = resolved.URL
-				}
-				if selector != "" {
-					err = nil
-					// also keep pr.Number/URL in sync for downstream logic
-					if resolved.Number != "" {
-						pr.Number = resolved.Number
-					}
-					if resolved.URL != "" {
-						pr.URL = resolved.URL
-					}
-				} else {
-					return nil, err
-				}
-			} else {
-				return nil, fmt.Errorf("%w; also failed to resolve PR from commit %s: %v", err, strings.TrimSpace(pr.HeadSHA), rerr)
-			}
-		} else {
-			return nil, err
-		}
-	}
-	if selector != "" {
-		if rs, rerr := h.resolveSHASelector(ctx, selector); rerr != nil {
-			return nil, rerr
-		} else {
-			selector = rs
-		}
+		return nil, err
 	}
 	headSHA := ""
 	if strings.TrimSpace(pr.HeadSHA) != "" {
@@ -1375,30 +1134,7 @@ func isNumericID(value string) bool {
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
-		if pr != nil && isHexSHA(strings.TrimSpace(pr.HeadSHA)) {
-			if resolved, rerr := h.findPRByCommitSHA(ctx, pr.HeadSHA); rerr == nil {
-				selector = resolved.Number
-				if selector == "" {
-					selector = resolved.URL
-				}
-				if selector != "" {
-					err = nil
-				} else {
-					return "", err
-				}
-			} else {
-				return "", fmt.Errorf("%w; also failed to resolve PR from commit %s: %v", err, strings.TrimSpace(pr.HeadSHA), rerr)
-			}
-		} else {
-			return "", err
-		}
-	}
-	if selector != "" {
-		if rs, rerr := h.resolveSHASelector(ctx, selector); rerr != nil {
-			return "", rerr
-		} else {
-			selector = rs
-		}
+		return "", err
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "mergeable", "--jq", ".mergeable")

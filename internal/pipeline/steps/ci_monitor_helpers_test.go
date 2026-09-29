@@ -12,8 +12,6 @@ import (
 
 func TestCICheckReadFailureOutcome_SHABranchHint(t *testing.T) {
 	t.Parallel()
-	// A "no pull requests found for branch <sha>" error containing a hex SHA
-	// must surface the SHA-specific remediation, not the generic gh version hint.
 	sha := "abc123def4567890abc123def4567890abc12345"
 	outcome := ciCheckReadFailureOutcome(errors.New("gh pr view: no pull requests found for branch " + sha))
 	var findings Findings
@@ -37,8 +35,6 @@ func TestCICheckReadFailureOutcome_SHABranchHint(t *testing.T) {
 
 func TestCICheckReadFailureOutcome_NumericPRNotTreatedAsSHA(t *testing.T) {
 	t.Parallel()
-	// A 7-digit numeric PR number must NOT trigger the SHA hint; it is a valid
-	// PR selector that is also hex-shaped (all digits) but must stay numeric.
 	outcome := ciCheckReadFailureOutcome(errors.New("gh pr view: no pull requests found for branch 1000000"))
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {

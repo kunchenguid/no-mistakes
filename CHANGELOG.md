@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.85.2](https://github.com/kunchenguid/no-mistakes/compare/v1.85.1...v1.85.2) (2026-09-29)
+
+
+### Bug Fixes
+
+* **cli:** show axi finding descriptions verbatim and keep them readable after a gate resolves ([#1219](https://github.com/kunchenguid/no-mistakes/issues/1219)) ([3a5fd7e](https://github.com/kunchenguid/no-mistakes/commit/3a5fd7ed4eaaaa9f66633ac4228a0e58e5f30b18))
+
 ## [1.85.1](https://github.com/kunchenguid/no-mistakes/compare/v1.85.0...v1.85.1) (2026-09-28)
 
 

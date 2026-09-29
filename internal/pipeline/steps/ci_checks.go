@@ -361,14 +361,6 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 		errStr = err.Error()
 	}
 	description := fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command.", err)
-	// The generic "gh >= 2.50 required" hint is only helpful for actual
-	// `gh pr checks --json` support errors. When the underlying error is
-	// "no pull requests found for branch <sha>" it is almost certainly a
-	// malformed selector (a commit SHA was passed where a PR number/URL was
-	// required) — `gh pr view` only accepts number/URL/branch, never a bare
-	// SHA. Surfacing the version hint in that case hides the real cause,
-	// which previously parked a pipeline for 12h. Detect that shape and
-	// suggest the correct resolution instead.
 	lower := strings.ToLower(errStr)
 	isBranchNotFound := strings.Contains(lower, "no pull requests found for branch")
 	mentionsSHA := isHexSHAInText(errStr)
@@ -392,11 +384,6 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 	}
 }
 
-// isHexSHAInText reports whether text contains a 7-40 char hex SHA. Used to
-// distinguish a branch-not-found error caused by a SHA selector from a
-// genuine missing branch. A purely decimal token (e.g. PR number 1000000)
-// is not considered a SHA even though decimal digits are hex digits, so
-// a large PR number does not trigger the SHA diagnostic.
 func isHexSHAInText(s string) bool {
 	for _, token := range strings.Fields(s) {
 		clean := strings.Trim(token, "`'\".,:;()[]{}<>")
