@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -355,11 +356,32 @@ func terminalCheckTargetsForNames(checks []scm.Check, names []string) []scm.Chec
 }
 
 func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
+	errStr := ""
+	if err != nil {
+		errStr = err.Error()
+	}
+	description := fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command.", err)
+	// The generic "gh >= 2.50 required" hint is only helpful for actual
+	// `gh pr checks --json` support errors. When the underlying error is
+	// "no pull requests found for branch <sha>" it is almost certainly a
+	// malformed selector (a commit SHA was passed where a PR number/URL was
+	// required) — `gh pr view` only accepts number/URL/branch, never a bare
+	// SHA. Surfacing the version hint in that case hides the real cause,
+	// which previously parked a pipeline for 12h. Detect that shape and
+	// suggest the correct resolution instead.
+	lower := strings.ToLower(errStr)
+	isBranchNotFound := strings.Contains(lower, "no pull requests found for branch")
+	mentionsSHA := isHexSHAInText(errStr)
+	if isBranchNotFound && mentionsSHA {
+		description += " The error indicates a commit SHA was used as the PR selector (gh pr view <sha>). gh pr view only accepts a PR number, URL, or branch name — never a bare SHA. Resolve the PR first via `gh pr list --search <sha>` or `gh api repos/{owner}/{repo}/commits/<sha>/pulls`, then use `gh pr view <number>` / `gh pr checks <number>`."
+	} else {
+		description += " For GitHub errors involving 'pr checks --json', gh >= 2.50 is required."
+	}
 	findings := Findings{
 		Summary: "CI checks could not be read from the provider",
 		Items: []Finding{{
 			Severity:    "warning",
-			Description: fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command. For GitHub errors involving 'pr checks --json', gh >= 2.50 is required.", err),
+			Description: description,
 			Action:      types.ActionAskUser,
 		}},
 	}
@@ -368,6 +390,30 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),
 	}
+}
+
+// isHexSHAInText reports whether text contains a 7-40 char hex SHA. Used to
+// distinguish a branch-not-found error caused by a SHA selector from a
+// genuine missing branch.
+func isHexSHAInText(s string) bool {
+	for _, token := range strings.Fields(s) {
+		clean := strings.Trim(token, "`'\".,:;()[]{}<>")
+		if len(clean) < 7 || len(clean) > 40 {
+			continue
+		}
+		isHex := true
+		for _, r := range clean {
+			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+				continue
+			}
+			isHex = false
+			break
+		}
+		if isHex {
+			return true
+		}
+	}
+	return false
 }
 
 // ciFixAgentTimeoutOutcome parks the CI step for a decision after the auto-fix
