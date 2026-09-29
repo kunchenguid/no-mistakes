@@ -60,7 +60,7 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 		t.Fatal(err)
 	}
 	defer database.Close()
-	repo, err := database.InsertRepo(filepath.Join(t.TempDir(), "repo"), "https://example.com/repo.git", "main")
+	repo, err := database.InsertRepo(filepath.Join(t.TempDir(), "repo"), "https://github.com/acme/repo.git", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +94,9 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, head); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.InsertReviewStepRoundWithProvenance(review.ID, 1, "initial", nil, nil, head, head, "", nil, nil, 1); err != nil {
+		t.Fatal(err)
+	}
 	if err := database.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +120,9 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handoff.Outcome != "pending-external-ci" || handoff.RunID != run.ID || len(handoff.PendingCISupport) != 1 || handoff.PendingCISupport[0].HistoricalCheckID != "check-1" {
+	if handoff.Outcome != "pending-external-ci" || handoff.RunID != run.ID ||
+		handoff.SourceRepo != "acme/repo" || handoff.SourceBranch != "feature" ||
+		len(handoff.PendingCISupport) != 1 || handoff.PendingCISupport[0].HistoricalCheckID != "check-1" {
 		t.Fatalf("handoff = %+v", handoff)
 	}
 	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, strings.Repeat("f", 40)); err != nil {

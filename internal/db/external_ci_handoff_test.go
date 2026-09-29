@@ -79,6 +79,9 @@ func TestPendingExternalCISupportBindsCurrentReviewAndReceipt(t *testing.T) {
 	if err := d.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := d.InsertReviewStepRoundWithProvenance(review.ID, 1, "initial", nil, nil, head, head, "", nil, nil, 1); err != nil {
+		t.Fatal(err)
+	}
 	receipt := testPRContextCandidate()
 	receipt.LocalHeadSHA = head
 	receipt.PRURL = "https://github.com/acme/repo/pull/1"

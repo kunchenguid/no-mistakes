@@ -103,6 +103,12 @@ func branchSyncScenario(t *testing.T) string {
           line: 1
           description: "unsafe value needs validation"
           action: auto-fix
+          support:
+            claim_type: source
+            source:
+              path: "feature.txt"
+              line: 1
+              quote: "safe"
       summary: "found one issue"
       risk_level: medium
       risk_rationale: "the unsafe value needs a guard"
@@ -632,6 +638,12 @@ func rebaseCustodyScenario(t *testing.T) string {
           line: 1
           description: "the feature needs a guard helper"
           action: auto-fix
+          support:
+            claim_type: source
+            source:
+              path: "feature.txt"
+              line: 1
+              quote: "unsafe"
       summary: "found one issue"
       risk_level: medium
       risk_rationale: "the feature needs a guard"

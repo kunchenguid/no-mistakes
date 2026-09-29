@@ -38,6 +38,26 @@ func TestReviewSupportSourceUsesPinnedHead(t *testing.T) {
 	}
 }
 
+func TestReviewSupportSourceCanQuoteDeletedLineAtPinnedMergeBase(t *testing.T) {
+	dir, base, unchangedHead := setupGitRepo(t)
+	gitCmd(t, dir, "rm", "base.txt")
+	gitCmd(t, dir, "commit", "-m", "remove base line")
+	head := gitCmd(t, dir, "rev-parse", "HEAD")
+	ctx := newTestContext(t, nil, dir, base, head, config.Commands{})
+	ctx.PRContext = &db.PRContext{PRContextCandidate: db.PRContextCandidate{LocalHeadSHA: head, MergeBaseSHA: base}}
+	items := Findings{Items: []Finding{{Action: types.ActionAutoFix, Support: &types.FindingSupport{
+		ClaimType: types.FindingClaimSource,
+		Source:    &types.FindingSourceSupport{Path: "base.txt", Line: 1, Quote: "base content", HeadSHA: base},
+	}}}}
+	if _, err := validateReviewFindingSupport(ctx, items, head); err != nil {
+		t.Fatalf("pinned merge-base source refused: %v", err)
+	}
+	ctx.PRContext.LocalHeadSHA = unchangedHead
+	if _, err := validateReviewFindingSupport(ctx, items, unchangedHead); err == nil {
+		t.Fatal("unchanged merge-base line accepted as removed source")
+	}
+}
+
 func TestReviewSupportFixRoundUsesExactNewLocalHeadProvisionally(t *testing.T) {
 	t.Parallel()
 	ctx := newReviewSupportContext(t)

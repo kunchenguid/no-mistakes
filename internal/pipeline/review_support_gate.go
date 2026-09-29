@@ -1,17 +1,19 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // validateReviewSupportOwners refuses a terminal verdict while a Review
 // hypothesis still lacks current evidence from its owning step. Only current
-// step results count; old rounds remain historical after a receipt reset.
+// step results count; superseded rounds are discarded when the receipt resets.
 func (e *Executor) validateReviewSupportOwners(runID string, through types.StepName) error {
 	results, err := e.db.GetStepsByRun(runID)
 	if err != nil {
@@ -47,8 +49,14 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 	if err != nil {
 		return fmt.Errorf("read PR comparison for support verdict: %w", err)
 	}
-	if receipt == nil || current.ReviewApprovedHeadSHA == nil || *current.ReviewApprovedHeadSHA != current.HeadSHA || receipt.LocalHeadSHA != current.HeadSHA {
+	if receipt == nil || current.ReviewApprovedHeadSHA == nil || receipt.LocalHeadSHA != current.HeadSHA {
 		return fmt.Errorf("pending Review support lacks an approved current-head comparison")
+	}
+	approvedHead := *current.ReviewApprovedHeadSHA
+	if approvedHead != current.HeadSHA {
+		if _, err := git.Run(context.Background(), e.workDir, "merge-base", "--is-ancestor", approvedHead, current.HeadSHA); err != nil {
+			return fmt.Errorf("pending Review support is not continuous with approved head: %w", err)
+		}
 	}
 	for _, claim := range pending {
 		if claim.ID == "" || claim.Support.OwnerResult != nil {
@@ -87,12 +95,15 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 				continue
 			}
 			result := candidate.Support.OwnerResult
-			if result.ReviewFindingID != claim.ID || result.HeadSHA != current.HeadSHA || result.TargetSHA != receipt.TargetSHA ||
-				result.DiffDigest != receipt.DiffDigest || result.Generation != receipt.Generation || result.Disposition != types.FindingSupportDispositionDisproven {
+			if result.ReviewFindingID != claim.ID || result.HeadSHA != approvedHead || result.TargetSHA != receipt.TargetSHA ||
+				result.Generation > receipt.Generation || result.Disposition != types.FindingSupportDispositionDisproven {
+				continue
+			}
+			if approvedHead == current.HeadSHA && result.DiffDigest != receipt.DiffDigest {
 				continue
 			}
 			observedAt, err := time.Parse(time.RFC3339Nano, result.ObservedAt)
-			if err != nil || observedAt.Before(time.Unix(receipt.ObservedAt, 0)) {
+			if err != nil || observedAt.IsZero() {
 				continue
 			}
 			if ownerName == types.StepTest && (result.ExitCode == nil || *result.ExitCode != 0) {

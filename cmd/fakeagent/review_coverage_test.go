@@ -97,6 +97,30 @@ func TestMatchLeavesExplicitReviewedPathsAlone(t *testing.T) {
 	}
 }
 
+func TestMatchFillsFreshSourceSupportWithoutMutatingScenario(t *testing.T) {
+	dir, base := setupCoverageRepo(t)
+	finding := map[string]any{"id": "finding-1", "file": "feature.txt", "line": 1}
+	s := &Scenario{Actions: []Action{{Structured: map[string]any{"findings": []any{finding}}}}}
+	readQuote := func() string {
+		t.Helper()
+		action := s.MatchInDir(dir, reviewPromptFor(base, "none"))
+		got := action.Structured["findings"].([]any)[0].(map[string]any)
+		return got["support"].(map[string]any)["source"].(map[string]any)["quote"].(string)
+	}
+	if got := readQuote(); got != "feature" {
+		t.Fatalf("first source quote = %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("corrected\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readQuote(); got != "corrected" {
+		t.Fatalf("later source quote = %q, want current worktree content", got)
+	}
+	if _, present := finding["support"]; present {
+		t.Fatal("scenario finding was mutated by source support fill")
+	}
+}
+
 func TestMatchDoesNotFillReviewedPathsOutsideAReviewTurn(t *testing.T) {
 	dir, base := setupCoverageRepo(t)
 	prompt := strings.Replace(reviewPromptFor(base, "none"), reviewPromptMarker, "Investigate previous review findings", 1)

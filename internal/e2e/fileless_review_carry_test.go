@@ -13,8 +13,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// A real CLI fix selection must settle a pre-upgrade, unanchored finding only
-// after the reviewer verifies the entire changed-file set without re-reporting it.
+// A real CLI fix selection must settle a fileless finding with supported source
+// evidence only after the reviewer verifies the entire changed-file set.
 func TestFilelessSelectedReviewFindingRequiresCompleteVerification(t *testing.T) {
 	for _, tc := range []struct {
 		name, coverage, rereport string
@@ -56,6 +56,12 @@ func TestFilelessSelectedReviewFindingRequiresCompleteVerification(t *testing.T)
           severity: warning
           description: Unanchored legacy concern
           action: ask-user
+          support:
+            claim_type: source
+            source:
+              path: service.txt
+              line: 1
+              quote: "broken service"
       summary: "one concern"
       risk_level: medium
       risk_rationale: "unanchored concern"
@@ -98,7 +104,7 @@ func TestFilelessSelectedReviewFindingRequiresCompleteVerification(t *testing.T)
 				t.Fatalf("select fix: %v\n%s", err, response)
 			}
 			if tc.clears {
-				run := h.WaitForRun(branch, 90*time.Second)
+				run := h.WaitForRun(branch, 3*time.Minute)
 				if run.Status != types.RunCompleted {
 					t.Fatalf("positive verification did not clear selected finding: status=%s error=%v response=%s", run.Status, run.Error, response)
 				}

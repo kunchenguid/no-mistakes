@@ -127,8 +127,9 @@ func (e *Executor) checkPRContext(ctx context.Context, run *db.Run, repo *db.Rep
 		Ctx: ctx, Run: run, Repo: repo, WorkDir: workDir,
 		Config: e.config, ForgeContext: e.forge, DB: e.db,
 		PRTarget: e.prTarget, PRContext: e.prContext,
-		Log:     func(message string) { slog.Info("PR context", "run_id", run.ID, "message", message) },
-		LogFile: func(message string) { slog.Info("PR context", "run_id", run.ID, "message", message) },
+		PRContextAfterStep: afterStep,
+		Log:                func(message string) { slog.Info("PR context", "run_id", run.ID, "message", message) },
+		LogFile:            func(message string) { slog.Info("PR context", "run_id", run.ID, "message", message) },
 	}, stepName)
 	if err != nil {
 		return -1, fmt.Errorf("check PR context before %s: %w", stepName, err)

@@ -367,7 +367,7 @@ Rules:
   - "pipeline-owned-delivery": only a finding whose sole claim is that this run's remote branch, push, PR, or CI output is not present yet.
   - "external-delivery": a pre-existing or external PR, third-party artifact, or other lifecycle requirement not owned by this run.
 - Every finding must include one typed support reference: support.claim_type is "source", "test", "ci", or "runtime", with only the matching support object.
-  - For source, give source.path, source.line, and a verbatim source.quote from the reviewed target commit. A historical source.head_sha, source.run_id, or source.observed_at is context only; it does not prove the claim applies to this head.
+  - For source, give source.path, source.line, and a verbatim source.quote from the reviewed head. For a deleted line, set source.head_sha to the pinned merge-base commit and quote the line there. Any other historical head, run ID, or observation time is context only and does not prove the claim applies to this comparison.
   - For test, give test.command. A remembered test result or old command output is a hypothesis for the Test step, not Review evidence.
   - For CI, give ci.check_id and ci.head_sha. A reported check result or old CI head is a hypothesis for the CI step, not Review evidence.
   - For runtime, give runtime.entity, runtime.transition, runtime.transition_at, runtime.observed_at, and runtime.revision. Current status alone cannot prove which revision caused a transition. Report an old or uncorrelated observation as a claim that still needs independent validation.

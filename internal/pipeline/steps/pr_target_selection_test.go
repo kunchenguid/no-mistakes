@@ -129,12 +129,31 @@ func TestResolvePRTarget_RejectsForeignAndClosedRecordedPR(t *testing.T) {
 	}
 }
 
-func TestResolvePRTarget_RejectsStaleDiscoveredHead(t *testing.T) {
+func TestResolvePRTarget_UsesLiveBaseBeforeExistingPRHeadIsPushed(t *testing.T) {
+	sctx, facts := selectionFixture(t)
+	facts.HeadSHA = gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD^")
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}})
+	if err != nil || got.TargetBranch != "develop" || got.PRURL != "" {
+		t.Fatalf("prospective comparison = %+v, %v", got, err)
+	}
+}
+
+func TestResolvePRTarget_RejectsDivergentDiscoveredPRHead(t *testing.T) {
 	sctx, facts := selectionFixture(t)
 	facts.HeadSHA = strings.Repeat("0", 40)
 	_, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}})
-	if err == nil || !strings.Contains(err.Error(), "head") {
-		t.Fatalf("error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "not an ancestor") {
+		t.Fatalf("divergent PR head error = %v", err)
+	}
+}
+
+func TestResolvePRTarget_RejectsDivergentRecordedPRHead(t *testing.T) {
+	sctx, facts := selectionFixture(t)
+	sctx.Run.PRURL = &facts.PR.URL
+	facts.HeadSHA = strings.Repeat("0", 40)
+	_, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts})
+	if err == nil || !strings.Contains(err.Error(), "not an ancestor") {
+		t.Fatalf("divergent recorded PR head error = %v", err)
 	}
 }
 

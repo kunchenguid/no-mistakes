@@ -215,7 +215,7 @@ Read a completed run's explicit external CI proof handoff as JSON:
 no-mistakes axi ci-handoff --run <run-id>
 ```
 
-This succeeds only for a completed run with `controller-ship-pr` ownership, exactly skipped Push, PR, and CI steps, and current pending Review CI claims. The JSON includes `outcome: pending-external-ci`, `run_id`, `external_ci_owner`, and each claim's provider check identity and PR comparison receipt. A missing, stale, or unreadable claim returns an error and a nonzero exit. The handoff is evidence to verify against the live PR; it does not assert that CI passed.
+This succeeds only for a completed run with `controller-ship-pr` ownership, exactly skipped Push, PR, and CI steps, and current pending Review CI claims. The JSON includes `outcome: pending-external-ci`, `run_id`, `external_ci_owner`, the run's source repository and branch, and each claim's provider check identity and PR comparison receipt. A missing, stale, or unreadable claim returns an error and a nonzero exit. The caller verifies the source identity, PR comparison, and live checks before merge. The handoff does not assert that CI passed.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
 ### Strict launch receipts

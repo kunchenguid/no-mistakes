@@ -68,6 +68,16 @@ func (d *DB) GetRunPRContext(runID string) (*PRContext, error) {
 // boundary when the target moved; Review is the boundary after Rebase itself
 // changed local HEAD.
 func (d *DB) BindRunPRContext(runID string, candidate PRContextCandidate, resetFrom types.StepName) (PRContextBindResult, error) {
+	return d.bindRunPRContext(runID, candidate, resetFrom, false)
+}
+
+// AdvanceRunPRContext records a commit made by the current forward pipeline
+// step. Earlier completed steps keep their own evidence and review anchor.
+func (d *DB) AdvanceRunPRContext(runID string, candidate PRContextCandidate) (PRContextBindResult, error) {
+	return d.bindRunPRContext(runID, candidate, types.StepReview, true)
+}
+
+func (d *DB) bindRunPRContext(runID string, candidate PRContextCandidate, resetFrom types.StepName, forward bool) (PRContextBindResult, error) {
 	if err := validatePRContextCandidate(candidate); err != nil {
 		return PRContextBindResult{}, err
 	}
@@ -147,7 +157,17 @@ func (d *DB) BindRunPRContext(runID string, candidate PRContextCandidate, resetF
 			return PRContextBindResult{}, fmt.Errorf("bind run PR context: attach discovered PR: %w", err)
 		}
 	}
-	if !initial && !identityOnlyAttach {
+	if !initial && !identityOnlyAttach && forward {
+		if _, err := tx.Exec(`UPDATE runs SET ci_ready_at=NULL, ci_ready_no_ci=0,
+			terminal_head_verified_at=NULL, updated_at=? WHERE id=?`, ts, runID); err != nil {
+			return PRContextBindResult{}, fmt.Errorf("advance run PR context: revoke terminal evidence: %w", err)
+		}
+	}
+	if !initial && !identityOnlyAttach && !forward {
+		if _, err := tx.Exec(`DELETE FROM step_rounds WHERE step_result_id IN (
+			SELECT id FROM step_results WHERE run_id=? AND step_order>=?)`, runID, resetFrom.Order()); err != nil {
+			return PRContextBindResult{}, fmt.Errorf("bind run PR context: discard superseded rounds: %w", err)
+		}
 		if _, err := tx.Exec(`UPDATE runs SET review_approved_head_sha=NULL,
 			ci_ready_at=NULL, ci_ready_no_ci=0, terminal_head_verified_at=NULL,
 			awaiting_agent_since=NULL, updated_at=? WHERE id=?`, ts, runID); err != nil {

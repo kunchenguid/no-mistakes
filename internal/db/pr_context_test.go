@@ -80,6 +80,9 @@ func TestRunPRContextChangedReceiptInvalidatesFromChosenBoundaryIncludingSkipped
 	if err := d.UpdateRunReviewApprovedHeadSHA(runID, candidate.LocalHeadSHA); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := d.InsertStepRound(steps[types.StepReview], 1, "auto_fix", nil, nil, 1); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.SetRunCIReady(runID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +107,10 @@ func TestRunPRContextChangedReceiptInvalidatesFromChosenBoundaryIncludingSkipped
 	run, err := d.GetRun(runID)
 	if err != nil || run.ReviewApprovedHeadSHA != nil || run.CIReadyAt != nil {
 		t.Fatalf("stale run authority: %+v, %v", run, err)
+	}
+	rounds, err := d.GetRoundsByStep(steps[types.StepReview])
+	if err != nil || len(rounds) != 0 {
+		t.Fatalf("superseded review rounds still consume budget: %d, %v", len(rounds), err)
 	}
 	if err := d.UpdateStepStatus(steps[types.StepRebase], types.StepStatusCompleted); err != nil {
 		t.Fatal(err)

@@ -3,8 +3,10 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -13,6 +15,8 @@ type externalCIHandoff struct {
 	Outcome          string                   `json:"outcome"`
 	RunID            string                   `json:"run_id"`
 	ExternalCIOwner  string                   `json:"external_ci_owner"`
+	SourceRepo       string                   `json:"source_repo"`
+	SourceBranch     string                   `json:"source_branch"`
 	PendingCISupport []types.PendingCISupport `json:"pending_ci_support"`
 }
 
@@ -80,5 +84,18 @@ func buildExternalCIHandoff(database *db.DB, run *db.Run) (externalCIHandoff, er
 	if len(claims) == 0 || len(claims) > 128 {
 		return externalCIHandoff{}, fmt.Errorf("run must have 1-128 current pending Review CI claims")
 	}
-	return externalCIHandoff{Outcome: "pending-external-ci", RunID: run.ID, ExternalCIOwner: run.ExternalCIOwner, PendingCISupport: claims}, nil
+	repo, err := database.GetRepo(run.RepoID)
+	if err != nil {
+		return externalCIHandoff{}, fmt.Errorf("read CI handoff source repository: %w", err)
+	}
+	if repo == nil {
+		return externalCIHandoff{}, fmt.Errorf("CI handoff source repository is missing")
+	}
+	sourceRepo := scm.RepoPath(repo.PushURL())
+	sourceBranch := strings.TrimPrefix(run.Branch, "refs/heads/")
+	if sourceRepo == "" || sourceBranch == "" {
+		return externalCIHandoff{}, fmt.Errorf("CI handoff source identity is unreadable")
+	}
+	return externalCIHandoff{Outcome: "pending-external-ci", RunID: run.ID, ExternalCIOwner: run.ExternalCIOwner,
+		SourceRepo: sourceRepo, SourceBranch: sourceBranch, PendingCISupport: claims}, nil
 }

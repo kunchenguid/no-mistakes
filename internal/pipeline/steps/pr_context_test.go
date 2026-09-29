@@ -19,7 +19,7 @@ func TestPRContextGuardExternalCIOwnerRejectsDifferentPRHead(t *testing.T) {
 		PRURL: "https://github.com/example/repo/pull/7", TargetBranch: "main",
 		ForgeHeadSHA: strings.Repeat("a", 40),
 	}
-	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection); err == nil || !strings.Contains(err.Error(), "differs from local head") {
+	if _, err := guardPRContextWithSelection(sctx, types.StepCI, selection); err == nil || !strings.Contains(err.Error(), "differs from local head") {
 		t.Fatalf("guard error = %v, want exact PR head refusal", err)
 	}
 }
@@ -65,5 +65,48 @@ func TestPRContextGuardPinsActualTargetAndRestartsAfterTargetMoves(t *testing.T)
 	resetStep, err := sctx.DB.GetStepResult(step.ID)
 	if err != nil || resetStep.Status != types.StepStatusPending {
 		t.Fatalf("review step was not invalidated: %+v, %v", resetStep, err)
+	}
+}
+
+func TestPRContextGuardAdvancesAfterDocumentEditWithoutRerunningReview(t *testing.T) {
+	dir, base, reviewedHead := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, reviewedHead, config.Commands{})
+	selection := pipeline.PRTargetSelection{TargetBranch: "main"}
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection); err != nil {
+		t.Fatal(err)
+	}
+	review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, reviewedHead); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "documentation.md"), []byte("documented\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "documentation.md")
+	gitCmd(t, dir, "commit", "-m", "document change")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	sctx.Run.HeadSHA = newHead
+	sctx.PRContextAfterStep = true
+	decision, err := guardPRContextWithSelection(sctx, types.StepDocument, selection)
+	if err != nil || decision.RestartFrom != "" {
+		t.Fatalf("forward document edit = %+v, %v", decision, err)
+	}
+	stored, err := sctx.DB.GetStepResult(review.ID)
+	if err != nil || stored.Status != types.StepStatusCompleted {
+		t.Fatalf("review rerun after document edit: %+v, %v", stored, err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != reviewedHead {
+		t.Fatalf("review anchor lost: %+v, %v", run, err)
+	}
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil || receipt.LocalHeadSHA != newHead {
+		t.Fatalf("new comparison not bound: %+v, %v", receipt, err)
 	}
 }

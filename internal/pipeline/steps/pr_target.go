@@ -76,6 +76,9 @@ func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsRea
 		if !samePRIdentity(owned, &facts.PR) {
 			return pipeline.PRTargetSelection{}, fmt.Errorf("recorded pull request %s has a different forge identity", owned)
 		}
+		if _, err := localHeadWithPRAncestry(sctx, facts.HeadSHA); err != nil {
+			return pipeline.PRTargetSelection{}, fmt.Errorf("recorded pull request %s: %w", owned, err)
+		}
 		selected.PRURL = facts.PR.URL
 		selected.ForgeHeadSHA = facts.HeadSHA
 		selected.TargetBranch = facts.BaseBranch
@@ -97,17 +100,35 @@ func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsRea
 	if err := validatePRFacts(facts, resolvedProvider(sctx), sourceRepo, branch); err != nil {
 		return pipeline.PRTargetSelection{}, fmt.Errorf("discovered pull request: %w", err)
 	}
-	localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	localHead, err := localHeadWithPRAncestry(sctx, facts.HeadSHA)
 	if err != nil {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("read local head before attaching pull request: %w", err)
+		return pipeline.PRTargetSelection{}, fmt.Errorf("discovered pull request %s: %w", facts.PR.URL, err)
 	}
 	if facts.HeadSHA != localHead {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("discovered pull request %s head %s differs from local head %s", facts.PR.URL, facts.HeadSHA, localHead)
+		// A fresh run may contain local commits that have not reached the
+		// existing PR yet. Its live base is still the comparison target, but
+		// the PR is not attached until Push updates its head and a later read
+		// proves the exact local revision is published.
+		selected.TargetBranch = facts.BaseBranch
+		return selected, nil
 	}
 	selected.PRURL = facts.PR.URL
 	selected.ForgeHeadSHA = facts.HeadSHA
 	selected.TargetBranch = facts.BaseBranch
 	return selected, nil
+}
+
+func localHeadWithPRAncestry(sctx *pipeline.StepContext, forgeHead string) (string, error) {
+	localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("read local head before attaching pull request: %w", err)
+	}
+	if forgeHead != localHead {
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", forgeHead, localHead); err != nil {
+			return "", fmt.Errorf("pull request head %s is not an ancestor of local head %s: %w", forgeHead, localHead, err)
+		}
+	}
+	return localHead, nil
 }
 
 func validatePRFacts(facts scm.PRFacts, provider scm.Provider, sourceRepo, branch string) error {

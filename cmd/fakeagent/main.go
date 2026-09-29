@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -87,6 +88,34 @@ type ghStubInvocation struct {
 
 func runGhForkPRStub(args []string) int {
 	recordGhStubInvocation(args)
+	if len(args) > 0 && args[0] == "api" {
+		for _, endpoint := range args {
+			if strings.HasPrefix(endpoint, "repos/") && strings.HasSuffix(endpoint, "/pulls") && hasArgValue(args, "-f", "state=open") {
+				fmt.Println("[[]]")
+				return 0
+			}
+			if strings.HasPrefix(endpoint, "repos/") && strings.HasSuffix(endpoint, "/pulls/99") {
+				targetRepo := strings.TrimSuffix(strings.TrimPrefix(endpoint, "repos/"), "/pulls/99")
+				head, base, _ := lastStubCreate(os.Getenv("FAKEAGENT_GH_LOG"), "pr")
+				branch := head
+				sourceRepo := targetRepo
+				if owner, ref, ok := strings.Cut(head, ":"); ok {
+					branch = ref
+					sourceRepo = owner + "/" + filepath.Base(targetRepo)
+				}
+				if base == "" {
+					base = "main"
+				}
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+					"number": 99, "html_url": "https://github.com/" + targetRepo + "/pull/99",
+					"state": "open", "merged": false,
+					"head": map[string]any{"ref": branch, "sha": stubGitHead(), "repo": map[string]any{"full_name": sourceRepo}},
+					"base": map[string]any{"ref": base},
+				})
+				return 0
+			}
+		}
+	}
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		return 0
@@ -167,6 +196,31 @@ func recordGhStubInvocation(args []string) {
 // model Gitea Actions runs at all.
 func runTeaStub(args []string) int {
 	recordTeaStubInvocation(args)
+	if len(args) >= 2 && args[0] == "api" {
+		endpoint := args[len(args)-1]
+		if strings.HasPrefix(endpoint, "/repos/") && strings.Contains(endpoint, "/pulls?state=open") {
+			fmt.Println("[]")
+			return 0
+		}
+		if strings.HasPrefix(endpoint, "/repos/") && strings.HasSuffix(endpoint, "/pulls/99") {
+			repo := strings.TrimSuffix(strings.TrimPrefix(endpoint, "/repos/"), "/pulls/99")
+			head, base, _ := lastStubCreate(os.Getenv("FAKEAGENT_TEA_LOG"), "pulls")
+			if base == "" {
+				base = "main"
+			}
+			host := os.Getenv("FAKEAGENT_TEA_HOST")
+			if host == "" {
+				host = "gitea.example.com"
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"number": 99, "html_url": "http://" + host + "/" + repo + "/pulls/99",
+				"state": "open", "merged": false,
+				"head": map[string]any{"ref": head, "sha": stubGitHead(), "repo": map[string]any{"full_name": repo}},
+				"base": map[string]any{"ref": base},
+			})
+			return 0
+		}
+	}
 
 	if len(args) >= 1 && args[0] == "api" && args[len(args)-1] == "/user" {
 		fmt.Println(`{"login":"e2e-tea-user"}`)
@@ -204,6 +258,34 @@ func runTeaStub(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "fakeagent tea: subcommand not implemented in e2e stub: %v\n", args)
 	return 1
+}
+
+func lastStubCreate(logPath, command string) (head, base, repo string) {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		var item struct {
+			Args []string `json:"args"`
+			Head string   `json:"head"`
+			Base string   `json:"base"`
+			Repo string   `json:"repo"`
+		}
+		if json.Unmarshal([]byte(line), &item) == nil && len(item.Args) >= 2 &&
+			item.Args[0] == command && item.Args[1] == "create" {
+			head, base, repo = item.Head, item.Base, item.Repo
+		}
+	}
+	return head, base, repo
+}
+
+func stubGitHead() string {
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 type teaStubInvocation struct {

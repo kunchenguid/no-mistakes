@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -66,12 +67,22 @@ func validateReviewFindingSupport(sctx *pipeline.StepContext, findings Findings,
 		switch item.Support.ClaimType {
 		case types.FindingClaimSource:
 			ref := item.Support.Source
-			if ref.HeadSHA != "" && ref.HeadSHA != reviewedHead {
+			sourceHead := reviewedHead
+			if ref.HeadSHA == sctx.PRContext.MergeBaseSHA && ref.HeadSHA != "" {
+				// Removed lines are absent from the reviewed head. The pinned
+				// merge base is the only earlier revision allowed as source proof.
+				sourceHead = ref.HeadSHA
+			} else if ref.HeadSHA != "" && ref.HeadSHA != reviewedHead {
 				markReviewSupportPending(item, false)
 				continue
 			}
-			if err := validateSourceQuoteAtHead(sctx, reviewedHead, ref); err != nil {
+			if err := validateSourceQuoteAtHead(sctx, sourceHead, ref); err != nil {
 				return findings, fmt.Errorf("review finding %d source support: %w", i, err)
+			}
+			if sourceHead != reviewedHead {
+				if err := validateRemovedSourceLine(sctx, sourceHead, reviewedHead, ref); err != nil {
+					return findings, fmt.Errorf("review finding %d source support: %w", i, err)
+				}
 			}
 		case types.FindingClaimTest, types.FindingClaimCI:
 			markReviewSupportPending(item, true)
@@ -80,6 +91,46 @@ func validateReviewFindingSupport(sctx *pipeline.StepContext, findings Findings,
 		}
 	}
 	return findings, nil
+}
+
+func validateRemovedSourceLine(sctx *pipeline.StepContext, base, head string, ref *types.FindingSourceSupport) error {
+	content, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "show", base+":"+ref.Path)
+	if err != nil {
+		return fmt.Errorf("read pinned merge-base source: %w", err)
+	}
+	lines := bytes.Split(content, []byte{'\n'})
+	if ref.Line < 1 || ref.Line > len(lines) {
+		return fmt.Errorf("merge-base source line does not exist")
+	}
+	line := strings.TrimSuffix(string(lines[ref.Line-1]), "\r")
+	patch, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--no-ext-diff", "--no-textconv", "--unified=0", base, head, "--", ref.Path)
+	if err != nil {
+		return fmt.Errorf("read removed source diff: %w", err)
+	}
+	hunkStart := regexp.MustCompile(`^@@ -(\d+)`)
+	oldLine := 0
+	inHunk := false
+	for _, patchLine := range strings.Split(string(patch), "\n") {
+		if match := hunkStart.FindStringSubmatch(patchLine); match != nil {
+			if _, err := fmt.Sscanf(match[1], "%d", &oldLine); err != nil {
+				return fmt.Errorf("unreadable removed source hunk")
+			}
+			inHunk = true
+			continue
+		}
+		if !inHunk || patchLine == "" {
+			continue
+		}
+		if strings.HasPrefix(patchLine, "-") {
+			if oldLine == ref.Line && patchLine[1:] == line {
+				return nil
+			}
+			oldLine++
+		} else if strings.HasPrefix(patchLine, " ") {
+			oldLine++
+		}
+	}
+	return fmt.Errorf("quoted merge-base line was not removed by the reviewed diff")
 }
 
 func markReviewSupportPending(item *Finding, ownerStepWillCheck bool) {

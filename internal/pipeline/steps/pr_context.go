@@ -18,6 +18,19 @@ import (
 // head changed by local pipeline work restarts at Review. The durable receipt
 // transaction revokes prior approval before this function asks for a restart.
 func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.PRContextDecision, error) {
+	if sctx != nil && sctx.PRContextAfterStep && step == types.StepPR &&
+		sctx.DB != nil && sctx.Run != nil {
+		// PRStep persists a newly created URL before returning its outcome.
+		// The executor checks the comparison before it copies that outcome to
+		// the in-memory run, so read the committed identity first.
+		fresh, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			return pipeline.PRContextDecision{}, err
+		}
+		if fresh != nil && fresh.PRURL != nil {
+			sctx.Run.PRURL = fresh.PRURL
+		}
+	}
 	if selected, ok := localOnlyPRTarget(sctx); ok {
 		return guardPRContextWithSelection(sctx, step, selected)
 	}
@@ -120,7 +133,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		return pipeline.PRContextDecision{}, fmt.Errorf("read local head for PR comparison: %w", err)
 	}
 	if sctx.Run.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
-		selection.PRURL != "" && selection.ForgeHeadSHA != localHead {
+		step.Order() >= types.StepCI.Order() && selection.PRURL != "" && selection.ForgeHeadSHA != localHead {
 		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s for external CI handoff", selection.ForgeHeadSHA, localHead)
 	}
 	mergeBase, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", targetSHA, localHead)
@@ -157,7 +170,26 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		(previous.PRURL != "" && previous.ForgeHeadSHA != candidate.ForgeHeadSHA) {
 		resetFrom = types.StepRebase
 	}
-	bound, err := sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, resetFrom)
+	forward := false
+	if previous != nil && sctx.PRContextAfterStep &&
+		previous.TargetBranch == candidate.TargetBranch && previous.TargetSHA == candidate.TargetSHA &&
+		previous.PRURL == candidate.PRURL && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
+		if step.Order() >= types.StepReview.Order() && step.Order() <= types.StepLint.Order() &&
+			previous.ForgeHeadSHA == candidate.ForgeHeadSHA && previous.LocalHeadSHA != localHead {
+			_, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", previous.LocalHeadSHA, localHead)
+			forward = err == nil
+		}
+		if step == types.StepPush && previous.LocalHeadSHA == localHead &&
+			candidate.ForgeHeadSHA == localHead {
+			forward = true
+		}
+	}
+	var bound db.PRContextBindResult
+	if forward {
+		bound, err = sctx.DB.AdvanceRunPRContext(sctx.Run.ID, candidate)
+	} else {
+		bound, err = sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, resetFrom)
+	}
 	if err != nil {
 		return pipeline.PRContextDecision{}, err
 	}
@@ -166,7 +198,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		sctx.Run.PRURL = &url
 	}
 	decision := pipeline.PRContextDecision{Target: selection}
-	if previous != nil && bound.Changed && !sameComparisonExceptNewPRIdentity(previous, candidate) {
+	if previous != nil && bound.Changed && !forward && !sameComparisonExceptNewPRIdentity(previous, candidate) {
 		if step.Order() >= resetFrom.Order() {
 			decision.RestartFrom = resetFrom
 		}

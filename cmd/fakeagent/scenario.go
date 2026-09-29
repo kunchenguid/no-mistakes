@@ -173,26 +173,13 @@ func (s *Scenario) MatchInDir(wd, prompt string) Action {
 // openers and are left alone.
 const reviewPromptMarker = "Review the code changes and return structured findings"
 
-// withReviewCoverage is the fixture-side stand-in for the coverage record a
-// real reviewer reports. The production Review step fails closed when a
-// clean round omits reviewed_paths (it parks for approval instead of
-// certifying an unread head), so a canned review response that does not
-// spell out reviewed_paths would park every e2e journey at the review gate.
-// A scenario that names reviewed_paths itself - partial, empty, or
-// fabricated - is passed through untouched so coverage tests can still
-// exercise the gate; only an absent field is filled, and only on a review
-// turn. The fill is the same set the step computes for that round: the
-// files changed between the prompt's base commit and the worktree, minus
-// the prompt's ignore patterns. This escape lives in the fake agent alone;
-// there is no production default that stands in for a missing record.
+// withReviewCoverage fills the coverage and source-reference boilerplate in
+// canned end-to-end reviewer responses. Explicit fixture values are never
+// replaced, so targeted invalid-evidence tests still exercise the gate.
+// Production Review has no such fill and rejects missing finding support.
 func withReviewCoverage(wd, prompt string, a Action) Action {
 	if !strings.Contains(prompt, reviewPromptMarker) || a.StructuredRaw != "" {
 		return a
-	}
-	if a.Structured != nil {
-		if _, present := a.Structured["reviewed_paths"]; present {
-			return a
-		}
 	}
 	paths, err := reviewCoverageForPrompt(wd, prompt)
 	if err != nil {
@@ -203,7 +190,49 @@ func withReviewCoverage(wd, prompt string, a Action) Action {
 	for k, v := range a.Structured {
 		structured[k] = v
 	}
-	structured["reviewed_paths"] = paths
+	if findings, ok := structured["findings"].([]any); ok {
+		copied := make([]any, len(findings))
+		copy(copied, findings)
+		for i, raw := range findings {
+			original, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			finding := make(map[string]any, len(original)+1)
+			for key, value := range original {
+				finding[key] = value
+			}
+			copied[i] = finding
+			if finding["support"] != nil {
+				continue
+			}
+			candidates := append([]string{}, paths...)
+			if file, ok := finding["file"].(string); ok && file != "" {
+				candidates = append([]string{file}, candidates...)
+			}
+			for _, file := range candidates {
+				content, readErr := os.ReadFile(filepath.Join(wd, file))
+				if readErr != nil || len(content) == 0 {
+					continue
+				}
+				lines := strings.Split(string(content), "\n")
+				line := 1
+				if specified, ok := finding["line"].(int); ok && specified > 0 && specified <= len(lines) {
+					line = specified
+				}
+				quote := strings.TrimSpace(lines[line-1])
+				if quote == "" {
+					continue
+				}
+				finding["support"] = map[string]any{"claim_type": "source", "source": map[string]any{"path": file, "line": line, "quote": quote}}
+				break
+			}
+		}
+		structured["findings"] = copied
+	}
+	if _, present := structured["reviewed_paths"]; !present {
+		structured["reviewed_paths"] = paths
+	}
 	a.Structured = structured
 	return a
 }

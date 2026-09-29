@@ -60,8 +60,21 @@ func (d *DB) PendingExternalCISupport(run *Run) ([]types.PendingCISupport, error
 	if err != nil {
 		return nil, err
 	}
-	if receipt == nil || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != receipt.LocalHeadSHA || run.HeadSHA != receipt.LocalHeadSHA {
+	if receipt == nil || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA == "" || run.HeadSHA != receipt.LocalHeadSHA {
 		return nil, fmt.Errorf("pending Review CI support has no current approved PR comparison")
+	}
+	rounds, err := d.GetRoundsByStep(review.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read approved Review rounds: %w", err)
+	}
+	approvedRoundHead := ""
+	for _, round := range rounds {
+		if round.ReviewedHeadSHA != nil {
+			approvedRoundHead = *round.ReviewedHeadSHA
+		}
+	}
+	if approvedRoundHead == "" || approvedRoundHead != *run.ReviewApprovedHeadSHA {
+		return nil, fmt.Errorf("pending Review CI support has no matching approved Review round")
 	}
 	result := make([]types.PendingCISupport, 0, len(claims))
 	for _, claim := range claims {
