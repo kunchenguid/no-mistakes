@@ -49,19 +49,19 @@ fi
 FILENAME="no-mistakes-${VERSION}-${OS}-${ARCH}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${FILENAME}"
 
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+INSTALL_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/no-mistakes.XXXXXXXX")"
+trap 'rm -rf "$INSTALL_TMP_DIR"' EXIT
 
 echo "Downloading no-mistakes ${VERSION} for ${OS}/${ARCH}..."
-curl -fsSL "$URL" -o "${TMPDIR}/${FILENAME}"
-tar xzf "${TMPDIR}/${FILENAME}" -C "$TMPDIR"
+curl -fsSL "$URL" -o "${INSTALL_TMP_DIR}/${FILENAME}"
+tar xzf "${INSTALL_TMP_DIR}/${FILENAME}" -C "$INSTALL_TMP_DIR"
 
 if ! mkdir -p "$INSTALL_DIR"; then
   echo "Could not create install directory: $INSTALL_DIR"
   exit 1
 fi
 
-mv "${TMPDIR}/no-mistakes" "$BIN_PATH"
+mv "${INSTALL_TMP_DIR}/no-mistakes" "$BIN_PATH"
 chmod 755 "$BIN_PATH" 2>/dev/null || true
 
 resolve_path() {
