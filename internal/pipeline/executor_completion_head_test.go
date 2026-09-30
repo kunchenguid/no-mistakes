@@ -36,7 +36,7 @@ func completionWorktree(t *testing.T) (string, string) {
 }
 
 func TestExecutorCompletionRequiresExactCleanReceiptHead(t *testing.T) {
-	for _, scenario := range []string{"current", "descendant", "dirty", "missing-receipt"} {
+	for _, scenario := range []string{"current", "descendant", "dirty", "missing-receipt", "missing-head", "unavailable-head"} {
 		t.Run(scenario, func(t *testing.T) {
 			database, p, run, repo := setupTest(t)
 			workDir, head := completionWorktree(t)
@@ -60,6 +60,17 @@ func TestExecutorCompletionRequiresExactCleanReceiptHead(t *testing.T) {
 					if err := git.CommitAll(context.Background(), workDir, "second"); err != nil {
 						t.Fatal(err)
 					}
+				}
+			}
+			if scenario == "missing-head" {
+				run.HeadSHA = ""
+				if err := database.UpdateRunHeadSHA(run.ID, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "unavailable-head" {
+				if err := os.RemoveAll(filepath.Join(workDir, ".git")); err != nil {
+					t.Fatal(err)
 				}
 			}
 			events := &eventCollector{}

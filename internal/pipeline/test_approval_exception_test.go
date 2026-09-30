@@ -42,7 +42,7 @@ func testApprovalOfParkedVerdict(t *testing.T, verdict string, exception, recove
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	if recovered {
 		if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 			t.Fatal(err)
@@ -147,7 +147,8 @@ func TestExecutor_UnvalidatedTestWorkRefusesApprovalUntilFixValidatesIt(t *testi
 	}
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Execute(context.Background(), run, repo, completionDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
 
 	err := exec.RespondWithOverrides(types.StepTest, types.ActionApprove, nil, nil, nil, "ship it anyway")

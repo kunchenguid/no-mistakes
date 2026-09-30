@@ -12,7 +12,7 @@ import (
 
 func TestExecutor_ContextCancellation(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// Step that blocks until context is cancelled
 	step := &adaptiveCallStep{
@@ -52,7 +52,7 @@ func TestExecutor_ContextCancellation(t *testing.T) {
 
 func TestExecutor_ContextCancelCause(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// Two steps: first passes, second blocks until context is cancelled.
 	// This tests that the cause propagates even when detected between steps.
@@ -105,7 +105,7 @@ func TestExecutor_ContextCancelCause(t *testing.T) {
 
 func TestExecutor_ContextCancelCauseBetweenSteps(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// First step passes and signals, cancel fires before second step starts.
 	started := make(chan struct{})

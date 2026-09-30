@@ -16,7 +16,7 @@ func TestExecutor_RecordsCompletedReviewApprovedHead(t *testing.T) {
 	step := &mockStep{name: types.StepReview, outcome: &StepOutcome{ReviewApprovedHeadSHA: reviewedHead}}
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
 
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := database.GetRun(run.ID)
@@ -45,7 +45,7 @@ func TestExecutor_FullRereviewReplacesApprovalWithoutAuthorizingParkedRound(t *t
 		return &StepOutcome{ReviewedPaths: []string{"main.go"}, ReviewablePaths: []string{"main.go"}, ReviewApprovedHeadSHA: rereviewedHead}, nil
 	}}
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
@@ -94,7 +94,7 @@ func TestExecutor_ParkedOrFailedReviewDoesNotAdvanceExistingApproval(t *testing.
 			ReviewApprovedHeadSHA: unapprovedHead,
 		}}
 		exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
-		workDir := t.TempDir()
+		workDir := completionFixture(t, database, run)
 		done := make(chan error, 1)
 		go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 		waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
@@ -119,7 +119,7 @@ func TestExecutor_ParkedOrFailedReviewDoesNotAdvanceExistingApproval(t *testing.
 		}
 		step := newFailStep(types.StepReview, errors.New("review agent failed"))
 		exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
-		if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		if err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err == nil {
 			t.Fatal("expected failed review")
 		}
 		got, _ := database.GetRun(run.ID)

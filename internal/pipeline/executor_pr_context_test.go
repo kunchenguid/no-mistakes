@@ -35,7 +35,7 @@ func TestExecutorResolvesPRTargetBeforeRebaseAndCarriesItToReview(t *testing.T) 
 		observed = append(observed, name)
 		return PRContextDecision{Target: PRTargetSelection{TargetBranch: "develop"}}, nil
 	})
-	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(observed, []types.StepName{types.StepRebase, types.StepRebase, types.StepReview, types.StepReview}) {
@@ -77,7 +77,8 @@ func TestExecutorParkedApprovalRevalidatesPRTargetBeforeFinalStepCompletes(t *te
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- executor.Execute(ctx, run, repo, t.TempDir()) }()
+	workDir := completionFixture(t, database, run)
+	go func() { done <- executor.Execute(ctx, run, repo, workDir) }()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if err := executor.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
@@ -175,7 +176,8 @@ func TestExecutorSkippedEvidenceOwnerCannotCompletePendingClaim(t *testing.T) {
 
 func TestExecutorCurrentOwnerProofCompletesPendingTestClaim(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	const head = "1111111111111111111111111111111111111111"
+	workDir := completionFixture(t, database, run)
+	head := run.HeadSHA
 	const target = "2222222222222222222222222222222222222222"
 	const digest = "3333333333333333333333333333333333333333333333333333333333333333"
 	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
@@ -230,7 +232,7 @@ func TestExecutorCurrentOwnerProofCompletesPendingTestClaim(t *testing.T) {
 			return &StepOutcome{Findings: string(resolvedJSON)}, nil
 		}},
 	}, nil)
-	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -259,12 +261,12 @@ func TestExecutorUnresolvedTestClaimStopsBeforePublication(t *testing.T) {
 
 func TestExecutorExplicitExternalCIOwnerCarriesPendingClaim(t *testing.T) {
 	database, p, baseRun, repo := setupTest(t)
-	const head = "1111111111111111111111111111111111111111"
-	run, err := database.InsertRunWithExternalCIOwner(repo.ID, "feature-external-ci", head, baseRun.BaseSHA,
+	run, err := database.InsertRunWithExternalCIOwner(repo.ID, "feature-external-ci", baseRun.HeadSHA, baseRun.BaseSHA,
 		nil, "", "", "", "develop", false, false, types.ExternalCIOwnerControllerShipPR, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	workDir := completionFixture(t, database, run)
 	_, err = database.BindRunPRContext(run.ID, db.PRContextCandidate{
 		SourceRepo: "acme/repo", SourceBranch: "feature", LocalHeadSHA: run.HeadSHA, TargetBranch: "develop",
 		TargetSHA:    "2222222222222222222222222222222222222222",
@@ -282,7 +284,7 @@ func TestExecutorExplicitExternalCIOwnerCarriesPendingClaim(t *testing.T) {
 		newPassStep(types.StepPush), newPassStep(types.StepPR), newPassStep(types.StepCI),
 	}, nil)
 	executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR, types.StepCI})
-	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("explicit external CI handoff was refused: %v", err)
 	}
 	current, err := database.GetRun(run.ID)
@@ -492,6 +494,7 @@ func TestExecutorTestSupportRejectsPostReviewDocumentCommitAtCompletion(t *testi
 
 func TestExecutorRecoveredApprovalRevalidatesMovedPRTargetBeforeUsingParkedVerdict(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +562,7 @@ func TestExecutorRecoveredApprovalRevalidatesMovedPRTargetBeforeUsingParkedVerdi
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := executor.Resume(ctx, run, repo, t.TempDir()); err != nil {
+	if err := executor.Resume(ctx, run, repo, workDir); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(observed, []types.StepName{types.StepRebase, types.StepReview}) {

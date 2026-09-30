@@ -23,7 +23,7 @@ func TestExecutorAutomaticSkipReasonRedactsCredentials(t *testing.T) {
 		name:    types.StepCI,
 		outcome: &StepOutcome{Skipped: true, SkipReason: "unavailable https://operator:secret@forge.example/repo"},
 	}}, nil)
-	if err := executor.Execute(context.Background(), r, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), r, repo, completionFixture(t, database, r)); err != nil {
 		t.Fatal(err)
 	}
 	results, err := database.GetStepsByRun(r.ID)
@@ -44,7 +44,7 @@ func TestExecutorAutomaticSkipReasonRedactsCredentials(t *testing.T) {
 // the IPC event contract that the TUI subscribes to.
 func TestExecutor_StepLifecycleEvents(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	stepNames := []types.StepName{types.StepReview, types.StepTest, types.StepLint}
 	steps := make([]Step, len(stepNames))
@@ -71,7 +71,7 @@ func TestExecutor_StepLifecycleEvents(t *testing.T) {
 
 func TestExecutor_SuccessfulStepsDoNotEmitTelemetry(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	recorder := &telemetryRecorder{}
 	restore := telemetry.SetDefaultForTesting(recorder)
@@ -93,7 +93,7 @@ func TestExecutor_SuccessfulStepsDoNotEmitTelemetry(t *testing.T) {
 
 func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var order []types.StepName
 	pass := func(name types.StepName) Step {
@@ -194,7 +194,7 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 
 func TestExecutor_RevalidationClearsReviewCarry(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	reviewCalls := 0
 	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
@@ -238,7 +238,7 @@ func TestExecutor_RevalidationClearsReviewCarry(t *testing.T) {
 
 func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	reviewCalls := 0
 	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
@@ -291,6 +291,7 @@ func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 
 func TestExecutor_RecoveredRevalidationPreservesSkippedStep(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	review := newPassStep(types.StepReview)
 	push := newPassStep(types.StepPush)
 	steps := []Step{review, push}
@@ -309,7 +310,8 @@ func TestExecutor_RecoveredRevalidationPreservesSkippedStep(t *testing.T) {
 	exec := NewExecutor(database, p, nil, nil, steps, nil)
 	exec.initializeRunScopes(run.ID)
 
-	if err := exec.executeRecoveredRemainder(context.Background(), run, repo, t.TempDir(), t.TempDir(), 0, true); err != nil {
+	exec.workDir = workDir
+	if err := exec.executeRecoveredRemainder(context.Background(), run, repo, workDir, t.TempDir(), 0, true); err != nil {
 		t.Fatalf("executeRecoveredRemainder() error = %v", err)
 	}
 	if got := review.callCount(); got != 1 {
@@ -337,7 +339,7 @@ func roundNumbers(rounds []*db.StepRound) []int {
 
 func TestExecutor_SkippedStepsDoNotEmitTelemetry(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	recorder := &telemetryRecorder{}
 	restore := telemetry.SetDefaultForTesting(recorder)
@@ -363,7 +365,7 @@ func TestExecutor_SkippedStepsDoNotEmitTelemetry(t *testing.T) {
 
 func TestExecutor_RunEventStatusCorrectOnSuccess(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	exec := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, nil)
 	events := collectEvents(exec)
@@ -402,7 +404,7 @@ func TestExecutor_RunEventStatusCorrectOnSuccess(t *testing.T) {
 
 func TestExecutor_RunEventStatusCorrectOnFailure(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	exec := NewExecutor(database, p, nil, nil, []Step{newFailStep(types.StepReview, fmt.Errorf("boom"))}, nil)
 	events := collectEvents(exec)
@@ -428,7 +430,7 @@ func TestExecutor_RunEventStatusCorrectOnFailure(t *testing.T) {
 
 func TestExecutor_StepError_FailsRun(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	steps := []Step{
 		newPassStep(types.StepReview),
@@ -468,7 +470,7 @@ func TestExecutor_OutOfMemoryFailureReasonKeepsRestorationDetail(t *testing.T) {
 	)
 
 	exec := NewExecutor(database, p, nil, nil, []Step{newFailStep(types.StepTest, stepErr)}, nil)
-	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -487,7 +489,7 @@ func TestExecutor_OutOfMemoryFailureReasonKeepsRestorationDetail(t *testing.T) {
 
 func TestExecutor_FailedStepEmitsTelemetry(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	recorder := &telemetryRecorder{}
 	restore := telemetry.SetDefaultForTesting(recorder)
@@ -512,7 +514,7 @@ func TestExecutor_FailedStepEmitsTelemetry(t *testing.T) {
 
 func TestExecutor_FailedStepRecordsDuration(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	steps := []Step{
 		newFailStep(types.StepReview, fmt.Errorf("review crashed")),
@@ -534,7 +536,7 @@ func TestExecutor_FailedStepRecordsDuration(t *testing.T) {
 
 func TestExecutor_EmptySteps(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	exec := NewExecutor(database, p, nil, nil, nil, nil)
 
@@ -551,7 +553,7 @@ func TestExecutor_EmptySteps(t *testing.T) {
 
 func TestExecutor_StepResultUsesDurationOverride(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &mockStep{
 		name: types.StepReview,
@@ -578,7 +580,7 @@ func TestExecutor_StepResultUsesDurationOverride(t *testing.T) {
 
 func TestExecutor_StepOutcomePRURL_EmitsRunUpdated(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	prURL := "https://github.com/test/repo/pull/99"
 	prStep := &mockStep{
@@ -619,7 +621,7 @@ func TestExecutor_StepOutcomePRURL_EmitsRunUpdated(t *testing.T) {
 
 func TestExecutor_SkippedOutcome_EmitsSkippedEvent(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &mockStep{
 		name:    types.StepPR,
@@ -648,7 +650,7 @@ func TestExecutor_SkippedOutcome_EmitsSkippedEvent(t *testing.T) {
 
 func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	review := newPassStep(types.StepReview)
 	testStep := newPassStep(types.StepTest)

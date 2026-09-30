@@ -14,7 +14,7 @@ import (
 
 func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// Config with auto-fix enabled for review (max 3 attempts)
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
@@ -61,7 +61,7 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 
 func TestExecutor_AutoFixCarriesUnselectedFindingsSeparately(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	calls := 0
 	step := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
 		calls++
@@ -94,7 +94,7 @@ func TestExecutor_AutoFixCarriesUnselectedFindingsSeparately(t *testing.T) {
 
 func TestExecutor_PersistsEffectiveAutoFixLimit(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 2}}
 
 	step := &adaptiveCallStep{
@@ -123,7 +123,7 @@ func TestExecutor_PersistsEffectiveAutoFixLimit(t *testing.T) {
 
 func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// Config with auto-fix limited to 2 attempts for lint
 	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 2}}
@@ -161,7 +161,7 @@ func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 
 func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// Config with auto-fix disabled for review
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 0}}
@@ -194,7 +194,7 @@ func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
 
 func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// nil config - executor should not panic and should use no auto-fix (backwards compat)
 	callCount := 0
@@ -225,7 +225,7 @@ func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {
 
 func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 1}}
 
@@ -262,7 +262,7 @@ func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
 
 func TestExecutor_DoesNotAutoFixManualApprovalOutcome(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	cfg := &config.Config{AutoFix: config.AutoFix{Test: 3}}
 
@@ -295,7 +295,7 @@ func TestExecutor_DoesNotAutoFixManualApprovalOutcome(t *testing.T) {
 
 func TestExecutor_AutoFixInfoFindings(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
 
@@ -334,7 +334,7 @@ func TestExecutor_AutoFixInfoFindings(t *testing.T) {
 
 func TestExecutor_AutoFixInfoFindingNoOpParksAfterBudget(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 1}}
 
 	callCount := 0
@@ -373,7 +373,7 @@ func TestExecutor_AutoFixInfoFindingNoOpParksAfterBudget(t *testing.T) {
 
 func TestExecutor_AutoFixSkipsHumanReviewFindings(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
 
@@ -407,7 +407,7 @@ func TestExecutor_AutoFixSkipsHumanReviewFindings(t *testing.T) {
 
 func TestExecutor_HumanReviewFindingsRequireApprovalWithoutNeedsApprovalFlag(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -431,7 +431,7 @@ func TestExecutor_HumanReviewFindingsRequireApprovalWithoutNeedsApprovalFlag(t *
 
 func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
 
@@ -488,7 +488,7 @@ func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 
 func TestExecutor_ParkedStepReleasesLogFileAfterCancel(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 0}}
 	step := &adaptiveCallStep{
 		name: types.StepLint,

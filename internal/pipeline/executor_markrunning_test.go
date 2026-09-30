@@ -15,7 +15,7 @@ import (
 // stream both read running again before Execute returns.
 func TestExecutor_MarkRunningReturnsAFixingStepToRunning(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var statuses []string
 	onEvent := func(event ipc.Event) {

@@ -77,10 +77,11 @@ func (*terminalObservationReconciler) ReconcileApprovalGate(sctx *StepContext) (
 
 func TestExecutorReconciledTerminalCICollectsCurrentSupport(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	step := &terminalObservationReconciler{}
 	executor := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	executor.SetGateReconcileTimings(time.Millisecond, time.Second)
-	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatal(err)
 	}
 	if step.calls != 2 {
@@ -94,6 +95,7 @@ func TestExecutorReconciledTerminalCICollectsCurrentSupport(t *testing.T) {
 
 func TestExecutorRecoveredTerminalCIGateCollectsCurrentSupport(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +125,7 @@ func TestExecutorRecoveredTerminalCIGateCollectsCurrentSupport(t *testing.T) {
 	}
 	step := &terminalObservationReconciler{calls: 1}
 	executor := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-	if err := executor.Resume(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Resume(context.Background(), run, repo, workDir); err != nil {
 		t.Fatal(err)
 	}
 	if step.calls != 2 {
@@ -221,6 +223,7 @@ func TestExecutorMergedHookRunsOnlyAfterDurableCompletion(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			database, p, run, repo := setupTest(t)
+			workDir := completionFixture(t, database, run)
 			hookCalls := 0
 			executor := NewExecutor(database, p, nil, nil, []Step{
 				&adaptiveCallStep{name: types.StepCI, fn: func(c *StepContext) (*StepOutcome, error) {
@@ -249,7 +252,7 @@ func TestExecutorMergedHookRunsOnlyAfterDurableCompletion(t *testing.T) {
 				}
 				return PRContextDecision{Target: PRTargetSelection{TargetBranch: "main"}}, nil
 			})
-			err := executor.Execute(context.Background(), run, repo, t.TempDir())
+			err := executor.Execute(context.Background(), run, repo, workDir)
 			expected := 1
 			if reject {
 				expected = 0

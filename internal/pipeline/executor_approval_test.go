@@ -14,7 +14,7 @@ import (
 
 func TestExecutor_ApprovalFix(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// Step that needs approval on first call, passes on second
 	callCount := 0
@@ -71,7 +71,7 @@ func TestExecutor_ApprovalFix(t *testing.T) {
 
 func TestExecutor_AwaitingAgentMarkerSetOnGateClearedOnRespond(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -215,7 +215,8 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	go func() {
-		done <- exec.Resume(context.Background(), run, repo, t.TempDir())
+		completionDir := completionFixture(t, database, run)
+		done <- exec.Resume(context.Background(), run, repo, completionDir)
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -326,7 +327,7 @@ func TestExecutor_ResumePromotesDurableReviewedCandidateOnApproval(t *testing.T)
 	}
 
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{newApprovalStep(types.StepReview, findings)}, nil)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	done := make(chan error, 1)
 	go func() { done <- exec.Resume(context.Background(), run, repo, workDir) }()
 	deadline := time.Now().Add(5 * time.Second)
@@ -353,7 +354,7 @@ func TestExecutor_ResumePromotesDurableReviewedCandidateOnApproval(t *testing.T)
 
 func TestExecutor_CustomGateTelemetryRedactsLabel(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	stepName := types.CustomGateStepName(types.StepReview, "private-policy")
 
 	recorder := &telemetryRecorder{}
@@ -433,7 +434,7 @@ func TestExecutor_CustomGateTelemetryRedactsLabel(t *testing.T) {
 
 func TestExecutor_TracksAutoFixTelemetry(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	recorder := &telemetryRecorder{}
 	restore := telemetry.SetDefaultForTesting(recorder)
