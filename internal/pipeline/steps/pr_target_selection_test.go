@@ -225,7 +225,7 @@ func TestFreshOwnedPRRetargetIsReadBackAndConsumed(t *testing.T) {
 	sctx.Run.PRBaseBranch = strptr("release")
 	sctx.Run.PRBaseBranchRequested = true
 	reader := &fakePRFactsReader{read: facts}
-	selected, err := resolveAndApplyPRTarget(sctx, reader, reader)
+	selected, _, err := resolveAndApplyPRTarget(sctx, reader, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestFreshRetargetWaitsForUnpublishedPRToAttach(t *testing.T) {
 	facts.HeadSHA = sctx.Run.BaseSHA
 	reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
 
-	selection, err := resolveAndApplyPRTarget(sctx, reader, reader)
+	selection, _, err := resolveAndApplyPRTarget(sctx, reader, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,12 +256,63 @@ func TestFreshRetargetWaitsForUnpublishedPRToAttach(t *testing.T) {
 	sctx.Run.PRURL = &facts.PR.URL
 	facts.HeadSHA = sctx.Run.HeadSHA
 	reader.read = facts
-	selection, err = resolveAndApplyPRTarget(sctx, reader, reader)
+	selection, _, err = resolveAndApplyPRTarget(sctx, reader, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if selection.TargetBranch != "release" || len(reader.retargets) != 1 || reader.retargets[0] != "release" || sctx.Run.PRBaseBranchRequested {
 		t.Fatalf("attached selection=%+v retargets=%v requested=%v", selection, reader.retargets, sctx.Run.PRBaseBranchRequested)
+	}
+}
+
+func TestFreshRetargetAfterUnpublishedPRAttachmentRestartsFromRebase(t *testing.T) {
+	sctx, facts := selectionFixture(t)
+	sctx.Run.PRBaseBranch = strptr("release")
+	sctx.Run.PRBaseBranchRequested = true
+	ensureLocalBranch(t, sctx.WorkDir, "develop", sctx.Run.BaseSHA)
+	ensureLocalBranch(t, sctx.WorkDir, "release", sctx.Run.BaseSHA)
+
+	facts.HeadSHA = sctx.Run.BaseSHA
+	reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
+	selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, reader)
+	if err != nil || freshRetarget || selection.PRURL != "" {
+		t.Fatalf("unpublished selection=%+v fresh=%v err=%v", selection, freshRetarget, err)
+	}
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, freshRetarget); err != nil {
+		t.Fatal(err)
+	}
+
+	facts.HeadSHA = sctx.Run.HeadSHA
+	attached := pipeline.PRTargetSelection{
+		PRURL: facts.PR.URL, SourceRepo: facts.SourceRepository, SourceBranch: facts.SourceBranch,
+		ForgeHeadSHA: facts.HeadSHA, TargetBranch: facts.BaseBranch,
+	}
+	if _, err := guardPRContextWithSelection(sctx, types.StepPush, attached, false); err != nil {
+		t.Fatal(err)
+	}
+	if sctx.Run.PRURL == nil || *sctx.Run.PRURL != facts.PR.URL {
+		t.Fatalf("attached run PR URL = %v", sctx.Run.PRURL)
+	}
+
+	reader.read = facts
+	selection, freshRetarget, err = resolveAndApplyPRTarget(sctx, reader, reader)
+	if err != nil || !freshRetarget || selection.TargetBranch != "release" {
+		t.Fatalf("retargeted selection=%+v fresh=%v err=%v", selection, freshRetarget, err)
+	}
+	decision, err := guardPRContextWithSelection(sctx, types.StepPR, selection, freshRetarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.RestartFrom != types.StepRebase {
+		t.Fatalf("restart = %q, want %q", decision.RestartFrom, types.StepRebase)
+	}
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil || receipt == nil || receipt.TargetBranch != "release" {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	stored, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || stored.PRBaseBranchRequested {
+		t.Fatalf("retarget request remained: run=%+v err=%v", stored, err)
 	}
 }
 
@@ -274,7 +325,7 @@ func TestInheritedOrUnownedPRBaseNeverRetargets(t *testing.T) {
 		if owned {
 			sctx.Run.PRURL = &facts.PR.URL
 		}
-		selected, err := resolveAndApplyPRTarget(sctx, reader, reader)
+		selected, _, err := resolveAndApplyPRTarget(sctx, reader, reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -306,7 +357,7 @@ func TestFreshRetargetRejectsMovedHeadAndUnsupportedProvider(t *testing.T) {
 			if tc.retargeter {
 				retargeter = reader
 			}
-			if _, err := resolveAndApplyPRTarget(sctx, reader, retargeter); err == nil {
+			if _, _, err := resolveAndApplyPRTarget(sctx, reader, retargeter); err == nil {
 				t.Fatal("expected fresh retarget to fail closed")
 			}
 			if len(reader.retargets) != 0 || !sctx.Run.PRBaseBranchRequested {

@@ -19,7 +19,7 @@ func TestPRContextGuardExternalCIOwnerRejectsDifferentPRHead(t *testing.T) {
 		PRURL: "https://github.com/example/repo/pull/7", TargetBranch: "main",
 		ForgeHeadSHA: strings.Repeat("a", 40),
 	}
-	if _, err := guardPRContextWithSelection(sctx, types.StepCI, selection); err == nil || !strings.Contains(err.Error(), "differs from local head") {
+	if _, err := guardPRContextWithSelection(sctx, types.StepCI, selection, false); err == nil || !strings.Contains(err.Error(), "differs from local head") {
 		t.Fatalf("guard error = %v, want exact PR head refusal", err)
 	}
 }
@@ -29,7 +29,7 @@ func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	ensureLocalBranch(t, dir, "develop", mainSHA)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, mainSHA, headSHA, config.Commands{})
 	selection := pipeline.PRTargetSelection{TargetBranch: "develop"}
-	first, err := guardPRContextWithSelection(sctx, types.StepRebase, selection)
+	first, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false)
 	if err != nil || first.RestartFrom != "" {
 		t.Fatalf("first context = %+v, %v", first, err)
 	}
@@ -54,7 +54,7 @@ func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	gitCmd(t, dir, "add", "target-move.txt")
 	gitCmd(t, dir, "commit", "-m", "move target")
 	gitCmd(t, dir, "checkout", "feature")
-	_, err = guardPRContextWithSelection(sctx, types.StepTest, selection)
+	_, err = guardPRContextWithSelection(sctx, types.StepTest, selection, false)
 	if err == nil || !strings.Contains(err.Error(), "start a new run") {
 		t.Fatalf("target movement error = %v, want a new run", err)
 	}
@@ -72,7 +72,7 @@ func TestPRContextGuardAdvancesAfterDocumentEditWithoutRerunningReview(t *testin
 	dir, base, reviewedHead := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, reviewedHead, config.Commands{})
 	selection := pipeline.PRTargetSelection{TargetBranch: "main"}
-	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection); err != nil {
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
 		t.Fatal(err)
 	}
 	review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
@@ -93,7 +93,7 @@ func TestPRContextGuardAdvancesAfterDocumentEditWithoutRerunningReview(t *testin
 	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
 	sctx.Run.HeadSHA = newHead
 	sctx.PRContextAfterStep = true
-	decision, err := guardPRContextWithSelection(sctx, types.StepDocument, selection)
+	decision, err := guardPRContextWithSelection(sctx, types.StepDocument, selection, false)
 	if err != nil || decision.RestartFrom != "" {
 		t.Fatalf("forward document edit = %+v, %v", decision, err)
 	}

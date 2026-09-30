@@ -33,7 +33,7 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 		}
 	}
 	if selected, ok := localOnlyPRTarget(sctx); ok {
-		return guardPRContextWithSelection(sctx, step, selected)
+		return guardPRContextWithSelection(sctx, step, selected, false)
 	}
 	host, reason := buildHost(sctx, resolvedProvider(sctx))
 	if host == nil {
@@ -47,69 +47,71 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 		return pipeline.PRContextDecision{}, fmt.Errorf("provider cannot read complete pull request facts")
 	}
 	retargeter, _ := host.(scm.PRBaseRetargeter)
-	selection, err := resolveAndApplyPRTarget(sctx, reader, retargeter)
+	selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, retargeter)
 	if err != nil {
 		return pipeline.PRContextDecision{}, err
 	}
-	return guardPRContextWithSelection(sctx, step, selection)
+	return guardPRContextWithSelection(sctx, step, selection, freshRetarget)
 }
 
 // A per-run flag records a fresh explicit --base-branch request separately
 // from an inherited target. It is consumed exactly once: a later forge-side
 // retarget remains authoritative instead of being undone at every boundary.
-func resolveAndApplyPRTarget(sctx *pipeline.StepContext, reader scm.PRFactsReader, retargeter scm.PRBaseRetargeter) (pipeline.PRTargetSelection, error) {
+func resolveAndApplyPRTarget(sctx *pipeline.StepContext, reader scm.PRFactsReader, retargeter scm.PRBaseRetargeter) (pipeline.PRTargetSelection, bool, error) {
 	selection, err := resolvePRTargetWithReader(sctx, reader)
 	if err != nil || !sctx.Run.PRBaseBranchRequested {
-		return selection, err
+		return selection, false, err
 	}
 	if sctx.DB == nil {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("fresh PR retarget requires durable run state")
+		return pipeline.PRTargetSelection{}, false, fmt.Errorf("fresh PR retarget requires durable run state")
 	}
 	// An unowned PR discovered by source/head is not mutation authority.
 	// A new run's --base-branch remains a prospective target only.
 	if runPRURL(sctx) == "" {
-		return selection, nil
+		return selection, false, nil
 	}
 	if sctx.Run.PRBaseBranch == nil {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("fresh PR retarget has no requested branch")
+		return pipeline.PRTargetSelection{}, false, fmt.Errorf("fresh PR retarget has no requested branch")
 	}
 	requested, err := ValidateRunPRBaseBranchName(*sctx.Run.PRBaseBranch)
 	if err != nil {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("invalid fresh PR retarget branch: %w", err)
+		return pipeline.PRTargetSelection{}, false, fmt.Errorf("invalid fresh PR retarget branch: %w", err)
 	}
 	if requested == "" {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("fresh PR retarget branch is empty")
+		return pipeline.PRTargetSelection{}, false, fmt.Errorf("fresh PR retarget branch is empty")
 	}
 	localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 	if err != nil {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("read local head before PR retarget: %w", err)
+		return pipeline.PRTargetSelection{}, false, fmt.Errorf("read local head before PR retarget: %w", err)
 	}
 	if selection.ForgeHeadSHA != localHead {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("recorded pull request head differs from local head before retarget")
+		return pipeline.PRTargetSelection{}, false, fmt.Errorf("recorded pull request head differs from local head before retarget")
 	}
+	freshRetarget := false
 	if selection.TargetBranch != requested {
 		if retargeter == nil {
-			return pipeline.PRTargetSelection{}, fmt.Errorf("provider cannot retarget recorded pull request to %s", requested)
+			return pipeline.PRTargetSelection{}, false, fmt.Errorf("provider cannot retarget recorded pull request to %s", requested)
 		}
 		if err := retargeter.SetPRBaseBranch(sctx.Ctx, prFromOwnedURL(selection.PRURL), requested); err != nil {
-			return pipeline.PRTargetSelection{}, fmt.Errorf("retarget recorded pull request to %s: %w", requested, err)
+			return pipeline.PRTargetSelection{}, false, fmt.Errorf("retarget recorded pull request to %s: %w", requested, err)
 		}
 		selection, err = resolvePRTargetWithReader(sctx, reader)
 		if err != nil {
-			return pipeline.PRTargetSelection{}, fmt.Errorf("read back retargeted pull request: %w", err)
+			return pipeline.PRTargetSelection{}, false, fmt.Errorf("read back retargeted pull request: %w", err)
 		}
 		if selection.TargetBranch != requested || selection.ForgeHeadSHA != localHead {
-			return pipeline.PRTargetSelection{}, fmt.Errorf("retargeted pull request base or head differs on read-back")
+			return pipeline.PRTargetSelection{}, false, fmt.Errorf("retargeted pull request base or head differs on read-back")
 		}
+		freshRetarget = true
 	}
 	if err := sctx.DB.ConsumePRBaseBranchRequest(sctx.Run.ID); err != nil {
-		return pipeline.PRTargetSelection{}, fmt.Errorf("consume fresh PR retarget request: %w", err)
+		return pipeline.PRTargetSelection{}, false, fmt.Errorf("consume fresh PR retarget request: %w", err)
 	}
 	sctx.Run.PRBaseBranchRequested = false
-	return selection, nil
+	return selection, freshRetarget, nil
 }
 
-func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName, selection pipeline.PRTargetSelection) (pipeline.PRContextDecision, error) {
+func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName, selection pipeline.PRTargetSelection, freshRetarget bool) (pipeline.PRContextDecision, error) {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil || sctx.Repo == nil {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR context requires a run, repository, and database")
 	}
@@ -185,7 +187,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 			forward = true
 		}
 	}
-	if previous != nil && previous.PRContextCandidate != candidate && !forward &&
+	if previous != nil && previous.PRContextCandidate != candidate && !forward && !freshRetarget &&
 		!sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() > resetFrom.Order() {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed after %s; start a new run for the current target and head", resetFrom)
 	}
