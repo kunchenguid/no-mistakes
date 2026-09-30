@@ -177,6 +177,9 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if step == types.StepPR && selection.ForgeHeadSHA != "" && selection.ForgeHeadSHA != localHead {
 		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s before PR publication", selection.ForgeHeadSHA, localHead)
 	}
+	if step == types.StepPR && selection.ForgeHeadSHA != "" && selection.ForgeHeadSHA != localHead {
+		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s before PR publication", selection.ForgeHeadSHA, localHead)
+	}
 	if sctx.Run.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
 		step.Order() >= types.StepCI.Order() && selection.PRURL != "" && selection.ForgeHeadSHA != localHead {
 		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s for external CI handoff", selection.ForgeHeadSHA, localHead)
