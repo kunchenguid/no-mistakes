@@ -2146,19 +2146,14 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 }
 
 func (e *Executor) completeRun(ctx context.Context, run *db.Run, repo *db.Repo) error {
-	verifiedHead, verified := e.reconcileTerminalRunHead(run)
-	var err error
-	if verified {
-		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead)
-	} else {
-		err = e.db.UpdateRunStatus(run.ID, types.RunCompleted)
-	}
+	verifiedHead, err := e.verifyCompletionHead(run)
 	if err != nil {
 		return err
 	}
-	if verified {
-		run.HeadSHA = verifiedHead
+	if err := e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead); err != nil {
+		return err
 	}
+	run.HeadSHA = verifiedHead
 	run.Status = types.RunCompleted
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	if run.PRState != nil && *run.PRState == "merged" && e.onPRMerged != nil {
@@ -2166,6 +2161,44 @@ func (e *Executor) completeRun(ctx context.Context, run *db.Run, repo *db.Repo) 
 	}
 
 	return nil
+}
+
+func (e *Executor) verifyCompletionHead(run *db.Run) (string, error) {
+	if run == nil || strings.TrimSpace(e.workDir) == "" {
+		return "", fmt.Errorf("completion has no managed worktree")
+	}
+	recordedRun, err := e.db.GetRun(run.ID)
+	if err != nil || recordedRun == nil {
+		return "", fmt.Errorf("read run head before completion: %w", err)
+	}
+	receipt, err := e.db.GetRunPRContext(run.ID)
+	if err != nil {
+		return "", fmt.Errorf("read PR comparison before completion: %w", err)
+	}
+	head := strings.TrimSpace(recordedRun.HeadSHA)
+	if head == "" || receipt == nil || head != run.HeadSHA || head != receipt.LocalHeadSHA {
+		return "", fmt.Errorf("completion head does not match run and PR comparison")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	observed, err := git.HeadSHA(ctx, e.workDir)
+	if err != nil {
+		return "", fmt.Errorf("read worktree head before completion: %w", err)
+	}
+	if strings.TrimSpace(observed) != head {
+		return "", fmt.Errorf("worktree head does not match PR comparison")
+	}
+	dirty, err := git.HasUncommittedChanges(ctx, e.workDir)
+	if err != nil {
+		return "", fmt.Errorf("check worktree before completion: %w", err)
+	}
+	if dirty {
+		return "", fmt.Errorf("worktree is dirty before completion")
+	}
+	if !e.preserveUnpublishedTerminalHead(ctx, recordedRun, head) {
+		return "", fmt.Errorf("preserve completion head custody")
+	}
+	return head, nil
 }
 
 func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
