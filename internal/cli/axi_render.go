@@ -119,6 +119,7 @@ type runView struct {
 	Branch           string
 	Status           string
 	HeadSHA          string
+	ReviewGeneration *int64
 	PRURL            string
 	CIReady          bool
 	CIReadyNoCI      bool
@@ -201,6 +202,10 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		ExternalCIOwner:    r.ExternalCIOwner,
 	}
 	if database != nil {
+		if context, err := database.GetRunPRContext(r.ID); err == nil && context != nil {
+			generation := context.Generation
+			rv.ReviewGeneration = &generation
+		}
 		if pending, err := database.PendingExternalCISupport(r); err == nil {
 			rv.PendingCISupport = pending
 		} else {
@@ -500,6 +505,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
+	if rv.ReviewGeneration != nil {
+		fields = append(fields, toon.Field{Key: "review_generation", Value: *rv.ReviewGeneration})
+	}
 	if rv.ExternalCIOwner != "" {
 		fields = append(fields, toon.Field{Key: "external_ci_owner", Value: rv.ExternalCIOwner})
 		if len(rv.PendingCISupport) > 0 {

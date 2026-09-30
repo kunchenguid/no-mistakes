@@ -69,6 +69,10 @@ func TestBuildReviewReceiptRequiresVerifiedTerminalComparison(t *testing.T) {
 		receipt.LocalHeadSHA != head || receipt.TargetSHA != target || receipt.DiffDigest != candidate.DiffDigest {
 		t.Fatalf("receipt = %+v", receipt)
 	}
+	status := axiDoc(runObjectField(runViewFromDB(run, nil, database)))
+	if !strings.Contains(status, "review_generation: 1\n") {
+		t.Fatalf("status does not expose the receipt generation: %s", status)
+	}
 	candidate.LocalHeadSHA = strings.Repeat("e", 40)
 	if _, err := database.BindRunPRContext(run.ID, candidate, types.StepReview); err != nil {
 		t.Fatal(err)
