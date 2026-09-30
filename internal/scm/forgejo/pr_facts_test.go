@@ -128,3 +128,45 @@ func TestFindOpenPRFactsRejectsIncompletePage(t *testing.T) {
 		}
 	}
 }
+
+func TestReadPRFactsMergedCommitFailsClosed(t *testing.T) {
+	const mergeSHA = "abcdef0123456789abcdef0123456789abcdef01"
+	merged := strings.Replace(rawPullFactsJSON(testRepo, "closed", testHeadSHA), `"merged":false`, `"merged":true`, 1)
+	for _, tc := range []struct {
+		name, sha       string
+		omit, wantError bool
+	}{
+		{"valid", mergeSHA, false, false},
+		{"missing", "", true, true},
+		{"empty", "", false, true},
+		{"short", "abcdef", false, true},
+		{"nonhex", strings.Repeat("z", 40), false, true},
+		{"whitespace", " " + mergeSHA, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := merged
+			if !tc.omit {
+				payload = strings.Replace(payload, `"data":{`, `"data":{`+fmt.Sprintf(`"merge_commit_sha":%q,`, tc.sha), 1)
+			}
+			host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: payload}}})
+			facts, err := host.ReadPRFacts(context.Background(), &scm.PR{Number: "42", URL: testPRURL})
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("accepted merged PR without a valid merge commit: %+v", facts)
+				}
+				return
+			}
+			if err != nil || facts.State != scm.PRStateMerged || facts.MergeCommitSHA != mergeSHA {
+				t.Fatalf("merged facts = %+v, %v", facts, err)
+			}
+		})
+	}
+}
+
+func TestReadPRFactsRejectsUnknownMergedState(t *testing.T) {
+	payload := strings.Replace(rawPullFactsJSON(testRepo, "invalid", testHeadSHA), `"merged":false`, `"merged":true,"merge_commit_sha":"abcdef0123456789abcdef0123456789abcdef01"`, 1)
+	host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: payload}}})
+	if facts, err := host.ReadPRFacts(context.Background(), &scm.PR{Number: "42", URL: testPRURL}); err == nil {
+		t.Fatalf("accepted unknown raw state as merged: %+v", facts)
+	}
+}

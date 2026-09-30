@@ -122,6 +122,10 @@ type PRFacts struct {
 	SourceBranch     string
 	HeadSHA          string
 	BaseBranch       string
+	// MergeCommitSHA is the forge-recorded result of a completed merge, read
+	// with the source and head above. It must be a full SHA for a merged PR.
+	// For an open PR, providers may report a tentative merge commit instead.
+	MergeCommitSHA string
 }
 
 // PRFactsReader reads a recorded PR by identity and discovers every open PR

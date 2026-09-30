@@ -11,11 +11,12 @@ import (
 )
 
 type rawPullFacts struct {
-	Number  int    `json:"number"`
-	HTMLURL string `json:"html_url"`
-	State   string `json:"state"`
-	Merged  *bool  `json:"merged"`
-	Head    struct {
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Number         int    `json:"number"`
+	HTMLURL        string `json:"html_url"`
+	State          string `json:"state"`
+	Merged         *bool  `json:"merged"`
+	Head           struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
 		Repo *struct {
@@ -45,20 +46,27 @@ func (h *Host) factsFromRaw(pull rawPullFacts) (scm.PRFacts, error) {
 		return scm.PRFacts{}, fmt.Errorf("Forgejo raw PR URL %q does not match %q", pull.HTMLURL, wantURL)
 	}
 	state := scm.PRStateOpen
-	if *pull.Merged {
-		state = scm.PRStateMerged
-	} else if pull.State == "closed" {
+	switch pull.State {
+	case "open":
+		if *pull.Merged {
+			return scm.PRFacts{}, errors.New("open Forgejo PR reports merged")
+		}
+	case "closed":
 		state = scm.PRStateClosed
-	} else if pull.State != "open" {
+		if *pull.Merged {
+			state = scm.PRStateMerged
+		}
+	default:
 		return scm.PRFacts{}, fmt.Errorf("Forgejo PR has invalid state %q", pull.State)
 	}
-	if pull.State == "open" && *pull.Merged {
-		return scm.PRFacts{}, errors.New("open Forgejo PR reports merged")
+	if state == scm.PRStateMerged && !isFullForgejoSHA(pull.MergeCommitSHA) {
+		return scm.PRFacts{}, errors.New("merged Forgejo PR lacks a full merge commit SHA")
 	}
 	pr := scm.PR{Number: number, URL: wantURL, HeadSHA: pull.Head.SHA, BaseBranch: pull.Base.Ref}
 	return scm.PRFacts{
 		PR:               pr,
 		State:            state,
+		MergeCommitSHA:   pull.MergeCommitSHA,
 		SourceRepository: pull.Head.Repo.FullName,
 		SourceBranch:     pull.Head.Ref,
 		HeadSHA:          pull.Head.SHA,

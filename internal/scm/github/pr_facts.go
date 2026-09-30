@@ -11,11 +11,12 @@ import (
 )
 
 type githubPRFactsWire struct {
-	Number  int    `json:"number"`
-	HTMLURL string `json:"html_url"`
-	State   string `json:"state"`
-	Merged  bool   `json:"merged"`
-	Head    struct {
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Number         int    `json:"number"`
+	HTMLURL        string `json:"html_url"`
+	State          string `json:"state"`
+	Merged         bool   `json:"merged"`
+	Head           struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
 		Repo *struct {
@@ -54,10 +55,14 @@ func (h *Host) prFactsFromWire(w githubPRFactsWire) (scm.PRFacts, error) {
 		!isFullCommitSHA(w.Head.SHA) {
 		return scm.PRFacts{}, fmt.Errorf("GitHub PR %d has incomplete source, head, or target facts", w.Number)
 	}
+	if state == scm.PRStateMerged && !isFullCommitSHA(w.MergeCommitSHA) {
+		return scm.PRFacts{}, fmt.Errorf("merged GitHub PR %d lacks a full merge commit SHA", w.Number)
+	}
 	number := strconv.Itoa(w.Number)
 	return scm.PRFacts{
 		PR:               scm.PR{Number: number, URL: w.HTMLURL, HeadSHA: w.Head.SHA, BaseBranch: w.Base.Ref},
 		State:            state,
+		MergeCommitSHA:   w.MergeCommitSHA,
 		SourceRepository: strings.TrimSpace(w.Head.Repo.FullName),
 		SourceBranch:     strings.TrimSpace(w.Head.Ref),
 		HeadSHA:          w.Head.SHA,

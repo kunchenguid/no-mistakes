@@ -20,6 +20,9 @@ func (h *Host) factsFromWire(w bitbucketPullRequest) (scm.PRFacts, error) {
 	if state != scm.PRStateOpen && state != scm.PRStateClosed && state != scm.PRStateMerged {
 		return scm.PRFacts{}, fmt.Errorf("Bitbucket PR %d has invalid state %q", w.ID, w.State)
 	}
+	if state == scm.PRStateMerged && !fullBitbucketHash(w.MergeCommit.Hash) {
+		return scm.PRFacts{}, fmt.Errorf("merged Bitbucket PR %d lacks a full merge commit SHA", w.ID)
+	}
 	sourceRepo := strings.TrimSpace(w.Source.Repository.FullName)
 	if sourceRepo == "" || strings.TrimSpace(w.Source.Branch.Name) == "" ||
 		strings.TrimSpace(w.Destination.Branch.Name) == "" || !fullBitbucketHash(w.Source.Commit.Hash) {
@@ -28,6 +31,7 @@ func (h *Host) factsFromWire(w bitbucketPullRequest) (scm.PRFacts, error) {
 	return scm.PRFacts{
 		PR:               scm.PR{Number: strconv.Itoa(w.ID), URL: wantURL, HeadSHA: w.Source.Commit.Hash, BaseBranch: w.Destination.Branch.Name},
 		State:            state,
+		MergeCommitSHA:   w.MergeCommit.Hash,
 		SourceRepository: sourceRepo,
 		SourceBranch:     w.Source.Branch.Name,
 		HeadSHA:          w.Source.Commit.Hash,

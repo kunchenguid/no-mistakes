@@ -21,6 +21,9 @@ type azPR struct {
 	ForkSource    *struct {
 		Repository azRepository `json:"repository"`
 	} `json:"forkSource"`
+	LastMergeCommit struct {
+		CommitID string `json:"commitId"`
+	} `json:"lastMergeCommit"`
 	LastMergeSourceCommit struct {
 		CommitID string `json:"commitId"`
 	} `json:"lastMergeSourceCommit"`

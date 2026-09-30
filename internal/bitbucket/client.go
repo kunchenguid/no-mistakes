@@ -330,6 +330,9 @@ func readTail(r io.Reader, maxBytes int) ([]byte, error) {
 }
 
 type bitbucketPullRequest struct {
+	MergeCommit struct {
+		Hash string `json:"hash"`
+	} `json:"merge_commit"`
 	ID     int    `json:"id"`
 	State  string `json:"state"`
 	Source struct {

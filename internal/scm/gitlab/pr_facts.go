@@ -18,6 +18,7 @@ import (
 // project ID together. The source path needs a separate project read; glab mr
 // list/view JSON is insufficient because a fork can use the same branch name.
 type gitlabMRFactsWire struct {
+	MergeCommitSHA  string `json:"merge_commit_sha"`
 	IID             int    `json:"iid"`
 	WebURL          string `json:"web_url"`
 	State           string `json:"state"`
@@ -123,6 +124,9 @@ func (h *Host) factsFromMR(ctx context.Context, wire gitlabMRFactsWire, cache ma
 	default:
 		return scm.PRFacts{}, fmt.Errorf("GitLab merge request %d has unsupported state %q", wire.IID, wire.State)
 	}
+	if state == scm.PRStateMerged && !isGitlabFullSHA(wire.MergeCommitSHA) {
+		return scm.PRFacts{}, errors.New("merged GitLab merge request lacks a full merge commit SHA")
+	}
 	project, err := h.projectForFacts(ctx, wire.SourceProjectID, cache)
 	if err != nil {
 		return scm.PRFacts{}, err
@@ -135,7 +139,7 @@ func (h *Host) factsFromMR(ctx context.Context, wire gitlabMRFactsWire, cache ma
 		return scm.PRFacts{}, errors.New("GitLab merge request target project identity disagrees with configured project")
 	}
 	pr := scm.PR{Number: strconv.Itoa(wire.IID), URL: wire.WebURL, HeadSHA: wire.SHA, BaseBranch: wire.TargetBranch}
-	return scm.PRFacts{PR: pr, State: state, SourceRepository: project, SourceBranch: wire.SourceBranch, HeadSHA: wire.SHA, BaseBranch: wire.TargetBranch}, nil
+	return scm.PRFacts{PR: pr, State: state, SourceRepository: project, SourceBranch: wire.SourceBranch, HeadSHA: wire.SHA, BaseBranch: wire.TargetBranch, MergeCommitSHA: wire.MergeCommitSHA}, nil
 }
 
 // ReadPRFacts reads a recorded MR by its target project and IID. A URL-only

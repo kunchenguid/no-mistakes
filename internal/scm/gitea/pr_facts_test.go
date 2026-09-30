@@ -2,6 +2,7 @@ package gitea
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestReadPRFactsBindsRecordedIdentityAndLiveFacts(t *testing.T) {
 }
 
 func TestReadPRFactsClosedMergedAndRejectsMismatchedIdentity(t *testing.T) {
-	merged := strings.Replace(giteaFactsJSON, `"state":"open","merged":false`, `"state":"closed","merged":true`, 1)
+	merged := strings.Replace(giteaFactsJSON, `"state":"open","merged":false`, `"state":"closed","merged":true,"merge_commit_sha":"abcdef0123456789abcdef0123456789abcdef01"`, 1)
 	host := factsHost(map[string]giteaTestResponse{
 		"tea api --login work /repos/owner/repo/pulls/42": {stdout: merged},
 	})
@@ -115,5 +116,41 @@ func TestFindOpenPRFactsAcceptsProvenEmptyList(t *testing.T) {
 	facts, err := host.FindOpenPRFacts(context.Background(), "fork/repo", "feature")
 	if err != nil || len(facts) != 0 {
 		t.Fatalf("empty list = %+v, %v", facts, err)
+	}
+}
+
+func TestReadPRFactsMergedCommitFailsClosed(t *testing.T) {
+	const mergeSHA = "abcdef0123456789abcdef0123456789abcdef01"
+	merged := strings.Replace(giteaFactsJSON, `"state":"open","merged":false`, `"state":"closed","merged":true`, 1)
+	for _, tc := range []struct {
+		name, sha       string
+		omit, wantError bool
+	}{
+		{"valid", mergeSHA, false, false},
+		{"missing", "", true, true},
+		{"empty", "", false, true},
+		{"short", "abcdef", false, true},
+		{"nonhex", strings.Repeat("z", 40), false, true},
+		{"whitespace", " " + mergeSHA, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := merged
+			if !tc.omit {
+				payload = strings.Replace(payload, `{`, `{`+fmt.Sprintf(`"merge_commit_sha":%q,`, tc.sha), 1)
+			}
+			host := factsHost(map[string]giteaTestResponse{
+				"tea api --login work /repos/owner/repo/pulls/42": {stdout: payload},
+			})
+			facts, err := host.ReadPRFacts(context.Background(), &scm.PR{Number: "42"})
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("accepted merged PR without a valid merge commit: %+v", facts)
+				}
+				return
+			}
+			if err != nil || facts.State != scm.PRStateMerged || facts.MergeCommitSHA != mergeSHA {
+				t.Fatalf("merged facts = %+v, %v", facts, err)
+			}
+		})
 	}
 }

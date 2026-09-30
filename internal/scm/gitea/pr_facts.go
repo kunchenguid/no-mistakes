@@ -17,11 +17,12 @@ import (
 // carries the source repository. PR facts therefore use the authenticated raw
 // API, where both a single pull and each list entry have this shape.
 type giteaPRFactsWire struct {
-	Number  int    `json:"number"`
-	HTMLURL string `json:"html_url"`
-	State   string `json:"state"`
-	Merged  *bool  `json:"merged"`
-	Head    struct {
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Number         int    `json:"number"`
+	HTMLURL        string `json:"html_url"`
+	State          string `json:"state"`
+	Merged         *bool  `json:"merged"`
+	Head           struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
 		Repo *struct {
@@ -88,10 +89,14 @@ func (h *Host) factsFromWire(w giteaPRFactsWire, owner, repo string) (scm.PRFact
 	default:
 		return scm.PRFacts{}, fmt.Errorf("Gitea PR %d has invalid state %q", w.Number, w.State)
 	}
+	if state == scm.PRStateMerged && !validGiteaSHA(w.MergeCommitSHA) {
+		return scm.PRFacts{}, fmt.Errorf("merged Gitea PR %d lacks a full merge commit SHA", w.Number)
+	}
 	number := strconv.Itoa(w.Number)
 	return scm.PRFacts{
 		PR:               scm.PR{Number: number, URL: w.HTMLURL, HeadSHA: w.Head.SHA, BaseBranch: w.Base.Ref},
 		State:            state,
+		MergeCommitSHA:   w.MergeCommitSHA,
 		SourceRepository: w.Head.Repo.FullName,
 		SourceBranch:     w.Head.Ref,
 		HeadSHA:          w.Head.SHA,

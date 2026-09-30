@@ -101,6 +101,10 @@ func (h *Host) factsFromPR(raw azPR) (scm.PRFacts, error) {
 	default:
 		return scm.PRFacts{}, fmt.Errorf("Azure PR %d has invalid status %q", raw.PullRequestID, raw.Status)
 	}
+	mergeSHA := raw.LastMergeCommit.CommitID
+	if state == scm.PRStateMerged && !azFullSHA(mergeSHA) {
+		return scm.PRFacts{}, fmt.Errorf("merged Azure PR %d lacks a full merge commit SHA", raw.PullRequestID)
+	}
 	source, err := azBranch(raw.SourceRefName)
 	if err != nil {
 		return scm.PRFacts{}, err
@@ -122,7 +126,7 @@ func (h *Host) factsFromPR(raw azPR) (scm.PRFacts, error) {
 	}
 	id := strconv.Itoa(raw.PullRequestID)
 	pr := scm.PR{Number: id, URL: webPRURL(h.org, h.project, h.repo, "", id), HeadSHA: head, BaseBranch: base}
-	return scm.PRFacts{PR: pr, State: state, SourceRepository: sourceRepository, SourceBranch: source, HeadSHA: head, BaseBranch: base}, nil
+	return scm.PRFacts{PR: pr, State: state, SourceRepository: sourceRepository, SourceBranch: source, HeadSHA: head, BaseBranch: base, MergeCommitSHA: mergeSHA}, nil
 }
 
 // lastMergeSourceCommit is a PR merge-computation snapshot, which can lag a
