@@ -213,6 +213,15 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
   completed, abandoned, or the configured `ci_timeout` idle window elapses
 - Merge-conflict polling and auto-fix from the PR's `mergeStatus`
 
+Azure CI readiness requires a native commit association. Build policies resolve
+the evaluation's exact build ID and verify its definition, project, repository,
+and PR merge ref. The build revision must match the live PR merge commit, and
+the PR source revision must match the live source branch. Status policies match
+the configured name, genre, and authorized account, then read the newest
+matching status's iteration source commit. A status without an iteration does
+not prove which code was checked. Missing or ambiguous association keeps CI
+unready; failed native lookups surface a provider error.
+
 **What you don't get (yet):**
 
 - Failed check log fetching for the CI auto-fix step (the `az` CLI has no

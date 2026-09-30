@@ -30,6 +30,7 @@ type azPR struct {
 }
 
 type azRepository struct {
+	ID      string `json:"id"`
 	Name    string `json:"name"`
 	WebURL  string `json:"webUrl"` // .../_git/{repo} - browsable base
 	Project struct {
@@ -49,7 +50,11 @@ type policyEval struct {
 			DisplayName string `json:"displayName"`
 		} `json:"type"`
 		Settings struct {
-			DisplayName string `json:"displayName"`
+			DisplayName       string `json:"displayName"`
+			BuildDefinitionID int    `json:"buildDefinitionId"`
+			StatusName        string `json:"statusName"`
+			StatusGenre       string `json:"statusGenre"`
+			AuthorID          string `json:"authorId"`
 		} `json:"settings"`
 	} `json:"configuration"`
 	Context map[string]any `json:"context"`
