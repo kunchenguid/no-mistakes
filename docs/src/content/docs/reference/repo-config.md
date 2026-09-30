@@ -210,8 +210,8 @@ Select the branch that newly created pull requests target.
 | Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
 
 Use this when the repository's integration branch differs from its forge default branch, for example `develop` instead of `main`.
-The configured branch is used for PR creation, and as the integration base for the rebase step.
-When unset, no-mistakes preserves the existing behavior and targets `Repo.DefaultBranch`.
+The configured branch is used for PR creation and pipeline integration and change scoping; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) describe which steps use it and how the recorded per-run override takes precedence.
+When unset and without a per-run override, no-mistakes targets the repository's forge default branch.
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
 A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, and Gitea) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).

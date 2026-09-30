@@ -9,7 +9,7 @@ This is the per-step reference. For the overview and rationale, see [Pipeline](/
 intent → rebase → review → test → document → lint → push → pr → ci
 ```
 
-Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Every step that scopes its work to the branch's changes (Review, Test, Document, Lint, PR drafting, CI repair, and repository gate fixes) first fetches the base branch's live remote tip and computes the branch base against it; if that fetch fails, the step fails instead of falling back to a possibly stale cached base ref. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
+Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Every step that scopes its work to the branch's changes (Review, Test, Document, Lint, PR drafting, CI repair, and repository gate fixes) first fetches the base branch's live remote tip and computes the branch base against it; if that fetch fails, the step fails instead of falling back to a possibly stale cached base ref. Review, Test, Document, Lint, and repository gate fixes use the same effective PR base as Rebase and PR drafting: the run's recorded `--base-branch` override wins over [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch), with the repository's forge default branch as the fallback. Their scope is the full branch delta from the merge-base with that target, not the last pushed delta or integration-only changes relative to the default branch. Review and Document prompts name that effective base branch. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept.
 The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and Review runs a fresh review up to three times in total when no-mistakes rejects the reviewer's final output; exhausting either bound, and every other step's invalid analyzer output, still stops the affected step.
 Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
@@ -60,7 +60,7 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 
 Fetches the latest authoritative remote state, fetches the configured pushed-branch target, and integrates your branch with those refs - by rebasing onto them, or by merging them in when [`rebase.strategy: merge`](/no-mistakes/reference/repo-config/#rebasestrategy) is configured.
 
-The integration branch used below is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch): the repository's forge default branch, or the trusted [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when configured.
+The integration branch used below is the effective PR base described in the scope rules at the top of this page.
 
 **Behavior:**
 - Fetches `origin/<PR base branch>` from the remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history. A failed base-branch fetch fails the step before any rebase or head update, rather than integrating against a possibly stale cached `origin/<PR base branch>`; the post-integration empty-diff check reuses that same fetched ref
@@ -254,7 +254,7 @@ This step never requires approval - it runs automatically after review, test, do
 Creates or updates a pull request.
 
 **Skipped when:**
-- The branch is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch) (the repository's forge default branch, or the trusted `pr.base_branch` when configured)
+- The branch is the effective PR base described in the scope rules at the top of this page
 - The upstream host is not GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps (`dev.azure.com` / `*.visualstudio.com`), or Gitea
 - The provider CLI (`gh`, `glab`, `forgejo-axi`, or `tea`) is not installed for GitHub, GitLab, Forgejo, or Gitea (GitHub also skips when `gh` is missing from `PATH`)
 - The provider CLI is not authenticated for GitHub, GitLab, Forgejo, or Gitea (GitHub reports a timed-out or interrupted `gh auth status` separately from auth failure; either still skips)
