@@ -193,17 +193,32 @@ func TestTestOwnerUsesOnlyMatchingConfiguredCommand(t *testing.T) {
 	}
 }
 
-func TestOwnerRefusesStaleReviewApprovalOrReceipt(t *testing.T) {
+func TestOwnerUsesCurrentReceiptWithEarlierReviewApproval(t *testing.T) {
 	t.Parallel()
-	sctx, receipt := completedReviewSupportFixture(t, pendingReviewTestClaim("go test ./..."))
+	sctx, _ := completedReviewSupportFixture(t, pendingReviewTestClaim("go test ./..."))
 	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, strings.Repeat("0", 40)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := currentReviewSupportClaims(sctx, types.FindingClaimTest); err == nil {
-		t.Fatal("stale Review approval resolved pending claim")
-	}
-	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, receipt.LocalHeadSHA); err != nil {
+	previous, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	advanced := previous.PRContextCandidate
+	advanced.LocalHeadSHA = strings.Repeat("b", 40)
+	if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, advanced); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, advanced.LocalHeadSHA); err != nil {
+		t.Fatal(err)
+	}
+	current, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run.HeadSHA = advanced.LocalHeadSHA
+	sctx.PRContext = current
+	if _, receipt, err := currentReviewSupportClaims(sctx, types.FindingClaimTest); err != nil || receipt.LocalHeadSHA != advanced.LocalHeadSHA {
+		t.Fatalf("earlier Review approval prevented current owner evidence: %v", err)
 	}
 	sctx.PRContext = nil
 	if _, _, err := currentReviewSupportClaims(sctx, types.FindingClaimTest); err == nil {

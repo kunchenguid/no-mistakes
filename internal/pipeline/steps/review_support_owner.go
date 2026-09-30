@@ -17,8 +17,8 @@ var errReviewSupportHeadAdvanced = errors.New("owner repair advanced head; revie
 
 // currentReviewSupportClaims reads only the completed Review step attached to
 // this run. No round history, previous finding, or model output at the owner
-// step grants authority. A pending claim can be examined only under the same
-// current PR comparison and Review-approved head.
+// step grants authority. A pending claim can be examined only with an
+// approved Review and the owner's current PR comparison.
 func currentReviewSupportClaims(sctx *pipeline.StepContext, claimType types.FindingClaimType) ([]Finding, *db.PRContext, error) {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
 		return nil, nil, fmt.Errorf("review support owner needs run and database")
@@ -77,10 +77,9 @@ func currentReviewSupportClaims(sctx *pipeline.StepContext, claimType types.Find
 	}
 	if receipt == nil || run == nil || run.ReviewApprovedHeadSHA == nil ||
 		strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" ||
-		*run.ReviewApprovedHeadSHA != receipt.LocalHeadSHA ||
 		run.HeadSHA != receipt.LocalHeadSHA || sctx.Run.HeadSHA != receipt.LocalHeadSHA ||
 		sctx.PRContext == nil || *sctx.PRContext != *receipt {
-		return nil, nil, fmt.Errorf("pending Review support has no exact current approved PR comparison")
+		return nil, nil, fmt.Errorf("pending Review support has no exact current PR comparison")
 	}
 	return pending, receipt, nil
 }

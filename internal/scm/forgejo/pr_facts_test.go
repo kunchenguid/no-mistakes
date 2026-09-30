@@ -25,7 +25,7 @@ func pullListJSON(numbers ...int) string {
 	for _, number := range numbers {
 		items = append(items, fmt.Sprintf(`{"number":%d}`, number))
 	}
-	return "[" + strings.Join(items, ",") + "]"
+	return `{"status":200,"data":[` + strings.Join(items, ",") + `]}`
 }
 
 func TestReadPRFactsKeepsForgeHeadAndBaseTogether(t *testing.T) {
@@ -55,7 +55,7 @@ func TestFindOpenPRFactsRejectsForeignSource(t *testing.T) {
 	recorder := &fakeRecorder{responses: []fakeResponse{
 		{stdout: pullListJSON(42)},
 		{stdout: rawPullFactsJSON("other/widgets", "open", testHeadSHA)},
-		{stdout: `[]`},
+		{stdout: pullListJSON()},
 	}}
 	facts, err := newTestHost(recorder).FindOpenPRFacts(context.Background(), testRepo, "feature/forgejo")
 	if err != nil {
@@ -70,7 +70,7 @@ func TestFindOpenPRFactsDiscoversForkSource(t *testing.T) {
 	recorder := &fakeRecorder{responses: []fakeResponse{
 		{stdout: pullListJSON(42)},
 		{stdout: rawPullFactsJSON("other/widgets", "open", testHeadSHA)},
-		{stdout: `[]`},
+		{stdout: pullListJSON()},
 	}}
 	facts, err := newTestHost(recorder).FindOpenPRFacts(context.Background(), "other/widgets", "feature/forgejo")
 	if err != nil || len(facts) != 1 || facts[0].SourceRepository != "other/widgets" {
@@ -88,7 +88,7 @@ func TestFindOpenPRFactsFiltersSameBranchForkCandidates(t *testing.T) {
 		{stdout: rawPullFactsJSONFor(42, "bob/widgets", "open", testHeadSHA)},
 		{stdout: pullListJSON(43)},
 		{stdout: rawPullFactsJSONFor(43, "alice/widgets", "open", testHeadSHA)},
-		{stdout: `[]`},
+		{stdout: pullListJSON()},
 	}}
 	facts, err := newTestHost(recorder).FindOpenPRFacts(context.Background(), "alice/widgets", "feature/forgejo")
 	if err != nil || len(facts) != 1 || facts[0].PR.Number != "43" || facts[0].SourceRepository != "alice/widgets" {
@@ -112,7 +112,7 @@ func TestFindOpenPRFactsRejectsAmbiguousSearch(t *testing.T) {
 		{stdout: pullListJSON(42, 43)},
 		{stdout: rawPullFactsJSONFor(42, testRepo, "open", testHeadSHA)},
 		{stdout: rawPullFactsJSONFor(43, testRepo, "open", testHeadSHA)},
-		{stdout: `[]`},
+		{stdout: pullListJSON()},
 	}}
 	host := newTestHost(recorder)
 	_, err := host.FindOpenPRFacts(context.Background(), testRepo, "feature/forgejo")
@@ -122,7 +122,9 @@ func TestFindOpenPRFactsRejectsAmbiguousSearch(t *testing.T) {
 }
 
 func TestFindOpenPRFactsRejectsIncompletePage(t *testing.T) {
-	if _, err := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `null`}}}).FindOpenPRFacts(context.Background(), testRepo, "feature/forgejo"); err == nil {
-		t.Fatal("incomplete Forgejo PR page was accepted")
+	for _, raw := range []string{`null`, `{"status":500,"data":[]}`, `{"status":200,"data":null}`} {
+		if _, err := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: raw}}}).FindOpenPRFacts(context.Background(), testRepo, "feature/forgejo"); err == nil {
+			t.Fatalf("incomplete Forgejo PR page was accepted: %s", raw)
+		}
 	}
 }

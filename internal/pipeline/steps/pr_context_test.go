@@ -69,7 +69,7 @@ func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	}
 }
 
-func TestPRContextGuardAdvancesAfterDocumentEditAndRefreshesTest(t *testing.T) {
+func TestPRContextGuardAdvancesAfterDocumentEditWithoutReplayingTest(t *testing.T) {
 	dir, base, reviewedHead := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, reviewedHead, config.Commands{})
 	selection := pipeline.PRTargetSelection{TargetBranch: "main"}
@@ -95,8 +95,8 @@ func TestPRContextGuardAdvancesAfterDocumentEditAndRefreshesTest(t *testing.T) {
 	sctx.Run.HeadSHA = newHead
 	sctx.PRContextAfterStep = true
 	decision, err := guardPRContextWithSelection(sctx, types.StepDocument, selection, false)
-	if err != nil || decision.RestartFrom != types.StepTest {
-		t.Fatalf("forward document edit = %+v, %v; want test restart", decision, err)
+	if err != nil || decision.RestartFrom != "" {
+		t.Fatalf("forward document edit = %+v, %v; want no restart", decision, err)
 	}
 	stored, err := sctx.DB.GetStepResult(review.ID)
 	if err != nil || stored.Status != types.StepStatusCompleted {
@@ -150,15 +150,15 @@ func TestPRContextGuardRevalidatesAfterPipelinePushAdvancesHead(t *testing.T) {
 	sctx.Run.HeadSHA = publishedHead
 	sctx.PRContextAfterStep = true
 	decision, err := guardPRContextWithSelection(sctx, types.StepPush, selection, false)
-	if err != nil || decision.RestartFrom != types.StepReview {
-		t.Fatalf("pipeline push context = %+v, %v; want review restart", decision, err)
+	if err != nil || decision.RestartFrom != "" {
+		t.Fatalf("pipeline push context = %+v, %v; want no restart", decision, err)
 	}
 	stored, err := sctx.DB.GetStepResult(review.ID)
-	if err != nil || stored.Status != types.StepStatusPending {
-		t.Fatalf("review was not reset for the published head: %+v, %v", stored, err)
+	if err != nil || stored.Status != types.StepStatusCompleted {
+		t.Fatalf("review was replayed for the published head: %+v, %v", stored, err)
 	}
 	storedTest, err := sctx.DB.GetStepResult(testStep.ID)
-	if err != nil || storedTest.Status != types.StepStatusPending || storedTest.FindingsJSON != nil {
-		t.Fatalf("test evidence was not reset for the published head: %+v, %v", storedTest, err)
+	if err != nil || storedTest.Status != types.StepStatusCompleted || storedTest.FindingsJSON == nil {
+		t.Fatalf("test evidence was replayed for the published head: %+v, %v", storedTest, err)
 	}
 }

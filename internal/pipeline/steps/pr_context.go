@@ -189,8 +189,8 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	}
 	// Push can commit formatter or agent changes after the validation steps.
 	// Its durable publication record proves this run, rather than an external
-	// actor, advanced HEAD. Bind that new comparison normally so Review and its
-	// dependent steps are reset and revalidate the published source.
+	// actor, advanced HEAD, so it advances the receipt without replaying
+	// completed validation.
 	pipelineOwnedPushAdvance := false
 	if previous != nil && sctx.PRContextAfterStep && step == types.StepPush &&
 		previous.LocalHeadSHA != candidate.LocalHeadSHA &&
@@ -204,7 +204,8 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		pipelineOwnedPushAdvance = current != nil && current.HeadSHA == candidate.LocalHeadSHA &&
 			current.LastPushedSHA != nil && *current.LastPushedSHA == candidate.LocalHeadSHA
 	}
-	if previous != nil && previous.PRContextCandidate != candidate && !forward && !pipelineOwnedPushAdvance && !freshRetarget &&
+	forward = forward || pipelineOwnedPushAdvance
+	if previous != nil && previous.PRContextCandidate != candidate && !forward && !freshRetarget &&
 		!sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() > resetFrom.Order() {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed after %s; start a new run for the current target and head", resetFrom)
 	}
@@ -223,14 +224,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	}
 	decision := pipeline.PRContextDecision{Target: selection}
 	if previous != nil && bound.Changed {
-		// Document and Lint may commit work the Test agent left in the
-		// worktree. The forward receipt preserves the valid Review result, but
-		// Test's evidence belongs to the old head and must be refreshed before
-		// the new one can proceed.
-		if forward && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
-			(step == types.StepDocument || step == types.StepLint) {
-			decision.RestartFrom = types.StepTest
-		} else if !forward && !sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() >= resetFrom.Order() {
+		if !forward && !sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() >= resetFrom.Order() {
 			decision.RestartFrom = resetFrom
 		}
 		if decision.RestartFrom != "" && sctx.Log != nil {

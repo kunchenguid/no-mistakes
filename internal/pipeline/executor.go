@@ -341,11 +341,6 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx))
 		}
-		if step.Name().Order() > types.StepTest.Order() {
-			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
-				return e.failRun(run, repo, err, ctx)
-			}
-		}
 		restartIndex, err := e.checkPRContext(ctx, run, repo, workDir, step.Name(), i, false)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
@@ -362,6 +357,11 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 				return e.failRun(run, repo, fmt.Errorf("skip step %s: %w", step.Name(), err), ctx)
 			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", nil)
+			if step.Name() == types.StepTest {
+				if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+					return e.failRun(run, repo, err, ctx)
+				}
+			}
 			continue
 		}
 		state, err := e.durableExecutionState(sr.ID)
@@ -375,6 +375,11 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
+		}
+		if step.Name() == types.StepTest {
+			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
 		}
 		if skipRemaining {
 			// Mark all subsequent steps as skipped
@@ -883,7 +888,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx), ctx)
 		}
-		if e.steps[index].Name().Order() > types.StepTest.Order() {
+		if index > 0 && e.steps[index-1].Name() == types.StepTest {
 			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
 				return e.failRun(run, repo, err, ctx)
 			}
@@ -901,6 +906,11 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			return e.failRun(run, repo, fmt.Errorf("recovered step plan changed at %d", index), ctx)
 		}
 		if results[index].Status == types.StepStatusSkipped {
+			if e.steps[index].Name() == types.StepTest {
+				if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+					return e.failRun(run, repo, err, ctx)
+				}
+			}
 			continue
 		}
 		state, stateErr := e.durableExecutionState(results[index].ID)
@@ -914,6 +924,11 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		skipRemaining, restartFrom, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
+		}
+		if e.steps[index].Name() == types.StepTest {
+			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
 		}
 		if skipRemaining {
 			return e.skipRecoveredRemainder(run, repo, index+1)

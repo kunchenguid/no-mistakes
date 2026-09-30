@@ -118,13 +118,17 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 	var matches []scm.PRFacts
 	for page := 1; page <= 10000; page++ {
 		endpoint := fmt.Sprintf("repos/%s/pulls?state=open&sort=oldest&limit=%d&page=%d", h.repository, pageSize, page)
-		var candidates []rawPullListItem
-		if err := h.runJSON(ctx, "api", []string{"GET", endpoint}, &candidates); err != nil {
+		var response struct {
+			Status int               `json:"status"`
+			Data   []rawPullListItem `json:"data"`
+		}
+		if err := h.runJSON(ctx, "api", []string{"GET", endpoint}, &response); err != nil {
 			return nil, fmt.Errorf("read complete Forgejo PR list page %d: %w", page, err)
 		}
-		if candidates == nil {
+		if response.Status != 200 || response.Data == nil {
 			return nil, fmt.Errorf("read complete Forgejo PR list page %d: invalid array", page)
 		}
+		candidates := response.Data
 		if len(candidates) > pageSize {
 			return nil, fmt.Errorf("Forgejo PR list page %d exceeds requested size", page)
 		}

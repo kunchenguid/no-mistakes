@@ -29,10 +29,19 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 	if err != nil {
 		return fmt.Errorf("read current Review support: %w", err)
 	}
+	var claimType types.FindingClaimType
+	switch through {
+	case types.StepTest:
+		claimType = types.FindingClaimTest
+	case types.StepCI:
+		claimType = types.FindingClaimCI
+	default:
+		return fmt.Errorf("invalid Review support owner %s", through)
+	}
 	var pending []types.Finding
 	for _, finding := range findings.Items {
 		if finding.Category == "review-support-pending" && finding.Support != nil &&
-			(finding.Support.ClaimType == types.FindingClaimTest || finding.Support.ClaimType == types.FindingClaimCI) {
+			finding.Support.ClaimType == claimType {
 			pending = append(pending, finding)
 		}
 	}
@@ -48,11 +57,11 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 		return fmt.Errorf("read PR comparison for support verdict: %w", err)
 	}
 	if receipt == nil || current.ReviewApprovedHeadSHA == nil ||
-		receipt.LocalHeadSHA != current.HeadSHA || *current.ReviewApprovedHeadSHA != receipt.LocalHeadSHA {
-		return fmt.Errorf("pending Review support lacks an approved current-head comparison")
+		strings.TrimSpace(*current.ReviewApprovedHeadSHA) == "" || receipt.LocalHeadSHA != current.HeadSHA {
+		return fmt.Errorf("pending Review support lacks an approved Review and current PR comparison")
 	}
 	externalCIHandoffReady := false
-	if through.Order() >= types.StepCI.Order() &&
+	if through == types.StepCI &&
 		current.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
 		stepsSkipped(byName, types.StepPush, types.StepPR, types.StepCI) {
 		if _, err := e.db.PendingExternalCISupport(current); err != nil {
@@ -60,7 +69,6 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 		}
 		externalCIHandoffReady = true
 	}
-	approvedHead := *current.ReviewApprovedHeadSHA
 	for _, claim := range pending {
 		if claim.ID == "" || claim.Support.OwnerResult != nil {
 			return fmt.Errorf("pending Review claim has invalid owner identity")
@@ -71,9 +79,6 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 		ownerName := types.StepTest
 		if claim.Support.ClaimType == types.FindingClaimCI {
 			ownerName = types.StepCI
-		}
-		if ownerName.Order() > through.Order() {
-			continue
 		}
 		owner := byName[ownerName]
 		if ownerName == types.StepCI && owner != nil && owner.Status == types.StepStatusSkipped &&
@@ -98,8 +103,8 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 				continue
 			}
 			result := candidate.Support.OwnerResult
-			if result.ReviewFindingID != claim.ID || result.HeadSHA != approvedHead || result.TargetSHA != receipt.TargetSHA ||
-				result.Generation > receipt.Generation || result.Disposition != types.FindingSupportDispositionDisproven {
+			if result.ReviewFindingID != claim.ID || result.HeadSHA != receipt.LocalHeadSHA || result.TargetSHA != receipt.TargetSHA ||
+				result.Generation != receipt.Generation || result.Disposition != types.FindingSupportDispositionDisproven {
 				continue
 			}
 			if result.DiffDigest != receipt.DiffDigest {
