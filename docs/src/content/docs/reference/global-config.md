@@ -930,11 +930,13 @@ Test runs the committed command first, then each added command in a separate she
 Test still performs its unconditional agent-driven end-user scenarios afterwards.
 Lint runs additional checks after the existing lint duty, including agent-driven lint when `commands.lint` is empty.
 An added check's failure parks the step rather than silently passing; existing explicit approval rules still apply.
+Its finding names that machine-local check and its exit code, and never attributes the failure to the committed command, including when the committed command is empty.
 `additional` is refused for preparation and formatting, because those commands are not independent check gates.
 Replacement command strings, `command`, `replace`, `skip`, unknown command names, empty additional checks, malformed environment entries, and niceness outside `0` through `19` are configuration errors.
 
 Use `env` to select an equivalent toolchain or change resource usage without editing the committed command, not to reduce the checks it performs.
-The operator's environment values are trusted input: no-mistakes does not infer the meaning of a tool's environment variables or prove that different toolchains are equivalent.
+Environment overrides are the operator's responsibility: a tool's environment can change what the unchanged command checks (for example a test filter or an alternate linter config), and no-mistakes does not infer the meaning of a tool's environment variables or prove that different toolchains are equivalent.
+Overrides are therefore always declared, never silent: whenever a command runs under any of these settings, its step output states `machine-local overrides applied to commands.<name>:` followed by every environment key and value, the niceness, and the added checks, and Test also passes that declaration to its agent for the testing summary.
 For example, `GOMAXPROCS: '2'` limits a Go process's available CPUs; a suite-specific parallelism environment variable works only if that suite honors it.
 `PATH` replaces that command's path literally, so include the existing system paths you need.
 Values do not expand `$PATH`, `~`, or shell substitutions.

@@ -78,7 +78,8 @@ These blocks steer a gate agent, so they are read from your default branch rathe
 Explicit `commands.test` and `commands.lint` give you deterministic local baseline behavior.
 Test always follows its optional command and any machine-local additional checks with agent-driven end-user scenarios; empty `commands.lint` folds lint into the document step's combined housekeeping pass, even with additional local lint checks.
 Use `repository_overrides.commands.<name>.env` for an equivalent machine-specific toolchain or a parallelism setting, and `.nice` to run the unchanged command at lower priority on POSIX machines.
-The operator controls these environment values; they are not shell-expanded and never apply to agents or built-in Git and forge operations.
+The operator controls these environment values and is responsible for them, because an environment variable can change what the unchanged command checks; they are not shell-expanded and never apply to agents or built-in Git and forge operations.
+Every step that runs a command under a machine-local override states the override keys and values in its output, so a result produced with overrides is always declared.
 Opted-in runs record the full effective configuration, including command strings, added checks, environment values, priority, and trusted-config SHA, in private local `logs/<run-id>/command-config.ndjson` evidence before checks run.
 A recovery appends its newly resolved configuration rather than overwriting the original record, and an evidence-write failure refuses execution.
 This file is not published in the PR or test-evidence branch, because environment values can be sensitive.

@@ -23,12 +23,13 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := ensurePrepared(sctx, s.Name()); err != nil {
 		return nil, fmt.Errorf("prepare local lint dependencies: %w", err)
 	}
-	output, code, err := runConfiguredChecks(sctx, "lint", sctx.Config.CommandOverrides["lint"].Additional)
+	output, results, err := runConfiguredChecks(sctx, "lint", "")
 	projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepLint)
 	if err != nil {
 		return nil, fmt.Errorf("run local lint checks: %w", err)
 	}
-	if code == 0 {
+	failed := failedChecks(results)
+	if len(failed) == 0 {
 		return outcome, nil
 	}
 	findings := Findings{}
@@ -38,10 +39,12 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			return nil, fmt.Errorf("parse lint findings: %w", err)
 		}
 	}
-	findings.Items = append(findings.Items, Finding{
-		Severity: "error", Action: types.ActionAutoFix,
-		Description: fmt.Sprintf("machine-local lint check failed with exit code %d", code),
-	})
+	for _, result := range failed {
+		findings.Items = append(findings.Items, Finding{
+			Severity: "error", Action: types.ActionAutoFix,
+			Description: result.description("lint"),
+		})
+	}
 	findings.Summary += "\n" + projectedOutput
 	payload, err := json.Marshal(findings)
 	if err != nil {
@@ -51,7 +54,7 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	outcome.NeedsApproval = true
 	outcome.AutoFixable = true
 	if outcome.ExitCode == 0 {
-		outcome.ExitCode = code
+		outcome.ExitCode = failed[0].ExitCode
 	}
 	return outcome, nil
 }
