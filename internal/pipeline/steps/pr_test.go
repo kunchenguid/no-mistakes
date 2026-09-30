@@ -60,6 +60,7 @@ func TestPRStep_UpdatesExactSourceSelectedPR(t *testing.T) {
 	sctx.Env = env
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +155,7 @@ func TestPRStep_UsesResolvedForgeProviderForSelfHostedRemote(t *testing.T) {
 			Unset: []string{"GH_TOKEN"},
 		},
 	}
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -194,6 +196,7 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	api := newFakeBitbucketPRAPI(t, 42, "https://bitbucket.org/test/repo/pull-requests/42")
+	api.headSHA = headSHA
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -202,6 +205,7 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	sctx.Run.PRURL = &prURL
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -240,6 +244,7 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	api := newFakeBitbucketPRAPI(t, 42, "https://bitbucket.org/test/repo/pull-requests/42")
+	api.headSHA = headSHA
 	api.existingPRURL = "https://bitbucket.org/test/repo/pull-requests/42"
 	api.createdPRURL = ""
 
@@ -250,6 +255,7 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	sctx.Run.PRURL = &prURL
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
@@ -262,7 +268,7 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 				api.existingPRURL,
 			)
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			fmt.Fprintf(w, `{"id":%d,"state":"OPEN","title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
+			fmt.Fprintf(w, `{"id":%d,"state":"OPEN","title":"Existing title","summary":{"raw":"Existing unconfigured description"},"links":{"html":{"href":%q}},"source":{"repository":{"full_name":"test/repo"},"branch":{"name":"feature"},"commit":{"hash":%q}},"destination":{"branch":{"name":"main"}}}`, api.existingPRID, api.existingPRURL, api.headSHA)
 		case r.Method == http.MethodPut && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
 			api.updateCalls++
 			body, err := io.ReadAll(r.Body)
@@ -468,6 +474,7 @@ func TestPRStep_ExistingPRAgainstDifferentBaseIsUpdatedNotDuplicated(t *testing.
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &prURL
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "develop"}
+	bindExistingPRMutationFixture(t, sctx, prURL, "develop")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)

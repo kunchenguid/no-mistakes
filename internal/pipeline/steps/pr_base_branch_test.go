@@ -142,6 +142,7 @@ func TestPRStep_KeepsExistingPRBaseWhenPerRunBaseDiffers(t *testing.T) {
 	sctx.Run.PRURL = &owned
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: owned, TargetBranch: "develop"}
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: owned, TargetBranch: "develop"}
+	bindExistingPRMutationFixture(t, sctx, owned, "develop")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -171,6 +172,7 @@ func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
 	sctx.Config.PR.BaseBranch = "main"
 	owned := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &owned
+	bindExistingPRMutationFixture(t, sctx, owned, "develop")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -199,6 +201,7 @@ func TestPRStep_PrefersPersistedPROverUnboundSibling(t *testing.T) {
 	owned := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &owned
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: owned, TargetBranch: "develop"}
+	bindExistingPRMutationFixture(t, sctx, owned, "develop")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)

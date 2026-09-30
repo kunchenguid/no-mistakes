@@ -458,6 +458,7 @@ func TestPRStep_ConfiguredTitlePromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)

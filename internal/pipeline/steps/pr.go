@@ -155,7 +155,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, err
 			}
 			if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit, func() error {
-				return verifyPRMutationComparison(sctx, host, existing, sctx.Run.HeadSHA)
+				return verifyPRMutationComparison(sctx, host, existing, sctx.Run.HeadSHA, false)
 			}); err != nil {
 				return nil, err
 			}
@@ -164,7 +164,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err != nil {
 				return nil, err
 			}
-			if err := verifyPRMutationComparison(sctx, host, existing, sctx.Run.HeadSHA); err != nil {
+			if err := verifyPRMutationComparison(sctx, host, existing, sctx.Run.HeadSHA, false); err != nil {
 				return nil, err
 			}
 			updated, err = host.UpdatePR(ctx, existing, scm.PRContent(content))

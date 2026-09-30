@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -377,6 +378,7 @@ func TestRestampPRAttestation_MissingReaderIsSkipped(t *testing.T) {
 
 func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
+	bindPublicationComparison(t, f.sctx, f.headSHA)
 	original := compliantPipelineBody(t, f.headSHA)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(original), 0o644); err != nil {
@@ -386,6 +388,7 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 	f.sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
 	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`)
 	f.sctx.Env = append(env,
+		"FAKE_CLI_PR_HEAD_SHA="+f.headSHA,
 		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: ci",
@@ -452,12 +455,14 @@ func TestCIStep_UnsettledRepairPushParksImmediately(t *testing.T) {
 
 func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
+	bindPublicationComparison(t, f.sctx, f.headSHA)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f.sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
 	f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`),
+		"FAKE_CLI_PR_HEAD_SHA="+f.headSHA,
 		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: ci",
@@ -574,6 +579,12 @@ func TestPushStep_AttestsHeadBeforePush(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, newHead)
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, pipeline.PRTargetSelection{
+		PRURL: prURL, SourceRepo: "test/repo", SourceBranch: "feature",
+		ForgeHeadSHA: priorHead, TargetBranch: "main",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, name := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument} {
 		sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, name)
@@ -592,6 +603,7 @@ func TestPushStep_AttestsHeadBeforePush(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "gh.log")
 	env := fakeCIGH(t, "OPEN", `[]`)
 	sctx.Env = append(env,
+		"FAKE_CLI_PR_HEAD_SHA="+priorHead,
 		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: existing pr",
@@ -792,6 +804,12 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, newHead)
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, pipeline.PRTargetSelection{
+		PRURL: prURL, SourceRepo: "test/repo", SourceBranch: "feature",
+		ForgeHeadSHA: priorHead, TargetBranch: "main",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
 
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(priorAttestedBody), 0o644); err != nil {
@@ -803,7 +821,7 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 		"FAKE_CLI_MODE=ci-gh-with-intervening-push",
 		"FAKE_CLI_STATE=OPEN",
 		"FAKE_CLI_CHECKS=[]",
-		"FAKE_CLI_PR_HEAD_SHA=deadbeef",
+		"FAKE_CLI_PR_HEAD_SHA=" + priorHead,
 		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
 		"FAKE_CLI_PR_BODY_FILE=" + bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: existing pr",

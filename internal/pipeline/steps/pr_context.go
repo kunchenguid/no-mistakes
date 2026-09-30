@@ -319,7 +319,7 @@ func prComparisonAtTarget(sctx *pipeline.StepContext, target, targetSHA, localHe
 	return db.PRContextCandidate{LocalHeadSHA: localHead, TargetBranch: target, TargetSHA: targetSHA, MergeBaseSHA: mergeBase, DiffDigest: hex.EncodeToString(digest[:])}, nil
 }
 
-func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, proposedHead string) error {
+func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, proposedHead string, allowProposed bool) error {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil || pr == nil {
 		return fmt.Errorf("PR update lacks a run or comparison receipt")
 	}
@@ -328,8 +328,25 @@ func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *s
 		return err
 	}
 	if receipt == nil || receipt.PRURL == "" || !samePRIdentity(receipt.PRURL, pr) ||
-		proposedHead == "" || proposedHead != sctx.Run.HeadSHA {
+		proposedHead == "" || sctx.Run.HeadSHA != receipt.LocalHeadSHA ||
+		(!allowProposed && proposedHead != receipt.LocalHeadSHA) {
 		return fmt.Errorf("PR update lacks the current run comparison")
+	}
+	durable, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	if durable == nil || durable.HeadSHA != receipt.LocalHeadSHA {
+		return fmt.Errorf("durable run head differs from PR comparison receipt before update")
+	}
+	if allowProposed {
+		dirty, err := git.HasUncommittedChanges(sctx.Ctx, sctx.WorkDir)
+		if err != nil {
+			return fmt.Errorf("check worktree before PR attestation update: %w", err)
+		}
+		if dirty {
+			return fmt.Errorf("worktree is dirty before PR attestation update")
+		}
 	}
 	reader, ok := host.(scm.PRFactsReader)
 	if !ok {

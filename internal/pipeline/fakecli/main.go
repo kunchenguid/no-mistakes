@@ -139,6 +139,21 @@ func fakeGHHandler(args []string) {
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
 	prBase := os.Getenv("FAKE_CLI_PR_BASE")
 	prListJSON, hasPRListJSON := os.LookupEnv("FAKE_CLI_PR_LIST_JSON")
+	if len(args) > 0 && args[0] == "api" && strings.Contains(args[len(args)-1], "/pulls/") {
+		factsURL := os.Getenv("FAKE_CLI_PR_FACTS_URL")
+		if factsURL == "" {
+			factsURL = prURL
+		}
+		factsBase := os.Getenv("FAKE_CLI_PR_FACTS_BASE")
+		if factsBase == "" {
+			factsBase = prBase
+			if factsBase == "" {
+				factsBase = "main"
+			}
+		}
+		fmt.Printf(`{"number":%d,"html_url":%q,"state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":%q}}`, extractTrailingNumber(factsURL), factsURL, fakePRHeadSHA(), factsBase)
+		os.Exit(0)
+	}
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
@@ -461,7 +476,7 @@ func fakeCIGHReconcileHandler(args []string) {
 			os.Exit(0)
 		}
 	}
-	if strings.Contains(joined, "api --method GET repos/test/repo/pulls/42") {
+	if len(args) > 0 && args[0] == "api" && args[len(args)-1] == "repos/test/repo/pulls/42" {
 		fmt.Printf(`{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, fakePRHeadSHA())
 		os.Exit(0)
 	}
@@ -606,6 +621,14 @@ func fakeCIGHHandler(args []string) {
 		if authErr := os.Getenv("FAKE_CLI_AUTH_ERR"); authErr != "" {
 			fmt.Fprintln(os.Stderr, authErr)
 			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if len(args) > 0 && args[0] == "api" && args[len(args)-1] == "repos/test/repo/pulls/42" {
+		if facts := os.Getenv("FAKE_CLI_PR_FACTS_JSON"); facts != "" {
+			fmt.Print(facts)
+		} else {
+			fmt.Printf(`{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, fakePRHeadSHA())
 		}
 		os.Exit(0)
 	}

@@ -833,7 +833,7 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		return nil
 	}
 	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx), func() error {
-		return verifyPRMutationComparison(sctx, host, pr, headSHA)
+		return verifyPRMutationComparison(sctx, host, pr, headSHA, true)
 	}); err != nil {
 		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
 	}
