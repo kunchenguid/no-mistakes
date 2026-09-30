@@ -168,6 +168,10 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if err != nil {
 		return pipeline.PRContextDecision{}, err
 	}
+	if previous != nil && previous.SourceBranch == candidate.SourceBranch &&
+		scm.SameSourceRepository(resolvedProvider(sctx), previous.SourceRepo, candidate.SourceRepo) {
+		candidate.SourceRepo = previous.SourceRepo
+	}
 	resetFrom := types.StepReview
 	if previous == nil || previous.TargetBranch != candidate.TargetBranch ||
 		previous.TargetSHA != candidate.TargetSHA ||

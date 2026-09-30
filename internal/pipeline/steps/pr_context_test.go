@@ -8,9 +8,87 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestPRContextGuardKeepsProviderEquivalentSourceIdentity(t *testing.T) {
+	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderAzureDevOps} {
+		t.Run(string(provider), func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			sctx.ForgeContext = &forgecontext.Context{Provider: provider}
+			selection := pipeline.PRTargetSelection{SourceRepo: "Other/Fork", SourceBranch: "feature", TargetBranch: "main"}
+			if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
+				t.Fatal(err)
+			}
+			selection.SourceRepo = "other/fork"
+			unchanged, err := guardPRContextWithSelection(sctx, types.StepTest, selection, false)
+			if err != nil || unchanged.RestartFrom != "" {
+				t.Fatalf("case-only observation = %+v, %v", unchanged, err)
+			}
+			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil || receipt.Generation != 1 || receipt.SourceRepo != "Other/Fork" {
+				t.Fatalf("case-only receipt = %+v, %v", receipt, err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "documented.md"), []byte("new\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "documented.md")
+			gitCmd(t, dir, "commit", "-m", "document")
+			sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+			sctx.PRContextAfterStep = true
+			advanced, err := guardPRContextWithSelection(sctx, types.StepDocument, selection, false)
+			if err != nil || advanced.RestartFrom != "" {
+				t.Fatalf("forward edit after case-only observation = %+v, %v", advanced, err)
+			}
+			receipt, err = sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil || receipt.Generation != 2 || receipt.LocalHeadSHA != sctx.Run.HeadSHA || receipt.SourceRepo != "Other/Fork" {
+				t.Fatalf("advanced receipt = %+v, %v", receipt, err)
+			}
+		})
+	}
+}
+
+func TestPRContextGuardDoesNotFoldCaseForForgejoSource(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	sctx.ForgeContext = &forgecontext.Context{Provider: scm.ProviderForgejo}
+	selection := pipeline.PRTargetSelection{SourceRepo: "Other/Fork", SourceBranch: "feature", TargetBranch: "main"}
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
+		t.Fatal(err)
+	}
+	selection.SourceRepo = "other/fork"
+	if _, err := guardPRContextWithSelection(sctx, types.StepTest, selection, false); err == nil {
+		t.Fatal("accepted a different case-sensitive source repository")
+	}
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil || receipt.Generation != 1 || receipt.SourceRepo != "Other/Fork" {
+		t.Fatalf("receipt changed after source conflict: %+v, %v", receipt, err)
+	}
+}
+
+func TestPRContextGuardAttachesPRAfterSourceCaseChange(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	selection := pipeline.PRTargetSelection{SourceRepo: "Other/Fork", SourceBranch: "feature", TargetBranch: "main"}
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
+		t.Fatal(err)
+	}
+	selection.SourceRepo = "other/fork"
+	selection.PRURL = "https://github.com/other/fork/pull/7"
+	selection.ForgeHeadSHA = head
+	decision, err := guardPRContextWithSelection(sctx, types.StepPR, selection, false)
+	if err != nil || decision.RestartFrom != "" {
+		t.Fatalf("first PR attachment = %+v, %v", decision, err)
+	}
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil || receipt.Generation != 2 || receipt.SourceRepo != "Other/Fork" || receipt.PRURL != selection.PRURL {
+		t.Fatalf("attached receipt = %+v, %v", receipt, err)
+	}
+}
 
 func TestPRContextGuardExternalCIOwnerRejectsDifferentPRHead(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
