@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -47,6 +48,21 @@ func TestFindOpenPRFactsRejectsForeignSource(t *testing.T) {
 	}
 	if len(facts) != 0 {
 		t.Fatalf("foreign fork PR bound to local source: %+v", facts)
+	}
+}
+
+func TestFindOpenPRFactsDiscoversForkSource(t *testing.T) {
+	recorder := &fakeRecorder{responses: []fakeResponse{
+		{stdout: `{"found":true,"pull_request":` + pullJSON("open", false, testHeadSHA) + `,"search_info":{"complete":true,"pages":1,"fetched":1,"total":1}}`},
+		{stdout: rawPullFactsJSON("other/widgets", "open", testHeadSHA)},
+	}}
+	facts, err := newTestHost(recorder).FindOpenPRFacts(context.Background(), "other/widgets", "feature/forgejo")
+	if err != nil || len(facts) != 1 || facts[0].SourceRepository != "other/widgets" {
+		t.Fatalf("fork facts = %+v, err=%v", facts, err)
+	}
+	want := []string{"pr", "find", "--repo", testRepo, "--head", "feature/forgejo", "--state", "open", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"}
+	if len(recorder.calls) == 0 || !reflect.DeepEqual(recorder.calls[0].args, want) {
+		t.Fatalf("fork discovery command = %+v, want %v", recorder.calls, want)
 	}
 }
 

@@ -51,6 +51,15 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 		receipt.LocalHeadSHA != current.HeadSHA || *current.ReviewApprovedHeadSHA != receipt.LocalHeadSHA {
 		return fmt.Errorf("pending Review support lacks an approved current-head comparison")
 	}
+	externalCIHandoffReady := false
+	if through.Order() >= types.StepCI.Order() &&
+		current.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
+		stepsSkipped(byName, types.StepPush, types.StepPR, types.StepCI) {
+		if _, err := e.db.PendingExternalCISupport(current); err != nil {
+			return fmt.Errorf("pending Review CI support has no usable external handoff: %w", err)
+		}
+		externalCIHandoffReady = true
+	}
 	approvedHead := *current.ReviewApprovedHeadSHA
 	for _, claim := range pending {
 		if claim.ID == "" || claim.Support.OwnerResult != nil {
@@ -69,7 +78,7 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 		owner := byName[ownerName]
 		if ownerName == types.StepCI && owner != nil && owner.Status == types.StepStatusSkipped &&
 			current.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
-			stepsSkipped(byName, types.StepPush, types.StepPR, types.StepCI) {
+			externalCIHandoffReady {
 			// Controller explicitly owns this exact-head CI decision. The run
 			// remains pending-external-ci at the AXI surface; this is a handoff,
 			// never a local CI proof or an approval to merge.

@@ -87,7 +87,7 @@ func resolveAndApplyPRTarget(sctx *pipeline.StepContext, reader scm.PRFactsReade
 	if selection.ForgeHeadSHA != localHead {
 		return pipeline.PRTargetSelection{}, false, fmt.Errorf("recorded pull request head differs from local head before retarget")
 	}
-	freshRetarget := false
+	freshRetarget := selection.TargetBranch == requested
 	if selection.TargetBranch != requested {
 		if retargeter == nil {
 			return pipeline.PRTargetSelection{}, false, fmt.Errorf("provider cannot retarget recorded pull request to %s", requested)

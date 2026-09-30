@@ -105,8 +105,8 @@ func (h *Host) ReadPRFacts(ctx context.Context, identity *scm.PR) (scm.PRFacts, 
 }
 
 func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBranch string) ([]scm.PRFacts, error) {
-	if sourceRepository != h.repository || strings.TrimSpace(sourceBranch) == "" {
-		return nil, fmt.Errorf("Forgejo PR source identity does not match configured repository")
+	if strings.TrimSpace(sourceRepository) == "" || strings.TrimSpace(sourceBranch) == "" {
+		return nil, fmt.Errorf("Forgejo PR source identity is incomplete")
 	}
 	var response struct {
 		Found       bool         `json:"found"`

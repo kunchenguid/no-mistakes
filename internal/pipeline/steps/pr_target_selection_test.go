@@ -266,53 +266,67 @@ func TestFreshRetargetWaitsForUnpublishedPRToAttach(t *testing.T) {
 }
 
 func TestFreshRetargetAfterUnpublishedPRAttachmentRestartsFromRebase(t *testing.T) {
-	sctx, facts := selectionFixture(t)
-	sctx.Run.PRBaseBranch = strptr("release")
-	sctx.Run.PRBaseBranchRequested = true
-	ensureLocalBranch(t, sctx.WorkDir, "develop", sctx.Run.BaseSHA)
-	ensureLocalBranch(t, sctx.WorkDir, "release", sctx.Run.BaseSHA)
+	for _, tc := range []struct {
+		name          string
+		concurrent    bool
+		wantRetargets int
+	}{
+		{name: "local retarget", wantRetargets: 1},
+		{name: "concurrent retarget", concurrent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sctx, facts := selectionFixture(t)
+			sctx.Run.PRBaseBranch = strptr("release")
+			sctx.Run.PRBaseBranchRequested = true
+			ensureLocalBranch(t, sctx.WorkDir, "develop", sctx.Run.BaseSHA)
+			ensureLocalBranch(t, sctx.WorkDir, "release", sctx.Run.BaseSHA)
 
-	facts.HeadSHA = sctx.Run.BaseSHA
-	reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
-	selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, reader)
-	if err != nil || freshRetarget || selection.PRURL != "" {
-		t.Fatalf("unpublished selection=%+v fresh=%v err=%v", selection, freshRetarget, err)
-	}
-	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, freshRetarget); err != nil {
-		t.Fatal(err)
-	}
+			facts.HeadSHA = sctx.Run.BaseSHA
+			reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
+			selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, reader)
+			if err != nil || freshRetarget || selection.PRURL != "" {
+				t.Fatalf("unpublished selection=%+v fresh=%v err=%v", selection, freshRetarget, err)
+			}
+			if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, freshRetarget); err != nil {
+				t.Fatal(err)
+			}
 
-	facts.HeadSHA = sctx.Run.HeadSHA
-	attached := pipeline.PRTargetSelection{
-		PRURL: facts.PR.URL, SourceRepo: facts.SourceRepository, SourceBranch: facts.SourceBranch,
-		ForgeHeadSHA: facts.HeadSHA, TargetBranch: facts.BaseBranch,
-	}
-	if _, err := guardPRContextWithSelection(sctx, types.StepPush, attached, false); err != nil {
-		t.Fatal(err)
-	}
-	if sctx.Run.PRURL == nil || *sctx.Run.PRURL != facts.PR.URL {
-		t.Fatalf("attached run PR URL = %v", sctx.Run.PRURL)
-	}
+			facts.HeadSHA = sctx.Run.HeadSHA
+			attached := pipeline.PRTargetSelection{
+				PRURL: facts.PR.URL, SourceRepo: facts.SourceRepository, SourceBranch: facts.SourceBranch,
+				ForgeHeadSHA: facts.HeadSHA, TargetBranch: facts.BaseBranch,
+			}
+			if _, err := guardPRContextWithSelection(sctx, types.StepPush, attached, false); err != nil {
+				t.Fatal(err)
+			}
+			if sctx.Run.PRURL == nil || *sctx.Run.PRURL != facts.PR.URL {
+				t.Fatalf("attached run PR URL = %v", sctx.Run.PRURL)
+			}
 
-	reader.read = facts
-	selection, freshRetarget, err = resolveAndApplyPRTarget(sctx, reader, reader)
-	if err != nil || !freshRetarget || selection.TargetBranch != "release" {
-		t.Fatalf("retargeted selection=%+v fresh=%v err=%v", selection, freshRetarget, err)
-	}
-	decision, err := guardPRContextWithSelection(sctx, types.StepPR, selection, freshRetarget)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decision.RestartFrom != types.StepRebase {
-		t.Fatalf("restart = %q, want %q", decision.RestartFrom, types.StepRebase)
-	}
-	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
-	if err != nil || receipt == nil || receipt.TargetBranch != "release" {
-		t.Fatalf("receipt=%+v err=%v", receipt, err)
-	}
-	stored, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || stored.PRBaseBranchRequested {
-		t.Fatalf("retarget request remained: run=%+v err=%v", stored, err)
+			if tc.concurrent {
+				facts.BaseBranch = "release"
+			}
+			reader.read = facts
+			selection, freshRetarget, err = resolveAndApplyPRTarget(sctx, reader, reader)
+			if err != nil || !freshRetarget || selection.TargetBranch != "release" || len(reader.retargets) != tc.wantRetargets {
+				t.Fatalf("retargeted selection=%+v fresh=%v retargets=%v err=%v", selection, freshRetarget, reader.retargets, err)
+			}
+			decision, err := guardPRContextWithSelection(sctx, types.StepPR, selection, freshRetarget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.RestartFrom != types.StepRebase {
+				t.Fatalf("restart = %q, want %q", decision.RestartFrom, types.StepRebase)
+			}
+			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil || receipt == nil || receipt.TargetBranch != "release" {
+				t.Fatalf("receipt=%+v err=%v", receipt, err)
+			}
+			stored, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil || stored.PRBaseBranchRequested {
+				t.Fatalf("retarget request remained: run=%+v err=%v", stored, err)
+			}
+		})
 	}
 }
 

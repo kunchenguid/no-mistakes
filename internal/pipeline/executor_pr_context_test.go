@@ -262,7 +262,7 @@ func TestExecutorExplicitExternalCIOwnerCarriesPendingClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = database.BindRunPRContext(run.ID, db.PRContextCandidate{
-		LocalHeadSHA: run.HeadSHA, TargetBranch: "develop",
+		SourceRepo: "acme/repo", SourceBranch: "feature", LocalHeadSHA: run.HeadSHA, TargetBranch: "develop",
 		TargetSHA:    "2222222222222222222222222222222222222222",
 		MergeBaseSHA: "2222222222222222222222222222222222222222",
 		DiffDigest:   "3333333333333333333333333333333333333333333333333333333333333333",
@@ -284,6 +284,35 @@ func TestExecutorExplicitExternalCIOwnerCarriesPendingClaim(t *testing.T) {
 	current, err := database.GetRun(run.ID)
 	if err != nil || current.Status != types.RunCompleted {
 		t.Fatalf("run = %+v, err = %v; want completed with pending external CI", current, err)
+	}
+}
+
+func TestExecutorExternalCIBypassRequiresHandoffSourceIdentity(t *testing.T) {
+	database, p, baseRun, repo := setupTest(t)
+	const head = "1111111111111111111111111111111111111111"
+	run, err := database.InsertRunWithExternalCIOwner(repo.ID, "feature-external-ci-no-source", head, baseRun.BaseSHA,
+		nil, "", "", "", "develop", false, false, types.ExternalCIOwnerControllerShipPR, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BindRunPRContext(run.ID, db.PRContextCandidate{
+		LocalHeadSHA: run.HeadSHA, TargetBranch: "develop",
+		TargetSHA:    "2222222222222222222222222222222222222222",
+		MergeBaseSHA: "2222222222222222222222222222222222222222",
+		DiffDigest:   "3333333333333333333333333333333333333333333333333333333333333333",
+	}, types.StepRebase); err != nil {
+		t.Fatal(err)
+	}
+	const pending = `{"findings":[{"id":"review-ci-no-source","severity":"warning","description":"historical CI failure","action":"no-op","category":"review-support-pending","support":{"claim_type":"ci","ci":{"check_id":"old-check","head_sha":"1111111111111111111111111111111111111111"}}}]}`
+	executor := NewExecutor(database, p, nil, nil, []Step{
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			return &StepOutcome{Findings: pending, ReviewApprovedHeadSHA: run.HeadSHA}, nil
+		}},
+		newPassStep(types.StepPush), newPassStep(types.StepPR), newPassStep(types.StepCI),
+	}, nil)
+	executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR, types.StepCI})
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("external CI bypass completed without a handoff source identity")
 	}
 }
 
