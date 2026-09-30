@@ -1,10 +1,98 @@
 package pipeline
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func marshalFindingItems(t *testing.T, items ...types.Finding) string {
+	t.Helper()
+	raw, err := types.MarshalFindingsJSON(types.Findings{Items: items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func parseFindingItems(t *testing.T, raw string) []types.Finding {
+	t.Helper()
+	parsed, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed.Items
+}
+
+func TestSupportedClaimsStayDistinctAcrossReviewCarryAndSelection(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	base := types.Finding{ID: "review-1", Severity: types.FindingSeverityWarning, File: "feature.go", Line: 8,
+		Description: "historical check needs proof", Action: types.ActionNoOp, Category: types.FindingCategoryReviewSupportPending}
+	first := base
+	first.Support = &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "build", HeadSHA: head}}
+	second := base
+	second.Support = &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "security", HeadSHA: head}}
+	merged := mergeOutstandingFindingsJSON(marshalFindingItems(t, first), marshalFindingItems(t, second), nil)
+	items := parseFindingItems(t, merged)
+	if len(items) != 2 || items[0].Support.CI.CheckID != "build" || items[1].Support.CI.CheckID != "security" || items[0].ID == items[1].ID {
+		t.Fatalf("distinct CI claims were not carried independently: %+v", items)
+	}
+	if types.ReviewSupportClaimID(items[0]) == types.ReviewSupportClaimID(items[1]) {
+		t.Fatal("distinct named checks share an owner claim ID")
+	}
+	selected := parseFindingItems(t, remapFindingIDsJSON(merged, marshalFindingItems(t, second)))
+	if len(selected) != 1 || selected[0].ID != items[1].ID {
+		t.Fatalf("selection remapped to another claim: %+v", selected)
+	}
+	remaining := parseFindingItems(t, removeMatchingFindingsJSON(merged, marshalFindingItems(t, second)))
+	if len(remaining) != 1 || remaining[0].Support.CI.CheckID != "build" {
+		t.Fatalf("removal erased an unrelated claim: %+v", remaining)
+	}
+	retained := parseFindingItems(t, retainMatchingFindingsJSON(merged, marshalFindingItems(t, second)))
+	if len(retained) != 1 || retained[0].Support.CI.CheckID != "security" {
+		t.Fatalf("retention selected an unrelated claim: %+v", retained)
+	}
+	if got := retainFindingIDsByIdentity(marshalFindingItems(t, second), []string{first.ID}, map[string]types.Finding{first.ID: first}); len(got) != 0 {
+		t.Fatalf("recovery reused a selected ID for another claim: %v", got)
+	}
+}
+
+func TestSupportedFindingSelectorsAndFreshEvidence(t *testing.T) {
+	base := types.Finding{ID: "review-1", Severity: types.FindingSeverityWarning, File: "feature.go", Line: 8,
+		Description: "claim needs proof", Action: types.ActionNoOp}
+	for _, tc := range []struct {
+		name     string
+		a, b     *types.FindingSupport
+		wantSame bool
+	}{
+		{"CI historical head", &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "build", HeadSHA: "old"}}, &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "build", HeadSHA: "new"}}, false},
+		{"Test command", &types.FindingSupport{ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: "go test ./a"}}, &types.FindingSupport{ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: "go test ./b"}}, false},
+		{"claim type", &types.FindingSupport{ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: "build"}}, &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "build", HeadSHA: "old"}}, false},
+		{"source path", &types.FindingSupport{ClaimType: types.FindingClaimSource, Source: &types.FindingSourceSupport{Path: "feature.go", Line: 8, Quote: "same"}}, &types.FindingSupport{ClaimType: types.FindingClaimSource, Source: &types.FindingSourceSupport{Path: "other.go", Line: 8, Quote: "same"}}, false},
+		{"runtime transition", &types.FindingSupport{ClaimType: types.FindingClaimRuntime, Runtime: &types.FindingRuntimeSupport{Entity: "service", Transition: "down", TransitionAt: "earlier", Revision: "a"}}, &types.FindingSupport{ClaimType: types.FindingClaimRuntime, Runtime: &types.FindingRuntimeSupport{Entity: "service", Transition: "down", TransitionAt: "later", Revision: "a"}}, false},
+		{"runtime revision", &types.FindingSupport{ClaimType: types.FindingClaimRuntime, Runtime: &types.FindingRuntimeSupport{Entity: "service", Transition: "down", TransitionAt: "earlier", Revision: "a"}}, &types.FindingSupport{ClaimType: types.FindingClaimRuntime, Runtime: &types.FindingRuntimeSupport{Entity: "service", Transition: "down", TransitionAt: "earlier", Revision: "b"}}, false},
+		{"source quote refresh", &types.FindingSupport{ClaimType: types.FindingClaimSource, Source: &types.FindingSourceSupport{Path: "feature.go", Line: 8, Quote: "old"}}, &types.FindingSupport{ClaimType: types.FindingClaimSource, Source: &types.FindingSourceSupport{Path: "feature.go", Line: 9, Quote: "new", HeadSHA: "fresh"}}, true},
+		{"owner result refresh", &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "build", HeadSHA: "old"}}, &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "build", HeadSHA: "old"}, OwnerResult: &types.FindingOwnerResult{CheckState: "pass"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := base, base
+			a.Support, b.Support = tc.a, tc.b
+			items := parseFindingItems(t, mergeFindingsJSON(marshalFindingItems(t, a), marshalFindingItems(t, b)))
+			want := 2
+			if tc.wantSame {
+				want = 1
+			}
+			if len(items) != want {
+				t.Fatalf("merged %d claims, want %d: %+v", len(items), want, items)
+			}
+			if tc.wantSame && !reflect.DeepEqual(items[0].Support, tc.b) {
+				t.Fatalf("new evidence was not retained: %+v", items[0].Support)
+			}
+		})
+	}
+}
 
 func TestMergeFindingsJSON_KeepsDistinctFindingsWithSameAutoID(t *testing.T) {
 	existingRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"first"}],"summary":"1 finding"}`
