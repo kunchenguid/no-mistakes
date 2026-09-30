@@ -48,7 +48,8 @@ func TestConfiguredChecks_AddWithoutMaskingEitherFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			separator := "; "
 			if runtime.GOOS == "windows" {
-				separator = " & "
+				// cmd's echo keeps the space before "&" in its output.
+				separator = "& "
 			}
 			local := "echo local>>order.txt" + separator + "exit " + strconv.Itoa(tc.localExit)
 			team := "echo team>>order.txt" + separator + "exit " + strconv.Itoa(tc.teamExit)
@@ -109,7 +110,9 @@ func TestRepositoryCommand_LowersOSPriority(t *testing.T) {
 		t.Skip("nice is a POSIX scheduling knob")
 	}
 	sctx := commandOverrideContext(t, config.CommandOverride{})
-	base, code, err := runRepositoryCommand(sctx, "test", "nice")
+	// BSD nice (macOS) refuses to print the niceness without a utility, so read it from ps.
+	readNice := "ps -o nice= -p $$"
+	base, code, err := runRepositoryCommand(sctx, "test", readNice)
 	if err != nil || code != 0 {
 		t.Fatalf("read baseline niceness: %q %d %v", base, code, err)
 	}
@@ -118,7 +121,7 @@ func TestRepositoryCommand_LowersOSPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	sctx.Config.CommandOverrides["test"] = config.CommandOverride{Nice: 1}
-	out, code, err := runRepositoryCommand(sctx, "test", "nice")
+	out, code, err := runRepositoryCommand(sctx, "test", readNice)
 	if err != nil || code != 0 || strings.TrimSpace(out) != strconv.Itoa(min(baseNice+1, 19)) {
 		t.Fatalf("niceness = (%q, %d, %v), baseline %d", out, code, err, baseNice)
 	}
