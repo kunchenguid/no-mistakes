@@ -158,7 +158,7 @@ At entry to every repository gate and every core step from Test through CI, no-m
 Runs **targeted** local validation of the change and requested intent, then gathers evidence for that intent.
 Local Test is never a repository-wide regression-suite substitute; broad regression is owned by remote CI and remains mandatory before a PR is ready.
 [`commands.test`](/no-mistakes/reference/repo-config/#commandstest) owns the configuration contract for any explicit baseline command.
-When Review leaves a pending Test support claim, only the named configured command's completed result for the Test step's current comparison can resolve it. The result must still match the final comparison before completion. A skipped, failed, stale, or different command leaves the claim unresolved and blocks publication. After a later pipeline commit makes a successful result stale, the Test owner runs the same trusted configured command for the final comparison. It does not repeat the Test agent or live scenarios. Completion waits for the fresh command result to pass.
+When Review leaves a pending Test support claim, only the named configured command's completed result for the Test step's current comparison can resolve it. The result must still match the final comparison before completion. A skipped, failed, stale, or different command leaves the claim unresolved and blocks completion. After a later pipeline commit makes a successful result stale, the Test owner runs the same trusted configured command for the final comparison. It does not repeat the Test agent or live scenarios. Completion waits for the fresh command result to pass.
 
 **Behavior:**
 
