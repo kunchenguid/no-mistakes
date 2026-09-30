@@ -160,9 +160,8 @@ func currentTestCommandHead(sctx *pipeline.StepContext) string {
 }
 
 // resolveCIReviewSupport makes a fresh provider read for the exact current PR
-// head and comparison. Same-head claims keep exact provider check identity.
-// A historical ancestor claim can be disproven by a complete passing check
-// set on a later pipeline head; its historical reference stays unchanged.
+// head and comparison. The named immutable provider check must belong to
+// that head; unrelated passing checks cannot resolve a historical claim.
 func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) ([]Finding, error) {
 	claims, receipt, err := currentReviewSupportClaims(sctx, types.FindingClaimCI)
 	if err != nil || len(claims) == 0 {
@@ -184,7 +183,7 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		return unresolved("Provider cannot read current PR facts for Review CI claim"), nil
 	}
 	facts, err := reader.ReadPRFacts(sctx.Ctx, pr)
-	if err != nil || (facts.State != scm.PRStateOpen && facts.State != scm.PRStateMerged) || !scm.SameSourceRepository(resolvedProvider(sctx), facts.SourceRepository, receipt.SourceRepo) ||
+	if err != nil || (facts.State != scm.PRStateOpen && facts.State != scm.PRStateMerged && facts.State != scm.PRStateClosed) || !scm.SameSourceRepository(resolvedProvider(sctx), facts.SourceRepository, receipt.SourceRepo) ||
 		facts.SourceBranch != receipt.SourceBranch || facts.PR.URL != receipt.PRURL ||
 		facts.HeadSHA != receipt.LocalHeadSHA || facts.BaseBranch != receipt.TargetBranch {
 		return unresolved("Review CI claim has no exact current PR head observation"), nil
@@ -201,20 +200,12 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		return unresolved("Review CI claim check read failed"), nil
 	}
 	observedAt = supportObservationTime()
-	completeCurrentHeadProof := completePassingCICheckEvidence(checks)
 	results := make([]Finding, 0, len(claims))
 	for _, claim := range claims {
 		ref := claim.Support.CI
 		if ref.HeadSHA != receipt.LocalHeadSHA {
-			historicalHead, headErr := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", ref.HeadSHA+"^{commit}")
-			_, ancestryErr := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", ref.HeadSHA, receipt.LocalHeadSHA)
-			if completeCurrentHeadProof && headErr == nil && historicalHead == ref.HeadSHA && ancestryErr == nil {
-				results = append(results, ownerSupportFinding(claim, receipt, types.FindingSupportDispositionDisproven,
-					"Historical Review CI claim disproven by the complete passing current-head check set", observedAt, nil, "pass:complete-current-head-checks"))
-			} else {
-				results = append(results, ownerSupportFinding(claim, receipt, types.FindingSupportDispositionUnresolved,
-					"Historical Review CI claim has no complete passing check evidence on the current head", observedAt, nil, ""))
-			}
+			results = append(results, ownerSupportFinding(claim, receipt, types.FindingSupportDispositionUnresolved,
+				"Historical Review CI claim has no matching named check evidence on the current head", observedAt, nil, ""))
 			continue
 		}
 		var matching *scm.Check
@@ -256,24 +247,6 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		}
 	}
 	return results, nil
-}
-
-// A later head cannot reuse the old check ID. This stronger observation proves
-// that every check returned by the current exact-head provider query ran and
-// passed, with no missing or ambiguous provider identities.
-func completePassingCICheckEvidence(checks []scm.Check) bool {
-	if len(checks) == 0 {
-		return false
-	}
-	identities := make(map[string]bool, len(checks))
-	for _, check := range checks {
-		id := strings.TrimSpace(check.ProviderID)
-		if id == "" || identities[id] || check.Bucket != scm.CheckBucketPass || check.PreRunFailure || check.AwaitingApproval {
-			return false
-		}
-		identities[id] = true
-	}
-	return true
 }
 
 func appendOwnerSupportResults(outcome *pipeline.StepOutcome, results []Finding) error {

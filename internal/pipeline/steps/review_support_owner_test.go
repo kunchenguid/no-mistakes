@@ -296,6 +296,11 @@ func TestCIOwnerRequiresExactCurrentHeadCheckIdentity(t *testing.T) {
 	if err != nil || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
 		t.Fatalf("merged check without merge evidence = %+v, %v", results, err)
 	}
+	host.facts.State = scm.PRStateClosed
+	results, err = resolveCIReviewSupport(sctx, host, pr)
+	if err != nil || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
+		t.Fatalf("closed exact-head check = %+v, %v", results, err)
+	}
 	host.facts.State = scm.PRStateOpen
 	host.checks[0].Bucket, host.checks[0].State = scm.CheckBucketFail, "FAILURE"
 	results, err = resolveCIReviewSupport(sctx, host, pr)
@@ -371,6 +376,12 @@ func TestCIOwnerRejectsTargetCommitMovement(t *testing.T) {
 	if err != nil || len(results) != 1 || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
 		t.Fatalf("changed target support = %+v, %v; want unresolved", results, err)
 	}
+	host.facts.State = scm.PRStateClosed
+	results, err = resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
+	if err != nil || len(results) != 1 || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("closed changed-target support = %+v, %v; want unresolved", results, err)
+	}
+
 }
 
 type supportMergedProofHost struct {
@@ -421,11 +432,12 @@ func TestCIOwnerProvesMergedResultOnAdvancedTarget(t *testing.T) {
 
 func TestCIOwnerRechecksHistoricalClaimAfterForwardEdit(t *testing.T) {
 	for _, tc := range []struct {
-		name                                    string
-		checks                                  []scm.Check
-		unknownHead, mutableHead, wantDisproven bool
+		name                     string
+		checks                   []scm.Check
+		unknownHead, mutableHead bool
 	}{
-		{name: "current checks pass", checks: []scm.Check{{ProviderID: "new-check-1", Bucket: scm.CheckBucketPass}, {ProviderID: "new-check-2", Bucket: scm.CheckBucketPass}}, wantDisproven: true},
+		{name: "unrelated docs checks pass", checks: []scm.Check{{Name: "docs", ProviderID: "docs-run-1", Bucket: scm.CheckBucketPass}, {Name: "markdown", ProviderID: "docs-run-2", Bucket: scm.CheckBucketPass}}},
+		{name: "historical identity returned on new head", checks: []scm.Check{{ProviderID: "old-check", Bucket: scm.CheckBucketPass}}},
 		{name: "new check fails", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketFail}}},
 		{name: "check pending", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketPending}}},
 		{name: "check skipped", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketSkip}}},
@@ -483,9 +495,6 @@ func TestCIOwnerRechecksHistoricalClaimAfterForwardEdit(t *testing.T) {
 				t.Fatalf("forward claim result = %+v, %v", results, err)
 			}
 			want := types.FindingSupportDispositionUnresolved
-			if tc.wantDisproven {
-				want = types.FindingSupportDispositionDisproven
-			}
 			if results[0].Support.OwnerResult.Disposition != want {
 				t.Fatalf("forward claim result = %+v; want %s", results[0], want)
 			}
