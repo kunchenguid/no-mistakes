@@ -684,11 +684,9 @@ func (d *DB) SetRunPushActive(id string, active bool) error {
 	return nil
 }
 
-// UpdateRunPRState persists normalized lifecycle truth independently of logs.
-// A merged or closed PR is also the terminal outcome of the final CI monitor
-// step, so the PR observation and active-run finalization are committed in one
-// transaction. This makes the database authoritative even if execution stops
-// before the executor's ordinary follow-up completion write.
+// UpdateRunPRState records normalized lifecycle observations independently of
+// logs. A terminal PR observation does not authorize pipeline completion: the
+// executor must first validate current owner support and the live comparison.
 func (d *DB) UpdateRunPRState(id, state string) error {
 	state = strings.ToLower(strings.TrimSpace(state))
 	ts := now()
@@ -709,58 +707,10 @@ func (d *DB) UpdateRunPRState(id, state string) error {
 	if _, err := tx.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, state, ts, ts, id); err != nil {
 		return fmt.Errorf("update run PR state: %w", err)
 	}
-	if terminalPRState(state) {
-		if err := finalizeTerminalPRRun(tx, id, ts); err != nil {
-			return fmt.Errorf("update run PR state: %w", err)
-		}
-	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("update run PR state: commit: %w", err)
 	}
 	return nil
-}
-
-// ReconcileTerminalPRRuns repairs active rows written by an older or
-// interrupted daemon after terminal PR truth became durable but before the
-// separate run completion write. It is called during exclusive daemon startup
-// before parked-run planning and generic crash recovery.
-func (d *DB) ReconcileTerminalPRRuns() (int, error) {
-	ts := now()
-	tx, err := d.sql.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("reconcile terminal PR runs: begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	rows, err := tx.Query(`SELECT id FROM runs WHERE status IN (?, ?) AND pr_state IN ('merged', 'closed')`, types.RunPending, types.RunRunning)
-	if err != nil {
-		return 0, fmt.Errorf("reconcile terminal PR runs: list runs: %w", err)
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return 0, fmt.Errorf("reconcile terminal PR runs: scan run: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("reconcile terminal PR runs: close rows: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("reconcile terminal PR runs: list runs: %w", err)
-	}
-
-	for _, id := range ids {
-		if err := finalizeTerminalPRRun(tx, id, ts); err != nil {
-			return 0, fmt.Errorf("reconcile terminal PR runs: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("reconcile terminal PR runs: commit: %w", err)
-	}
-	return len(ids), nil
 }
 
 func monotonicPRState(current, observed string) string {
@@ -776,38 +726,6 @@ func monotonicPRState(current, observed string) string {
 	default:
 		return observed
 	}
-}
-
-func terminalPRState(state string) bool {
-	return state == "merged" || state == "closed"
-}
-
-func finalizeTerminalPRRun(tx *sql.Tx, id string, ts int64) error {
-	if _, err := tx.Exec(
-		`UPDATE step_results SET status = ?, exit_code = COALESCE(exit_code, 0), completed_at = COALESCE(completed_at, ?),
-			last_activity_at = ?, last_activity = ?, agent_pid = NULL
-		 WHERE run_id = ? AND step_name = ? AND status IN (?, ?, ?, ?)
-		   AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND status IN (?, ?))`,
-		types.StepStatusCompleted, ts, ts, "status: completed", id, types.StepCI,
-		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
-		id, types.RunPending, types.RunRunning,
-	); err != nil {
-		return fmt.Errorf("complete terminal CI step: %w", err)
-	}
-	if _, err := tx.Exec(
-		`UPDATE runs SET
-			status = CASE WHEN status IN (?, ?) THEN ? ELSE status END,
-			push_active = 0,
-			parked_ms = COALESCE(parked_ms, 0) + CASE
-				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
-				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,
-			awaiting_agent_since = NULL, updated_at = ?
-		 WHERE id = ?`,
-		types.RunPending, types.RunRunning, types.RunCompleted, ts, ts, ts, id,
-	); err != nil {
-		return fmt.Errorf("finalize terminal PR run: %w", err)
-	}
-	return nil
 }
 
 // SetRunCIReady persists checks-passed readiness so fresh TUI and AXI attaches

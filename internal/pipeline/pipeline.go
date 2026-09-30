@@ -139,9 +139,6 @@ type StepContext struct {
 	// AXI checks-passed outcome read a running status. Nil in embeddings that
 	// never fix.
 	MarkRunning func() error
-	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
-	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
-	OnPRMerged func(ctx context.Context, runID string)
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,

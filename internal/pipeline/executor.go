@@ -126,8 +126,8 @@ func (e *Executor) checkPRContext(ctx context.Context, run *db.Run, repo *db.Rep
 	return index, nil
 }
 
-// SetOnPRMerged registers a best-effort hook invoked after a merged PR state
-// is persisted. The pipeline never fails the run if the hook errors.
+// SetOnPRMerged registers a best-effort hook invoked after a run completes
+// with a verified merged PR. Observation alone never invokes the hook.
 func (e *Executor) SetOnPRMerged(fn func(context.Context, string)) {
 	if e == nil {
 		return
@@ -376,10 +376,13 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 	// Mark run as completed. A failure here must emit a terminal failure rather
 	// than leaving a silent running row after every step has finished.
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
 	if err := e.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
 		return e.failRun(run, repo, err, ctx)
 	}
-	if err := e.completeRun(run, repo); err != nil {
+	if err := e.completeRun(ctx, run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
 	}
 	return nil
@@ -534,9 +537,20 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 			return nil
 		}
+		if gate.step.Name() == types.StepCI {
+			if err := e.validateCICompletion(ctx, run, repo, workDir); err != nil {
+				return err
+			}
+		}
 		return e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult))
 	}
 	completeReconciledGate := func() error {
+		// Reconciliation observes the terminal PR; CI still owns fresh support
+		// collection. Re-enter the normal step path before its completion write.
+		if gate.step.Name() == types.StepCI && terminalPRObserved(run) {
+			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index, true)
+		}
+
 		restartIndex, err := e.checkPRContext(ctx, run, repo, workDir, gate.step.Name(), gate.index, true)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
@@ -573,9 +587,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		Log: func(message string) {
 			slog.Info("recovered approval gate reconciliation", "run_id", run.ID, "step", gate.step.Name(), "message", message)
 		},
-		LogChunk:   func(string) {},
-		LogFile:    func(string) {},
-		OnPRMerged: e.onPRMerged,
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
 	}
 	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx, gate.findings); reconciled {
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
@@ -761,7 +774,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
-			return e.skipRecoveredRemainder(run, repo, gate.index+1)
+			return e.skipRecoveredRemainder(ctx, run, repo, workDir, gate.index+1)
 		}
 		if restartFrom != "" {
 			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
@@ -903,7 +916,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			}
 		}
 		if skipRemaining {
-			return e.skipRecoveredRemainder(run, repo, index+1)
+			return e.skipRecoveredRemainder(ctx, run, repo, workDir, index+1)
 		}
 		if restartFrom != "" {
 			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, index)
@@ -914,16 +927,19 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			index = restartIndex - 1
 		}
 	}
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
 	if err := e.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
 		return e.failRun(run, repo, err, ctx)
 	}
-	if err := e.completeRun(run, repo); err != nil {
+	if err := e.completeRun(ctx, run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("complete recovered run: %w", err), ctx)
 	}
 	return nil
 }
 
-func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int) error {
+func (e *Executor) skipRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, start int) error {
 	results, err := e.db.GetStepsByRun(run.ID)
 	if err != nil {
 		return e.failRun(run, repo, fmt.Errorf("get recovered steps: %w", err))
@@ -937,13 +953,27 @@ func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, e.steps[index].Name(), string(types.StepStatusSkipped), "", "", nil)
 	}
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
 	if err := e.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
 		return e.failRun(run, repo, err)
 	}
-	if err := e.completeRun(run, repo); err != nil {
+	if err := e.completeRun(ctx, run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("complete recovered run: %w", err))
 	}
 	return nil
+}
+
+func (e *Executor) validateCICompletion(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return err
+	}
+	return e.validateReviewSupportOwnersBeforeCICompletion(run.ID)
+}
+
+func terminalPRObserved(run *db.Run) bool {
+	return run.PRState != nil && (*run.PRState == "closed" || *run.PRState == "merged")
 }
 
 func recoveredStepDuration(step *db.StepResult) int64 {
@@ -1196,7 +1226,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		},
 		CIReadinessChanged: ciReadinessChanged,
 		MarkRunning:        markRunning,
-		OnPRMerged:         e.onPRMerged,
 	}
 	if stepName == types.StepReview {
 		BindUncertifiedPipelineRange(sctx)
@@ -1533,6 +1562,18 @@ rounds:
 			}
 			if reconciled {
 				phaseStart = time.Now()
+				if stepName == types.StepCI && terminalPRObserved(run) {
+					// A terminal observation clears the stale gate, not the support duty.
+					// Re-run CI without applying its old repair selection.
+					if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+						return false, "", fmt.Errorf("resume CI support after terminal observation: %w", err)
+					}
+					e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
+					sctx.Fixing, sctx.SkipFixExecution = false, false
+					sctx.CarriedFindings, sctx.PreviousFindings, sctx.DeferredFindings = "", "", ""
+					nextTrigger = "initial"
+					continue rounds
+				}
 				goto done
 			}
 
@@ -1680,6 +1721,11 @@ rounds:
 	}
 
 done:
+	// A CI repair that requests fresh validation has no terminal verdict yet.
+	// Leave its status active until the caller resets it with the owner stages.
+	if stepName == types.StepCI && restartFrom != "" {
+		return skipRemaining, restartFrom, nil
+	}
 	// Mark step completed with execution-only timing.
 	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
 	if durationOverrideMS > 0 {
@@ -1688,6 +1734,15 @@ done:
 	status := types.StepStatusCompleted
 	if stepSkipped {
 		status = types.StepStatusSkipped
+	}
+	if stepName == types.StepCI && !stepSkipped {
+		if err := e.validateCICompletion(ctx, run, repo, workDir); err != nil {
+			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
+				slog.Warn("failed to mark unproven CI step as failed", "step", stepName, "error", dbErr)
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", err.Error(), &durationMS)
+			return false, "", err
+		}
 	}
 	// A review round's captured head becomes authority only when the review
 	// actually completes. Parked outcomes stay in the loop above, failures
@@ -2031,6 +2086,21 @@ func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *S
 	if HasProtectedPathRefusal(findingsJSON) {
 		return false, nil
 	}
+	// Closing or merging a PR cannot clear a gate raised by current CI
+	// support that remains unresolved or supported. Only current proof can.
+	if step.Name() == types.StepCI {
+		findings, err := types.ParseFindingsJSON(findingsJSON)
+		if err != nil {
+			return false, fmt.Errorf("read CI support gate findings: %w", err)
+		}
+		for _, finding := range findings.Items {
+			if finding.Support != nil && finding.Support.ClaimType == types.FindingClaimCI &&
+				finding.Support.OwnerResult != nil &&
+				finding.Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
+				return false, nil
+			}
+		}
+	}
 	timeout := e.gateReconcileTimeout
 	if timeout <= 0 {
 		timeout = defaultGateReconcileTimeout
@@ -2075,7 +2145,7 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	return err
 }
 
-func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
+func (e *Executor) completeRun(ctx context.Context, run *db.Run, repo *db.Repo) error {
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
 	var err error
 	if verified {
@@ -2091,6 +2161,10 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 	}
 	run.Status = types.RunCompleted
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
+	if run.PRState != nil && *run.PRState == "merged" && e.onPRMerged != nil {
+		e.onPRMerged(ctx, run.ID)
+	}
+
 	return nil
 }
 

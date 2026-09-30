@@ -938,7 +938,7 @@ func TestUpdateRunPRURL(t *testing.T) {
 	}
 }
 
-func TestUpdateRunPRStateFinalizesActiveTerminalOutcomes(t *testing.T) {
+func TestUpdateRunPRStateRecordsTerminalObservationWithoutCompleting(t *testing.T) {
 	for _, state := range []string{"merged", "closed"} {
 		t.Run(state, func(t *testing.T) {
 			d := openTestDB(t)
@@ -957,36 +957,23 @@ func TestUpdateRunPRStateFinalizesActiveTerminalOutcomes(t *testing.T) {
 			if err := d.StartStep(ci.ID); err != nil {
 				t.Fatal(err)
 			}
-
 			if err := d.UpdateRunPRState(run.ID, state); err != nil {
 				t.Fatal(err)
 			}
-
 			got, _ := d.GetRun(run.ID)
-			if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != state {
-				t.Fatalf("terminal PR run = status %s pr_state %v, want completed/%s", got.Status, got.PRState, state)
+			if got.Status != types.RunRunning || got.PRState == nil || *got.PRState != state || got.PRStateObservedAt == nil {
+				t.Fatalf("PR observation = status %s state %v observed %v, want running/%s with timestamp", got.Status, got.PRState, got.PRStateObservedAt, state)
 			}
-			if got.AwaitingAgentSince != nil || got.PushActive {
-				t.Fatalf("terminal PR run retained active markers: awaiting=%v push_active=%t", got.AwaitingAgentSince, got.PushActive)
-			}
-			parkedMS := got.ParkedMS
-			if err := d.CompleteRunAwaitingAgent(run.ID, 1234); err != nil {
-				t.Fatal(err)
-			}
-			got, _ = d.GetRun(run.ID)
-			if got.ParkedMS != parkedMS {
-				t.Fatalf("duplicate gate completion changed parked_ms from %d to %d", parkedMS, got.ParkedMS)
+			if got.AwaitingAgentSince == nil || !got.PushActive {
+				t.Fatalf("observation altered active markers: %+v", got)
 			}
 			gotCI, _ := d.GetStepResult(ci.ID)
-			if gotCI.Status != types.StepStatusCompleted {
-				t.Fatalf("CI status = %s, want completed", gotCI.Status)
+			if gotCI.Status != types.StepStatusRunning {
+				t.Fatalf("CI status = %s, want running until executor verifies support", gotCI.Status)
 			}
 			active, err := d.GetActiveRuns()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(active) != 0 {
-				t.Fatalf("terminal PR remains active: %+v", active)
+			if err != nil || len(active) != 1 {
+				t.Fatalf("active runs = %+v, err = %v; observation must remain active", active, err)
 			}
 		})
 	}
@@ -1024,12 +1011,12 @@ func TestUpdateRunPRStateIgnoresDuplicateAndDelayedRegressions(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := d.GetRun(run.ID)
-	if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != "merged" {
+	if got.Status != types.RunRunning || got.PRState == nil || *got.PRState != "merged" {
 		t.Fatalf("duplicate/delayed PR observations regressed run: status=%s pr_state=%v", got.Status, got.PRState)
 	}
 	active, _ := d.GetActiveRuns()
-	if len(active) != 0 {
-		t.Fatalf("duplicate/delayed PR observations reactivated run: %+v", active)
+	if len(active) != 1 {
+		t.Fatalf("duplicate/delayed PR observations completed run without executor proof: %+v", active)
 	}
 }
 
@@ -1056,7 +1043,7 @@ func TestUpdateRunPRStateDoesNotRewriteAlreadyTerminalStatus(t *testing.T) {
 	}
 }
 
-func TestReconcileTerminalPRRunsFinalizesLegacyActiveRows(t *testing.T) {
+func TestRecoverStaleTerminalPRObservationDoesNotCertifyCompletion(t *testing.T) {
 	for _, state := range []string{"merged", "closed"} {
 		t.Run(state, func(t *testing.T) {
 			d := openTestDB(t)
@@ -1065,37 +1052,27 @@ func TestReconcileTerminalPRRunsFinalizesLegacyActiveRows(t *testing.T) {
 			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 				t.Fatal(err)
 			}
+			if err := d.UpdateRunPRURL(run.ID, "https://github.com/user/project/pull/1"); err != nil {
+				t.Fatal(err)
+			}
 			ci, _ := d.InsertStepResult(run.ID, types.StepCI)
 			if err := d.StartStep(ci.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+			if err := d.UpdateRunPRState(run.ID, state); err != nil {
 				t.Fatal(err)
 			}
-			// Simulate a row written by an older daemon after it observed a terminal
-			// PR but before its separate run-status finalization write.
-			if _, err := d.sql.Exec(`UPDATE runs SET pr_state = ? WHERE id = ?`, state, run.ID); err != nil {
-				t.Fatal(err)
-			}
-
-			count, err := d.ReconcileTerminalPRRuns()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if count != 1 {
-				t.Fatalf("reconciled count = %d, want 1", count)
+			count, err := d.RecoverStaleRuns("interrupted before support proof")
+			if err != nil || count != 1 {
+				t.Fatalf("recover = %d, %v; want 1/nil", count, err)
 			}
 			got, _ := d.GetRun(run.ID)
-			if got.Status != types.RunCompleted || got.AwaitingAgentSince != nil {
-				t.Fatalf("reconciled run = status %s awaiting %v", got.Status, got.AwaitingAgentSince)
+			if got.Status != types.RunCIMonitorInterrupted {
+				t.Fatalf("unverified terminal observation recovered as %s", got.Status)
 			}
 			gotCI, _ := d.GetStepResult(ci.ID)
-			if gotCI.Status != types.StepStatusCompleted {
-				t.Fatalf("reconciled CI status = %s, want completed", gotCI.Status)
-			}
-			count, err = d.ReconcileTerminalPRRuns()
-			if err != nil || count != 0 {
-				t.Fatalf("idempotent reconciliation = count %d err %v, want 0/nil", count, err)
+			if gotCI.Status != types.StepStatusSkipped {
+				t.Fatalf("unverified CI status = %s", gotCI.Status)
 			}
 		})
 	}

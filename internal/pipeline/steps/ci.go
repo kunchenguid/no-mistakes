@@ -144,16 +144,15 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		if err := verifyMergedProof(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, sctx.Run.HeadSHA); err != nil {
 			return false, err
 		}
-		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
+		if err := observeCIState(sctx, "merged"); err != nil {
 			return false, err
 		}
-		notifyPRMerged(sctx)
 		if sctx.Log != nil {
 			sctx.Log("PR has been merged; clearing stale CI approval gate")
 		}
 		return true, nil
 	case scm.PRStateClosed:
-		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
+		if err := observeCIState(sctx, "closed"); err != nil {
 			return false, err
 		}
 		if sctx.Log != nil {
@@ -161,7 +160,7 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		}
 		return true, nil
 	case scm.PRStateOpen:
-		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
+		if err := observeCIState(sctx, "open"); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -245,20 +244,34 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 	return nil
 }
 
+// observeCIState records PR truth without completing CI or the run. The same
+// observation is available to the executor's post-CI comparison guard.
+func observeCIState(sctx *pipeline.StepContext, state string) error {
+	if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, state); err != nil {
+		return err
+	}
+	// Keep the in-memory observation monotonic like its durable counterpart.
+	if sctx.Run.PRState != nil && (*sctx.Run.PRState == "merged" ||
+		(*sctx.Run.PRState == "closed" && state != "merged")) {
+		return nil
+	}
+	sctx.Run.PRState = &state
+	return nil
+}
+
 func terminalCIOutcome(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, state scm.PRState) (*pipeline.StepOutcome, bool, error) {
 	switch state {
 	case scm.PRStateMerged:
 		if err := verifyMergedProof(sctx.Ctx, host, pr, sctx.Run.HeadSHA); err != nil {
 			return nil, true, err
 		}
-		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
+		if err := observeCIState(sctx, "merged"); err != nil {
 			return nil, true, err
 		}
-		notifyPRMerged(sctx)
 		sctx.Log("PR has been merged!")
 		return &pipeline.StepOutcome{}, true, nil
 	case scm.PRStateClosed:
-		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
+		if err := observeCIState(sctx, "closed"); err != nil {
 			return nil, true, err
 		}
 		sctx.Log("PR has been closed")
@@ -387,7 +400,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
 		}
 	}
-	// A PR can close while CI is waiting. Finish that lifecycle before asking
+	// A PR can close while CI is waiting. Observe that lifecycle before asking
 	// for an open PR's target branch, which is no longer available after close.
 	if state, stateErr := host.GetPRState(ctx, pr); stateErr == nil {
 		if terminal, done, terminalErr := terminalCIOutcome(sctx, host, pr, state); done || terminalErr != nil {
@@ -530,7 +543,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		} else if terminal, done, terminalErr := terminalCIOutcome(sctx, host, pr, state); done || terminalErr != nil {
 			return terminal, terminalErr
 		} else if state == scm.PRStateOpen {
-			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
+			if err := observeCIState(sctx, "open"); err != nil {
 				return nil, err
 			}
 		}
@@ -816,11 +829,4 @@ func setCIMonitorReadiness(sctx *pipeline.StepContext, ready, declaredNoCI bool)
 		sctx.CIReadinessChanged(ready, declaredNoCI)
 	}
 	return nil
-}
-
-func notifyPRMerged(sctx *pipeline.StepContext) {
-	if sctx == nil || sctx.OnPRMerged == nil || sctx.Run == nil {
-		return
-	}
-	sctx.OnPRMerged(sctx.Ctx, sctx.Run.ID)
 }
