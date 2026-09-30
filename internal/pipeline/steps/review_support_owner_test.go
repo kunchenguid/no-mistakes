@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -294,5 +295,38 @@ func TestCIOwnerRequiresExactCurrentHeadCheckIdentity(t *testing.T) {
 	results, err = resolveCIReviewSupport(sctx, host, pr)
 	if err != nil || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
 		t.Fatalf("old PR head = %+v, %v", results, err)
+	}
+}
+
+func TestCIOwnerUsesProviderSourceIdentity(t *testing.T) {
+	for _, provider := range []scm.Provider{scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderAzureDevOps} {
+		t.Run(string(provider), func(t *testing.T) {
+			sctx, receipt := completedReviewSupportFixture(t, pendingReviewCIClaim("run-42", ""))
+			sctx.ForgeContext = &forgecontext.Context{Provider: provider}
+			steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := types.MarshalFindingsJSON(Findings{Items: []Finding{pendingReviewCIClaim("run-42", receipt.LocalHeadSHA)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.SetStepFindings(steps[0].ID, encoded); err != nil {
+				t.Fatal(err)
+			}
+			host := &supportCheckHost{
+				facts:  scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateOpen, SourceRepository: "Test/Repo", SourceBranch: receipt.SourceBranch, HeadSHA: receipt.LocalHeadSHA, BaseBranch: receipt.TargetBranch},
+				checks: []scm.Check{{Name: "test", ProviderID: "run-42", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
+			}
+			results, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
+			if err != nil || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
+				t.Fatalf("case-only source difference = %+v, %v", results, err)
+			}
+			host.facts.SourceRepository = "other/repo"
+			results, err = resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
+			if err != nil || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
+				t.Fatalf("different source repository = %+v, %v", results, err)
+			}
+		})
 	}
 }

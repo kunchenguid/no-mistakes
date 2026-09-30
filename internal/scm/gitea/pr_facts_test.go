@@ -78,7 +78,7 @@ func TestFindOpenPRFactsPaginatesAndReturnsEveryExactSourceCandidate(t *testing.
 		"tea api --login work /repos/owner/repo/pulls?state=open&sort=oldest&limit=50&page=2": {stdout: `[` + second + `]`},
 		"tea api --login work /repos/owner/repo/pulls?state=open&sort=oldest&limit=50&page=3": {stdout: `[]`},
 	})
-	facts, err := host.FindOpenPRFacts(context.Background(), "fork/repo", "feature")
+	facts, err := host.FindOpenPRFacts(context.Background(), "Fork/Repo", "feature")
 	if err != nil {
 		t.Fatal(err)
 	}

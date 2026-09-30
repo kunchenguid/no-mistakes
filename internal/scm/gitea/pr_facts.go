@@ -201,7 +201,7 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 				return nil, fmt.Errorf("Gitea open PR list returned duplicate PR %s", item.PR.Number)
 			}
 			seen[item.PR.Number] = true
-			if strings.EqualFold(item.SourceRepository, sourceRepository) && item.SourceBranch == sourceBranch {
+			if scm.SameSourceRepository(scm.ProviderGitea, item.SourceRepository, sourceRepository) && item.SourceBranch == sourceBranch {
 				facts = append(facts, item)
 			}
 		}

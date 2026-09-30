@@ -104,7 +104,7 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 			if err != nil {
 				return nil, err
 			}
-			if item.State != scm.PRStateOpen || item.SourceRepository != sourceRepository || item.SourceBranch != sourceBranch {
+			if item.State != scm.PRStateOpen || !scm.SameSourceRepository(scm.ProviderBitbucket, item.SourceRepository, sourceRepository) || item.SourceBranch != sourceBranch {
 				return nil, fmt.Errorf("Bitbucket PR listing returned a mismatched source identity")
 			}
 			if seenPRs[candidate.ID] {

@@ -150,7 +150,7 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 			if facts.State != scm.PRStateOpen {
 				return nil, fmt.Errorf("Forgejo PR list page %d entry %d returned a non-open PR", page, i)
 			}
-			if facts.SourceRepository == sourceRepository && facts.SourceBranch == sourceBranch {
+			if scm.SameSourceRepository(scm.ProviderForgejo, facts.SourceRepository, sourceRepository) && facts.SourceBranch == sourceBranch {
 				matches = append(matches, facts)
 			}
 		}

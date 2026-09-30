@@ -71,7 +71,7 @@ func TestFindOpenPRFactsReturnsEveryPagedCandidateAndAcceptsPushURL(t *testing.T
 		"az repos pr list --source-branch feature --status active --top 100 --skip 100 --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {stdout: "[" + last + "]"},
 		"az repos ref list --filter heads/feature --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json":                                      {stdout: `[{"name":"refs/heads/feature","objectId":"` + azFactsSHA + `"}]`},
 	})
-	facts, err := h.FindOpenPRFacts(context.Background(), "git@ssh.dev.azure.com:v3/myorg/myproject/myrepo", "feature")
+	facts, err := h.FindOpenPRFacts(context.Background(), "git@ssh.dev.azure.com:v3/MyOrg/MyProject/MyRepo", "feature")
 	if err != nil {
 		t.Fatal(err)
 	}

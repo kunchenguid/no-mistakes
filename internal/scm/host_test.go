@@ -55,6 +55,31 @@ func TestRepoPathPreservesNonAzureGitNamespace(t *testing.T) {
 	}
 }
 
+func TestSameSourceRepositoryUsesProviderCaseSemantics(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		provider Provider
+		left     string
+		right    string
+		want     bool
+	}{
+		{"github case", ProviderGitHub, "Other/Fork", "other/fork", true},
+		{"gitlab case", ProviderGitLab, "Other/Fork", "other/fork", true},
+		{"gitea case", ProviderGitea, "Other/Fork", "other/fork", true},
+		{"azure case", ProviderAzureDevOps, "https://dev.azure.com/Other/Project/_git/Fork", "https://dev.azure.com/other/project/_git/fork", true},
+		{"forgejo case", ProviderForgejo, "Other/Fork", "other/fork", false},
+		{"bitbucket case", ProviderBitbucket, "Other/Fork", "other/fork", false},
+		{"different repository", ProviderGitLab, "other/fork", "other/repo", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SameSourceRepository(tc.provider, tc.left, tc.right); got != tc.want {
+				t.Fatalf("SameSourceRepository(%s, %q, %q) = %t, want %t", tc.provider, tc.left, tc.right, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckBucketHelpers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

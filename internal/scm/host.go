@@ -47,6 +47,17 @@ func ExtractHost(remote string) string {
 	return strings.ToLower(s)
 }
 
+// SameSourceRepository applies the provider's authoritative repository-name
+// case semantics when comparing PR source identities.
+func SameSourceRepository(provider Provider, left, right string) bool {
+	switch provider {
+	case ProviderGitHub, ProviderGitLab, ProviderGitea, ProviderAzureDevOps:
+		return strings.EqualFold(left, right)
+	default:
+		return left == right
+	}
+}
+
 // stripPort removes a trailing :port from a host, leaving bare hosts and
 // bracketed IPv6 literals intact.
 func stripPort(host string) string {

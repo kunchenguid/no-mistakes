@@ -229,7 +229,7 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 			}
 			seen[item.PR.URL] = true
 			seenNumbers[item.PR.Number] = true
-			if strings.EqualFold(item.SourceRepository, sourceRepository) {
+			if scm.SameSourceRepository(scm.ProviderGitLab, item.SourceRepository, sourceRepository) {
 				facts = append(facts, item)
 			}
 		}

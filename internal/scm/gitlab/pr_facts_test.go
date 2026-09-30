@@ -34,7 +34,7 @@ func TestFindOpenPRFactsReturnsEveryPaginatedCandidate(t *testing.T) {
 	h := gitlabFactsHost(map[string]gitlabTestResponse{
 		"glab api --hostname gitlab.example.com --method GET projects/group%2Fproject/merge_requests -f state=opened -f source_branch=feature -f per_page=100 --paginate": {stdout: `[ ` + gitlabFacts42 + ` ]` + "\n" + `[ ` + gitlabFacts43 + ` ]`},
 	})
-	facts, err := h.FindOpenPRFacts(context.Background(), "other/fork", "feature")
+	facts, err := h.FindOpenPRFacts(context.Background(), "Other/Fork", "feature")
 	if err != nil {
 		t.Fatal(err)
 	}

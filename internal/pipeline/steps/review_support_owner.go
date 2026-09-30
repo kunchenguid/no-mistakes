@@ -185,11 +185,7 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		return unresolved("Provider cannot read current PR facts for Review CI claim"), nil
 	}
 	facts, err := reader.ReadPRFacts(sctx.Ctx, pr)
-	sameSource := facts.SourceRepository == receipt.SourceRepo
-	if resolvedProvider(sctx) == scm.ProviderGitHub {
-		sameSource = strings.EqualFold(facts.SourceRepository, receipt.SourceRepo)
-	}
-	if err != nil || (facts.State != scm.PRStateOpen && facts.State != scm.PRStateMerged) || !sameSource ||
+	if err != nil || (facts.State != scm.PRStateOpen && facts.State != scm.PRStateMerged) || !scm.SameSourceRepository(resolvedProvider(sctx), facts.SourceRepository, receipt.SourceRepo) ||
 		facts.SourceBranch != receipt.SourceBranch || facts.PR.URL != receipt.PRURL ||
 		facts.HeadSHA != receipt.LocalHeadSHA || facts.BaseBranch != receipt.TargetBranch {
 		return unresolved("Review CI claim has no exact current PR head observation"), nil

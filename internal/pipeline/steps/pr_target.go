@@ -135,13 +135,7 @@ func validatePRFacts(facts scm.PRFacts, provider scm.Provider, sourceRepo, branc
 	if facts.State != scm.PRStateOpen {
 		return fmt.Errorf("pull request %s is %s", facts.PR.URL, strings.ToLower(string(facts.State)))
 	}
-	sameSource := facts.SourceRepository == sourceRepo
-	if provider == scm.ProviderGitHub {
-		// GitHub repository owner/name is case-insensitive. Its API can return
-		// canonical display casing different from the local remote spelling.
-		sameSource = strings.EqualFold(facts.SourceRepository, sourceRepo)
-	}
-	if !sameSource || facts.SourceBranch != branch {
+	if !scm.SameSourceRepository(provider, facts.SourceRepository, sourceRepo) || facts.SourceBranch != branch {
 		return fmt.Errorf("pull request %s source %s on %s differs from %s on %s", facts.PR.URL, facts.SourceRepository, facts.SourceBranch, sourceRepo, branch)
 	}
 	if strings.TrimSpace(facts.PR.URL) == "" || strings.TrimSpace(facts.HeadSHA) == "" || strings.TrimSpace(facts.BaseBranch) == "" {

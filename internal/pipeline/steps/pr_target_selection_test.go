@@ -80,6 +80,30 @@ func TestResolvePRTarget_GitHubSourceRepositoryCaseDoesNotChangeIdentity(t *test
 	}
 }
 
+func TestValidatePRFactsUsesProviderSourceIdentity(t *testing.T) {
+	facts := scm.PRFacts{PR: scm.PR{URL: "https://example.test/pr/42"}, State: scm.PRStateOpen, SourceRepository: "Other/Fork", SourceBranch: "feature", HeadSHA: "head", BaseBranch: "main"}
+	for _, tc := range []struct {
+		name     string
+		provider scm.Provider
+		source   string
+		wantErr  bool
+	}{
+		{"github case", scm.ProviderGitHub, "other/fork", false},
+		{"gitlab case", scm.ProviderGitLab, "other/fork", false},
+		{"gitea case", scm.ProviderGitea, "other/fork", false},
+		{"azure case", scm.ProviderAzureDevOps, "other/fork", false},
+		{"forgejo case", scm.ProviderForgejo, "other/fork", true},
+		{"different repository", scm.ProviderGitLab, "other/repo", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePRFacts(facts, tc.provider, tc.source, "feature")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validatePRFacts() error = %v, want error %t", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestResolvePRTarget_DiscoversUnrecordedExactHead(t *testing.T) {
 	sctx, facts := selectionFixture(t)
 	reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}

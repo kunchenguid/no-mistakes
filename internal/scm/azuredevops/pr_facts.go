@@ -244,7 +244,7 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 				return nil, fmt.Errorf("az repos pr list returned duplicate PR %s", item.PR.Number)
 			}
 			seen[item.PR.Number] = true
-			if strings.EqualFold(item.SourceRepository, wanted) {
+			if scm.SameSourceRepository(scm.ProviderAzureDevOps, item.SourceRepository, wanted) {
 				facts = append(facts, item)
 			}
 		}

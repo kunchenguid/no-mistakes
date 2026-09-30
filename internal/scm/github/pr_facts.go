@@ -159,7 +159,7 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 			if item.State != scm.PRStateOpen || item.SourceBranch != sourceBranch {
 				return nil, fmt.Errorf("GitHub PR list returned a non-open or mismatched branch")
 			}
-			if !strings.EqualFold(item.SourceRepository, sourceRepository) {
+			if !scm.SameSourceRepository(scm.ProviderGitHub, item.SourceRepository, sourceRepository) {
 				continue
 			}
 			if seen[item.PR.URL] {
