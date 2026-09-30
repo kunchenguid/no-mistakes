@@ -20,7 +20,7 @@ import (
 func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`, headSHA)
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
@@ -69,7 +69,7 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 
 func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`, headSHA)
 	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "test@example.com")
 	t.Setenv("NO_MISTAKES_BITBUCKET_API_TOKEN", "test-token")
 	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", api.server.URL)
@@ -103,7 +103,7 @@ func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","key":"build-linux","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","key":"build-linux","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"}]}`, headSHA)
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
@@ -146,7 +146,7 @@ func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 func TestCIStep_BitbucketStoppedCheckParksForADecision(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"STOPPED"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"STOPPED"}]}`, headSHA)
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
@@ -217,7 +217,7 @@ func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","key":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","key":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"}]}`, headSHA)
 	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}","build_number":1}]}`
 	api.stepsJSON = `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`
 	api.stepLog = "error log output"
@@ -293,7 +293,7 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","key":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","key":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"}]}`, headSHA)
 	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}","build_number":1}]}`
 	api.stepsJSON = `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`
 	api.stepLog = "error log output"
@@ -375,7 +375,7 @@ func TestCIStep_BitbucketAutoFixAggregatesSelectedPipelineLogs(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"},{"name":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/2"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/1"},{"name":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/2"}]}`, headSHA)
 	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}","build_number":1},{"uuid":"{pipeline-2}","build_number":2}]}`
 	api.stepsByPath = map[string]string{
 		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps": `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`,
@@ -502,7 +502,7 @@ func TestLatestBitbucketStatusesDeduplicatesByKeyBeforeName(t *testing.T) {
 func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) {
 	t.Parallel()
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"key":"build","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/42"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"key":"build","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/42"}]}`, strings.Repeat("a", 40))
 	client, err := bitbucket.NewClientFromEnv(fakeBitbucketEnv(api.server.URL))
 	if err != nil {
 		t.Fatalf("new bitbucket client: %v", err)

@@ -388,22 +388,26 @@ type fakeBitbucketCIAPI struct {
 	lastPipelineQ  string
 }
 
-func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitbucketCIAPI {
+func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON, headSHA string) *fakeBitbucketCIAPI {
 	t.Helper()
 
 	api := &fakeBitbucketCIAPI{
 		prState:      prState,
 		statusesJSON: statusesJSON,
+		prSourceSHA:  headSHA,
 	}
 
 	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"values":[{"id":42,"state":"OPEN","source":{"branch":{"name":"feature"},"repository":{"full_name":"test/repo"}},"destination":{"branch":{"name":"main"}}}]}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
 			api.prStateCalls++
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}}}`, api.prState, api.prSourceSHA)
+			fmt.Fprintf(w, `{"id":42,"state":%q,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}},"source":{"branch":{"name":"feature"},"repository":{"full_name":"test/repo"},"commit":{"hash":%q}},"destination":{"branch":{"name":"main"}}}`, api.prState, api.prSourceSHA)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
 			api.statusesCalls++
 			api.lastStatusesQ = r.URL.Query().Get("q")

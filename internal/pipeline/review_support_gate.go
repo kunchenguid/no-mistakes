@@ -41,7 +41,8 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 	var pending []types.Finding
 	for _, finding := range findings.Items {
 		if finding.Category == "review-support-pending" && finding.Support != nil &&
-			finding.Support.ClaimType == claimType {
+			(finding.Support.ClaimType == claimType ||
+				(through == types.StepCI && finding.Support.ClaimType == types.FindingClaimTest)) {
 			pending = append(pending, finding)
 		}
 	}

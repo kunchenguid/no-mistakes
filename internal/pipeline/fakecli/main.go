@@ -449,14 +449,39 @@ func extractTrailingNumber(rawURL string) int {
 
 func fakeCIGHReconcileHandler(args []string) {
 	joined := strings.Join(args, " ")
+	createdPath := os.Getenv("FAKE_CLI_CREATED_PATH")
+	_, createdErr := os.Stat(createdPath)
+	created := createdPath != "" && createdErr == nil
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "api --method GET repos/test/repo/pulls/42") {
+		fmt.Printf(`{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, fakePRHeadSHA())
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api --method GET repos/test/repo/pulls ") {
+		if created {
+			fmt.Printf(`[[{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}]]`, fakePRHeadSHA())
+		} else {
+			fmt.Println("[[]]")
+		}
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr list") {
-		fmt.Println("[]")
+		if created {
+			fmt.Println(`[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
+		} else {
+			fmt.Println("[]")
+		}
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr create") {
+		if createdPath != "" {
+			if err := os.WriteFile(createdPath, []byte("created"), 0o644); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
 		fmt.Println("https://github.com/test/repo/pull/42")
 		os.Exit(0)
 	}
@@ -548,6 +573,20 @@ func fakeGHStorePRBody(args []string) {
 	}
 }
 
+func fakeCIPRListJSON() string {
+	if raw, ok := os.LookupEnv("FAKE_CLI_PR_LIST_JSON"); ok {
+		if raw == "" {
+			return "[]"
+		}
+		return raw
+	}
+	prURL := os.Getenv("FAKE_CLI_PR_URL")
+	if prURL == "" {
+		prURL = "https://github.com/test/repo/pull/42"
+	}
+	return fmt.Sprintf(`[{"number":%d,"url":%q,"baseRefName":"main"}]`, extractTrailingNumber(prURL), prURL)
+}
+
 func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	stateErr := os.Getenv("FAKE_CLI_STATE_ERR")
@@ -566,11 +605,7 @@ func fakeCIGHHandler(args []string) {
 	}
 	fakeGHHandlePRContentCommands(args, joined)
 	if strings.Contains(joined, "pr list") {
-		if prListJSON := os.Getenv("FAKE_CLI_PR_LIST_JSON"); prListJSON != "" {
-			fmt.Print(prListJSON)
-		} else {
-			fmt.Println("[]")
-		}
+		fmt.Print(fakeCIPRListJSON())
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
@@ -656,6 +691,10 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	fakeGHHandlePRContentCommands(args, joined)
+	if strings.Contains(joined, "pr list") {
+		fmt.Print(fakeCIPRListJSON())
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
 			fmt.Fprintln(os.Stderr, mergeableErr)
@@ -774,6 +813,14 @@ func fakeCIGlabHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "mr list") {
+		if state == "opened" {
+			fmt.Println(`[{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","target_branch":"main"}]`)
+		} else {
+			fmt.Println("[]")
+		}
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "mr view") {
 		fmt.Printf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":{"id":7}}`,
 			state, conflicts, mergeStatus)
@@ -785,6 +832,10 @@ func fakeCIGlabHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "mr update") {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api --paginate projects/test%2Frepo/pipelines/7/jobs") {
+		fmt.Println(checksJSON)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "ci status") {
@@ -820,6 +871,14 @@ func fakeCIGlabSequenceHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "mr list") {
+		if state == "opened" {
+			fmt.Println(`[{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","target_branch":"main"}]`)
+		} else {
+			fmt.Println("[]")
+		}
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "mr view") {

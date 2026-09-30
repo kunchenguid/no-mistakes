@@ -140,9 +140,10 @@ func setupCIGateReconcileTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.
 		t.Fatal(err)
 	}
 	env := fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":        "ci-gh-reconcile",
-		"FAKE_CLI_STATE_PATH":  statePath,
-		"FAKE_CLI_PR_HEAD_SHA": "deadbeef",
+		"FAKE_CLI_MODE":         "ci-gh-reconcile",
+		"FAKE_CLI_STATE_PATH":   statePath,
+		"FAKE_CLI_CREATED_PATH": filepath.Join(t.TempDir(), "pr-created"),
+		"FAKE_CLI_PR_HEAD_SHA":  headSHA,
 	})
 	return database, p, run, repo, dir, statePath, env
 }
@@ -157,5 +158,15 @@ func waitForCIGate(t *testing.T, database *db.DB, runID string) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("CI step did not reach awaiting_approval")
+	run, _ := database.GetRun(runID)
+	steps, _ := database.GetStepsByRun(runID)
+	if run != nil && run.Error != nil {
+		t.Logf("run error: %s", *run.Error)
+	}
+	for _, step := range steps {
+		if step.Error != nil {
+			t.Logf("%s error: %s", step.StepName, *step.Error)
+		}
+	}
+	t.Fatalf("CI step did not reach awaiting_approval: run=%+v steps=%+v", run, steps)
 }

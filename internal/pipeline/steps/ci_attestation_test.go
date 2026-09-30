@@ -486,25 +486,23 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 	}
 }
 
-// This fixture has no available GitLab host, so publication skips attestation
-// interaction. GitLab with an available host supports raw reads and restamping;
-// provider identity alone no longer causes the skip.
-func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) {
+// An unavailable GitLab host cannot supply the PR's live target. The repair
+// stays local even though attestation interaction would also be unavailable.
+func TestCIStep_PublishRepairRefusesUnknownGitLabTarget(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
 	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
 	f.sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	f.sctx.Run.PRURL = &gitlabPR
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
-	if err != nil {
-		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
+	if _, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check"); err == nil || !strings.Contains(err.Error(), "glab CLI is not installed") {
+		t.Fatalf("commitRepair error = %v, want unavailable target refusal", err)
 	}
-	if !repair.HeadAdvanced || repair.Revalidate {
-		t.Fatalf("repair = %+v, want a published head advance without attestation", repair)
+	if remoteHead := gitCmd(t, f.upstream, "rev-parse", "refs/heads/feature"); remoteHead != f.headSHA {
+		t.Fatalf("repair published without target facts: remote=%s, want %s", remoteHead, f.headSHA)
 	}
 	if strings.Contains(f.log(), "pipeline attestation") || strings.Contains(f.log(), "attestation rebind") {
-		t.Fatalf("expected no attestation interaction at all for a non-GitHub provider:\n%s", f.log())
+		t.Fatalf("expected no attestation interaction without a GitLab host:\n%s", f.log())
 	}
 }
 
@@ -625,7 +623,7 @@ func TestPushStep_AttestsHeadBeforePush(t *testing.T) {
 	}
 }
 
-func TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed(t *testing.T) {
+func TestPushStep_UnavailableSCMRefusesUnverifiedPRTarget(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -661,11 +659,11 @@ func TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed(t *testing.T
 		"FAKE_CLI_LOG="+logFile,
 	)
 
-	if _, err := (&PushStep{}).Execute(sctx); err != nil {
-		t.Fatalf("push step failed: %v", err)
+	if _, err := (&PushStep{}).Execute(sctx); err == nil {
+		t.Fatal("push accepted an unverified PR target while SCM was unavailable")
 	}
-	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != newHead {
-		t.Fatalf("remote head = %s, want %s", remoteHead, newHead)
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != priorHead {
+		t.Fatalf("remote head = %s, want unchanged %s", remoteHead, priorHead)
 	}
 	body, err := os.ReadFile(bodyFile)
 	if err != nil {
@@ -675,14 +673,14 @@ func TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed(t *testing.T
 		t.Fatal("unavailable SCM host unexpectedly changed the PR attestation")
 	}
 	if got, out := runVerifyPy(t, string(body), newHead); got != "failure" || !strings.Contains(out, "does not match") {
-		t.Fatalf("stale attestation must fail closed at the pushed head, got %s\n%s", got, out)
+		t.Fatalf("stale attestation must not certify the unpublished head, got %s\n%s", got, out)
 	}
 	logData, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(logData), "auth status") || strings.Contains(string(logData), "pr edit") {
-		t.Fatalf("expected an unavailable-host skip before any PR write:\n%s", logData)
+		t.Fatalf("expected refusal before any PR write:\n%s", logData)
 	}
 }
 

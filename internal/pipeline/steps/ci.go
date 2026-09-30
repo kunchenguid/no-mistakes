@@ -245,6 +245,29 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 	return nil
 }
 
+func terminalCIOutcome(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, state scm.PRState) (*pipeline.StepOutcome, bool, error) {
+	switch state {
+	case scm.PRStateMerged:
+		if err := verifyMergedProof(sctx.Ctx, host, pr, sctx.Run.HeadSHA); err != nil {
+			return nil, true, err
+		}
+		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
+			return nil, true, err
+		}
+		notifyPRMerged(sctx)
+		sctx.Log("PR has been merged!")
+		return &pipeline.StepOutcome{}, true, nil
+	case scm.PRStateClosed:
+		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
+			return nil, true, err
+		}
+		sctx.Log("PR has been closed")
+		return &pipeline.StepOutcome{}, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
 	refusalFindings := ""
 	if sctx.StepResultID != "" {
@@ -362,6 +385,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		retryRefusal = false
 		if repair.Revalidate {
 			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+	}
+	// A PR can close while CI is waiting. Finish that lifecycle before asking
+	// for an open PR's target branch, which is no longer available after close.
+	if state, stateErr := host.GetPRState(ctx, pr); stateErr == nil {
+		if terminal, done, terminalErr := terminalCIOutcome(sctx, host, pr, state); done || terminalErr != nil {
+			return terminal, terminalErr
 		}
 	}
 	baseBranch, err := currentPRTargetBranch(sctx)
@@ -497,22 +527,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 			prStateKnown = false
-		} else if state == scm.PRStateMerged {
-			if err := verifyMergedProof(ctx, host, pr, sctx.Run.HeadSHA); err != nil {
-				return nil, err
-			}
-			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
-				return nil, err
-			}
-			notifyPRMerged(sctx)
-			sctx.Log("PR has been merged!")
-			return &pipeline.StepOutcome{}, nil
-		} else if state == scm.PRStateClosed {
-			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
-				return nil, err
-			}
-			sctx.Log("PR has been closed")
-			return &pipeline.StepOutcome{}, nil
+		} else if terminal, done, terminalErr := terminalCIOutcome(sctx, host, pr, state); done || terminalErr != nil {
+			return terminal, terminalErr
 		} else if state == scm.PRStateOpen {
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
 				return nil, err

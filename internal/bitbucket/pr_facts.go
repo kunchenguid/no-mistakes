@@ -69,6 +69,16 @@ func (h *Host) ReadPRFacts(ctx context.Context, identity *scm.PR) (scm.PRFacts, 
 	return h.factsFromWire(wire)
 }
 
+// GetPRBaseBranch supplies the live target for callers that discover a PR
+// through the older Host interface, whose PR value has no Bitbucket base.
+func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
+	facts, err := h.ReadPRFacts(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	return facts.BaseBranch, nil
+}
+
 func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBranch string) ([]scm.PRFacts, error) {
 	if h.client == nil {
 		return nil, fmt.Errorf("discover Bitbucket PR facts: client unavailable")

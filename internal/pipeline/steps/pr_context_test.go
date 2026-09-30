@@ -162,3 +162,37 @@ func TestPRContextGuardRevalidatesAfterPipelinePushAdvancesHead(t *testing.T) {
 		t.Fatalf("test evidence was replayed for the published head: %+v, %v", storedTest, err)
 	}
 }
+
+func TestPRContextGuardAcceptsPublishedCIRepairHead(t *testing.T) {
+	for _, afterStep := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before CI", true: "after CI"}[afterStep], func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			selection := pipeline.PRTargetSelection{TargetBranch: "main"}
+			if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "repair.txt")
+			gitCmd(t, dir, "commit", "-m", "ci repair")
+			publishedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+			if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{
+				HeadSHA: publishedHead, TargetKind: "upstream", TargetFingerprint: "test", Ref: "refs/heads/feature",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Run.HeadSHA = publishedHead
+			sctx.PRContextAfterStep = afterStep
+			decision, err := guardPRContextWithSelection(sctx, types.StepCI, selection, false)
+			if err != nil || decision.RestartFrom != "" {
+				t.Fatalf("published CI repair context = %+v, %v; want forward receipt", decision, err)
+			}
+			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil || receipt.LocalHeadSHA != publishedHead {
+				t.Fatalf("published repair receipt = %+v, %v", receipt, err)
+			}
+		})
+	}
+}

@@ -241,7 +241,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}

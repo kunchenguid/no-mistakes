@@ -54,7 +54,7 @@ func TestUserJourney(t *testing.T) {
 	}
 }
 
-func TestTestAgentNewTestFileRevalidatesCurrentHead(t *testing.T) {
+func TestTestAgentNewTestFilePublishesWithForwardOnlySteps(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 	if out, err := h.Run("init"); err != nil {
 		t.Fatalf("nm init: %v\n%s", err, out)
@@ -1846,8 +1846,8 @@ func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("test-agent-new-test-file", "test-agent-new-test-file.txt", "test agent new test file\n", "add test agent new test file")
 	h.PushToGate("test-agent-new-test-file")
-	// The agent's new test file must reach the pushed, re-reviewed head. Its
-	// provisional informational note is superseded when that head changes.
+	// The agent's new test file must reach the pushed head. The Test step keeps
+	// its informational note when later pipeline steps advance that head.
 	run := h.WaitForRun("test-agent-new-test-file", 60*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("test-agent-new-test-file run status = %s, want completed; error=%v", run.Status, deref(run.Error))
@@ -1866,8 +1866,9 @@ func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("parse new test file findings: %v", err)
 	}
-	if len(findings.Items) != 0 {
-		t.Fatalf("final Test retained provisional findings from an older head: %+v", findings.Items)
+	if len(findings.Items) != 1 || findings.Items[0].File != "agent_test.py" ||
+		findings.Items[0].Action != types.ActionNoOp {
+		t.Fatalf("Test lost its informational note about the added test: %+v", findings.Items)
 	}
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("test-agent-new-test-file"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1901,8 +1902,9 @@ func assertTestAgentStagedNewTestFileRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("parse staged new test file findings: %v", err)
 	}
-	if len(findings.Items) != 0 {
-		t.Fatalf("final Test retained provisional findings from an older head: %+v", findings.Items)
+	if len(findings.Items) != 1 || findings.Items[0].File != "agent_staged_test.go" ||
+		findings.Items[0].Action != types.ActionNoOp {
+		t.Fatalf("Test lost its informational note about the staged test: %+v", findings.Items)
 	}
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("test-agent-staged-new-test-file"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2033,7 +2035,7 @@ func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.S
 	h.dumpDebugState()
 	if lastRun != nil {
 		if step, ok := findStep(lastRun.Steps, stepName); ok {
-			t.Fatalf("step %s for branch %s did not reach %s in %v (last status=%s)", stepName, branch, status, timeout, step.Status)
+			t.Fatalf("step %s for branch %s did not reach %s in %v (step status=%s, run status=%s, run error=%v)", stepName, branch, status, timeout, step.Status, lastRun.Status, deref(lastRun.Error))
 		}
 		t.Fatalf("step %s for branch %s did not appear in %v (run status=%s)", stepName, branch, timeout, lastRun.Status)
 	}

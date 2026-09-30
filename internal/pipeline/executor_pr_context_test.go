@@ -384,7 +384,7 @@ func TestExecutorExternalCIBypassRejectsPostReviewDocumentCommit(t *testing.T) {
 	}
 }
 
-func TestExecutorTestSupportSurvivesPostReviewDocumentCommit(t *testing.T) {
+func TestExecutorTestSupportRejectsPostReviewDocumentCommitAtCompletion(t *testing.T) {
 	database, p, baseRun, repo := setupTest(t)
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
@@ -481,8 +481,8 @@ func TestExecutorTestSupportSurvivesPostReviewDocumentCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
-		t.Fatalf("completed Test support was reconsidered after a document commit: %v", err)
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err == nil {
+		t.Fatal("completion accepted Test proof from before a document commit")
 	}
 }
 

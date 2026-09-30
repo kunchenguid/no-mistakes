@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -158,6 +159,7 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
+	sctx.PRTarget = &pipeline.PRTargetSelection{TargetBranch: "main"}
 	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
@@ -385,7 +387,7 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}

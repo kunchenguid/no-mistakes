@@ -187,24 +187,28 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 			forward = true
 		}
 	}
-	// Push can commit formatter or agent changes after the validation steps.
-	// Its durable publication record proves this run, rather than an external
-	// actor, advanced HEAD, so it advances the receipt without replaying
-	// completed validation.
-	pipelineOwnedPushAdvance := false
-	if previous != nil && sctx.PRContextAfterStep && step == types.StepPush &&
+	// Push and a later CI repair can publish a descendant of the last bound
+	// head. The durable publication record attributes that advance to this run;
+	// the receipt follows it without replaying completed steps.
+	pipelineOwnedPublicationAdvance := false
+	publicationBoundary := (sctx.PRContextAfterStep && step == types.StepPush) || step == types.StepCI
+	if previous != nil && publicationBoundary &&
 		previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		previous.TargetBranch == candidate.TargetBranch && previous.TargetSHA == candidate.TargetSHA &&
 		previous.SourceRepo == candidate.SourceRepo && previous.SourceBranch == candidate.SourceBranch &&
 		(previous.PRURL == "" || previous.PRURL == candidate.PRURL) {
 		current, err := sctx.DB.GetRun(sctx.Run.ID)
 		if err != nil {
-			return pipeline.PRContextDecision{}, fmt.Errorf("read published head after push: %w", err)
+			return pipeline.PRContextDecision{}, fmt.Errorf("read pipeline-published head: %w", err)
 		}
-		pipelineOwnedPushAdvance = current != nil && current.HeadSHA == candidate.LocalHeadSHA &&
+		pipelineOwnedPublicationAdvance = current != nil && current.HeadSHA == candidate.LocalHeadSHA &&
 			current.LastPushedSHA != nil && *current.LastPushedSHA == candidate.LocalHeadSHA
+		if pipelineOwnedPublicationAdvance {
+			_, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", previous.LocalHeadSHA, candidate.LocalHeadSHA)
+			pipelineOwnedPublicationAdvance = err == nil
+		}
 	}
-	forward = forward || pipelineOwnedPushAdvance
+	forward = forward || pipelineOwnedPublicationAdvance
 	if previous != nil && previous.PRContextCandidate != candidate && !forward && !freshRetarget &&
 		!sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() > resetFrom.Order() {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed after %s; start a new run for the current target and head", resetFrom)

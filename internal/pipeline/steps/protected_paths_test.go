@@ -44,7 +44,10 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 				gitCmd(t, f.dir, "commit", "-m", "advance conflicting base")
 				gitCmd(t, f.dir, "push", "origin", "main")
 				gitCmd(t, f.dir, "checkout", "feature")
-				f.sctx.Env = fakeCIGHMergeable(t, "OPEN", `[]`, "CONFLICTING")
+				f.sctx.Env = append(fakeCIGHMergeable(t, "OPEN", `[]`, "CONFLICTING"),
+					"FAKE_CLI_PR_HEAD_SHA="+f.headSHA,
+					`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`,
+				)
 			}
 			f.sctx.Agent = &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 				if tc.rebase {
