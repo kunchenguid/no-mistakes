@@ -47,7 +47,7 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 		return pipeline.PRContextDecision{}, fmt.Errorf("provider cannot read complete pull request facts")
 	}
 	retargeter, _ := host.(scm.PRBaseRetargeter)
-	selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, retargeter)
+	selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, retargeter, step == types.StepCI)
 	if err != nil {
 		return pipeline.PRContextDecision{}, err
 	}
@@ -57,8 +57,8 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 // A per-run flag records a fresh explicit --base-branch request separately
 // from an inherited target. It is consumed exactly once: a later forge-side
 // retarget remains authoritative instead of being undone at every boundary.
-func resolveAndApplyPRTarget(sctx *pipeline.StepContext, reader scm.PRFactsReader, retargeter scm.PRBaseRetargeter) (pipeline.PRTargetSelection, bool, error) {
-	selection, err := resolvePRTargetWithReader(sctx, reader)
+func resolveAndApplyPRTarget(sctx *pipeline.StepContext, reader scm.PRFactsReader, retargeter scm.PRBaseRetargeter, allowTerminal bool) (pipeline.PRTargetSelection, bool, error) {
+	selection, err := resolvePRTargetWithReader(sctx, reader, allowTerminal)
 	if err != nil || !sctx.Run.PRBaseBranchRequested {
 		return selection, false, err
 	}
@@ -95,7 +95,7 @@ func resolveAndApplyPRTarget(sctx *pipeline.StepContext, reader scm.PRFactsReade
 		if err := retargeter.SetPRBaseBranch(sctx.Ctx, prFromOwnedURL(selection.PRURL), requested); err != nil {
 			return pipeline.PRTargetSelection{}, false, fmt.Errorf("retarget recorded pull request to %s: %w", requested, err)
 		}
-		selection, err = resolvePRTargetWithReader(sctx, reader)
+		selection, err = resolvePRTargetWithReader(sctx, reader, allowTerminal)
 		if err != nil {
 			return pipeline.PRTargetSelection{}, false, fmt.Errorf("read back retargeted pull request: %w", err)
 		}

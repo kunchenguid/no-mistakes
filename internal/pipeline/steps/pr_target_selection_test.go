@@ -67,7 +67,7 @@ func TestResolvePRTarget_RecordedUsesExactLivePRBase(t *testing.T) {
 	sctx, facts := selectionFixture(t)
 	sctx.Run.PRURL = &facts.PR.URL
 	reader := &fakePRFactsReader{read: facts}
-	got, err := resolvePRTargetWithReader(sctx, reader)
+	got, err := resolvePRTargetWithReader(sctx, reader, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestResolvePRTarget_GitHubSourceRepositoryCaseDoesNotChangeIdentity(t *test
 	sctx, facts := selectionFixture(t)
 	sctx.Run.PRURL = &facts.PR.URL
 	facts.SourceRepository = "Test/Repo"
-	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts})
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestValidatePRFactsUsesProviderSourceIdentity(t *testing.T) {
 		{"different repository", scm.ProviderGitLab, "other/repo", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validatePRFacts(facts, tc.provider, tc.source, "feature")
+			err := validatePRFacts(facts, tc.provider, tc.source, "feature", false)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("validatePRFacts() error = %v, want error %t", err, tc.wantErr)
 			}
@@ -119,7 +119,7 @@ func TestValidatePRFactsUsesProviderSourceIdentity(t *testing.T) {
 func TestResolvePRTarget_DiscoversUnrecordedExactHead(t *testing.T) {
 	sctx, facts := selectionFixture(t)
 	reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
-	got, err := resolvePRTargetWithReader(sctx, reader)
+	got, err := resolvePRTargetWithReader(sctx, reader, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestResolvePRTarget_AmbiguousDiscoveryFails(t *testing.T) {
 	second := facts
 	second.PR.URL = "https://github.com/test/repo/pull/43"
 	second.PR.Number = "43"
-	_, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts, second}})
+	_, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts, second}}, false)
 	if err == nil || !strings.Contains(err.Error(), "multiple") {
 		t.Fatalf("error = %v", err)
 	}
@@ -158,8 +158,58 @@ func TestResolvePRTarget_RejectsForeignAndClosedRecordedPR(t *testing.T) {
 			sctx, facts := selectionFixture(t)
 			sctx.Run.PRURL = &facts.PR.URL
 			change.apply(&facts)
-			if _, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts}); err == nil {
+			if _, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts}, false); err == nil {
 				t.Fatal("expected rejection")
+			}
+		})
+	}
+}
+
+func TestResolvePRTarget_AllowsRecordedTerminalPROnlyAtCI(t *testing.T) {
+	for _, state := range []scm.PRState{scm.PRStateMerged, scm.PRStateClosed} {
+		t.Run(string(state), func(t *testing.T) {
+			sctx, facts := selectionFixture(t)
+			sctx.Run.PRURL = &facts.PR.URL
+			facts.BaseBranch = "main"
+			reader := &fakePRFactsReader{read: facts}
+			selected, err := resolvePRTargetWithReader(sctx, reader, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := guardPRContextWithSelection(sctx, types.StepPR, selected, false); err != nil {
+				t.Fatal(err)
+			}
+			reader.read.State = state
+			if _, err := resolvePRTargetWithReader(sctx, reader, false); err == nil {
+				t.Fatal("accepted terminal PR before CI")
+			}
+			unowned := *sctx.Run
+			unowned.PRURL = nil
+			sctx.Run = &unowned
+			if _, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{reader.read}}, true); err == nil {
+				t.Fatal("accepted terminal PR from discovery")
+			}
+			sctx.Run.PRURL = &facts.PR.URL
+			selected, err = resolvePRTargetWithReader(sctx, reader, true)
+			if err != nil || selected.PRURL != facts.PR.URL || selected.ForgeHeadSHA != facts.HeadSHA || selected.TargetBranch != "main" {
+				t.Fatalf("terminal selection = %+v, %v", selected, err)
+			}
+			decision, err := guardPRContextWithSelection(sctx, types.StepCI, selected, false)
+			if err != nil || decision.RestartFrom != "" {
+				t.Fatalf("terminal comparison = %+v, %v", decision, err)
+			}
+			reader.read.SourceRepository = "other/repo"
+			if _, err := resolvePRTargetWithReader(sctx, reader, true); err == nil {
+				t.Fatal("accepted terminal PR with foreign source")
+			}
+			reader.read.SourceRepository = facts.SourceRepository
+			reader.read.HeadSHA = sctx.Run.BaseSHA
+			selected, err = resolvePRTargetWithReader(sctx, reader, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := guardPRContextWithSelection(sctx, types.StepCI, selected, false); err == nil {
+				t.Fatal("accepted terminal PR with changed head")
 			}
 		})
 	}
@@ -168,7 +218,7 @@ func TestResolvePRTarget_RejectsForeignAndClosedRecordedPR(t *testing.T) {
 func TestResolvePRTarget_UsesLiveBaseBeforeExistingPRHeadIsPushed(t *testing.T) {
 	sctx, facts := selectionFixture(t)
 	facts.HeadSHA = gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD^")
-	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}})
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}}, false)
 	if err != nil || got.TargetBranch != "develop" || got.PRURL != "" {
 		t.Fatalf("prospective comparison = %+v, %v", got, err)
 	}
@@ -180,7 +230,7 @@ func TestResolvePRTarget_RebasedLocalHeadStillUsesExactSourcePRTarget(t *testing
 		t.Fatal("rebase did not rewrite local HEAD")
 	}
 
-	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}})
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +246,7 @@ func TestResolvePRTarget_RecordedPRSurvivesPipelineRebase(t *testing.T) {
 		t.Fatal("rebase did not rewrite local HEAD")
 	}
 
-	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts})
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +257,7 @@ func TestResolvePRTarget_RecordedPRSurvivesPipelineRebase(t *testing.T) {
 
 func TestResolvePRTarget_NoPRUsesProspectiveTarget(t *testing.T) {
 	sctx, _ := selectionFixture(t)
-	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{})
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +270,7 @@ func TestResolvePRTarget_AzureSourceIdentityIsCanonicalAndCredentialFree(t *test
 	sctx, _ := selectionFixture(t)
 	sctx.Repo.UpstreamURL = "https://user:secret@dev.azure.com/example/project/_git/repo"
 	reader := &fakePRFactsReader{}
-	got, err := resolvePRTargetWithReader(sctx, reader)
+	got, err := resolvePRTargetWithReader(sctx, reader, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +323,7 @@ func TestFreshOwnedPRRetargetIsReadBackAndConsumed(t *testing.T) {
 	sctx.Run.PRBaseBranch = strptr("release")
 	sctx.Run.PRBaseBranchRequested = true
 	reader := &fakePRFactsReader{read: facts}
-	selected, _, err := resolveAndApplyPRTarget(sctx, reader, reader)
+	selected, _, err := resolveAndApplyPRTarget(sctx, reader, reader, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +343,7 @@ func TestFreshRetargetWaitsForUnpublishedPRToAttach(t *testing.T) {
 	facts.HeadSHA = sctx.Run.BaseSHA
 	reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
 
-	selection, _, err := resolveAndApplyPRTarget(sctx, reader, reader)
+	selection, _, err := resolveAndApplyPRTarget(sctx, reader, reader, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +354,7 @@ func TestFreshRetargetWaitsForUnpublishedPRToAttach(t *testing.T) {
 	sctx.Run.PRURL = &facts.PR.URL
 	facts.HeadSHA = sctx.Run.HeadSHA
 	reader.read = facts
-	selection, _, err = resolveAndApplyPRTarget(sctx, reader, reader)
+	selection, _, err = resolveAndApplyPRTarget(sctx, reader, reader, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +381,7 @@ func TestFreshRetargetAfterUnpublishedPRAttachmentRestartsFromRebase(t *testing.
 
 			facts.HeadSHA = sctx.Run.BaseSHA
 			reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
-			selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, reader)
+			selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, reader, false)
 			if err != nil || freshRetarget || selection.PRURL != "" {
 				t.Fatalf("unpublished selection=%+v fresh=%v err=%v", selection, freshRetarget, err)
 			}
@@ -355,7 +405,7 @@ func TestFreshRetargetAfterUnpublishedPRAttachmentRestartsFromRebase(t *testing.
 				facts.BaseBranch = "release"
 			}
 			reader.read = facts
-			selection, freshRetarget, err = resolveAndApplyPRTarget(sctx, reader, reader)
+			selection, freshRetarget, err = resolveAndApplyPRTarget(sctx, reader, reader, false)
 			if err != nil || !freshRetarget || selection.TargetBranch != "release" || len(reader.retargets) != tc.wantRetargets {
 				t.Fatalf("retargeted selection=%+v fresh=%v retargets=%v err=%v", selection, freshRetarget, reader.retargets, err)
 			}
@@ -387,7 +437,7 @@ func TestInheritedOrUnownedPRBaseNeverRetargets(t *testing.T) {
 		if owned {
 			sctx.Run.PRURL = &facts.PR.URL
 		}
-		selected, _, err := resolveAndApplyPRTarget(sctx, reader, reader)
+		selected, _, err := resolveAndApplyPRTarget(sctx, reader, reader, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -419,7 +469,7 @@ func TestFreshRetargetRejectsMovedHeadAndUnsupportedProvider(t *testing.T) {
 			if tc.retargeter {
 				retargeter = reader
 			}
-			if _, _, err := resolveAndApplyPRTarget(sctx, reader, retargeter); err == nil {
+			if _, _, err := resolveAndApplyPRTarget(sctx, reader, retargeter, false); err == nil {
 				t.Fatal("expected fresh retarget to fail closed")
 			}
 			if len(reader.retargets) != 0 || !sctx.Run.PRBaseBranchRequested {

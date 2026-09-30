@@ -28,7 +28,7 @@ func ResolvePRTarget(sctx *pipeline.StepContext) (pipeline.PRTargetSelection, er
 	if !ok {
 		return pipeline.PRTargetSelection{}, fmt.Errorf("provider cannot read complete pull request facts")
 	}
-	return resolvePRTargetWithReader(sctx, reader)
+	return resolvePRTargetWithReader(sctx, reader, false)
 }
 
 // A local Git remote has no forge PR to discover. It still needs a pinned
@@ -49,7 +49,7 @@ func localOnlyPRTarget(sctx *pipeline.StepContext) (pipeline.PRTargetSelection, 
 	}, true
 }
 
-func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsReader) (pipeline.PRTargetSelection, error) {
+func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsReader, allowTerminal bool) (pipeline.PRTargetSelection, error) {
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
 	pushURL := strings.TrimSpace(sctx.Repo.PushURL())
 	sourceRepo := scm.RepoPath(pushURL)
@@ -70,7 +70,7 @@ func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsRea
 		if err != nil {
 			return pipeline.PRTargetSelection{}, fmt.Errorf("read recorded pull request %s: %w", owned, err)
 		}
-		if err := validatePRFacts(facts, resolvedProvider(sctx), sourceRepo, branch); err != nil {
+		if err := validatePRFacts(facts, resolvedProvider(sctx), sourceRepo, branch, allowTerminal); err != nil {
 			return pipeline.PRTargetSelection{}, fmt.Errorf("recorded pull request %s: %w", owned, err)
 		}
 		if !samePRIdentity(owned, &facts.PR) {
@@ -94,7 +94,7 @@ func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsRea
 		return selected, nil
 	}
 	facts := candidates[0]
-	if err := validatePRFacts(facts, resolvedProvider(sctx), sourceRepo, branch); err != nil {
+	if err := validatePRFacts(facts, resolvedProvider(sctx), sourceRepo, branch, false); err != nil {
 		return pipeline.PRTargetSelection{}, fmt.Errorf("discovered pull request: %w", err)
 	}
 	localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
@@ -115,8 +115,8 @@ func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsRea
 	return selected, nil
 }
 
-func validatePRFacts(facts scm.PRFacts, provider scm.Provider, sourceRepo, branch string) error {
-	if facts.State != scm.PRStateOpen {
+func validatePRFacts(facts scm.PRFacts, provider scm.Provider, sourceRepo, branch string, allowTerminal bool) error {
+	if facts.State != scm.PRStateOpen && !(allowTerminal && (facts.State == scm.PRStateMerged || facts.State == scm.PRStateClosed)) {
 		return fmt.Errorf("pull request %s is %s", facts.PR.URL, strings.ToLower(string(facts.State)))
 	}
 	if !scm.SameSourceRepository(provider, facts.SourceRepository, sourceRepo) || facts.SourceBranch != branch {
