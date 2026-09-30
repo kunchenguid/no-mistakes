@@ -149,7 +149,7 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 // This is NOT compare-and-swap: providers expose full-body writes. Detected
 // pre-write edits are merged from their latest version (bounded); a write error
 // or post-write divergence fails without replaying a potentially applied write.
-func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
+func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int, beforeWrite func() error) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {
 		return fmt.Errorf("provider cannot read PR content; author-safe template updates are unsupported")
@@ -176,6 +176,11 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 			continue
 		}
 		if content.Body != current.Body || content.Title != "" {
+			if beforeWrite != nil {
+				if err := beforeWrite(); err != nil {
+					return err
+				}
+			}
 			if _, err := host.UpdatePR(sctx.Ctx, pr, scm.PRContent(content)); err != nil {
 				return fmt.Errorf("update templated PR: %w", err)
 			}

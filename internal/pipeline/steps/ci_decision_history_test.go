@@ -85,7 +85,7 @@ func newCIDecisionPromptFixture(t *testing.T) *ciDecisionPromptFixture {
 	sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`)
 	sctx.Run.PRURL = &prURL
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.UserIntent = ciDecisionOriginalIntent
 	sctx.IntentSource = db.RunIntentSourceAgent
 	sctx.Config.CITimeout = 30 * time.Second

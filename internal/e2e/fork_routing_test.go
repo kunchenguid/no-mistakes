@@ -63,6 +63,10 @@ func TestForkRouting(t *testing.T) {
 		t.Fatalf("PR URL = %v, want parent repository PR URL", run.PRURL)
 	}
 
+	if out, err := h.runGit(t.Context(), h.UpstreamDir, "merge-base", "--is-ancestor", run.HeadSHA, "refs/heads/main"); err != nil {
+		t.Fatalf("provider reported merged without placing the reviewed head on the target: %v\n%s", err, out)
+	}
+
 	forkSHA, err := h.runGit(ctx, forkDir, "rev-parse", "refs/heads/"+branch)
 	if err != nil {
 		t.Fatalf("fork branch missing: %v\n%s", err, forkSHA)

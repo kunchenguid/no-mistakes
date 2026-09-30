@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -34,6 +35,12 @@ func TestCIStep_VerifyApprovalOverride(t *testing.T) {
 			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"PR must be raised via no-mistakes","state":"SUCCESS","bucket":"pass"}]`,
 			wantUnresolved: false,
 		},
+		{
+			name:           "green after retarget",
+			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+			wantUnresolved: true,
+			wantContains:   "comparison",
+		},
 		// Regression for the upstream review P1 "unresolved checks become
 		// clean passes": before this fix, VerifyApprovalOverride used
 		// !hasFailingChecks, which reads pending/cancelled/unknown-bucket
@@ -57,20 +64,23 @@ func TestCIStep_VerifyApprovalOverride(t *testing.T) {
 			name:           "unknown bucket",
 			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"legacy","state":"SOMETHING_NEW","bucket":"weird"}]`,
 			wantUnresolved: true,
-			wantContains:   "legacy",
+			wantContains:   "incomplete context",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dir := t.TempDir()
+			dir, base, head := setupGitRepo(t)
 			env := fakeCIGH(t, "OPEN", tc.checksJSON)
 
 			prURL := "https://github.com/test/repo/pull/42"
-			sctx := newTestContext(t, nil, dir, "base", "deadbeef", config.Commands{})
+			sctx := newTestContextWithDBRecords(t, nil, dir, base, head, config.Commands{})
 			sctx.Env = env
-			sctx.Run.PRURL = &prURL
+			bindExistingPRMutationFixture(t, sctx, prURL, "main")
+			if tc.name == "green after retarget" {
+				sctx.Env = append(sctx.Env, "FAKE_CLI_PR_FACTS_JSON="+fmt.Sprintf(`{"number":42,"html_url":%q,"state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"develop"}}`, prURL, head))
+			}
 
 			step := &CIStep{}
 			unresolved, err := step.VerifyApprovalOverride(sctx)

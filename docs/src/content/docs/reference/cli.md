@@ -123,6 +123,7 @@ no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
+no-mistakes axi run --intent "the user's goal" --skip=push,pr,ci --external-ci-owner=controller-ship-pr
 no-mistakes axi run --intent "the user's goal" --no-publish-intent
 ```
 
@@ -133,6 +134,7 @@ no-mistakes axi run --intent "the user's goal" --no-publish-intent
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--external-ci-owner` | `string` | (none) | Explicit CI claim handoff to `controller-ship-pr`; requires exactly `--skip=push,pr,ci` |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
@@ -166,6 +168,7 @@ Only attached runs receive plan-aware guidance. Review and Test assess the propo
 
 `--base-branch` is persisted on the run so rebase, PR, and CI honor it after resume.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
+An existing open PR's actual target wins over the configured target. A fresh, explicit `--base-branch` request may retarget that exact PR before Rebase; the run reads the PR back before using the new target. A run without an owned PR keeps the selected branch as its prospective target. `--external-ci-owner` is persisted for the run and does not turn a skipped CI step into a passing check. When Review has pending CI support and Push, PR, and CI are explicitly skipped, the outcome is `pending-external-ci`. Read the typed handoff below and let the named external owner prove those claims before merge. Without that owner, pending claims block completion.
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
@@ -187,7 +190,7 @@ Long-running `axi run` calls are working, not stalled; if one returns a `gate:`,
 Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
 When the CI step is still monitoring an open PR and checks are green - or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) with no registered checks - `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge. A generic empty check list without that declaration is not ready.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
-If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
+If that PR later falls behind its live target branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
 The monitor auto-rebases onto the base, resolves actual conflicts, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push; a PR that is merely behind but clean needs no command.
 After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the restart conditions.
 Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
@@ -203,7 +206,8 @@ Report that missing evidence; this outcome does not establish CI readiness or a 
 Explicit per-run skips retain their existing behavior.
 If the run also has a Test or CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible.
 Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
-When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
+
+When the pipeline applied fixes, successful outcomes include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
 ### Strict launch receipts
 
@@ -233,6 +237,26 @@ A replay that adds `--no-publish-intent` against a run bound to publish the sect
 Explicit `--model`/`--effort` must match a stored pin the same way; omitting both preserves it.
 A conflicting claim does not consume the first `created` disposition.
 Without the two proof flags, ordinary reattachment is unchanged, and historical runs without a nonce are not adopted into a proof binding.
+
+## no-mistakes axi ci-handoff
+
+Read a completed run's explicit external CI proof handoff as JSON:
+
+```sh
+no-mistakes axi ci-handoff --run <run-id>
+```
+
+This succeeds only for a completed run with `controller-ship-pr` ownership, exactly skipped Push, PR, and CI steps, and current pending Review CI claims. The JSON includes `outcome: pending-external-ci`, `run_id`, `external_ci_owner`, the run's source repository and branch, and each claim's provider check identity and PR comparison receipt. A missing, stale, or unreadable claim returns an error and a nonzero exit. The caller verifies the source identity, PR comparison, and live checks before merge. The handoff does not assert that CI passed.
+
+## no-mistakes axi review-receipt
+
+Read the exact comparison recorded for a completed run as JSON:
+
+```sh
+no-mistakes axi review-receipt --run <run-id>
+```
+
+The command requires a verified terminal head and a current comparison receipt. It returns the run and source identity, any recorded PR URL and forge head, the local head, target branch and commit, merge base, raw diff digest, and receipt generation. It fails when the receipt is missing or points at a different head. The caller must reread the live PR and target immediately before publishing or merging; this stored receipt is evidence of what the run checked, not a claim that the forge still has those coordinates.
 
 ## no-mistakes axi respond
 
@@ -318,6 +342,7 @@ no-mistakes axi status --run <id>
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
+When a run has an exact PR comparison receipt, `run.review_generation` identifies its current receipt generation. Compare this field with `axi review-receipt`'s `generation` as well as the run head and live target before accepting a terminal review result.
 A pinned run also includes `pi_profile` with `model` and `effort`; see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles).
 Status offers branch-scoped `axi respond` commands only for the current branch's implicitly resolved run. An explicitly selected gate stays inspection-only even when its branch matches, because a newer active run on that branch could receive the bare response command instead; the gate remains visible and its log commands retain `--run <id>`.
 When a repository has no configured lint command and Document performs the combined Document/Lint housekeeping invocation, the run object includes `shared_work` evidence naming its `document+lint housekeeping` scope and the duration attributed to Document; Lint's own duration remains the cached-result handoff time.

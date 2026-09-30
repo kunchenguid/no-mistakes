@@ -67,7 +67,7 @@ func TestExecutor_AcceptedApprovalWinsReconciliationRace(t *testing.T) {
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	exec.SetGateReconcileTimings(time.Hour, time.Second)
 
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	select {
@@ -104,7 +104,7 @@ func TestExecutor_ReconcilesParkedGateThroughNormalCompletionPath(t *testing.T) 
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	exec.SetGateReconcileTimings(10*time.Millisecond, 100*time.Millisecond)
 
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
@@ -147,7 +147,7 @@ func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	exec.SetGateReconcileTimings(10*time.Millisecond, 50*time.Millisecond)
 
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
@@ -197,7 +197,7 @@ func TestExecutor_FatalReconcileErrorFailsRun(t *testing.T) {
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	exec.SetGateReconcileTimings(time.Millisecond, 50*time.Millisecond)
 
-	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run))
 	if !errors.Is(err, ErrFatalGateReconciliation) {
 		t.Fatalf("Execute() error = %v, want fatal reconciliation error", err)
 	}
@@ -248,7 +248,7 @@ func TestExecutor_ResumeFatalReconcileErrorFailsRun(t *testing.T) {
 	step.err.Store(&reconcileErr)
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 
-	err = exec.Resume(context.Background(), run, repo, t.TempDir())
+	err = exec.Resume(context.Background(), run, repo, completionFixture(t, database, run))
 	if !errors.Is(err, ErrFatalGateReconciliation) {
 		t.Fatalf("Resume() error = %v, want fatal reconciliation error", err)
 	}
@@ -274,7 +274,7 @@ func TestExecutor_GateRecheckIsBoundedAndApprovalWinsAfterTimeout(t *testing.T) 
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	exec.SetGateReconcileTimings(time.Hour, 25*time.Millisecond)
 
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	select {
@@ -329,7 +329,7 @@ func TestExecutor_AppliesGateReconcileTimingsFromGlobalConfig(t *testing.T) {
 	step := &reconcilingApprovalStep{name: types.StepCI, block: true, started: make(chan struct{})}
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
 
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	select {
@@ -371,7 +371,7 @@ func TestExecutor_AppliesGateReconcileIntervalFromGlobalConfig(t *testing.T) {
 	step := &reconcilingApprovalStep{name: types.StepCI}
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
 
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
@@ -431,7 +431,7 @@ func TestExecutor_GateRecheckStopsAfterApprovalCancelAndShutdown(t *testing.T) {
 			exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 			exec.SetGateReconcileTimings(5*time.Millisecond, 50*time.Millisecond)
 			ctx, cancel := context.WithCancelCause(context.Background())
-			workDir := t.TempDir()
+			workDir := completionFixture(t, database, run)
 			done := make(chan error, 1)
 			go func() { done <- exec.Execute(ctx, run, repo, workDir) }()
 			waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)

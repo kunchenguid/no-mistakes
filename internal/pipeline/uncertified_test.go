@@ -13,6 +13,7 @@ import (
 
 func TestExecutor_BindsUncertifiedRangeOntoInitialReview(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, "from-sha", run.HeadSHA, "source-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +25,7 @@ func TestExecutor_BindsUncertifiedRangeOntoInitialReview(t *testing.T) {
 		return &StepOutcome{ReviewApprovedHeadSHA: run.HeadSHA}, nil
 	}}
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatal(err)
 	}
 	if fixing {
@@ -117,12 +118,13 @@ func TestBindUncertifiedPipelineRange_DoesNotBindWhileFixing(t *testing.T) {
 
 func TestApprovedReview_ClearsUncertifiedRange(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, "from-sha", run.HeadSHA, run.ID); err != nil {
 		t.Fatal(err)
 	}
 	step := &mockStep{name: types.StepReview, outcome: &StepOutcome{ReviewApprovedHeadSHA: run.HeadSHA}}
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatal(err)
 	}
 	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
@@ -136,6 +138,7 @@ func TestApprovedReview_ClearsUncertifiedRange(t *testing.T) {
 
 func TestParkedReview_DoesNotClearUncertifiedRange(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	completionDir := completionFixture(t, database, run)
 	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, "from-sha", run.HeadSHA, run.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +152,7 @@ func TestParkedReview_DoesNotClearUncertifiedRange(t *testing.T) {
 	}
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
 	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	go func() { done <- exec.Execute(context.Background(), run, repo, completionDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
 	if err != nil {
@@ -173,12 +176,13 @@ func TestParkedReview_DoesNotClearUncertifiedRange(t *testing.T) {
 
 func TestFailedReview_DoesNotClearUncertifiedRange(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, "from-sha", run.HeadSHA, run.ID); err != nil {
 		t.Fatal(err)
 	}
 	step := newFailStep(types.StepReview, fmt.Errorf("review agent failed"))
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+	if err := exec.Execute(context.Background(), run, repo, workDir); err == nil {
 		t.Fatal("expected failed review")
 	}
 	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
@@ -204,6 +208,7 @@ func TestApprovedReview_ClearsUncertifiedRangeWhenApprovedHeadIsDescendant(t *te
 	execGit(t, dir, "commit", "-m", "later pipeline commit")
 	approved := currentSHA(t, dir)
 	run.HeadSHA = approved
+	bindCompletionFixture(t, database, run, dir)
 	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, fromSHA, toSHA, run.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -236,6 +241,7 @@ func TestApprovedReview_DoesNotClearWhenApprovedHeadIsNotDescendant(t *testing.T
 	execGit(t, dir, "commit", "-m", "unrelated head")
 	other := currentSHA(t, dir)
 	run.HeadSHA = other
+	bindCompletionFixture(t, database, run, dir)
 	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, fromSHA, toSHA, run.ID); err != nil {
 		t.Fatal(err)
 	}

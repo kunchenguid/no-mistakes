@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -190,9 +192,39 @@ type mockPassStep struct {
 }
 
 func (s *mockPassStep) Name() types.StepName { return s.name }
-func (s *mockPassStep) Execute(_ *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+func (s *mockPassStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	s.execCnt.Add(1)
 	return &pipeline.StepOutcome{}, nil
+}
+
+func bindMockRunComparison(sctx *pipeline.StepContext) error {
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	if receipt == nil {
+		targetSHA, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "refs/heads/"+sctx.Repo.DefaultBranch+"^{commit}")
+		if err != nil {
+			return err
+		}
+		prURL, sourceRepo, sourceBranch := "", "", ""
+		if sctx.Run.PRURL != nil && *sctx.Run.PRURL != "" {
+			prURL = *sctx.Run.PRURL
+			sourceRepo, _, _ = strings.Cut(prURL, "/pull/")
+			sourceBranch = sctx.Run.Branch
+		}
+		candidate, err := testgit.RunComparisonCandidate(sctx.Run, sctx.WorkDir, sctx.Repo.DefaultBranch, targetSHA, prURL, sourceRepo, sourceBranch)
+		if err != nil {
+			return err
+		}
+		if _, err := sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, types.StepReview); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // mockApprovalStep pauses for approval every time.

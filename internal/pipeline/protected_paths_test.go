@@ -69,7 +69,7 @@ func TestProtectedPathRefusalRequiresDecisionAcrossRecovery(t *testing.T) {
 					t.Error("executor did not stop")
 				}
 			})
-			workDir := t.TempDir()
+			workDir := completionFixture(t, database, run)
 			go func() {
 				if recovered {
 					done <- exec.Resume(ctx, run, repo, workDir)

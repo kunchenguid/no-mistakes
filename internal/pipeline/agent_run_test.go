@@ -166,7 +166,7 @@ func TestExecutor_DirectAgentRunIsDeadlineBounded(t *testing.T) {
 	}
 	cfg := &config.Config{AgentTimeout: 20 * time.Millisecond}
 	exec := NewExecutor(database, p, cfg, ag, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+	if err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err == nil {
 		t.Fatal("expected hanging Agent.Run to fail the run")
 	}
 	got, err := database.GetRun(run.ID)
@@ -649,7 +649,7 @@ func TestExecutor_DirectAgentRunUnderACallerDeadlineRefusesLateWork(t *testing.T
 	}
 	cfg := &config.Config{AgentTimeout: time.Hour}
 	exec := NewExecutor(database, p, cfg, ag, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+	if err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err == nil {
 		t.Fatal("expected the expired caller deadline to fail the run")
 	}
 }

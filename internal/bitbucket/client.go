@@ -39,6 +39,11 @@ type CommitStatus struct {
 	State       string `json:"state"`
 	Description string `json:"description"`
 	URL         string `json:"url"`
+	Links       struct {
+		Commit struct {
+			Href string `json:"href"`
+		} `json:"commit"`
+	} `json:"links"`
 }
 
 type Pipeline struct {
@@ -330,13 +335,27 @@ func readTail(r io.Reader, maxBytes int) ([]byte, error) {
 }
 
 type bitbucketPullRequest struct {
+	MergeCommit struct {
+		Hash string `json:"hash"`
+	} `json:"merge_commit"`
 	ID     int    `json:"id"`
 	State  string `json:"state"`
 	Source struct {
+		Branch struct {
+			Name string `json:"name"`
+		} `json:"branch"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
 		Commit struct {
 			Hash string `json:"hash"`
 		} `json:"commit"`
 	} `json:"source"`
+	Destination struct {
+		Branch struct {
+			Name string `json:"name"`
+		} `json:"branch"`
+	} `json:"destination"`
 	Links struct {
 		HTML struct {
 			Href string `json:"href"`

@@ -64,29 +64,67 @@ func marshalFindingIDs(ids []string) string {
 	return string(encoded)
 }
 
-func findingKey(item types.Finding) types.Finding {
+type findingIdentity struct {
+	finding             types.Finding
+	hasSupport          bool
+	claimType           types.FindingClaimType
+	sourcePath          string
+	testCommand         string
+	ciCheckID           string
+	ciHeadSHA           string
+	runtimeEntity       string
+	runtimeTransition   string
+	runtimeTransitionAt string
+	runtimeRevision     string
+}
+
+func findingKey(item types.Finding) findingIdentity {
+	key := findingIdentity{finding: item}
+	if support := item.Support; support != nil {
+		key.hasSupport = true
+		key.claimType = support.ClaimType
+		if support.Source != nil {
+			key.sourcePath = support.Source.Path
+		}
+		if support.Test != nil {
+			key.testCommand = support.Test.Command
+		}
+		if support.CI != nil {
+			key.ciCheckID = support.CI.CheckID
+			key.ciHeadSHA = support.CI.HeadSHA
+		}
+		if support.Runtime != nil {
+			key.runtimeEntity = support.Runtime.Entity
+			key.runtimeTransition = support.Runtime.Transition
+			key.runtimeTransitionAt = support.Runtime.TransitionAt
+			key.runtimeRevision = support.Runtime.Revision
+		}
+	}
+	item = key.finding
 	item.ID = ""
 	item.Action = ""
 	item.Source = ""
 	item.UserInstructions = ""
-	return item
+	item.Support = nil
+	key.finding = item
+	return key
 }
 
-func findingFingerprint(item types.Finding) types.Finding {
-	item = findingKey(item)
-	item.Line = 0
-	return item
+func findingFingerprint(item types.Finding) findingIdentity {
+	key := findingKey(item)
+	key.finding.Line = 0
+	return key
 }
 
-func countFindingFingerprints(items []types.Finding) map[types.Finding]int {
-	counts := make(map[types.Finding]int, len(items))
+func countFindingFingerprints(items []types.Finding) map[findingIdentity]int {
+	counts := make(map[findingIdentity]int, len(items))
 	for _, item := range items {
 		counts[findingFingerprint(item)]++
 	}
 	return counts
 }
 
-func hasFindingMatch(item types.Finding, exact map[types.Finding]bool, itemCounts, candidateCounts map[types.Finding]int) bool {
+func hasFindingMatch(item types.Finding, exact map[findingIdentity]bool, itemCounts, candidateCounts map[findingIdentity]int) bool {
 	if exact[findingKey(item)] {
 		return true
 	}
@@ -144,7 +182,7 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	if err != nil {
 		return existingRaw
 	}
-	seen := make(map[types.Finding]bool, len(existing.Items)+len(additional.Items))
+	seen := make(map[findingIdentity]bool, len(existing.Items)+len(additional.Items))
 	existingCounts := countFindingFingerprints(existing.Items)
 	additionalCounts := countFindingFingerprints(additional.Items)
 	merged := types.FindingsMetadata(existing)
@@ -154,6 +192,22 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	}
 	for _, item := range additional.Items {
 		if hasFindingMatch(item, seen, additionalCounts, existingCounts) {
+			if item.Support != nil {
+				key, fingerprint := findingKey(item), findingFingerprint(item)
+				uniqueFingerprint := additionalCounts[fingerprint] == 1 && existingCounts[fingerprint] == 1
+				for i := range merged.Items {
+					if findingKey(merged.Items[i]) == key || uniqueFingerprint && findingFingerprint(merged.Items[i]) == fingerprint {
+						merged.Items[i].Support = item.Support
+						merged.Items[i].File = item.File
+						merged.Items[i].Line = item.Line
+						seen = make(map[findingIdentity]bool, len(merged.Items))
+						for _, current := range merged.Items {
+							seen[findingKey(current)] = true
+						}
+						break
+					}
+				}
+			}
 			continue
 		}
 		key := findingKey(item)
@@ -185,7 +239,7 @@ func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
 	if err != nil {
 		return existingRaw
 	}
-	toRemove := make(map[types.Finding]bool, len(remove.Items))
+	toRemove := make(map[findingIdentity]bool, len(remove.Items))
 	existingCounts := countFindingFingerprints(existing.Items)
 	removeCounts := countFindingFingerprints(remove.Items)
 	for _, item := range remove.Items {
@@ -220,7 +274,7 @@ func retainMatchingFindingsJSON(existingRaw, keepRaw string) string {
 	if err != nil {
 		return ""
 	}
-	allowed := make(map[types.Finding]bool, len(keep.Items))
+	allowed := make(map[findingIdentity]bool, len(keep.Items))
 	existingCounts := countFindingFingerprints(existing.Items)
 	keepCounts := countFindingFingerprints(keep.Items)
 	for _, item := range keep.Items {
@@ -285,6 +339,30 @@ func hasBlockingFindingsJSON(raw string) bool {
 		if item.Severity == types.FindingSeverityError || item.Severity == types.FindingSeverityWarning {
 			return true
 		}
+	}
+	return false
+}
+
+// A Review hypothesis owned by Test or CI is retained in Review's findings
+// but must advance to that evidence step. Only the trusted Review validator
+// emits this exact category and typed no-op support in production.
+func hasBlockingFindingsAtStepJSON(raw string, step types.StepName) bool {
+	if step != types.StepReview {
+		return hasBlockingFindingsJSON(raw)
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw != ""
+	}
+	for _, item := range findings.Items {
+		if item.Severity != types.FindingSeverityError && item.Severity != types.FindingSeverityWarning {
+			continue
+		}
+		if item.Category == "review-support-pending" && item.Action == types.ActionNoOp && item.Support != nil &&
+			(item.Support.ClaimType == types.FindingClaimTest || item.Support.ClaimType == types.FindingClaimCI) && item.Support.Validate() == nil {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -579,7 +657,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	}
 	fullyCovered := len(covered) == len(reviewable)
 	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
-	reported := make(map[types.Finding]bool, len(thisRound.Items))
+	reported := make(map[findingIdentity]bool, len(thisRound.Items))
 	reportedFiles := make(map[string]bool, len(thisRound.Items))
 	hasUnanchoredFinding := false
 	for _, item := range thisRound.Items {

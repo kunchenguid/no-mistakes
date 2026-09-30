@@ -46,13 +46,16 @@ type approvalResponse struct {
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
-	db     *db.DB
-	paths  *paths.Paths
-	config *config.Config
-	forge  *forgecontext.Context
-	agent  agent.Agent
-	steps  []Step
-	skips  map[types.StepName]bool
+	db             *db.DB
+	paths          *paths.Paths
+	config         *config.Config
+	forge          *forgecontext.Context
+	agent          agent.Agent
+	steps          []Step
+	skips          map[types.StepName]bool
+	prContextGuard func(*StepContext, types.StepName) (PRContextDecision, error)
+	prTarget       *PRTargetSelection
+	prContext      *db.PRContext
 
 	onEvent EventFunc
 
@@ -73,8 +76,58 @@ type Executor struct {
 	onPRMerged            func(context.Context, string)
 }
 
-// SetOnPRMerged registers a best-effort hook invoked after a merged PR state
-// is persisted. The pipeline never fails the run if the hook errors.
+// PRContextDecision carries the read-only target selected at a step boundary.
+// A guard that invalidated dependent evidence may ask the executor to restart
+// from an earlier core step after its database transaction commits.
+type PRContextDecision struct {
+	Target      PRTargetSelection
+	RestartFrom types.StepName
+}
+
+// SetPRContextGuard installs the run's target and diff-receipt guard. The
+// daemon installs it for production runs; focused executor embeddings may
+// leave it nil when no forge is involved.
+func (e *Executor) SetPRContextGuard(guard func(*StepContext, types.StepName) (PRContextDecision, error)) {
+	e.prContextGuard = guard
+}
+
+func (e *Executor) checkPRContext(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, stepName types.StepName, currentIndex int, afterStep bool) (int, error) {
+	if e.prContextGuard == nil || stepName.Order() < types.StepRebase.Order() {
+		return -1, nil
+	}
+	decision, err := e.prContextGuard(&StepContext{
+		Ctx: ctx, Run: run, Repo: repo, WorkDir: workDir,
+		Config: e.config, ForgeContext: e.forge, DB: e.db,
+		PRTarget: e.prTarget, PRContext: e.prContext,
+		PRContextAfterStep: afterStep,
+		Log:                func(message string) { slog.Info("PR context", "run_id", run.ID, "message", message) },
+		LogFile:            func(message string) { slog.Info("PR context", "run_id", run.ID, "message", message) },
+	}, stepName)
+	if err != nil {
+		return -1, fmt.Errorf("check PR context before %s: %w", stepName, err)
+	}
+	if strings.TrimSpace(decision.Target.TargetBranch) == "" {
+		return -1, fmt.Errorf("check PR context before %s: target is empty", stepName)
+	}
+	selected := decision.Target
+	e.prTarget = &selected
+	receipt, err := e.db.GetRunPRContext(run.ID)
+	if err != nil {
+		return -1, fmt.Errorf("load PR context after %s: %w", stepName, err)
+	}
+	e.prContext = receipt
+	if decision.RestartFrom == "" || (decision.RestartFrom == stepName && !afterStep) {
+		return -1, nil
+	}
+	index, err := e.stepIndex(decision.RestartFrom)
+	if err != nil || index > currentIndex {
+		return -1, fmt.Errorf("invalid PR context restart from %s before %s", decision.RestartFrom, stepName)
+	}
+	return index, nil
+}
+
+// SetOnPRMerged registers a best-effort hook invoked after a run completes
+// with a verified merged PR. Observation alone never invokes the hook.
 func (e *Executor) SetOnPRMerged(fn func(context.Context, string)) {
 	if e == nil {
 		return
@@ -260,6 +313,15 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx))
 		}
+		restartIndex, err := e.checkPRContext(ctx, run, repo, workDir, step.Name(), i, false)
+		if err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
+		if restartIndex >= 0 {
+			revalidating = true
+			i = restartIndex - 1
+			continue
+		}
 
 		sr := stepRecords[step.Name()]
 		if e.skips[step.Name()] {
@@ -267,6 +329,11 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 				return e.failRun(run, repo, fmt.Errorf("skip step %s: %w", step.Name(), err), ctx)
 			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", nil)
+			if step.Name() == types.StepTest {
+				if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+					return e.failRun(run, repo, err, ctx)
+				}
+			}
 			continue
 		}
 		state, err := e.durableExecutionState(sr.ID)
@@ -280,6 +347,11 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
+		}
+		if step.Name() == types.StepTest && restartFrom == "" {
+			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
 		}
 		if skipRemaining {
 			// Mark all subsequent steps as skipped
@@ -304,7 +376,13 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 	// Mark run as completed. A failure here must emit a terminal failure rather
 	// than leaving a silent running row after every step has finished.
-	if err := e.completeRun(run, repo); err != nil {
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if err := e.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if err := e.completeRun(ctx, run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
 	}
 	return nil
@@ -433,6 +511,18 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.initializeRunScopes(run.ID)
 
 	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
+	// A recovered gate may have been parked while the PR base or its target
+	// moved. Revalidate before its old findings can reconcile or be approved.
+	restartIndex, err := e.checkPRContext(ctx, run, repo, workDir, gate.step.Name(), gate.index, true)
+	if err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if restartIndex >= 0 {
+		if err := e.db.AddRunParkedDuration(run.ID, time.Since(parkStart).Milliseconds()); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("record recovered parked duration: %w", err), ctx)
+		}
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
+	}
 	duration := recoveredStepDuration(gate.stepResult)
 	completeRecoveredGate := func() error {
 		if gate.step.Name() == types.StepReview {
@@ -447,9 +537,27 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 			return nil
 		}
+		if gate.step.Name() == types.StepCI {
+			if err := e.validateCICompletion(ctx, run, repo, workDir); err != nil {
+				return err
+			}
+		}
 		return e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult))
 	}
 	completeReconciledGate := func() error {
+		// Reconciliation observes the terminal PR; CI still owns fresh support
+		// collection. Re-enter the normal step path before its completion write.
+		if gate.step.Name() == types.StepCI && terminalPRObserved(run) {
+			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index, true)
+		}
+
+		restartIndex, err := e.checkPRContext(ctx, run, repo, workDir, gate.step.Name(), gate.index, true)
+		if err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
+		if restartIndex >= 0 {
+			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
+		}
 		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled step %s: %w", gate.step.Name(), err), ctx)
 		}
@@ -474,12 +582,13 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		// conversation directory from it - would otherwise decline on every tick
 		// of a RECOVERED park, which is the daemon-restart window it exists for.
 		EvidenceDir: e.runEvidenceDir(run.ID),
+		PRTarget:    e.prTarget,
+		PRContext:   e.prContext,
 		Log: func(message string) {
 			slog.Info("recovered approval gate reconciliation", "run_id", run.ID, "step", gate.step.Name(), "message", message)
 		},
-		LogChunk:   func(string) {},
-		LogFile:    func(string) {},
-		OnPRMerged: e.onPRMerged,
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
 	}
 	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx, gate.findings); reconciled {
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
@@ -530,6 +639,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	if reconciled {
 		return completeReconciledGate()
 	}
+	restartIndex, err = e.checkPRContext(ctx, run, repo, workDir, gate.step.Name(), gate.index, true)
+	if err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if restartIndex >= 0 {
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
+	}
+	reconcileCtx.PRTarget, reconcileCtx.PRContext = e.prTarget, e.prContext
 
 	approvalFields := telemetry.Fields{
 		"step":       telemetry.StepName(gate.step.Name()),
@@ -657,7 +774,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
-			return e.skipRecoveredRemainder(run, repo, gate.index+1)
+			return e.skipRecoveredRemainder(ctx, run, repo, workDir, gate.index+1)
 		}
 		if restartFrom != "" {
 			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
@@ -756,10 +873,29 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx), ctx)
 		}
+		if index > 0 && e.steps[index-1].Name() == types.StepTest {
+			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+		}
+		restartIndex, contextErr := e.checkPRContext(ctx, run, repo, workDir, e.steps[index].Name(), index, false)
+		if contextErr != nil {
+			return e.failRun(run, repo, contextErr, ctx)
+		}
+		if restartIndex >= 0 {
+			revalidating = true
+			index = restartIndex - 1
+			continue
+		}
 		if index >= len(results) || results[index].StepName != e.steps[index].Name() || (!revalidating && results[index].Status != types.StepStatusPending && results[index].Status != types.StepStatusSkipped) {
 			return e.failRun(run, repo, fmt.Errorf("recovered step plan changed at %d", index), ctx)
 		}
 		if results[index].Status == types.StepStatusSkipped {
+			if e.steps[index].Name() == types.StepTest {
+				if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+					return e.failRun(run, repo, err, ctx)
+				}
+			}
 			continue
 		}
 		state, stateErr := e.durableExecutionState(results[index].ID)
@@ -774,8 +910,13 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
+		if e.steps[index].Name() == types.StepTest && restartFrom == "" {
+			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+		}
 		if skipRemaining {
-			return e.skipRecoveredRemainder(run, repo, index+1)
+			return e.skipRecoveredRemainder(ctx, run, repo, workDir, index+1)
 		}
 		if restartFrom != "" {
 			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, index)
@@ -786,13 +927,19 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			index = restartIndex - 1
 		}
 	}
-	if err := e.completeRun(run, repo); err != nil {
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if err := e.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if err := e.completeRun(ctx, run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("complete recovered run: %w", err), ctx)
 	}
 	return nil
 }
 
-func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int) error {
+func (e *Executor) skipRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, start int) error {
 	results, err := e.db.GetStepsByRun(run.ID)
 	if err != nil {
 		return e.failRun(run, repo, fmt.Errorf("get recovered steps: %w", err))
@@ -806,10 +953,27 @@ func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, e.steps[index].Name(), string(types.StepStatusSkipped), "", "", nil)
 	}
-	if err := e.completeRun(run, repo); err != nil {
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if err := e.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
+		return e.failRun(run, repo, err)
+	}
+	if err := e.completeRun(ctx, run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("complete recovered run: %w", err))
 	}
 	return nil
+}
+
+func (e *Executor) validateCICompletion(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	if err := e.refreshReviewTestSupport(ctx, run, repo, workDir); err != nil {
+		return err
+	}
+	return e.validateReviewSupportOwnersBeforeCICompletion(run.ID)
+}
+
+func terminalPRObserved(run *db.Run) bool {
+	return run.PRState != nil && (*run.PRState == "closed" || *run.PRState == "merged")
 }
 
 func recoveredStepDuration(step *db.StepResult) int64 {
@@ -1039,6 +1203,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Agent:             stepAgent,
 		Config:            e.config,
 		ForgeContext:      e.forge,
+		PRTarget:          e.prTarget,
+		PRContext:         e.prContext,
 		DB:                e.db,
 		StepResultID:      sr.ID,
 		UserIntent:        userIntent,
@@ -1060,7 +1226,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		},
 		CIReadinessChanged: ciReadinessChanged,
 		MarkRunning:        markRunning,
-		OnPRMerged:         e.onPRMerged,
 	}
 	if stepName == types.StepReview {
 		BindUncertifiedPipelineRange(sctx)
@@ -1107,6 +1272,36 @@ rounds:
 		outcome, err := step.Execute(sctx)
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
+		}
+		if err == nil && e.prContextGuard != nil && stepName.Order() >= types.StepRebase.Order() {
+			currentIndex, indexErr := e.stepIndex(stepName)
+			if indexErr != nil {
+				return false, "", indexErr
+			}
+			restartIndex, contextErr := e.checkPRContext(ctx, run, repo, workDir, stepName, currentIndex, true)
+			if contextErr != nil {
+				return false, "", contextErr
+			}
+			sctx.PRTarget, sctx.PRContext = e.prTarget, e.prContext
+			if restartIndex >= 0 {
+				if restartIndex < currentIndex {
+					return false, e.steps[restartIndex].Name(), nil
+				}
+				// The comparison moved while this step was executing. Its
+				// result has no authority; rerun this same step under the new
+				// receipt without recording the discarded round.
+				if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+					return false, "", fmt.Errorf("restart step %s after PR context change: %w", stepName, err)
+				}
+				e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
+				sctx.PRTarget, sctx.PRContext = e.prTarget, e.prContext
+				sctx.Fixing, sctx.SkipFixExecution, sctx.FinalizingAnswers = false, false, false
+				sctx.CarriedFindings, sctx.PreviousFindings, sctx.DeferredFindings = "", "", ""
+				outstandingFindings = ""
+				pendingVerificationIDs, selectedOutstandingIDs = nil, nil
+				nextTrigger = "initial"
+				continue rounds
+			}
 		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
@@ -1272,7 +1467,7 @@ rounds:
 			}
 		}
 
-		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(effectiveFindings) && !hasBlockingFindingsJSON(effectiveFindings) && (!carryFindings || !hasSelectedFindingsJSON(effectiveFindings, selectedOutstandingIDs)) {
+		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(effectiveFindings) && !hasBlockingFindingsAtStepJSON(effectiveFindings, stepName) && (!carryFindings || !hasSelectedFindingsJSON(effectiveFindings, selectedOutstandingIDs)) {
 			// Step completed without needing approval.
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
@@ -1335,8 +1530,51 @@ rounds:
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", err.Error(), &executionMS)
 				return false, "", fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
 			}
+			// The gate can stay parked across a target advance or PR retarget.
+			// An approval or automatic reconciliation from its old comparison
+			// has no authority until the exact receipt is checked again.
+			if e.prContextGuard != nil && stepName.Order() >= types.StepRebase.Order() {
+				currentIndex, indexErr := e.stepIndex(stepName)
+				if indexErr != nil {
+					return false, "", indexErr
+				}
+				restartIndex, contextErr := e.checkPRContext(ctx, run, repo, workDir, stepName, currentIndex, true)
+				if contextErr != nil {
+					return false, "", contextErr
+				}
+				if restartIndex >= 0 {
+					if restartIndex < currentIndex {
+						return false, e.steps[restartIndex].Name(), nil
+					}
+					if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+						return false, "", fmt.Errorf("restart step %s after parked PR context change: %w", stepName, err)
+					}
+					e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
+					sctx.PRTarget, sctx.PRContext = e.prTarget, e.prContext
+					sctx.Fixing, sctx.SkipFixExecution, sctx.FinalizingAnswers = false, false, false
+					sctx.CarriedFindings, sctx.PreviousFindings, sctx.DeferredFindings = "", "", ""
+					outstandingFindings = ""
+					pendingVerificationIDs, selectedOutstandingIDs = nil, nil
+					nextTrigger = "initial"
+					phaseStart = time.Now()
+					continue rounds
+				}
+				sctx.PRTarget, sctx.PRContext = e.prTarget, e.prContext
+			}
 			if reconciled {
 				phaseStart = time.Now()
+				if stepName == types.StepCI && terminalPRObserved(run) {
+					// A terminal observation clears the stale gate, not the support duty.
+					// Re-run CI without applying its old repair selection.
+					if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+						return false, "", fmt.Errorf("resume CI support after terminal observation: %w", err)
+					}
+					e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
+					sctx.Fixing, sctx.SkipFixExecution = false, false
+					sctx.CarriedFindings, sctx.PreviousFindings, sctx.DeferredFindings = "", "", ""
+					nextTrigger = "initial"
+					continue rounds
+				}
 				goto done
 			}
 
@@ -1484,6 +1722,11 @@ rounds:
 	}
 
 done:
+	// A repair that requests fresh validation has no terminal verdict yet.
+	// Leave its status active until the caller resets it with the owner stages.
+	if restartFrom != "" {
+		return skipRemaining, restartFrom, nil
+	}
 	// Mark step completed with execution-only timing.
 	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
 	if durationOverrideMS > 0 {
@@ -1492,6 +1735,15 @@ done:
 	status := types.StepStatusCompleted
 	if stepSkipped {
 		status = types.StepStatusSkipped
+	}
+	if stepName == types.StepCI && !stepSkipped {
+		if err := e.validateCICompletion(ctx, run, repo, workDir); err != nil {
+			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
+				slog.Warn("failed to mark unproven CI step as failed", "step", stepName, "error", dbErr)
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", err.Error(), &durationMS)
+			return false, "", err
+		}
 	}
 	// A review round's captured head becomes authority only when the review
 	// actually completes. Parked outcomes stay in the loop above, failures
@@ -1835,6 +2087,21 @@ func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *S
 	if HasProtectedPathRefusal(findingsJSON) {
 		return false, nil
 	}
+	// Closing or merging a PR cannot clear a gate raised by current CI
+	// support that remains unresolved or supported. Only current proof can.
+	if step.Name() == types.StepCI {
+		findings, err := types.ParseFindingsJSON(findingsJSON)
+		if err != nil {
+			return false, fmt.Errorf("read CI support gate findings: %w", err)
+		}
+		for _, finding := range findings.Items {
+			if finding.Support != nil && finding.Support.ClaimType == types.FindingClaimCI &&
+				finding.Support.OwnerResult != nil &&
+				finding.Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
+				return false, nil
+			}
+		}
+	}
 	timeout := e.gateReconcileTimeout
 	if timeout <= 0 {
 		timeout = defaultGateReconcileTimeout
@@ -1879,23 +2146,60 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	return err
 }
 
-func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
-	verifiedHead, verified := e.reconcileTerminalRunHead(run)
-	var err error
-	if verified {
-		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead)
-	} else {
-		err = e.db.UpdateRunStatus(run.ID, types.RunCompleted)
-	}
+func (e *Executor) completeRun(ctx context.Context, run *db.Run, repo *db.Repo) error {
+	verifiedHead, err := e.verifyCompletionHead(run)
 	if err != nil {
 		return err
 	}
-	if verified {
-		run.HeadSHA = verifiedHead
+	if err := e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead); err != nil {
+		return err
 	}
+	run.HeadSHA = verifiedHead
 	run.Status = types.RunCompleted
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
+	if run.PRState != nil && *run.PRState == "merged" && e.onPRMerged != nil {
+		e.onPRMerged(ctx, run.ID)
+	}
+
 	return nil
+}
+
+func (e *Executor) verifyCompletionHead(run *db.Run) (string, error) {
+	if run == nil || strings.TrimSpace(e.workDir) == "" {
+		return "", fmt.Errorf("completion has no managed worktree")
+	}
+	recordedRun, err := e.db.GetRun(run.ID)
+	if err != nil || recordedRun == nil {
+		return "", fmt.Errorf("read run head before completion: %w", err)
+	}
+	receipt, err := e.db.GetRunPRContext(run.ID)
+	if err != nil {
+		return "", fmt.Errorf("read PR comparison before completion: %w", err)
+	}
+	head := strings.TrimSpace(recordedRun.HeadSHA)
+	if head == "" || receipt == nil || head != run.HeadSHA || head != receipt.LocalHeadSHA {
+		return "", fmt.Errorf("completion head does not match run and PR comparison")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	observed, err := git.HeadSHA(ctx, e.workDir)
+	if err != nil {
+		return "", fmt.Errorf("read worktree head before completion: %w", err)
+	}
+	if strings.TrimSpace(observed) != head {
+		return "", fmt.Errorf("worktree head does not match PR comparison")
+	}
+	dirty, err := git.HasUncommittedChanges(ctx, e.workDir)
+	if err != nil {
+		return "", fmt.Errorf("check worktree before completion: %w", err)
+	}
+	if dirty {
+		return "", fmt.Errorf("worktree is dirty before completion")
+	}
+	if !e.preserveUnpublishedTerminalHead(ctx, recordedRun, head) {
+		return "", fmt.Errorf("preserve completion head custody")
+	}
+	return head, nil
 }
 
 func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {

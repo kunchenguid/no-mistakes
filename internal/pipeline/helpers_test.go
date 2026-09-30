@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -84,6 +87,68 @@ func setupTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.Repo) {
 		t.Fatal(err)
 	}
 	return database, p, run, repo
+}
+
+func completionFixture(t *testing.T, database *db.DB, run *db.Run) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init"}, {"config", "user.email", "test@test.com"}, {"config", "user.name", "Test"}, {"commit", "--allow-empty", "-m", "initial"}} {
+		if _, err := git.Run(context.Background(), dir, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bindCompletionFixture(t, database, run, dir)
+	return dir
+}
+
+func bindCompletionFixture(t *testing.T, database *db.DB, run *db.Run, dir string) {
+	t.Helper()
+	head, err := git.HeadSHA(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	run.HeadSHA = head
+	if _, err := database.BindRunPRContext(run.ID, db.PRContextCandidate{
+		LocalHeadSHA: head, TargetBranch: "main", TargetSHA: head,
+		MergeBaseSHA: head, DiffDigest: hex.EncodeToString(sha256.New().Sum(nil)),
+	}, types.StepRebase); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func advanceCompletionFixture(t *testing.T, database *db.DB, run *db.Run, dir string) {
+	t.Helper()
+	head, err := git.HeadSHA(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := database.GetRunPRContext(run.ID)
+	if err != nil || receipt == nil {
+		t.Fatalf("read comparison receipt: %v", err)
+	}
+	candidate := receipt.PRContextCandidate
+	candidate.LocalHeadSHA = head
+	mergeBase, err := git.Run(context.Background(), dir, "merge-base", candidate.TargetSHA, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch, err := git.RunRaw(context.Background(), dir, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", candidate.TargetSHA+"..."+head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(patch)
+	candidate.MergeBaseSHA = mergeBase
+	candidate.DiffDigest = hex.EncodeToString(digest[:])
+	if _, err := database.AdvanceRunPRContext(run.ID, candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	run.HeadSHA = head
 }
 
 // eventCollector is a thread-safe event accumulator for tests.

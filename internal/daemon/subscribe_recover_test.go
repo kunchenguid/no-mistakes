@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -381,7 +382,7 @@ func TestRecoverStaleRunsOnStartup(t *testing.T) {
 	}
 }
 
-func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
+func TestRecoverOnStartup_DoesNotCertifyUnverifiedTerminalPRRun(t *testing.T) {
 	for _, state := range []string{"merged", "closed"} {
 		t.Run(state, func(t *testing.T) {
 			root, err := os.MkdirTemp("", "dtest")
@@ -409,8 +410,10 @@ func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
 			if err := database.UpdateRunPRState(run.ID, state); err != nil {
 				t.Fatal(err)
 			}
-			// Recreate a legacy interrupted row after the current writer has run:
-			// terminal PR truth was durable, but status was still running.
+			// A terminal observation is durable, but its evidence was not verified.
+			if err := database.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+				t.Fatal(err)
+			}
 			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 				t.Fatal(err)
 			}
@@ -428,15 +431,15 @@ func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != state {
-				t.Fatalf("startup reconciliation = status %s pr_state %v, want completed/%s", got.Status, got.PRState, state)
+			if got.Status != types.RunCIMonitorInterrupted || got.PRState == nil || *got.PRState != state {
+				t.Fatalf("startup reconciliation = status %s pr_state %v, want interrupted/%s", got.Status, got.PRState, state)
 			}
 			gotCI, err := database.GetStepResult(ci.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if gotCI.Status != types.StepStatusCompleted {
-				t.Fatalf("startup reconciliation CI status = %s, want completed", gotCI.Status)
+			if gotCI.Status != types.StepStatusSkipped {
+				t.Fatalf("startup reconciliation CI status = %s, want skipped", gotCI.Status)
 			}
 			active, err := lifecycle.ActiveRuns(p)
 			if err != nil {
@@ -480,6 +483,7 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
 		t.Fatal(err)
 	}
+	testgit.BindRunComparison(t, d, run, worktree, "main", "", "", "")
 	step, err := d.InsertStepResult(run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -628,6 +632,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
 				t.Fatal(err)
 			}
+			testgit.BindRunComparison(t, d, run, worktree, "main", prURL, "test/repo", "feature")
 			step, err := d.InsertStepResult(run.ID, types.StepCI)
 			if err != nil {
 				t.Fatal(err)

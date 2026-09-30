@@ -73,7 +73,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.UserIntent = "user wanted CI autofix to preserve the extracted intent"
 	sctx.Config.CITimeout = 30 * time.Second
@@ -235,7 +235,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1} // only 1 attempt allowed
@@ -331,7 +331,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
@@ -405,7 +405,7 @@ func TestCIStep_CIAutoFixRetriesWhenGitHubClockLagsLocalClock(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 5 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
@@ -488,7 +488,7 @@ func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 1 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
@@ -574,7 +574,7 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
@@ -646,7 +646,7 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
@@ -725,7 +725,7 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
@@ -802,7 +802,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
@@ -877,7 +877,7 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
@@ -1041,7 +1041,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
@@ -1126,7 +1126,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.UserIntent = "user wanted CI autofix to preserve the extracted intent"
 	sctx.Config.CITimeout = 30 * time.Second
@@ -1383,7 +1383,7 @@ func TestCIStep_FixAgentTimeoutRecordsCommittedRepair(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/1109"
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
@@ -1465,7 +1465,7 @@ func TestCIStep_FixAfterATimedOutRepairRevalidatesTheRecordedCommit(t *testing.T
 	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: headSHA, TargetKind: "origin", Ref: "refs/heads/feature"}); err != nil {
 		t.Fatal(err)
 	}
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
@@ -1509,7 +1509,7 @@ func TestCIStep_FixAgentCutMidRebaseRecordsNoPartialHead(t *testing.T) {
 	}
 	prURL := "https://github.com/test/repo/pull/1109"
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
@@ -1648,7 +1648,7 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 
 	prURL := "https://github.com/test/repo/pull/3195"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 10}
@@ -1738,7 +1738,7 @@ func TestCIStep_NonTimeoutFixFailureKeepsRetrying(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/3195"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}

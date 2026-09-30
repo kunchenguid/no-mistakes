@@ -44,7 +44,10 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 				gitCmd(t, f.dir, "commit", "-m", "advance conflicting base")
 				gitCmd(t, f.dir, "push", "origin", "main")
 				gitCmd(t, f.dir, "checkout", "feature")
-				f.sctx.Env = fakeCIGHMergeable(t, "OPEN", `[]`, "CONFLICTING")
+				f.sctx.Env = append(fakeCIGHMergeable(t, "OPEN", `[]`, "CONFLICTING"),
+					"FAKE_CLI_PR_HEAD_SHA="+f.headSHA,
+					`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`,
+				)
 			}
 			f.sctx.Agent = &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 				if tc.rebase {
@@ -108,7 +111,12 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			// environment across every step, but the executor this test drives
 			// resets StepContext.Env per step and this fixture only injects it
 			// explicitly via reconcileEnvStep.
-			steps := []pipeline.Step{&ReviewStep{}, &TestStep{}, reconcileEnvStep{step: &PushStep{}, env: green}, reconcileEnvStep{step: ci, env: green}}
+			steps := []pipeline.Step{
+				reconcileEnvStep{step: &ReviewStep{}, env: green},
+				reconcileEnvStep{step: &TestStep{}, env: green},
+				reconcileEnvStep{step: &PushStep{}, env: green},
+				reconcileEnvStep{step: ci, env: green},
+			}
 			reviews := 0
 			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 				findings := cleanReviewFindings()
@@ -299,8 +307,8 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 				if strings.Contains(f.log(), ciChecksPassedMsg) {
 					t.Fatal("reported checks passed before revalidation/publication")
 				}
-			} else if f.remoteHead(t) != f.localHead(t) || !strings.Contains(f.log(), ciChecksPassedMsg) {
-				t.Fatalf("retry did not publish before monitoring: local=%s remote=%s\n%s", f.localHead(t), f.remoteHead(t), f.log())
+			} else if f.remoteHead(t) != f.localHead(t) || !strings.Contains(f.log(), "CI readiness lacks a current PR comparison receipt") {
+				t.Fatalf("retry did not publish and withhold unproven readiness: local=%s remote=%s\n%s", f.localHead(t), f.remoteHead(t), f.log())
 			}
 		})
 	}

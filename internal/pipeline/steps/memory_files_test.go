@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -249,7 +250,7 @@ func TestCIStep_RepairPromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
@@ -453,7 +454,11 @@ func TestPRStep_ConfiguredTitlePromptKeepsMemoryFilesHandsOff(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = append(env, "FAKE_CLI_PR_BODY=existing author body", "FAKE_CLI_PR_TITLE=old title")
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)

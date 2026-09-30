@@ -30,7 +30,11 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	targetBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return nil, err
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, targetBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -362,6 +366,12 @@ Rules:
   - "source": every source-verifiable finding, including any finding that mixes a source defect with a delivery claim.
   - "pipeline-owned-delivery": only a finding whose sole claim is that this run's remote branch, push, PR, or CI output is not present yet.
   - "external-delivery": a pre-existing or external PR, third-party artifact, or other lifecycle requirement not owned by this run.
+- Every finding must include one typed support reference: support.claim_type is "source", "test", "ci", or "runtime", with only the matching support object.
+  - For source, give source.path, source.line, and a verbatim source.quote from the reviewed head. For a deleted line, set source.head_sha to the pinned merge-base commit and quote the line there. Any other historical head, run ID, or observation time is context only and does not prove the claim applies to this comparison.
+  - For test, give test.command. A remembered test result or old command output is a hypothesis for the Test step, not Review evidence.
+  - For CI, give ci.check_id and ci.head_sha. A reported check result or old CI head is a hypothesis for the CI step, not Review evidence.
+  - For runtime, give runtime.entity, runtime.transition, runtime.transition_at, runtime.observed_at, and runtime.revision. Current status alone cannot prove which revision caused a transition. Report an old or uncorrelated observation as a claim that still needs independent validation.
+- Do not turn an unsupported historical report, previous finding, test result, CI result, or runtime observation into a source-backed finding by citing a related line. Identify the type of the actual claim so its evidence owner can validate it.
 
 Simplification (a dedicated pass over what the change introduced, in addition to the findings above):
 - Enumerate every component the change introduced: a new branch, acceptance or matching path, fallback, alias, mode, flag, option, a second definition of a concept the code already defines once, or a parallel copy of a rule. Judge each one against the User intent when one is stated, otherwise against the change's own stated purpose. The stated purpose sets the required scope, not the implementation.
@@ -464,6 +474,9 @@ Risk assessment (after listing all findings):
 		if err == nil {
 			findings, err = parseReviewAnalyzerOutput(result)
 			if err == nil {
+				findings, err = validateReviewFindingSupport(sctx, findings, reviewTargetSHA)
+			}
+			if err == nil {
 				break
 			}
 		} else if !agent.IsStructuredOutputRejected(err) || sctx.Ctx.Err() != nil || errors.Is(err, errReviewAgentTimeout) {
@@ -499,7 +512,7 @@ Risk assessment (after listing all findings):
 	if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
 		return nil, err
 	}
-	needsApproval := hasBlockingFindings(findings.Items)
+	needsApproval := hasBlockingReviewFindings(findings.Items)
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 		// A clean round certifies the whole head, so it is held to a positive
 		// coverage record over every trusted reviewable path. An omitted
@@ -522,7 +535,7 @@ Risk assessment (after listing all findings):
 			return nil, err
 		}
 		findings = completed
-		needsApproval = hasBlockingFindings(findings.Items)
+		needsApproval = hasBlockingReviewFindings(findings.Items)
 		if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 			sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
 			needsApproval = true
@@ -662,6 +675,11 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 	completion, err := parseReviewAnalyzerOutput(result)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("focused coverage pass returned invalid findings (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
+		return findings, nil
+	}
+	completion, err = validateReviewFindingSupport(sctx, completion, sctx.Run.HeadSHA)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("focused coverage pass returned unsupported findings (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
 		return findings, nil
 	}
 	// The completion turn runs in the same pre-push phase as the first pass, so

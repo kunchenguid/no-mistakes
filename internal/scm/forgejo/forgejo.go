@@ -595,7 +595,7 @@ func (h *Host) normalizePull(pull pullRequest) (*scm.PR, error) {
 	if pull.State != "open" && pull.State != "closed" {
 		return nil, fmt.Errorf("forgejo-axi returned unknown PR state %q", pull.State)
 	}
-	return &scm.PR{Number: strconv.Itoa(pull.Number), URL: pull.URL, HeadSHA: pull.HeadSHA}, nil
+	return &scm.PR{Number: strconv.Itoa(pull.Number), URL: pull.URL, HeadSHA: pull.HeadSHA, BaseBranch: pull.Base}, nil
 }
 
 func (h *Host) normalizeChecks(result checksResult) ([]scm.Check, error) {
@@ -626,6 +626,7 @@ func (h *Host) normalizeChecks(result checksResult) ([]scm.Check, error) {
 		check := scm.Check{
 			Name:       status.Context,
 			ProviderID: "forgejo-status:" + status.Context,
+			HeadSHA:    result.SHA,
 			Bucket:     bucket,
 			State:      status.State,
 			Link:       stringValue(status.TargetURL),

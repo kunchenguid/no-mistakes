@@ -77,7 +77,8 @@ func TestExecutor_RecoveredAnswerRoundIsTriggeredAsAnAnswer(t *testing.T) {
 	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 2}}, newFakeSessionAgent(), []Step{step}, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Resume(context.Background(), run, repo, completionDir) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -137,7 +138,8 @@ func TestExecutor_AnswerActionIsRefusedForAnyStepButReview(t *testing.T) {
 	exec := NewExecutor(database, p, &config.Config{}, newFakeSessionAgent(), []Step{step}, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Execute(context.Background(), run, repo, completionDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepDocument, types.StepStatusAwaitingApproval)
 
 	if err := exec.Respond(types.StepDocument, types.ActionAnswer, nil); err != nil {
@@ -244,7 +246,8 @@ func TestExecutor_RecoveredAnswerRoundInheritsAFixReviewGatesContext(t *testing.
 	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 2}}, newFakeSessionAgent(), []Step{step}, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Resume(context.Background(), run, repo, completionDir) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -361,7 +364,8 @@ func TestExecutor_RecoveredAnswerRoundKeepsTheOutstandingFindings(t *testing.T) 
 	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 0}}, newFakeSessionAgent(), []Step{step}, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Resume(context.Background(), run, repo, completionDir) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {

@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
+    pr_base_branch_requested INTEGER NOT NULL DEFAULT 0,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
+    external_ci_owner    TEXT NOT NULL DEFAULT '',
     pi_profile           TEXT,
     verification_plan    TEXT,
     created_at           INTEGER NOT NULL,
@@ -71,6 +73,24 @@ CREATE TABLE IF NOT EXISTS step_results (
     auto_fix_limit              INTEGER,
     ci_fix_attempts             INTEGER NOT NULL DEFAULT 0,
     override_reason             TEXT
+);
+
+-- A run's observed PR identity and exact comparison are one atomic receipt.
+-- Historical runs have no row: their mutable runs.base_sha is not evidence
+-- of a forge target or canonical diff.
+CREATE TABLE IF NOT EXISTS run_pr_contexts (
+    run_id          TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    pr_url          TEXT,
+    source_repo     TEXT,
+    source_branch   TEXT,
+    forge_head_sha  TEXT,
+    local_head_sha  TEXT NOT NULL,
+    target_branch   TEXT NOT NULL,
+    target_sha      TEXT NOT NULL,
+    merge_base_sha  TEXT NOT NULL,
+    diff_digest     TEXT NOT NULL,
+    observed_at     INTEGER NOT NULL,
+    generation      INTEGER NOT NULL CHECK (generation > 0)
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -237,6 +257,14 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`CREATE TABLE IF NOT EXISTS run_pr_contexts (
+		run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+		pr_url TEXT, source_repo TEXT, source_branch TEXT, forge_head_sha TEXT,
+		local_head_sha TEXT NOT NULL, target_branch TEXT NOT NULL,
+		target_sha TEXT NOT NULL, merge_base_sha TEXT NOT NULL,
+		diff_digest TEXT NOT NULL, observed_at INTEGER NOT NULL,
+		generation INTEGER NOT NULL CHECK (generation > 0)
+	)`,
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,
@@ -369,4 +397,9 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN approval_reason TEXT`,
+	// A fresh --base-branch request is one-time PR retarget authority. A rerun
+	// may inherit pr_base_branch without inheriting this authority.
+	`ALTER TABLE runs ADD COLUMN pr_base_branch_requested INTEGER NOT NULL DEFAULT 0`,
+	// Explicit caller ownership of CI verification outside this pipeline.
+	`ALTER TABLE runs ADD COLUMN external_ci_owner TEXT NOT NULL DEFAULT ''`,
 }

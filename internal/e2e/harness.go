@@ -142,6 +142,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	t.Setenv("HOME", h.HomeDir)
 	t.Setenv("NM_HOME", h.NMHome)
 	t.Setenv("FAKEAGENT_LOG", h.AgentLog)
+	t.Setenv("FAKEAGENT_PR_UPSTREAM", h.UpstreamDir)
 	if h.Scenario != "" {
 		t.Setenv("FAKEAGENT_SCENARIO", h.Scenario)
 	}

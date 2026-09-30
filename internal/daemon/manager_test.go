@@ -415,6 +415,9 @@ type captureForgeContextStep struct {
 
 func (s *captureForgeContextStep) Name() types.StepName { return types.StepReview }
 func (s *captureForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	if sctx.ForgeContext == nil {
 		return nil, fmt.Errorf("forge context is missing")
 	}
@@ -438,6 +441,9 @@ type barrierForgeContextStep struct {
 
 func (s *barrierForgeContextStep) Name() types.StepName { return types.StepReview }
 func (s *barrierForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	if sctx.ForgeContext == nil {
 		return nil, fmt.Errorf("forge context is missing")
 	}
@@ -909,6 +915,9 @@ func TestRerunInheritsPRBaseBranchFromSelectedRun(t *testing.T) {
 	if firstRun.PRBaseBranch == nil || *firstRun.PRBaseBranch != "epic/feature" {
 		t.Fatalf("first run PRBaseBranch = %#v, want epic/feature", firstRun.PRBaseBranch)
 	}
+	if !firstRun.PRBaseBranchRequested {
+		t.Fatal("fresh initial --base-branch request was not persisted")
+	}
 
 	var rerun ipc.RerunResult
 	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
@@ -922,6 +931,21 @@ func TestRerunInheritsPRBaseBranchFromSelectedRun(t *testing.T) {
 	got := waitForRunTerminalState(t, d, rerun.RunID)
 	if got.PRBaseBranch == nil || *got.PRBaseBranch != "epic/feature" {
 		t.Fatalf("rerun PRBaseBranch = %#v, want inherited epic/feature", got.PRBaseBranch)
+	}
+	if got.PRBaseBranchRequested {
+		t.Fatal("inherited base branch became a fresh retarget request")
+	}
+
+	var explicit ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID: "pr-base-rerun-repo", Branch: "main", PreviousRunID: first.RunID,
+		PRBaseBranch: "epic/feature",
+	}, &explicit); err != nil {
+		t.Fatal(err)
+	}
+	explicitRun := waitForRunTerminalState(t, d, explicit.RunID)
+	if !explicitRun.PRBaseBranchRequested {
+		t.Fatal("fresh rerun --base-branch request was not persisted")
 	}
 }
 

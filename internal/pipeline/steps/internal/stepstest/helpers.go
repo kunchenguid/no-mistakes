@@ -644,6 +644,32 @@ func NewTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	return sctx
 }
 
+func BindCurrentPRComparison(t *testing.T, sctx *pipeline.StepContext, prURL, sourceRepo, target string) {
+	t.Helper()
+	if sctx.Run == nil || sctx.DB == nil {
+		t.Fatal("PR comparison fixture needs a durable run")
+	}
+	durable, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable == nil {
+		repo, err := sctx.DB.InsertRepo(sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Repo.DefaultBranch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := sctx.DB.InsertRun(repo.ID, sctx.Run.Branch, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sctx.Repo = repo
+		sctx.Run = run
+	}
+	sctx.PRContext = testgit.BindRunComparison(t, sctx.DB, sctx.Run, sctx.WorkDir, target, prURL, sourceRepo, "feature")
+	sctx.Run.PRURL = &prURL
+	sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+sctx.Run.HeadSHA)
+}
+
 // fakeCIGH creates a fake gh binary that responds to CI-related
 // commands (pr view --json state, pr checks --json, pr view --json comments).
 func FakeCIGH(t *testing.T, state, checksJSON string) []string {

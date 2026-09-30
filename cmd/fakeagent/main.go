@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -87,6 +88,43 @@ type ghStubInvocation struct {
 
 func runGhForkPRStub(args []string) int {
 	recordGhStubInvocation(args)
+	if len(args) > 0 && args[0] == "api" {
+		for _, endpoint := range args {
+			if strings.HasPrefix(endpoint, "repos/") && strings.HasSuffix(endpoint, "/pulls") && hasArgValue(args, "-f", "state=open") {
+				fmt.Println("[[]]")
+				return 0
+			}
+			if strings.HasPrefix(endpoint, "repos/") && strings.HasSuffix(endpoint, "/pulls/99") {
+				targetRepo := strings.TrimSuffix(strings.TrimPrefix(endpoint, "repos/"), "/pulls/99")
+				head, base, _ := lastStubCreate(os.Getenv("FAKEAGENT_GH_LOG"), "pr")
+				branch := head
+				sourceRepo := targetRepo
+				if owner, ref, ok := strings.Cut(head, ":"); ok {
+					branch = ref
+					sourceRepo = owner + "/" + filepath.Base(targetRepo)
+				}
+				if base == "" {
+					base = "main"
+				}
+				state, merged, mergeSHA, headSHA := "open", false, "", stubGitHead()
+				result, err := readStubPRMerge(os.Getenv("FAKEAGENT_GH_LOG"), "pr")
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return 1
+				}
+				if result != nil {
+					state, merged, mergeSHA, headSHA = "closed", true, result.MergeSHA, result.HeadSHA
+				}
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+					"number": 99, "html_url": "https://github.com/" + targetRepo + "/pull/99",
+					"state": state, "merged": merged, "merge_commit_sha": mergeSHA,
+					"head": map[string]any{"ref": branch, "sha": headSHA, "repo": map[string]any{"full_name": sourceRepo}},
+					"base": map[string]any{"ref": base},
+				})
+				return 0
+			}
+		}
+	}
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		return 0
@@ -101,6 +139,10 @@ func runGhForkPRStub(args []string) int {
 		return 0
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		if err := resetStubPRMerge(os.Getenv("FAKEAGENT_GH_LOG")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 		repo := argAfter(args, "--repo")
 		if repo == "" {
 			repo = os.Getenv("FAKEAGENT_GH_PARENT")
@@ -113,6 +155,10 @@ func runGhForkPRStub(args []string) int {
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
 		if hasArgValue(args, "--json", "state") {
+			if _, err := mergeStubPR(os.Getenv("FAKEAGENT_GH_LOG"), "pr"); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
 			fmt.Println("MERGED")
 			return 0
 		}
@@ -155,18 +201,45 @@ func recordGhStubInvocation(args []string) {
 	_ = json.NewEncoder(f).Encode(inv)
 }
 
-// runTeaStub shadows any system-installed tea during the Gitea provider e2e
-// journey. It is a stateless canned-response stub, mirroring
-// runGhForkPRStub: `pulls list` always reports no existing PR (so the PR
-// step exercises CreatePR), `pulls create` fabricates a plausible PR URL
-// from its own human-readable output (real tea has no --output json on
-// create; the pipeline's CreatePR falls back to scanning that output because
-// this stub's stateless `pulls list` can never re-find the PR it just
-// created), and `pulls <idx>` (view) reports the PR as already merged so the
-// CI step's GetPRState short-circuits on the first poll without needing to
-// model Gitea Actions runs at all.
+// runTeaStub shadows any system-installed tea during the Gitea e2e journey.
+// It creates an open fixture PR, then performs its local upstream merge when
+// CI first reads its terminal state. Raw facts report that same merge result.
 func runTeaStub(args []string) int {
 	recordTeaStubInvocation(args)
+	if len(args) >= 2 && args[0] == "api" {
+		endpoint := args[len(args)-1]
+		if strings.HasPrefix(endpoint, "/repos/") && strings.Contains(endpoint, "/pulls?state=open") {
+			fmt.Println("[]")
+			return 0
+		}
+		if strings.HasPrefix(endpoint, "/repos/") && strings.HasSuffix(endpoint, "/pulls/99") {
+			repo := strings.TrimSuffix(strings.TrimPrefix(endpoint, "/repos/"), "/pulls/99")
+			head, base, _ := lastStubCreate(os.Getenv("FAKEAGENT_TEA_LOG"), "pulls")
+			if base == "" {
+				base = "main"
+			}
+			host := os.Getenv("FAKEAGENT_TEA_HOST")
+			if host == "" {
+				host = "gitea.example.com"
+			}
+			state, merged, mergeSHA, headSHA := "open", false, "", stubGitHead()
+			result, err := readStubPRMerge(os.Getenv("FAKEAGENT_TEA_LOG"), "pulls")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			if result != nil {
+				state, merged, mergeSHA, headSHA = "closed", true, result.MergeSHA, result.HeadSHA
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"number": 99, "html_url": "http://" + host + "/" + repo + "/pulls/99",
+				"state": state, "merged": merged, "merge_commit_sha": mergeSHA,
+				"head": map[string]any{"ref": head, "sha": headSHA, "repo": map[string]any{"full_name": repo}},
+				"base": map[string]any{"ref": base},
+			})
+			return 0
+		}
+	}
 
 	if len(args) >= 1 && args[0] == "api" && args[len(args)-1] == "/user" {
 		fmt.Println(`{"login":"e2e-tea-user"}`)
@@ -177,6 +250,10 @@ func runTeaStub(args []string) int {
 		return 0
 	}
 	if len(args) >= 2 && args[0] == "pulls" && args[1] == "create" {
+		if err := resetStubPRMerge(os.Getenv("FAKEAGENT_TEA_LOG")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 		repo := argAfter(args, "--repo")
 		if repo == "" {
 			repo = "owner/repo"
@@ -193,17 +270,48 @@ func runTeaStub(args []string) int {
 		return 0
 	}
 	if len(args) >= 2 && args[0] == "pulls" {
-		// `tea pulls <idx> --output json` (view a single PR by index). Merged
-		// on the first poll so the CI step's GetPRState exits without needing
-		// to model Gitea Actions runs.
+		// The first terminal read merges the PR into the local upstream.
 		if _, err := strconv.Atoi(args[1]); err == nil {
-			fmt.Println(`{"index":99,"state":"closed","hasMerged":true,"head":"","base":"main"}`)
+			result, err := mergeStubPR(os.Getenv("FAKEAGENT_TEA_LOG"), "pulls")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"index": 99, "state": "closed", "hasMerged": true, "head": result.Head, "base": result.Base})
 			return 0
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "fakeagent tea: subcommand not implemented in e2e stub: %v\n", args)
 	return 1
+}
+
+func lastStubCreate(logPath, command string) (head, base, repo string) {
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		var item struct {
+			Args []string `json:"args"`
+			Head string   `json:"head"`
+			Base string   `json:"base"`
+			Repo string   `json:"repo"`
+		}
+		if json.Unmarshal([]byte(line), &item) == nil && len(item.Args) >= 2 &&
+			item.Args[0] == command && item.Args[1] == "create" {
+			head, base, repo = item.Head, item.Base, item.Repo
+		}
+	}
+	return head, base, repo
+}
+
+func stubGitHead() string {
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 type teaStubInvocation struct {

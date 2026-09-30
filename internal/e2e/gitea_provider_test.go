@@ -79,6 +79,10 @@ func TestGiteaProviderJourney(t *testing.T) {
 		t.Fatalf("PR URL = %v, want a Gitea pull URL under %s/%s", run.PRURL, giteaHost, repoSlug)
 	}
 
+	if out, err := h.runGit(t.Context(), h.UpstreamDir, "merge-base", "--is-ancestor", run.HeadSHA, "refs/heads/main"); err != nil {
+		t.Fatalf("provider reported merged without placing the reviewed head on the target: %v\n%s", err, out)
+	}
+
 	invocations := readTeaStubInvocations(t, teaLog)
 	if len(invocations) == 0 {
 		t.Fatal("no tea invocations recorded; the pipeline never called the Gitea host")

@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -216,7 +217,7 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 	}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
 	sctx.Env = env
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Run.Branch = "refs/heads/feature"
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &prURL
@@ -361,6 +362,7 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
@@ -396,6 +398,52 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected continued-monitoring CI log, got: %v", logs)
+	}
+}
+
+func TestCIStep_NoClaimRetargetBeforeGreenDoesNotPublishReadiness(t *testing.T) {
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = stepstest.FakeCIGHSequence(t, "OPEN", []string{
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+	})
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
+	sctx.Config.CITimeout = 10 * time.Minute
+	factsPath := filepath.Join(t.TempDir(), "facts.json")
+	facts := func(base string) []byte {
+		return []byte(`{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":"` + headSHA + `","repo":{"full_name":"test/repo"}},"base":{"ref":"` + base + `"}}`)
+	}
+	if err := os.WriteFile(factsPath, facts("main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = append(sctx.Env, "FAKE_CLI_PR_FACTS_FILE="+factsPath)
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	waits := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		waits++
+		if waits == 1 {
+			return os.WriteFile(factsPath, facts("develop"), 0o644)
+		}
+		cancel()
+		return ctx.Err()
+	})
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("monitor result = %v", err)
+	}
+	for _, line := range logs {
+		if line == cimonitor.ChecksPassedMsg {
+			t.Fatalf("retargeted PR announced checks-passed: %v", logs)
+		}
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.CIReadyAt != nil {
+		t.Fatalf("retargeted PR recorded readiness: %+v, %v", run, err)
 	}
 }
 
@@ -461,6 +509,7 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	// This test owns termination through the cancelled context. Check discovery
 	// shells out several times per poll, so a short wall-clock timeout makes the
 	// assertion depend on runner speed (especially under -race and on Windows).
@@ -624,6 +673,7 @@ func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 10 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -692,6 +742,8 @@ func TestCIStep_UncertainProviderStateClearsPersistedReadiness(t *testing.T) {
 			sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = tt.env(t)
 			sctx.Run.PRURL = &prURL
+			// The executor pins the live target before the CI monitor begins.
+			sctx.PRTarget = &pipeline.PRTargetSelection{TargetBranch: "main"}
 			sctx.Config.CITimeout = 10 * time.Second
 			if err := sctx.DB.SetRunCIReady(sctx.Run.ID, true); err != nil {
 				t.Fatal(err)
@@ -843,6 +895,7 @@ func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 10 * time.Second
 	sctx.Config.NoCI = true
 
@@ -908,8 +961,9 @@ func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
 	// auto_fix.ci = 0 so the failure parks rather than auto-fixing; we only
 	// care about readiness transitions across the delayed-registration path.
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 10 * time.Minute
 	sctx.Config.NoCI = false
 	zero := 0
@@ -976,7 +1030,7 @@ func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
 	// contract after a fix round). Prove green becomes ready.
 	logs = nil
 	env = stepstest.FakeCIGH(t, "OPEN", `[{"name":"e2e","state":"SUCCESS","bucket":"pass"}]`)
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Ctx = context.Background()
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
@@ -1012,7 +1066,7 @@ func TestCIStep_DeclaredNoCIWithUnexpectedChecksHonorsThem(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/99"
 	ag := &stepstest.MockAgent{AgentName: "test"}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Minute
 	sctx.Config.NoCI = true
@@ -1066,6 +1120,7 @@ func TestCIStep_NonEmptyPassingChecksContinueMonitoring(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
@@ -1478,7 +1533,7 @@ func ghLog(t *testing.T, logFile string) string {
 // checks as running again rather than leaving an earlier state to look current.
 func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{
 		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
@@ -1491,7 +1546,8 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -1574,7 +1630,7 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 // bill the repository a duplicate workflow run.
 func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	// The identical completedAt is what makes the second poll a stale read of
 	// the same cancellation rather than the re-run job ending cancelled again.
@@ -1591,7 +1647,8 @@ func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -1652,7 +1709,7 @@ func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.
 // ready-to-merge signal.
 func TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled, cancelled}, "", "")
@@ -1662,7 +1719,7 @@ func TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget(t *testing.T) {
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -1728,7 +1785,7 @@ func TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget(t *testing.T) {
 // let an agent edit code the provider never tested.
 func TestCIStep_UnresolvedCancelledCheckNeverEntersTheAutoFixLoop(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled, cancelled}, "", "")
@@ -1738,7 +1795,7 @@ func TestCIStep_UnresolvedCancelledCheckNeverEntersTheAutoFixLoop(t *testing.T) 
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -1801,7 +1858,7 @@ func TestCIStep_UnresolvedCancelledCheckNeverEntersTheAutoFixLoop(t *testing.T) 
 // leave an earlier ready-to-merge signal behind when it parks for that reason.
 func TestCIStep_MovedPublishedHeadClearsCIReadiness(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	os.WriteFile(filepath.Join(dir, "out-of-band.txt"), []byte("out of band"), 0o644)
 	stepstest.GitCmd(t, dir, "add", "-A")
@@ -1820,7 +1877,7 @@ func TestCIStep_MovedPublishedHeadClearsCIReadiness(t *testing.T) {
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -1858,7 +1915,7 @@ func TestCIStep_MovedPublishedHeadClearsCIReadiness(t *testing.T) {
 // key, so one poll must not spend that budget once per check.
 func TestCIStep_SameNamedCancelledChecksShareOneRerunBudget(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{
 		`[{"name":"build","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"},{"name":"build","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/901/job/902"}]`,
@@ -1870,7 +1927,7 @@ func TestCIStep_SameNamedCancelledChecksShareOneRerunBudget(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -1908,7 +1965,7 @@ func TestCIStep_SameNamedCancelledChecksShareOneRerunBudget(t *testing.T) {
 // can clear the genuine failure.
 func TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{
 		`[{"name":"lint","state":"FAILURE","bucket":"fail","link":"https://github.com/test/repo/actions/runs/900/job/901"},{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/902"}]`,
@@ -1919,7 +1976,7 @@ func TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -1970,7 +2027,7 @@ func TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure(t *testing.T) {
 // cancelled check must not defer it by a whole CI cycle.
 func TestCIStep_MergeConflictEscalatesWithoutRerunningChecks(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{
 		`[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
@@ -1981,7 +2038,7 @@ func TestCIStep_MergeConflictEscalatesWithoutRerunningChecks(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -2031,7 +2088,7 @@ func TestCIStep_MergeConflictEscalatesWithoutRerunningChecks(t *testing.T) {
 // itself: it escalates on the first failure like any other genuine failure.
 func TestCIStep_TimedOutCheckEscalatesWithoutRerunning(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{
 		`[{"name":"test","state":"TIMED_OUT","bucket":"fail","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
@@ -2042,7 +2099,7 @@ func TestCIStep_TimedOutCheckEscalatesWithoutRerunning(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -2081,7 +2138,7 @@ func TestCIStep_TimedOutCheckEscalatesWithoutRerunning(t *testing.T) {
 // waited on.
 func TestCIStep_ZeroRerunBudgetEscalatesCancelledCheckWithoutMakingItReady(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled, cancelled}, "", "")
@@ -2091,7 +2148,7 @@ func TestCIStep_ZeroRerunBudgetEscalatesCancelledCheckWithoutMakingItReady(t *te
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 0}
@@ -2155,7 +2212,7 @@ func TestCIStep_ZeroRerunBudgetEscalatesCancelledCheckWithoutMakingItReady(t *te
 // wait-for-more-results branch it can never leave.
 func TestCIStep_CancelledCheckAmongPassingChecksEscalatesInsteadOfPollingForever(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	// The long-running job is still in progress on the first poll, exactly as
 	// it was in the incident, so the monitor is right to wait there. It then
@@ -2171,9 +2228,9 @@ func TestCIStep_CancelledCheckAmongPassingChecksEscalatesInsteadOfPollingForever
 	prURL := "https://github.com/test/repo/pull/1495"
 	ag := &stepstest.MockAgent{AgentName: "test"}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 4 * time.Hour
 	// The shipped defaults, which is what the incident ran with.
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
@@ -2236,17 +2293,15 @@ func TestCIStep_CancelledCheckAmongPassingChecksEscalatesInsteadOfPollingForever
 	}
 }
 
-// Readiness is read from the PR's live check rollup on every poll, so it always
-// describes the commit the forge currently has for that PR. No recorded head
-// SHA gates it: a run whose own record still names the pre-advance commit must
-// still recognize the green terminal state the forge published for the head the
-// pipeline last pushed.
-func TestCIStep_GreenChecksAtAdvancedHeadAreRecognizedWhileRunTracksOlderHead(t *testing.T) {
+func TestCIStep_GreenChecksAtAdvancedHeadCannotCertifyOlderReceipt(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 
-	// The branch advances past the commit the run still records, the way a
-	// pipeline fix commit does mid-run.
 	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("pipeline fix"), 0o644)
 	stepstest.GitCmd(t, dir, "add", "-A")
 	stepstest.GitCmd(t, dir, "commit", "-m", "no-mistakes(document): align docs")
@@ -2255,28 +2310,15 @@ func TestCIStep_GreenChecksAtAdvancedHeadAreRecognizedWhileRunTracksOlderHead(t 
 	if advanced == headSHA {
 		t.Fatal("expected the published head to advance past the recorded head")
 	}
-
-	env := stepstest.FakeCIGHSequence(t, "OPEN", []string{
+	sctx.Env = append(stepstest.FakeCIGHSequence(t, "OPEN", []string{
 		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
-	})
-
-	prURL := "https://github.com/test/repo/pull/42"
-	ag := &stepstest.MockAgent{AgentName: "test"}
-	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	}), "FAKE_CLI_PR_HEAD_SHA="+advanced)
 	sctx.Config.CITimeout = 30 * time.Minute
-	sctx.Config.AutoFix = config.AutoFix{CI: 3}
-	sctx.Config.CI = config.CI{RerunTransient: config.DefaultCIRerunTransient}
-
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
-
 	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
 		cancel()
 		return ctx.Err()
@@ -2284,31 +2326,20 @@ func TestCIStep_GreenChecksAtAdvancedHeadAreRecognizedWhileRunTracksOlderHead(t 
 	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected monitoring to continue after green checks, got %v", err)
 	}
-	sawPassed := false
-	for _, l := range logs {
-		if l == cimonitor.ChecksPassedMsg {
-			sawPassed = true
+	for _, line := range logs {
+		if line == cimonitor.ChecksPassedMsg {
+			t.Fatalf("stale receipt published checks-passed: %v", logs)
 		}
 	}
-	if !sawPassed {
-		t.Fatalf("expected the green rollup to be recognized, got: %v", logs)
-	}
 	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dbRun.CIReadyAt == nil {
-		t.Fatal("green checks on the PR's current head must record CI readiness")
+	if err != nil || dbRun.CIReadyAt != nil {
+		t.Fatalf("advanced green checks certified older receipt: %+v, %v", dbRun, err)
 	}
 }
 
-// A rerun re-runs whatever commit the branch now points at, so it is only
-// meaningful while that is still the commit this run delivered. When the
-// published head has moved, the step terminates with the expected and observed
-// commits instead of certifying a revision it never produced.
 func TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	// Someone else advances the published branch out of band.
 	os.WriteFile(filepath.Join(dir, "out-of-band.txt"), []byte("out of band"), 0o644)
@@ -2326,7 +2357,7 @@ func TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -2397,7 +2428,7 @@ func TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning(t *testing.T) {
 // the same rerun forever.
 func TestCIStep_RefusedRerunSpendsBudgetAndEscalates(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
 	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled}, "", "HTTP 403: Unable to retry this workflow run")
@@ -2407,7 +2438,7 @@ func TestCIStep_RefusedRerunSpendsBudgetAndEscalates(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -2451,7 +2482,7 @@ func TestCIStep_RefusedRerunSpendsBudgetAndEscalates(t *testing.T) {
 
 func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	cancelled := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
 		`{"name":"Behavior portable serial","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340751"}]`
@@ -2471,9 +2502,10 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/1495"
 	ag := &stepstest.MockAgent{AgentName: "test"}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 4 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -2501,6 +2533,14 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, advancedHeadSHA); err != nil {
 				t.Fatal(err)
 			}
+			candidate, err := testgit.RunComparisonCandidate(sctx.Run, dir, "main", sctx.PRContext.TargetSHA, prURL, "test/repo", "feature")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, candidate); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+advancedHeadSHA)
 		}
 		if polls >= 6 {
 			cancel()
@@ -2543,7 +2583,7 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 
 func TestCIStep_SameHeadGreenRerunEmitsChecksPassed(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	cancelled := `[{"name":"build","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/1/job/10"}]`
 	runPassed := `[{"name":"build","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z","link":"https://github.com/test/repo/actions/runs/1/job/11"}]`
@@ -2552,9 +2592,10 @@ func TestCIStep_SameHeadGreenRerunEmitsChecksPassed(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/1497"
 	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 4 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
@@ -2603,7 +2644,7 @@ func TestCIStep_SameHeadGreenRerunEmitsChecksPassed(t *testing.T) {
 
 func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 	t.Parallel()
-	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	dir, _, baseSHA, headSHA := setupCIRerunRepo(t)
 
 	cancelled := `[{"name":"build","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/1/job/10"}]`
 	delayedSibling := `[{"name":"build","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z","link":"https://github.com/test/repo/actions/runs/2/job/20"}]`
@@ -2611,9 +2652,10 @@ func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/1496"
 	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_URL="+prURL)
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 4 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}

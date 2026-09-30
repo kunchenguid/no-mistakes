@@ -299,6 +299,7 @@ type fakeBitbucketPRAPI struct {
 	existingPRID   int
 	existingPRURL  string
 	createdPRURL   string
+	headSHA        string
 }
 
 func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketPRAPI {
@@ -326,7 +327,7 @@ func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string)
 				api.existingPRURL,
 			)
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			fmt.Fprintf(w, `{"id":%d,"title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
+			fmt.Fprintf(w, `{"id":%d,"state":"OPEN","title":"Existing title","summary":{"raw":"Existing unconfigured description"},"links":{"html":{"href":%q}},"source":{"repository":{"full_name":"test/repo"},"branch":{"name":"feature"},"commit":{"hash":%q}},"destination":{"branch":{"name":"main"}}}`, api.existingPRID, api.existingPRURL, api.headSHA)
 		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
 			api.createCalls++
 			body, err := io.ReadAll(r.Body)
@@ -388,22 +389,26 @@ type fakeBitbucketCIAPI struct {
 	lastPipelineQ  string
 }
 
-func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitbucketCIAPI {
+func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON, headSHA string) *fakeBitbucketCIAPI {
 	t.Helper()
 
 	api := &fakeBitbucketCIAPI{
 		prState:      prState,
 		statusesJSON: statusesJSON,
+		prSourceSHA:  headSHA,
 	}
 
 	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"values":[{"id":42,"state":"OPEN","source":{"branch":{"name":"feature"},"repository":{"full_name":"test/repo"}},"destination":{"branch":{"name":"main"}}}]}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
 			api.prStateCalls++
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}}}`, api.prState, api.prSourceSHA)
+			fmt.Fprintf(w, `{"id":42,"state":%q,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}},"source":{"branch":{"name":"feature"},"repository":{"full_name":"test/repo"},"commit":{"hash":%q}},"destination":{"branch":{"name":"main"}}}`, api.prState, api.prSourceSHA)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
 			api.statusesCalls++
 			api.lastStatusesQ = r.URL.Query().Get("q")
@@ -477,6 +482,22 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	sctx.Run = run
 	sctx.Repo = repo
 	return sctx
+}
+
+func bindExistingPRMutationFixture(t *testing.T, sctx *pipeline.StepContext, prURL, target string) {
+	t.Helper()
+	selection := pipeline.PRTargetSelection{
+		PRURL: prURL, SourceRepo: "test/repo", SourceBranch: "feature",
+		ForgeHeadSHA: sctx.Run.HeadSHA, TargetBranch: target,
+	}
+	if _, err := guardPRContextWithSelection(sctx, types.StepPR, selection, false); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = append(sctx.Env,
+		"FAKE_CLI_PR_HEAD_SHA="+sctx.Run.HeadSHA,
+		"FAKE_CLI_PR_FACTS_URL="+prURL,
+		"FAKE_CLI_PR_FACTS_BASE="+target,
+	)
 }
 
 // fakeCIGH creates a fake gh binary that responds to CI-related

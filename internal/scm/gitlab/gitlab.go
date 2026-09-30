@@ -597,6 +597,12 @@ type gitlabJob struct {
 	Status     string `json:"status"`
 	Stage      string `json:"stage"`
 	FinishedAt string `json:"finished_at"`
+	Commit     struct {
+		ID string `json:"id"`
+	} `json:"commit"`
+	Pipeline struct {
+		SHA string `json:"sha"`
+	} `json:"pipeline"`
 }
 
 // completedAt parses the job's finished_at timestamp, returning the zero time
@@ -646,8 +652,14 @@ func decodeGitlabJobs(out []byte) ([]gitlabJob, error) {
 		}
 		var asObject struct {
 			Jobs []gitlabJob `json:"jobs"`
+			SHA  string      `json:"sha"`
 		}
 		if err := json.Unmarshal(raw, &asObject); err == nil && len(asObject.Jobs) > 0 {
+			for i := range asObject.Jobs {
+				if asObject.Jobs[i].Commit.ID == "" && asObject.Jobs[i].Pipeline.SHA == "" {
+					asObject.Jobs[i].Pipeline.SHA = asObject.SHA
+				}
+			}
 			jobs = append(jobs, asObject.Jobs...)
 		}
 	}
@@ -675,11 +687,22 @@ func jobsToChecks(jobs []gitlabJob) []scm.Check {
 		checks = append(checks, scm.Check{
 			Name:        job.Name,
 			ProviderID:  providerID,
+			HeadSHA:     gitlabJobHeadSHA(job),
 			Bucket:      gitlabStatusBucket(job.Status),
 			CompletedAt: job.completedAt(),
 		})
 	}
 	return checks
+}
+
+func gitlabJobHeadSHA(job gitlabJob) string {
+	if job.Commit.ID != "" && job.Pipeline.SHA != "" && job.Commit.ID != job.Pipeline.SHA {
+		return ""
+	}
+	if job.Commit.ID != "" {
+		return job.Commit.ID
+	}
+	return job.Pipeline.SHA
 }
 
 func findFailedJobTargetIDs(out []byte, checkTargets []scm.CheckTarget) []int {

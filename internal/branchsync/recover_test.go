@@ -14,6 +14,7 @@ import (
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	pipelinepkg "github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -1689,6 +1690,8 @@ func TestSuccessfulSkippedDeliveryReleasesVerifiedUnmovedHead(t *testing.T) {
 	if err := gitpkg.WorktreeAdd(f.ctx, f.gate, managed, f.submitted); err != nil {
 		t.Fatal(err)
 	}
+	mustRun(t, managed, "branch", "main", f.base)
+	testgit.BindRunComparison(t, f.db, f.run, managed, "main", "", "", "")
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)

@@ -18,7 +18,7 @@ func TestExecutor_TerminalizesRunWhenInitialStatusWriteFails(t *testing.T) {
 	events := &eventCollector{}
 	exec := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, events.handler)
 
-	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run))
 	if err == nil || !strings.Contains(err.Error(), "update run status") {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -31,7 +31,7 @@ func TestExecutor_TerminalizesRunWhenFinalCompletedWriteFails(t *testing.T) {
 	events := &eventCollector{}
 	exec := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, events.handler)
 
-	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run))
 	if err == nil || !strings.Contains(err.Error(), "update run status") {
 		t.Fatalf("Execute() error = %v", err)
 	}

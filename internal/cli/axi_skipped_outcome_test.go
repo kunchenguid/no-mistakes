@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -39,6 +40,7 @@ func TestAxiOutcomeProviderUnavailableSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	testgit.BindRunComparison(t, database, r, dir, "main", "", "", "")
 	missingCLI := t.TempDir()
 	executor := pipeline.NewExecutor(database, p, nil, nil, []pipeline.Step{
 		unavailableProviderStep{&steps.PRStep{}, missingCLI},
@@ -92,6 +94,7 @@ func TestAxiOutcomeProviderUnavailableSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	testgit.BindRunComparison(t, database, explicit, dir, "main", "", "", "")
 	executor.SetSkippedSteps([]types.StepName{types.StepPR, types.StepCI})
 	if err := executor.Execute(context.Background(), explicit, repo, dir); err != nil {
 		t.Fatal(err)

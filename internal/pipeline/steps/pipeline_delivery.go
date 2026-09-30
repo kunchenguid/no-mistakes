@@ -67,5 +67,15 @@ func filteredReviewSummary(items []Finding) string {
 // review. Findings about pre-existing external PRs, third-party artifacts, or
 // other non-run-owned lifecycle state return false.
 func isDeferredPipelineOwnedDeliveryFinding(item Finding) bool {
+	// A typed test or CI claim can be about an observation from an earlier
+	// run. Review cannot validate it, but the owning Test/CI step can. Keep
+	// that pending reference for handoff while dropping claims that merely
+	// complain this run has not produced its later delivery artifacts yet.
+	if item.Category == reviewSupportPendingCategory && item.Support != nil {
+		switch item.Support.ClaimType {
+		case types.FindingClaimTest, types.FindingClaimCI:
+			return false
+		}
+	}
 	return item.ReviewScope == types.FindingReviewScopePipelineOwnedDelivery
 }
