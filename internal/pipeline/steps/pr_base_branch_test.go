@@ -163,6 +163,7 @@ func TestPRStep_KeepsExistingPRBaseWhenPerRunBaseDiffers(t *testing.T) {
 func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	ensureLocalBranch(t, dir, "develop", baseSHA)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})

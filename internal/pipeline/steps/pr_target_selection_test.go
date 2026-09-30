@@ -51,6 +51,18 @@ func selectionFixture(t *testing.T) (*pipeline.StepContext, scm.PRFacts) {
 	}
 }
 
+func rebaseSelectionFixtureOntoMovedTarget(t *testing.T, sctx *pipeline.StepContext) string {
+	t.Helper()
+	ensureLocalBranch(t, sctx.WorkDir, "develop", sctx.Run.BaseSHA)
+	gitCmd(t, sctx.WorkDir, "checkout", "develop")
+	gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "move target")
+	gitCmd(t, sctx.WorkDir, "checkout", "feature")
+	gitCmd(t, sctx.WorkDir, "rebase", "develop")
+	rebasedHead := gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
+	sctx.Run.HeadSHA = rebasedHead
+	return rebasedHead
+}
+
 func TestResolvePRTarget_RecordedUsesExactLivePRBase(t *testing.T) {
 	sctx, facts := selectionFixture(t)
 	sctx.Run.PRURL = &facts.PR.URL
@@ -162,22 +174,34 @@ func TestResolvePRTarget_UsesLiveBaseBeforeExistingPRHeadIsPushed(t *testing.T) 
 	}
 }
 
-func TestResolvePRTarget_RejectsDivergentDiscoveredPRHead(t *testing.T) {
+func TestResolvePRTarget_RebasedLocalHeadStillUsesExactSourcePRTarget(t *testing.T) {
 	sctx, facts := selectionFixture(t)
-	facts.HeadSHA = strings.Repeat("0", 40)
-	_, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}})
-	if err == nil || !strings.Contains(err.Error(), "not an ancestor") {
-		t.Fatalf("divergent PR head error = %v", err)
+	if rebasedHead := rebaseSelectionFixtureOntoMovedTarget(t, sctx); rebasedHead == facts.HeadSHA {
+		t.Fatal("rebase did not rewrite local HEAD")
+	}
+
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{list: []scm.PRFacts{facts}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TargetBranch != "develop" || got.PRURL != "" || got.ForgeHeadSHA != facts.HeadSHA {
+		t.Fatalf("rebased prospective comparison = %+v, want live target without PR attachment", got)
 	}
 }
 
-func TestResolvePRTarget_RejectsDivergentRecordedPRHead(t *testing.T) {
+func TestResolvePRTarget_RecordedPRSurvivesPipelineRebase(t *testing.T) {
 	sctx, facts := selectionFixture(t)
 	sctx.Run.PRURL = &facts.PR.URL
-	facts.HeadSHA = strings.Repeat("0", 40)
-	_, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts})
-	if err == nil || !strings.Contains(err.Error(), "not an ancestor") {
-		t.Fatalf("divergent recorded PR head error = %v", err)
+	if rebasedHead := rebaseSelectionFixtureOntoMovedTarget(t, sctx); rebasedHead == facts.HeadSHA {
+		t.Fatal("rebase did not rewrite local HEAD")
+	}
+
+	got, err := resolvePRTargetWithReader(sctx, &fakePRFactsReader{read: facts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRURL != facts.PR.URL || got.ForgeHeadSHA != facts.HeadSHA || got.TargetBranch != "develop" {
+		t.Fatalf("recorded selection after rebase = %+v", got)
 	}
 }
 

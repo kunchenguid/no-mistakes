@@ -458,6 +458,7 @@ func TestPRStep_UsesConfiguredBaseBranch(t *testing.T) {
 func TestPRStep_ExistingPRAgainstDifferentBaseIsUpdatedNotDuplicated(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	ensureLocalBranch(t, dir, "develop", baseSHA)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
 
 	ag := &mockAgent{name: "test"}
@@ -565,11 +566,8 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "pr list --head feature --repo parent-owner/no-mistakes --state open --json number,url,baseRefName,headRefName,headRepositoryOwner") {
-		t.Fatalf("expected PR lookup to use parent repo and bare head branch, got:\n%s", ghLog)
-	}
-	if strings.Contains(ghLog, "pr list --head fork-owner:feature") {
-		t.Fatalf("PR lookup used unsupported owner-qualified --head, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "pr list") {
+		t.Fatalf("unbound PR publication must not use branch-only lookup, got:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "pr create --head fork-owner:feature --base develop --repo parent-owner/no-mistakes") {
 		t.Fatalf("expected PR create to target parent repo with fork owner head, got:\n%s", ghLog)
@@ -614,8 +612,8 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
-	if api.listCalls != 1 {
-		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	if api.listCalls != 0 {
+		t.Fatalf("list calls = %d, want 0 for unbound publication", api.listCalls)
 	}
 	if api.createCalls != 1 {
 		t.Fatalf("create calls = %d, want 1", api.createCalls)

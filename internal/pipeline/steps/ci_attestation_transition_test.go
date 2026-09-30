@@ -54,6 +54,10 @@ func TestPipeline_CIRepairRefreshesPublishedAttestationBeforeReadiness(t *testin
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, initialHead, config.Commands{})
 
 			prURL := "https://github.com/test/repo/pull/42"
+			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Run.PRURL = &prURL
 			env, _ := fakeGH(t, prURL)
 			bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 			if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, baseSHA)), 0o644); err != nil {
@@ -62,6 +66,7 @@ func TestPipeline_CIRepairRefreshesPublishedAttestationBeforeReadiness(t *testin
 			env = append(env,
 				"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 				"FAKE_CLI_PR_TITLE=fix: stale title",
+				"FAKE_CLI_PR_BASE=main",
 			)
 			if tc.failUpdate {
 				env = append(env, "FAKE_CLI_PR_EDIT_ERR=simulated PR update failure")

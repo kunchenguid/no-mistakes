@@ -25,6 +25,68 @@ func TestPRContextGuardExternalCIOwnerRejectsDifferentPRHead(t *testing.T) {
 	}
 }
 
+func TestPRContextGuardRequiresPublishedHeadBeforePRMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		prHead   func(*testing.T, string, string, string) string
+		wantFail bool
+	}{
+		{name: "exact head", prHead: func(_ *testing.T, _ string, _ string, head string) string { return head }},
+		{name: "older ancestor", prHead: func(_ *testing.T, _ string, base string, _ string) string { return base }, wantFail: true},
+		{name: "rebased sibling", prHead: func(t *testing.T, dir, base, _ string) string {
+			gitCmd(t, dir, "checkout", "-b", "older-pr-head", base)
+			gitCmd(t, dir, "commit", "--allow-empty", "-m", "older PR head")
+			oldHead := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "checkout", "feature")
+			return oldHead
+		}, wantFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			selection := pipeline.PRTargetSelection{
+				PRURL: "https://github.com/test/repo/pull/42", SourceRepo: "test/repo", SourceBranch: "feature",
+				ForgeHeadSHA: tc.prHead(t, dir, base, head), TargetBranch: "main",
+			}
+			if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
+				t.Fatal(err)
+			}
+			before, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = guardPRContextWithSelection(sctx, types.StepPR, selection, false)
+			if tc.wantFail {
+				if err == nil || !strings.Contains(err.Error(), "differs from local head") {
+					t.Fatalf("PR mutation guard error = %v, want exact-head refusal", err)
+				}
+				after, readErr := sctx.DB.GetRunPRContext(sctx.Run.ID)
+				if readErr != nil || *after != *before {
+					t.Fatalf("PR receipt changed on refusal: before=%+v after=%+v err=%v", before, after, readErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("exact published head refused: %v", err)
+			}
+		})
+	}
+}
+
+func TestPRContextGuardRejectsUnattachedExistingPRBeforeCreation(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	selection := pipeline.PRTargetSelection{
+		SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: base, TargetBranch: "main",
+	}
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guardPRContextWithSelection(sctx, types.StepPR, selection, false); err == nil || !strings.Contains(err.Error(), "differs from local head") {
+		t.Fatalf("unattached existing PR guard error = %v, want exact-head refusal", err)
+	}
+}
+
 func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	dir, mainSHA, headSHA := setupGitRepo(t)
 	ensureLocalBranch(t, dir, "develop", mainSHA)
