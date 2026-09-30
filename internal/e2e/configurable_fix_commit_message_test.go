@@ -216,7 +216,7 @@ func TestPerRepositoryMachineLocalFixCommitJourney(t *testing.T) {
 		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, run.Error)
 	}
 
-	log, err := h.runGit(context.Background(), h.UpstreamDir, "log", "--format=%s", "main..refs/heads/"+branch)
+	log, err := h.runGit(context.Background(), h.UpstreamDir, "log", "--format=%s", "-1", "refs/heads/"+branch)
 	if err != nil {
 		t.Fatalf("read upstream commit subjects: %v\n%s", err, log)
 	}
