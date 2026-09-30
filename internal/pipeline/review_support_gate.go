@@ -13,6 +13,16 @@ import (
 // hypothesis still lacks current evidence from its owning step. Only current
 // step results count; superseded rounds are discarded when the receipt resets.
 func (e *Executor) validateReviewSupportOwners(runID string, through types.StepName) error {
+	return e.validateReviewSupportOwnersAtBoundary(runID, through, false)
+}
+
+// The candidate CI findings have been persisted, but its durable completion
+// must wait until those findings prove the current comparison.
+func (e *Executor) validateReviewSupportOwnersBeforeCICompletion(runID string) error {
+	return e.validateReviewSupportOwnersAtBoundary(runID, types.StepCI, true)
+}
+
+func (e *Executor) validateReviewSupportOwnersAtBoundary(runID string, through types.StepName, ciCandidate bool) error {
 	results, err := e.db.GetStepsByRun(runID)
 	if err != nil {
 		return fmt.Errorf("read support owner steps: %w", err)
@@ -90,7 +100,9 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 			// never a local CI proof or an approval to merge.
 			continue
 		}
-		if owner == nil || owner.Status != types.StepStatusCompleted || owner.FindingsJSON == nil {
+		candidateCI := ciCandidate && ownerName == types.StepCI && owner != nil &&
+			(owner.Status == types.StepStatusRunning || owner.Status == types.StepStatusFixing || owner.Status == types.StepStatusAwaitingApproval || owner.Status == types.StepStatusFixReview)
+		if owner == nil || (owner.Status != types.StepStatusCompleted && !candidateCI) || owner.FindingsJSON == nil {
 			return fmt.Errorf("pending Review claim %s has no completed %s evidence owner", types.ReviewSupportClaimID(claim), ownerName)
 		}
 		ownerFindings, err := types.ParseFindingsJSON(*owner.FindingsJSON)

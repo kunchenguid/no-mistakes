@@ -412,18 +412,6 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 		"failed", gateStats.Failed,
 	)
 
-	terminalPRStarted := time.Now()
-	terminalPRCount, err := d.ReconcileTerminalPRRuns()
-	if err != nil {
-		slog.Error("failed to reconcile terminal PR runs", "error", err)
-		logStartupPhase("terminal_pr_runs", terminalPRStarted, "failed", true)
-	} else {
-		if terminalPRCount > 0 {
-			slog.Info("reconciled terminal PR runs", "count", terminalPRCount)
-		}
-		logStartupPhase("terminal_pr_runs", terminalPRStarted, "reconciled", terminalPRCount)
-	}
-
 	parkedStarted := time.Now()
 	plans := mgr.recoverableParkedRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
