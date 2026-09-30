@@ -30,7 +30,8 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := effectivePRBaseBranch(sctx)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +143,7 @@ Context:
 - base commit: %s
 - target commit: %s
 - review scope: %s
-- default branch: %s
+- base branch: %s
 - ignore patterns: %s
 
 Rules:
@@ -166,7 +167,7 @@ Previous review findings to address:
 			baseSHA,
 			sctx.Run.HeadSHA,
 			reviewScope,
-			sctx.Repo.DefaultBranch,
+			baseBranch,
 			ignorePatterns,
 			historySection,
 			previousFindings,
@@ -322,7 +323,7 @@ Context:
 - base commit: %s
 - target commit: %s
 - review scope: %s
-- default branch: %s
+- base branch: %s
 - ignore patterns: %s
 
 Task:
@@ -380,7 +381,7 @@ Risk assessment (after listing all findings):
 		baseSHA,
 		sctx.Run.HeadSHA,
 		reviewScope,
-		sctx.Repo.DefaultBranch,
+		baseBranch,
 		ignorePatterns,
 		reviewCoverageSection(reviewable),
 		historySection,
