@@ -112,7 +112,13 @@ func TestPendingExternalCISupportBindsCurrentReviewAndReceipt(t *testing.T) {
 	if item.ClaimID != types.ReviewSupportClaimID(claim) || item.OriginalFindingID != claim.ID || item.HistoricalCheckID != "check-17" || item.HistoricalHeadSHA != strings.Repeat("e", 40) || item.SourceHeadSHA != head || item.TargetSHA != receipt.TargetSHA || item.TargetBranch != receipt.TargetBranch || item.DiffDigest != receipt.DiffDigest || item.ReceiptGeneration != 1 || item.RunID != run.ID || item.PRURL != receipt.PRURL || item.Owner != types.ExternalCIOwnerControllerShipPR {
 		t.Fatalf("handoff = %+v", item)
 	}
-	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, strings.Repeat("f", 40)); err != nil {
+	advancedHead := strings.Repeat("b", 40)
+	if err := d.UpdateRunHeadSHA(run.ID, advancedHead); err != nil {
+		t.Fatal(err)
+	}
+	receipt.LocalHeadSHA = advancedHead
+	receipt.ForgeHeadSHA = advancedHead
+	if _, err := d.AdvanceRunPRContext(run.ID, receipt); err != nil {
 		t.Fatal(err)
 	}
 	run, err = d.GetRun(run.ID)
@@ -120,6 +126,6 @@ func TestPendingExternalCISupportBindsCurrentReviewAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := d.PendingExternalCISupport(run); err == nil {
-		t.Fatal("stale Review approval accepted")
+		t.Fatal("handoff accepted a receipt advanced after Review approval")
 	}
 }

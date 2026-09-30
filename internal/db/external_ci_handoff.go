@@ -60,7 +60,8 @@ func (d *DB) PendingExternalCISupport(run *Run) ([]types.PendingCISupport, error
 	if err != nil {
 		return nil, err
 	}
-	if receipt == nil || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA == "" || run.HeadSHA != receipt.LocalHeadSHA {
+	if receipt == nil || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA == "" ||
+		run.HeadSHA != receipt.LocalHeadSHA || *run.ReviewApprovedHeadSHA != receipt.LocalHeadSHA {
 		return nil, fmt.Errorf("pending Review CI support has no current approved PR comparison")
 	}
 	rounds, err := d.GetRoundsByStep(review.ID)

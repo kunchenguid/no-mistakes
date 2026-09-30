@@ -75,6 +75,7 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 		owner := byName[ownerName]
 		if ownerName == types.StepCI && owner != nil && owner.Status == types.StepStatusSkipped &&
 			current.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
+			approvedHead == receipt.LocalHeadSHA &&
 			stepsSkipped(byName, types.StepPush, types.StepPR, types.StepCI) {
 			// Controller explicitly owns this exact-head CI decision. The run
 			// remains pending-external-ci at the AXI surface; this is a handoff,

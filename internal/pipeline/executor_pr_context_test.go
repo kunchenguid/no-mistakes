@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -283,6 +284,74 @@ func TestExecutorExplicitExternalCIOwnerCarriesPendingClaim(t *testing.T) {
 	current, err := database.GetRun(run.ID)
 	if err != nil || current.Status != types.RunCompleted {
 		t.Fatalf("run = %+v, err = %v; want completed with pending external CI", current, err)
+	}
+}
+
+func TestExecutorExternalCIBypassRejectsPostReviewDocumentCommit(t *testing.T) {
+	database, p, baseRun, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	reviewedHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, workDir, "docs.md", "post-review document update\n")
+	execGit(t, workDir, "add", "docs.md")
+	execGit(t, workDir, "commit", "-m", "document")
+	advancedHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := database.InsertRunWithExternalCIOwner(repo.ID, "feature-external-ci-advanced", reviewedHead, baseRun.BaseSHA,
+		nil, "", "", "", "develop", false, false, types.ExternalCIOwnerControllerShipPR, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := db.PRContextCandidate{
+		LocalHeadSHA: reviewedHead, TargetBranch: "develop",
+		TargetSHA:    "2222222222222222222222222222222222222222",
+		MergeBaseSHA: "2222222222222222222222222222222222222222",
+		DiffDigest:   "3333333333333333333333333333333333333333333333333333333333333333",
+	}
+	if _, err := database.BindRunPRContext(run.ID, receipt, types.StepRebase); err != nil {
+		t.Fatal(err)
+	}
+	const pending = `{"findings":[{"id":"review-ci-advanced","severity":"warning","description":"historical CI failure","action":"no-op","category":"review-support-pending","support":{"claim_type":"ci","ci":{"check_id":"old-check","head_sha":"1111111111111111111111111111111111111111"}}}]}`
+	review, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(review.ID, pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, reviewedHead); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []types.StepName{types.StepPush, types.StepPR, types.StepCI} {
+		step, err := database.InsertStepResult(run.ID, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateStepStatus(step.ID, types.StepStatusSkipped); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, advancedHead); err != nil {
+		t.Fatal(err)
+	}
+	receipt.LocalHeadSHA = advancedHead
+	if _, err := database.AdvanceRunPRContext(run.ID, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewExecutor(database, p, nil, nil, nil, nil)
+	executor.workDir = workDir
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err == nil {
+		t.Fatal("external CI bypass accepted a document commit after Review approval")
 	}
 }
 
