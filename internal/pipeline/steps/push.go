@@ -39,7 +39,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			return nil, fmt.Errorf("prepare formatter dependencies: %w", err)
 		}
 		sctx.Log(fmt.Sprintf("running formatter: %s", fmtCmd))
-		output, exitCode, err := runStepShellCommand(sctx, fmtCmd)
+		output, exitCode, err := runRepositoryCommand(sctx, "format", fmtCmd)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: format command failed: %v: %s", err, output))
 		} else if exitCode != 0 {

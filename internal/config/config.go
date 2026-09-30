@@ -186,8 +186,8 @@ type GlobalConfig struct {
 	// session_reuse: false to force every invocation cold.
 	SessionReuse  bool          `yaml:"-"`
 	ForgeProfiles ForgeProfiles `yaml:"forge_profiles"`
-	// RepositoryOverrides scopes machine-local commit and PR-title formats to
-	// canonicalized remote host/owner/repository identities.
+	// RepositoryOverrides scopes machine-local settings to canonicalized
+	// remote host/owner/repository identities.
 	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
 	AutoFix             AutoFixRaw
 	// CI is the operator's own CI-step floor. It is the only place the rerun
@@ -268,8 +268,9 @@ type ForgeProfiles map[string]ForgeProfile
 
 // RepositoryOverride contains machine-local settings for one normalized remote.
 type RepositoryOverride struct {
-	Commit GlobalCommitRaw `yaml:"commit"`
-	PR     RepositoryPRRaw `yaml:"pr"`
+	Commit   GlobalCommitRaw            `yaml:"commit"`
+	PR       RepositoryPRRaw            `yaml:"pr"`
+	Commands map[string]CommandOverride `yaml:"commands"`
 }
 
 // RepositoryPRRaw contains machine-local per-repository PR title settings.
@@ -708,6 +709,7 @@ type Config struct {
 	SessionReuse          bool
 	Eval                  Eval
 	Commands              Commands
+	CommandOverrides      map[string]CommandOverride
 	// Gates are the repository's extra checks, already trusted-only by the
 	// time they reach here (EffectiveRepoConfig sourced them from the trusted
 	// default-branch copy).
@@ -3070,8 +3072,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	return merge(global, repo, nil)
 }
 
-// MergeForRemote combines global and per-repo config, applying a matching
-// machine-local repository override between the global defaults and repo config.
+// MergeForRemote combines global and per-repo config. Matching machine-local
+// formats sit between global defaults and repo formats; command execution
+// settings supplement the repository commands without replacing them.
 func MergeForRemote(global *GlobalConfig, repo *RepoConfig, remote string) *Config {
 	var override *RepositoryOverride
 	if global != nil {
@@ -3218,6 +3221,10 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
 		NoCI:                   repo.NoCI,
+	}
+
+	if override != nil {
+		cfg.CommandOverrides = copyCommandOverrides(override.Commands)
 	}
 
 	if repo.Agent != "" {

@@ -16,6 +16,47 @@ type LintStep struct{}
 func (s *LintStep) Name() types.StepName { return types.StepLint }
 
 func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	outcome, err := s.executeRepositoryLint(sctx)
+	if err != nil || len(sctx.Config.CommandOverrides["lint"].Additional) == 0 {
+		return outcome, err
+	}
+	if err := ensurePrepared(sctx, s.Name()); err != nil {
+		return nil, fmt.Errorf("prepare local lint dependencies: %w", err)
+	}
+	output, code, err := runConfiguredChecks(sctx, "lint", sctx.Config.CommandOverrides["lint"].Additional)
+	projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepLint)
+	if err != nil {
+		return nil, fmt.Errorf("run local lint checks: %w", err)
+	}
+	if code == 0 {
+		return outcome, nil
+	}
+	findings := Findings{}
+	if outcome.Findings != "" {
+		findings, err = types.ParseFindingsJSON(outcome.Findings)
+		if err != nil {
+			return nil, fmt.Errorf("parse lint findings: %w", err)
+		}
+	}
+	findings.Items = append(findings.Items, Finding{
+		Severity: "error", Action: types.ActionAutoFix,
+		Description: fmt.Sprintf("machine-local lint check failed with exit code %d", code),
+	})
+	findings.Summary += "\n" + projectedOutput
+	payload, err := json.Marshal(findings)
+	if err != nil {
+		return nil, err
+	}
+	outcome.Findings = string(payload)
+	outcome.NeedsApproval = true
+	outcome.AutoFixable = true
+	if outcome.ExitCode == 0 {
+		outcome.ExitCode = code
+	}
+	return outcome, nil
+}
+
+func (s *LintStep) executeRepositoryLint(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
@@ -161,7 +202,7 @@ Previous lint findings to address:
 		return nil, fmt.Errorf("prepare lint dependencies: %w", err)
 	}
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
-	output, exitCode, err := runStepShellCommand(sctx, lintCmd)
+	output, exitCode, err := runRepositoryCommand(sctx, "lint", lintCmd)
 	if err != nil {
 		logConfiguredCommandOutput(sctx, output, types.StepLint)
 		return nil, fmt.Errorf("run lint command: %w", err)

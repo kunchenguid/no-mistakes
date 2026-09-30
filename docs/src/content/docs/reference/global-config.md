@@ -868,7 +868,7 @@ A `commit.branch_pattern` in `.no-mistakes.yaml` takes precedence and clears any
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine apply ticket conventions to a single repository without adding settings to that repository.
+This lets one machine add checks, fit command execution to its toolchain and resources, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -888,11 +888,69 @@ repository_overrides:
       title_format: '{{.Branch}}: {{.Title}}'
 ```
 
-Supported fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
+Formatting fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
 A `commit.branch_replacement` must be paired with `commit.branch_pattern` in the same override.
 Precedence is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
 As with the global replacement, a repository `commit.branch_pattern` replaces the matching machine-local pattern and clears its replacement.
 Repositories matching no block keep existing global and built-in behavior.
+
+#### Machine-local commands
+
+A matching `commands` block supplements the repository's trusted commands; it never changes their strings or removes them.
+Repository command selection still comes from the trusted default branch, or the pushed branch only with trusted `allow_repo_commands: true`.
+Only the operator's global config can supply these local settings, never a repository's `.no-mistakes.yaml`.
+With no matching command override, execution remains unchanged.
+
+```yaml
+repository_overrides:
+  https://github.com/acme/widget.git:
+    commands:
+      test:
+        additional:
+          - /opt/local-checks/widget-smoke
+        env:
+          PATH: '/opt/toolchain/bin:/usr/local/bin:/usr/bin:/bin'
+          GOMAXPROCS: '2'
+        nice: 10
+      lint:
+        additional:
+          - /opt/local-checks/widget-policy
+      prepare:
+        env:
+          TOOLCHAIN_HOME: /opt/toolchain
+```
+
+| Field | Supported commands | Meaning |
+| --- | --- | --- |
+| `additional` | `test`, `lint` | Ordered list of separate shell checks added after the repository check; every check must succeed |
+| `env` | `prepare`, `test`, `lint`, `format` | Literal string environment values for that configured command and its additional checks |
+| `nice` | `prepare`, `test`, `lint`, `format` | POSIX niceness adjustment from `0` to `19`; `0` leaves scheduling unchanged |
+
+Test runs the committed command first, then each added command in a separate shell, retaining a failure from either source even when another check succeeds.
+Test still performs its unconditional agent-driven end-user scenarios afterwards.
+Lint runs additional checks after the existing lint duty, including agent-driven lint when `commands.lint` is empty.
+An added check's failure parks the step rather than silently passing; existing explicit approval rules still apply.
+`additional` is refused for preparation and formatting, because those commands are not independent check gates.
+Replacement command strings, `command`, `replace`, `skip`, unknown command names, empty additional checks, malformed environment entries, and niceness outside `0` through `19` are configuration errors.
+
+Use `env` to select an equivalent toolchain or change resource usage without editing the committed command, not to reduce the checks it performs.
+The operator's environment values are trusted input: no-mistakes does not infer the meaning of a tool's environment variables or prove that different toolchains are equivalent.
+For example, `GOMAXPROCS: '2'` limits a Go process's available CPUs; a suite-specific parallelism environment variable works only if that suite honors it.
+`PATH` replaces that command's path literally, so include the existing system paths you need.
+Values do not expand `$PATH`, `~`, or shell substitutions.
+Environment names must be portable shell variable names, values must not contain NUL, and case-ambiguous duplicate names are refused.
+These settings are scoped to configured shell commands and their local checks, not agents, built-in Git operations, forge commands, or repository-declared extra gates.
+An active forge profile's credential and identity environment remains authoritative over a command's environment.
+
+`nice: 10` invokes the POSIX `nice -n 10` utility around the command shell, adding ten to its inherited niceness, not setting an absolute priority.
+Positive niceness is refused on Windows; use environment-based resource knobs there.
+A missing `nice` utility fails the command rather than silently ignoring the request.
+
+Before executing an opted-in run, no-mistakes records the full resolved configuration in `<NM_HOME>/logs/<run-id>/command-config.ndjson`, including the unchanged team command strings, added checks, environment keys and values, niceness, trusted-config SHA, and tool build.
+This record is independent of optional eval capture.
+Recovery appends a new snapshot of the configuration it resolves, including removal of a previously active local override.
+A snapshot write failure stops execution before checks run.
+The file is private local evidence, created with owner-only permissions on POSIX and excluded from PR and test-evidence publication; treat it as sensitive because it contains exact environment values.
 
 ### intent
 

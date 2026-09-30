@@ -128,21 +128,22 @@ Previous test findings to address:
 	}
 
 	testCmd := sctx.Config.Commands.Test
+	commands := configuredCheckCommands(sctx, "test", testCmd)
 	tested := []string{}
 	var baselineFindings []Finding
 	var baselineSummary string
 	var baselineExitCode int
-	if testCmd != "" {
+	if len(commands) > 0 {
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
 			return nil, fmt.Errorf("prepare test dependencies: %w", err)
 		}
 		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
-		output, exitCode, err := runStepShellCommand(sctx, testCmd)
+		output, exitCode, err := runConfiguredChecks(sctx, "test", commands)
 		if err != nil {
 			logConfiguredCommandOutput(sctx, output, types.StepTest)
 			return nil, fmt.Errorf("run test command: %w", err)
 		}
-		tested = append(tested, testCmd)
+		tested = append(tested, commands...)
 
 		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
 		if exitCode != 0 {

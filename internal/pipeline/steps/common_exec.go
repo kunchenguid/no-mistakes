@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -309,11 +310,25 @@ func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdSt
 }
 
 func runShellCommandWithProcessEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {
+	return runShellCommandWithPriority(ctx, dir, env, cmdStr, 0)
+}
+
+func runShellCommandWithPriority(ctx context.Context, dir string, env []string, cmdStr string, nice int) (string, int, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd.exe", "/c", cmdStr)
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", shellenv.OwnOOMScoreScript(cmdStr))
+	}
+	if nice != 0 {
+		if nice < 0 || nice > 19 || runtime.GOOS == "windows" {
+			return "", -1, fmt.Errorf("unsupported command niceness %d on %s", nice, runtime.GOOS)
+		}
+		if cmd.Err != nil {
+			return "", -1, cmd.Err
+		}
+		// Resolve the shell before applying the operator's PATH to its payload.
+		cmd = exec.CommandContext(ctx, "nice", append([]string{"-n", strconv.Itoa(nice), cmd.Path}, cmd.Args[1:]...)...)
 	}
 	shellenv.ConfigureCooperativeShellCommand(cmd)
 	cmd.Dir = dir

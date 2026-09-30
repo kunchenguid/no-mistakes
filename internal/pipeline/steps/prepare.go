@@ -60,7 +60,7 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 
 		sctx.Log(fmt.Sprintf("preparing dependencies once for this worktree: %s", prepareCmd))
 		started := time.Now()
-		output, exitCode, commandErr := runStepShellCommand(sctx, prepareCmd)
+		output, exitCode, commandErr := runRepositoryCommand(sctx, "prepare", prepareCmd)
 		if output != "" {
 			logCommandOutput(sctx, output, "Prepare", logStep)
 		}

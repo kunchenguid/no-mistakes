@@ -347,7 +347,12 @@ Optional dependency-preparation command for isolated run worktrees. Run via the 
 | Type | `string` |
 | Default | Empty (no preparation command) |
 
-When set, no-mistakes runs this command before the first configured `commands.test`, `commands.lint`, or `commands.format` command that the pipeline reaches. By default, it is a lazy command hook rather than an additional pipeline step: when no configured command needs it and [`test.prepare`](#testprepare) is false, `commands.prepare` alone does nothing. Trusted `test.prepare: true` instead triggers it eagerly before agent-only Test while leaving `commands.test` unset. A successful result is shared by all later configured commands in that isolated worktree, including after daemon recovery. The dependent step log records the preparation command, output, and elapsed preparation time. A non-zero exit or launch failure fails that step before its command runs.
+When set, no-mistakes runs this command before the first configured Test, Lint, or Format command that the pipeline reaches, including machine-local additional Test or Lint checks.
+By default, it is a lazy command hook rather than an additional pipeline step: when no configured command needs it and [`test.prepare`](#testprepare) is false, `commands.prepare` alone does nothing.
+Trusted `test.prepare: true` instead triggers it eagerly before agent-only Test while leaving `commands.test` unset.
+A successful result is shared by all later configured commands in that isolated worktree, including after daemon recovery.
+The dependent step log records the preparation command, output, and elapsed preparation time.
+A non-zero exit or launch failure fails that step before its command runs.
 
 Use this for deterministic dependency materialization such as `npm ci --prefer-offline`. The run worktree starts with tracked files only, so ignored dependency directories such as `node_modules` are otherwise absent. no-mistakes keeps ignored files produced by preparation, while removing its tracked, ordinary untracked, and nested-repository mutations before continuing. Earlier pending tracked and ordinary untracked pipeline changes are restored exactly, so preparation can run before a later configured command without admitting setup artifacts into a fix commit.
 
@@ -367,6 +372,7 @@ Broad regression belongs in remote CI and remains mandatory before a PR is ready
 no-mistakes does not guess whether an arbitrary shell string is "too broad" - the contract is documented and dogfooded, not enforced with language- or filename-specific heuristics.
 
 When set, the test step runs this exact command first as the baseline and checks the exit code.
+Machine-local [`repository_overrides.commands`](/no-mistakes/reference/global-config/#machine-local-commands) can add checks and adjust its execution environment or scheduling priority without replacing this command.
 Whether the baseline passes, fails, or is absent, the agent then derives targeted end-user scenarios and drives the product itself under the same targeted-validation contract.
 A non-zero exit parks the Test step. Approving that gate records an explicit override on the step and on the PR attestation; the [`require-no-mistakes`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation) check treats that as non-compliant unless [`test.allow_approve_over_failure`](#testallow_approve_over_failure) is set.
 

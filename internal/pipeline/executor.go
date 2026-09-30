@@ -240,6 +240,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
 
+	if err := recordCommandConfiguration(logDir, "start", e.config); err != nil {
+		return e.failRun(run, repo, err)
+	}
 	e.initializeRunScopes(run.ID)
 
 	// Create step result records in DB
@@ -429,6 +432,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	logDir := e.paths.RunLogDir(run.ID)
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
+	}
+	if err := recordCommandConfiguration(logDir, "resume", e.config); err != nil {
+		return e.failRun(run, repo, err)
 	}
 	e.initializeRunScopes(run.ID)
 
