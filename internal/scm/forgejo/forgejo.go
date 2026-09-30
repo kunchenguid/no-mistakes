@@ -626,6 +626,7 @@ func (h *Host) normalizeChecks(result checksResult) ([]scm.Check, error) {
 		check := scm.Check{
 			Name:       status.Context,
 			ProviderID: "forgejo-status:" + status.Context,
+			HeadSHA:    result.SHA,
 			Bucket:     bucket,
 			State:      status.State,
 			Link:       stringValue(status.TargetURL),

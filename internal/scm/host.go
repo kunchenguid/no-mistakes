@@ -193,6 +193,7 @@ const (
 type Check struct {
 	Name       string
 	ProviderID string `json:"provider_id,omitempty"`
+	HeadSHA    string
 	Bucket     CheckBucket
 	Kind       CheckKind
 	// State is the provider's own outcome string for the check (GitHub

@@ -446,7 +446,6 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if err != nil {
 			return nil, err
 		}
-		pr.HeadSHA = headSHA
 	}
 	var checks []scm.Check
 	if headSHA != "" {
@@ -464,6 +463,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		}
 		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
 		checks = h.collapseLatestByName(checks)
+		for i := range checks {
+			checks[i].HeadSHA = headSHA
+		}
 		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
 		if err != nil {
 			return nil, err

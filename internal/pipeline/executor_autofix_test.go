@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,46 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 	updated, _ := database.GetRun(run.ID)
 	if updated.Status != types.RunCompleted {
 		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
+	}
+}
+
+func TestExecutorReviewFixRoundReceivesAdvancedComparison(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		if calls == 1 {
+			return &StepOutcome{NeedsApproval: true, AutoFixable: true,
+				Findings: `{"findings":[{"severity":"error","file":"main.go","description":"bug","action":"auto-fix"}]}`}, nil
+		}
+		if sctx.PRContext == nil || sctx.PRContext.Generation != 2 || sctx.PRContext.DiffDigest != strings.Repeat("b", 64) {
+			t.Fatalf("fix round kept stale comparison: %+v", sctx.PRContext)
+		}
+		return &StepOutcome{ReviewedPaths: []string{"main.go"}, ReviewablePaths: []string{"main.go"}}, nil
+	}}
+	executor := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 1}}, nil, []Step{step}, nil)
+	advanced := false
+	executor.SetPRContextGuard(func(sctx *StepContext, step types.StepName) (PRContextDecision, error) {
+		if step == types.StepReview && sctx.PRContextAfterStep && !advanced {
+			receipt, err := sctx.DB.GetRunPRContext(run.ID)
+			if err != nil {
+				return PRContextDecision{}, err
+			}
+			candidate := receipt.PRContextCandidate
+			candidate.DiffDigest = strings.Repeat("b", 64)
+			if _, err := sctx.DB.AdvanceRunPRContext(run.ID, candidate); err != nil {
+				return PRContextDecision{}, err
+			}
+			advanced = true
+		}
+		return PRContextDecision{Target: PRTargetSelection{TargetBranch: "main"}}, nil
+	})
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("review calls = %d", calls)
 	}
 }
 

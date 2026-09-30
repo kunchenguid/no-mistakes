@@ -307,8 +307,8 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 				if strings.Contains(f.log(), ciChecksPassedMsg) {
 					t.Fatal("reported checks passed before revalidation/publication")
 				}
-			} else if f.remoteHead(t) != f.localHead(t) || !strings.Contains(f.log(), ciChecksPassedMsg) {
-				t.Fatalf("retry did not publish before monitoring: local=%s remote=%s\n%s", f.localHead(t), f.remoteHead(t), f.log())
+			} else if f.remoteHead(t) != f.localHead(t) || !strings.Contains(f.log(), "CI readiness lacks a current PR comparison receipt") {
+				t.Fatalf("retry did not publish and withhold unproven readiness: local=%s remote=%s\n%s", f.localHead(t), f.remoteHead(t), f.log())
 			}
 		})
 	}

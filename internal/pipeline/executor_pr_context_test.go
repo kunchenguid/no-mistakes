@@ -237,6 +237,35 @@ func TestExecutorCurrentOwnerProofCompletesPendingTestClaim(t *testing.T) {
 	}
 }
 
+func TestExecutorTestRestartPrecedesFinalSupportValidation(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
+	const pending = `{"findings":[{"id":"review-claim-1","severity":"warning","description":"old test result needs current proof","action":"no-op","category":"review-support-pending","support":{"claim_type":"test","test":{"command":"go test ./..."}}}]}`
+	reviewCalls, testCalls := 0, 0
+	executor := NewExecutor(database, p, nil, nil, []Step{
+		&adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+			reviewCalls++
+			if reviewCalls == 1 {
+				return &StepOutcome{Findings: pending, ReviewApprovedHeadSHA: run.HeadSHA}, nil
+			}
+			return &StepOutcome{ReviewApprovedHeadSHA: run.HeadSHA}, nil
+		}},
+		&adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+			testCalls++
+			if testCalls == 1 {
+				return &StepOutcome{RestartFrom: types.StepReview}, nil
+			}
+			return &StepOutcome{}, nil
+		}},
+	}, nil)
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatal(err)
+	}
+	if reviewCalls != 2 || testCalls != 2 {
+		t.Fatalf("restart calls: review=%d test=%d", reviewCalls, testCalls)
+	}
+}
+
 func TestExecutorUnresolvedTestClaimStopsBeforePublication(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	const pending = `{"findings":[{"id":"review-claim-1","severity":"warning","description":"old test output needs current proof","action":"no-op","category":"review-support-pending","support":{"claim_type":"test","test":{"command":"go test ./..."}}}]}`

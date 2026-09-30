@@ -738,6 +738,23 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 	}
 }
 
+func TestGetChecksPreservesProviderCommitForNamedProof(t *testing.T) {
+	const current = "2222222222222222222222222222222222222222"
+	const old = "1111111111111111111111111111111111111111"
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab ci status --mr 123 --output json": {
+			stdout: `{"sha":"` + current + `","jobs":[{"id":1,"name":"test","status":"success","commit":{"id":"` + old + `"}},{"id":2,"name":"test","status":"failed","commit":{"id":"` + current + `"}},{"id":3,"name":"lint","status":"success"}]}`,
+		},
+	}), nil, "", "")
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: current})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 3 || checks[0].HeadSHA != old || checks[1].HeadSHA != current || checks[2].HeadSHA != current {
+		t.Fatalf("provider job commits = %+v", checks)
+	}
+}
+
 func TestGetChecksLeavesCompletedAtZeroWhenFinishedAtMissingOrInvalid(t *testing.T) {
 	t.Parallel()
 

@@ -768,7 +768,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// evidence; there is no grace-period promotion path.
 					if sctx.Config != nil && sctx.Config.NoCI {
 						sctx.DeferredFindings = ""
-						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
+						lastMonitorLog = logVerifiedCIMonitorStatus(sctx, host, ciNoChecksPassedMsg, lastMonitorLog)
 					} else {
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
@@ -776,7 +776,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					}
 				case allChecksPassed(checks):
 					sctx.DeferredFindings = ""
-					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
+					lastMonitorLog = logVerifiedCIMonitorStatus(sctx, host, ciChecksPassedMsg, lastMonitorLog)
 				default:
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
@@ -812,6 +812,49 @@ func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) st
 		sctx.Log(message)
 	}
 	return message
+}
+
+func logVerifiedCIMonitorStatus(sctx *pipeline.StepContext, host scm.Host, message, previous string) string {
+	if err := verifyCIMonitorComparison(sctx, host); err != nil {
+		clearCIMonitorReady(sctx)
+		sctx.Log(fmt.Sprintf("warning: CI readiness comparison could not be verified: %v", err))
+		return ""
+	}
+	return logCIMonitorStatus(sctx, message, previous)
+}
+
+func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host) error {
+	if sctx == nil || sctx.Run == nil || sctx.DB == nil || host == nil {
+		return fmt.Errorf("CI readiness lacks a run or comparison reader")
+	}
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	if receipt == nil || receipt.PRURL == "" || sctx.Run.HeadSHA != receipt.LocalHeadSHA {
+		return fmt.Errorf("CI readiness lacks a current PR comparison receipt")
+	}
+	durable, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	if durable == nil || durable.HeadSHA != receipt.LocalHeadSHA {
+		return fmt.Errorf("durable run head differs from CI readiness comparison")
+	}
+	reader, ok := host.(scm.PRFactsReader)
+	if !ok {
+		return fmt.Errorf("provider cannot read complete PR facts for CI readiness")
+	}
+	facts, err := reader.ReadPRFacts(sctx.Ctx, prFromOwnedURL(receipt.PRURL))
+	if err != nil {
+		return err
+	}
+	if facts.State != scm.PRStateOpen {
+		return fmt.Errorf("PR is no longer open for CI readiness")
+	}
+	selection := pipeline.PRTargetSelection{PRURL: facts.PR.URL, State: facts.State, SourceRepo: facts.SourceRepository,
+		SourceBranch: facts.SourceBranch, ForgeHeadSHA: facts.HeadSHA, TargetBranch: facts.BaseBranch}
+	return verifyCurrentPRComparison(sctx, host, selection, receipt, &facts)
 }
 
 func clearCIMonitorReady(sctx *pipeline.StepContext) {

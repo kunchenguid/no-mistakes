@@ -1196,6 +1196,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, lead 
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		var help []string
+		if rv.TestOverrideReason != "" {
+			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
+		}
 		if rv.PendingCISupportError != "" {
 			help = append(help, "External CI handoff is unavailable: "+rv.PendingCISupportError)
 			fields = append(fields, toon.Field{Key: "help", Value: help})
@@ -1210,9 +1213,6 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, lead 
 		}
 		if rv.CIOverrideReason != "" {
 			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
-		}
-		if rv.TestOverrideReason != "" {
-			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
 		}
 		if len(rv.automaticSkips()) > 0 {
 			help = append(help, "Publication or CI verification did not run (see `run.automatic_skips` and `run.head_sha`). Report the missing evidence and its cause; this outcome does not establish CI readiness or a code failure.")

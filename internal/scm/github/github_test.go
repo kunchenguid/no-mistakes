@@ -222,8 +222,8 @@ func TestGetChecksUsesLivePRHeadForWorkflowDiscovery(t *testing.T) {
 	if len(checks) != 1 || checks[0].Name != "build" {
 		t.Fatalf("checks = %+v, want live-head build rollup", checks)
 	}
-	if pr.HeadSHA != "live-head" {
-		t.Fatalf("PR HeadSHA = %q, want live-head", pr.HeadSHA)
+	if pr.HeadSHA != "stale-head" || checks[0].HeadSHA != "live-head" {
+		t.Fatalf("requested PR head or observed check head changed incorrectly: pr=%q check=%q", pr.HeadSHA, checks[0].HeadSHA)
 	}
 }
 

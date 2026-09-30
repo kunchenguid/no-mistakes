@@ -348,7 +348,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
-		if step.Name() == types.StepTest {
+		if step.Name() == types.StepTest && restartFrom == "" {
 			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
 				return e.failRun(run, repo, err, ctx)
 			}
@@ -910,7 +910,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
-		if e.steps[index].Name() == types.StepTest {
+		if e.steps[index].Name() == types.StepTest && restartFrom == "" {
 			if err := e.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
 				return e.failRun(run, repo, err, ctx)
 			}
@@ -1282,6 +1282,7 @@ rounds:
 			if contextErr != nil {
 				return false, "", contextErr
 			}
+			sctx.PRTarget, sctx.PRContext = e.prTarget, e.prContext
 			if restartIndex >= 0 {
 				if restartIndex < currentIndex {
 					return false, e.steps[restartIndex].Name(), nil
@@ -1723,7 +1724,7 @@ rounds:
 done:
 	// A CI repair that requests fresh validation has no terminal verdict yet.
 	// Leave its status active until the caller resets it with the owner stages.
-	if stepName == types.StepCI && restartFrom != "" {
+	if restartFrom != "" {
 		return skipRemaining, restartFrom, nil
 	}
 	// Mark step completed with execution-only timing.

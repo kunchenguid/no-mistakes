@@ -17,7 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
+func TestCIStep_BitbucketWithholdsReadinessWithoutComparison(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`, headSHA)
@@ -53,17 +53,17 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	if api.statusesCalls == 0 {
 		t.Fatal("expected Bitbucket statuses endpoint to be called")
 	}
-	foundPassed := false
+	foundRefusal := false
 	for _, line := range logs {
 		if strings.Contains(line, "ready to merge") {
 			t.Fatalf("expected Bitbucket CI logs not to imply mergeability, got %v", logs)
 		}
-		if strings.Contains(line, "all CI checks passed - still monitoring until merged or closed") {
-			foundPassed = true
+		if strings.Contains(line, "CI readiness lacks a current PR comparison receipt") {
+			foundRefusal = true
 		}
 	}
-	if !foundPassed {
-		t.Fatalf("expected successful Bitbucket CI logs, got %v", logs)
+	if !foundRefusal {
+		t.Fatalf("missing comparison was treated as CI readiness: %v", logs)
 	}
 }
 

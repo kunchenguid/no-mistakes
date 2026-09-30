@@ -211,7 +211,7 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		var matching *scm.Check
 		ambiguous := false
 		for i := range checks {
-			if checks[i].ProviderID != ref.CheckID {
+			if checks[i].ProviderID != ref.CheckID || checks[i].HeadSHA != receipt.LocalHeadSHA {
 				continue
 			}
 			if matching != nil {

@@ -63,6 +63,46 @@ func mutationComparisonFixture(t *testing.T) (*pipeline.StepContext, *mutationCo
 	return sctx, host, pr
 }
 
+func TestCIMonitorReadinessRequiresFreshExactComparison(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*testing.T, *pipeline.StepContext, *mutationComparisonHost)
+	}{
+		{"retargeted", func(_ *testing.T, _ *pipeline.StepContext, h *mutationComparisonHost) { h.facts.BaseBranch = "develop" }},
+		{"source moved", func(_ *testing.T, _ *pipeline.StepContext, h *mutationComparisonHost) {
+			h.facts.HeadSHA = strings.Repeat("a", 40)
+		}},
+		{"unreadable", func(_ *testing.T, _ *pipeline.StepContext, h *mutationComparisonHost) {
+			h.err = errors.New("provider unavailable")
+		}},
+		{"target advanced", func(t *testing.T, sctx *pipeline.StepContext, _ *mutationComparisonHost) {
+			gitCmd(t, sctx.WorkDir, "checkout", "main")
+			gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "advance target")
+			gitCmd(t, sctx.WorkDir, "checkout", "feature")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sctx, host, _ := mutationComparisonFixture(t)
+			sctx.Log = func(string) {}
+			if got := logVerifiedCIMonitorStatus(sctx, host, ciChecksPassedMsg, ""); got != ciChecksPassedMsg {
+				t.Fatalf("current comparison did not publish readiness: %q", got)
+			}
+			current, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil || current.CIReadyAt == nil {
+				t.Fatalf("current comparison readiness = %+v, %v", current, err)
+			}
+			tc.mutate(t, sctx, host)
+			if got := logVerifiedCIMonitorStatus(sctx, host, ciChecksPassedMsg, ciChecksPassedMsg); got != "" {
+				t.Fatalf("stale comparison retained green monitor state: %q", got)
+			}
+			current, err = sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil || current.CIReadyAt != nil {
+				t.Fatalf("stale comparison kept readiness = %+v, %v", current, err)
+			}
+		})
+	}
+}
+
 func TestPRMutationComparisonRejectsChangedLiveEvidence(t *testing.T) {
 	for _, change := range []struct {
 		name   string

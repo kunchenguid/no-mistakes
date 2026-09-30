@@ -281,12 +281,18 @@ func TestCIOwnerRequiresExactCurrentHeadCheckIdentity(t *testing.T) {
 	}
 	host := &supportCheckHost{facts: scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateOpen, SourceRepository: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, HeadSHA: receipt.LocalHeadSHA, BaseBranch: receipt.TargetBranch}}
 	pr := &scm.PR{URL: receipt.PRURL, Number: "42"}
-	host.checks = []scm.Check{{Name: "test", ProviderID: "old-run", Bucket: scm.CheckBucketPass, State: "SUCCESS"}}
+	host.checks = []scm.Check{{Name: "test", ProviderID: "old-run", HeadSHA: receipt.LocalHeadSHA, Bucket: scm.CheckBucketPass, State: "SUCCESS"}}
 	results, err := resolveCIReviewSupport(sctx, host, pr)
 	if err != nil || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
 		t.Fatalf("same-name old check = %+v, %v", results, err)
 	}
 	host.checks[0].ProviderID = "run-42"
+	host.checks[0].HeadSHA = strings.Repeat("0", 40)
+	results, err = resolveCIReviewSupport(sctx, host, pr)
+	if err != nil || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("named check from another commit = %+v, %v", results, err)
+	}
+	host.checks[0].HeadSHA = receipt.LocalHeadSHA
 	results, err = resolveCIReviewSupport(sctx, host, pr)
 	if err != nil || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven || results[0].Support.OwnerResult.CheckState != "pass:SUCCESS" {
 		t.Fatalf("exact current check = %+v, %v", results, err)
@@ -343,7 +349,7 @@ func TestCIOwnerUsesProviderSourceIdentity(t *testing.T) {
 			}
 			host := &supportCheckHost{
 				facts:  scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateOpen, SourceRepository: "Test/Repo", SourceBranch: receipt.SourceBranch, HeadSHA: receipt.LocalHeadSHA, BaseBranch: receipt.TargetBranch},
-				checks: []scm.Check{{Name: "test", ProviderID: "run-42", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
+				checks: []scm.Check{{Name: "test", ProviderID: "run-42", HeadSHA: receipt.LocalHeadSHA, Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
 			}
 			results, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
 			if err != nil || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
@@ -409,7 +415,7 @@ func TestCIOwnerProvesMergedResultOnAdvancedTarget(t *testing.T) {
 	mergeSHA := gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
 	gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "advance after merge")
 	gitCmd(t, sctx.WorkDir, "checkout", "feature")
-	host := &supportCheckHost{facts: scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateMerged, MergeCommitSHA: mergeSHA, SourceRepository: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, HeadSHA: receipt.LocalHeadSHA, BaseBranch: receipt.TargetBranch}, checks: []scm.Check{{ProviderID: "run-42", Bucket: scm.CheckBucketPass}}}
+	host := &supportCheckHost{facts: scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateMerged, MergeCommitSHA: mergeSHA, SourceRepository: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, HeadSHA: receipt.LocalHeadSHA, BaseBranch: receipt.TargetBranch}, checks: []scm.Check{{ProviderID: "run-42", HeadSHA: receipt.LocalHeadSHA, Bucket: scm.CheckBucketPass}}}
 	results, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
 	if err != nil || len(results) != 1 || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
 		t.Fatalf("merged current support = %+v, %v", results, err)
