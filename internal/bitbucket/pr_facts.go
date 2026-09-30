@@ -12,7 +12,6 @@ import (
 )
 
 func (h *Host) factsFromWire(w bitbucketPullRequest) (scm.PRFacts, error) {
-	repo := h.repo.Workspace + "/" + h.repo.RepoSlug
 	wantURL := prURL(h.repo, w.ID, "")
 	if w.ID <= 0 || wantURL == "" || strings.TrimSpace(w.Links.HTML.Href) != wantURL {
 		return scm.PRFacts{}, fmt.Errorf("Bitbucket PR facts have inconsistent repository or PR identity")
@@ -21,14 +20,15 @@ func (h *Host) factsFromWire(w bitbucketPullRequest) (scm.PRFacts, error) {
 	if state != scm.PRStateOpen && state != scm.PRStateClosed && state != scm.PRStateMerged {
 		return scm.PRFacts{}, fmt.Errorf("Bitbucket PR %d has invalid state %q", w.ID, w.State)
 	}
-	if w.Source.Repository.FullName != repo || strings.TrimSpace(w.Source.Branch.Name) == "" ||
+	sourceRepo := strings.TrimSpace(w.Source.Repository.FullName)
+	if sourceRepo == "" || strings.TrimSpace(w.Source.Branch.Name) == "" ||
 		strings.TrimSpace(w.Destination.Branch.Name) == "" || !fullBitbucketHash(w.Source.Commit.Hash) {
 		return scm.PRFacts{}, fmt.Errorf("Bitbucket PR %d has incomplete source, head, or target facts", w.ID)
 	}
 	return scm.PRFacts{
 		PR:               scm.PR{Number: strconv.Itoa(w.ID), URL: wantURL, HeadSHA: w.Source.Commit.Hash, BaseBranch: w.Destination.Branch.Name},
 		State:            state,
-		SourceRepository: repo,
+		SourceRepository: sourceRepo,
 		SourceBranch:     w.Source.Branch.Name,
 		HeadSHA:          w.Source.Commit.Hash,
 		BaseBranch:       w.Destination.Branch.Name,
@@ -73,12 +73,12 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 	if h.client == nil {
 		return nil, fmt.Errorf("discover Bitbucket PR facts: client unavailable")
 	}
-	repo := h.repo.Workspace + "/" + h.repo.RepoSlug
-	if sourceRepository != repo || strings.TrimSpace(sourceBranch) == "" {
-		return nil, fmt.Errorf("Bitbucket PR source identity does not match configured repository")
+	sourceRepository = strings.TrimSpace(sourceRepository)
+	if sourceRepository == "" || strings.TrimSpace(sourceBranch) == "" {
+		return nil, fmt.Errorf("Bitbucket PR source identity is incomplete")
 	}
 	query := url.Values{}
-	query.Set("q", fmt.Sprintf(`source.branch.name=%q AND source.repository.full_name=%q AND state=%q`, sourceBranch, repo, "OPEN"))
+	query.Set("q", fmt.Sprintf(`source.branch.name=%q AND source.repository.full_name=%q AND state=%q`, sourceBranch, sourceRepository, "OPEN"))
 	query.Set("pagelen", "100")
 	next := repoPRPath(h.repo) + "?" + query.Encode()
 	seenPages := map[string]bool{}
@@ -104,8 +104,8 @@ func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBran
 			if err != nil {
 				return nil, err
 			}
-			if item.State != scm.PRStateOpen || item.SourceBranch != sourceBranch {
-				return nil, fmt.Errorf("Bitbucket PR listing returned a non-open or mismatched branch")
+			if item.State != scm.PRStateOpen || item.SourceRepository != sourceRepository || item.SourceBranch != sourceBranch {
+				return nil, fmt.Errorf("Bitbucket PR listing returned a mismatched source identity")
 			}
 			if seenPRs[candidate.ID] {
 				return nil, fmt.Errorf("Bitbucket PR listing repeated PR %d", candidate.ID)

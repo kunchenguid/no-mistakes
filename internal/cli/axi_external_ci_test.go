@@ -60,7 +60,7 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 		t.Fatal(err)
 	}
 	defer database.Close()
-	repo, err := database.InsertRepo(filepath.Join(t.TempDir(), "repo"), "https://github.com/acme/repo.git", "main")
+	repo, err := database.InsertRepo(filepath.Join(t.TempDir(), "repo"), "git@ssh.dev.azure.com:v3/acme/trading/controller", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 		t.Fatal(err)
 	}
 	if handoff.Outcome != "pending-external-ci" || handoff.RunID != run.ID ||
-		handoff.SourceRepo != "acme/repo" || handoff.SourceBranch != "feature" ||
+		handoff.SourceRepo != "https://dev.azure.com/acme/trading/_git/controller" || handoff.SourceBranch != "feature" ||
 		len(handoff.PendingCISupport) != 1 || handoff.PendingCISupport[0].HistoricalCheckID != "check-1" {
 		t.Fatalf("handoff = %+v", handoff)
 	}

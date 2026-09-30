@@ -7,7 +7,6 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
-	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -76,10 +75,7 @@ func buildReviewReceipt(database *db.DB, run *db.Run) (reviewReceipt, error) {
 		return reviewReceipt{}, fmt.Errorf("run source repository is missing")
 	}
 	pushURL := repo.PushURL()
-	sourceRepo := scm.RepoPath(pushURL)
-	if canonical, err := azuredevops.CanonicalSourceRepository(pushURL); err == nil {
-		sourceRepo = canonical
-	}
+	sourceRepo := externalSourceRepository(pushURL)
 	sourceBranch := strings.TrimPrefix(run.Branch, "refs/heads/")
 	if sourceRepo == "" || sourceBranch == "" {
 		return reviewReceipt{}, fmt.Errorf("run source identity is unreadable")

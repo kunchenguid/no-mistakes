@@ -322,7 +322,7 @@ func TestPRStep_SkipsWhenBranchEqualsPerRunBase(t *testing.T) {
 	}
 }
 
-func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
+func TestCIStep_AutoFixUsesPinnedPRTarget(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	upstream := t.TempDir()
@@ -345,7 +345,8 @@ func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
 	sctx.Run.PRBaseBranch = &runBase
 	sctx.Config.PR.BaseBranch = "main"
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
-	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42", BaseBranch: "develop"}
+	sctx.PRTarget = &pipeline.PRTargetSelection{TargetBranch: "develop"}
+	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42", BaseBranch: "main"}
 
 	var prompt string
 	sctx.Agent = &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -361,7 +362,7 @@ func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(prompt, "base commit: "+developTip) {
-		t.Fatalf("expected existing PR forge base %s to win over per-run override, got:\n%s", developTip, prompt)
+		t.Fatalf("expected pinned PR target base %s to win over stale configuration, got:\n%s", developTip, prompt)
 	}
 }
 

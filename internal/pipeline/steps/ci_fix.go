@@ -167,7 +167,13 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	}
 	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
 	baseBranch := effectivePRBaseBranch(sctx)
-	if pr != nil && strings.TrimSpace(pr.BaseBranch) != "" {
+	if sctx.PRTarget != nil {
+		var err error
+		baseBranch, err = currentPRTargetBranch(sctx)
+		if err != nil {
+			return ciRepairResult{}, err
+		}
+	} else if pr != nil && strings.TrimSpace(pr.BaseBranch) != "" {
 		baseBranch = strings.TrimSpace(pr.BaseBranch)
 	}
 	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
@@ -786,8 +792,8 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 //
 // It is a no-op - not an error - when: the provider has no supported raw
 // content contract;
-// the branch is the configured PR base branch (the PR step never manages a
-// PR there either, see effectivePRBaseBranch); the SCM host is unavailable
+// the branch is the current PR target branch (the PR step never manages a
+// PR there either); the SCM host is unavailable
 // (matches the PR step's own skip semantics); or no PR exists yet for this
 // branch. It never mints an attestation for a PR that was not raised through
 // no-mistakes - restampPRAttestationWithSteps already enforces that. Any
@@ -799,7 +805,11 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		return nil
 	}
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
-	if branch == effectivePRBaseBranch(sctx) {
+	targetBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return err
+	}
+	if branch == targetBranch {
 		return nil
 	}
 	host, reason := buildHost(sctx, provider)

@@ -13,6 +13,8 @@ import (
 
 const bitbucketFactsPull = `{"id":42,"state":"OPEN","source":{"branch":{"name":"feature"},"repository":{"full_name":"test/repo"},"commit":{"hash":"0123456789abcdef0123456789abcdef01234567"}},"destination":{"branch":{"name":"develop"}},"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}}}`
 
+const bitbucketForkFactsPull = `{"id":42,"state":"OPEN","source":{"branch":{"name":"feature"},"repository":{"full_name":"fork/repo"},"commit":{"hash":"0123456789abcdef0123456789abcdef01234567"}},"destination":{"branch":{"name":"develop"}},"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}}}`
+
 func TestReadPRFactsBindsBitbucketSourceHeadAndTarget(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, bitbucketFactsPull)
@@ -25,6 +27,38 @@ func TestReadPRFactsBindsBitbucketSourceHeadAndTarget(t *testing.T) {
 	}
 	if facts.SourceRepository != "test/repo" || facts.SourceBranch != "feature" || facts.HeadSHA != "0123456789abcdef0123456789abcdef01234567" || facts.BaseBranch != "develop" || facts.State != scm.PRStateOpen {
 		t.Fatalf("incomplete Bitbucket PR facts: %+v", facts)
+	}
+}
+
+func TestBitbucketPRFactsPreserveForkSourceIdentity(t *testing.T) {
+	query := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/2.0/repositories/test/repo/pullrequests" {
+			query <- r.URL.Query().Get("q")
+			fmt.Fprintf(w, `{"values":[%s]}`, bitbucketForkFactsPull)
+			return
+		}
+		fmt.Fprint(w, bitbucketForkFactsPull)
+	}))
+	defer server.Close()
+	host := NewHost(&Client{baseURL: server.URL, httpClient: server.Client()}, RepoRef{Workspace: "test", RepoSlug: "repo"}, false)
+
+	facts, err := host.ReadPRFacts(context.Background(), &scm.PR{Number: "42", URL: "https://bitbucket.org/test/repo/pull-requests/42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.SourceRepository != "fork/repo" {
+		t.Fatalf("recorded fork source = %q, want fork/repo", facts.SourceRepository)
+	}
+	found, err := host.FindOpenPRFacts(context.Background(), "fork/repo", "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].SourceRepository != "fork/repo" {
+		t.Fatalf("fork candidates = %+v", found)
+	}
+	if got := <-query; !strings.Contains(got, `source.repository.full_name="fork/repo"`) {
+		t.Fatalf("query = %q, want fork source repository", got)
 	}
 }
 

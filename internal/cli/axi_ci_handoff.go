@@ -7,6 +7,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -91,11 +92,19 @@ func buildExternalCIHandoff(database *db.DB, run *db.Run) (externalCIHandoff, er
 	if repo == nil {
 		return externalCIHandoff{}, fmt.Errorf("CI handoff source repository is missing")
 	}
-	sourceRepo := scm.RepoPath(repo.PushURL())
+	sourceRepo := externalSourceRepository(repo.PushURL())
 	sourceBranch := strings.TrimPrefix(run.Branch, "refs/heads/")
 	if sourceRepo == "" || sourceBranch == "" {
 		return externalCIHandoff{}, fmt.Errorf("CI handoff source identity is unreadable")
 	}
 	return externalCIHandoff{Outcome: "pending-external-ci", RunID: run.ID, ExternalCIOwner: run.ExternalCIOwner,
 		SourceRepo: sourceRepo, SourceBranch: sourceBranch, PendingCISupport: claims}, nil
+}
+
+func externalSourceRepository(pushURL string) string {
+	sourceRepo := scm.RepoPath(pushURL)
+	if canonical, err := azuredevops.CanonicalSourceRepository(pushURL); err == nil {
+		return canonical
+	}
+	return sourceRepo
 }
