@@ -27,6 +27,10 @@ type rawPullFacts struct {
 	} `json:"base"`
 }
 
+type rawPullListItem struct {
+	Number int `json:"number"`
+}
+
 func (h *Host) factsFromRaw(pull rawPullFacts) (scm.PRFacts, error) {
 	if pull.Number <= 0 || pull.Merged == nil || pull.Head.Repo == nil ||
 		strings.TrimSpace(pull.Head.Repo.FullName) == "" ||
@@ -105,48 +109,51 @@ func (h *Host) ReadPRFacts(ctx context.Context, identity *scm.PR) (scm.PRFacts, 
 }
 
 func (h *Host) FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBranch string) ([]scm.PRFacts, error) {
-	if strings.TrimSpace(sourceRepository) == "" || strings.TrimSpace(sourceBranch) == "" {
+	if strings.TrimSpace(sourceRepository) == "" || strings.TrimSpace(sourceBranch) == "" ||
+		sourceRepository != strings.TrimSpace(sourceRepository) || sourceBranch != strings.TrimSpace(sourceBranch) {
 		return nil, fmt.Errorf("Forgejo PR source identity is incomplete")
 	}
-	var response struct {
-		Found       bool         `json:"found"`
-		PullRequest *pullRequest `json:"pull_request"`
-		SearchInfo  struct {
-			Complete bool `json:"complete"`
-			Pages    int  `json:"pages"`
-			Fetched  int  `json:"fetched"`
-			Total    *int `json:"total"`
-		} `json:"search_info"`
-	}
-	if err := h.runJSON(ctx, "pr find", []string{"--repo", h.repository, "--head", sourceBranch, "--state", "open"}, &response); err != nil {
-		return nil, err
-	}
-	info := response.SearchInfo
-	if !info.Complete || info.Pages <= 0 || info.Total == nil || info.Fetched < 0 || *info.Total < info.Fetched {
-		return nil, errors.New("Forgejo PR search is incomplete or inconsistent")
-	}
-	if *info.Total > 1 {
-		return nil, fmt.Errorf("ambiguous Forgejo PR search: %d open candidates", *info.Total)
-	}
-	if !response.Found {
-		if *info.Total != 0 || info.Fetched != 0 || response.PullRequest != nil {
-			return nil, errors.New("Forgejo PR search reported contradictory absence")
+	const pageSize = 50
+	seen := make(map[string]bool)
+	var matches []scm.PRFacts
+	for page := 1; page <= 10000; page++ {
+		endpoint := fmt.Sprintf("repos/%s/pulls?state=open&sort=oldest&limit=%d&page=%d", h.repository, pageSize, page)
+		var candidates []rawPullListItem
+		if err := h.runJSON(ctx, "api", []string{"GET", endpoint}, &candidates); err != nil {
+			return nil, fmt.Errorf("read complete Forgejo PR list page %d: %w", page, err)
 		}
-		return []scm.PRFacts{}, nil
+		if candidates == nil {
+			return nil, fmt.Errorf("read complete Forgejo PR list page %d: invalid array", page)
+		}
+		if len(candidates) > pageSize {
+			return nil, fmt.Errorf("Forgejo PR list page %d exceeds requested size", page)
+		}
+		if len(candidates) == 0 {
+			if len(matches) > 1 {
+				return nil, fmt.Errorf("ambiguous Forgejo PR search: %d exact source candidates", len(matches))
+			}
+			return matches, nil
+		}
+		for i, candidate := range candidates {
+			if candidate.Number <= 0 {
+				return nil, fmt.Errorf("Forgejo PR list page %d entry %d has invalid number", page, i)
+			}
+			number := strconv.Itoa(candidate.Number)
+			if seen[number] {
+				return nil, fmt.Errorf("Forgejo PR list returned duplicate %s", number)
+			}
+			seen[number] = true
+			facts, err := h.ReadPRFacts(ctx, &scm.PR{Number: number, URL: h.canonicalPRURL(candidate.Number)})
+			if err != nil {
+				return nil, fmt.Errorf("read Forgejo PR list page %d entry %d: %w", page, i, err)
+			}
+			if facts.State != scm.PRStateOpen {
+				return nil, fmt.Errorf("Forgejo PR list page %d entry %d returned a non-open PR", page, i)
+			}
+			if facts.SourceRepository == sourceRepository && facts.SourceBranch == sourceBranch {
+				matches = append(matches, facts)
+			}
+		}
 	}
-	if *info.Total != 1 || info.Fetched != 1 || response.PullRequest == nil {
-		return nil, errors.New("Forgejo PR search reported inconsistent candidate count")
-	}
-	facts, err := h.ReadPRFacts(ctx, &scm.PR{Number: strconv.Itoa(response.PullRequest.Number), URL: response.PullRequest.URL})
-	if err != nil {
-		return nil, err
-	}
-	if facts.State != scm.PRStateOpen || facts.SourceBranch != sourceBranch ||
-		facts.HeadSHA != response.PullRequest.HeadSHA || facts.BaseBranch != response.PullRequest.Base {
-		return nil, errors.New("Forgejo PR search returned a non-open or mismatched branch")
-	}
-	if facts.SourceRepository != sourceRepository {
-		return []scm.PRFacts{}, nil
-	}
-	return []scm.PRFacts{facts}, nil
+	return nil, errors.New("Forgejo PR list exceeded pagination limit")
 }
