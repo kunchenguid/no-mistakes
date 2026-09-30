@@ -187,7 +187,24 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 			forward = true
 		}
 	}
-	if previous != nil && previous.PRContextCandidate != candidate && !forward && !freshRetarget &&
+	// Push can commit formatter or agent changes after the validation steps.
+	// Its durable publication record proves this run, rather than an external
+	// actor, advanced HEAD. Bind that new comparison normally so Review and its
+	// dependent steps are reset and revalidate the published source.
+	pipelineOwnedPushAdvance := false
+	if previous != nil && sctx.PRContextAfterStep && step == types.StepPush &&
+		previous.LocalHeadSHA != candidate.LocalHeadSHA &&
+		previous.TargetBranch == candidate.TargetBranch && previous.TargetSHA == candidate.TargetSHA &&
+		previous.SourceRepo == candidate.SourceRepo && previous.SourceBranch == candidate.SourceBranch &&
+		(previous.PRURL == "" || previous.PRURL == candidate.PRURL) {
+		current, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			return pipeline.PRContextDecision{}, fmt.Errorf("read published head after push: %w", err)
+		}
+		pipelineOwnedPushAdvance = current != nil && current.HeadSHA == candidate.LocalHeadSHA &&
+			current.LastPushedSHA != nil && *current.LastPushedSHA == candidate.LocalHeadSHA
+	}
+	if previous != nil && previous.PRContextCandidate != candidate && !forward && !pipelineOwnedPushAdvance && !freshRetarget &&
 		!sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() > resetFrom.Order() {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed after %s; start a new run for the current target and head", resetFrom)
 	}
@@ -205,12 +222,19 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		sctx.Run.PRURL = &url
 	}
 	decision := pipeline.PRContextDecision{Target: selection}
-	if previous != nil && bound.Changed && !forward && !sameComparisonExceptNewPRIdentity(previous, candidate) {
-		if step.Order() >= resetFrom.Order() {
+	if previous != nil && bound.Changed {
+		// Document and Lint may commit work the Test agent left in the
+		// worktree. The forward receipt preserves the valid Review result, but
+		// Test's evidence belongs to the old head and must be refreshed before
+		// the new one can proceed.
+		if forward && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
+			(step == types.StepDocument || step == types.StepLint) {
+			decision.RestartFrom = types.StepTest
+		} else if !forward && !sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() >= resetFrom.Order() {
 			decision.RestartFrom = resetFrom
 		}
-		if sctx.Log != nil {
-			sctx.Log(fmt.Sprintf("PR context changed at %s; revalidating from %s", step, resetFrom))
+		if decision.RestartFrom != "" && sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("PR context changed at %s; revalidating from %s", step, decision.RestartFrom))
 		}
 	}
 	return decision, nil

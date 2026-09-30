@@ -54,6 +54,14 @@ func TestUserJourney(t *testing.T) {
 	}
 }
 
+func TestTestAgentNewTestFileRevalidatesCurrentHead(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+	assertTestAgentNewTestFileRun(t, h)
+}
+
 func TestAXIControlByteFailureGateRemainsReadable(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 	out, err := h.Run("init")

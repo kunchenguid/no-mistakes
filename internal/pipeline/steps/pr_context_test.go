@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -68,7 +69,7 @@ func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	}
 }
 
-func TestPRContextGuardAdvancesAfterDocumentEditWithoutRerunningReview(t *testing.T) {
+func TestPRContextGuardAdvancesAfterDocumentEditAndRefreshesTest(t *testing.T) {
 	dir, base, reviewedHead := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, reviewedHead, config.Commands{})
 	selection := pipeline.PRTargetSelection{TargetBranch: "main"}
@@ -94,12 +95,12 @@ func TestPRContextGuardAdvancesAfterDocumentEditWithoutRerunningReview(t *testin
 	sctx.Run.HeadSHA = newHead
 	sctx.PRContextAfterStep = true
 	decision, err := guardPRContextWithSelection(sctx, types.StepDocument, selection, false)
-	if err != nil || decision.RestartFrom != "" {
-		t.Fatalf("forward document edit = %+v, %v", decision, err)
+	if err != nil || decision.RestartFrom != types.StepTest {
+		t.Fatalf("forward document edit = %+v, %v; want test restart", decision, err)
 	}
 	stored, err := sctx.DB.GetStepResult(review.ID)
 	if err != nil || stored.Status != types.StepStatusCompleted {
-		t.Fatalf("review rerun after document edit: %+v, %v", stored, err)
+		t.Fatalf("review was reset after document edit: %+v, %v", stored, err)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != reviewedHead {
@@ -108,5 +109,56 @@ func TestPRContextGuardAdvancesAfterDocumentEditWithoutRerunningReview(t *testin
 	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
 	if err != nil || receipt.LocalHeadSHA != newHead {
 		t.Fatalf("new comparison not bound: %+v, %v", receipt, err)
+	}
+}
+
+func TestPRContextGuardRevalidatesAfterPipelinePushAdvancesHead(t *testing.T) {
+	dir, base, reviewedHead := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, reviewedHead, config.Commands{})
+	selection := pipeline.PRTargetSelection{TargetBranch: "main"}
+	if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
+		t.Fatal(err)
+	}
+	review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(testStep.ID, `{"findings":[{"severity":"info","description":"new test file written by agent","action":"no-op"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "formatted.txt"), []byte("formatted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "formatted.txt")
+	gitCmd(t, dir, "commit", "-m", "format source")
+	publishedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{
+		HeadSHA: publishedHead, TargetKind: "upstream", TargetFingerprint: "test", Ref: "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run.HeadSHA = publishedHead
+	sctx.PRContextAfterStep = true
+	decision, err := guardPRContextWithSelection(sctx, types.StepPush, selection, false)
+	if err != nil || decision.RestartFrom != types.StepReview {
+		t.Fatalf("pipeline push context = %+v, %v; want review restart", decision, err)
+	}
+	stored, err := sctx.DB.GetStepResult(review.ID)
+	if err != nil || stored.Status != types.StepStatusPending {
+		t.Fatalf("review was not reset for the published head: %+v, %v", stored, err)
+	}
+	storedTest, err := sctx.DB.GetStepResult(testStep.ID)
+	if err != nil || storedTest.Status != types.StepStatusPending || storedTest.FindingsJSON != nil {
+		t.Fatalf("test evidence was not reset for the published head: %+v, %v", storedTest, err)
 	}
 }
