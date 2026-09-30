@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -67,32 +66,20 @@ func buildReviewReceipt(database *db.DB, run *db.Run) (reviewReceipt, error) {
 	if context == nil || context.LocalHeadSHA != run.HeadSHA || context.TargetSHA == "" || context.DiffDigest == "" {
 		return reviewReceipt{}, fmt.Errorf("run has no current exact PR comparison receipt")
 	}
-	repo, err := database.GetRepo(run.RepoID)
+	sourceRepo, sourceBranch, err := receiptSourceIdentity(context)
 	if err != nil {
-		return reviewReceipt{}, fmt.Errorf("read run source repository: %w", err)
-	}
-	if repo == nil {
-		return reviewReceipt{}, fmt.Errorf("run source repository is missing")
-	}
-	pushURL := repo.PushURL()
-	sourceRepo := externalSourceRepository(pushURL)
-	sourceBranch := strings.TrimPrefix(run.Branch, "refs/heads/")
-	if sourceRepo == "" || sourceBranch == "" {
-		return reviewReceipt{}, fmt.Errorf("run source identity is unreadable")
-	}
-	if context.PRURL != "" {
-		sameRepo := context.SourceRepo == sourceRepo
-		if scm.ExtractHost(pushURL) == "github.com" {
-			sameRepo = strings.EqualFold(context.SourceRepo, sourceRepo)
-		}
-		if !sameRepo || context.SourceBranch != sourceBranch {
-			return reviewReceipt{}, fmt.Errorf("run PR identity conflicts with source repository")
-		}
-		sourceRepo = context.SourceRepo
+		return reviewReceipt{}, err
 	}
 	return reviewReceipt{RunID: run.ID, SourceRepo: sourceRepo, SourceBranch: sourceBranch,
 		PRURL: context.PRURL, ForgeHeadSHA: context.ForgeHeadSHA, LocalHeadSHA: context.LocalHeadSHA,
 		TargetBranch: context.TargetBranch, TargetSHA: context.TargetSHA,
 		MergeBaseSHA: context.MergeBaseSHA, DiffDigest: context.DiffDigest,
 		Generation: context.Generation}, nil
+}
+
+func receiptSourceIdentity(context *db.PRContext) (string, string, error) {
+	if context == nil || strings.TrimSpace(context.SourceRepo) == "" || strings.TrimSpace(context.SourceBranch) == "" {
+		return "", "", fmt.Errorf("comparison receipt has no source identity")
+	}
+	return context.SourceRepo, context.SourceBranch, nil
 }

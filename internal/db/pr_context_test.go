@@ -11,6 +11,7 @@ import (
 
 func testPRContextCandidate() PRContextCandidate {
 	return PRContextCandidate{
+		SourceRepo: "acme/repo", SourceBranch: "feature",
 		LocalHeadSHA: strings.Repeat("a", 40), TargetBranch: "main",
 		TargetSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("c", 40),
 		DiffDigest: strings.Repeat("d", 64),

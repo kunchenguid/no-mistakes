@@ -56,9 +56,12 @@ func TestBuildReviewReceiptRequiresVerifiedTerminalComparison(t *testing.T) {
 	if _, err := buildReviewReceipt(database, run); err == nil {
 		t.Fatal("completed run without comparison accepted")
 	}
-	candidate := db.PRContextCandidate{LocalHeadSHA: head, TargetBranch: "main", TargetSHA: target,
+	candidate := db.PRContextCandidate{SourceRepo: "acme/repo", SourceBranch: "feature", LocalHeadSHA: head, TargetBranch: "main", TargetSHA: target,
 		MergeBaseSHA: strings.Repeat("c", 40), DiffDigest: strings.Repeat("d", 64)}
 	if _, err := database.BindRunPRContext(run.ID, candidate, types.StepRebase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.UpdateRepoMetadata(repo.ID, "https://github.com/acme/other.git", "main"); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := buildReviewReceipt(database, run)

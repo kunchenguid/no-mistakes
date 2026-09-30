@@ -12,8 +12,7 @@ import (
 )
 
 // PRContextCandidate is the exact PR identity and comparison observed by a
-// caller. Empty PR fields are allowed only before a PR exists. The local head,
-// target, merge base, and digest are required even then.
+// caller. The PR URL and forge head are empty only before a PR exists.
 type PRContextCandidate struct {
 	PRURL        string
 	SourceRepo   string
@@ -113,7 +112,10 @@ func (d *DB) bindRunPRContext(runID string, candidate PRContextCandidate, resetF
 		previous.SourceRepo = sourceRepo.String
 		previous.SourceBranch = sourceBranch.String
 		previous.ForgeHeadSHA = forgeHead.String
-		if previous.PRURL != "" && (candidate.PRURL != previous.PRURL || candidate.SourceRepo != previous.SourceRepo || candidate.SourceBranch != previous.SourceBranch) {
+		if previous.SourceRepo != "" && (candidate.SourceRepo != previous.SourceRepo || candidate.SourceBranch != previous.SourceBranch) {
+			return PRContextBindResult{}, fmt.Errorf("bind run PR context: source identity conflicts with receipt")
+		}
+		if previous.PRURL != "" && candidate.PRURL != previous.PRURL {
 			return PRContextBindResult{}, fmt.Errorf("bind run PR context: PR identity conflict")
 		}
 		if previous.PRContextCandidate == candidate {
@@ -125,6 +127,7 @@ func (d *DB) bindRunPRContext(runID string, candidate PRContextCandidate, resetF
 	}
 	identityOnlyAttach := !initial && previous.PRURL == "" && candidate.PRURL != "" &&
 		candidate.ForgeHeadSHA == candidate.LocalHeadSHA &&
+		previous.SourceRepo == candidate.SourceRepo && previous.SourceBranch == candidate.SourceBranch &&
 		previous.LocalHeadSHA == candidate.LocalHeadSHA &&
 		previous.TargetBranch == candidate.TargetBranch &&
 		previous.TargetSHA == candidate.TargetSHA &&
@@ -209,8 +212,12 @@ func validatePRContextCandidate(c PRContextCandidate) error {
 	if !validGitSHA(c.LocalHeadSHA) || !validGitSHA(c.TargetSHA) || !validGitSHA(c.MergeBaseSHA) || !validHex(c.DiffDigest, 64) {
 		return fmt.Errorf("bind run PR context: invalid SHA or digest")
 	}
+	if (c.SourceRepo == "") != (c.SourceBranch == "") ||
+		(c.SourceRepo != "" && (c.SourceRepo != strings.TrimSpace(c.SourceRepo) || strings.ContainsAny(c.SourceRepo, "\r\n\t") || c.SourceBranch != strings.TrimSpace(c.SourceBranch) || strings.ContainsAny(c.SourceBranch, "\r\n\t"))) {
+		return fmt.Errorf("bind run PR context: incomplete source identity")
+	}
 	if c.PRURL == "" {
-		if c.SourceRepo != "" || c.SourceBranch != "" || c.ForgeHeadSHA != "" {
+		if c.ForgeHeadSHA != "" {
 			return fmt.Errorf("bind run PR context: incomplete PR identity")
 		}
 		return nil
@@ -219,7 +226,7 @@ func validatePRContextCandidate(c PRContextCandidate) error {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.Fragment != "" || c.PRURL != strings.TrimSpace(c.PRURL) {
 		return fmt.Errorf("bind run PR context: invalid PR URL")
 	}
-	if c.SourceRepo == "" || c.SourceRepo != strings.TrimSpace(c.SourceRepo) || strings.ContainsAny(c.SourceRepo, "\r\n\t") || c.SourceBranch == "" || c.SourceBranch != strings.TrimSpace(c.SourceBranch) || strings.ContainsAny(c.SourceBranch, "\r\n\t") || !validGitSHA(c.ForgeHeadSHA) {
+	if c.SourceRepo == "" || !validGitSHA(c.ForgeHeadSHA) {
 		return fmt.Errorf("bind run PR context: incomplete or invalid PR identity")
 	}
 	return nil

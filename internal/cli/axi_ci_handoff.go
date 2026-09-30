@@ -3,11 +3,8 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/scm"
-	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -85,26 +82,14 @@ func buildExternalCIHandoff(database *db.DB, run *db.Run) (externalCIHandoff, er
 	if len(claims) == 0 || len(claims) > 128 {
 		return externalCIHandoff{}, fmt.Errorf("run must have 1-128 current pending Review CI claims")
 	}
-	repo, err := database.GetRepo(run.RepoID)
+	receipt, err := database.GetRunPRContext(run.ID)
 	if err != nil {
-		return externalCIHandoff{}, fmt.Errorf("read CI handoff source repository: %w", err)
+		return externalCIHandoff{}, fmt.Errorf("read CI handoff comparison receipt: %w", err)
 	}
-	if repo == nil {
-		return externalCIHandoff{}, fmt.Errorf("CI handoff source repository is missing")
-	}
-	sourceRepo := externalSourceRepository(repo.PushURL())
-	sourceBranch := strings.TrimPrefix(run.Branch, "refs/heads/")
-	if sourceRepo == "" || sourceBranch == "" {
-		return externalCIHandoff{}, fmt.Errorf("CI handoff source identity is unreadable")
+	sourceRepo, sourceBranch, err := receiptSourceIdentity(receipt)
+	if err != nil {
+		return externalCIHandoff{}, fmt.Errorf("read CI handoff source identity: %w", err)
 	}
 	return externalCIHandoff{Outcome: "pending-external-ci", RunID: run.ID, ExternalCIOwner: run.ExternalCIOwner,
 		SourceRepo: sourceRepo, SourceBranch: sourceBranch, PendingCISupport: claims}, nil
-}
-
-func externalSourceRepository(pushURL string) string {
-	sourceRepo := scm.RepoPath(pushURL)
-	if canonical, err := azuredevops.CanonicalSourceRepository(pushURL); err == nil {
-		return canonical
-	}
-	return sourceRepo
 }

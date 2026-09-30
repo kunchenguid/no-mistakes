@@ -238,6 +238,33 @@ func TestFreshOwnedPRRetargetIsReadBackAndConsumed(t *testing.T) {
 	}
 }
 
+func TestFreshRetargetWaitsForUnpublishedPRToAttach(t *testing.T) {
+	sctx, facts := selectionFixture(t)
+	sctx.Run.PRBaseBranch = strptr("release")
+	sctx.Run.PRBaseBranchRequested = true
+	facts.HeadSHA = sctx.Run.BaseSHA
+	reader := &fakePRFactsReader{list: []scm.PRFacts{facts}}
+
+	selection, err := resolveAndApplyPRTarget(sctx, reader, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.PRURL != "" || selection.TargetBranch != "develop" || len(reader.retargets) != 0 || !sctx.Run.PRBaseBranchRequested {
+		t.Fatalf("unpublished selection=%+v retargets=%v requested=%v", selection, reader.retargets, sctx.Run.PRBaseBranchRequested)
+	}
+
+	sctx.Run.PRURL = &facts.PR.URL
+	facts.HeadSHA = sctx.Run.HeadSHA
+	reader.read = facts
+	selection, err = resolveAndApplyPRTarget(sctx, reader, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.TargetBranch != "release" || len(reader.retargets) != 1 || reader.retargets[0] != "release" || sctx.Run.PRBaseBranchRequested {
+		t.Fatalf("attached selection=%+v retargets=%v requested=%v", selection, reader.retargets, sctx.Run.PRBaseBranchRequested)
+	}
+}
+
 func TestInheritedOrUnownedPRBaseNeverRetargets(t *testing.T) {
 	for _, owned := range []bool{false, true} {
 		sctx, facts := selectionFixture(t)

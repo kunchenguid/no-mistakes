@@ -68,10 +68,6 @@ func resolveAndApplyPRTarget(sctx *pipeline.StepContext, reader scm.PRFactsReade
 	// An unowned PR discovered by source/head is not mutation authority.
 	// A new run's --base-branch remains a prospective target only.
 	if runPRURL(sctx) == "" {
-		if err := sctx.DB.ConsumePRBaseBranchRequest(sctx.Run.ID); err != nil {
-			return pipeline.PRTargetSelection{}, err
-		}
-		sctx.Run.PRBaseBranchRequested = false
 		return selection, nil
 	}
 	if sctx.Run.PRBaseBranch == nil {
@@ -155,10 +151,12 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		TargetSHA: targetSHA, MergeBaseSHA: mergeBase,
 		DiffDigest: hex.EncodeToString(digest[:]),
 	}
-	if selection.PRURL != "" {
-		candidate.PRURL = selection.PRURL
+	if selection.SourceRepo != "" {
 		candidate.SourceRepo = selection.SourceRepo
 		candidate.SourceBranch = selection.SourceBranch
+	}
+	if selection.PRURL != "" {
+		candidate.PRURL = selection.PRURL
 		candidate.ForgeHeadSHA = selection.ForgeHeadSHA
 	}
 	previous, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
@@ -168,12 +166,14 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	resetFrom := types.StepReview
 	if previous == nil || previous.TargetBranch != candidate.TargetBranch ||
 		previous.TargetSHA != candidate.TargetSHA ||
+		previous.SourceRepo != candidate.SourceRepo || previous.SourceBranch != candidate.SourceBranch ||
 		(previous.PRURL != "" && previous.ForgeHeadSHA != candidate.ForgeHeadSHA) {
 		resetFrom = types.StepRebase
 	}
 	forward := false
 	if previous != nil && sctx.PRContextAfterStep &&
 		previous.TargetBranch == candidate.TargetBranch && previous.TargetSHA == candidate.TargetSHA &&
+		previous.SourceRepo == candidate.SourceRepo && previous.SourceBranch == candidate.SourceBranch &&
 		previous.PRURL == candidate.PRURL && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
 		if step.Order() >= types.StepReview.Order() && step.Order() <= types.StepLint.Order() &&
 			previous.ForgeHeadSHA == candidate.ForgeHeadSHA && previous.LocalHeadSHA != localHead {
@@ -217,6 +217,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 func sameComparisonExceptNewPRIdentity(previous *db.PRContext, next db.PRContextCandidate) bool {
 	return previous != nil && previous.PRURL == "" && next.PRURL != "" &&
 		strings.EqualFold(next.ForgeHeadSHA, next.LocalHeadSHA) &&
+		previous.SourceRepo == next.SourceRepo && previous.SourceBranch == next.SourceBranch &&
 		previous.LocalHeadSHA == next.LocalHeadSHA &&
 		previous.TargetBranch == next.TargetBranch &&
 		previous.TargetSHA == next.TargetSHA &&

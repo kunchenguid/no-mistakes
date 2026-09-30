@@ -60,7 +60,7 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 		t.Fatal(err)
 	}
 	defer database.Close()
-	repo, err := database.InsertRepo(filepath.Join(t.TempDir(), "repo"), "git@ssh.dev.azure.com:v3/acme/trading/controller", "main")
+	repo, err := database.InsertRepoWithFork(filepath.Join(t.TempDir(), "repo"), "https://github.com/acme/upstream.git", "https://github.com/contributor/source-a.git", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 	if _, err := buildExternalCIHandoff(database, run); err == nil {
 		t.Fatal("pending run accepted")
 	}
-	receipt := db.PRContextCandidate{LocalHeadSHA: head, TargetBranch: "main", TargetSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("c", 40), DiffDigest: strings.Repeat("d", 64)}
+	receipt := db.PRContextCandidate{SourceRepo: "contributor/source-a", SourceBranch: "feature", LocalHeadSHA: head, TargetBranch: "main", TargetSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("c", 40), DiffDigest: strings.Repeat("d", 64)}
 	if _, err := database.BindRunPRContext(run.ID, receipt, types.StepRebase); err != nil {
 		t.Fatal(err)
 	}
@@ -116,12 +116,15 @@ func TestBuildExternalCIHandoffRequiresTerminalSkippedDeliveryAndCurrentClaim(t 
 			t.Fatal(err)
 		}
 	}
+	if _, err := database.UpdateRepoForkURL(repo.ID, "https://github.com/contributor/source-b.git"); err != nil {
+		t.Fatal(err)
+	}
 	handoff, err := buildExternalCIHandoff(database, run)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if handoff.Outcome != "pending-external-ci" || handoff.RunID != run.ID ||
-		handoff.SourceRepo != "https://dev.azure.com/acme/trading/_git/controller" || handoff.SourceBranch != "feature" ||
+		handoff.SourceRepo != "contributor/source-a" || handoff.SourceBranch != "feature" ||
 		len(handoff.PendingCISupport) != 1 || handoff.PendingCISupport[0].HistoricalCheckID != "check-1" {
 		t.Fatalf("handoff = %+v", handoff)
 	}
