@@ -455,6 +455,12 @@ func fakeCIGHReconcileHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	if len(args) > 0 && args[0] == "api" && args[len(args)-1] == "repos/test/repo/pulls/42" {
+		if facts := os.Getenv("FAKE_CLI_PR_FACTS_JSON"); facts != "" {
+			fmt.Print(facts)
+			os.Exit(0)
+		}
+	}
 	if strings.Contains(joined, "api --method GET repos/test/repo/pulls/42") {
 		fmt.Printf(`{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, fakePRHeadSHA())
 		os.Exit(0)

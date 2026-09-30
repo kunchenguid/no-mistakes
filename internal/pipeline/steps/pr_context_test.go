@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,53 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestPRContextGuardRechecksTerminalCIAgainstLivePR(t *testing.T) {
+	for _, tc := range []struct {
+		name, recorded, liveState, liveSource, liveBase string
+		merged, movedHead, wantError                    bool
+	}{
+		{name: "closed", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main"},
+		{name: "merged", recorded: "merged", liveState: "closed", liveSource: "test/repo", liveBase: "main", merged: true},
+		{name: "reopened", recorded: "closed", liveState: "open", liveSource: "test/repo", liveBase: "main", wantError: true},
+		{name: "retargeted", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "develop", wantError: true},
+		{name: "pushed", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", movedHead: true, wantError: true},
+		{name: "different source", recorded: "closed", liveState: "closed", liveSource: "other/repo", liveBase: "main", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			prURL := "https://github.com/test/repo/pull/42"
+			selection := pipeline.PRTargetSelection{PRURL: prURL, SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: head, TargetBranch: "main"}
+			if _, err := guardPRContextWithSelection(sctx, types.StepPR, selection, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, tc.recorded); err != nil {
+				t.Fatal(err)
+			}
+			liveHead := head
+			if tc.movedHead {
+				liveHead = base
+			}
+			facts := fmt.Sprintf(`{"number":42,"html_url":%q,"state":%q,"merged":%t,"head":{"ref":"feature","sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}`, prURL, tc.liveState, tc.merged, liveHead, tc.liveSource, tc.liveBase)
+			binDir := fakeCLIBinDir(t)
+			linkTestBinary(t, binDir, "gh")
+			sctx.Env = fakeCLIEnv(binDir, map[string]string{"FAKE_CLI_MODE": "ci-gh-reconcile", "FAKE_CLI_PR_FACTS_JSON": facts})
+			sctx.PRContextAfterStep = true
+			decision, err := GuardPRContext(sctx, types.StepCI)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("terminal guard = %+v, %v; want error %t", decision, err, tc.wantError)
+			}
+			if !tc.wantError && (decision.RestartFrom != "" || decision.Target.PRURL != prURL || decision.Target.ForgeHeadSHA != head) {
+				t.Fatalf("terminal selection = %+v", decision)
+			}
+			receipt, readErr := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if readErr != nil || receipt.PRURL != prURL || receipt.ForgeHeadSHA != head || receipt.Generation != 1 {
+				t.Fatalf("terminal receipt changed: %+v, %v", receipt, readErr)
+			}
+		})
+	}
+}
 
 func TestPRContextGuardKeepsProviderEquivalentSourceIdentity(t *testing.T) {
 	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderAzureDevOps} {

@@ -8,6 +8,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -21,6 +22,7 @@ type PRTargetSelection struct {
 	SourceBranch string
 	ForgeHeadSHA string
 	TargetBranch string
+	State        scm.PRState
 }
 
 // StepContext provides shared resources to pipeline steps during execution.

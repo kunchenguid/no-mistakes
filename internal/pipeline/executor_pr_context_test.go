@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -97,7 +96,7 @@ func TestExecutorParkedApprovalRevalidatesPRTargetBeforeFinalStepCompletes(t *te
 	}
 }
 
-func TestExecutorAcceptsTerminalCIProofWithoutRequiringAnOpenPR(t *testing.T) {
+func TestExecutorRechecksTerminalCIProof(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	const head = "1111111111111111111111111111111111111111"
 	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
@@ -122,11 +121,16 @@ func TestExecutorAcceptsTerminalCIProofWithoutRequiringAnOpenPR(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepCI)}, nil)
-	executor.SetPRContextGuard(func(*StepContext, types.StepName) (PRContextDecision, error) {
-		return PRContextDecision{}, errors.New("closed PR cannot be read as open")
+	called := false
+	executor.SetPRContextGuard(func(sctx *StepContext, step types.StepName) (PRContextDecision, error) {
+		called = true
+		if step != types.StepCI || !sctx.PRContextAfterStep {
+			t.Fatalf("terminal guard context = %s, after=%t", step, sctx.PRContextAfterStep)
+		}
+		return PRContextDecision{Target: PRTargetSelection{PRURL: prURL, TargetBranch: "develop"}}, nil
 	})
 	index, err := executor.checkPRContext(context.Background(), run, repo, t.TempDir(), types.StepCI, 0, true)
-	if err != nil || index != -1 {
+	if err != nil || index != -1 || !called {
 		t.Fatalf("terminal CI context = %d, %v", index, err)
 	}
 }

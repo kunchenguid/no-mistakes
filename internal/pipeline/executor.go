@@ -95,34 +95,6 @@ func (e *Executor) checkPRContext(ctx context.Context, run *db.Run, repo *db.Rep
 	if e.prContextGuard == nil || stepName.Order() < types.StepRebase.Order() {
 		return -1, nil
 	}
-	if stepName == types.StepCI && afterStep {
-		// CI owns the terminal PR transition. Once it has recorded merge or
-		// close, the forge no longer has an open PR to resolve; asking the
-		// ordinary guard to read one would turn a valid terminal outcome into
-		// a failed run. Keep the immutable comparison bound to this exact PR
-		// and head while CI's merge proof remains the authority for merge.
-		current, err := e.db.GetRun(run.ID)
-		if err != nil {
-			return -1, fmt.Errorf("read terminal PR state after CI: %w", err)
-		}
-		if current.PRState != nil && (*current.PRState == "merged" || *current.PRState == "closed") {
-			receipt, err := e.db.GetRunPRContext(run.ID)
-			if err != nil {
-				return -1, fmt.Errorf("read terminal PR comparison after CI: %w", err)
-			}
-			if receipt == nil || receipt.PRURL == "" || current.PRURL == nil || *current.PRURL != receipt.PRURL || current.HeadSHA != receipt.LocalHeadSHA {
-				return -1, fmt.Errorf("terminal CI state lacks a matching PR comparison and head")
-			}
-			e.prContext = receipt
-			e.prTarget = &PRTargetSelection{
-				PRURL: receipt.PRURL, SourceRepo: receipt.SourceRepo,
-				SourceBranch: receipt.SourceBranch, ForgeHeadSHA: receipt.ForgeHeadSHA,
-				TargetBranch: receipt.TargetBranch,
-			}
-			run.PRState = current.PRState
-			return -1, nil
-		}
-	}
 	decision, err := e.prContextGuard(&StepContext{
 		Ctx: ctx, Run: run, Repo: repo, WorkDir: workDir,
 		Config: e.config, ForgeContext: e.forge, DB: e.db,

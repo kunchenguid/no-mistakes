@@ -79,6 +79,7 @@ func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsRea
 		selected.PRURL = facts.PR.URL
 		selected.ForgeHeadSHA = facts.HeadSHA
 		selected.TargetBranch = facts.BaseBranch
+		selected.State = facts.State
 		return selected, nil
 	}
 
@@ -102,6 +103,7 @@ func resolvePRTargetWithReader(sctx *pipeline.StepContext, reader scm.PRFactsRea
 		return pipeline.PRTargetSelection{}, fmt.Errorf("read local head before selecting pull request target: %w", err)
 	}
 	selected.ForgeHeadSHA = facts.HeadSHA
+	selected.State = facts.State
 	if facts.HeadSHA != localHead {
 		// A fresh run may contain local commits or a rebase that have not
 		// reached the existing PR yet. Its live base is still the comparison

@@ -46,6 +46,39 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 	if !ok {
 		return pipeline.PRContextDecision{}, fmt.Errorf("provider cannot read complete pull request facts")
 	}
+	if step == types.StepCI && sctx.PRContextAfterStep {
+		current, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			return pipeline.PRContextDecision{}, fmt.Errorf("read terminal PR state after CI: %w", err)
+		}
+		if current.PRState != nil && (*current.PRState == "merged" || *current.PRState == "closed") {
+			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil {
+				return pipeline.PRContextDecision{}, fmt.Errorf("read terminal PR comparison after CI: %w", err)
+			}
+			if receipt == nil || receipt.PRURL == "" || current.PRURL == nil || *current.PRURL != receipt.PRURL {
+				return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI state lacks a matching PR receipt")
+			}
+			sctx.Run.PRURL = current.PRURL
+			selection, err := resolvePRTargetWithReader(sctx, reader, true)
+			if err != nil {
+				return pipeline.PRContextDecision{}, err
+			}
+			localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+			if err != nil {
+				return pipeline.PRContextDecision{}, fmt.Errorf("read local head after terminal CI: %w", err)
+			}
+			if !strings.EqualFold(string(selection.State), *current.PRState) || selection.PRURL != receipt.PRURL ||
+				!scm.SameSourceRepository(resolvedProvider(sctx), selection.SourceRepo, receipt.SourceRepo) ||
+				selection.SourceBranch != receipt.SourceBranch || selection.ForgeHeadSHA != receipt.ForgeHeadSHA ||
+				selection.TargetBranch != receipt.TargetBranch || current.HeadSHA != receipt.LocalHeadSHA ||
+				localHead != current.HeadSHA {
+				return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI state differs from the recorded PR comparison")
+			}
+			sctx.Run.PRState = current.PRState
+			return pipeline.PRContextDecision{Target: selection}, nil
+		}
+	}
 	retargeter, _ := host.(scm.PRBaseRetargeter)
 	selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, retargeter, step == types.StepCI)
 	if err != nil {
