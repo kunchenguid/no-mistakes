@@ -108,37 +108,40 @@ func TestFindOpenPRFactsAllowsCompleteEmptyList(t *testing.T) {
 	}
 }
 
-func TestReadPRFactsMergedCommitFailsClosed(t *testing.T) {
+func TestReadPRFactsMergedResultMatchesGitLabMergeMethod(t *testing.T) {
 	const mergeSHA = "abcdef0123456789abcdef0123456789abcdef01"
+	const squashSHA = "1123456789abcdef0123456789abcdef01234567"
+	const headSHA = "0123456789abcdef0123456789abcdef01234567"
 	merged := strings.Replace(gitlabFacts42, `"state":"opened"`, `"state":"merged"`, 1)
 	for _, tc := range []struct {
-		name, sha       string
-		omit, wantError bool
+		name, fields, wantSHA string
+		wantError             bool
 	}{
-		{"valid", mergeSHA, false, false},
-		{"missing", "", true, true},
-		{"empty", "", false, true},
-		{"short", "abcdef", false, true},
-		{"nonhex", strings.Repeat("z", 40), false, true},
-		{"whitespace", " " + mergeSHA, false, true},
+		{"merge commit", fmt.Sprintf(`"merge_commit_sha":%q,"squash_commit_sha":%q,`, mergeSHA, squashSHA), mergeSHA, false},
+		{"squash fast-forward", fmt.Sprintf(`"merge_commit_sha":null,"squash_commit_sha":%q,`, squashSHA), squashSHA, false},
+		{"plain fast-forward", `"merge_commit_sha":null,"squash_commit_sha":null,`, headSHA, false},
+		{"missing optional commits", "", headSHA, false},
+		{"empty optional commits", `"merge_commit_sha":"","squash_commit_sha":"",`, headSHA, false},
+		{"short merge commit with valid squash", fmt.Sprintf(`"merge_commit_sha":"abcdef","squash_commit_sha":%q,`, squashSHA), "", true},
+		{"nonhex merge commit", fmt.Sprintf(`"merge_commit_sha":%q,`, strings.Repeat("z", 40)), "", true},
+		{"whitespace merge commit", fmt.Sprintf(`"merge_commit_sha":%q,`, " "+mergeSHA), "", true},
+		{"short squash commit", `"merge_commit_sha":null,"squash_commit_sha":"abcdef",`, "", true},
+		{"malformed squash with valid merge", fmt.Sprintf(`"merge_commit_sha":%q,"squash_commit_sha":"bad",`, mergeSHA), "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			payload := merged
-			if !tc.omit {
-				payload = strings.Replace(payload, `{`, `{`+fmt.Sprintf(`"merge_commit_sha":%q,`, tc.sha), 1)
-			}
+			payload := strings.Replace(merged, `{`, `{`+tc.fields, 1)
 			host := gitlabFactsHost(map[string]gitlabTestResponse{
 				"glab api --hostname gitlab.example.com --method GET projects/group%2Fproject/merge_requests/42": {stdout: payload},
 			})
 			facts, err := host.ReadPRFacts(context.Background(), &scm.PR{Number: "42"})
 			if tc.wantError {
 				if err == nil {
-					t.Fatalf("accepted merged PR without a valid merge commit: %+v", facts)
+					t.Fatalf("accepted malformed merged result: %+v", facts)
 				}
 				return
 			}
-			if err != nil || facts.State != scm.PRStateMerged || facts.MergeCommitSHA != mergeSHA {
-				t.Fatalf("merged facts = %+v, %v", facts, err)
+			if err != nil || facts.State != scm.PRStateMerged || facts.MergeCommitSHA != tc.wantSHA || facts.HeadSHA != headSHA || facts.PR.HeadSHA != headSHA || facts.SourceRepository != "other/fork" || facts.BaseBranch != "develop" {
+				t.Fatalf("merged facts = %+v, %v; want merge result %q and unchanged source head", facts, err, tc.wantSHA)
 			}
 		})
 	}
