@@ -319,6 +319,57 @@ func prComparisonAtTarget(sctx *pipeline.StepContext, target, targetSHA, localHe
 	return db.PRContextCandidate{LocalHeadSHA: localHead, TargetBranch: target, TargetSHA: targetSHA, MergeBaseSHA: mergeBase, DiffDigest: hex.EncodeToString(digest[:])}, nil
 }
 
+func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, proposedHead string) error {
+	if sctx == nil || sctx.DB == nil || sctx.Run == nil || pr == nil {
+		return fmt.Errorf("PR update lacks a run or comparison receipt")
+	}
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	if receipt == nil || receipt.PRURL == "" || !samePRIdentity(receipt.PRURL, pr) ||
+		proposedHead == "" || proposedHead != sctx.Run.HeadSHA {
+		return fmt.Errorf("PR update lacks the current run comparison")
+	}
+	reader, ok := host.(scm.PRFactsReader)
+	if !ok {
+		return fmt.Errorf("provider cannot read complete pull request facts before update")
+	}
+	facts, err := reader.ReadPRFacts(sctx.Ctx, pr)
+	if err != nil {
+		return fmt.Errorf("read pull request before update: %w", err)
+	}
+	if facts.State != scm.PRStateOpen || !samePRIdentity(receipt.PRURL, &facts.PR) ||
+		!scm.SameSourceRepository(resolvedProvider(sctx), facts.SourceRepository, receipt.SourceRepo) ||
+		facts.SourceBranch != receipt.SourceBranch || facts.HeadSHA != receipt.ForgeHeadSHA ||
+		facts.BaseBranch != receipt.TargetBranch {
+		return fmt.Errorf("live pull request differs from its comparison receipt before update")
+	}
+	selection := pipeline.PRTargetSelection{TargetBranch: receipt.TargetBranch}
+	current, err := readPRComparison(sctx, selection)
+	if err != nil {
+		return err
+	}
+	if current.LocalHeadSHA != proposedHead {
+		return fmt.Errorf("local head differs from proposed PR update head")
+	}
+	if proposedHead != receipt.LocalHeadSHA {
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", receipt.LocalHeadSHA, proposedHead); err != nil {
+			return fmt.Errorf("proposed PR update head does not descend from comparison receipt: %w", err)
+		}
+		current, err = prComparisonAtTarget(sctx, receipt.TargetBranch, current.TargetSHA, receipt.LocalHeadSHA)
+		if err != nil {
+			return err
+		}
+	}
+	expected := receipt.PRContextCandidate
+	expected.PRURL, expected.SourceRepo, expected.SourceBranch, expected.ForgeHeadSHA = "", "", "", ""
+	if current != expected {
+		return fmt.Errorf("live target commit, merge base, or diff differs from PR comparison receipt before update")
+	}
+	return nil
+}
+
 // verifyCurrentPRComparison is read-only: owner evidence and terminal CI must
 // validate the receipt, never replace it with the post-merge empty diff.
 func verifyCurrentPRComparison(sctx *pipeline.StepContext, host scm.Host, selection pipeline.PRTargetSelection, receipt *db.PRContext, facts *scm.PRFacts) error {

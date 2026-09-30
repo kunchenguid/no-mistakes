@@ -832,7 +832,9 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	if pr == nil {
 		return nil
 	}
-	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
+	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx), func() error {
+		return verifyPRMutationComparison(sctx, host, pr, headSHA)
+	}); err != nil {
 		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
 	}
 	return nil
@@ -853,7 +855,7 @@ func attestationPolicyFrom(sctx *pipeline.StepContext) pipelineAttestationPolicy
 // failed: missing-reader is not a settlement miss. All currently supported
 // providers have readers; this keeps the optional-interface fallback intact.
 func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, logfn func(string)) error {
-	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn, pipelineAttestationPolicy{})
+	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn, pipelineAttestationPolicy{}, nil)
 }
 
 // restampPRAttestationWithSteps is restampPRAttestation with an explicit step
@@ -862,7 +864,7 @@ func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHea
 // them outright. allow_test_command_override always comes from policy, never
 // from the previous attestation. See attestHeadBeforePush for why a caller
 // picks one steps argument over the other.
-func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string), policy pipelineAttestationPolicy) error {
+func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string), policy pipelineAttestationPolicy, beforeWrite func() error) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok || pr == nil {
 		if logfn != nil && !ok {
@@ -901,6 +903,11 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 			case latest.Body != content.Body:
 				err = errors.New("pull request body changed while preparing attestation update")
 			default:
+				if beforeWrite != nil {
+					if err := beforeWrite(); err != nil {
+						return err
+					}
+				}
 				// Do not send title: a body-only write leaves a concurrent title
 				// edit untouched.
 				_, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated})
