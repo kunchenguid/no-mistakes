@@ -521,6 +521,100 @@ func TestExecutorTestSupportRejectsPostReviewDocumentCommitAtCompletion(t *testi
 	}
 }
 
+func TestExecutorCIHistoricalClaimAcceptsFinalComparisonProof(t *testing.T) {
+	database, p, baseRun, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	reviewedHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, workDir, "docs.md", "owned document correction\n")
+	execGit(t, workDir, "add", "docs.md")
+	execGit(t, workDir, "commit", "-m", "document")
+	finalHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature-ci-forward", reviewedHead, baseRun.BaseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := db.PRContextCandidate{LocalHeadSHA: reviewedHead, TargetBranch: "main", TargetSHA: reviewedHead,
+		MergeBaseSHA: reviewedHead, DiffDigest: "3333333333333333333333333333333333333333333333333333333333333333"}
+	if _, err := database.BindRunPRContext(run.ID, receipt, types.StepReview); err != nil {
+		t.Fatal(err)
+	}
+	claim := types.Finding{ID: "review-ci-forward", Severity: types.FindingSeverityWarning, Action: types.ActionNoOp,
+		Category: types.FindingCategoryReviewSupportPending, Description: "historical CI failure",
+		Support: &types.FindingSupport{ClaimType: types.FindingClaimCI,
+			CI: &types.FindingCISupport{CheckID: "bitbucket-status:build", HeadSHA: reviewedHead}}}
+	claimJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{claim}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(review.ID, claimJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, reviewedHead); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, finalHead); err != nil {
+		t.Fatal(err)
+	}
+	receipt.LocalHeadSHA = finalHead
+	if _, err := database.AdvanceRunPRContext(run.ID, receipt); err != nil {
+		t.Fatal(err)
+	}
+	current, err := database.GetRunPRContext(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := claim
+	resolved.ID = types.ReviewSupportClaimID(claim)
+	resolved.Category = types.FindingCategoryReviewSupportResolved
+	resolved.Support = &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: claim.Support.CI,
+		OwnerResult: &types.FindingOwnerResult{ReviewFindingID: claim.ID, HeadSHA: finalHead,
+			TargetSHA: current.TargetSHA, DiffDigest: current.DiffDigest, Generation: current.Generation,
+			ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Disposition: types.FindingSupportDispositionDisproven, CheckState: "pass"}}
+	resolvedJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{resolved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci, err := database.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(ci.ID, resolvedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(ci.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(database, p, nil, nil, nil, nil)
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
+		t.Fatalf("final CI owner result refused: %v", err)
+	}
+	resolved.Support.OwnerResult.Generation--
+	staleJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{resolved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(ci.ID, staleJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err == nil {
+		t.Fatal("completion accepted stale CI proof")
+	}
+}
+
 func TestExecutorRecoveredApprovalRevalidatesMovedPRTargetBeforeUsingParkedVerdict(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := completionFixture(t, database, run)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
@@ -508,5 +510,159 @@ func TestCIOwnerRechecksHistoricalClaimAfterForwardEdit(t *testing.T) {
 				t.Fatalf("historical claim relabeled or owner proof stale: %+v", results[0].Support)
 			}
 		})
+	}
+}
+
+func TestCIOwnerResolvesPublishedForwardClaimWithoutRelabeling(t *testing.T) {
+	dir, base, reviewed := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, nil, dir, base, reviewed, config.Commands{})
+	sctx.Repo.UpstreamURL = dir
+	sctx.ForgeContext = &forgecontext.Context{Provider: scm.ProviderBitbucket}
+	candidate, err := readPRComparison(sctx, pipeline.PRTargetSelection{TargetBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.PRURL = "https://bitbucket.org/test/repo/pull-requests/42"
+	candidate.SourceRepo = "test/repo"
+	candidate.SourceBranch = "feature"
+	candidate.ForgeHeadSHA = reviewed
+	if _, err := sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, types.StepReview); err != nil {
+		t.Fatal(err)
+	}
+	original, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.PRContext = original
+	step, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := pendingReviewCIClaim("bitbucket-status:build", original.LocalHeadSHA)
+	encoded, err := types.MarshalFindingsJSON(Findings{Items: []Finding{claim}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(step.ID, encoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteReviewStep(step.ID, sctx.Run.ID, reviewed, 0, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	claimID := types.ReviewSupportClaimID(claim)
+	gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "document correction")
+	head := gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run.HeadSHA = head
+	sctx.PRContextAfterStep = true
+	selection := pipeline.PRTargetSelection{PRURL: original.PRURL, SourceRepo: original.SourceRepo, SourceBranch: original.SourceBranch,
+		ForgeHeadSHA: original.ForgeHeadSHA, TargetBranch: original.TargetBranch}
+	if decision, err := guardPRContextWithSelection(sctx, types.StepDocument, selection, false); err != nil || decision.RestartFrom != "" {
+		t.Fatalf("document forward guard = %+v, %v", decision, err)
+	}
+	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{HeadSHA: head}); err != nil {
+		t.Fatal(err)
+	}
+	selection.ForgeHeadSHA = head
+	if decision, err := guardPRContextWithSelection(sctx, types.StepPush, selection, false); err != nil || decision.RestartFrom != "" {
+		t.Fatalf("publication guard = %+v, %v", decision, err)
+	}
+	sctx.PRContext, err = sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeBitbucketCIAPI(t, "OPEN", fmt.Sprintf(`{"values":[{"name":"build","key":"build","state":"SUCCESSFUL","links":{"commit":{"href":"https://api.bitbucket.org/2.0/repositories/test/repo/commit/%s"}}}]}`, head), head)
+	client, err := bitbucket.NewClientFromEnv(fakeBitbucketEnv(api.server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := bitbucket.NewHost(client, bitbucket.RepoRef{Workspace: "test", RepoSlug: "repo"}, false)
+	results, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: original.PRURL, Number: "42"})
+	if err != nil || len(results) != 1 || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
+		t.Fatalf("forward CI proof = %+v, %v", results, err)
+	}
+	if results[0].ID != claimID || results[0].Support.CI.HeadSHA != original.LocalHeadSHA ||
+		results[0].Support.OwnerResult.HeadSHA != head || results[0].Support.OwnerResult.Generation != sctx.PRContext.Generation {
+		t.Fatalf("claim origin or final owner proof changed: %+v", results[0])
+	}
+	for _, tc := range []struct {
+		name, key, state, checkHead string
+		want                        string
+	}{
+		{"old check commit", "build", "SUCCESSFUL", original.LocalHeadSHA, types.FindingSupportDispositionUnresolved},
+		{"missing commit link", "build", "SUCCESSFUL", "", types.FindingSupportDispositionUnresolved},
+		{"different check ID", "other", "SUCCESSFUL", head, types.FindingSupportDispositionUnresolved},
+		{"pending", "build", "INPROGRESS", head, types.FindingSupportDispositionUnresolved},
+		{"skipped", "build", "STOPPED", head, types.FindingSupportDispositionUnresolved},
+		{"failed", "build", "FAILED", head, types.FindingSupportDispositionSupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			link := ""
+			if tc.checkHead != "" {
+				link = fmt.Sprintf(`,"links":{"commit":{"href":"https://api.bitbucket.org/2.0/repositories/test/repo/commit/%s"}}`, tc.checkHead)
+			}
+			api.statusesJSON = fmt.Sprintf(`{"values":[{"name":"build","key":%q,"state":%q%s}]}`, tc.key, tc.state, link)
+			got, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: original.PRURL, Number: "42"})
+			if err != nil || len(got) != 1 || got[0].Support.OwnerResult.Disposition != tc.want {
+				t.Fatalf("%s result = %+v, %v", tc.name, got, err)
+			}
+		})
+	}
+	stub := &supportCheckHost{facts: scm.PRFacts{PR: scm.PR{URL: original.PRURL}, State: scm.PRStateOpen,
+		SourceRepository: original.SourceRepo, SourceBranch: original.SourceBranch, HeadSHA: head, BaseBranch: original.TargetBranch}}
+	for _, tc := range []struct {
+		name   string
+		checks []scm.Check
+	}{
+		{"duplicate identity", []scm.Check{{ProviderID: "bitbucket-status:build", HeadSHA: head, Bucket: scm.CheckBucketPass}, {ProviderID: "bitbucket-status:build", HeadSHA: head, Bucket: scm.CheckBucketPass}}},
+		{"awaiting approval", []scm.Check{{ProviderID: "bitbucket-status:build", HeadSHA: head, Bucket: scm.CheckBucketPass, AwaitingApproval: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub.checks = tc.checks
+			got, err := resolveCIReviewSupport(sctx, stub, &scm.PR{URL: original.PRURL, Number: "42"})
+			if err != nil || len(got) != 1 || got[0].Category != types.FindingCategoryReviewSupportUnresolved {
+				t.Fatalf("%s result = %+v, %v", tc.name, got, err)
+			}
+		})
+	}
+	api.statusesJSON = fmt.Sprintf(`{"values":[{"name":"build","key":"build","state":"SUCCESSFUL","links":{"commit":{"href":"https://api.bitbucket.org/2.0/repositories/test/repo/commit/%s"}}}]}`, head)
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: original.LocalHeadSHA}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: original.PRURL, Number: "42"}); err != nil || len(got) != 1 || got[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("unpublished forward head = %+v, %v", got, err)
+	}
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: head}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, base); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: original.PRURL, Number: "42"}); err != nil || len(got) != 1 || got[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("unapproved historical head = %+v, %v", got, err)
+	}
+	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, original.LocalHeadSHA); err != nil {
+		t.Fatal(err)
+	}
+	api.prSourceSHA = original.LocalHeadSHA
+	if got, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: original.PRURL, Number: "42"}); err != nil || len(got) != 1 || got[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("externally moved PR = %+v, %v", got, err)
+	}
+	api.prSourceSHA = head
+	sctx.PRContext = original
+	if _, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: original.PRURL, Number: "42"}); err == nil {
+		t.Fatal("stale in-step comparison accepted")
+	}
+	sctx.PRContext, err = sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, sctx.WorkDir, "checkout", "main")
+	gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "move target")
+	gitCmd(t, sctx.WorkDir, "checkout", "feature")
+	if got, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: original.PRURL, Number: "42"}); err != nil || len(got) != 1 || got[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("moved target = %+v, %v", got, err)
 	}
 }

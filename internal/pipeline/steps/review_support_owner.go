@@ -199,14 +199,26 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 	if err != nil {
 		return unresolved("Review CI claim check read failed"), nil
 	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return nil, err
+	}
+	approvedHead, _ := reviewApprovedHead(sctx, run)
 	observedAt = supportObservationTime()
 	results := make([]Finding, 0, len(claims))
 	for _, claim := range claims {
 		ref := claim.Support.CI
 		if ref.HeadSHA != receipt.LocalHeadSHA {
-			results = append(results, ownerSupportFinding(claim, receipt, types.FindingSupportDispositionUnresolved,
-				"Historical Review CI claim has no matching named check evidence on the current head", observedAt, nil, ""))
-			continue
+			if ref.HeadSHA != approvedHead || run.LastPushedSHA == nil || *run.LastPushedSHA != receipt.LocalHeadSHA {
+				results = append(results, ownerSupportFinding(claim, receipt, types.FindingSupportDispositionUnresolved,
+					"Historical Review CI claim has no proven pipeline advance to the current head", observedAt, nil, ""))
+				continue
+			}
+			if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", approvedHead, receipt.LocalHeadSHA); err != nil {
+				results = append(results, ownerSupportFinding(claim, receipt, types.FindingSupportDispositionUnresolved,
+					"Historical Review CI claim is not an ancestor of the current head", observedAt, nil, ""))
+				continue
+			}
 		}
 		var matching *scm.Check
 		ambiguous := false
@@ -229,9 +241,9 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		if matching.State != "" {
 			checkState += ":" + matching.State
 		}
-		if matching.PreRunFailure {
+		if matching.PreRunFailure || matching.AwaitingApproval {
 			results = append(results, ownerSupportFinding(claim, receipt, types.FindingSupportDispositionUnresolved,
-				"Review CI check failed before repository code ran", observedAt, nil, checkState))
+				"Review CI check has no completed repository result", observedAt, nil, checkState))
 			continue
 		}
 		switch matching.Bucket {
