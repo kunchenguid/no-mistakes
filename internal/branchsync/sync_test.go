@@ -1062,3 +1062,57 @@ func readOptional(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+func TestReboundPublicationSynchronizesCustodyFromTheDestination(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+	mustRun(t, f.remote, "update-ref", "refs/heads/existing", f.pushed)
+	mustRun(t, f.remote, "update-ref", "-d", "refs/heads/feature/sync")
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := f.db.GetRun(f.run.ID)
+	if err := f.db.RebindPublication(f.repo, run, "existing", "https://github.com/test/repo/pull/1", TargetFingerprint(f.repo.PushURL())); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunPublication(run.ID, db.PushBinding{HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.repo.PushURL()), Ref: "refs/heads/existing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateBehind || state.Target.Ref != "refs/heads/existing" || state.Local.Branch != "feature/sync" {
+		t.Fatalf("wrong custody/publication interpretation: %+v", state)
+	}
+	state = f.service.Apply(f.ctx)
+	if !state.Changed || state.State != StateSynchronized {
+		t.Fatalf("custody sync refused: %+v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatal("custody branch omitted published work")
+	}
+	if _, exists, err := gitpkg.ExactRefTarget(f.ctx, f.remote, "refs/heads/feature/sync"); err != nil || exists {
+		t.Fatal("source publication branch recreated")
+	}
+}
+
+func TestResolvePushURLRecoversOnlyMatchingRemoteCredentials(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+	repo := *f.repo
+	repo.UpstreamURL = "https://example.com/owner/repo.git"
+	mustRun(t, f.local, "remote", "add", "wrong", "https://user:wrong@example.com/other/repo.git")
+	if got := ResolvePushURL(f.ctx, f.local, &repo); got != repo.UpstreamURL {
+		t.Fatal("unrelated remote selected")
+	}
+	credentialled := "https://user:secret@example.com/owner/repo.git"
+	mustRun(t, f.local, "remote", "add", "authenticated", credentialled)
+	if got := ResolvePushURL(f.ctx, f.local, &repo); got != credentialled {
+		t.Fatal("matching credentials not recovered")
+	}
+	repo.ForkURL = "https://example.com/other/repo.git"
+	if got := ResolvePushURL(f.ctx, f.local, &repo); got != "https://user:wrong@example.com/other/repo.git" {
+		t.Fatal("fork target credentials not recovered")
+	}
+}

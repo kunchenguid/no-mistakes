@@ -213,7 +213,7 @@ Use this when the repository's integration branch differs from its forge default
 The configured branch is used for PR creation, and as the integration base for the rebase step.
 When unset, no-mistakes preserves the existing behavior and targets `Repo.DefaultBranch`.
 
-PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
+PR lookup does not filter by base, so a `pr.base_branch` change after a PR was opened updates that branch's existing PR instead of opening a duplicate against the new base. The [PR step](/no-mistakes/reference/pipeline-steps/#pr) owns source-repository matching.
 A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, and Gitea) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
 Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created.
 

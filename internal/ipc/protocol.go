@@ -24,6 +24,7 @@ const (
 	MethodGetRunsForHead          = "get_runs_for_head"
 	MethodGetActiveRun            = "get_active_run"
 	MethodRerun                   = "rerun"
+	MethodCustodyOperation        = "custody_operation"
 	MethodSubscribe               = "subscribe"
 	MethodRespond                 = "respond"
 	MethodAnswerReview            = "answer_review_question"
@@ -33,6 +34,25 @@ const (
 	MethodHealth                  = "health"
 	MethodShutdown                = "shutdown"
 )
+
+// CustodyOperationParams binds an explicit mutation to an exact caller and run
+// generation. A publication branch is always an already-existing PR branch.
+type CustodyOperationParams struct {
+	Action            string `json:"action"`
+	RepoID            string `json:"repo_id"`
+	RunID             string `json:"run_id"`
+	WorkDir           string `json:"work_dir"`
+	HeadSHA           string `json:"head_sha"`
+	PublicationBranch string `json:"publication_branch,omitempty"`
+}
+
+type CustodyOperationResult struct {
+	RunID   string `json:"run_id"`
+	State   string `json:"state"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+	PRURL   string `json:"pr_url"`
+}
 
 // JSON-RPC 2.0 error codes.
 const (
@@ -409,17 +429,18 @@ type RunInfo struct {
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
-	ID               string          `json:"id"`
-	RepoID           string          `json:"repo_id"`
-	Branch           string          `json:"branch"`
-	HeadSHA          string          `json:"head_sha"`
-	SubmittedHeadSHA *string         `json:"submitted_head_sha,omitempty"`
-	BaseSHA          string          `json:"base_sha"`
-	Status           types.RunStatus `json:"status"`
-	PRURL            *string         `json:"pr_url,omitempty"`
-	Error            *string         `json:"error,omitempty"`
-	CIReady          bool            `json:"ci_ready,omitempty"`
-	CIReadyNoCI      bool            `json:"ci_ready_no_ci,omitempty"`
+	ID                string          `json:"id"`
+	RepoID            string          `json:"repo_id"`
+	Branch            string          `json:"branch"`
+	PublicationBranch *string         `json:"publication_branch,omitempty"`
+	HeadSHA           string          `json:"head_sha"`
+	SubmittedHeadSHA  *string         `json:"submitted_head_sha,omitempty"`
+	BaseSHA           string          `json:"base_sha"`
+	Status            types.RunStatus `json:"status"`
+	PRURL             *string         `json:"pr_url,omitempty"`
+	Error             *string         `json:"error,omitempty"`
+	CIReady           bool            `json:"ci_ready,omitempty"`
+	CIReadyNoCI       bool            `json:"ci_ready_no_ci,omitempty"`
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`

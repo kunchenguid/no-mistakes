@@ -38,7 +38,9 @@ func mutatesPipelineControl(cmd *cobra.Command) bool {
 	case "no-mistakes", "no-mistakes init", "no-mistakes eject", "no-mistakes rerun",
 		"no-mistakes axi run", "no-mistakes axi respond", "no-mistakes axi abort",
 		"no-mistakes daemon start", "no-mistakes daemon stop", "no-mistakes daemon restart",
-		"no-mistakes update":
+		"no-mistakes update",
+		"no-mistakes custody release", "no-mistakes custody reconcile", "no-mistakes publication rebind",
+		"no-mistakes axi custody release", "no-mistakes axi custody reconcile", "no-mistakes axi publication rebind":
 		return true
 	case "no-mistakes sync", "no-mistakes axi sync":
 		check, err := cmd.Flags().GetBool("check")

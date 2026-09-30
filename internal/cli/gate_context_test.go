@@ -32,6 +32,12 @@ func TestGateControlPolicyCoversEveryMutationEntrypoint(t *testing.T) {
 		{args: []string{"axi", "logs"}, mutates: false},
 		{args: []string{"status"}, mutates: false},
 		{args: []string{"doctor"}, mutates: false},
+		{args: []string{"custody", "release"}, mutates: true},
+		{args: []string{"custody", "reconcile"}, mutates: true},
+		{args: []string{"publication", "rebind"}, mutates: true},
+		{args: []string{"axi", "custody", "release"}, mutates: true},
+		{args: []string{"axi", "custody", "reconcile"}, mutates: true},
+		{args: []string{"axi", "publication", "rebind"}, mutates: true},
 		{args: []string{"daemon", "stop", "--force"}, mutates: true},
 	}
 	for _, tc := range cases {

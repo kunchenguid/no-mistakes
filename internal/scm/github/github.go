@@ -27,8 +27,8 @@ type Host struct {
 	cliAvailable func() bool
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
-	forkOwner    string // fork owner for cross-repository PR heads
-	draft        bool   // open created PRs as drafts (gh pr create --draft)
+	forkRepo     string
+	draft        bool // open created PRs as drafts (gh pr create --draft)
 	// assetHTTP and assetUploadPrefix override the unofficial user-attachments
 	// upload transport in tests. Production leaves both nil/empty and uses
 	// http.DefaultClient against uploads.github.com (or uploads.<ghec-host>).
@@ -61,7 +61,7 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 // New for its role in scoping the auth check. draft opens created PRs as drafts.
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string, draft bool) *Host {
 	h := New(cmd, cliAvailable, host, repo)
-	h.forkOwner = repoOwner(forkRepo)
+	h.forkRepo = strings.TrimSpace(forkRepo)
 	h.draft = draft
 	return h
 }
@@ -127,10 +127,11 @@ func prSelector(pr *scm.PR) (string, error) {
 }
 
 func (h *Host) headRef(branch string) string {
-	if h.forkOwner == "" {
+	owner := repoOwner(h.forkRepo)
+	if owner == "" {
 		return branch
 	}
-	return h.forkOwner + ":" + branch
+	return owner + ":" + branch
 }
 
 func repoOwner(slug string) string {
@@ -242,24 +243,20 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		args = append(args, "--base", base)
 	}
 	args = append(args, h.repoArgs()...)
-	jsonFields := "number,url,baseRefName"
-	if h.forkOwner != "" {
-		jsonFields = "number,url,baseRefName,headRefName,headRepositoryOwner"
-	}
-	args = append(args, "--state", "open", "--json", jsonFields)
+	args = append(args, "--state", "open", "--json", "number,url,baseRefName,headRefName,headRepository")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	var prs []struct {
-		Number              int    `json:"number"`
-		URL                 string `json:"url"`
-		BaseRefName         string `json:"baseRefName"`
-		HeadRefName         string `json:"headRefName"`
-		HeadRepositoryOwner *struct {
-			Login string `json:"login"`
-		} `json:"headRepositoryOwner"`
+		Number         int    `json:"number"`
+		URL            string `json:"url"`
+		BaseRefName    string `json:"baseRefName"`
+		HeadRefName    string `json:"headRefName"`
+		HeadRepository *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
 	}
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, fmt.Errorf("parse gh pr list JSON: %w", err)
@@ -287,17 +284,19 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d PR number %d does not match URL number %d", i, candidate.Number, number)
 		}
 		prNumbers[i] = strconv.Itoa(candidate.Number)
-		if h.forkOwner != "" {
-			if strings.TrimSpace(candidate.HeadRefName) == "" {
-				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRefName", i)
-			}
-			if candidate.HeadRepositoryOwner == nil || strings.TrimSpace(candidate.HeadRepositoryOwner.Login) == "" {
-				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRepositoryOwner login", i)
-			}
+		if strings.TrimSpace(candidate.HeadRefName) == "" {
+			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRefName", i)
+		}
+		if candidate.HeadRepository == nil || strings.TrimSpace(candidate.HeadRepository.NameWithOwner) == "" {
+			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRepository identity", i)
 		}
 	}
+	target := h.publicationRepo()
+	if target == "" {
+		return nil, fmt.Errorf("parse gh pr list JSON: configured head repository is unavailable")
+	}
 	for i, candidate := range prs {
-		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
+		if candidate.HeadRefName != strings.TrimPrefix(branch, "refs/heads/") || !strings.EqualFold(candidate.HeadRepository.NameWithOwner, target) {
 			continue
 		}
 		pr := &scm.PR{
@@ -310,19 +309,11 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	return nil, nil
 }
 
-func (h *Host) matchesHead(headRefName string, owner *struct {
-	Login string `json:"login"`
-}, branch string) bool {
-	if h.forkOwner == "" {
-		return true
+func (h *Host) publicationRepo() string {
+	if h.forkRepo != "" {
+		return h.forkRepo
 	}
-	if strings.TrimSpace(headRefName) != "" && headRefName != branch {
-		return false
-	}
-	if owner == nil {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(owner.Login), h.forkOwner)
+	return h.repoSlug()
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
@@ -758,6 +749,32 @@ func (h *Host) checkStartedAfter(a, b scm.Check) (bool, bool) {
 		return a.CompletedAt.After(b.CompletedAt), true
 	}
 	return false, false
+}
+
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR, branch string) (string, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return "", err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "headRefOid,headRefName,headRepository")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("read publication PR head: %w", err)
+	}
+	var proof struct {
+		HeadRefOid     string
+		HeadRefName    string
+		HeadRepository *struct{ NameWithOwner string }
+	}
+	if err := json.Unmarshal(out, &proof); err != nil {
+		return "", fmt.Errorf("decode publication PR head: %w", err)
+	}
+	target := h.publicationRepo()
+	if target == "" || branch == "" || proof.HeadRepository == nil || !strings.EqualFold(proof.HeadRepository.NameWithOwner, target) || proof.HeadRefName != strings.TrimPrefix(branch, "refs/heads/") || strings.TrimSpace(proof.HeadRefOid) == "" {
+		return "", fmt.Errorf("publication PR head repository or branch does not match the configured push target")
+	}
+	return strings.TrimSpace(proof.HeadRefOid), nil
 }
 
 func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {

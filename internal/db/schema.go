@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS runs (
     id                   TEXT PRIMARY KEY,
     repo_id              TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
     branch               TEXT NOT NULL,
+    publication_branch   TEXT,
+    publication_target_fingerprint TEXT,
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     worktree_dir            TEXT,
@@ -237,6 +239,20 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`ALTER TABLE runs ADD COLUMN publication_branch TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_target_fingerprint TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_publication_owner_insert BEFORE INSERT ON runs
+    WHEN NEW.status IN ('pending', 'running') AND EXISTS (SELECT 1 FROM runs owner
+      WHERE owner.repo_id = NEW.repo_id AND owner.status IN ('pending', 'running') AND owner.publication_branch = NEW.branch)
+    BEGIN SELECT RAISE(ABORT, 'branch reserved by publication owner'); END`,
+	`CREATE TRIGGER IF NOT EXISTS runs_publication_owner_update BEFORE UPDATE OF status, branch, publication_branch ON runs
+    WHEN NEW.status IN ('pending', 'running') AND EXISTS (SELECT 1 FROM runs owner
+      WHERE owner.repo_id = NEW.repo_id AND owner.id <> NEW.id AND owner.status IN ('pending', 'running')
+      AND (owner.publication_branch = NEW.branch OR (NEW.publication_branch IS NOT NULL
+      AND (owner.branch = NEW.publication_branch OR owner.publication_branch = NEW.publication_branch))))
+    BEGIN SELECT RAISE(ABORT, 'branch reserved by publication owner'); END`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS runs_publication_owner ON runs(repo_id, publication_branch)
+    WHERE status IN ('pending', 'running') AND publication_branch IS NOT NULL`,
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,

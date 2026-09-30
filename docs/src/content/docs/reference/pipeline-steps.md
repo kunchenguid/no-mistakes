@@ -228,8 +228,9 @@ Pushes the validated branch to the configured push target.
 
 - If `commands.format` is set, ensures [`commands.prepare`](/no-mistakes/reference/repo-config/#commandsprepare) has succeeded once for the isolated worktree, then runs the formatter
 - Commits any uncommitted changes left by pipeline agents or the formatter with message `no-mistakes: apply agent fixes`
-- Without fork routing, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
+- Without fork routing or an explicit publication rebind, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
 - With GitHub fork routing, the push target is `repos.fork_url`
+- For a [rebound publication destination](/no-mistakes/reference/cli/#no-mistakes-publication-rebind), reloads the durable binding and verifies the registered target fingerprint at each Push, PR and CI boundary. Publication stays on that configured target even if local `origin` is repointed; private gate reconciliation still uses the original custody branch
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
 - Requires the commit proposed for push to equal or descend from the review-approved commit, allowing commits made by later pipeline steps without authorizing unrelated history
 - Re-reads the push target via `git ls-remote` before pushing
@@ -239,7 +240,8 @@ Pushes the validated branch to the configured push target.
 - Uses `--force-with-lease=<ref>:<sha>` with an explicit SHA anchor for allowed existing-branch rewrites
 - Pushes the exact verified commit SHA instead of mutable worktree `HEAD`
 - Treats the branch as already pushed when the remote already points at that verified commit
-- Uses regular push for new branches, and for an append-only update to an existing branch - one whose remote head is already an ancestor of the head being pushed, so nothing can be discarded and the remote itself, rather than a lease anchor, enforces the no-rewrite property an open PR's head depends on. This holds under either [`rebase.strategy`](/no-mistakes/reference/repo-config/#rebasestrategy), since it is a property of the update rather than of how the update was produced
+- Outside explicit publication rebinding, uses regular push for new branches, and for an append-only update to an existing branch - one whose remote head is already an ancestor of the head being pushed, so nothing can be discarded and the remote itself, rather than a lease anchor, enforces the no-rewrite property an open PR's head depends on. This holds under either [`rebase.strategy`](/no-mistakes/reference/repo-config/#rebasestrategy), since it is a property of the update rather than of how the update was produced
+- Rebound publication requires the same existing open PR and branch, with the PR's source repository, source ref and current head matching the configured push target. It allows only an equal or descendant proposed head and uses an explicit remote-head lease even for append-only updates, refusing branch deletion or replacement between proof and push. Branch creation and history rewrites are refused
 - When the local gate mirror exists, applies the [private mirror reconciliation contract](/no-mistakes/concepts/gate-model/#private-mirror-reconciliation), including Decision 41-A for the run's exact submitted or last pushed head, while preserving newer descendants through shared worktree refs; skips a missing mirror
 - Only after the remote and gate mirror settle, atomically records the exact delivered commit as both the run head and successful-push binding; until that database write succeeds, the durable database head and binding remain unchanged, so a partial failure records nothing and is safe to re-enter
 
@@ -262,9 +264,11 @@ Creates or updates a pull request.
 - The `az` CLI with the `azure-devops` extension is not installed or not authenticated for Azure DevOps
 - A legacy or manually edited non-GitHub repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only
 
+For a rebound run, these conditions fail the step instead of automatically skipping publication.
+
 **Behavior:**
-- Checks for an existing PR on the branch, matching by branch alone rather than filtering by base, so a still-open PR against a since-changed [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is found and updated instead of orphaned behind a duplicate
-- If one exists, updates it. If not, creates a new one against the configured base branch, or the per-run `--base-branch` override when set.
+- Checks for an existing PR on the publication branch without filtering by base; see [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) for existing-PR base handling. GitHub also filters candidates by the configured head repository and source ref, so a same-named foreign fork branch cannot be selected
+- If one exists, updates it. If not, creates a new one against the configured base branch, or the per-run `--base-branch` override when set. A rebound run instead requires its bound PR identity and verifiable source repository/ref; it refuses a replacement PR
 - A per-run `--base-branch` that disagrees with an existing PR's live forge base retargets that PR (GitHub `gh pr edit --base`, GitLab `glab mr update --target-branch`, Gitea `tea api` PATCH) before updating title and body, but only the run's persisted PR URL or number after `GetPRState` proves it is still open. A sibling first-list-hit is ignored in favor of that identity; a closed or merged persisted identity, a run with no persisted identity, or a provider that cannot retarget, fails closed instead of moving another review object. A rerun inherits the selected run's PR URL only when that PR is not already merged or closed. A repo-config `pr.base_branch` change still does not retarget.
 - If existing-PR discovery fails or its provider response cannot be decoded and validated as a PR listing for the configured repository, stops instead of treating the result as no PR and creating a duplicate.
 - Uses `gh` for GitHub, `glab` for GitLab, `forgejo-axi` for Forgejo, `tea` for Gitea, the Bitbucket API for Bitbucket Cloud, and `az` for Azure DevOps
@@ -332,6 +336,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Behavior:**
 
+- For a rebound run, verifies that the destination PR's configured source repository/ref still has the exact run head before crediting checks or automatically completing a parked gate. An unpublished or unverifiable head clears readiness and parks for a decision; explicit approval retains the unresolved condition as an override. An unavailable provider, failed authentication or missing PR identity fails execution instead of automatically skipping CI
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
 - Continues its normal monitoring loop until the PR is merged, closed, declined, or the configured `ci_timeout` idle window elapses, then parks at an approval gate instead of ending the run
 - If the provider check read keeps failing (6 consecutive polls while the PR is still open), parks at an ask-user approval gate instead of spinning invisibly to `ci_timeout`; the provider-neutral finding names the provider CLI or credentials and includes the underlying error (for GitHub, `gh` < 2.50 rejecting `gh pr checks --json`), and the streak resets as soon as one read succeeds

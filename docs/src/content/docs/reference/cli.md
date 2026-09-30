@@ -319,6 +319,7 @@ no-mistakes axi status --run <id>
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 A pinned run also includes `pi_profile` with `model` and `effort`; see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles).
+An explicitly rebound run includes `publication_branch` separately from its original custody `branch`; see [publication rebind](#no-mistakes-publication-rebind).
 Status offers branch-scoped `axi respond` commands only for the current branch's implicitly resolved run. An explicitly selected gate stays inspection-only even when its branch matches, because a newer active run on that branch could receive the bare response command instead; the gate remains visible and its log commands retain `--run <id>`.
 When a repository has no configured lint command and Document performs the combined Document/Lint housekeeping invocation, the run object includes `shared_work` evidence naming its `document+lint housekeeping` scope and the duration attributed to Document; Lint's own duration remains the cached-result handoff time.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
@@ -358,7 +359,7 @@ The ordinary worktree mutation is either a strict fast-forward of the invoking c
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing during ordinary synchronization.
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks. The bound-archive exception described below never changes the worktree at all.
-When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
+When the local custody gate branch is exactly at a newer successful push binding for that custody branch and Git proves that an older terminal run's unpublished preserved head is its ancestor, status, synchronization and recovery select the newer binding. If the older run was explicitly rebound, matching target provenance uses its verified publication destination rather than its historical push ref; the newer run must have successfully published to that destination on the configured target. Historical run heads and push bindings remain unchanged. Missing gate evidence, non-ancestor heads, unpublished replacements, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
@@ -483,6 +484,40 @@ no-mistakes attach [--run <id>]
 | `--run` | `string` | (none)  | Attach to a specific run ID instead of the active run |
 
 Opens the TUI for the active run anywhere in the current repo. If `--run` is specified, attaches to that specific run regardless of branch. Unlike bare `no-mistakes`, this does not stay branch-scoped before falling back.
+
+## no-mistakes custody release / reconcile
+
+Return a terminal run's custody at the exact head of an existing open PR, including a missing or stale gate branch. Run from the registered, checked-out custody branch and select its latest run explicitly:
+
+```sh
+no-mistakes custody release --run <run-id>
+no-mistakes axi custody reconcile --run <run-id>
+```
+
+Both command families print structured TOON. `reconcile` uses the same preservation protocol as `release`, and additionally requires a failed run with an exact historical daemon shutdown, restart, or crash diagnostic. Neither command stops or restarts the daemon. A run with a live executor must finish first; terminal records and their original errors remain as history.
+
+The caller must be clean, and its HEAD, existing remote branch and open PR head must agree. For a rebound run, the remote branch and PR are selected from its recorded publication destination; the caller stays on the original custody branch, whose private gate lane is restored. The daemon archives every available terminal-stack head, submitted head, last pushed head, managed-worktree head and prior gate head under immutable `refs/no-mistakes/release/<run-id>/<sha>` refs in the registered gate. A Git ref transaction verifies those archives before it restores only the private gate branch. A database transaction fences the selected run, heads, push generations and configured target before stamping custody returned. A crash between those operations is retryable; successful retries are idempotent. Caller files, caller branch and public history remain unchanged.
+
+Release refuses a missing recorded head, uncommitted managed work, a live source or publication owner, a default branch, symbolic or conflicting evidence, or a generation/target/head that changes during proof. Available unpublished commits stay archived; the command never discards an unavailable commit to bypass a refusal. Existing `sync --recover` and its explicit keep-local path retain their own recovery semantics.
+
+After success, a fresh `no-mistakes axi run --intent "..."` can adopt the existing branch. The current exact-PR-head reader supports GitHub, including configured GitHub fork routing; providers without that capability refuse safely.
+
+Release preserves historical run heads and successful-push provenance. Its successful response confirms the completed release, but later status and sync still classify against the historical push binding. After release at a replacement published head, they can report advancement or rewriting, or offer synchronization toward the old head. Use the successful release result to start a fresh run at the existing published head rather than synchronizing back to that historical head. Release archives and a custody-return stamp alone do not prove completed publication: archives can survive a refused release, and ordinary recovery can write the same stamp for unpublished work.
+
+## no-mistakes publication rebind
+
+Change a run's publication destination to an existing open PR branch without renaming its custody branch or fabricating successful-push evidence:
+
+```sh
+no-mistakes publication rebind --run <run-id> --branch <existing-pr-branch>
+no-mistakes axi publication rebind --run <run-id> --branch <existing-pr-branch>
+```
+
+Run from that run's registered custody branch. The run must be live and parked at an approval gate. The daemon verifies the existing PR, configured push target, exact live remote head and its ancestry in the recorded managed head. Another active publisher, a default branch, a missing/retired PR, unverifiable evidence, or a destination that requires history rewrite refuses without changing the binding.
+
+AXI run objects keep `branch` as the custody branch and include `publication_branch` when a destination is explicitly bound.
+
+The operation itself never pushes or changes caller files. It clears CI readiness, including the declared-no-CI signal, and notifies attached consumers. Push, PR and CI read the durable destination when they resume; their [publication guards](/no-mistakes/reference/pipeline-steps/#push) apply to rebound runs. A supported rerun carrying the same inherited PR URL keeps the destination; changing repository routing invalidates its target proof. Destination ownership and the inherited target proof are checked before superseding an active source run.
 
 ## no-mistakes rerun
 

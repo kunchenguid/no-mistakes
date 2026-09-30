@@ -92,6 +92,8 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newRerunCmd())
 	cmd.AddCommand(newStatusCmd())
 	cmd.AddCommand(newSyncCmd())
+	cmd.AddCommand(newCustodyCmd())
+	cmd.AddCommand(newPublicationCmd())
 	cmd.AddCommand(newRunsCmd())
 	cmd.AddCommand(newStatsCmd())
 	cmd.AddCommand(newDoctorCmd())

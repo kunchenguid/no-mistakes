@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -453,5 +454,219 @@ func TestExecutor_GateRecheckStopsAfterApprovalCancelAndShutdown(t *testing.T) {
 				t.Fatalf("gate watcher leaked after %s: calls advanced from %d to %d", tt.name, settled, got)
 			}
 		})
+	}
+}
+
+func TestExecutorPublicationRebindRefusesGateAlreadyReconciled(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	e := NewExecutor(database, p, nil, nil, nil, nil)
+	e.waiting = true
+	e.waitingStep = types.StepCI
+	step := &reconcilingApprovalStep{name: types.StepCI}
+	step.resolved.Store(true)
+	resolved, err := e.reconcileApprovalGate(context.Background(), step, &StepContext{Run: run, Repo: repo}, "")
+	if !resolved || err != nil {
+		t.Fatalf("resolved=%v err=%v", resolved, err)
+	}
+	called := false
+	if err := e.WhileParked(func() error { called = true; return nil }); err == nil || called {
+		t.Fatal("rebind overtook the committed gate exit")
+	}
+}
+
+func TestExecutorPublicationRebindSerializesApprovalResponse(t *testing.T) {
+	database, p, _, _ := setupTest(t)
+	e := NewExecutor(database, p, nil, nil, nil, nil)
+	e.waiting = true
+	e.waitingStep = types.StepReview
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	bound := make(chan error, 1)
+	go func() { bound <- e.WhileParked(func() error { close(entered); <-release; return nil }) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("parked operation did not enter")
+	}
+	responded := make(chan error, 1)
+	go func() { responded <- e.Respond(types.StepReview, types.ActionApprove, nil) }()
+	select {
+	case err := <-responded:
+		close(release)
+		t.Fatalf("approval passed the custody mutation: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-bound:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("binding did not complete")
+	}
+	select {
+	case err := <-responded:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("approval did not resume")
+	}
+	if err := e.WhileParked(func() error { return nil }); err == nil {
+		t.Fatal("binding admitted after approval")
+	}
+}
+
+func TestExecutorPublicationRebindResetsReadinessAcrossGateRecovery(t *testing.T) {
+	for _, recovered := range []bool{false, true} {
+		for _, declaredNoCI := range []bool{false, true} {
+			t.Run(fmt.Sprintf("recovered=%v/no-ci=%v", recovered, declaredNoCI), func(t *testing.T) {
+				database, p, run, repo := setupTest(t)
+				findings := `{"findings":[{"id":"ci-1","severity":"warning","description":"waiting","action":"ask-user"}],"summary":"waiting"}`
+				if recovered {
+					if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+						t.Fatal(err)
+					}
+					sr, err := database.InsertStepResult(run.ID, types.StepCI)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := database.StartStep(sr.ID); err != nil {
+						t.Fatal(err)
+					}
+					if err := database.SetStepFindings(sr.ID, findings); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := database.InsertStepRound(sr.ID, 1, "initial", &findings, nil, 10); err != nil {
+						t.Fatal(err)
+					}
+					if err := database.UpdateStepStatusWithDuration(sr.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+						t.Fatal(err)
+					}
+					if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+						t.Fatal(err)
+					}
+					if err := database.SetRunCIReadyWithReason(run.ID, true, declaredNoCI); err != nil {
+						t.Fatal(err)
+					}
+					run, err = database.GetRun(run.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				calls := 0
+				step := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
+					calls++
+					if err := database.SetRunCIReadyWithReason(run.ID, true, declaredNoCI); err != nil {
+						return nil, err
+					}
+					sctx.CIReadinessChanged(true, declaredNoCI)
+					if !recovered && calls == 1 {
+						return &StepOutcome{NeedsApproval: true, Findings: findings}, nil
+					}
+					return &StepOutcome{}, nil
+				}}
+				readiness := make(chan ipc.Event, 8)
+				parked := make(chan struct{}, 8)
+				exec := NewExecutor(database, p, nil, nil, []Step{step}, func(event ipc.Event) {
+					if event.Type == ipc.EventCIReadinessChanged {
+						readiness <- event
+					}
+					if event.Type == ipc.EventStepCompleted && event.Status != nil && *event.Status == string(types.StepStatusAwaitingApproval) {
+						parked <- struct{}{}
+					}
+				})
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan error, 1)
+				workDir := t.TempDir()
+				go func() {
+					if recovered {
+						done <- exec.Resume(ctx, run, repo, workDir)
+					} else {
+						done <- exec.Execute(ctx, run, repo, workDir)
+					}
+				}()
+				finished := false
+				t.Cleanup(func() {
+					cancel()
+					if !finished {
+						select {
+						case <-done:
+						case <-time.After(3 * time.Second):
+							t.Error("cancelled executor did not stop")
+						}
+					}
+				})
+				assertReadiness := func(ready, noCI bool) {
+					t.Helper()
+					select {
+					case event := <-readiness:
+						if event.CIReady == nil || *event.CIReady != ready || event.CIReadyNoCI == nil || *event.CIReadyNoCI != noCI {
+							t.Fatalf("readiness event = %+v, want %v/%v", event, ready, noCI)
+						}
+					case <-time.After(3 * time.Second):
+						t.Fatalf("missing readiness event %v/%v", ready, noCI)
+					}
+				}
+				select {
+				case <-parked:
+				case <-time.After(3 * time.Second):
+					t.Fatal("gate did not park")
+				}
+				if !recovered {
+					assertReadiness(true, declaredNoCI)
+				}
+				refused := errors.New("publication proof refused")
+				if err := exec.WhileParked(func() error { return refused }); !errors.Is(err, refused) {
+					t.Fatalf("refused rebind error = %v", err)
+				}
+				fresh, err := database.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fresh.CIReadyAt == nil || fresh.CIReadyNoCI != declaredNoCI {
+					t.Fatal("refused rebind changed readiness")
+				}
+				select {
+				case event := <-readiness:
+					t.Fatalf("refused rebind emitted readiness: %+v", event)
+				default:
+				}
+				if err := exec.WhileParked(func() error {
+					return database.RebindPublication(repo, fresh, "existing", "https://github.com/test/repo/pull/42", "fingerprint")
+				}); err != nil {
+					t.Fatal(err)
+				}
+				assertReadiness(false, false)
+				fresh, err = database.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fresh.CIReadyAt != nil || fresh.CIReadyNoCI {
+					t.Fatal("rebind did not clear persisted readiness")
+				}
+				if err := exec.Respond(types.StepCI, types.ActionFix, nil); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-done:
+					finished = true
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("CI retry did not finish")
+				}
+				assertReadiness(true, declaredNoCI)
+				fresh, err = database.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fresh.CIReadyAt == nil || fresh.CIReadyNoCI != declaredNoCI || fresh.Status != types.RunCompleted {
+					t.Fatalf("retried run = %+v", fresh)
+				}
+			})
+		}
 	}
 }

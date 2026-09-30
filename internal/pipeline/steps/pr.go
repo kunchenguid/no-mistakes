@@ -66,27 +66,42 @@ type pipelineUpdateGroup struct {
 func (s *PRStep) Name() types.StepName { return types.StepPR }
 
 func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	var publicationErr error
+	sctx, publicationErr = publicationContext(sctx)
+	if publicationErr != nil {
+		return nil, publicationErr
+	}
+
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
 	ctx := sctx.Ctx
 
-	branch := sctx.Run.Branch
+	branch := sctx.Run.PublishBranch()
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
 	baseBranch := effectivePRBaseBranch(sctx)
+	if branch == baseBranch && sctx.Run.PublicationBranch != nil {
+		return nil, fmt.Errorf("rebound publication cannot target the base branch")
+	}
 	if branch == baseBranch {
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
+	if host == nil && sctx.Run.PublicationBranch != nil {
+		return nil, fmt.Errorf("rebound publication provider unavailable: %s", skipReason)
+	}
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if sctx.Run.PublicationBranch != nil {
+			return nil, fmt.Errorf("rebound publication PR cannot be verified: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
@@ -104,13 +119,25 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
-	if err != nil {
-		return nil, err
-	}
 	bodyLimit := scm.MaxPRBodyChars(provider)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
+	if err != nil {
+		return nil, err
+	}
+	if sctx.Run.PublicationBranch != nil && (existing == nil || sctx.Run.PRURL == nil || existing.URL != *sctx.Run.PRURL) {
+		return nil, fmt.Errorf("rebound publication requires the same existing PR; a replacement PR will not be created")
+	}
+	if sctx.Run.PublicationBranch != nil {
+		reader, ok := host.(scm.PRHeadReader)
+		if !ok {
+			return nil, fmt.Errorf("rebound publication provider cannot prove the PR head")
+		}
+		if _, err := reader.GetPRHeadSHA(ctx, existing, sctx.Run.PublishBranch()); err != nil {
+			return nil, err
+		}
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
 	}

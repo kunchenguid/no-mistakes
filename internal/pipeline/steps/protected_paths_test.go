@@ -99,7 +99,7 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			green := append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
 				// attestHeadBeforePush discovers the PR via FindPR before every
 				// publish, matching the persisted PRURL the fixture set up.
-				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`,
+				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main","headRefName":"feature","headRepository":{"nameWithOwner":"test/repo"}}]`,
 			)
 			ci := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { cancel(); return ctx.Err() }}
 			// Push now also attests the PR's pipeline before every push (see
@@ -269,7 +269,7 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 			f.sctx.Fixing = true
 			f.sctx.PreviousFindings = outcome.Findings
 			f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
-				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
+				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main","headRefName":"feature","headRepository":{"nameWithOwner":"test/repo"}}]`)
 			outcome, err = f.run(t)
 			if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) || calls != 1 || f.localHead(t) != f.headSHA {
 				t.Fatalf("unresolved retry bypassed refusal or reran fixer: %+v, %v calls=%d", outcome, err, calls)
@@ -278,7 +278,7 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 				t.Fatal(err)
 			}
 			f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
-				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
+				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main","headRefName":"feature","headRepository":{"nameWithOwner":"test/repo"}}]`)
 			outcome, err = f.run(t)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				t.Fatalf("retry: %+v, %v\n%s", outcome, err, f.log())
@@ -327,7 +327,7 @@ func TestCIStep_ProtectedPathRetryPublicationFailureKeepsRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
-		`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
+		`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main","headRefName":"feature","headRepository":{"nameWithOwner":"test/repo"}}]`)
 	hooks := t.TempDir()
 	gitCmd(t, f.upstream, "config", "core.hooksPath", hooks)
 	rejectPush := filepath.Join(hooks, "pre-receive")

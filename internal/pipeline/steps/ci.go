@@ -108,6 +108,12 @@ func (s *CIStep) Name() types.StepName { return types.StepCI }
 // the normal CI polling loop. Open, unknown, and provider-error states remain
 // parked so reconciliation never guesses success.
 func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error) {
+	var publicationErr error
+	sctx, publicationErr = publicationContext(sctx)
+	if publicationErr != nil {
+		return false, publicationErr
+	}
+
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
 	}
@@ -133,6 +139,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	prNumber, err := scm.ExtractPRNumber(prURL)
 	if err != nil {
 		return false, fmt.Errorf("extract PR number: %w", err)
+	}
+	if err := assertReboundCIHead(sctx, host, &scm.PR{Number: prNumber, URL: prURL}); err != nil {
+		return false, err
 	}
 	state, err := host.GetPRState(sctx.Ctx, &scm.PR{Number: prNumber, URL: prURL})
 	if err != nil {
@@ -183,6 +192,12 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 // reruns, or pushes anything, and it never blocks the approval itself - it
 // only decides how the resulting completion is recorded.
 func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, error) {
+	var publicationErr error
+	sctx, publicationErr = publicationContext(sctx)
+	if publicationErr != nil {
+		return "", publicationErr
+	}
+
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -207,9 +222,16 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, err
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
-	checks, err := host.GetChecks(ctx, &scm.PR{Number: prNumber, URL: prURL})
+	pr := &scm.PR{Number: prNumber, URL: prURL}
+	if err := assertReboundCIHead(sctx, host, pr); err != nil {
+		return err.Error(), nil
+	}
+	checks, err := host.GetChecks(ctx, pr)
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
+	}
+	if err := assertReboundCIHead(sctx, host, pr); err != nil {
+		return err.Error(), nil
 	}
 	if allChecksPassed(checks) {
 		return "", nil
@@ -245,6 +267,12 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
+	var publicationErr error
+	sctx, publicationErr = publicationContext(sctx)
+	if publicationErr != nil {
+		return nil, publicationErr
+	}
+
 	refusalFindings := ""
 	if sctx.StepResultID != "" {
 		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
@@ -302,10 +330,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if sctx.Run.PublicationBranch != nil {
+			return nil, fmt.Errorf("rebound CI publication cannot be verified: %s", skipReason)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if sctx.Run.PublicationBranch != nil {
+			return nil, fmt.Errorf("rebound CI publication cannot be verified: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
@@ -324,6 +358,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 	}
 	if prURL == "" {
+		if sctx.Run.PublicationBranch != nil {
+			return nil, fmt.Errorf("rebound CI publication cannot be verified: run has no PR URL")
+		}
 		sctx.Log("no PR URL found, skipping CI")
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: "no PR URL found"}, nil
 	}
@@ -480,6 +517,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return timeoutOutcome()
 		}
 
+		pr.HeadSHA = sctx.Run.HeadSHA
+		if err := assertReboundCIHead(sctx, host, pr); err != nil {
+			clearCIMonitorReady(sctx)
+			findings, _ := types.MarshalFindingsJSON(Findings{
+				Summary: "rebound CI publication head is unresolved",
+				Items:   []Finding{{Severity: "warning", Description: err.Error(), Action: types.ActionAskUser}},
+			})
+			return &pipeline.StepOutcome{NeedsApproval: true, Findings: findings}, nil
+		}
+
 		// Check PR state (merged/closed -> exit)
 		prStateKnown := true
 		state, err := host.GetPRState(ctx, pr)
@@ -531,8 +578,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 
 		// Check CI status - wait for all checks to complete before escalating
-		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, err := host.GetChecks(ctx, pr)
+		if err == nil {
+			err = assertReboundCIHead(sctx, host, pr)
+		}
 		if err != nil {
 			clearCIMonitorReady(sctx)
 			lastMonitorLog = ""
