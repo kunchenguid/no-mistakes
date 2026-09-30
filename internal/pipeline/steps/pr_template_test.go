@@ -280,6 +280,7 @@ func TestPRTemplateUpdateAppliesConfiguredTitleFormat(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &prURL
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -319,6 +320,7 @@ func TestPRTemplateRegenerationPreservesAuthorsAndClosingReferences(t *testing.T
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &prURL
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -418,13 +420,14 @@ func TestPRTemplateUpdateErrorIsNotMaskedByLegacyWarning(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &prURL
 	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
+	bindExistingPRMutationFixture(t, sctx, prURL, "main")
 	out, err := (&PRStep{}).Execute(sctx)
 	if err == nil || out != nil || !strings.Contains(err.Error(), "update templated PR") {
 		t.Fatalf("write failure became a clean success: %+v, %v", out, err)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || run.PRURL != nil {
-		t.Fatalf("failed first attachment recorded as success: %+v, %v", run, err)
+	if err != nil || run.PRURL == nil || *run.PRURL != prURL {
+		t.Fatalf("failed update changed the selected PR identity: %+v, %v", run, err)
 	}
 	logs, _ := os.ReadFile(logFile)
 	if strings.Count(string(logs), "pr edit") != 1 || strings.Contains(string(logs), "pr create") {

@@ -472,8 +472,7 @@ func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, 
 	}
 	var payload struct {
 		HeadPipeline struct {
-			ID  int    `json:"id"`
-			SHA string `json:"sha"`
+			ID int `json:"id"`
 		} `json:"head_pipeline"`
 	}
 	trimmed := bytesTrimToJSON(out)
@@ -491,13 +490,7 @@ func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, 
 	if err != nil {
 		return nil, fmt.Errorf("glab pipeline jobs: %s: %w", strings.TrimSpace(string(jobsOut)), err)
 	}
-	checks, err := parseGitlabJobs(jobsOut)
-	for i := range checks {
-		if checks[i].HeadSHA == "" {
-			checks[i].HeadSHA = payload.HeadPipeline.SHA
-		}
-	}
-	return checks, err
+	return parseGitlabJobs(jobsOut)
 }
 
 func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
@@ -703,6 +696,9 @@ func jobsToChecks(jobs []gitlabJob) []scm.Check {
 }
 
 func gitlabJobHeadSHA(job gitlabJob) string {
+	if job.Commit.ID != "" && job.Pipeline.SHA != "" && job.Commit.ID != job.Pipeline.SHA {
+		return ""
+	}
 	if job.Commit.ID != "" {
 		return job.Commit.ID
 	}

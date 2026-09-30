@@ -1,10 +1,49 @@
 package bitbucket
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
+
+func TestGetChecksUsesEachStatusCommit(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	old := strings.Repeat("b", 40)
+	var requested []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		if r.URL.Path != "/2.0/repositories/test/repo/pullrequests/42/statuses" {
+			t.Errorf("unexpected API path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"values":[{"name":"build","key":"build","state":"SUCCESSFUL","links":{"commit":{"href":"https://api.bitbucket.org/2.0/repositories/fork/repo/commit/` + head + `"}}},{"name":"test","key":"test","state":"SUCCESSFUL","links":{"commit":{"href":"https://api.bitbucket.org/2.0/repositories/fork/repo/commit/` + old + `"}}}]}`))
+	}))
+	defer server.Close()
+	host := NewHost(&Client{baseURL: server.URL, httpClient: server.Client()}, RepoRef{Workspace: "test", RepoSlug: "repo"}, false)
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "42", HeadSHA: old})
+	if err != nil || len(checks) != 2 || checks[0].HeadSHA != head || checks[1].HeadSHA != old {
+		t.Fatalf("provider linked commits = %+v, %v", checks, err)
+	}
+	if len(requested) != 1 {
+		t.Fatalf("check API calls = %v", requested)
+	}
+}
+
+func TestGetChecksLeavesMissingStatusCommitUnresolved(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[{"name":"build","key":"build","state":"SUCCESSFUL"}]}`))
+	}))
+	defer server.Close()
+	host := NewHost(&Client{baseURL: server.URL, httpClient: server.Client()}, RepoRef{Workspace: "test", RepoSlug: "repo"}, false)
+	if checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "42"}); err != nil || len(checks) != 1 || checks[0].HeadSHA != "" {
+		t.Fatalf("missing commit was inferred from PR: %+v, %v", checks, err)
+	}
+}
 
 func TestNormalizePRState(t *testing.T) {
 	tests := []struct {

@@ -39,6 +39,11 @@ type CommitStatus struct {
 	State       string `json:"state"`
 	Description string `json:"description"`
 	URL         string `json:"url"`
+	Links       struct {
+		Commit struct {
+			Href string `json:"href"`
+		} `json:"commit"`
+	} `json:"links"`
 }
 
 type Pipeline struct {

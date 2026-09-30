@@ -86,6 +86,9 @@ type reviewRoleProbeStep struct{}
 func (s *reviewRoleProbeStep) Name() types.StepName { return types.StepReview }
 
 func (s *reviewRoleProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	if _, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Purpose: "review", Prompt: "review", CWD: sctx.WorkDir}); err != nil {
 		return nil, err
 	}

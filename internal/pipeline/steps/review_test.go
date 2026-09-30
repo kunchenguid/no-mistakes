@@ -17,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -359,6 +360,7 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	}
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	testgit.BindRunComparison(t, sctx.DB, sctx.Run, dir, "main", "", "", "")
 	sctx.Config.ReviewAgentTimeout = timeout
 	sctx.Config.AutoFix.Review = 2
 

@@ -84,7 +84,8 @@ func TestCIMonitorReadinessRequiresFreshExactComparison(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sctx, host, _ := mutationComparisonFixture(t)
 			sctx.Log = func(string) {}
-			if got := logVerifiedCIMonitorStatus(sctx, host, ciChecksPassedMsg, ""); got != ciChecksPassedMsg {
+			checks := []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, HeadSHA: sctx.Run.HeadSHA}}
+			if got := logVerifiedCIMonitorStatus(sctx, host, checks, ciChecksPassedMsg, ""); got != ciChecksPassedMsg {
 				t.Fatalf("current comparison did not publish readiness: %q", got)
 			}
 			current, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -92,7 +93,7 @@ func TestCIMonitorReadinessRequiresFreshExactComparison(t *testing.T) {
 				t.Fatalf("current comparison readiness = %+v, %v", current, err)
 			}
 			tc.mutate(t, sctx, host)
-			if got := logVerifiedCIMonitorStatus(sctx, host, ciChecksPassedMsg, ciChecksPassedMsg); got != "" {
+			if got := logVerifiedCIMonitorStatus(sctx, host, checks, ciChecksPassedMsg, ciChecksPassedMsg); got != "" {
 				t.Fatalf("stale comparison retained green monitor state: %q", got)
 			}
 			current, err = sctx.DB.GetRun(sctx.Run.ID)
@@ -100,6 +101,24 @@ func TestCIMonitorReadinessRequiresFreshExactComparison(t *testing.T) {
 				t.Fatalf("stale comparison kept readiness = %+v, %v", current, err)
 			}
 		})
+	}
+}
+
+func TestCIMonitorReadinessRequiresChecksOnReceiptHead(t *testing.T) {
+	for _, checkedHead := range []string{"", strings.Repeat("a", 40)} {
+		sctx, host, _ := mutationComparisonFixture(t)
+		checks := []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, HeadSHA: sctx.Run.HeadSHA}}
+		if got := logVerifiedCIMonitorStatus(sctx, host, checks, ciChecksPassedMsg, ""); got != ciChecksPassedMsg {
+			t.Fatalf("current check did not publish readiness: %q", got)
+		}
+		checks[0].HeadSHA = checkedHead
+		if got := logVerifiedCIMonitorStatus(sctx, host, checks, ciChecksPassedMsg, ciChecksPassedMsg); got != "" {
+			t.Fatalf("check on %q retained readiness: %q", checkedHead, got)
+		}
+		run, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil || run.CIReadyAt != nil {
+			t.Fatalf("stale check retained durable readiness: %+v, %v", run, err)
+		}
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -132,6 +133,7 @@ func setupCIGateReconcileTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.
 	if err != nil {
 		t.Fatal(err)
 	}
+	testgit.BindRunComparison(t, database, run, dir, "main", "", "test/repo", "feature")
 
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")

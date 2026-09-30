@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -482,6 +483,7 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
 		t.Fatal(err)
 	}
+	testgit.BindRunComparison(t, d, run, worktree, "main", "", "", "")
 	step, err := d.InsertStepResult(run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -630,6 +632,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
 				t.Fatal(err)
 			}
+			testgit.BindRunComparison(t, d, run, worktree, "main", prURL, "test/repo", "feature")
 			step, err := d.InsertStepResult(run.ID, types.StepCI)
 			if err != nil {
 				t.Fatal(err)

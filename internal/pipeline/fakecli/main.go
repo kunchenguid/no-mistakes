@@ -462,22 +462,38 @@ func extractTrailingNumber(rawURL string) int {
 	return number
 }
 
+func fakeCIGHFactsAPI(args []string) {
+	if len(args) == 0 || args[0] != "api" || !strings.HasPrefix(args[len(args)-1], "repos/test/repo/pulls/") {
+		return
+	}
+	number, err := strconv.Atoi(strings.TrimPrefix(args[len(args)-1], "repos/test/repo/pulls/"))
+	if err != nil || number <= 0 {
+		return
+	}
+	if factsFile := os.Getenv("FAKE_CLI_PR_FACTS_FILE"); factsFile != "" {
+		facts, err := os.ReadFile(factsFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Print(string(facts))
+		os.Exit(0)
+	}
+	if facts := os.Getenv("FAKE_CLI_PR_FACTS_JSON"); facts != "" {
+		fmt.Print(facts)
+		os.Exit(0)
+	}
+	fmt.Printf(`{"number":%d,"html_url":"https://github.com/test/repo/pull/%d","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, number, number, fakePRHeadSHA())
+	os.Exit(0)
+}
+
 func fakeCIGHReconcileHandler(args []string) {
+	fakeCIGHFactsAPI(args)
 	joined := strings.Join(args, " ")
 	createdPath := os.Getenv("FAKE_CLI_CREATED_PATH")
 	_, createdErr := os.Stat(createdPath)
 	created := createdPath != "" && createdErr == nil
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
-		os.Exit(0)
-	}
-	if len(args) > 0 && args[0] == "api" && args[len(args)-1] == "repos/test/repo/pulls/42" {
-		if facts := os.Getenv("FAKE_CLI_PR_FACTS_JSON"); facts != "" {
-			fmt.Print(facts)
-			os.Exit(0)
-		}
-	}
-	if len(args) > 0 && args[0] == "api" && args[len(args)-1] == "repos/test/repo/pulls/42" {
-		fmt.Printf(`{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, fakePRHeadSHA())
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api --method GET repos/test/repo/pulls ") {
@@ -609,6 +625,7 @@ func fakeCIPRListJSON() string {
 }
 
 func fakeCIGHHandler(args []string) {
+	fakeCIGHFactsAPI(args)
 	state := os.Getenv("FAKE_CLI_STATE")
 	stateErr := os.Getenv("FAKE_CLI_STATE_ERR")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
@@ -621,14 +638,6 @@ func fakeCIGHHandler(args []string) {
 		if authErr := os.Getenv("FAKE_CLI_AUTH_ERR"); authErr != "" {
 			fmt.Fprintln(os.Stderr, authErr)
 			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-	if len(args) > 0 && args[0] == "api" && args[len(args)-1] == "repos/test/repo/pulls/42" {
-		if facts := os.Getenv("FAKE_CLI_PR_FACTS_JSON"); facts != "" {
-			fmt.Print(facts)
-		} else {
-			fmt.Printf(`{"number":42,"html_url":"https://github.com/test/repo/pull/42","state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, fakePRHeadSHA())
 		}
 		os.Exit(0)
 	}
@@ -709,6 +718,7 @@ func fakeCIGHRerun() {
 }
 
 func fakeCIGHSequenceHandler(args []string) {
+	fakeCIGHFactsAPI(args)
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
 	indexPath := os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")
@@ -817,6 +827,7 @@ func fakeCIGHSequenceHandler(args []string) {
 }
 
 func fakeCIGlabHandler(args []string) {
+	fakeCIGlabFactsAPI(args)
 	state := os.Getenv("FAKE_CLI_STATE")
 	if state == "" {
 		state = "opened"
@@ -883,6 +894,7 @@ func fakeCIGlabHandler(args []string) {
 }
 
 func fakeCIGlabSequenceHandler(args []string) {
+	fakeCIGlabFactsAPI(args)
 	state := os.Getenv("FAKE_CLI_STATE")
 	if state == "" {
 		state = "opened"
@@ -948,6 +960,21 @@ func fakeCIGlabSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+func fakeCIGlabFactsAPI(args []string) {
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "api ") {
+		return
+	}
+	if strings.Contains(joined, "projects/test%2Frepo/merge_requests/42") {
+		fmt.Printf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":"opened","source_project_id":1,"target_project_id":1,"source_branch":"feature","target_branch":"main","sha":%q}`, fakePRHeadSHA())
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "projects/1") {
+		fmt.Print(`{"id":1,"path_with_namespace":"test/repo"}`)
+		os.Exit(0)
+	}
 }
 
 func fakeCIGHNoChecksHandler(args []string) {

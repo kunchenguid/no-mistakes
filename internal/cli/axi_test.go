@@ -1166,7 +1166,7 @@ func setupAxiQueryRepo(t *testing.T) (string, *paths.Paths, *db.DB, *db.Repo) {
 	repoDir := t.TempDir()
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
-	run(t, repoDir, "git", "init")
+	run(t, repoDir, "git", "init", "-b", "main")
 	run(t, repoDir, "git", "config", "user.email", "test@test.com")
 	run(t, repoDir, "git", "config", "user.name", "Test")
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")

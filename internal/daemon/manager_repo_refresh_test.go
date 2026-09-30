@@ -184,6 +184,9 @@ type captureRefreshRepoStep struct {
 
 func (s *captureRefreshRepoStep) Name() types.StepName { return types.StepReview }
 func (s *captureRefreshRepoStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	copy := *sctx.Repo
 	s.seen <- &copy
 	return &pipeline.StepOutcome{}, nil

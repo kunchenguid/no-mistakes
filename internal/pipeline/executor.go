@@ -1722,7 +1722,7 @@ rounds:
 	}
 
 done:
-	// A CI repair that requests fresh validation has no terminal verdict yet.
+	// A repair that requests fresh validation has no terminal verdict yet.
 	// Leave its status active until the caller resets it with the owner stages.
 	if restartFrom != "" {
 		return skipRemaining, restartFrom, nil

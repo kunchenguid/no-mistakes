@@ -207,11 +207,14 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, err
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
-	checks, err := host.GetChecks(ctx, &scm.PR{Number: prNumber, URL: prURL})
+	checks, err := host.GetChecks(ctx, &scm.PR{Number: prNumber, URL: prURL, HeadSHA: sctx.Run.HeadSHA})
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
 	if allChecksPassed(checks) {
+		if err := verifyCIMonitorComparison(sctx, host, checks); err != nil {
+			return fmt.Sprintf("could not verify live CI comparison: %v", err), nil
+		}
 		return "", nil
 	}
 	if len(checks) == 0 {
@@ -768,7 +771,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// evidence; there is no grace-period promotion path.
 					if sctx.Config != nil && sctx.Config.NoCI {
 						sctx.DeferredFindings = ""
-						lastMonitorLog = logVerifiedCIMonitorStatus(sctx, host, ciNoChecksPassedMsg, lastMonitorLog)
+						lastMonitorLog = logVerifiedCIMonitorStatus(sctx, host, nil, ciNoChecksPassedMsg, lastMonitorLog)
 					} else {
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
@@ -776,7 +779,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					}
 				case allChecksPassed(checks):
 					sctx.DeferredFindings = ""
-					lastMonitorLog = logVerifiedCIMonitorStatus(sctx, host, ciChecksPassedMsg, lastMonitorLog)
+					lastMonitorLog = logVerifiedCIMonitorStatus(sctx, host, checks, ciChecksPassedMsg, lastMonitorLog)
 				default:
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
@@ -814,8 +817,8 @@ func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) st
 	return message
 }
 
-func logVerifiedCIMonitorStatus(sctx *pipeline.StepContext, host scm.Host, message, previous string) string {
-	if err := verifyCIMonitorComparison(sctx, host); err != nil {
+func logVerifiedCIMonitorStatus(sctx *pipeline.StepContext, host scm.Host, checks []scm.Check, message, previous string) string {
+	if err := verifyCIMonitorComparison(sctx, host, checks); err != nil {
 		clearCIMonitorReady(sctx)
 		sctx.Log(fmt.Sprintf("warning: CI readiness comparison could not be verified: %v", err))
 		return ""
@@ -823,7 +826,7 @@ func logVerifiedCIMonitorStatus(sctx *pipeline.StepContext, host scm.Host, messa
 	return logCIMonitorStatus(sctx, message, previous)
 }
 
-func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host) error {
+func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host, checks []scm.Check) error {
 	if sctx == nil || sctx.Run == nil || sctx.DB == nil || host == nil {
 		return fmt.Errorf("CI readiness lacks a run or comparison reader")
 	}
@@ -840,6 +843,11 @@ func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host) error 
 	}
 	if durable == nil || durable.HeadSHA != receipt.LocalHeadSHA {
 		return fmt.Errorf("durable run head differs from CI readiness comparison")
+	}
+	for _, check := range checks {
+		if check.HeadSHA == "" || check.HeadSHA != receipt.LocalHeadSHA {
+			return fmt.Errorf("CI check %q is not bound to the current comparison head", check.Name)
+		}
 	}
 	reader, ok := host.(scm.PRFactsReader)
 	if !ok {

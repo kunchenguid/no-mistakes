@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -258,6 +259,23 @@ func assertProtectedWorktreePreserved(t *testing.T, workDir, head string) {
 
 func (s *protectedPathPushRetryStep) Name() types.StepName { return types.StepPush }
 func (s *protectedPathPushRetryStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		return nil, err
+	}
+	if receipt == nil {
+		targetSHA, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "refs/heads/main")
+		if err != nil {
+			return nil, err
+		}
+		candidate, err := testgit.RunComparisonCandidate(sctx.Run, sctx.WorkDir, "main", targetSHA, "", "", "")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, types.StepReview); err != nil {
+			return nil, err
+		}
+	}
 	if len(sctx.Config.ProtectedPaths) != 1 || sctx.Config.ProtectedPaths[0] != "*.txt" {
 		return nil, fmt.Errorf("trusted protected_paths lost to pushed config: %q", sctx.Config.ProtectedPaths)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -339,6 +340,7 @@ func TestPipeline_DocumentPlusLintIsOneAgentInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
+	testgit.BindRunComparison(t, database, run, workDir, "main", "", "", "")
 
 	calls := 0
 	ag := &mockAgent{

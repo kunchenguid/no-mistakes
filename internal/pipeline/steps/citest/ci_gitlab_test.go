@@ -46,7 +46,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
-	checksJSON := `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"success"}]`
+	checksJSON := `[{"id":1,"name":"build","status":"success","commit":{"id":"` + headSHA + `"}},{"id":2,"name":"test","status":"success","commit":{"id":"` + headSHA + `"}}]`
 	env := stepstest.FakeCIGlab(t, "opened", checksJSON)
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
@@ -55,6 +55,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 5 * time.Second
 
 	var logs []string
@@ -82,6 +83,40 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected passing CI log, got: %v", logs)
+	}
+}
+
+func TestCIStep_GitLabOldGreenJobCannotCertifyCurrentHead(t *testing.T) {
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+	old := strings.Repeat("a", 40)
+	checksJSON := `[{"id":1,"name":"build","status":"success","pipeline":{"sha":"` + old + `"}}]`
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Env = stepstest.FakeCIGlab(t, "opened", checksJSON)
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
+	sctx.Config.CITimeout = 5 * time.Second
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		cancel()
+		return ctx.Err()
+	})
+	pinCIMonitorClock(step)
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("monitor result = %v", err)
+	}
+	for _, line := range logs {
+		if strings.Contains(line, "all CI checks passed") {
+			t.Fatalf("old job announced readiness: %v", logs)
+		}
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.CIReadyAt != nil {
+		t.Fatalf("old job persisted readiness: %+v, %v", run, err)
 	}
 }
 
@@ -271,7 +306,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 
 	sequence := []string{
 		`[{"id":1,"name":"build","status":"running"}]`,
-		`[{"id":1,"name":"build","status":"success"}]`,
+		`[{"id":1,"name":"build","status":"success","commit":{"id":"` + headSHA + `"}}]`,
 	}
 	env := stepstest.FakeCIGlabSequence(t, "opened", sequence)
 
@@ -281,6 +316,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
+	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string

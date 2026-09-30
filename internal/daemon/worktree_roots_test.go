@@ -28,6 +28,9 @@ type mockWorkDirStep struct {
 
 func (s *mockWorkDirStep) Name() types.StepName { return s.name }
 func (s *mockWorkDirStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	select {
 	case s.workDir <- sctx.WorkDir:
 	default:

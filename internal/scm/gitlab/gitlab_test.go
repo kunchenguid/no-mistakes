@@ -755,6 +755,20 @@ func TestGetChecksPreservesProviderCommitForNamedProof(t *testing.T) {
 	}
 }
 
+func TestGetChecksRejectsConflictingJobAndPipelineCommitEvidence(t *testing.T) {
+	const current = "2222222222222222222222222222222222222222"
+	const old = "1111111111111111111111111111111111111111"
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab ci status --mr 123 --output json": {
+			stdout: `[{"id":1,"name":"build","status":"success","commit":{"id":"` + current + `"},"pipeline":{"sha":"` + old + `"}}]`,
+		},
+	}), nil, "", "")
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: current})
+	if err != nil || len(checks) != 1 || checks[0].HeadSHA != "" {
+		t.Fatalf("ambiguous job commit = %+v, %v", checks, err)
+	}
+}
+
 func TestGetChecksLeavesCompletedAtZeroWhenFinishedAtMissingOrInvalid(t *testing.T) {
 	t.Parallel()
 

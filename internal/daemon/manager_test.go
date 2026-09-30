@@ -415,6 +415,9 @@ type captureForgeContextStep struct {
 
 func (s *captureForgeContextStep) Name() types.StepName { return types.StepReview }
 func (s *captureForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	if sctx.ForgeContext == nil {
 		return nil, fmt.Errorf("forge context is missing")
 	}
@@ -438,6 +441,9 @@ type barrierForgeContextStep struct {
 
 func (s *barrierForgeContextStep) Name() types.StepName { return types.StepReview }
 func (s *barrierForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := bindMockRunComparison(sctx); err != nil {
+		return nil, err
+	}
 	if sctx.ForgeContext == nil {
 		return nil, fmt.Errorf("forge context is missing")
 	}
