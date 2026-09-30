@@ -13,9 +13,6 @@ func TestCommandOverrides_KeepTrustedCommandsAndMatchOnlyTheRemote(t *testing.T)
     commands:
       test:
         additional: ['machine-test --all']
-        env:
-          GOMAXPROCS: '2'
-          PATH: '/opt/toolchain/bin:/usr/bin:/bin'
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -28,17 +25,16 @@ func TestCommandOverrides_KeepTrustedCommandsAndMatchOnlyTheRemote(t *testing.T)
 		t.Fatalf("team commands changed: %+v", got.Commands)
 	}
 	override := got.CommandOverrides["test"]
-	if !reflect.DeepEqual(override.Additional, []string{"machine-test --all"}) || override.Env["GOMAXPROCS"] != "2" || override.Env["PATH"] != "/opt/toolchain/bin:/usr/bin:/bin" {
+	if !reflect.DeepEqual(override.Additional, []string{"machine-test --all"}) {
 		t.Fatalf("local override = %+v", override)
 	}
 	unmatched := MergeForRemote(global, effective, "git@github.com:acme/other.git")
 	if !reflect.DeepEqual(unmatched, Merge(global, effective)) {
 		t.Fatal("unmatched override changed legacy merge behavior")
 	}
-	override.Env["GOMAXPROCS"] = "99"
 	override.Additional[0] = "changed"
 	again := MergeForRemote(global, effective, "git@github.com:acme/widget.git")
-	if again.CommandOverrides["test"].Env["GOMAXPROCS"] != "2" || again.CommandOverrides["test"].Additional[0] != "machine-test --all" {
+	if again.CommandOverrides["test"].Additional[0] != "machine-test --all" {
 		t.Fatal("effective override aliases mutable global configuration")
 	}
 }
@@ -64,10 +60,7 @@ func TestCommandOverrides_RejectWeakeningAndMalformedExecutionSettings(t *testin
 		"test: {nice: 20}",
 		"test: {additional: ['   ']}",
 		"test: {additional: [\"echo\\0bad\"]}",
-		"test: {env: {'BAD=KEY': value}}",
-		"test: {env: {'9BAD': value}}",
-		"test: {env: {'PATH': one, 'path': two}}",
-		"test: {env: {'OK': \"value\\0bad\"}}",
+		"test: {env: {PATH: /opt/other/bin}}",
 	} {
 		t.Run(value, func(t *testing.T) {
 			_, err := LoadGlobalFromBytes([]byte("repository_overrides:\n  https://github.com/acme/widget:\n    commands:\n      " + value + "\n"))
@@ -102,7 +95,6 @@ repository_overrides:
   https://github.com/acme/widget:
     commands:
       test:
-        env: {PATH: /untrusted/bin}
         additional: [untrusted-command]
 `))
 	if err != nil {

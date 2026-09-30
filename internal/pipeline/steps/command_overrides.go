@@ -2,48 +2,24 @@ package steps
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
 
 func runRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
 	override := sctx.Config.CommandOverrides[name]
-	env := stepEnvironment(sctx)
-	if len(override.Env) != 0 {
-		env = (runenv.Overlay{Set: override.Env}).Apply(env)
-		// A command's toolchain settings must not undo a pinned forge identity.
-		if sctx.ForgeContext != nil {
-			env = sctx.ForgeContext.Environment.Apply(env)
-		}
-	}
-	if declaration := commandOverrideDeclaration(name, override, true); declaration != "" {
+	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
 		sctx.Log(declaration)
 	}
-	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, env, command, override.Nice)
+	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, override.Nice)
 }
 
 // commandOverrideDeclaration states every machine-local override applied to a
 // command so a result produced under one is never presented as a plain run.
-// Environment values appear only when withValues is set, for private logs.
-func commandOverrideDeclaration(name string, override config.CommandOverride, withValues bool) string {
+func commandOverrideDeclaration(name string, override config.CommandOverride) string {
 	var parts []string
-	if len(override.Env) != 0 {
-		keys := make([]string, 0, len(override.Env))
-		for key := range override.Env {
-			keys = append(keys, key)
-		}
-		slices.Sort(keys)
-		if withValues {
-			for i, key := range keys {
-				keys[i] = fmt.Sprintf("%s=%q", key, override.Env[key])
-			}
-		}
-		parts = append(parts, "env "+strings.Join(keys, " "))
-	}
 	if override.Nice != 0 {
 		parts = append(parts, fmt.Sprintf("nice %d", override.Nice))
 	}
@@ -97,7 +73,7 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 		checks = append(checks, checkResult{Command: additional, Local: true})
 	}
 	var output strings.Builder
-	if declaration := commandOverrideDeclaration(name, override, false); declaration != "" {
+	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
 		fmt.Fprintf(&output, "%s\n", declaration)
 	}
 	for i := range checks {

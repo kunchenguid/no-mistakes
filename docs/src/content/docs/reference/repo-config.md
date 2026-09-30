@@ -372,7 +372,7 @@ Broad regression belongs in remote CI and remains mandatory before a PR is ready
 no-mistakes does not guess whether an arbitrary shell string is "too broad" - the contract is documented and dogfooded, not enforced with language- or filename-specific heuristics.
 
 When set, the test step runs this exact command first as the baseline and checks the exit code.
-Machine-local [`repository_overrides.commands`](/no-mistakes/reference/global-config/#machine-local-commands) can add checks and adjust its execution environment or scheduling priority without replacing this command.
+Machine-local [`repository_overrides.commands`](/no-mistakes/reference/global-config/#machine-local-commands) can add checks and lower its scheduling priority without replacing this command.
 Whether the baseline passes, fails, or is absent, the agent then derives targeted end-user scenarios and drives the product itself under the same targeted-validation contract.
 A non-zero exit parks the Test step. Approving that gate records an explicit override on the step and on the PR attestation; the [`require-no-mistakes`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation) check treats that as non-compliant unless [`test.allow_approve_over_failure`](#testallow_approve_over_failure) is set.
 

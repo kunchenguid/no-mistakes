@@ -868,7 +868,7 @@ A `commit.branch_pattern` in `.no-mistakes.yaml` takes precedence and clears any
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine add checks, fit command execution to its toolchain and resources, or apply ticket conventions without adding settings to that repository.
+This lets one machine add checks, lower command scheduling priority, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -908,22 +908,17 @@ repository_overrides:
       test:
         additional:
           - /opt/local-checks/widget-smoke
-        env:
-          PATH: '/opt/toolchain/bin:/usr/local/bin:/usr/bin:/bin'
-          GOMAXPROCS: '2'
         nice: 10
       lint:
         additional:
           - /opt/local-checks/widget-policy
       prepare:
-        env:
-          TOOLCHAIN_HOME: /opt/toolchain
+        nice: 10
 ```
 
 | Field | Supported commands | Meaning |
 | --- | --- | --- |
 | `additional` | `test`, `lint` | Ordered list of separate shell checks added after the repository check; every check must succeed |
-| `env` | `prepare`, `test`, `lint`, `format` | Literal string environment values for that configured command and its additional checks |
 | `nice` | `prepare`, `test`, `lint`, `format` | POSIX niceness adjustment from `0` to `19`; `0` leaves scheduling unchanged |
 
 Test runs the committed command first, then each added command in a separate shell, retaining a failure from either source even when another check succeeds.
@@ -932,28 +927,23 @@ Lint runs additional checks after the existing lint duty, including agent-driven
 An added check's failure parks the step rather than silently passing; existing explicit approval rules still apply.
 Its finding names that machine-local check and its exit code, and never attributes the failure to the committed command, including when the committed command is empty.
 `additional` is refused for preparation and formatting, because those commands are not independent check gates.
-Replacement command strings, `command`, `replace`, `skip`, unknown command names, empty additional checks, malformed environment entries, and niceness outside `0` through `19` are configuration errors.
+Replacement command strings, `command`, `replace`, `skip`, per-command `env`, unknown command names, empty additional checks, and niceness outside `0` through `19` are configuration errors.
 
-Use `env` to select an equivalent toolchain or change resource usage without editing the committed command, not to reduce the checks it performs.
-Environment overrides are the operator's responsibility: a tool's environment can change what the unchanged command checks (for example a test filter or an alternate linter config), and no-mistakes does not infer the meaning of a tool's environment variables or prove that different toolchains are equivalent.
-Overrides are therefore always declared, never silent: whenever a command runs under any of these settings, its step output states `machine-local overrides applied to commands.<name>:` followed by every environment key and value, the niceness, and the added checks.
-Test also passes a declaration to its agent for the testing summary, but that agent-facing declaration, like the check output recorded in findings, carries environment keys only, never values; exact values stay in the private step log and `command-config.ndjson`.
-For example, `GOMAXPROCS: '2'` limits a Go process's available CPUs; a suite-specific parallelism environment variable works only if that suite honors it.
-`PATH` replaces that command's path literally, so include the existing system paths you need.
-Values do not expand `$PATH`, `~`, or shell substitutions.
-Environment names must be portable shell variable names, values must not contain NUL, and case-ambiguous duplicate names are refused.
+Overrides are always declared, never silent: whenever a command runs under any of these settings, its step output states `machine-local overrides applied to commands.<name>:` followed by the niceness and the added checks, and Test passes the same declaration to its agent for the testing summary.
 These settings are scoped to configured shell commands and their local checks, not agents, built-in Git operations, forge commands, or repository-declared extra gates.
-An active forge profile's credential and identity environment remains authoritative over a command's environment.
+
+There is no per-command environment override.
+Toolchain paths (such as `PATH`) and parallelism settings (such as `GOMAXPROCS`) come from the operator's own environment, which the daemon captures at startup and passes to every configured command; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns where to set them.
 
 `nice: 10` invokes the POSIX `nice -n 10` utility around the command shell, adding ten to its inherited niceness, not setting an absolute priority.
-Positive niceness is refused on Windows; use environment-based resource knobs there.
+Positive niceness is refused on Windows; set resource limits in the operator's own environment there.
 A missing `nice` utility fails the command rather than silently ignoring the request.
 
-Before executing an opted-in run, no-mistakes records the full resolved configuration in `<NM_HOME>/logs/<run-id>/command-config.ndjson`, including the unchanged team command strings, added checks, environment keys and values, niceness, trusted-config SHA, and tool build.
+Before executing an opted-in run, no-mistakes records the full resolved configuration in `<NM_HOME>/logs/<run-id>/command-config.ndjson`, including the unchanged team command strings, added checks, niceness, trusted-config SHA, and tool build.
 This record is independent of optional eval capture.
 Recovery appends a new snapshot of the configuration it resolves, including removal of a previously active local override.
 A snapshot write failure stops execution before checks run.
-The file is private local evidence, created with owner-only permissions on POSIX and excluded from PR and test-evidence publication; treat it as sensitive because it contains exact environment values.
+The file is private local evidence, created with owner-only permissions on POSIX and excluded from PR and test-evidence publication.
 
 ### intent
 

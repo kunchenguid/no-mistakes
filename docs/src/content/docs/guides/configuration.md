@@ -36,9 +36,10 @@ For Azure DevOps, authenticate the `az` CLI with either `az devops login` or `AZ
 - **Global config** is for your machine-level defaults.
 - **Repo config** is for codebase-specific behavior that should travel with the repo.
 
-For machine-local checks, toolchain paths, resource settings, or commit and PR-title conventions scoped to one remote, use global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) instead of adding that configuration to the repository.
+For machine-local checks, command scheduling priority, or commit and PR-title conventions scoped to one remote, use global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) instead of adding that configuration to the repository.
 The global reference owns remote matching, syntax, and precedence.
-Local command settings supplement the committed commands and never replace them; [Machine-local commands](/no-mistakes/reference/global-config/#machine-local-commands) owns their fields, the operator's responsibility for environment values, and how applied overrides are declared and recorded.
+Local command settings supplement the committed commands and never replace them; [Machine-local commands](/no-mistakes/reference/global-config/#machine-local-commands) owns their fields and how applied overrides are declared and recorded.
+Toolchain paths and parallelism settings come from your own environment, which the daemon captures at startup, rather than from per-command settings.
 
 In practice, most teams should keep personal preferences global and repo policy
 local.

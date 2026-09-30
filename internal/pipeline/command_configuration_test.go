@@ -19,7 +19,6 @@ func TestExecutor_CommandConfigurationRecordedBeforeChecks(t *testing.T) {
   https://github.com/test/repo:
     commands:
       test:
-        env: {GOMAXPROCS: '2', PATH: '/opt/tools/bin:/usr/bin'}
         additional: [extra-tests]
 `))
 	if err != nil {
@@ -69,7 +68,7 @@ func TestExecutor_CommandConfigurationWriteFailureStopsBeforeChecks(t *testing.T
 		t.Fatal(err)
 	}
 	step := newPassStep(types.StepTest)
-	cfg := &config.Config{CommandOverrides: map[string]config.CommandOverride{"test": {Env: map[string]string{"PARALLEL": "2"}}}}
+	cfg := &config.Config{CommandOverrides: map[string]config.CommandOverride{"test": {Additional: []string{"extra-tests"}}}}
 	executor := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
 	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
 		t.Fatal("ran without recording configuration evidence")

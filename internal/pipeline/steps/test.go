@@ -182,7 +182,7 @@ Previous test findings to address:
 			sctx.Log("configured test command failed, asking agent to gather live evidence...")
 		}
 	}
-	if len(failedBaseline) == 0 && testCmd == "" {
+	if len(failedBaseline) == 0 && len(baselineResults) == 0 {
 		sctx.Log("no test command configured, asking agent to run tests...")
 	} else if len(failedBaseline) == 0 {
 		sctx.Log("baseline tests passed, asking agent to gather live evidence...")
@@ -205,7 +205,7 @@ Previous test findings to address:
 			configuredTestCommand += fmt.Sprintf("\nConfigured test command failed with exit code %d: `%s`\n", result.ExitCode, result.Command)
 		}
 	}
-	if declaration := commandOverrideDeclaration("test", sctx.Config.CommandOverrides["test"], false); declaration != "" && len(baselineResults) > 0 {
+	if declaration := commandOverrideDeclaration("test", sctx.Config.CommandOverrides["test"]); declaration != "" && len(baselineResults) > 0 {
 		configuredTestCommand += fmt.Sprintf("Baseline ran with %s. Declare these overrides in testing_summary.\n", declaration)
 	}
 	trustedRunbook := trustedTestInstructionsSection(sctx) + budgetCutGuidanceSection(sctx)

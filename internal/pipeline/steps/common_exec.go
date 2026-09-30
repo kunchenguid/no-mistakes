@@ -327,7 +327,7 @@ func runShellCommandWithPriority(ctx context.Context, dir string, env []string, 
 		if cmd.Err != nil {
 			return "", -1, cmd.Err
 		}
-		// Resolve the shell before applying the operator's PATH to its payload.
+		// Run the already-resolved shell under nice with the same arguments.
 		cmd = exec.CommandContext(ctx, "nice", append([]string{"-n", strconv.Itoa(nice), cmd.Path}, cmd.Args[1:]...)...)
 	}
 	shellenv.ConfigureCooperativeShellCommand(cmd)

@@ -17,7 +17,6 @@ import (
 
 const (
 	machineLocalRemote     = "https://example.invalid/acme/widget.git"
-	machineLocalSecretEnv  = "sekrit-toolchain-value-4b1d"
 	testStepPromptMarker   = "You are validating a code change by driving the product itself"
 	machineLocalConfigFile = "command-config.ndjson"
 )
@@ -64,26 +63,24 @@ func testStepPrompts(h *Harness) []string {
 }
 
 // TestMachineLocalCommandOverridesJourney drives the real daemon with an
-// operator-only repository override that adds a local test check, remaps the
-// team command's environment, and lowers its priority.
+// operator-only repository override that adds a local test check and lowers
+// the team command's priority.
 func TestMachineLocalCommandOverridesJourney(t *testing.T) {
-	t.Run("overrides_apply_are_declared_and_recorded_without_leaking_values", func(t *testing.T) {
+	t.Run("overrides_apply_are_declared_and_recorded", func(t *testing.T) {
 		h := NewHarness(t, SetupOpts{Agent: "claude"})
 		marker := filepath.Join(t.TempDir(), "marker")
 		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-team-test"),
-			`printf 'team TOOLCHAIN_HOME=%s nice=%s\n' "$TOOLCHAIN_HOME" "$(nice)" >> "`+marker+`"
+			`printf 'team nice=%s\n' "$(nice)" >> "`+marker+`"
 exit 0
 `)
 		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-local-smoke"),
-			`printf 'local TOOLCHAIN_HOME=%s nice=%s\n' "$TOOLCHAIN_HOME" "$(nice)" >> "`+marker+`"
+			`printf 'local nice=%s\n' "$(nice)" >> "`+marker+`"
 exit 0
 `)
 		setupMachineLocalCommands(t, h, `    commands:
       test:
         additional:
           - nm-local-smoke
-        env:
-          TOOLCHAIN_HOME: `+machineLocalSecretEnv+`
         nice: 7
 `)
 		const branch = "feature/local-overrides"
@@ -101,8 +98,8 @@ exit 0
 		}
 		t.Logf("command marker:\n%s", markerData)
 		for _, want := range []string{
-			"team TOOLCHAIN_HOME=" + machineLocalSecretEnv + " nice=7",
-			"local TOOLCHAIN_HOME=" + machineLocalSecretEnv + " nice=7",
+			"team nice=7",
+			"local nice=7",
 		} {
 			if !strings.Contains(string(markerData), want) {
 				t.Errorf("marker missing %q", want)
@@ -112,7 +109,7 @@ exit 0
 		testLog := readStepLog(t, h, run.ID, string(types.StepTest))
 		t.Logf("test step log:\n%s", testLog)
 		for _, want := range []string{
-			`machine-local overrides applied to commands.test: env TOOLCHAIN_HOME="` + machineLocalSecretEnv + `"; nice 7; additional checks "nm-local-smoke"`,
+			`machine-local overrides applied to commands.test: nice 7; additional checks "nm-local-smoke"`,
 			"running tests: nm-team-test",
 			"running machine-local test check: nm-local-smoke",
 		} {
@@ -121,36 +118,19 @@ exit 0
 			}
 		}
 
-		if step, ok := findStep(run.Steps, types.StepTest); ok && step.FindingsJSON != nil {
-			t.Logf("test findings: %s", *step.FindingsJSON)
-			if strings.Contains(*step.FindingsJSON, machineLocalSecretEnv) {
-				t.Errorf("test step findings leaked the override env value")
-			}
-		} else {
-			t.Errorf("test step findings missing")
-		}
-
 		prompts := testStepPrompts(h)
 		if len(prompts) == 0 {
 			t.Fatal("test step never invoked the agent")
 		}
 		for _, prompt := range prompts {
-			if strings.Contains(prompt, machineLocalSecretEnv) {
-				t.Fatalf("test prompt leaked the override env value")
-			}
 			for _, want := range []string{
-				"Baseline ran with machine-local overrides applied to commands.test: env TOOLCHAIN_HOME; nice 7; additional checks \"nm-local-smoke\"",
+				"Baseline ran with machine-local overrides applied to commands.test: nice 7; additional checks \"nm-local-smoke\"",
 				"Configured test command already ran successfully as baseline: `nm-team-test`",
 				"Machine-local test check (the operator's addition, not the repository's command) already ran successfully as baseline: `nm-local-smoke`",
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("test prompt missing %q", want)
 				}
-			}
-		}
-		for _, inv := range h.AgentInvocations() {
-			if strings.Contains(inv.Prompt, machineLocalSecretEnv) {
-				t.Errorf("an agent prompt leaked the override env value (args %v)", inv.Args)
 			}
 		}
 
@@ -176,9 +156,8 @@ exit 0
 				EffectiveConfig struct {
 					Commands         map[string]any `json:"Commands"`
 					CommandOverrides map[string]struct {
-						Env        map[string]string `json:"env"`
-						Nice       int               `json:"nice"`
-						Additional []string          `json:"additional"`
+						Nice       int      `json:"nice"`
+						Additional []string `json:"additional"`
 					} `json:"CommandOverrides"`
 				} `json:"effective_config"`
 			}
@@ -188,7 +167,7 @@ exit 0
 			records++
 			override := record.EffectiveConfig.CommandOverrides["test"]
 			t.Logf("command-config record event=%s commands=%v test override=%+v", record.Event, record.EffectiveConfig.Commands, override)
-			if record.Event != "start" || override.Env["TOOLCHAIN_HOME"] != machineLocalSecretEnv || override.Nice != 7 ||
+			if record.Event != "start" || override.Nice != 7 ||
 				len(override.Additional) != 1 || override.Additional[0] != "nm-local-smoke" {
 				t.Errorf("unexpected command config record: %s", scanner.Text())
 			}

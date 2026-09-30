@@ -12,9 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -66,42 +64,6 @@ func TestConfiguredChecks_AddWithoutMaskingEitherFailure(t *testing.T) {
 				t.Fatalf("checks did not run separately in order: %q, %v", data, err)
 			}
 		})
-	}
-}
-
-func TestRepositoryCommand_RemapsToolchainWithoutRewritingCommand(t *testing.T) {
-	bin := t.TempDir()
-	name, script := "nm-local-tool", "#!/bin/sh\nprintf '%s:%s' \"$1\" \"$NM_PARALLEL\"\n"
-	if runtime.GOOS == "windows" {
-		name, script = "nm-local-tool.cmd", "@echo off\r\necho %1:%NM_PARALLEL%\r\n"
-	}
-	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sctx := commandOverrideContext(t, config.CommandOverride{Env: map[string]string{
-		"PATH": bin + string(os.PathListSeparator) + os.Getenv("PATH"), "NM_PARALLEL": "2",
-	}})
-	sctx.Env = []string{"NM_PARALLEL=original"}
-	command := "nm-local-tool all-tests"
-	out, code, err := runRepositoryCommand(sctx, "test", command)
-	if err != nil || code != 0 || strings.TrimSpace(out) != "all-tests:2" {
-		t.Fatalf("remapped command = (%q, %d, %v)", out, code, err)
-	}
-	if got, _ := envValue(stepEnvironment(sctx), "NM_PARALLEL"); got != "original" {
-		t.Fatal("command environment leaked into other step subprocesses")
-	}
-}
-
-func TestRepositoryCommand_EnvironmentCannotUndoForgeIdentity(t *testing.T) {
-	sctx := commandOverrideContext(t, config.CommandOverride{Env: map[string]string{"GH_CONFIG_DIR": "wrong-profile", "GH_TOKEN": "wrong-token"}})
-	sctx.ForgeContext = &forgecontext.Context{Environment: runenv.Overlay{Set: map[string]string{"GH_CONFIG_DIR": "pinned-profile"}, Unset: []string{"GH_TOKEN"}}}
-	command := "printf '%s:%s' \"$GH_CONFIG_DIR\" \"$GH_TOKEN\""
-	if runtime.GOOS == "windows" {
-		command = "echo %GH_CONFIG_DIR%:%GH_TOKEN%"
-	}
-	out, code, err := runRepositoryCommand(sctx, "test", command)
-	if err != nil || code != 0 || strings.Contains(out, "wrong") || !strings.Contains(out, "pinned-profile") {
-		t.Fatalf("forge identity = (%q, %d, %v)", out, code, err)
 	}
 }
 
@@ -201,47 +163,17 @@ func TestTestStep_OverriddenPassIsDeclared(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, base, head, config.Commands{Test: "exit 0"})
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
-	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Env: map[string]string{"GOFLAGS": "-p=2"}, Additional: []string{"exit 0"}}}
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Additional: []string{"exit 0"}}}
 	outcome, err := (&TestStep{}).Execute(sctx)
 	if err != nil || outcome.NeedsApproval {
 		t.Fatalf("outcome = %+v, %v", outcome, err)
 	}
-	want := `machine-local overrides applied to commands.test: env GOFLAGS="-p=2"; additional checks "exit 0"`
+	want := `machine-local overrides applied to commands.test: additional checks "exit 0"`
 	if !strings.Contains(strings.Join(logs, "\n"), want) {
 		t.Fatalf("step output does not declare the overrides:\n%s", strings.Join(logs, "\n"))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, `machine-local overrides applied to commands.test: env GOFLAGS; additional checks "exit 0"`) {
+	if !strings.Contains(ag.calls[0].Prompt, "Baseline ran with "+want) {
 		t.Fatal("agent prompt does not declare the overrides")
-	}
-}
-
-func TestTestStep_OverrideEnvValuesNeverReachThePromptOrFindings(t *testing.T) {
-	const secret = "postgres://user:s3cret@internal-db"
-	dir, base, head := setupGitRepo(t)
-	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, base, head, config.Commands{Test: "exit 0"})
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Env: map[string]string{"DATABASE_URL": secret}, Additional: []string{"exit 3"}}}
-	outcome, err := (&TestStep{}).Execute(sctx)
-	if err != nil || !outcome.NeedsApproval {
-		t.Fatalf("outcome = %+v, %v", outcome, err)
-	}
-	prompt := ag.calls[0].Prompt
-	if strings.Contains(prompt, secret) || !strings.Contains(prompt, "env DATABASE_URL") {
-		t.Fatalf("prompt must declare the key without its value:\n%s", prompt)
-	}
-	findings, err := types.ParseFindingsJSON(outcome.Findings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(outcome.Findings, secret) || strings.Contains(findings.TestingSummary, secret) || strings.Contains(findings.Summary, secret) {
-		t.Fatalf("override value published in Test findings: %s", outcome.Findings)
-	}
-	if !strings.Contains(strings.Join(logs, "\n"), `DATABASE_URL="`+secret+`"`) {
-		t.Fatal("private step log lost the exact override value")
 	}
 }
 
@@ -253,11 +185,11 @@ func TestRepositoryCommand_DeclaresOverridesForEveryCommand(t *testing.T) {
 		var logs []string
 		sctx := commandOverrideContext(t, config.CommandOverride{})
 		sctx.Log = func(s string) { logs = append(logs, s) }
-		sctx.Config.CommandOverrides = map[string]config.CommandOverride{name: {Env: map[string]string{"B": "2", "A": "1"}, Nice: 3}}
+		sctx.Config.CommandOverrides = map[string]config.CommandOverride{name: {Nice: 3}}
 		if _, code, err := runRepositoryCommand(sctx, name, "exit 0"); err != nil || code != 0 {
 			t.Fatalf("%s: %d %v", name, code, err)
 		}
-		want := "machine-local overrides applied to commands." + name + `: env A="1" B="2"; nice 3`
+		want := "machine-local overrides applied to commands." + name + ": nice 3"
 		if len(logs) != 1 || logs[0] != want {
 			t.Fatalf("%s logs = %q, want %q", name, logs, want)
 		}
@@ -284,5 +216,23 @@ func TestLintStep_AddedChecksDoNotReplaceAgentOnlyLint(t *testing.T) {
 	}
 	if len(ag.calls) != 1 || !outcome.NeedsApproval || outcome.ExitCode != 9 {
 		t.Fatalf("agent duty or local failure lost: calls=%d outcome=%+v", len(ag.calls), outcome)
+	}
+}
+
+func TestTestStep_PassingLocalChecksWithoutTeamCommandAreReportedAsBaseline(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, base, head, config.Commands{})
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Additional: []string{"exit 0"}}}
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(logs, "\n")
+	if strings.Contains(joined, "no test command configured") || !strings.Contains(joined, "baseline tests passed") {
+		t.Fatalf("passing local checks misreported:\n%s", joined)
 	}
 }
