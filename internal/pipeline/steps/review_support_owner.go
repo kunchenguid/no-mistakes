@@ -200,6 +200,7 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		return unresolved("Review CI claim check read failed"), nil
 	}
 	observedAt = supportObservationTime()
+	completeCurrentHeadProof := completePassingCICheckEvidence(checks)
 	results := make([]Finding, 0, len(claims))
 	for _, claim := range claims {
 		ref := claim.Support.CI
@@ -247,6 +248,24 @@ func resolveCIReviewSupport(sctx *pipeline.StepContext, host scm.Host, pr *scm.P
 		}
 	}
 	return results, nil
+}
+
+// A later head cannot reuse the old check ID. This stronger observation proves
+// that every check returned by the current exact-head provider query ran and
+// passed, with no missing or ambiguous provider identities.
+func completePassingCICheckEvidence(checks []scm.Check) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	identities := make(map[string]bool, len(checks))
+	for _, check := range checks {
+		id := strings.TrimSpace(check.ProviderID)
+		if id == "" || identities[id] || check.Bucket != scm.CheckBucketPass || check.PreRunFailure || check.AwaitingApproval {
+			return false
+		}
+		identities[id] = true
+	}
+	return true
 }
 
 func appendOwnerSupportResults(outcome *pipeline.StepOutcome, results []Finding) error {
