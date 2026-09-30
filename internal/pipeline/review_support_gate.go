@@ -1,13 +1,11 @@
 package pipeline
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -49,15 +47,11 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 	if err != nil {
 		return fmt.Errorf("read PR comparison for support verdict: %w", err)
 	}
-	if receipt == nil || current.ReviewApprovedHeadSHA == nil || receipt.LocalHeadSHA != current.HeadSHA {
+	if receipt == nil || current.ReviewApprovedHeadSHA == nil ||
+		receipt.LocalHeadSHA != current.HeadSHA || *current.ReviewApprovedHeadSHA != receipt.LocalHeadSHA {
 		return fmt.Errorf("pending Review support lacks an approved current-head comparison")
 	}
 	approvedHead := *current.ReviewApprovedHeadSHA
-	if approvedHead != current.HeadSHA {
-		if _, err := git.Run(context.Background(), e.workDir, "merge-base", "--is-ancestor", approvedHead, current.HeadSHA); err != nil {
-			return fmt.Errorf("pending Review support is not continuous with approved head: %w", err)
-		}
-	}
 	for _, claim := range pending {
 		if claim.ID == "" || claim.Support.OwnerResult != nil {
 			return fmt.Errorf("pending Review claim has invalid owner identity")
@@ -75,7 +69,6 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 		owner := byName[ownerName]
 		if ownerName == types.StepCI && owner != nil && owner.Status == types.StepStatusSkipped &&
 			current.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
-			approvedHead == receipt.LocalHeadSHA &&
 			stepsSkipped(byName, types.StepPush, types.StepPR, types.StepCI) {
 			// Controller explicitly owns this exact-head CI decision. The run
 			// remains pending-external-ci at the AXI surface; this is a handoff,
@@ -100,7 +93,7 @@ func (e *Executor) validateReviewSupportOwners(runID string, through types.StepN
 				result.Generation > receipt.Generation || result.Disposition != types.FindingSupportDispositionDisproven {
 				continue
 			}
-			if approvedHead == current.HeadSHA && result.DiffDigest != receipt.DiffDigest {
+			if result.DiffDigest != receipt.DiffDigest {
 				continue
 			}
 			observedAt, err := time.Parse(time.RFC3339Nano, result.ObservedAt)

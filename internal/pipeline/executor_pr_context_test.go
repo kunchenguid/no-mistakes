@@ -355,6 +355,105 @@ func TestExecutorExternalCIBypassRejectsPostReviewDocumentCommit(t *testing.T) {
 	}
 }
 
+func TestExecutorTestSupportRejectsPostReviewDocumentCommit(t *testing.T) {
+	database, p, baseRun, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	reviewedHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, workDir, "docs.md", "post-review document update\n")
+	execGit(t, workDir, "add", "docs.md")
+	execGit(t, workDir, "commit", "-m", "document")
+	advancedHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := database.InsertRun(repo.ID, "feature-test-advanced", reviewedHead, baseRun.BaseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := db.PRContextCandidate{
+		LocalHeadSHA: reviewedHead, TargetBranch: "develop",
+		TargetSHA:    "2222222222222222222222222222222222222222",
+		MergeBaseSHA: "2222222222222222222222222222222222222222",
+		DiffDigest:   "3333333333333333333333333333333333333333333333333333333333333333",
+	}
+	if _, err := database.BindRunPRContext(run.ID, receipt, types.StepRebase); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := database.GetRunPRContext(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := types.Finding{
+		ID: "review-test-advanced", Severity: types.FindingSeverityWarning,
+		Description: "historical test failure", Action: types.ActionNoOp,
+		Category: types.FindingCategoryReviewSupportPending,
+		Support:  &types.FindingSupport{ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: "go test ./..."}},
+	}
+	claimJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{claim}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(review.ID, claimJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	resolved := claim
+	resolved.ID = types.ReviewSupportClaimID(claim)
+	resolved.Severity = types.FindingSeverityInfo
+	resolved.Category = types.FindingCategoryReviewSupportResolved
+	resolved.Support = &types.FindingSupport{
+		ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: "go test ./..."},
+		OwnerResult: &types.FindingOwnerResult{
+			ReviewFindingID: claim.ID, HeadSHA: reviewedHead, TargetSHA: receipt.TargetSHA,
+			DiffDigest: receipt.DiffDigest, Generation: bound.Generation,
+			ObservedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+			Disposition: types.FindingSupportDispositionDisproven, ExitCode: &zero,
+		},
+	}
+	resolvedJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{resolved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testStep, err := database.InsertStepResult(run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(testStep.ID, resolvedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, reviewedHead); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, advancedHead); err != nil {
+		t.Fatal(err)
+	}
+	receipt.LocalHeadSHA = advancedHead
+	if _, err := database.AdvanceRunPRContext(run.ID, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewExecutor(database, p, nil, nil, nil, nil)
+	executor.workDir = workDir
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err == nil {
+		t.Fatal("Test support accepted a document commit after Review approval")
+	}
+}
+
 func TestExecutorRecoveredApprovalRevalidatesMovedPRTargetBeforeUsingParkedVerdict(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
