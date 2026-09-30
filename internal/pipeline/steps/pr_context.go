@@ -51,12 +51,17 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 		if err != nil {
 			return pipeline.PRContextDecision{}, fmt.Errorf("read terminal PR state after CI: %w", err)
 		}
-		if current.PRState != nil && (*current.PRState == "merged" || *current.PRState == "closed") {
+		state := sctx.Run.PRState
+		if state == nil && current != nil {
+			state = current.PRState
+		}
+		if state != nil && (*state == "merged" || *state == "closed") {
 			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
 			if err != nil {
 				return pipeline.PRContextDecision{}, fmt.Errorf("read terminal PR comparison after CI: %w", err)
 			}
-			if receipt == nil || receipt.PRURL == "" || current.PRURL == nil || *current.PRURL != receipt.PRURL {
+			if receipt == nil || receipt.PRURL == "" || current == nil || current.PRURL == nil || *current.PRURL != receipt.PRURL ||
+				current.HeadSHA != receipt.LocalHeadSHA || sctx.Run.HeadSHA != receipt.LocalHeadSHA {
 				return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI state lacks a matching PR receipt")
 			}
 			sctx.Run.PRURL = current.PRURL
@@ -64,18 +69,13 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 			if err != nil {
 				return pipeline.PRContextDecision{}, err
 			}
-			localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
-			if err != nil {
-				return pipeline.PRContextDecision{}, fmt.Errorf("read local head after terminal CI: %w", err)
+			if !strings.EqualFold(string(selection.State), *state) {
+				return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI state differs from the live PR state")
 			}
-			if !strings.EqualFold(string(selection.State), *current.PRState) || selection.PRURL != receipt.PRURL ||
-				!scm.SameSourceRepository(resolvedProvider(sctx), selection.SourceRepo, receipt.SourceRepo) ||
-				selection.SourceBranch != receipt.SourceBranch || selection.ForgeHeadSHA != receipt.ForgeHeadSHA ||
-				selection.TargetBranch != receipt.TargetBranch || current.HeadSHA != receipt.LocalHeadSHA ||
-				localHead != current.HeadSHA {
-				return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI state differs from the recorded PR comparison")
+			if err := verifyCurrentPRComparison(sctx, host, selection, receipt, nil); err != nil {
+				return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI comparison: %w", err)
 			}
-			sctx.Run.PRState = current.PRState
+			sctx.Run.PRState = state
 			return pipeline.PRContextDecision{Target: selection}, nil
 		}
 	}
@@ -83,6 +83,26 @@ func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.P
 	selection, freshRetarget, err := resolveAndApplyPRTarget(sctx, reader, retargeter, step == types.StepCI)
 	if err != nil {
 		return pipeline.PRContextDecision{}, err
+	}
+	if step == types.StepCI && (selection.State == scm.PRStateMerged || selection.State == scm.PRStateClosed) {
+		// A merge can land before CI starts or while a parked CI gate is being
+		// recovered. Its result must be proven before the owner step runs, too.
+		receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+		if err != nil {
+			return pipeline.PRContextDecision{}, err
+		}
+		current, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			return pipeline.PRContextDecision{}, err
+		}
+		if receipt == nil || current == nil || current.PRURL == nil || *current.PRURL != receipt.PRURL ||
+			current.HeadSHA != receipt.LocalHeadSHA || sctx.Run.HeadSHA != receipt.LocalHeadSHA {
+			return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI entry lacks a matching PR receipt")
+		}
+		if err := verifyCurrentPRComparison(sctx, host, selection, receipt, nil); err != nil {
+			return pipeline.PRContextDecision{}, fmt.Errorf("terminal CI entry comparison: %w", err)
+		}
+		return pipeline.PRContextDecision{Target: selection}, nil
 	}
 	return guardPRContextWithSelection(sctx, step, selection, freshRetarget)
 }
@@ -148,46 +168,18 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil || sctx.Repo == nil {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR context requires a run, repository, and database")
 	}
-	target, err := ValidateRunPRBaseBranchName(selection.TargetBranch)
+	candidate, err := readPRComparison(sctx, selection)
 	if err != nil {
-		return pipeline.PRContextDecision{}, fmt.Errorf("invalid selected PR target: %w", err)
+		return pipeline.PRContextDecision{}, err
 	}
-	selection.TargetBranch = target
-	if err := fetchRunUpstreamBranch(sctx.Ctx, sctx, target); err != nil {
-		return pipeline.PRContextDecision{}, fmt.Errorf("fetch selected PR target %q: %w", target, err)
-	}
-	targetSHA, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", "refs/remotes/origin/"+target+"^{commit}")
-	if err != nil {
-		return pipeline.PRContextDecision{}, fmt.Errorf("resolve fetched PR target %q: %w", target, err)
-	}
-	localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
-	if err != nil {
-		return pipeline.PRContextDecision{}, fmt.Errorf("read local head for PR comparison: %w", err)
-	}
+	selection.TargetBranch = candidate.TargetBranch
+	localHead := candidate.LocalHeadSHA
 	if step == types.StepPR && selection.ForgeHeadSHA != "" && selection.ForgeHeadSHA != localHead {
 		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s before PR publication", selection.ForgeHeadSHA, localHead)
 	}
 	if sctx.Run.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
 		step.Order() >= types.StepCI.Order() && selection.PRURL != "" && selection.ForgeHeadSHA != localHead {
 		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s for external CI handoff", selection.ForgeHeadSHA, localHead)
-	}
-	mergeBase, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", targetSHA, localHead)
-	if err != nil {
-		return pipeline.PRContextDecision{}, fmt.Errorf("compute PR merge base: %w", err)
-	}
-	// Hash raw patch bytes. Trimming output would collapse distinct patches
-	// whose final whitespace differs and undermine the receipt comparison.
-	patch, err := git.RunRaw(sctx.Ctx, sctx.WorkDir,
-		"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index",
-		targetSHA+"..."+localHead)
-	if err != nil {
-		return pipeline.PRContextDecision{}, fmt.Errorf("compute canonical PR diff: %w", err)
-	}
-	digest := sha256.Sum256(patch)
-	candidate := db.PRContextCandidate{
-		LocalHeadSHA: localHead, TargetBranch: target,
-		TargetSHA: targetSHA, MergeBaseSHA: mergeBase,
-		DiffDigest: hex.EncodeToString(digest[:]),
 	}
 	if selection.SourceRepo != "" {
 		candidate.SourceRepo = selection.SourceRepo
@@ -287,4 +279,125 @@ func sameComparisonExceptNewPRIdentity(previous *db.PRContext, next db.PRContext
 		previous.TargetSHA == next.TargetSHA &&
 		previous.MergeBaseSHA == next.MergeBaseSHA &&
 		previous.DiffDigest == next.DiffDigest
+}
+
+// readPRComparison always fetches the actual target. A terminal PR does not
+// turn a cached target ref into current comparison evidence.
+func readPRComparison(sctx *pipeline.StepContext, selection pipeline.PRTargetSelection) (db.PRContextCandidate, error) {
+	target, err := ValidateRunPRBaseBranchName(selection.TargetBranch)
+	if err != nil {
+		return db.PRContextCandidate{}, fmt.Errorf("invalid selected PR target: %w", err)
+	}
+	if target == "" {
+		return db.PRContextCandidate{}, fmt.Errorf("selected PR target is empty")
+	}
+	if err := fetchRunUpstreamBranch(sctx.Ctx, sctx, target); err != nil {
+		return db.PRContextCandidate{}, fmt.Errorf("fetch selected PR target %q: %w", target, err)
+	}
+	targetSHA, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", "refs/remotes/origin/"+target+"^{commit}")
+	if err != nil {
+		return db.PRContextCandidate{}, fmt.Errorf("resolve fetched PR target %q: %w", target, err)
+	}
+	localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return db.PRContextCandidate{}, fmt.Errorf("read local head for PR comparison: %w", err)
+	}
+	return prComparisonAtTarget(sctx, target, targetSHA, localHead)
+}
+
+func prComparisonAtTarget(sctx *pipeline.StepContext, target, targetSHA, localHead string) (db.PRContextCandidate, error) {
+	mergeBase, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", targetSHA, localHead)
+	if err != nil {
+		return db.PRContextCandidate{}, fmt.Errorf("compute PR merge base: %w", err)
+	}
+	// Hash raw bytes, including the patch's trailing whitespace.
+	patch, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", targetSHA+"..."+localHead)
+	if err != nil {
+		return db.PRContextCandidate{}, fmt.Errorf("compute canonical PR diff: %w", err)
+	}
+	digest := sha256.Sum256(patch)
+	return db.PRContextCandidate{LocalHeadSHA: localHead, TargetBranch: target, TargetSHA: targetSHA, MergeBaseSHA: mergeBase, DiffDigest: hex.EncodeToString(digest[:])}, nil
+}
+
+// verifyCurrentPRComparison is read-only: owner evidence and terminal CI must
+// validate the receipt, never replace it with the post-merge empty diff.
+func verifyCurrentPRComparison(sctx *pipeline.StepContext, host scm.Host, selection pipeline.PRTargetSelection, receipt *db.PRContext, facts *scm.PRFacts) error {
+	if receipt == nil || receipt.PRURL == "" || selection.PRURL != receipt.PRURL ||
+		!scm.SameSourceRepository(resolvedProvider(sctx), selection.SourceRepo, receipt.SourceRepo) ||
+		selection.SourceBranch != receipt.SourceBranch || selection.ForgeHeadSHA != receipt.ForgeHeadSHA ||
+		selection.ForgeHeadSHA != receipt.LocalHeadSHA || selection.TargetBranch != receipt.TargetBranch {
+		return fmt.Errorf("live PR identity, head, or target differs from its comparison receipt")
+	}
+	current, err := readPRComparison(sctx, selection)
+	if err != nil {
+		return err
+	}
+	if current.LocalHeadSHA != receipt.LocalHeadSHA {
+		return fmt.Errorf("local head differs from PR comparison receipt")
+	}
+	expected := receipt.PRContextCandidate
+	expected.PRURL, expected.SourceRepo, expected.SourceBranch, expected.ForgeHeadSHA = "", "", "", ""
+	if selection.State != scm.PRStateMerged {
+		if current != expected {
+			return fmt.Errorf("live target commit, merge base, or diff differs from PR comparison receipt")
+		}
+		return nil
+	}
+	// Merging changes the target, so recheck the original immutable comparison
+	// and separately prove its exact result landed on the fetched target.
+	original, err := prComparisonAtTarget(sctx, receipt.TargetBranch, receipt.TargetSHA, receipt.LocalHeadSHA)
+	if err != nil {
+		return err
+	}
+	if original != expected {
+		return fmt.Errorf("original merged PR comparison differs from its receipt")
+	}
+	if facts == nil {
+		reader, ok := host.(scm.PRFactsReader)
+		if !ok {
+			return fmt.Errorf("provider cannot read merged PR facts")
+		}
+		observed, err := reader.ReadPRFacts(sctx.Ctx, prFromOwnedURL(receipt.PRURL))
+		if err != nil {
+			return fmt.Errorf("read merged PR evidence: %w", err)
+		}
+		facts = &observed
+	}
+	if facts.State != scm.PRStateMerged || facts.PR.URL != receipt.PRURL ||
+		facts.HeadSHA != receipt.LocalHeadSHA || facts.SourceBranch != receipt.SourceBranch ||
+		!scm.SameSourceRepository(resolvedProvider(sctx), facts.SourceRepository, receipt.SourceRepo) || facts.BaseBranch != receipt.TargetBranch || facts.MergeCommitSHA == "" {
+		return fmt.Errorf("merged PR evidence differs from its comparison receipt")
+	}
+	mergeSHA := facts.MergeCommitSHA
+	if proofHost, ok := host.(scm.MergedProofHost); ok {
+		pr := prFromOwnedURL(receipt.PRURL)
+		proof, err := proofHost.GetMergedProof(sctx.Ctx, pr, receipt.LocalHeadSHA)
+		if err != nil {
+			return fmt.Errorf("read exact merged PR proof: %w", err)
+		}
+		if !proof.Merged || proof.Number != pr.Number || proof.URL != receipt.PRURL || proof.HeadSHA != receipt.LocalHeadSHA || proof.MergeCommitSHA != mergeSHA || proof.MergedAt.IsZero() || proof.MergedBy == "" {
+			return fmt.Errorf("merged PR proof differs from its comparison receipt")
+		}
+	} else if host.Capabilities().MergedProof {
+		return fmt.Errorf("provider advertises merged proof without implementing it")
+	}
+	resolvedMerge, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", mergeSHA+"^{commit}")
+	if err != nil || resolvedMerge != mergeSHA {
+		return fmt.Errorf("merged PR result is not an exact commit")
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", mergeSHA, current.TargetSHA); err != nil {
+		return fmt.Errorf("merged PR result is absent from current target: %w", err)
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", receipt.TargetSHA, mergeSHA); err != nil {
+		return fmt.Errorf("merged PR result does not contain the reviewed target: %w", err)
+	}
+	mergeTree, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-tree", "--write-tree", receipt.TargetSHA, receipt.LocalHeadSHA)
+	if err != nil {
+		return fmt.Errorf("cannot prove the reviewed merge result: %w", err)
+	}
+	actualTree, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", mergeSHA+"^{tree}")
+	if err != nil || mergeTree != actualTree {
+		return fmt.Errorf("merged PR tree differs from the reviewed comparison result")
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -122,10 +123,14 @@ func completedReviewSupportFixture(t *testing.T, claim Finding) (*pipeline.StepC
 	t.Helper()
 	dir, base, head := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, nil, dir, base, head, config.Commands{})
-	candidate := db.PRContextCandidate{
-		PRURL: "https://github.com/test/repo/pull/42", SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: head,
-		LocalHeadSHA: head, TargetBranch: "main", TargetSHA: base, MergeBaseSHA: base, DiffDigest: strings.Repeat("a", 64),
+	candidate, err := readPRComparison(sctx, pipeline.PRTargetSelection{TargetBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	candidate.PRURL = "https://github.com/test/repo/pull/42"
+	candidate.SourceRepo = "test/repo"
+	candidate.SourceBranch = "feature"
+	candidate.ForgeHeadSHA = head
 	if _, err := sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, types.StepReview); err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +253,8 @@ type supportCheckHost struct {
 	checks []scm.Check
 }
 
+func (h *supportCheckHost) Capabilities() scm.Capabilities { return scm.Capabilities{} }
+
 func (h *supportCheckHost) ReadPRFacts(context.Context, *scm.PR) (scm.PRFacts, error) {
 	return h.facts, nil
 }
@@ -286,8 +293,8 @@ func TestCIOwnerRequiresExactCurrentHeadCheckIdentity(t *testing.T) {
 	}
 	host.facts.State = scm.PRStateMerged
 	results, err = resolveCIReviewSupport(sctx, host, pr)
-	if err != nil || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
-		t.Fatalf("merged exact-head check = %+v, %v", results, err)
+	if err != nil || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("merged check without merge evidence = %+v, %v", results, err)
 	}
 	host.facts.State = scm.PRStateOpen
 	host.checks[0].Bucket, host.checks[0].State = scm.CheckBucketFail, "FAILURE"
@@ -341,6 +348,149 @@ func TestCIOwnerUsesProviderSourceIdentity(t *testing.T) {
 			results, err = resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
 			if err != nil || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
 				t.Fatalf("different source repository = %+v, %v", results, err)
+			}
+		})
+	}
+}
+
+func TestCIOwnerRejectsTargetCommitMovement(t *testing.T) {
+	sctx, receipt := completedReviewSupportFixture(t, pendingReviewCIClaim("run-42", ""))
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := types.MarshalFindingsJSON(Findings{Items: []Finding{pendingReviewCIClaim("run-42", receipt.LocalHeadSHA)}})
+	if err := sctx.DB.SetStepFindings(steps[0].ID, encoded); err != nil {
+		t.Fatal(err)
+	}
+	host := &supportCheckHost{facts: scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateOpen, SourceRepository: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, HeadSHA: receipt.LocalHeadSHA, BaseBranch: receipt.TargetBranch}, checks: []scm.Check{{ProviderID: "run-42", Bucket: scm.CheckBucketPass}}}
+	gitCmd(t, sctx.WorkDir, "checkout", "main")
+	gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "move target")
+	gitCmd(t, sctx.WorkDir, "checkout", "feature")
+	results, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
+	if err != nil || len(results) != 1 || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("changed target support = %+v, %v; want unresolved", results, err)
+	}
+}
+
+type supportMergedProofHost struct {
+	*supportCheckHost
+	proof scm.MergedProof
+}
+
+func (h *supportMergedProofHost) GetMergedProof(context.Context, *scm.PR, string) (scm.MergedProof, error) {
+	return h.proof, nil
+}
+
+func TestCIOwnerProvesMergedResultOnAdvancedTarget(t *testing.T) {
+	sctx, receipt := completedReviewSupportFixture(t, pendingReviewCIClaim("run-42", ""))
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := types.MarshalFindingsJSON(Findings{Items: []Finding{pendingReviewCIClaim("run-42", receipt.LocalHeadSHA)}})
+	if err := sctx.DB.SetStepFindings(steps[0].ID, encoded); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, sctx.WorkDir, "checkout", "main")
+	gitCmd(t, sctx.WorkDir, "merge", "--squash", "feature")
+	gitCmd(t, sctx.WorkDir, "commit", "-m", "squash reviewed comparison")
+	mergeSHA := gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
+	gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "advance after merge")
+	gitCmd(t, sctx.WorkDir, "checkout", "feature")
+	host := &supportCheckHost{facts: scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateMerged, MergeCommitSHA: mergeSHA, SourceRepository: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, HeadSHA: receipt.LocalHeadSHA, BaseBranch: receipt.TargetBranch}, checks: []scm.Check{{ProviderID: "run-42", Bucket: scm.CheckBucketPass}}}
+	results, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
+	if err != nil || len(results) != 1 || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
+		t.Fatalf("merged current support = %+v, %v", results, err)
+	}
+	if results[0].Support.OwnerResult.TargetSHA != receipt.TargetSHA || results[0].Support.OwnerResult.DiffDigest != receipt.DiffDigest {
+		t.Fatalf("merged support replaced original comparison: %+v", results[0].Support.OwnerResult)
+	}
+	proofHost := &supportMergedProofHost{supportCheckHost: host, proof: scm.MergedProof{Merged: true, Number: "42", URL: receipt.PRURL, HeadSHA: receipt.LocalHeadSHA, MergeCommitSHA: mergeSHA, MergedAt: time.Now(), MergedBy: "merge-bot"}}
+	results, err = resolveCIReviewSupport(sctx, proofHost, &scm.PR{URL: receipt.PRURL, Number: "42"})
+	if err != nil || len(results) != 1 || results[0].Support.OwnerResult.Disposition != types.FindingSupportDispositionDisproven {
+		t.Fatalf("provider merge proof = %+v, %v", results, err)
+	}
+	proofHost.proof.HeadSHA = receipt.TargetSHA
+	results, err = resolveCIReviewSupport(sctx, proofHost, &scm.PR{URL: receipt.PRURL, Number: "42"})
+	if err != nil || len(results) != 1 || results[0].Category != types.FindingCategoryReviewSupportUnresolved {
+		t.Fatalf("different provider merged head = %+v, %v", results, err)
+	}
+
+}
+
+func TestCIOwnerRechecksHistoricalClaimAfterForwardEdit(t *testing.T) {
+	for _, tc := range []struct {
+		name                                    string
+		checks                                  []scm.Check
+		unknownHead, mutableHead, wantDisproven bool
+	}{
+		{name: "current checks pass", checks: []scm.Check{{ProviderID: "new-check-1", Bucket: scm.CheckBucketPass}, {ProviderID: "new-check-2", Bucket: scm.CheckBucketPass}}, wantDisproven: true},
+		{name: "new check fails", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketFail}}},
+		{name: "check pending", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketPending}}},
+		{name: "check skipped", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketSkip}}},
+		{name: "missing checks"},
+		{name: "unknown provider identity", checks: []scm.Check{{Bucket: scm.CheckBucketPass}}},
+		{name: "ambiguous provider identity", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketPass}, {ProviderID: "new-check", Bucket: scm.CheckBucketPass}}},
+		{name: "setup failed", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketPass, PreRunFailure: true}}},
+		{name: "approval pending", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketPass, AwaitingApproval: true}}},
+		{name: "mutable historical head", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketPass}}, mutableHead: true},
+		{name: "unknown historical head", checks: []scm.Check{{ProviderID: "new-check", Bucket: scm.CheckBucketPass}}, unknownHead: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sctx, original := completedReviewSupportFixture(t, pendingReviewCIClaim("old-check", ""))
+			steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			historicalHead := original.LocalHeadSHA
+			if tc.unknownHead {
+				historicalHead = strings.Repeat("0", 40)
+			}
+			if tc.mutableHead {
+				historicalHead = "HEAD"
+			}
+			claim := pendingReviewCIClaim("old-check", historicalHead)
+			encoded, err := types.MarshalFindingsJSON(Findings{Items: []Finding{claim}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.SetStepFindings(steps[0].ID, encoded); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "forward pipeline edit")
+			head := gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
+			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, head); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Run.HeadSHA = head
+			candidate, err := readPRComparison(sctx, pipeline.PRTargetSelection{TargetBranch: original.TargetBranch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate.PRURL, candidate.SourceRepo, candidate.SourceBranch, candidate.ForgeHeadSHA = original.PRURL, original.SourceRepo, original.SourceBranch, head
+			if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, candidate); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sctx.PRContext = receipt
+			host := &supportCheckHost{facts: scm.PRFacts{PR: scm.PR{URL: receipt.PRURL}, State: scm.PRStateOpen, HeadSHA: head, SourceRepository: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, BaseBranch: receipt.TargetBranch}, checks: tc.checks}
+			results, err := resolveCIReviewSupport(sctx, host, &scm.PR{URL: receipt.PRURL, Number: "42"})
+			if err != nil || len(results) != 1 {
+				t.Fatalf("forward claim result = %+v, %v", results, err)
+			}
+			want := types.FindingSupportDispositionUnresolved
+			if tc.wantDisproven {
+				want = types.FindingSupportDispositionDisproven
+			}
+			if results[0].Support.OwnerResult.Disposition != want {
+				t.Fatalf("forward claim result = %+v; want %s", results[0], want)
+			}
+			if results[0].Support.CI.CheckID != "old-check" || results[0].Support.CI.HeadSHA != historicalHead || results[0].Support.OwnerResult.HeadSHA != head || results[0].Support.OwnerResult.Generation != receipt.Generation {
+				t.Fatalf("historical claim relabeled or owner proof stale: %+v", results[0].Support)
 			}
 		})
 	}

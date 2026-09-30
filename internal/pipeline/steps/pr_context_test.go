@@ -17,11 +17,14 @@ import (
 
 func TestPRContextGuardRechecksTerminalCIAgainstLivePR(t *testing.T) {
 	for _, tc := range []struct {
-		name, recorded, liveState, liveSource, liveBase string
-		merged, movedHead, wantError                    bool
+		name, recorded, liveState, liveSource, liveBase                   string
+		merged, movedHead, movedTarget, missingTarget, pending, wantError bool
 	}{
+		{name: "pending closed", pending: true, recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main"},
+		{name: "target advanced after close", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", movedTarget: true, wantError: true},
+		{name: "missing live target", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", missingTarget: true, wantError: true},
 		{name: "closed", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main"},
-		{name: "merged", recorded: "merged", liveState: "closed", liveSource: "test/repo", liveBase: "main", merged: true},
+		{name: "merged without proof", recorded: "merged", liveState: "closed", liveSource: "test/repo", liveBase: "main", merged: true, wantError: true},
 		{name: "reopened", recorded: "closed", liveState: "open", liveSource: "test/repo", liveBase: "main", wantError: true},
 		{name: "retargeted", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "develop", wantError: true},
 		{name: "pushed", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", movedHead: true, wantError: true},
@@ -35,8 +38,18 @@ func TestPRContextGuardRechecksTerminalCIAgainstLivePR(t *testing.T) {
 			if _, err := guardPRContextWithSelection(sctx, types.StepPR, selection, false); err != nil {
 				t.Fatal(err)
 			}
-			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, tc.recorded); err != nil {
+			if tc.pending {
+				sctx.Run.PRState = &tc.recorded
+			} else if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, tc.recorded); err != nil {
 				t.Fatal(err)
+			}
+			if tc.movedTarget {
+				gitCmd(t, dir, "checkout", "main")
+				gitCmd(t, dir, "commit", "--allow-empty", "-m", "move target after close")
+				gitCmd(t, dir, "checkout", "feature")
+			}
+			if tc.missingTarget {
+				gitCmd(t, dir, "branch", "-D", "main")
 			}
 			liveHead := head
 			if tc.movedHead {
@@ -380,6 +393,142 @@ func TestPRContextGuardAcceptsPublishedCIRepairHead(t *testing.T) {
 			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
 			if err != nil || receipt.LocalHeadSHA != publishedHead {
 				t.Fatalf("published repair receipt = %+v, %v", receipt, err)
+			}
+		})
+	}
+}
+
+func TestPRContextGuardProvesMergedComparison(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode                                                                   string
+		advance, changedResult, targetMoved, missingMerge, detachedMerge, beforeStep bool
+		wantError                                                                    bool
+	}{
+		{name: "already merged at CI entry", mode: "merge", beforeStep: true},
+		{name: "already squashed at CI entry", mode: "squash", beforeStep: true},
+		{name: "already rebased at CI entry", mode: "rebase", beforeStep: true},
+		{name: "merge", mode: "merge"},
+		{name: "squash", mode: "squash"},
+		{name: "multiple rebased commits", mode: "rebase"},
+		{name: "target advances after merge", mode: "merge", advance: true},
+		{name: "merge changes result", mode: "merge", changedResult: true, wantError: true},
+		{name: "target changed before merge", mode: "merge", targetMoved: true, wantError: true},
+		{name: "missing merge evidence", mode: "merge", missingMerge: true, wantError: true},
+		{name: "merge absent from target", mode: "merge", detachedMerge: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			if tc.mode == "rebase" {
+				if err := os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second change\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "second.txt")
+				gitCmd(t, dir, "commit", "-m", "second change")
+				head = gitCmd(t, dir, "rev-parse", "HEAD")
+			}
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			prURL := "https://github.com/test/repo/pull/42"
+			selection := pipeline.PRTargetSelection{PRURL: prURL, SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: head, TargetBranch: "main"}
+			if _, err := guardPRContextWithSelection(sctx, types.StepPR, selection, false); err != nil {
+				t.Fatal(err)
+			}
+			before, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "checkout", "main")
+			if tc.targetMoved {
+				if err := os.WriteFile(filepath.Join(dir, "unreviewed.txt"), []byte("unreviewed\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "unreviewed.txt")
+				gitCmd(t, dir, "commit", "-m", "target moved")
+			}
+			switch tc.mode {
+			case "squash":
+				gitCmd(t, dir, "merge", "--squash", "feature")
+				gitCmd(t, dir, "commit", "-m", "squash reviewed head")
+			case "rebase":
+				// Cherry-pick each commit onto the target, as a provider rebase merge
+				// does. A different committer forces new commit IDs.
+				commits := strings.Fields(gitCmd(t, dir, "rev-list", "--reverse", base+".."+head))
+				for _, commit := range commits {
+					gitCmd(t, dir, "-c", "user.name=Merge bot", "cherry-pick", commit)
+				}
+			default:
+				gitCmd(t, dir, "merge", "--no-ff", "feature", "-m", "merge reviewed head")
+			}
+			if tc.changedResult {
+				if err := os.WriteFile(filepath.Join(dir, "unexpected.txt"), []byte("changed result\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "unexpected.txt")
+				gitCmd(t, dir, "commit", "--amend", "--no-edit")
+			}
+			mergedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			if tc.advance {
+				gitCmd(t, dir, "commit", "--allow-empty", "-m", "target advances after merge")
+			}
+			if tc.detachedMerge {
+				gitCmd(t, dir, "reset", "--hard", base)
+			}
+			if tc.missingMerge {
+				mergedSHA = ""
+			}
+			gitCmd(t, dir, "checkout", "feature")
+			state := "merged"
+			if !tc.beforeStep {
+				sctx.Run.PRState = &state
+			}
+			facts := fmt.Sprintf(`{"number":42,"html_url":%q,"state":"closed","merged":true,"merge_commit_sha":%q,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, prURL, mergedSHA, head)
+			binDir := fakeCLIBinDir(t)
+			linkTestBinary(t, binDir, "gh")
+			sctx.Env = fakeCLIEnv(binDir, map[string]string{"FAKE_CLI_MODE": "ci-gh-reconcile", "FAKE_CLI_PR_FACTS_JSON": facts})
+			sctx.PRContextAfterStep = !tc.beforeStep
+			decision, err := GuardPRContext(sctx, types.StepCI)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("merged guard = %+v, %v; want error %t", decision, err, tc.wantError)
+			}
+			after, readErr := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if readErr != nil || *after != *before {
+				t.Fatalf("merged receipt changed: before=%+v after=%+v error=%v", before, after, readErr)
+			}
+		})
+	}
+}
+
+func TestPRContextGuardRejectsCorruptTerminalComparison(t *testing.T) {
+	for _, field := range []string{"merge base", "diff digest"} {
+		t.Run(field, func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, nil, dir, base, head, config.Commands{})
+			prURL := "https://github.com/test/repo/pull/42"
+			selection := pipeline.PRTargetSelection{PRURL: prURL, SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: head, TargetBranch: "main"}
+			if _, err := guardPRContextWithSelection(sctx, types.StepPR, selection, false); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := receipt.PRContextCandidate
+			if field == "merge base" {
+				candidate.MergeBaseSHA = head
+			} else {
+				candidate.DiffDigest = strings.Repeat("0", 64)
+			}
+			if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, candidate); err != nil {
+				t.Fatal(err)
+			}
+			state := "closed"
+			sctx.Run.PRState = &state
+			sctx.PRContextAfterStep = true
+			facts := fmt.Sprintf(`{"number":42,"html_url":%q,"state":"closed","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"main"}}`, prURL, head)
+			binDir := fakeCLIBinDir(t)
+			linkTestBinary(t, binDir, "gh")
+			sctx.Env = fakeCLIEnv(binDir, map[string]string{"FAKE_CLI_MODE": "ci-gh-reconcile", "FAKE_CLI_PR_FACTS_JSON": facts})
+			if _, err := GuardPRContext(sctx, types.StepCI); err == nil {
+				t.Fatal("accepted corrupt terminal comparison")
 			}
 		})
 	}
