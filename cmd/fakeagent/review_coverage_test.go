@@ -110,6 +110,25 @@ func TestMatchDoesNotFillReviewedPathsOutsideAReviewTurn(t *testing.T) {
 	}
 }
 
+func TestHeldToPathsDecodesEscapedNames(t *testing.T) {
+	prompt := strings.Join([]string{
+		"Review the changes with a risk assessment.",
+		"Changed files this review is held to (computed by the pipeline):",
+		"- plain.txt",
+		"- odd\\nname.txt",
+		"- ctrl\\u0007file.go",
+		"- A complete review pass examines every listed file.",
+	}, "\n")
+	got, ok := heldToPaths(prompt)
+	if !ok {
+		t.Fatal("held-to section not found")
+	}
+	want := []string{"plain.txt", "odd\nname.txt", "ctrl\afile.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("paths = %q, want %q", got, want)
+	}
+}
+
 func TestReviewCoverageReportsAnEmptySetAsPresent(t *testing.T) {
 	dir, base := setupCoverageRepo(t)
 	paths, err := reviewCoverageForPrompt(dir, reviewPromptFor(base, "*.md, *.txt, *.generated.go, vendor/**"))

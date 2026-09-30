@@ -469,7 +469,7 @@ Prose changes only. Do not request test coverage.
 
 The review step appends only the blocks whose `path` matches at least one changed file, in the order they appear in the file.
 Two entries with the same `path` **and** the same `instructions` are injected once. The same instruction text under two different `path` values is injected once per path, because each block states its own scope. Two entries with the same `path` and different `instructions` are both injected.
-Matching runs against the full changed-file list and is deliberately **not** filtered by `ignore_patterns`: that field is read from the pushed branch, so filtering here would let a contributor drop one of your rules from the review of their own branch.
+Matching runs against the full changed-file list and is deliberately **not** filtered by `ignore_patterns`: that field is read from the pushed branch, so filtering there would let a contributor drop one of your rules from the review of their own branch. A pushed ignore entry therefore cannot keep a covered file out of review, and your own (default-branch) `ignore_patterns` decides the opposite boundary: a covered file the trusted list also excludes is never pulled into review by the rule alone (it is reviewed only if the pushed list leaves it a survivor, in which case the rule still applies to it).
 
 Blocks augment the built-in review instructions; they cannot disable them, and a finding the reviewer raises from a block goes through the same severity and action model as any other finding.
 With nothing configured, or nothing matching the change, the review prompt is exactly what it would be without this setting.
@@ -556,7 +556,7 @@ Do not rely on a configured command to leave a background server or watcher runn
 
 ### ignore_patterns
 
-Paths to exclude from review and documentation checks.
+Paths to exclude from review and documentation checks. `ignore_patterns` is read from the pushed branch, so it cannot waive a trusted rule: a path a matched [`review.path_instructions`](#reviewpath_instructions) entry covers is pulled back into the reviewable set and the coverage contract even when the pushed list excludes it - unless your own default-branch `ignore_patterns` also excludes it, which remains an authorized skip. Only the pushed copy is overruled this way; the trusted list never removes a path that survives on its own.
 
 | | |
 | --- | --- |

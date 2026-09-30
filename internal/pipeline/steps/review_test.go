@@ -1572,10 +1572,12 @@ func TestReviewStep_PushedIgnorePatternsCannotSuppressPathInstructions(t *testin
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			// The branch adds app.go and ignores *.txt, so the reviewable set
-			// is app.go alone; the canned clean review covers it in one turn.
+			// The branch adds app.go and ignores *.txt, but the trusted rule
+			// keeps feature.txt reviewable: a pushed ignore cannot waive a
+			// maintainer's rule, so the reviewable set is both files and the
+			// canned clean review covers them in one turn.
 			findings := cleanReviewFindings()
-			findings.ReviewedPaths = []string{"app.go"}
+			findings.ReviewedPaths = []string{"app.go", "feature.txt"}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},
@@ -1598,6 +1600,176 @@ func TestReviewStep_PushedIgnorePatternsCannotSuppressPathInstructions(t *testin
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "Fixture files carry no product behavior.") {
 		t.Fatalf("a pushed ignore_patterns entry suppressed the trusted rule:\n%s", ag.calls[0].Prompt)
+	}
+}
+
+// The all-ignored early return used to approve the head before trusted
+// instruction selection ever ran, so ignore_patterns ['*'] on the pushed
+// branch produced a Review pass with the matching trusted rule never run
+// (#1069). Files a matched trusted rule covers stay reviewable even when the
+// pushed branch ignores them, which keeps the reviewer running - unless the
+// default branch's own ignore_patterns also excludes them, which stays the
+// authorized skip the early return exists for: only PUSHED ignores are
+// overruled by the union.
+func TestReviewStep_AllIgnoredCannotSuppressTrustedReview(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.PathInstruction{{Path: "*.txt", Instructions: "Review every fixture modification."}}
+	for _, tc := range []struct {
+		name           string
+		rules          []config.PathInstruction
+		trustedIgnores []string
+		wantCalls      int
+	}{
+		{"trusted_rule_matches", rules, nil, 1},
+		{"no_rules", nil, nil, 0},
+		{"rule_matches_nothing", []config.PathInstruction{{Path: "internal/**", Instructions: "SCM rules."}}, nil, 0},
+		// @coreldh's interaction: the default branch's own ignore_patterns is
+		// an authorized skip even for paths a trusted rule covers - only
+		// PUSHED ignores are overruled by the union.
+		{"trusted_ignore_still_skips", rules, []string{"*.txt"}, 0},
+		// ...while a pushed-only ignore that the trusted list does not share
+		// still cannot waive the maintainer's rule.
+		{"pushed_only_ignore_loses_to_rule", rules, []string{"vendor/**"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			// The branch changes feature.txt and commits its own pushed
+			// .no-mistakes.yaml carrying ignore_patterns ['*'] - the config
+			// file itself rides the same diff the issue's proof uses.
+			if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte("ignore_patterns:\n  - '*'\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "add pushed ignore-everything config")
+
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return nil, fmt.Errorf("synthetic reviewer refusal")
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+			sctx.Config.IgnorePatterns = []string{"*"}
+			sctx.Config.TrustedIgnorePatterns = tc.trustedIgnores
+			sctx.Config.Review = config.Review{PathInstructions: tc.rules}
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if len(ag.calls) != tc.wantCalls {
+				t.Fatalf("reviewer calls = %d, want %d", len(ag.calls), tc.wantCalls)
+			}
+			if tc.wantCalls > 0 {
+				// The trusted rule's file stayed reviewable, so the refusing
+				// reviewer is invoked and the step fails instead of approving.
+				if err == nil {
+					t.Fatal("expected the refusing reviewer's error, got nil")
+				}
+				if outcome != nil && outcome.ReviewApprovedHeadSHA == sctx.Run.HeadSHA {
+					t.Fatal("an ignored-out review still approved the head")
+				}
+				if !strings.Contains(ag.calls[0].Prompt, "feature.txt") {
+					t.Errorf("review prompt does not hold coverage to the trusted rule's file:\n%s", ag.calls[0].Prompt)
+				}
+				return
+			}
+			// Nothing is reviewable and no trusted rule claims the files: the
+			// authorized skip approves without invoking the reviewer.
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome == nil || outcome.ReviewApprovedHeadSHA != sctx.Run.HeadSHA {
+				t.Fatalf("authorized skip outcome = %+v, want approval of current head", outcome)
+			}
+		})
+	}
+}
+
+// A rule's displayed file list must agree with the held-to coverage list:
+// showing a file that sits outside the reviewable set invites the reviewer
+// to report it in reviewed_paths, which then parks the round on out-of-scope
+// coverage - while a trusted-ignored file that survived the pushed list is
+// still in the set and still belongs to its rule. Blocks keep only their
+// still-reviewable matched files, a block left with none is dropped from
+// the prompt, and the step log names it as matching only ignored paths
+// rather than looking identical to a rule that matched nothing.
+func TestReviewStep_TrustedIgnoredFilesAreNotClaimedByRuleBlocks(t *testing.T) {
+	t.Parallel()
+
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	// The branch adds files the ignore lists treat three ways: keep.go and
+	// loose.go survive the pushed list (loose.go is additionally ignored on
+	// the trusted copy alone, but a survivor still belongs to its rule),
+	// vendor/x.go and pkg/dropped.go are ignored by pushed AND trusted
+	// lists, and a vendor-only rule matches nothing reviewable at all.
+	for name, content := range map[string]string{
+		".no-mistakes.yaml": "ignore_patterns:\n  - 'vendor/**'\n  - 'pkg/**'\n",
+		"keep.go":           "package main\n",
+		"loose.go":          "package main\n",
+		"vendor/x.go":       "package vendor\n",
+		"pkg/dropped.go":    "package pkg\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "add ignored go files")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return nil, fmt.Errorf("synthetic reviewer refusal")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	sctx.Config.IgnorePatterns = []string{"vendor/**", "pkg/**"}
+	// loose.go is ignored on the trusted copy alone: the pushed branch left
+	// it a survivor, so it stays reviewable and its rule still claims it.
+	sctx.Config.TrustedIgnorePatterns = []string{"vendor/**", "pkg/**", "loose.go"}
+	sctx.Config.Review = config.Review{PathInstructions: []config.PathInstruction{
+		{Path: "*.txt", Instructions: "Review every fixture modification."},
+		{Path: "*.go", Instructions: "Review every Go file."},
+		{Path: "vendor/**", Instructions: "Vendor-only review rules."},
+	}}
+	var logs []string
+	sctx.Log = func(msg string) { logs = append(logs, msg) }
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected the refusing reviewer's error, got nil")
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("reviewer calls = %d, want 1", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+	// Survivors and their still-covered rules stay in the prompt - loose.go
+	// included, even though the trusted ignore list alone excludes it.
+	for _, want := range []string{"feature.txt", "keep.go", "loose.go", "Review every Go file.", "Review every fixture modification."} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing %q", want)
+		}
+	}
+	// Trusted-ignored files and the fully-ignored vendor rule's instructions
+	// must not be claimed anywhere in the prompt.
+	for _, excluded := range []string{"vendor/x.go", "pkg/dropped.go", "Vendor-only review rules."} {
+		if strings.Contains(prompt, excluded) {
+			t.Errorf("review prompt claims skipped content %q", excluded)
+		}
+	}
+	foundIgnoredLog := false
+	for _, msg := range logs {
+		if strings.Contains(msg, "matched only paths the ignore lists exclude") && strings.Contains(msg, "vendor/**") {
+			foundIgnoredLog = true
+		}
+	}
+	if !foundIgnoredLog {
+		t.Errorf("step log does not name the vendor-only rule as ignored-out:\n%s", strings.Join(logs, "\n"))
 	}
 }
 

@@ -286,6 +286,12 @@ type RepoConfig struct {
 	Agents         []types.AgentName `yaml:"-"`
 	Commands       Commands          `yaml:"commands"`
 	IgnorePatterns []string          `yaml:"ignore_patterns"`
+	// TrustedIgnorePatterns is never a config key: EffectiveRepoConfig fills
+	// it from the trusted default-branch copy of ignore_patterns so a step
+	// can tell the maintainer's own exclusions (an authorized skip even for
+	// paths a trusted review rule covers) from the pushed branch's copy in
+	// IgnorePatterns, which cannot waive a trusted rule.
+	TrustedIgnorePatterns []string `yaml:"-"`
 	// ProtectedPaths prevents automatic staging of dirty matching paths. It is
 	// trusted-only, regardless of allow_repo_commands, so a pushed branch cannot
 	// remove the maintainer's protection from its own fixes.
@@ -713,17 +719,22 @@ type Config struct {
 	// default-branch copy).
 	Gates          []Gate
 	IgnorePatterns []string
-	ProtectedPaths []string
-	AutoFix        AutoFix
-	CI             CI
-	Rebase         Rebase
-	Commit         Commit
-	Intent         Intent
-	Test           Test
-	Document       Document
-	Review         Review
-	PR             PR
-	ForgeProfiles  ForgeProfiles
+	// TrustedIgnorePatterns is the trusted default-branch copy of
+	// ignore_patterns, kept separate from the pushed copy in
+	// IgnorePatterns: the maintainer's own ignores remain an authorized
+	// skip even for paths a matched trusted review rule covers.
+	TrustedIgnorePatterns []string
+	ProtectedPaths        []string
+	AutoFix               AutoFix
+	CI                    CI
+	Rebase                Rebase
+	Commit                Commit
+	Intent                Intent
+	Test                  Test
+	Document              Document
+	Review                Review
+	PR                    PR
+	ForgeProfiles         ForgeProfiles
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -2607,6 +2618,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	}
 	effective := *pushed
 	if trusted != nil {
+		effective.TrustedIgnorePatterns = append([]string(nil), trusted.IgnorePatterns...)
 		effective.Document = trusted.Document
 		effective.ProtectedPaths = append([]string(nil), trusted.ProtectedPaths...)
 		// review.path_instructions steers the gate agent that reviews the pushed
@@ -3191,18 +3203,19 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		SessionReuse:          global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
-		Eval:           global.Eval,
-		Commands:       repo.Commands,
-		Gates:          copyGates(repo.Gates),
-		IgnorePatterns: repo.IgnorePatterns,
-		ProtectedPaths: repo.ProtectedPaths,
-		AutoFix:        af,
-		CI:             ci,
-		Rebase:         rebase,
-		Commit:         commit,
-		Intent:         intent,
-		Test:           test,
-		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		Eval:                  global.Eval,
+		Commands:              repo.Commands,
+		Gates:                 copyGates(repo.Gates),
+		IgnorePatterns:        repo.IgnorePatterns,
+		TrustedIgnorePatterns: repo.TrustedIgnorePatterns,
+		ProtectedPaths:        repo.ProtectedPaths,
+		AutoFix:               af,
+		CI:                    ci,
+		Rebase:                rebase,
+		Commit:                commit,
+		Intent:                intent,
+		Test:                  test,
+		Document:              Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		// repo is the EffectiveRepoConfig result, so both values are already
 		// trusted-only. Like document.instructions and test.instructions, the
 		// review block is resolved from the repository alone - global config

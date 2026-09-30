@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -209,14 +210,23 @@ func withReviewCoverage(wd, prompt string, a Action) Action {
 }
 
 // reviewCoverageForPrompt derives the reviewable changed-file set for a
-// review prompt: `git diff --name-only <base commit>` against the worktree
-// (which equals base..HEAD when the tree is clean, in both the initial review
-// and the post-fix rereview), filtered by the prompt's ignore patterns with
-// the same matching rules the pipeline applies (basename glob for a bare
-// pattern, prefix for `dir/**`, full-path glob otherwise). Paths are
-// returned as an empty, non-nil slice when nothing is reviewable so the
-// field is still reported.
+// review prompt. The prompt's "Changed files this review is held to" section
+// enumerates the canonical set the coverage gate checks, so the fixture
+// answers from that list whenever it is present: re-deriving the set as
+// diff-minus-ignore would now miss files a matched trusted review
+// instruction keeps reviewable despite the pushed ignore list. When the
+// section is absent the fixture falls back to deriving the set itself:
+// `git diff --name-only <base commit>` against the worktree (which equals
+// base..HEAD when the tree is clean, in both the initial review and the
+// post-fix rereview), filtered by the prompt's ignore patterns with the same
+// matching rules the pipeline applies (basename glob for a bare pattern,
+// prefix for `dir/**`, full-path glob otherwise). Paths are returned as an
+// empty, non-nil slice when nothing is reviewable so the field is still
+// reported.
 func reviewCoverageForPrompt(wd, prompt string) ([]string, error) {
+	if paths, ok := heldToPaths(prompt); ok {
+		return paths, nil
+	}
 	base := promptContextValue(prompt, "base commit")
 	if base == "" {
 		return nil, errors.New("review prompt has no base commit line")
@@ -245,6 +255,71 @@ func reviewCoverageForPrompt(wd, prompt string) ([]string, error) {
 		paths = append(paths, file)
 	}
 	return paths, nil
+}
+
+// heldToPaths reads the canonical reviewable set out of a review prompt's
+// "Changed files this review is held to" section: the `- ` bullets between
+// the section header and its two fixed rule lines. The bool is false when
+// the section is absent, so prompts built without it still exercise the
+// fixture's own derivation. A section that is present always lists at least
+// one path - an empty reviewable set returns early before a prompt exists.
+func heldToPaths(prompt string) ([]string, bool) {
+	const header = "Changed files this review is held to"
+	headerEnd := strings.Index(prompt, header)
+	if headerEnd < 0 {
+		return nil, false
+	}
+	paths := []string{}
+	for _, line := range strings.Split(prompt[headerEnd:], "\n")[1:] {
+		if strings.HasPrefix(line, "- A complete review pass") {
+			break
+		}
+		if !strings.HasPrefix(line, "- ") {
+			break
+		}
+		paths = append(paths, unescapeCoveragePath(strings.TrimPrefix(line, "- ")))
+	}
+	return paths, true
+}
+
+// unescapeCoveragePath reverses the display escaping the pipeline applies to
+// held-to paths (coveragePathLine): control characters reach the prompt as
+// visible `\n`, `\r`, `\t`, and `\uXXXX` sequences so an authored path can
+// never inject extra lines, and reviewed_paths must carry the real path back.
+func unescapeCoveragePath(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		switch s[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+			i++
+		case 'r':
+			b.WriteByte('\r')
+			i++
+		case 't':
+			b.WriteByte('\t')
+			i++
+		case 'u':
+			if i+6 <= len(s) {
+				if v, err := strconv.ParseUint(s[i+2:i+6], 16, 32); err == nil {
+					b.WriteRune(rune(v))
+					i += 5
+					continue
+				}
+			}
+			b.WriteByte(s[i])
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 // promptContextValue reads a `- <key>: <value>` line from the prompt's

@@ -111,6 +111,15 @@ func changedPathList(changedFiles string) []string {
 	return paths
 }
 
+func ignoredByPatterns(file string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if matchIgnorePattern(file, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // reviewablePaths returns the changed paths that survive the repo's ignore
 // patterns. ignore_patterns is a pushed-branch field, so this subset decides
 // only whether a step has anything to work on; it must never decide which
@@ -122,14 +131,7 @@ func changedPathList(changedFiles string) []string {
 func reviewablePaths(changed []string, ignorePatterns []string) []string {
 	var paths []string
 	for _, file := range changed {
-		ignored := false
-		for _, pattern := range ignorePatterns {
-			if matchIgnorePattern(file, pattern) {
-				ignored = true
-				break
-			}
-		}
-		if !ignored {
+		if !ignoredByPatterns(file, ignorePatterns) {
 			paths = append(paths, file)
 		}
 	}

@@ -54,7 +54,8 @@ func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 			Test:    "go test ./...",
 			Format:  "gofmt -w .",
 		},
-		Commit: CommitRaw{FixMessage: &trustedTemplate},
+		IgnorePatterns: []string{"generated/**"},
+		Commit:         CommitRaw{FixMessage: &trustedTemplate},
 	}
 
 	got := EffectiveRepoConfig(pushed, trusted, false)
@@ -80,6 +81,12 @@ func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 	// Non-executing fields still come from the pushed copy.
 	if len(got.IgnorePatterns) != 1 || got.IgnorePatterns[0] != "vendor/**" {
 		t.Errorf("ignore_patterns = %v, want pushed value", got.IgnorePatterns)
+	}
+	// The maintainer's own ignore list arrives on the separate
+	// TrustedIgnorePatterns field so a step can still tell pushed ignores
+	// (which cannot waive a trusted rule) from trusted ones (which can).
+	if len(got.TrustedIgnorePatterns) != 1 || got.TrustedIgnorePatterns[0] != "generated/**" {
+		t.Errorf("trusted ignore_patterns = %v, want trusted value", got.TrustedIgnorePatterns)
 	}
 	if got.Commit.FixMessage == nil || *got.Commit.FixMessage != pushedTemplate {
 		t.Errorf("commit.fix_message = %v, want pushed value", got.Commit.FixMessage)
@@ -147,6 +154,9 @@ func TestEffectiveRepoConfig_NoTrustedDisablesCommands(t *testing.T) {
 
 	got := EffectiveRepoConfig(pushed, nil, false)
 
+	if len(got.TrustedIgnorePatterns) != 0 {
+		t.Errorf("trusted ignore_patterns = %v, want empty (no trusted config)", got.TrustedIgnorePatterns)
+	}
 	if got.Commands.Prepare != "" {
 		t.Errorf("prepare = %q, want empty (no trusted config)", got.Commands.Prepare)
 	}
