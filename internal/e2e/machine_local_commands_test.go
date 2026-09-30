@@ -121,6 +121,15 @@ exit 0
 			}
 		}
 
+		if step, ok := findStep(run.Steps, types.StepTest); ok && step.FindingsJSON != nil {
+			t.Logf("test findings: %s", *step.FindingsJSON)
+			if strings.Contains(*step.FindingsJSON, machineLocalSecretEnv) {
+				t.Errorf("test step findings leaked the override env value")
+			}
+		} else {
+			t.Errorf("test step findings missing")
+		}
+
 		prompts := testStepPrompts(h)
 		if len(prompts) == 0 {
 			t.Fatal("test step never invoked the agent")
@@ -259,6 +268,27 @@ exit 0
 			t.Errorf("lint finding does not name the machine-local check")
 		}
 		h.CancelRun(run.ID)
+	})
+
+	t.Run("repository_config_cannot_declare_machine_local_checks", func(t *testing.T) {
+		h := NewHarness(t, SetupOpts{Agent: "claude"})
+		marker := filepath.Join(t.TempDir(), "marker")
+		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-pushed-check"), `echo ran >> "`+marker+`"
+exit 0
+`)
+		setupMachineLocalCommands(t, h, "")
+		const branch = "feature/pushed-overrides"
+		h.CommitChange(branch, ".no-mistakes.yaml", "repository_overrides:\n  "+machineLocalRemote+":\n    commands:\n      test:\n        additional:\n          - nm-pushed-check\n", "try to declare a machine-local check from the repository")
+		h.CommitChange(branch, "feature.txt", "hello\n", "add feature")
+		h.PushToGate(branch)
+		run := h.WaitForRun(branch, 120*time.Second)
+		t.Logf("run status = %s (error=%v)", run.Status, run.Error)
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("a repository-declared machine-local check executed: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(h.NMHome, "logs", run.ID, machineLocalConfigFile)); !os.IsNotExist(err) {
+			t.Errorf("command config evidence written for a repository-declared override: %v", err)
+		}
 	})
 
 	t.Run("no_override_behaves_as_today", func(t *testing.T) {

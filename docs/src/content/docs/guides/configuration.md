@@ -38,8 +38,7 @@ For Azure DevOps, authenticate the `az` CLI with either `az devops login` or `AZ
 
 For machine-local checks, toolchain paths, resource settings, or commit and PR-title conventions scoped to one remote, use global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) instead of adding that configuration to the repository.
 The global reference owns remote matching, syntax, and precedence.
-Local command settings never rewrite or replace the committed command string: they add separate Test or Lint checks, or supply an operator-controlled environment and lower OS scheduling priority around its execution.
-Every added check must succeed as well as the committed check; an added Lint check never replaces agent-driven lint when the committed lint command is empty.
+Local command settings supplement the committed commands and never replace them; [Machine-local commands](/no-mistakes/reference/global-config/#machine-local-commands) owns their fields, the operator's responsibility for environment values, and how applied overrides are declared and recorded.
 
 In practice, most teams should keep personal preferences global and repo policy
 local.
@@ -77,12 +76,6 @@ These blocks steer a gate agent, so they are read from your default branch rathe
 
 Explicit `commands.test` and `commands.lint` give you deterministic local baseline behavior.
 Test always follows its optional command and any machine-local additional checks with agent-driven end-user scenarios; empty `commands.lint` folds lint into the document step's combined housekeeping pass, even with additional local lint checks.
-Use `repository_overrides.commands.<name>.env` for an equivalent machine-specific toolchain or a parallelism setting, and `.nice` to run the unchanged command at lower priority on POSIX machines.
-The operator controls these environment values and is responsible for them, because an environment variable can change what the unchanged command checks; they are not shell-expanded and never apply to agents or built-in Git and forge operations.
-Every step that runs a command under a machine-local override states the override keys and values in its output, so a result produced with overrides is always declared.
-Opted-in runs record the full effective configuration, including command strings, added checks, environment values, priority, and trusted-config SHA, in private local `logs/<run-id>/command-config.ndjson` evidence before checks run.
-A recovery appends its newly resolved configuration rather than overwriting the original record, and an evidence-write failure refuses execution.
-This file is not published in the PR or test-evidence branch, because environment values can be sensitive.
 When a clean run worktree needs ignored dependencies, configure `commands.prepare` once instead of repeating installation. Its [repository reference](/no-mistakes/reference/repo-config/#commandsprepare) owns sharing across configured commands and the trusted agent-only Test opt-in.
 An empty `commands.format` runs no separate formatter, so configure it explicitly when the push step must format agent changes.
 Test evidence is collected locally; GitHub.com/GHEC PRs also upload supported screenshots and recordings unless that is turned off. The [Test step reference](/no-mistakes/reference/pipeline-steps/#test) owns the live-validation behavior, and the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) owns evidence location, cleanup, GitHub attachments, orphan-branch publication, and fail-closed behavior.
