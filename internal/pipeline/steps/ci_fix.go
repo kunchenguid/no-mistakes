@@ -794,11 +794,11 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // content contract;
 // the branch is the current PR target branch (the PR step never manages a
 // PR there either); the SCM host is unavailable
-// (matches the PR step's own skip semantics); or no PR exists yet for this
-// branch. It never mints an attestation for a PR that was not raised through
+// (matches the PR step's own skip semantics); or this run has no bound PR.
+// It never mints an attestation for a PR that was not raised through
 // no-mistakes - restampPRAttestationWithSteps already enforces that. Any
-// other failure (PR discovery errors, or a discoverable PR whose write does
-// not settle) is wrapped in errAttestationWriteFailed and returned.
+// other failure (a bound-PR read or write that does not settle) is wrapped in
+// errAttestationWriteFailed and returned.
 func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult) error {
 	provider := resolvedProvider(sctx)
 	if !supportsPRTemplates(provider) {
@@ -825,11 +825,7 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		}
 		return nil
 	}
-	discovered, err := host.FindPR(sctx.Ctx, branch, "")
-	if err != nil {
-		return fmt.Errorf("%w: find pull request: %v", errAttestationWriteFailed, err)
-	}
-	pr, err := bindExistingPR(sctx, host, discovered)
+	pr, err := mutablePR(sctx, host)
 	if err != nil {
 		return fmt.Errorf("%w: resolve pull request: %v", errAttestationWriteFailed, err)
 	}

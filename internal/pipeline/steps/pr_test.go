@@ -49,7 +49,7 @@ func TestPRStep_GhNotAvailable(t *testing.T) {
 	}
 }
 
-func TestPRStep_UpdatesExistingPR(t *testing.T) {
+func TestPRStep_UpdatesExactSourceSelectedPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -58,6 +58,8 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -101,44 +103,33 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	}
 }
 
-func TestPRStep_MalformedPRListFailsClosed(t *testing.T) {
+func TestPRStep_UnboundSameBranchPRIsNeverUpdated(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	env, logFile := fakeGH(t, "")
-	env = append(env, "FAKE_CLI_PR_LIST_JSON=[{")
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 
-	_, err := (&PRStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("Execute() error = nil, want malformed PR-list error")
-	}
-	if !strings.Contains(err.Error(), "parse gh pr list JSON") {
-		t.Fatalf("Execute() error = %v, want GitHub parse context", err)
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
 	}
 
-	logData, readErr := os.ReadFile(logFile)
-	if readErr != nil {
-		t.Fatal(readErr)
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "pr list --head feature ") || !strings.Contains(ghLog, "--state open --json number,url,baseRefName") {
-		t.Fatalf("expected production PR lookup command, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "pr edit") {
+		t.Fatalf("unbound same-branch pull request was updated:\n%s", ghLog)
 	}
-	if strings.Contains(ghLog, "pr create") || strings.Contains(ghLog, "pr edit") {
-		t.Fatalf("malformed lookup must stop before PR mutation, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "pr create") {
+		t.Fatalf("unbound pull request must create this run's pull request:\n%s", ghLog)
 	}
-
-	run, readErr := sctx.DB.GetRun(sctx.Run.ID)
-	if readErr != nil {
-		t.Fatal(readErr)
+	if strings.Contains(ghLog, "pr list") {
+		t.Fatalf("branch-only pull request lookup remained reachable:\n%s", ghLog)
 	}
-	if run.PRURL != nil {
-		t.Fatalf("PR URL = %q, want nil after malformed lookup", *run.PRURL)
-	}
-	t.Logf("gh transcript:\n%sobserved pipeline error: %v\nstored PR URL: <nil>", ghLog, err)
 }
 
 func TestPRStep_UsesResolvedForgeProviderForSelfHostedRemote(t *testing.T) {
@@ -151,6 +142,9 @@ func TestPRStep_UsesResolvedForgeProviderForSelfHostedRemote(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = append(env, "GH_TOKEN="+credentialSentinel)
+	prURL := "https://code.example.test/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
 	sctx.Repo.UpstreamURL = "git@work-code:test/repo.git"
 	sctx.ForgeContext = &forgecontext.Context{
 		Provider: scm.ProviderGitHub,
@@ -205,6 +199,9 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	sctx.Run.PRURL = &prURL
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -214,8 +211,8 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
-	if api.listCalls != 1 {
-		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	if api.listCalls != 0 {
+		t.Fatalf("list calls = %d, want 0", api.listCalls)
 	}
 	if api.updateCalls != 1 {
 		t.Fatalf("update calls = %d, want 1", api.updateCalls)
@@ -250,6 +247,9 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	sctx.Run.PRURL = &prURL
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "main"}
 	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
@@ -262,7 +262,7 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 				api.existingPRURL,
 			)
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			fmt.Fprintf(w, `{"id":%d,"title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
+			fmt.Fprintf(w, `{"id":%d,"state":"OPEN","title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
 		case r.Method == http.MethodPut && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
 			api.updateCalls++
 			body, err := io.ReadAll(r.Body)
@@ -287,8 +287,8 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatal("bitbucket PR step should never need approval")
 	}
-	if api.listCalls != 1 {
-		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	if api.listCalls != 0 {
+		t.Fatalf("list calls = %d, want 0", api.listCalls)
 	}
 	if api.updateCalls != 1 {
 		t.Fatalf("update calls = %d, want 1", api.updateCalls)
@@ -444,12 +444,6 @@ func TestPRStep_UsesConfiguredBaseBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "pr list --head feature ") {
-		t.Fatalf("expected PR lookup by branch, got:\n%s", logData)
-	}
-	if strings.Contains(string(logData), "pr list --head feature --base") {
-		t.Fatalf("expected PR lookup not to filter by base branch (would miss an existing PR opened against a different base), got:\n%s", logData)
-	}
 	if !strings.Contains(string(logData), "pr create --head feature --base develop") {
 		t.Fatalf("expected configured base branch in PR creation, got:\n%s", logData)
 	}
@@ -470,6 +464,9 @@ func TestPRStep_ExistingPRAgainstDifferentBaseIsUpdatedNotDuplicated(t *testing.
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Config.PR.BaseBranch = "main"
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: prURL, TargetBranch: "develop"}
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
