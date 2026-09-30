@@ -207,8 +207,38 @@ func TestTestStep_OverriddenPassIsDeclared(t *testing.T) {
 	if !strings.Contains(strings.Join(logs, "\n"), want) {
 		t.Fatalf("step output does not declare the overrides:\n%s", strings.Join(logs, "\n"))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, want) {
+	if !strings.Contains(ag.calls[0].Prompt, `machine-local overrides applied to commands.test: env GOFLAGS; additional checks "exit 0"`) {
 		t.Fatal("agent prompt does not declare the overrides")
+	}
+}
+
+func TestTestStep_OverrideEnvValuesNeverReachThePromptOrFindings(t *testing.T) {
+	const secret = "postgres://user:s3cret@internal-db"
+	dir, base, head := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, base, head, config.Commands{Test: "exit 0"})
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Env: map[string]string{"DATABASE_URL": secret}, Additional: []string{"exit 3"}}}
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, %v", outcome, err)
+	}
+	prompt := ag.calls[0].Prompt
+	if strings.Contains(prompt, secret) || !strings.Contains(prompt, "env DATABASE_URL") {
+		t.Fatalf("prompt must declare the key without its value:\n%s", prompt)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(outcome.Findings, secret) || strings.Contains(findings.TestingSummary, secret) || strings.Contains(findings.Summary, secret) {
+		t.Fatalf("override value published in Test findings: %s", outcome.Findings)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), `DATABASE_URL="`+secret+`"`) {
+		t.Fatal("private step log lost the exact override value")
 	}
 }
 

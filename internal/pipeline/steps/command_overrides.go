@@ -20,7 +20,7 @@ func runRepositoryCommand(sctx *pipeline.StepContext, name, command string) (str
 			env = sctx.ForgeContext.Environment.Apply(env)
 		}
 	}
-	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
+	if declaration := commandOverrideDeclaration(name, override, true); declaration != "" {
 		sctx.Log(declaration)
 	}
 	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, env, command, override.Nice)
@@ -28,7 +28,8 @@ func runRepositoryCommand(sctx *pipeline.StepContext, name, command string) (str
 
 // commandOverrideDeclaration states every machine-local override applied to a
 // command so a result produced under one is never presented as a plain run.
-func commandOverrideDeclaration(name string, override config.CommandOverride) string {
+// Environment values appear only when withValues is set, for private logs.
+func commandOverrideDeclaration(name string, override config.CommandOverride, withValues bool) string {
 	var parts []string
 	if len(override.Env) != 0 {
 		keys := make([]string, 0, len(override.Env))
@@ -36,11 +37,12 @@ func commandOverrideDeclaration(name string, override config.CommandOverride) st
 			keys = append(keys, key)
 		}
 		slices.Sort(keys)
-		env := make([]string, len(keys))
-		for i, key := range keys {
-			env[i] = fmt.Sprintf("%s=%q", key, override.Env[key])
+		if withValues {
+			for i, key := range keys {
+				keys[i] = fmt.Sprintf("%s=%q", key, override.Env[key])
+			}
 		}
-		parts = append(parts, "env "+strings.Join(env, " "))
+		parts = append(parts, "env "+strings.Join(keys, " "))
 	}
 	if override.Nice != 0 {
 		parts = append(parts, fmt.Sprintf("nice %d", override.Nice))
@@ -95,7 +97,7 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 		checks = append(checks, checkResult{Command: additional, Local: true})
 	}
 	var output strings.Builder
-	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
+	if declaration := commandOverrideDeclaration(name, override, false); declaration != "" {
 		fmt.Fprintf(&output, "%s\n", declaration)
 	}
 	for i := range checks {

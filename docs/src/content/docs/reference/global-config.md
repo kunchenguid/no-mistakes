@@ -936,7 +936,8 @@ Replacement command strings, `command`, `replace`, `skip`, unknown command names
 
 Use `env` to select an equivalent toolchain or change resource usage without editing the committed command, not to reduce the checks it performs.
 Environment overrides are the operator's responsibility: a tool's environment can change what the unchanged command checks (for example a test filter or an alternate linter config), and no-mistakes does not infer the meaning of a tool's environment variables or prove that different toolchains are equivalent.
-Overrides are therefore always declared, never silent: whenever a command runs under any of these settings, its step output states `machine-local overrides applied to commands.<name>:` followed by every environment key and value, the niceness, and the added checks, and Test also passes that declaration to its agent for the testing summary.
+Overrides are therefore always declared, never silent: whenever a command runs under any of these settings, its step output states `machine-local overrides applied to commands.<name>:` followed by every environment key and value, the niceness, and the added checks.
+Test also passes a declaration to its agent for the testing summary, but that agent-facing declaration, like the check output recorded in findings, carries environment keys only, never values; exact values stay in the private step log and `command-config.ndjson`.
 For example, `GOMAXPROCS: '2'` limits a Go process's available CPUs; a suite-specific parallelism environment variable works only if that suite honors it.
 `PATH` replaces that command's path literally, so include the existing system paths you need.
 Values do not expand `$PATH`, `~`, or shell substitutions.
