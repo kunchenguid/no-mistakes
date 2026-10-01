@@ -146,6 +146,39 @@ func TestReviewStep_InvalidReviewExhaustsTheRetryBound(t *testing.T) {
 	}
 }
 
+func TestReviewStep_DistinctSchemaFailuresAreAttributed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	validationErrors := []string{
+		`pi output parse: JSON output risk_scope must match one of the allowed values`,
+		`pi output parse: JSON output missing required field "review_scope"`,
+		`pi output parse: JSON output tested must be array or null`,
+	}
+	calls := 0
+	ag := &mockAgent{
+		name: "pi",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			validation := validationErrors[calls]
+			calls++
+			return nil, rejectedStructuredOutputError{message: validation}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || outcome != nil {
+		t.Fatalf("Execute() = %+v, %v; want the exhausted schema failure", outcome, err)
+	}
+	if calls != reviewAnalyzerMaxAttempts {
+		t.Fatalf("agent calls = %d, want %d", calls, reviewAnalyzerMaxAttempts)
+	}
+	for _, want := range []string{"across distinct fields (risk_scope, review_scope, tested)", "attempt 1:", "attempt 2:", "attempt 3:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
 func TestReviewStep_NonSchemaFailuresAreNotRetried(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

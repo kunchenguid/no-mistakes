@@ -460,6 +460,7 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	}
 	var findings Findings
+	var validationErrors []error
 	for attempt := 1; ; attempt++ {
 		result, err := s.runReviewAgent(sctx, "agent review", sessionRole, opts)
 		if err == nil {
@@ -470,7 +471,11 @@ Risk assessment (after listing all findings):
 		} else if !agent.IsStructuredOutputRejected(err) || sctx.Ctx.Err() != nil || errors.Is(err, errReviewAgentTimeout) {
 			return nil, err
 		}
+		validationErrors = append(validationErrors, err)
 		if attempt == reviewAnalyzerMaxAttempts {
+			if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
+				return nil, fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %s: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors), err)
+			}
 			return nil, fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err)
 		}
 		sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, reviewAnalyzerMaxAttempts))
@@ -798,6 +803,50 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 		findings.Items[i].Severity = types.NormalizeFindingSeverity(findings.Items[i].Severity)
 	}
 	return findings, nil
+}
+
+func distinctReviewValidationFailures(failures []error) string {
+	fields := make([]string, 0, len(failures))
+	seen := make(map[string]struct{}, len(failures))
+	for _, failure := range failures {
+		field := reviewValidationField(failure.Error())
+		if field == "" {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		fields = append(fields, field)
+	}
+	if len(fields) < 2 {
+		return ""
+	}
+	return strings.Join(fields, ", ")
+}
+
+func reviewValidationField(message string) string {
+	if _, suffix, ok := strings.Cut(message, `missing required field "`); ok {
+		field, _, _ := strings.Cut(suffix, `"`)
+		if field != "" {
+			return field
+		}
+	}
+	if _, suffix, ok := strings.Cut(message, "JSON output "); ok {
+		words := strings.Fields(suffix)
+		if len(words) > 0 {
+			return strings.Trim(words[0], `"'`)
+		}
+	}
+	return ""
+}
+
+func reviewValidationAttempts(failures []error) string {
+	attempts := make([]string, 0, len(failures))
+	for i, failure := range failures {
+		attempts = append(attempts, fmt.Sprintf("attempt %d: %s", i+1, strings.ReplaceAll(failure.Error(), "\n", "; ")))
+	}
+	return strings.Join(attempts, "; ")
 }
 
 // reviewRetryNote is the only thing a rerun review learns from the attempt
