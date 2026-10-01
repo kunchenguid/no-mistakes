@@ -34,6 +34,16 @@ func TestTestBaseAttributionJourney(t *testing.T) {
 		wantBaseRun bool
 		want        []string
 		wantAbsent  []string
+		// overrides is the operator's machine-local repository override
+		// block; localCheck is written as its additional test check.
+		overrides  string
+		localCheck string
+		// wantAttributionAbsent must not appear in the attribution section
+		// itself (the summary's text before the command output).
+		wantAttributionAbsent []string
+		// wantNice is the niceness every commands.test and commands.prepare
+		// run must report, on the head and on the base checkout.
+		wantNice string
 	}
 	goFailures := `echo '--- FAIL: TestOld (0.01s)'
 echo '--- FAIL: TestParse (0.00s)'
@@ -118,6 +128,42 @@ exit 0
 			wantAbsent: []string{"Introduced by this change", "Pre-existing"},
 		},
 		{
+			name:    "package_without_test_line_is_unattributed",
+			trusted: "test:\n  base_attribution: true\n",
+			testScript: `echo '--- FAIL: TestFoo (0.01s)'
+printf 'FAIL\texample.com/pkg/a\t0.10s\n'
+if [ -f regression ]; then printf 'FAIL\texample.com/pkg/b [build failed]\n'; fi
+exit 1
+`,
+			branchFiles: map[string]string{"regression": "x\n"},
+			wantPark:    true, wantBaseRun: true,
+			want: []string{
+				"Base attribution: commands.test also fails on base commit",
+				"Pre-existing on the base commit (1):\n- example.com/pkg/a: --- FAIL: TestFoo",
+				"Failures without a per-test line (could not be attributed) (1):\n- FAIL example.com/pkg/b [build failed]",
+			},
+			wantAbsent: []string{"Introduced by this change"},
+		},
+		{
+			name:          "local_check_output_is_not_attributed_and_base_honors_nice",
+			trusted:       "test:\n  base_attribution: true\n",
+			testScript:    goFailures,
+			prepareScript: "exit 0\n",
+			overrides:     "    commands:\n      test:\n        nice: 7\n        additional:\n          - LOCALCHECK\n      prepare:\n        nice: 7\n",
+			localCheck: `echo '--- FAIL: TestLocalOnly (0.01s)'
+printf 'FAIL\texample.com/pkg/local\t0.10s\n'
+exit 1
+`,
+			branchFiles: map[string]string{"regression": "x\n"},
+			wantPark:    true, wantBaseRun: true,
+			want: []string{
+				"Introduced by this change (2):\n- example.com/pkg/b: --- FAIL: TestNew\n- example.com/pkg/b: --- FAIL: TestParse",
+				"Pre-existing on the base commit (2):\n- example.com/pkg/a: --- FAIL: TestOld\n- example.com/pkg/a: --- FAIL: TestParse",
+			},
+			wantAttributionAbsent: []string{"TestLocalOnly", "pkg/local"},
+			wantNice:              "7",
+		},
+		{
 			name:        "pushed_branch_cannot_opt_in",
 			trusted:     "",
 			testScript:  goFailures,
@@ -138,7 +184,7 @@ exit 0
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHarness(t, SetupOpts{Agent: "claude"})
 			cwdLog := filepath.Join(t.TempDir(), "cwd.log")
-			record := "echo \"$0 $(pwd)\" >> '" + cwdLog + "'\n"
+			record := "echo \"$0 $(pwd) nice=$(ps -o nice= -p $$ | tr -d ' ')\" >> '" + cwdLog + "'\n"
 			config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: true\ncommands:\n  test: sh scripts/test.sh\n"
 			if tc.prepareScript != "" {
 				config += "  prepare: sh scripts/prepare.sh\n"
@@ -149,7 +195,11 @@ exit 0
 			if out, err := h.runGit(context.Background(), h.WorkDir, "push", "origin", "main"); err != nil {
 				t.Fatalf("push trusted config: %v\n%s", err, out)
 			}
-			if out, err := h.Run("init"); err != nil {
+			if tc.overrides != "" {
+				localCheck := filepath.Join(t.TempDir(), "local-check.sh")
+				writeMachineLocalScript(t, localCheck, tc.localCheck)
+				setupMachineLocalCommands(t, h, strings.ReplaceAll(tc.overrides, "LOCALCHECK", "sh "+localCheck))
+			} else if out, err := h.Run("init"); err != nil {
 				t.Fatalf("init: %v\n%s", err, out)
 			}
 			branch := "attr-" + strings.ReplaceAll(tc.name, "_", "-")
@@ -179,7 +229,7 @@ exit 0
 				summary = findings.Summary
 				var commandFinding *types.Finding
 				for i := range findings.Items {
-					if findings.Items[i].Category == types.FindingCategoryTestCommand {
+					if findings.Items[i].Category == types.FindingCategoryTestCommand && !strings.HasPrefix(findings.Items[i].Description, "machine-local ") {
 						commandFinding = &findings.Items[i]
 					}
 				}
@@ -200,6 +250,12 @@ exit 0
 					t.Errorf("findings summary unexpectedly contains %q:\n%s", absent, summary)
 				}
 			}
+			attribution, _, _ := strings.Cut(summary, "\n\n")
+			for _, absent := range tc.wantAttributionAbsent {
+				if strings.Contains(attribution, absent) {
+					t.Errorf("attribution section classified machine-local output %q:\n%s", absent, attribution)
+				}
+			}
 			if got := strings.Contains(logData, "re-running it on base commit"); got != (tc.wantBaseRun || tc.prepareScript != "") {
 				t.Errorf("step log base re-run present = %v, want %v:\n%s", got, tc.wantBaseRun, logData)
 			}
@@ -209,10 +265,14 @@ exit 0
 			// Every base-side command ran in a disposable checkout outside
 			// the run worktree, which is removed afterwards.
 			for _, line := range strings.Split(strings.TrimSpace(string(cwds)), "\n") {
+				fields := strings.Fields(line)
+				if tc.wantNice != "" && len(fields) == 3 && fields[2] != "nice="+tc.wantNice {
+					t.Errorf("command ran without the operator's niceness %s: %s", tc.wantNice, line)
+				}
 				if !strings.Contains(line, "no-mistakes-test-base-") {
 					continue
 				}
-				dir := line[strings.Index(line, " ")+1:]
+				dir := fields[1]
 				if strings.HasPrefix(dir, h.NMHome) || strings.HasPrefix(dir, h.WorkDir) {
 					t.Errorf("base command ran inside the run's state: %s", dir)
 				}

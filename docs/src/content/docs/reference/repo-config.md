@@ -861,7 +861,7 @@ test:
   base_attribution: true
 ```
 
-When a configured [`commands.test`](#commandstest) exits non-zero, re-runs the same command on the run's base commit (the merge base with the effective PR base branch) and diffs the two results, so failures that already exist on the base are not blamed on the change. The base run uses a disposable clone of that commit outside the run worktree, runs [`commands.prepare`](#commandsprepare) there first when one is configured (its output is logged as `Prepare (base)`), and logs its output to the Test step log as `Test (base)`.
+When a configured [`commands.test`](#commandstest) exits non-zero, re-runs the same command on the run's base commit (the merge base with the effective PR base branch) and diffs the two results, so failures that already exist on the base are not blamed on the change. The base run uses a disposable clone of that commit outside the run worktree, runs [`commands.prepare`](#commandsprepare) there first when one is configured (its output is logged as `Prepare (base)`), and logs its output to the Test step log as `Test (base)`. Both base commands keep the machine-local [`nice`](/no-mistakes/reference/global-config/#machine-local-commands) settings for `prepare` and `test`. Only the repository command's own output is attributed: machine-local `additional` test checks are never re-run on the base, and a failure in one of them alone triggers no base run.
 
 The attribution leads the Test findings summary (the failure output the PR and repair turns see) and is passed to the evidence agent:
 
