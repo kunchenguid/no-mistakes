@@ -944,7 +944,7 @@ It also records the values configured commands inherit from the daemon's environ
 This record is independent of optional eval capture.
 Recovery appends a new snapshot of the configuration it resolves, including removal of a previously active local override.
 A snapshot write failure stops execution before checks run.
-The file is private local evidence, created with owner-only permissions on POSIX and excluded from PR and test-evidence publication.
+The file is private local evidence, restricted to owner-only permissions on POSIX on every write (including a file left from an earlier snapshot) and excluded from PR and test-evidence publication.
 
 ### intent
 
