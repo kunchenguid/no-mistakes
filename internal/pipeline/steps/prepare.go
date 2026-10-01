@@ -22,10 +22,11 @@ var (
 
 // ensurePrepared runs the trusted preparation command before the first
 // configured Test, Lint, or Format command, or an opted-in agent-only Test.
-// Successful preparation is shared
-// for the executor lifetime. Only ignored materialization (for example
-// node_modules) survives preparation; its tracked and ordinary untracked
-// mutations are removed so setup cannot ride into a later pipeline fix commit.
+// Successful preparation is shared for the executor lifetime. Only ignored
+// materialization (for example node_modules) and submodules checked out at
+// their recorded commits survive preparation; its tracked and ordinary
+// untracked mutations are removed so setup cannot ride into a later pipeline
+// fix commit.
 func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 	prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare)
 	if prepareCmd == "" {
@@ -119,7 +120,7 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 	if _, err := git.Run(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", "git clean -ffd"); err != nil {
 		return err
 	}
-	if err := deinitializePreparationSubmodules(ctx, submodules); err != nil {
+	if err := resetPreparedSubmodules(ctx, workDir); err != nil {
 		return err
 	}
 	if _, err := git.Run(ctx, workDir, "clean", "-ffd"); err != nil {
@@ -264,17 +265,17 @@ func initializePreparationSubmodules(ctx context.Context, submodules []preparati
 	return nil
 }
 
-func deinitializePreparationSubmodules(ctx context.Context, submodules []preparationSubmodule) error {
-	for i := len(submodules) - 1; i >= 0; i-- {
-		submodule := submodules[i]
-		if submodule.initialized || !submoduleWorktreeInitialized(submodule.parentWorkDir, submodule.path) {
-			continue
-		}
-		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "deinit", "--force", "--", submodule.path); err != nil {
-			return err
-		}
+// resetPreparedSubmodules returns every submodule checkout preparation left
+// behind, including one the command initialized itself, to its recorded
+// commit. A submodule checked out at its gitlink is the tracked tree the
+// configured commands build against, not a setup mutation, so it is kept
+// rather than deinitialized; a moved submodule HEAD is still undone here.
+func resetPreparedSubmodules(ctx context.Context, workDir string) error {
+	current, err := preparationSubmodules(ctx, workDir)
+	if err != nil {
+		return err
 	}
-	return nil
+	return initializePreparationSubmodules(ctx, current)
 }
 
 func registeredSubmodulePaths(ctx context.Context, workDir string) ([]string, error) {
@@ -506,9 +507,6 @@ func (s preparationSnapshot) restore(ctx context.Context) error {
 				return fmt.Errorf("restore untracked directory %s: %w", directory.path, err)
 			}
 		}
-	}
-	if err := deinitializePreparationSubmodules(ctx, s.submodules); err != nil {
-		return err
 	}
 	return nil
 }

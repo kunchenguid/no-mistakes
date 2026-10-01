@@ -603,6 +603,74 @@ func TestProtectedPaths_Staging(t *testing.T) {
 	}
 }
 
+// A rebase onto a base that bumped a submodule moves the recorded pointer but
+// leaves a populated checkout at the old commit. Catch-all staging must not
+// commit that stale checkout back as the pointer.
+func TestStagePipelineChanges_KeepsRecordedSubmodulePointer(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		agentFix bool
+	}{
+		{"with_agent_fix", true},
+		{"stale_pointer_only", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, _ := setupGitRepo(t)
+			remote := t.TempDir()
+			gitCmd(t, remote, "init", "--bare")
+			seed := t.TempDir()
+			gitCmd(t, seed, "init", "-b", "main")
+			if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, seed, "add", "module.txt")
+			gitCmd(t, seed, "commit", "-m", "module base")
+			gitCmd(t, seed, "push", remote, "main")
+			gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+			gitCmd(t, dir, "commit", "-m", "add module")
+			stale := gitCmd(t, dir, "rev-parse", "HEAD:module")
+
+			if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("bumped\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, seed, "commit", "-am", "bump module")
+			gitCmd(t, seed, "push", remote, "main")
+			bumped := gitCmd(t, seed, "rev-parse", "HEAD")
+			gitCmd(t, filepath.Join(dir, "module"), "fetch", "origin")
+			gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+bumped+",module")
+			gitCmd(t, dir, "commit", "-m", "base bumped module")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != stale {
+				t.Fatalf("fixture checkout = %s, want stale %s", got, stale)
+			}
+			if tc.agentFix {
+				if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			sctx := newTestContext(t, &mockAgent{}, dir, baseSHA, headSHA, config.Commands{})
+			committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "")
+			if err != nil {
+				t.Fatalf("commit agent fixes: %v", err)
+			}
+			if committed != tc.agentFix {
+				t.Fatalf("committed = %v, want %v", committed, tc.agentFix)
+			}
+			if got := gitCmd(t, dir, "rev-parse", "HEAD:module"); got != bumped {
+				t.Errorf("fix commit recorded submodule pointer %s, want the base's %s (stale checkout %s)", got, bumped, stale)
+			}
+			if tc.agentFix {
+				gitCmd(t, dir, "cat-file", "-e", "HEAD:fix.txt")
+			} else if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+				t.Errorf("stale pointer alone advanced HEAD from %s to %s", headSHA, got)
+			}
+		})
+	}
+}
+
 func TestProtectedPaths_UnreadableStatusFailsClosed(t *testing.T) {
 	t.Parallel()
 	sctx := newTestContext(t, &mockAgent{}, t.TempDir(), "", "", config.Commands{})

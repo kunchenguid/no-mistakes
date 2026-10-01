@@ -94,6 +94,64 @@ func TestConfiguredTestAndLintSharePreparation(t *testing.T) {
 	}
 }
 
+// A run worktree is a detached linked worktree of the gate, so its committed
+// submodules start empty and a repository populates them with
+// commands.prepare. Every configured command must see that checkout.
+func TestConfiguredTestAndLintSeeSubmoduleCheckedOutByPreparation(t *testing.T) {
+	super, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "push", remote, "main")
+	gitCmd(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, super, "commit", "-m", "add module")
+	headSHA := gitCmd(t, super, "rev-parse", "HEAD")
+	gate := filepath.Join(t.TempDir(), "gate.git")
+	gitCmd(t, t.TempDir(), "clone", "--bare", super, gate)
+	workDir := filepath.Join(t.TempDir(), "run")
+	gitCmd(t, gate, "worktree", "add", "--detach", workDir, headSHA)
+	if _, err := os.Stat(filepath.Join(workDir, "module", "module.txt")); !os.IsNotExist(err) {
+		t.Fatalf("run worktree started with submodule contents: %v", err)
+	}
+
+	evidenceSawModule := false
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		_, err := os.Stat(filepath.Join(opts.CWD, "module", "module.txt"))
+		evidenceSawModule = err == nil
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["module check"],"testing_summary":"module available","artifacts":[],"scenarios":[{"name":"user runs the configured command","result":"pass","live":true,"evidence":"module check passed","reason":""}],"verdict":"go"}`)}, nil
+	}}
+	sctx := newPreparationTestContext(t, ag, workDir, baseSHA, headSHA, config.Commands{
+		Prepare: "git -c protocol.file.allow=always submodule update --init --recursive",
+		Test:    submoduleFileExistsCommand(),
+		Lint:    submoduleFileExistsCommand(),
+	})
+	sctx.GateDir = gate
+	sctx.Shared = &pipeline.RunShared{}
+
+	if outcome, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatalf("test step: %v", err)
+	} else if outcome.ExitCode != 0 {
+		t.Fatalf("test step exit code = %d; the configured command did not see the prepared submodule", outcome.ExitCode)
+	}
+	if !evidenceSawModule {
+		t.Fatal("evidence turn did not see the prepared submodule")
+	}
+	if outcome, err := (&LintStep{}).Execute(sctx); err != nil {
+		t.Fatalf("lint step: %v", err)
+	} else if outcome.ExitCode != 0 {
+		t.Fatalf("lint step exit code = %d; the configured command did not see the prepared submodule", outcome.ExitCode)
+	}
+	if got := gitStatusPorcelain(t, workDir); got != "" {
+		t.Fatalf("prepared submodule left superproject changes: %q", got)
+	}
+}
+
 func TestEnsurePrepared_RemovesNestedRepositoryMutation(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ignoreTestDependencies(t, dir)
@@ -292,7 +350,7 @@ func TestEnsurePrepared_DoesNotInitializeUnrelatedSubmodule(t *testing.T) {
 	}
 }
 
-func TestEnsurePrepared_DeinitializesSubmoduleInitializedByPreparation(t *testing.T) {
+func TestEnsurePrepared_KeepsSubmoduleInitializedByPreparationAtRecordedCommit(t *testing.T) {
 	dir, baseSHA, _ := setupGitRepo(t)
 	remote := t.TempDir()
 	gitCmd(t, remote, "init", "--bare")
@@ -318,8 +376,13 @@ func TestEnsurePrepared_DeinitializesSubmoduleInitializedByPreparation(t *testin
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare initializes submodule: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "module", ".git")); !os.IsNotExist(err) {
-		t.Fatalf("preparation left newly initialized submodule: %v", err)
+	// The configured commands build against the checkout preparation made, so
+	// it must survive; the commit the command made inside it must not.
+	if got, err := os.ReadFile(filepath.Join(dir, "module", "module.txt")); err != nil || string(got) != "base\n" {
+		t.Fatalf("submodule checkout after preparation = %q, %v; want recorded module.txt", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "module", "prepared.txt")); !os.IsNotExist(err) {
+		t.Fatalf("preparation commit inside the submodule survived: %v", err)
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("preparation left submodule mutation: %q", got)
@@ -513,7 +576,7 @@ func TestEnsurePrepared_RestoresNestedInitializedSubmodule(t *testing.T) {
 	}
 }
 
-func TestEnsurePrepared_DeinitializesNestedSubmoduleInitializedByPreparation(t *testing.T) {
+func TestEnsurePrepared_KeepsNestedSubmoduleInitializedByPreparation(t *testing.T) {
 	dir, baseSHA, headSHA := setupNestedSubmodules(t)
 	outer := filepath.Join(dir, "outer")
 	gitCmd(t, outer, "submodule", "deinit", "--force", "inner")
@@ -527,8 +590,11 @@ func TestEnsurePrepared_DeinitializesNestedSubmoduleInitializedByPreparation(t *
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare initializes nested submodule: %v", err)
 	}
-	if _, err := os.Stat(innerGit); !os.IsNotExist(err) {
-		t.Fatalf("preparation left nested submodule initialized: %v", err)
+	if _, err := os.Stat(filepath.Join(outer, "inner", "inner.txt")); err != nil {
+		t.Fatalf("preparation discarded the nested submodule checkout: %v", err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("preparation left nested submodule mutation: %q", got)
 	}
 }
 
@@ -649,6 +715,13 @@ func dependencyExistsCommand() string {
 		return `if exist .deps\count (exit /b 0) else (exit /b 1)`
 	}
 	return `test -f .deps/count`
+}
+
+func submoduleFileExistsCommand() string {
+	if runtime.GOOS == "windows" {
+		return `if exist module\module.txt (exit /b 0) else (exit /b 1)`
+	}
+	return `test -f module/module.txt`
 }
 
 func nestedRepositoryPreparationCommand() string {

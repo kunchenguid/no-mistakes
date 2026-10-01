@@ -33,6 +33,36 @@ func stagePipelineChanges(sctx *pipeline.StepContext) error {
 			}
 		}
 	}
-	_, err := stepGitRun(sctx, "add", "-A")
-	return err
+	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
+		return err
+	}
+	return unstageSubmodulePointerMoves(sctx)
+}
+
+// unstageSubmodulePointerMoves keeps catch-all staging from recording a
+// submodule checkout as a new pointer. A rebase moves the recorded pointer but
+// not the populated checkout, so `git add -A` would commit the stale checkout
+// as a silent revert of the base's submodule bump; pipeline corrections never
+// move a submodule pointer.
+func unstageSubmodulePointerMoves(sctx *pipeline.StepContext) error {
+	raw, err := stepGitRunRaw(sctx, "diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none")
+	if err != nil {
+		return fmt.Errorf("check staged submodule pointers: %w", err)
+	}
+	fields := strings.Split(strings.TrimSuffix(raw, "\x00"), "\x00")
+	var moved []string
+	for i := 0; i+1 < len(fields); i += 2 {
+		modes := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		if len(modes) >= 2 && modes[0] == "160000" && modes[1] == "160000" {
+			moved = append(moved, fields[i+1])
+		}
+	}
+	if len(moved) == 0 {
+		return nil
+	}
+	if _, err := stepGitRun(sctx, append([]string{"reset", "-q", "--"}, moved...)...); err != nil {
+		return fmt.Errorf("unstage submodule pointers: %w", err)
+	}
+	sctx.Log(fmt.Sprintf("left submodule pointers as recorded: %s", strings.Join(moved, ", ")))
+	return nil
 }
