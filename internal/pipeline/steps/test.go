@@ -133,6 +133,7 @@ Previous test findings to address:
 	var baselineFindings []Finding
 	var baselineSummary string
 	var baselineExitCode int
+	var attributionSection string
 	if testCmd != "" || len(sctx.Config.CommandOverrides["test"].Additional) > 0 {
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
 			return nil, fmt.Errorf("prepare test dependencies: %w", err)
@@ -161,6 +162,14 @@ Previous test findings to address:
 			}
 			baselineSummary = projectedOutput
 			baselineExitCode = failed[0].ExitCode
+			if sctx.Config.Test.BaseAttribution && !failed[0].Local {
+				attribution, err := attributeTestFailures(sctx, testCmd, baseSHA, output)
+				if err != nil {
+					return nil, err
+				}
+				attributionSection = attribution.render()
+				baselineSummary = attributionSection + "\n\n" + baselineSummary
+			}
 		}
 	}
 	if repairCut != nil {
@@ -203,6 +212,9 @@ Previous test findings to address:
 			configuredTestCommand += fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", result.Command)
 		default:
 			configuredTestCommand += fmt.Sprintf("\nConfigured test command failed with exit code %d: `%s`\n", result.ExitCode, result.Command)
+			if attributionSection != "" {
+				configuredTestCommand += sanitizePromptMultilineText(attributionSection) + "\n"
+			}
 		}
 	}
 	if declaration := commandOverrideDeclaration("test", sctx.Config.CommandOverrides["test"]); declaration != "" && len(baselineResults) > 0 {

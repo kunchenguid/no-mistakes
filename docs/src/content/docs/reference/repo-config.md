@@ -8,12 +8,12 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.prepare`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -849,6 +849,27 @@ Opts agent-only Test into running `commands.prepare` before its first agent turn
 This is **eager**, not on-demand: opted-in repositories pay setup cost even when the evidence agent subsequently reports `no-surface`. Leave it off to retain lazy command-only preparation. Preparation does not replace fresh Test evidence or change verdict/approval policy. Failures stop Test before the agent launches and never record successful preparation.
 
 The trigger always comes from the trusted default branch; pushed-branch text cannot enable it. The executable `commands.prepare` value separately follows the existing `allow_repo_commands` policy.
+
+### test.base_attribution
+
+**Type:** boolean. **Default:** `false`. Repository-only, trusted-default-branch-only, even with `allow_repo_commands: true`.
+
+```yaml
+commands:
+  test: "go test ./internal/... -count=1"
+test:
+  base_attribution: true
+```
+
+When a configured [`commands.test`](#commandstest) exits non-zero, re-runs the same command on the run's base commit (the merge base with the effective PR base branch) and diffs the two results, so failures that already exist on the base are not blamed on the change. The base run uses a disposable clone of that commit outside the run worktree, runs [`commands.prepare`](#commandsprepare) there first when one is configured, and logs its output to the Test step log as `Test (base)`.
+
+The attribution leads the Test findings summary (the failure output the PR and repair turns see) and is passed to the evidence agent:
+
+- the command passes on the base: every failure is introduced by the change;
+- the command also fails on the base: recognized per-test failure lines are split into *introduced by this change* and *pre-existing on the base commit*. Per-test lines are recognized for common runners (`go test`, pytest, jest/vitest, TAP, cargo); package- or file-level summary lines are ignored. When none are recognized the summary says the two could not be separated;
+- the base checkout, preparation, or run cannot complete: the summary says attribution is unavailable and every failure stays attributed to the change.
+
+Attribution informs; it never changes the gate. The failing command still parks the Test step with the same `error` finding, an approval over it is still recorded as a configured-command override (see [`test.allow_approve_over_failure`](#testallow_approve_over_failure)), and a passing command never triggers a base run. Each failing Test execution, including after an auto-fix round, pays one extra run of the command, which is why this is off by default.
 
 ### test.instructions
 
