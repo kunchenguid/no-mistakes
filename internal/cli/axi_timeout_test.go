@@ -88,7 +88,10 @@ func TestDriveRun_SlowGetRunRetriesAfterHealthProbe(t *testing.T) {
 }
 
 func TestDriveRun_GetRunRPCErrorIsNotRetried(t *testing.T) {
-	setDriveGetRunTimeout(t, 60*time.Millisecond)
+	// The deadline is generous so the immediate RPC error always wins the race
+	// on a loaded runner; a short one let the attempt time out first and take
+	// the slow-reply health probe this test asserts never happens.
+	setDriveGetRunTimeout(t, 10*time.Second)
 
 	var healthCalls atomic.Int32
 	socketPath := filepath.Join(makeSocketSafeTempDir(t), "rpc-fail.sock")
