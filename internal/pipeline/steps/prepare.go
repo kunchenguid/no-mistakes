@@ -26,13 +26,15 @@ var (
 // materialization (for example node_modules) and submodules checked out at
 // their recorded commits survive preparation; its tracked and ordinary
 // untracked mutations are removed so setup cannot ride into a later pipeline
-// fix commit.
+// fix commit. Every call, including the rerun after a fix round, then forces
+// each populated submodule back to the commit the superproject records, so a
+// configured command never validates submodule content the head lacks.
 func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 	prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare)
 	if prepareCmd == "" {
 		return nil
 	}
-	return sctx.Shared.EnsurePrepared(func() error {
+	if err := sctx.Shared.EnsurePrepared(func() error {
 		marker, err := preparationMarkerPath(sctx.Ctx, sctx.WorkDir)
 		if err != nil {
 			return err
@@ -92,7 +94,43 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 			return fmt.Errorf("write preparation marker: %w", err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return syncPopulatedSubmodules(sctx)
+}
+
+// syncPopulatedSubmodules resets every populated submodule to its recorded
+// commit without fetching. An edit inside a submodule cannot be committed by
+// the superproject, and a rebase moves the recorded pointer but not the
+// checkout, so either would otherwise be validated in place of the head.
+func syncPopulatedSubmodules(sctx *pipeline.StepContext) error {
+	submodules, err := preparationSubmodules(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return err
+	}
+	var discarded []string
+	for _, submodule := range submodules {
+		if !submodule.initialized {
+			continue
+		}
+		status, err := git.Run(sctx.Ctx, submodule.parentWorkDir, "status", "--porcelain", "--ignore-submodules=untracked", "--", submodule.path)
+		if err != nil {
+			return fmt.Errorf("check submodule %s: %w", submodule.path, err)
+		}
+		if strings.TrimSpace(status) == "" {
+			continue
+		}
+		rel, _ := filepath.Rel(sctx.WorkDir, filepath.Join(submodule.parentWorkDir, submodule.path))
+		discarded = append(discarded, filepath.ToSlash(rel))
+	}
+	if err := initializePreparationSubmodules(sctx.Ctx, submodules); err != nil {
+		return fmt.Errorf("reset submodules to recorded commits: %w", err)
+	}
+	if len(discarded) > 0 {
+		sctx.Log(fmt.Sprintf("reset submodules to their recorded commits, discarding changes: %s", strings.Join(discarded, ", ")))
+	}
+	return nil
 }
 
 func preparationMarkerPath(ctx context.Context, workDir string) (string, error) {

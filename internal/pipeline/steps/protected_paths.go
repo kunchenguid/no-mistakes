@@ -60,7 +60,7 @@ func unstageSubmodulePointerMoves(sctx *pipeline.StepContext) error {
 	if len(moved) == 0 {
 		return nil
 	}
-	if _, err := stepGitRun(sctx, append([]string{"reset", "-q", "--"}, moved...)...); err != nil {
+	if _, err := stepGitRun(sctx, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, moved...)...); err != nil {
 		return fmt.Errorf("unstage submodule pointers: %w", err)
 	}
 	sctx.Log(fmt.Sprintf("left submodule pointers as recorded: %s", strings.Join(moved, ", ")))
