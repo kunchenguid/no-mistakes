@@ -258,7 +258,7 @@ func initializePreparationSubmodules(ctx context.Context, submodules []preparati
 		if !submodule.initialized {
 			continue
 		}
-		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--force", "--", submodule.path); err != nil {
+		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--checkout", "--force", "--", submodule.path); err != nil {
 			return err
 		}
 	}
@@ -286,13 +286,17 @@ func registeredSubmodulePaths(ctx context.Context, workDir string) ([]string, er
 		}
 		return nil, fmt.Errorf("list registered submodules: %w", err)
 	}
+	return parseRegisteredSubmodulePaths(out)
+}
+
+func parseRegisteredSubmodulePaths(out []byte) ([]string, error) {
 	var paths []string
 	for _, entry := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
 		_, path, ok := strings.Cut(entry, "\n")
 		if !ok {
 			return nil, fmt.Errorf("invalid registered submodule entry %q", entry)
 		}
-		path, err = preparationRelativePath(path)
+		path, err := preparationRelativePath(path)
 		if err != nil {
 			return nil, fmt.Errorf("invalid submodule path: %w", err)
 		}

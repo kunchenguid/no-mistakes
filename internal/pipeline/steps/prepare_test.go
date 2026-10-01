@@ -389,6 +389,45 @@ func TestEnsurePrepared_KeepsSubmoduleInitializedByPreparationAtRecordedCommit(t
 	}
 }
 
+// A submodule configured with `update = rebase` would rebase the command's own
+// commit onto the recorded one instead of checking that commit out, so the
+// configured commands would validate content the head does not record.
+func TestEnsurePrepared_ResetsSubmoduleConfiguredToRebase(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "push", remote, "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "config", "--file", ".gitmodules", "submodule.module.update", "rebase")
+	gitCmd(t, dir, "add", ".gitmodules", "module")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	recorded := gitCmd(t, dir, "rev-parse", "HEAD:module")
+	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: initializesSubmodulePreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare initializes submodule: %v", err)
+	}
+	module := filepath.Join(dir, "module")
+	if got := gitCmd(t, module, "rev-parse", "HEAD"); got != recorded {
+		t.Fatalf("submodule checkout = %s, want recorded %s", got, recorded)
+	}
+	if _, err := os.Stat(filepath.Join(module, "prepared.txt")); !os.IsNotExist(err) {
+		t.Fatalf("preparation commit inside the submodule survived: %v", err)
+	}
+}
+
 func TestEnsurePrepared_RestoresDeletedInitializedSubmodule(t *testing.T) {
 	dir, baseSHA, _ := setupGitRepo(t)
 	remote := t.TempDir()
