@@ -262,6 +262,22 @@ func TestBaseAttributionKeysPytestFailuresByTestID(t *testing.T) {
 	}
 }
 
+// A " - " inside a parametrized id is part of the id, not the reason, so two
+// parameter sets that differ only after it stay distinct tests.
+func TestBaseAttributionKeepsPytestParameterIDsWhole(t *testing.T) {
+	t.Parallel()
+	base := "FAILED tests/test_a.py::test_login[user - password] - AssertionError\n"
+	head := "FAILED tests/test_a.py::test_login[user - admin] - AssertionError\n"
+	a := classifiedAttribution(1, head, base)
+	if strings.Join(a.introduced, "|") != "FAILED tests/test_a.py::test_login[user - admin]" || len(a.preexisting) != 0 || len(a.ambiguous) != 0 {
+		t.Fatalf("introduced = %q preexisting = %q ambiguous = %q, want the admin case introduced", a.introduced, a.preexisting, a.ambiguous)
+	}
+	a = classifiedAttribution(1, "FAILED tests/test_a.py::test_login[user - admin] - KeyError: x\n", head)
+	if strings.Join(a.preexisting, "|") != "FAILED tests/test_a.py::test_login[user - admin]" || len(a.introduced) != 0 {
+		t.Fatalf("preexisting = %q introduced = %q, want the admin case pre-existing", a.preexisting, a.introduced)
+	}
+}
+
 // A base that fails without any recognized per-test line (here a build
 // failure, whose aggregate line is deliberately ignored) cannot say which head
 // failures it shares, so nothing is listed as introduced.
