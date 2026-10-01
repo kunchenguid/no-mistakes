@@ -441,6 +441,71 @@ func TestEnsurePrepared_DiscardsFixAgentEditInsidePreparedSubmodule(t *testing.T
 	}
 }
 
+// A file a fix agent creates inside a submodule is untracked there, so neither
+// the forced checkout nor the superproject commit removes or carries it. The
+// rerun must not see it, while ignored build output inside the submodule
+// survives.
+func TestEnsurePrepared_DiscardsFixAgentNewFileInsidePreparedSubmodule(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt", ".gitignore")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "push", remote, "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
+	sctx.Shared = &pipeline.RunShared{}
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "module", "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "module", "build", "out.o"), []byte("built\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "module", "missing.h"), []byte("agent file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := commitAgentFixesWithResult(sctx, types.StepTest, "fix tests", "")
+	if err != nil {
+		t.Fatalf("commit agent fixes: %v", err)
+	}
+	if committed {
+		t.Fatal("superproject committed a new file inside the submodule")
+	}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare before rerun: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "module", "missing.h")); !os.IsNotExist(err) {
+		t.Fatalf("agent's new submodule file survived before rerun: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "module", "build", "out.o")); err != nil {
+		t.Fatalf("ignored submodule build output was removed: %v", err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("submodule still differs from the head: %q", got)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "discarding changes: module") {
+		t.Fatalf("discarded submodule file was not logged: %q", logs)
+	}
+}
+
 // A rebase onto a base that bumped a submodule moves the recorded pointer but
 // not the populated checkout. The next configured command must run against the
 // pointer the rebased head records.

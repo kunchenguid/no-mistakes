@@ -114,7 +114,7 @@ func syncPopulatedSubmodules(sctx *pipeline.StepContext) error {
 		if !submodule.initialized {
 			continue
 		}
-		status, err := git.Run(sctx.Ctx, submodule.parentWorkDir, "status", "--porcelain", "--ignore-submodules=untracked", "--", submodule.path)
+		status, err := git.Run(sctx.Ctx, submodule.parentWorkDir, "status", "--porcelain", "--ignore-submodules=none", "--", submodule.path)
 		if err != nil {
 			return fmt.Errorf("check submodule %s: %w", submodule.path, err)
 		}
@@ -126,6 +126,14 @@ func syncPopulatedSubmodules(sctx *pipeline.StepContext) error {
 	}
 	if err := initializePreparationSubmodules(sctx.Ctx, submodules); err != nil {
 		return fmt.Errorf("reset submodules to recorded commits: %w", err)
+	}
+	for _, submodule := range submodules {
+		if !submodule.initialized {
+			continue
+		}
+		if _, err := git.Run(sctx.Ctx, filepath.Join(submodule.parentWorkDir, submodule.path), "clean", "-ffd"); err != nil {
+			return fmt.Errorf("clean submodule %s: %w", submodule.path, err)
+		}
 	}
 	if len(discarded) > 0 {
 		sctx.Log(fmt.Sprintf("reset submodules to their recorded commits, discarding changes: %s", strings.Join(discarded, ", ")))
