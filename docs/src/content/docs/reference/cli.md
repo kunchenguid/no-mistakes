@@ -123,6 +123,7 @@ no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
+no-mistakes axi run --intent "the user's goal" --push-branch stacked-pr
 no-mistakes axi run --intent "the user's goal" --no-publish-intent
 ```
 
@@ -133,6 +134,7 @@ no-mistakes axi run --intent "the user's goal" --no-publish-intent
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--push-branch` | `string` | (none)  | Remote publish ref and PR head branch for this run only; defaults to the run's local branch name |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
@@ -166,6 +168,8 @@ Only attached runs receive plan-aware guidance. Review and Test assess the propo
 
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
+`--push-branch` is likewise persisted on the run: the push step publishes the verified head to that remote ref instead of the run's own branch name, and the PR step discovers and updates (or creates) the PR on that head branch. Gate identity, custody tracking, and `no-mistakes sync` recovery stay on the local branch name. Use it when the local branch name does not match the remote review branch - for example a local branch cut from a stacked PR's head, which otherwise opens a duplicate PR against the default base. Reattaching with a `--push-branch` that differs from the active run's stored binding is refused rather than silently discarded; omit the flag to reattach.
+Like `--no-publish-intent`, the binding rides IPC fields an older daemon silently drops, so `axi run`/`rerun` probe the running daemon when the flag is set and refuse when it is too old to honor them; the gate's push-received forwarder does the same for a `no-mistakes.push-branch=` push option. Restart the daemon with the current binary.
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
@@ -492,6 +496,7 @@ Rerun the pipeline for the current branch.
 no-mistakes rerun
 no-mistakes rerun --intent "the revised user goal"
 no-mistakes rerun --model openai-codex/gpt-5.4 --effort high
+no-mistakes rerun --push-branch stacked-pr
 no-mistakes rerun --no-publish-intent
 ```
 
@@ -528,6 +533,7 @@ use rerun to bypass a gate.
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
+| `--push-branch` | `string` | (none) | Remote publish ref and PR head branch for this run only; inherited from the selected prior run when omitted |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |

@@ -593,7 +593,7 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 // only evaluated at the top of the loop, so a git transport that hangs while the
 // status API stays healthy would otherwise defer timeout detection indefinitely.
 func publishedBranchHead(sctx *pipeline.StepContext) (string, error) {
-	ref := normalizedBranchRef(sctx.Run.Branch)
+	ref := normalizedBranchRef(runPushBranch(sctx))
 	ctx, cancel := context.WithTimeout(sctx.Ctx, defaultPublishedHeadResolveWindow)
 	defer cancel()
 	bounded := *sctx

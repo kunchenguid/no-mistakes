@@ -526,6 +526,14 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	return err
 }
 
+// FetchRemoteRefToPrivateRef imports an arbitrary remote ref (e.g. a
+// refs/pull/<n>/head review ref) without touching FETCH_HEAD.
+func FetchRemoteRefToPrivateRef(ctx context.Context, dir, remote, remoteRef, localRef string) error {
+	refspec := fmt.Sprintf("+%s:%s", remoteRef, localRef)
+	_, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec)
+	return err
+}
+
 // FetchRemoteRef imports the object named by one exact remote ref without
 // touching FETCH_HEAD or any caller-owned ref. The temporary ref is private to
 // this operation, allowing the caller to publish the verified object with its

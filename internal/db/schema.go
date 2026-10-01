@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
+    push_branch          TEXT,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
     pi_profile           TEXT,
     verification_plan    TEXT,
@@ -315,6 +316,12 @@ var migrationStatements = []string{
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
+	// Per-run publish/PR head branch chosen by the operator (axi run
+	// --push-branch). Nullable: absent means the run publishes to, and targets
+	// its PR at, the branch it ran on. Runs record it explicitly so remote
+	// publication cannot drift when a local branch was cut from another
+	// pull request's head.
+	`ALTER TABLE runs ADD COLUMN push_branch TEXT`,
 	// The caller-side, tighten-only decision to keep the generated Intent
 	// section out of the PR body (axi run --no-publish-intent, or
 	// intent.publish_intent: false in global config). Resolved once at run

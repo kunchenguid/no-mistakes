@@ -183,7 +183,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	const maxLogBytes = 32 * 1024
 	var logOutput string
 	if host.Capabilities().FailedCheckLogs {
-		logOutput = fetchCILogOutput(ctx, host, pr, sctx.Run.Branch, sctx.Run.HeadSHA, targets.Checks, maxLogBytes)
+		logOutput = fetchCILogOutput(ctx, host, pr, runPushBranch(sctx), sctx.Run.HeadSHA, targets.Checks, maxLogBytes)
 	}
 
 	// Build prompt based on what issues are present
@@ -798,7 +798,7 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	if !supportsPRTemplates(provider) {
 		return nil
 	}
-	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
+	branch := runPushBranch(sctx)
 	if branch == effectivePRBaseBranch(sctx) {
 		return nil
 	}
@@ -815,11 +815,7 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		}
 		return nil
 	}
-	discovered, err := host.FindPR(sctx.Ctx, branch, "")
-	if err != nil {
-		return fmt.Errorf("%w: find pull request: %v", errAttestationWriteFailed, err)
-	}
-	pr, err := bindExistingPR(sctx, host, discovered)
+	pr, err := resolveBoundPR(sctx.Ctx, sctx, host, branch)
 	if err != nil {
 		return fmt.Errorf("%w: resolve pull request: %v", errAttestationWriteFailed, err)
 	}

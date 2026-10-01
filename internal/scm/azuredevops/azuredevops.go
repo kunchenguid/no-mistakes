@@ -160,6 +160,11 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			return nil, fmt.Errorf("az repos pr list: parse response: entry %d: %w", i, err)
 		}
 	}
+	// Every listed PR shares the queried source branch, so more than one row
+	// is an ambiguous bind target rather than a list to pick from.
+	if len(prs) > 1 {
+		return nil, fmt.Errorf("az repos pr list: %d open pull requests share source branch %s; refusing to pick one implicitly", len(prs), branch)
+	}
 	return h.toPR(&prs[0]), nil
 }
 

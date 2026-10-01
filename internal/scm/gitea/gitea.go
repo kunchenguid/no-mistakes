@@ -139,6 +139,8 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		return nil, fmt.Errorf("tea pulls list: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
 	base = strings.TrimSpace(base)
+	var match *scm.PR
+	var matches int
 	for _, item := range items {
 		if item.Head != branch {
 			continue
@@ -146,9 +148,15 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if base != "" && item.Base != base {
 			continue
 		}
-		return &scm.PR{Number: item.Index, URL: item.URL, BaseBranch: strings.TrimSpace(item.Base)}, nil
+		matches++
+		if match == nil {
+			match = &scm.PR{Number: item.Index, URL: item.URL, HeadBranch: strings.TrimSpace(item.Head), BaseBranch: strings.TrimSpace(item.Base)}
+		}
 	}
-	return nil, nil
+	if matches > 1 {
+		return nil, fmt.Errorf("tea pulls list: %d open pull requests share head branch %s; refusing to pick one implicitly", matches, branch)
+	}
+	return match, nil
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {

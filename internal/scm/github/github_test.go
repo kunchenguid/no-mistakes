@@ -1997,3 +1997,51 @@ func TestGetPRContentRequiresExplicitStrings(t *testing.T) {
 		t.Fatalf("explicit empty body rejected: %+v, %v", got, err)
 	}
 }
+
+func TestFindPRSameHeadMultiplicityRefuses(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName": {
+			stdout: `[` +
+				`{"number":1,"url":"https://github.example.com/org/repo/pull/1","baseRefName":"main"},` +
+				`{"number":2,"url":"https://github.example.com/org/repo/pull/2","baseRefName":"main"}` +
+				`]` + "\n",
+		},
+	}), nil, "", "")
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+	if err == nil {
+		t.Fatalf("FindPR() = %+v, want same-head multiplicity refusal", pr)
+	}
+	for _, want := range []string{"share head branch", "#1", "#2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("FindPR() error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestListOpenPRs(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --state open --limit 500 --json number,url,baseRefName,headRefName,headRefOid,headRepositoryOwner": {
+			stdout: `[` +
+				`{"number":2020,"url":"https://github.example.com/org/repo/pull/2020","baseRefName":"main","headRefName":"stacked-pr","headRefOid":"` + strings.Repeat("ab", 20) + `","headRepositoryOwner":{"login":"org"}},` +
+				`{"number":2025,"url":"https://github.example.com/org/repo/pull/2025","baseRefName":"main","headRefName":"feature/clone","headRefOid":"` + strings.Repeat("cd", 20) + `","headRepositoryOwner":{"login":"org"}}` +
+				`]` + "\n",
+		},
+	}), nil, "", "")
+
+	prs, err := host.ListOpenPRs(context.Background())
+	if err != nil {
+		t.Fatalf("ListOpenPRs() error = %v", err)
+	}
+	if len(prs) != 2 {
+		t.Fatalf("ListOpenPRs() = %+v, want 2 PRs", prs)
+	}
+	first := prs[0]
+	if first.Number != "2020" || first.HeadBranch != "stacked-pr" || first.BaseBranch != "main" || first.HeadSHA != strings.Repeat("ab", 20) {
+		t.Fatalf("ListOpenPRs()[0] = %+v, want stacked-pr identity", first)
+	}
+}

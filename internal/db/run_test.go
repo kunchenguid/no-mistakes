@@ -98,25 +98,25 @@ func TestLaunchNonceBindingClaimsOnceAndPreservesLegacyRows(t *testing.T) {
 	if got, err := d.GetRun(legacy.ID); err != nil || got.LaunchNonce != nil || got.LaunchValidationGeneration != nil || got.LaunchIntentDigest != nil {
 		t.Fatalf("legacy launch binding = %#v, err = %v", got, err)
 	}
-	if claim, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "legacy-nonce", "legacy-head", "generation-1", "digest", "", false); err != nil || claimed || claim != nil {
+	if claim, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "legacy-nonce", "legacy-head", "generation-1", "digest", "", "", false); err != nil || claimed || claim != nil {
 		t.Fatalf("legacy receipt claim = %#v, claimed=%v, err=%v", claim, claimed, err)
 	}
 
 	const generation = "generation-001"
 	const intentDigest = "intent-digest"
 	intent := RunIntent{Summary: "exact persisted intent\n", Source: RunIntentSourceAgent, Score: 1}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", false, nil)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if run.LaunchNonce == nil || *run.LaunchNonce != "nonce-1" || run.LaunchValidationGeneration == nil || *run.LaunchValidationGeneration != generation || run.LaunchIntentDigest == nil || *run.LaunchIntentDigest != intentDigest {
 		t.Fatalf("launch binding = %#v", run)
 	}
-	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", false, nil); err == nil {
+	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", "", false, nil); err == nil {
 		t.Fatal("duplicate nonce insert succeeded")
 	}
 
-	conflicting, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1", "head", "generation-002", intentDigest, "", false)
+	conflicting, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1", "head", "generation-002", intentDigest, "", "", false)
 	if err != nil || claimed || conflicting == nil || conflicting.ID != run.ID {
 		t.Fatalf("conflicting generation claim = %#v, claimed=%v, err=%v", conflicting, claimed, err)
 	}
@@ -127,11 +127,11 @@ func TestLaunchNonceBindingClaimsOnceAndPreservesLegacyRows(t *testing.T) {
 	if stored.LaunchReceiptClaimedAt != nil {
 		t.Fatal("conflicting generation claim consumed created disposition")
 	}
-	first, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1", "head", generation, intentDigest, "", false)
+	first, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1", "head", generation, intentDigest, "", "", false)
 	if err != nil || !claimed || first.ID != run.ID {
 		t.Fatalf("first claim = %#v, claimed=%v, err=%v", first, claimed, err)
 	}
-	replay, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1", "head", generation, intentDigest, "", false)
+	replay, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1", "head", generation, intentDigest, "", "", false)
 	if err != nil || claimed || replay.ID != run.ID {
 		t.Fatalf("replay claim = %#v, claimed=%v, err=%v", replay, claimed, err)
 	}
@@ -147,12 +147,12 @@ func TestClaimLaunchReceiptRejectsMismatchedPRBaseBranch(t *testing.T) {
 	const generation = "generation-base-001"
 	const intentDigest = "base-intent-digest"
 	const prBaseBranch = "release/v1"
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-base", generation, intentDigest, prBaseBranch, false, nil)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-base", generation, intentDigest, prBaseBranch, "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	conflicting, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-base", "head", generation, intentDigest, "other-target", false)
+	conflicting, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-base", "head", generation, intentDigest, "other-target", "", false)
 	if err != nil || claimed || conflicting == nil || conflicting.ID != run.ID {
 		t.Fatalf("conflicting base claim = %#v, claimed=%v, err=%v", conflicting, claimed, err)
 	}
@@ -164,16 +164,59 @@ func TestClaimLaunchReceiptRejectsMismatchedPRBaseBranch(t *testing.T) {
 		t.Fatal("conflicting base claim consumed created disposition")
 	}
 
-	first, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-base", "head", generation, intentDigest, " release/v1 ", false)
+	first, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-base", "head", generation, intentDigest, " release/v1 ", "", false)
 	if err != nil || !claimed || first.ID != run.ID {
 		t.Fatalf("matching base claim = %#v, claimed=%v, err=%v", first, claimed, err)
 	}
 	if first.PRBaseBranch == nil || *first.PRBaseBranch != prBaseBranch {
 		t.Fatalf("claimed PR base branch = %#v, want %q", first.PRBaseBranch, prBaseBranch)
 	}
-	replay, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-base", "head", generation, intentDigest, "", false)
+	replay, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-base", "head", generation, intentDigest, "", "", false)
 	if err != nil || claimed || replay == nil || replay.ID != run.ID {
 		t.Fatalf("omitted base replay = %#v, claimed=%v, err=%v", replay, claimed, err)
+	}
+}
+
+func TestClaimLaunchReceiptRejectsMismatchedPushBranch(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := RunIntent{Summary: "exact persisted intent", Source: RunIntentSourceAgent, Score: 1}
+	const generation = "generation-push-001"
+	const intentDigest = "push-intent-digest"
+	const pushBranch = "stacked-pr"
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-push", generation, intentDigest, "", pushBranch, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PushBranch == nil || *run.PushBranch != pushBranch {
+		t.Fatalf("stored push branch = %#v, want %q", run.PushBranch, pushBranch)
+	}
+
+	conflicting, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-push", "head", generation, intentDigest, "", "other-target", false)
+	if err != nil || claimed || conflicting == nil || conflicting.ID != run.ID {
+		t.Fatalf("conflicting push-branch claim = %#v, claimed=%v, err=%v", conflicting, claimed, err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LaunchReceiptClaimedAt != nil {
+		t.Fatal("conflicting push-branch claim consumed created disposition")
+	}
+
+	first, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-push", "head", generation, intentDigest, "", " stacked-pr ", false)
+	if err != nil || !claimed || first.ID != run.ID {
+		t.Fatalf("matching push-branch claim = %#v, claimed=%v, err=%v", first, claimed, err)
+	}
+	if first.PushBranch == nil || *first.PushBranch != pushBranch {
+		t.Fatalf("claimed push branch = %#v, want %q", first.PushBranch, pushBranch)
+	}
+	replay, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-push", "head", generation, intentDigest, "", "", false)
+	if err != nil || claimed || replay == nil || replay.ID != run.ID {
+		t.Fatalf("omitted push-branch replay = %#v, claimed=%v, err=%v", replay, claimed, err)
 	}
 }
 
@@ -190,7 +233,7 @@ func TestOmitIntentRoundTripAndClaimMatching(t *testing.T) {
 	// The omit decision is stamped on the row at creation and read back
 	// through every path (GetRun and receipt claims) so recovery and reruns
 	// inherit it instead of re-reading a since-changed config.
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-omit", generation, intentDigest, "", true, nil)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-omit", generation, intentDigest, "", "", true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,11 +247,11 @@ func TestOmitIntentRoundTripAndClaimMatching(t *testing.T) {
 
 	// A claim requesting omission against a run that publishes is a genuine
 	// conflict and must not consume the created disposition.
-	publishing, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-publish", generation, intentDigest, "", false, nil)
+	publishing, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-publish", generation, intentDigest, "", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conflicting, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-publish", "head", generation, intentDigest, "", true)
+	conflicting, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-publish", "head", generation, intentDigest, "", "", true)
 	if err != nil || claimed || conflicting == nil || conflicting.ID != publishing.ID || conflicting.OmitIntent {
 		t.Fatalf("conflicting omit claim = %#v, claimed=%v, err=%v", conflicting, claimed, err)
 	}
@@ -221,7 +264,7 @@ func TestOmitIntentRoundTripAndClaimMatching(t *testing.T) {
 	}
 
 	// A matching omit claim returns the run with the stamp intact.
-	claimedRun, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-omit", "head", generation, intentDigest, "", true)
+	claimedRun, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-omit", "head", generation, intentDigest, "", "", true)
 	if err != nil || !claimed || claimedRun == nil || claimedRun.ID != run.ID || !claimedRun.OmitIntent {
 		t.Fatalf("matching omit claim = %#v, claimed=%v, err=%v", claimedRun, claimed, err)
 	}
@@ -229,7 +272,7 @@ func TestOmitIntentRoundTripAndClaimMatching(t *testing.T) {
 	// The reverse is not a conflict: the stored value folds the operator's
 	// global tighten-only default in, so a claim without the flag can serve
 	// a run whose row omits publication.
-	folded, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-publish", "head", generation, intentDigest, "", false)
+	folded, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-publish", "head", generation, intentDigest, "", "", false)
 	if err != nil || !claimed || folded == nil || folded.ID != publishing.ID {
 		t.Fatalf("folded-tolerance claim = %#v, claimed=%v, err=%v", folded, claimed, err)
 	}
@@ -244,7 +287,7 @@ func TestClaimLaunchReceiptAtomicallyReturnsCreatedOnce(t *testing.T) {
 	intent := RunIntent{Summary: "exact persisted intent", Source: RunIntentSourceAgent, Score: 1}
 	const generation = "generation-race-001"
 	const intentDigest = "race-intent-digest"
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-race", generation, intentDigest, "", false, nil)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-race", generation, intentDigest, "", "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +303,7 @@ func TestClaimLaunchReceiptAtomicallyReturnsCreatedOnce(t *testing.T) {
 	for range callers {
 		go func() {
 			<-start
-			claimedRun, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-race", "head", generation, intentDigest, "", false)
+			claimedRun, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-race", "head", generation, intentDigest, "", "", false)
 			runID := ""
 			if claimedRun != nil {
 				runID = claimedRun.ID

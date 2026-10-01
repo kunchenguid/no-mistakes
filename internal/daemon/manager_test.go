@@ -925,6 +925,60 @@ func TestRerunInheritsPRBaseBranchFromSelectedRun(t *testing.T) {
 	}
 }
 
+func TestRerunInheritsPushBranchFromSelectedRun(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "push-branch-rerun-repo")
+	workDir := repo.WorkingPath
+	gitCmd(t, workDir, "checkout", "-b", "feature/local-name")
+	if err := os.WriteFile(filepath.Join(workDir, "stack.txt"), []byte("stack\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", "stack.txt")
+	gitCmd(t, workDir, "commit", "-m", "stack")
+	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/feature/local-name")
+	gitCmd(t, workDir, "checkout", "main")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:       p.RepoDir("push-branch-rerun-repo"),
+		Ref:        "refs/heads/feature/local-name",
+		Old:        "0000000000000000000000000000000000000000",
+		New:        headSHA,
+		PushBranch: "stacked-pr",
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRun := waitForRunTerminalState(t, d, first.RunID)
+	if firstRun.PushBranch == nil || *firstRun.PushBranch != "stacked-pr" {
+		t.Fatalf("first run PushBranch = %#v, want stacked-pr", firstRun.PushBranch)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "push-branch-rerun-repo",
+		Branch:        "feature/local-name",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PushBranch == nil || *got.PushBranch != "stacked-pr" {
+		t.Fatalf("rerun PushBranch = %#v, want inherited stacked-pr", got.PushBranch)
+	}
+}
+
 // The omit-intent decision folds once at run start: the caller's tighten-only
 // request OR the operator's global intent.publish_intent default, stamped on
 // the run row at creation. Reruns inherit the selected run's decision and can

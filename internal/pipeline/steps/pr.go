@@ -71,10 +71,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	ctx := sctx.Ctx
 
-	branch := sctx.Run.Branch
-	if strings.HasPrefix(branch, "refs/heads/") {
-		branch = strings.TrimPrefix(branch, "refs/heads/")
-	}
+	// The PR head is the publish branch: a per-run --push-branch binding
+	// publishes onto and targets that remote branch, which is also the
+	// identity FindPR binds an existing pull request by.
+	branch := runPushBranch(sctx)
 	baseBranch := effectivePRBaseBranch(sctx)
 	if branch == baseBranch {
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
@@ -110,11 +110,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	bodyLimit := scm.MaxPRBodyChars(provider)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, "")
-	if err != nil {
-		return nil, err
-	}
-	existing, err = bindExistingPR(sctx, host, existing)
+	existing, err := resolveBoundPR(ctx, sctx, host, branch)
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +182,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 
+	if err := refuseAmbiguousCreateTarget(ctx, sctx, host, branch, baseBranch); err != nil {
+		return nil, err
+	}
 	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
 		return nil, err
@@ -257,6 +256,65 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 	return nil
 }
 
+// resolveBoundPR decides which pull request this run binds, checking the
+// run's persisted PR URL FIRST and only falling back to a branch-only
+// FindPR discovery when there is no owned identity (first attach) or the
+// owned object proved stale. An open owned PR outranks any same-head
+// listing - the run already knows its review object, so an unrelated
+// second PR on the same branch must not trip the multi-head refusal or
+// steal the bind. A closed or merged persisted PR is stale: title/body
+// update the discovered PR, and a per-run --base-branch retarget is refused
+// rather than moving either object.
+func resolveBoundPR(ctx context.Context, sctx *pipeline.StepContext, host scm.Host, branch string) (*scm.PR, error) {
+	owned := runPRURL(sctx)
+	var discovered *scm.PR
+	if owned == "" {
+		return host.FindPR(ctx, branch, "")
+	}
+	ownedPR := prFromOwnedURL(owned)
+	state, err := host.GetPRState(ctx, ownedPR)
+	if err != nil {
+		return nil, fmt.Errorf("read persisted pull request %s state: %w", owned, err)
+	}
+	if state == scm.PRStateOpen {
+		if runPushBound(sctx) {
+			// A bound run publishes onto its --push-branch target, so the
+			// persisted identity is only valid while the PR's head still is
+			// that branch. A rerun that re-binds a different publish branch
+			// inherits the old URL; without this check the step would push to
+			// the new branch while updating the previous head's PR.
+			discovered, err = host.FindPR(ctx, branch, "")
+			if err != nil {
+				return nil, err
+			}
+			if discovered == nil {
+				return nil, fmt.Errorf("persisted pull request %s is open but the bound publish branch %s has no pull request of its own; refusing to update a different head's review object (rebind with `--push-branch` matching the persisted pull request's head, or publish without a pull request via `--skip pr`)", owned, branch)
+			}
+			if !samePRIdentity(owned, discovered) {
+				return nil, fmt.Errorf("bound publish branch %s already has pull request %s, which is not this run's persisted %s; refusing to retarget either object (rebind with `--push-branch` matching the persisted pull request's head, or publish without a pull request via `--skip pr`)", branch, describePR(discovered), owned)
+			}
+		}
+		if strings.TrimSpace(ownedPR.BaseBranch) == "" {
+			if reader, ok := host.(scm.PRBaseBranchReader); ok {
+				base, err := reader.GetPRBaseBranch(ctx, ownedPR)
+				if err != nil {
+					return nil, fmt.Errorf("read persisted pull request %s: %w", owned, err)
+				}
+				ownedPR.BaseBranch = strings.TrimSpace(base)
+			}
+		}
+		return ownedPR, nil
+	}
+	if runPRBaseBranch(sctx) != "" {
+		return nil, fmt.Errorf("persisted pull request %s is stale (%s); refusing to retarget another pull request", owned, strings.ToLower(string(state)))
+	}
+	discovered, err = host.FindPR(ctx, branch, "")
+	if err != nil {
+		return nil, err
+	}
+	return discovered, nil
+}
+
 // bindExistingPR prefers the run's persisted PR URL over a branch-only
 // FindPR hit after GetPRState proves that identity is still open. A closed
 // or merged persisted PR is stale: title/body update the discovered PR, and
@@ -288,6 +346,14 @@ func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.P
 		}
 		return discovered, nil
 	}
+	if runPushBound(sctx) && !samePRIdentity(owned, discovered) {
+		// A bound run's persisted identity is only valid while its head is the
+		// bound publish branch; see resolveBoundPR for the full rationale.
+		if discovered == nil {
+			return nil, fmt.Errorf("persisted pull request %s is open but the bound publish branch has no pull request of its own; refusing to update a different head's review object", owned)
+		}
+		return nil, fmt.Errorf("bound publish branch already has pull request %s, which is not this run's persisted %s; refusing to retarget either object", describePR(discovered), owned)
+	}
 	existing := discovered
 	if !samePRIdentity(owned, discovered) {
 		existing = ownedPR
@@ -308,6 +374,101 @@ func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.P
 	}
 	existing.BaseBranch = strings.TrimSpace(base)
 	return existing, nil
+}
+
+// refuseAmbiguousCreateTarget stops a create that would silently land on
+// the wrong review object: another open PR already covers part of this
+// proposed head, so creating <branch> -> <base> would re-propose its diff
+// under a guessed target (issue #552: a local branch cut from a stacked
+// PR's head opened a duplicate PR against the default branch).
+//
+// Detection keys on the candidate PR's own head SHA being an ancestor of
+// the proposed head - the new PR's diff then literally contains that PR's
+// commits - and is skipped when the candidate's head branch is the target
+// base, because that is exactly the legal stacked-PR shape (work on top of
+// a pending PR, base set to its branch). Same-head candidates are absent by
+// construction: FindPR already bound them before create.
+//
+// Detection fails closed, matching the other remote-state checks in this
+// step: providers without scm.OpenPRLister keep their prior behavior, but
+// where the listing exists an unreadable open-PR set, head, or candidate
+// branch leaves ambiguity unresolved and refuses the create rather than
+// opening a possibly duplicate pull request.
+func refuseAmbiguousCreateTarget(ctx context.Context, sctx *pipeline.StepContext, host scm.Host, branch, baseBranch string) error {
+	lister, ok := host.(scm.OpenPRLister)
+	if !ok {
+		return nil
+	}
+	openPRs, err := lister.ListOpenPRs(ctx)
+	if err != nil {
+		return fmt.Errorf("could not list open pull requests before PR create: %w", err)
+	}
+	head, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("could not resolve head before PR create: %w", err)
+	}
+	for i := range openPRs {
+		candidate := &openPRs[i]
+		candidateBranch := strings.TrimSpace(candidate.HeadBranch)
+		if candidateBranch == "" || candidateBranch == branch || candidateBranch == baseBranch {
+			continue
+		}
+		candidateHead := strings.TrimSpace(candidate.HeadSHA)
+		if candidateHead == "" {
+			continue
+		}
+		if !isAncestor(ctx, sctx.WorkDir, candidateHead, head) {
+			// The recorded head usually sits behind the candidate's live tip;
+			// fetch the review object so its history is present, then re-check.
+			// Review refs on the base repo (GitHub/Gitea refs/pull, GitLab
+			// refs/merge-requests) name the PR's own head for same-repo and
+			// cross-fork listings alike, so both the recorded head and the
+			// fetched live tip count as ancestry evidence. The upstream branch
+			// fallback is not attested to the listed PR - a same-named branch
+			// on the base repo can belong to an unrelated fork PR - so it only
+			// materializes the recorded head, never a tip of its own. When no
+			// fetch can verify the candidate the create refuses rather than
+			// opening a possibly duplicate pull request.
+			upstreamURL := resolveUpstreamURL(sctx)
+			reviewRefFetched := false
+			reviewRefTip := ""
+			var lastErr error
+			if candidate.Number != "" {
+				scanRef := "refs/no-mistakes/open-pr-scan/pr-" + candidate.Number
+				for _, remoteRef := range []string{"refs/pull/" + candidate.Number + "/head", "refs/merge-requests/" + candidate.Number + "/head"} {
+					if err := git.FetchRemoteRefToPrivateRef(ctx, sctx.WorkDir, upstreamURL, remoteRef, scanRef); err == nil {
+						reviewRefFetched = true
+						if tip, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", scanRef+"^{commit}"); err == nil {
+							reviewRefTip = strings.TrimSpace(tip)
+						}
+						break
+					} else {
+						lastErr = err
+					}
+				}
+			}
+			if !reviewRefFetched {
+				if err := git.FetchRemoteBranchToPrivateRef(ctx, sctx.WorkDir, upstreamURL, candidateBranch, "refs/no-mistakes/open-pr-scan/"+candidateBranch); err != nil {
+					if lastErr != nil {
+						return fmt.Errorf("could not verify open pull request %s before PR create: %w (review ref: %v)", describePR(candidate), err, lastErr)
+					}
+					return fmt.Errorf("could not verify open pull request %s before PR create: %w", describePR(candidate), err)
+				}
+				// A successful branch fetch can still be about a different PR
+				// (a same-named upstream branch when the listing's head lives
+				// on a fork), so the recorded head must now resolve locally.
+				if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", candidateHead+"^{commit}"); err != nil {
+					return fmt.Errorf("could not verify open pull request %s before PR create: recorded head %s is not reachable on the review ref or the upstream branch", describePR(candidate), shortObjectID(candidateHead))
+				}
+			}
+			if !isAncestor(ctx, sctx.WorkDir, candidateHead, head) && !(reviewRefTip != "" && isAncestor(ctx, sctx.WorkDir, reviewRefTip, head)) {
+				continue
+			}
+		}
+		return fmt.Errorf("refusing to create pull request %s -> %s: the proposed head already contains open pull request %s (head %s, targeting %s); bind this run to it with `axi run --push-branch %s`, stack onto it with `axi run --base-branch %s`, or publish without a pull request via `--skip pr`",
+			branch, baseBranch, describePR(candidate), shortObjectID(candidateHead), strings.TrimSpace(candidate.BaseBranch), candidateBranch, candidateBranch)
+	}
+	return nil
 }
 
 func prFromOwnedURL(owned string) *scm.PR {

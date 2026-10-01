@@ -775,7 +775,7 @@ func TestLastKnownBranchTip_BranchRefNormalization(t *testing.T) {
 		HeadSHA:           sha2,
 		TargetKind:        "upstream",
 		TargetFingerprint: "fingerprint",
-		Ref:               "unprefixed-branch",
+		Ref:               "refs/heads/unprefixed-branch",
 	}); err != nil {
 		t.Fatal(err)
 	}

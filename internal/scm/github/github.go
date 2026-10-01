@@ -236,6 +236,18 @@ func parsePullRequestURL(raw, expectedHost, expectedRepo string) (int, error) {
 	return number, nil
 }
 
+// githubPRListEntry is one entry of a `gh pr list` JSON response.
+type githubPRListEntry struct {
+	Number              int    `json:"number"`
+	URL                 string `json:"url"`
+	BaseRefName         string `json:"baseRefName"`
+	HeadRefName         string `json:"headRefName"`
+	HeadRefOid          string `json:"headRefOid"`
+	HeadRepositoryOwner *struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
+}
+
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
 	args := []string{"pr", "list", "--head", branch}
 	if strings.TrimSpace(base) != "" {
@@ -247,30 +259,51 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		jsonFields = "number,url,baseRefName,headRefName,headRepositoryOwner"
 	}
 	args = append(args, "--state", "open", "--json", jsonFields)
+	prs, err := h.listPREntries(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+	var match *scm.PR
+	var matchIDs []string
+	for i := range prs {
+		candidate := &prs[i]
+		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
+			continue
+		}
+		if match == nil {
+			match = h.entryToPR(candidate)
+		}
+		matchIDs = append(matchIDs, "#"+strconv.Itoa(candidate.Number))
+	}
+	// More than one open PR on the same source branch means the pipeline
+	// cannot tell which review object it owns - a local branch cut from a
+	// stacked PR's head otherwise inherits whichever listing order surfaced.
+	// Fail closed and let the operator resolve or close the duplicates.
+	if len(matchIDs) > 1 {
+		return nil, fmt.Errorf("gh pr list: %d open pull requests (%s) share head branch %s; refusing to pick one implicitly", len(matchIDs), strings.Join(matchIDs, ", "), branch)
+	}
+	return match, nil
+}
+
+// listPREntries runs `gh pr list` with the assembled arguments and validates
+// every entry's identity. Empty output is a legitimate zero-row listing; a
+// malformed entry fails closed so a partial listing can never read as none.
+func (h *Host) listPREntries(ctx context.Context, args []string) ([]githubPRListEntry, error) {
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list: %s: %w", strings.TrimSpace(string(out)), err)
 	}
-	var prs []struct {
-		Number              int    `json:"number"`
-		URL                 string `json:"url"`
-		BaseRefName         string `json:"baseRefName"`
-		HeadRefName         string `json:"headRefName"`
-		HeadRepositoryOwner *struct {
-			Login string `json:"login"`
-		} `json:"headRepositoryOwner"`
-	}
+	var prs []githubPRListEntry
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, fmt.Errorf("parse gh pr list JSON: %w", err)
 	}
 	if prs == nil {
 		return nil, errors.New("parse gh pr list JSON: expected array")
 	}
-	if len(prs) == 0 {
-		return nil, nil
-	}
-	prNumbers := make([]string, len(prs))
 	for i, candidate := range prs {
 		if candidate.Number <= 0 {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing positive PR number", i)
@@ -286,7 +319,6 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if candidate.Number != number {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d PR number %d does not match URL number %d", i, candidate.Number, number)
 		}
-		prNumbers[i] = strconv.Itoa(candidate.Number)
 		if h.forkOwner != "" {
 			if strings.TrimSpace(candidate.HeadRefName) == "" {
 				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRefName", i)
@@ -296,18 +328,33 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			}
 		}
 	}
-	for i, candidate := range prs {
-		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
-			continue
-		}
-		pr := &scm.PR{
-			Number:     prNumbers[i],
-			URL:        strings.TrimSpace(candidate.URL),
-			BaseBranch: strings.TrimSpace(candidate.BaseRefName),
-		}
-		return pr, nil
+	return prs, nil
+}
+
+func (h *Host) entryToPR(candidate *githubPRListEntry) *scm.PR {
+	return &scm.PR{
+		Number:     strconv.Itoa(candidate.Number),
+		URL:        strings.TrimSpace(candidate.URL),
+		HeadBranch: strings.TrimSpace(candidate.HeadRefName),
+		HeadSHA:    strings.TrimSpace(candidate.HeadRefOid),
+		BaseBranch: strings.TrimSpace(candidate.BaseRefName),
 	}
-	return nil, nil
+}
+
+// ListOpenPRs enumerates the repository's open pull requests. The PR step
+// uses it to refuse ambiguous create targets (scm.OpenPRLister).
+func (h *Host) ListOpenPRs(ctx context.Context) ([]scm.PR, error) {
+	args := append([]string{"pr", "list"}, h.repoArgs()...)
+	args = append(args, "--state", "open", "--limit", "500", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepositoryOwner")
+	entries, err := h.listPREntries(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]scm.PR, 0, len(entries))
+	for i := range entries {
+		prs = append(prs, *h.entryToPR(&entries[i]))
+	}
+	return prs, nil
 }
 
 func (h *Host) matchesHead(headRefName string, owner *struct {

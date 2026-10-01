@@ -120,17 +120,23 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // the ordinary Push step.
 func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, attestationSteps []*db.StepResult) error {
 	ctx := sctx.Ctx
-	ref := normalizedBranchRef(sctx.Run.Branch)
-	branch := strings.TrimPrefix(ref, "refs/heads/")
+	// The publish ref is the remote branch this run's head lands on - a
+	// per-run --push-branch binding overrides the local branch name. The gate
+	// mirror ref stays the run's own branch identity (it is what `rerun` and
+	// branch-sync recovery resolve), so the two can differ legitimately.
+	publishRef := normalizedBranchRef(runPushBranch(sctx))
+	mirrorRef := normalizedBranchRef(sctx.Run.Branch)
+	branch := strings.TrimPrefix(publishRef, "refs/heads/")
+	mirrorBranch := strings.TrimPrefix(mirrorRef, "refs/heads/")
 
 	pushURL := resolvePushURL(sctx)
 	pushTarget := "upstream"
 	usingFork := strings.TrimSpace(sctx.Repo.ForkURL) != ""
 	if usingFork {
 		pushTarget = "fork"
-		sctx.Log(fmt.Sprintf("pushing to fork %s (%s)...", safeurl.Redact(pushURL), ref))
+		sctx.Log(fmt.Sprintf("pushing to fork %s (%s)...", safeurl.Redact(pushURL), publishRef))
 	} else {
-		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), ref))
+		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), publishRef))
 	}
 
 	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
@@ -143,7 +149,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// until the upstream push is verified, because a refused or failed push is
 	// a designed outcome and a gate left with no branch ref would strand
 	// `rerun` and branch-sync recovery on a branch that never published.
-	mirrorPlan, err := planGateMirrorReconciliation(ctx, sctx, ref, branch, headBeingPushed)
+	mirrorPlan, err := planGateMirrorReconciliation(ctx, sctx, mirrorRef, mirrorBranch, headBeingPushed)
 	if err != nil {
 		return err
 	}
@@ -157,7 +163,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// remote-tracking refs), so the anchor is explicit.
 	lastSeen := lastKnownBranchTip(ctx, sctx, branch, usingFork)
 	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
-	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
+	decision, err := resolveForcePushDecision(gitRun, pushURL, publishRef, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
 	if err != nil {
 		return fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
@@ -178,7 +184,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		// and a SHA-bound attestation depend on - which is what keeps that head
 		// from being rewritten when the branch integrated a moved base by
 		// merging rather than rebasing (rebase.strategy).
-		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, ref, "", false); err != nil {
+		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, publishRef, "", false); err != nil {
 			return fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	case decision.upToDate:
@@ -186,11 +192,11 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		// successful binding even though no objects needed to move.
 	default:
 		// Existing branch: force-with-lease anchored to the verified remote head.
-		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, ref, decision.remoteSHA, true); err != nil {
+		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, publishRef, decision.remoteSHA, true); err != nil {
 			return fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	}
-	verifiedRemote, err := lsRemoteSHA(gitRun, pushURL, ref)
+	verifiedRemote, err := lsRemoteSHA(gitRun, pushURL, publishRef)
 	if err != nil || verifiedRemote != headBeingPushed {
 		if err != nil {
 			return fmt.Errorf("verify successful push to %s: %w", pushTarget, err)
@@ -211,7 +217,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// returning the error makes the CI monitor treat an already published
 	// repair as a failed one, and recording first and swallowing the error
 	// strands the gate behind the remote for good.
-	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed, mirrorPlan); err != nil {
+	if err := updateGateMirrorAfterPush(ctx, sctx, mirrorRef, headBeingPushed, mirrorPlan); err != nil {
 		return err
 	}
 
@@ -225,7 +231,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		HeadSHA:           headBeingPushed,
 		TargetKind:        pushTarget,
 		TargetFingerprint: branchsync.TargetFingerprint(pushURL),
-		Ref:               ref,
+		Ref:               publishRef,
 	}); err != nil {
 		return err
 	}
@@ -415,9 +421,14 @@ func shortObjectID(value string) string {
 }
 
 // lastKnownBranchTip returns the commit SHA the pipeline last observed or
-// produced for this branch on the remote. It checks the current run's recorded
-// pushed head, then prior pipeline runs for the same repo and branch, and
-// finally falls back to the worktree's remote-tracking ref.
+// produced for this remote branch. It checks the current run's recorded
+// pushed head, then prior runs whose durable PushRef names this exact remote
+// ref (bound runs publish under --push-branch, not their local branch name),
+// and finally falls back to the worktree's remote-tracking ref. An earlier
+// run's publication is a valid lease anchor under the single-publisher scope:
+// the remote is only "unchanged" while it still points at what the pipeline
+// produced, and any out-of-band move falls through to the dropped-commit
+// check in resolveForcePushDecision.
 func lastKnownBranchTip(ctx context.Context, sctx *pipeline.StepContext, branch string, fork bool) string {
 	// Publication updates the durable run row after the remote and mirror settle,
 	// but the executor's in-memory run only advances HeadSHA. Reload the current
@@ -441,8 +452,9 @@ func lastKnownBranchTip(ctx context.Context, sctx *pipeline.StepContext, branch 
 	if sctx.DB != nil && sctx.Repo != nil {
 		runs, err := sctx.DB.GetRunsByRepo(sctx.Repo.ID)
 		if err == nil {
+			publishRef := "refs/heads/" + strings.TrimPrefix(branch, "refs/heads/")
 			for _, r := range runs {
-				if strings.TrimPrefix(r.Branch, "refs/heads/") == strings.TrimPrefix(branch, "refs/heads/") && r.LastPushedSHA != nil && strings.TrimSpace(*r.LastPushedSHA) != "" {
+				if r.PushRef != nil && *r.PushRef == publishRef && r.LastPushedSHA != nil && strings.TrimSpace(*r.LastPushedSHA) != "" {
 					return strings.TrimSpace(*r.LastPushedSHA)
 				}
 			}

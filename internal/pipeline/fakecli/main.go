@@ -171,6 +171,14 @@ func fakeGHHandler(args []string) {
 			fmt.Println(state)
 			os.Exit(0)
 		}
+		if strings.Contains(strings.Join(args, " "), "--json baseRefName") {
+			base := prBase
+			if base == "" {
+				base = "main"
+			}
+			fmt.Println(base)
+			os.Exit(0)
+		}
 		if prURL != "" {
 			fmt.Println(prURL)
 			os.Exit(0)
@@ -483,6 +491,7 @@ func fakeCIGHReconcileHandler(args []string) {
 		fmt.Println("MERGEABLE")
 		os.Exit(0)
 	}
+	fakeGHHandlePRContentCommands(args, joined)
 	if strings.Contains(joined, "pr checks") {
 		fmt.Println(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
 		os.Exit(0)
@@ -496,6 +505,14 @@ func fakeCIGHReconcileHandler(args []string) {
 }
 
 func fakeGHHandlePRContentCommands(args []string, joined string) {
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json baseRefName") {
+		base := os.Getenv("FAKE_CLI_PR_BASE")
+		if base == "" {
+			base = "main"
+		}
+		fmt.Println(base)
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json title,body") {
 		if raw, ok := os.LookupEnv("FAKE_CLI_PR_CONTENT_JSON"); ok {
 			fmt.Println(raw)
@@ -889,6 +906,7 @@ func fakeCIGHNoChecksHandler(args []string) {
 		fmt.Println(fakePRHeadSHA())
 		os.Exit(0)
 	}
+	fakeGHHandlePRContentCommands(args, joined)
 	os.Exit(1)
 }
 

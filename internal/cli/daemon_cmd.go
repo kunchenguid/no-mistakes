@@ -125,6 +125,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			pushBranch, err := parsePushBranchPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			omitIntent, err := parseOmitIntentPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -159,6 +163,12 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 
+			if pushBranch != "" {
+				if err := probeDaemonPushBranch(client); err != nil {
+					return err
+				}
+			}
+
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 				Gate:                   gatePath,
@@ -170,6 +180,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				LaunchNonce:            launchNonce,
 				ValidationGeneration:   validationGeneration,
 				PRBaseBranch:           prBaseBranch,
+				PushBranch:             pushBranch,
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
 				VerificationPlanID:     verificationPlanID,
@@ -345,6 +356,37 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 	return branch, nil
 }
 
+// pushBranchPushOptionPrefix carries a per-run publish/PR head branch through a
+// git push (axi run --push-branch).
+const pushBranchPushOptionPrefix = "no-mistakes.push-branch="
+
+// formatPushBranchPushOption encodes a per-run publish branch as a push
+// option, or returns "" when unset.
+func formatPushBranchPushOption(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return ""
+	}
+	return pushBranchPushOptionPrefix + branch
+}
+
+// parsePushBranchPushOptions extracts the per-run publish branch push option,
+// if any. The last occurrence wins.
+func parsePushBranchPushOptions(options []string) (string, error) {
+	branch := ""
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, pushBranchPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("push branch push option must not be empty")
+		}
+		branch = value
+	}
+	return branch, nil
+}
+
 // omitIntentPushOption carries axi run --no-publish-intent through a git push.
 // Like every publication control it is tighten-only: the option can only ask
 // for omission, never for publication.
@@ -400,6 +442,21 @@ func probeDaemonOmitIntent(client *ipc.Client) error {
 	}
 	if err != nil {
 		return fmt.Errorf("the running daemon is too old to honor --no-publish-intent (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
+}
+
+// probeDaemonPushBranch asks the daemon for the push-branch capability, same
+// contract as probeDaemonOmitIntent: an older daemon silently drops the
+// push_branch field and would run unbound, publishing onto the local branch.
+func probeDaemonPushBranch(client *ipc.Client) error {
+	var result ipc.ProbePushBranchResult
+	err := client.Call(ipc.MethodProbePushBranch, &ipc.ProbePushBranchParams{}, &result)
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the push-branch capability")
+	}
+	if err != nil {
+		return fmt.Errorf("the running daemon is too old to honor --push-branch (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
 	}
 	return nil
 }

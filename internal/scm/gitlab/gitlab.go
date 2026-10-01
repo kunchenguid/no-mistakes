@@ -260,6 +260,11 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			return nil, fmt.Errorf("parse glab mr list JSON: entry %d IID %d does not match URL number %d", i, candidate.IID, number)
 		}
 	}
+	// Every listed MR shares the queried source branch, so more than one row
+	// is an ambiguous bind target rather than a list to pick from.
+	if len(mrs) > 1 {
+		return nil, fmt.Errorf("glab mr list: %d open merge requests share source branch %s; refusing to pick one implicitly", len(mrs), branch)
+	}
 	pr := mrs[0].toPR()
 	return pr, nil
 }

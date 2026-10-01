@@ -94,10 +94,24 @@ type PR struct {
 	// being certified. Providers that expose CI outside the PR check rollup
 	// use it to include those runs.
 	HeadSHA string
+	// HeadBranch is the source branch this PR is drawn from. It is populated
+	// by listings that enumerate open PRs (OpenPRLister) and stays empty on
+	// lookups that never asked the forge for it.
+	HeadBranch string
 	// BaseBranch is the forge's actual target branch for this PR. It is
 	// authoritative once a PR exists and protects resumed CI repair from a
 	// later configuration change.
 	BaseBranch string
+}
+
+// OpenPRLister is implemented by providers that can enumerate the
+// repository's open pull requests in one call. The PR step uses it to detect
+// ambiguous targets - several open PRs sharing a head, or an open PR whose
+// head the proposed commit already contains - before creating a new one.
+// Providers without it keep the FindPR semantics only: detection is skipped
+// rather than guessed.
+type OpenPRLister interface {
+	ListOpenPRs(ctx context.Context) ([]PR, error)
 }
 
 // PRContent is the title + body for creating or updating a PR.

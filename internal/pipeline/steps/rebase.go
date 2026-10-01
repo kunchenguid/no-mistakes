@@ -29,14 +29,19 @@ const forkBranchRefPrefix = "refs/remotes/no-mistakes-push/"
 func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
+	// The remote side of this step is the publish branch - a per-run
+	// --push-branch binding changes which remote ref is fetched, rebased
+	// onto, and compared against the default, while the local branch name
+	// stays the run's identity for bundled-commit detection.
+	pushBranch := runPushBranch(sctx)
 	defaultBranch := effectivePRBaseBranch(sctx)
 	branchTarget := ""
 	pushRemote := resolveUpstreamURL(sctx)
-	if branch != "" {
-		branchTarget = "origin/" + branch
+	if pushBranch != "" {
+		branchTarget = "origin/" + pushBranch
 		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 			pushRemote = sctx.Repo.PushURL()
-			branchTarget = forkBranchTrackingRef(branch)
+			branchTarget = forkBranchTrackingRef(pushBranch)
 		}
 	}
 
@@ -44,7 +49,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// A force push means the user explicitly rewrote the branch - the pushed
 	// commit is authoritative and must not be overwritten by prior pipeline
 	// state on the remote.
-	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
+	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, pushBranch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
 	if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
@@ -60,12 +65,12 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// when the remote carries an out-of-band commit - silently clobbering it
 	// (the original #281/#305 hazard, in the force-push path). Leaving it stale is
 	// what lets the push step's content check catch that case.
-	if !forcePush && branch != "" && branch != defaultBranch {
+	if !forcePush && pushBranch != "" && pushBranch != defaultBranch {
 		if strings.TrimSpace(sctx.Repo.ForkURL) == "" {
-			if err := fetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
-				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
+			if err := fetchRunUpstreamBranch(ctx, sctx, pushBranch); err != nil {
+				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", pushBranch, err))
 			}
-		} else if err := git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, pushRemote, branch, branchTarget); err != nil {
+		} else if err := git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, pushRemote, pushBranch, branchTarget); err != nil {
 			sctx.LogFile(fmt.Sprintf("warning: could not fetch %s: %v", branchTarget, err))
 		}
 	}
@@ -78,7 +83,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
 		return outcome, nil
 	}
-	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+	if forcePush && pushBranch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
 		findingsJSON, _ := json.Marshal(Findings{
 			Items: []Finding{{
 				Severity:    "warning",
@@ -93,10 +98,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	targets := rebaseTargetsForBranch(branch, defaultBranch, branchTarget)
+	targets := rebaseTargetsForBranch(pushBranch, defaultBranch, branchTarget)
 	if forcePush {
 		sctx.Log("force push detected, skipping " + branchTarget + " sync")
-		targets = forcePushRebaseTargets(branch, defaultBranch)
+		targets = forcePushRebaseTargets(pushBranch, defaultBranch)
 	}
 
 	merging := mergesMovedBase(sctx)

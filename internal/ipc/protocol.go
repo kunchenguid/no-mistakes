@@ -14,6 +14,7 @@ const (
 	MethodPushReceived            = "push_received"
 	MethodResolvePiProfile        = "resolve_pi_profile"
 	MethodProbeOmitIntent         = "probe_omit_intent"
+	MethodProbePushBranch         = "probe_push_branch"
 	MethodReleaseVerificationPlan = "release_verification_plan"
 	MethodCaptureVerificationPlan = "capture_verification_plan"
 	MethodStartFreshRun           = "start_fresh_run"
@@ -88,6 +89,9 @@ type PushReceivedParams struct {
 	LaunchNonce          string           `json:"launch_nonce,omitempty"`
 	ValidationGeneration string           `json:"validation_generation,omitempty"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	// PushBranch is the explicit remote publish/PR head branch requested with
+	// axi run --push-branch. Absent means the run publishes on Ref's branch.
+	PushBranch string `json:"push_branch,omitempty"`
 	// OmitIntent carries the caller-side, tighten-only request to keep the
 	// generated Intent section out of the PR body. It never publishes intent
 	// a repository's trusted config disabled.
@@ -114,6 +118,7 @@ type StartFreshRunParams struct {
 	LaunchNonce          string           `json:"launch_nonce"`
 	ValidationGeneration string           `json:"validation_generation"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	PushBranch           string           `json:"push_branch,omitempty"`
 	OmitIntent           bool             `json:"omit_intent,omitempty"`
 }
 
@@ -147,6 +152,20 @@ type ProbeOmitIntentResult struct {
 	OK bool `json:"ok"`
 }
 
+// ProbePushBranchParams is the empty request for MethodProbePushBranch.
+type ProbePushBranchParams struct{}
+
+// ProbePushBranchResult answers MethodProbePushBranch. Like the omit-intent
+// probe, the method exists only as a capability check: an older daemon
+// decodes JSON permissively and would silently drop the unknown push_branch
+// field from push_received / rerun / claim_launch_receipt, running unbound
+// and publishing onto the local branch instead of the bound target. The
+// distinct method is refused by such a daemon (method not found), so a client
+// that reaches OK=true knows push_branch is honored.
+type ProbePushBranchResult struct {
+	OK bool `json:"ok"`
+}
+
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
@@ -159,6 +178,7 @@ type ClaimLaunchReceiptParams struct {
 	ValidationGeneration string `json:"validation_generation"`
 	IntentDigest         string `json:"intent_digest"`
 	PRBaseBranch         string `json:"pr_base_branch,omitempty"`
+	PushBranch           string `json:"push_branch,omitempty"`
 	OmitIntent           bool   `json:"omit_intent,omitempty"`
 }
 
@@ -221,6 +241,9 @@ type RerunParams struct {
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	// PushBranch overrides the inherited remote publish/PR head branch of the
+	// selected prior run (axi rerun --push-branch).
+	PushBranch string `json:"push_branch,omitempty"`
 	// OmitIntent requests omission of the public Intent section for the new
 	// run. It is tighten-only: the selected prior run's decision is always
 	// inherited and this can only add to it.
@@ -423,6 +446,9 @@ type RunInfo struct {
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`
+	// PushBranch is the per-run remote publish/PR head branch, if the
+	// operator set --push-branch when starting this run.
+	PushBranch *string `json:"push_branch,omitempty"`
 	// OmitIntent is true when this run was started with the caller-side,
 	// tighten-only request to keep the generated Intent section out of the
 	// PR body (see runs.omit_intent).

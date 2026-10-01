@@ -108,16 +108,18 @@ jobs:
       # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
       # on the core shard is the union of the git and steps shards; the workflow
       # tests resolve every shard through `go list` and fail if they drift or
-      # overlap. pipeline/steps is its own shard (~10 min) so it runs in
+      # overlap. pipeline/steps is its own shard (~14-15 min) so it runs in
       # parallel with the remaining git-heavy packages instead of setting a
-      # ~21 min serial floor.
+      # ~21 min serial floor. Its go test timeout is 20m (not the 15m shared
+      # by the other shards) because the suite already sits near 15m: the cap
+      # still surfaces a real hang as goroutine dumps under the 40m job cap.
       - name: Test on Windows (git-heavy)
         if: runner.os == 'Windows' && matrix.shard == 'git'
         run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
 
       - name: Test on Windows (pipeline/steps)
         if: runner.os == 'Windows' && matrix.shard == 'steps'
-        run: go test -v -timeout=15m ./internal/pipeline/steps/...
+        run: go test -v -timeout=20m ./internal/pipeline/steps/...
 
       - name: Test on Windows (core)
         if: runner.os == 'Windows' && matrix.shard == 'core'
