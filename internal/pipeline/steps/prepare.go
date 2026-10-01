@@ -309,14 +309,23 @@ func resetPreparedSubmodules(ctx context.Context, workDir string) ([]string, err
 			if err != nil {
 				return fmt.Errorf("check submodule %s: %w", path, err)
 			}
+			submoduleWorkDir := filepath.Join(parentWorkDir, path)
+			rel, _ := filepath.Rel(workDir, submoduleWorkDir)
+			rel = filepath.ToSlash(rel)
 			if strings.TrimSpace(status) != "" {
-				rel, _ := filepath.Rel(workDir, filepath.Join(parentWorkDir, path))
-				discarded = append(discarded, filepath.ToSlash(rel))
+				discarded = append(discarded, rel)
+			}
+			recorded, err := git.Run(ctx, parentWorkDir, "rev-parse", ":"+filepath.ToSlash(path))
+			if err != nil {
+				return fmt.Errorf("resolve recorded commit of submodule %s: %w", rel, err)
+			}
+			recorded = strings.TrimSpace(recorded)
+			if _, err := git.Run(ctx, submoduleWorkDir, "cat-file", "-e", recorded+"^{commit}"); err != nil {
+				return fmt.Errorf("submodule %s: commit %s recorded by HEAD is not available locally; no-mistakes does not fetch submodules, so commands.prepare or a manual fetch inside the submodule must provide it", rel, recorded)
 			}
 			if _, err := git.Run(ctx, parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--force", "--", path); err != nil {
 				return err
 			}
-			submoduleWorkDir := filepath.Join(parentWorkDir, path)
 			if _, err := git.Run(ctx, submoduleWorkDir, "clean", "-ffd"); err != nil {
 				return fmt.Errorf("clean submodule %s: %w", path, err)
 			}

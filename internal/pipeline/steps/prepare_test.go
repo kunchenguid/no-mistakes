@@ -532,20 +532,21 @@ func TestEnsurePrepared_ChecksOutPointerMovedAfterPreparation(t *testing.T) {
 		t.Fatalf("prepare: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("bumped\n"), 0o644); err != nil {
+	module := filepath.Join(dir, "module")
+	stale := gitCmd(t, module, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(module, "module.txt"), []byte("bumped\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitCmd(t, seed, "commit", "-am", "bump module")
-	gitCmd(t, seed, "push", remote, "main")
-	bumped := gitCmd(t, seed, "rev-parse", "HEAD")
-	gitCmd(t, filepath.Join(dir, "module"), "fetch", "origin")
+	gitCmd(t, module, "commit", "-am", "bump module")
+	bumped := gitCmd(t, module, "rev-parse", "HEAD")
+	gitCmd(t, module, "checkout", "-q", stale)
 	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+bumped+",module")
 	gitCmd(t, dir, "commit", "-m", "rebased onto base that bumped module")
 
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare before rerun: %v", err)
 	}
-	if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != bumped {
+	if got := gitCmd(t, module, "rev-parse", "HEAD"); got != bumped {
 		t.Fatalf("submodule checkout = %s, want the rebased head's pointer %s", got, bumped)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "module", "module.txt")); err != nil || string(got) != "bumped\n" {
@@ -553,6 +554,52 @@ func TestEnsurePrepared_ChecksOutPointerMovedAfterPreparation(t *testing.T) {
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("submodule still differs from the head: %q", got)
+	}
+}
+
+// no-mistakes never fetches submodules, so a rebased head whose submodule
+// pointer names a commit that is not available locally must fail by naming
+// that cause instead of running the configured command against the old tree.
+func TestEnsurePrepared_UnfetchedPointerMovedAfterPreparationFailsNamingTheCause(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "push", remote, "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("bumped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "commit", "-am", "bump module")
+	gitCmd(t, seed, "push", remote, "main")
+	bumped := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+bumped+",module")
+	gitCmd(t, dir, "commit", "-m", "rebased onto base that bumped module")
+
+	err := ensurePrepared(sctx, types.StepTest)
+	if err == nil {
+		t.Fatal("prepare before rerun succeeded with the recorded submodule commit unavailable")
+	}
+	for _, want := range []string{"module", bumped, "not available locally", "commands.prepare"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err, want)
+		}
 	}
 }
 
@@ -776,24 +823,26 @@ func TestEnsurePrepared_FollowsOuterSubmoduleThatDropsANestedSubmodule(t *testin
 		t.Fatalf("prepare: %v", err)
 	}
 
-	outerRemote := gitCmd(t, filepath.Join(dir, "outer"), "remote", "get-url", "origin")
-	clone := filepath.Join(t.TempDir(), "outer")
-	gitCmd(t, t.TempDir(), "clone", outerRemote, clone)
-	gitCmd(t, clone, "rm", "-q", "inner")
-	gitCmd(t, clone, "commit", "-m", "drop inner")
-	gitCmd(t, clone, "push", "origin", "HEAD:main")
-	dropped := gitCmd(t, clone, "rev-parse", "HEAD")
-	gitCmd(t, filepath.Join(dir, "outer"), "fetch", "origin")
+	outer := filepath.Join(dir, "outer")
+	stale := gitCmd(t, outer, "rev-parse", "HEAD")
+	gitCmd(t, outer, "rm", "-q", "inner")
+	gitCmd(t, outer, "commit", "-m", "drop inner")
+	dropped := gitCmd(t, outer, "rev-parse", "HEAD")
+	gitCmd(t, outer, "checkout", "-q", stale)
+	gitCmd(t, outer, "submodule", "update", "--init", "--no-fetch", "inner")
+	if _, err := os.Stat(filepath.Join(outer, "inner", "inner.txt")); err != nil {
+		t.Fatalf("fixture did not repopulate the nested submodule: %v", err)
+	}
 	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+dropped+",outer")
 	gitCmd(t, dir, "commit", "-m", "rebased onto base that dropped inner")
 
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare before rerun: %v", err)
 	}
-	if got := gitCmd(t, filepath.Join(dir, "outer"), "rev-parse", "HEAD"); got != dropped {
+	if got := gitCmd(t, outer, "rev-parse", "HEAD"); got != dropped {
 		t.Fatalf("outer checkout = %s, want the rebased head's pointer %s", got, dropped)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "outer", "inner")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outer, "inner")); !os.IsNotExist(err) {
 		t.Fatalf("dropped nested submodule checkout survived: %v", err)
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
