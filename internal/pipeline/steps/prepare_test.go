@@ -765,6 +765,42 @@ func TestEnsurePrepared_KeepsNestedSubmoduleInitializedByPreparation(t *testing.
 	}
 }
 
+// A rebased head can bump an outer submodule to a commit that no longer
+// registers a nested submodule preparation populated. The reset must follow
+// the bumped outer checkout instead of resetting the vanished nested path.
+func TestEnsurePrepared_FollowsOuterSubmoduleThatDropsANestedSubmodule(t *testing.T) {
+	dir, baseSHA, headSHA := setupNestedSubmodules(t)
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git --version"})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	outerRemote := gitCmd(t, filepath.Join(dir, "outer"), "remote", "get-url", "origin")
+	clone := filepath.Join(t.TempDir(), "outer")
+	gitCmd(t, t.TempDir(), "clone", outerRemote, clone)
+	gitCmd(t, clone, "rm", "-q", "inner")
+	gitCmd(t, clone, "commit", "-m", "drop inner")
+	gitCmd(t, clone, "push", "origin", "HEAD:main")
+	dropped := gitCmd(t, clone, "rev-parse", "HEAD")
+	gitCmd(t, filepath.Join(dir, "outer"), "fetch", "origin")
+	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+dropped+",outer")
+	gitCmd(t, dir, "commit", "-m", "rebased onto base that dropped inner")
+
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare before rerun: %v", err)
+	}
+	if got := gitCmd(t, filepath.Join(dir, "outer"), "rev-parse", "HEAD"); got != dropped {
+		t.Fatalf("outer checkout = %s, want the rebased head's pointer %s", got, dropped)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "outer", "inner")); !os.IsNotExist(err) {
+		t.Fatalf("dropped nested submodule checkout survived: %v", err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("submodules still differ from the head: %q", got)
+	}
+}
+
 func TestEnsurePrepared_RestoresIntentToAdd(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "intent.go"), []byte("package intent\n"), 0o644); err != nil {
