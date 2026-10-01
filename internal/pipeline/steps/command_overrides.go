@@ -19,6 +19,14 @@ func declareCommandOverrides(sctx *pipeline.StepContext, name string) {
 	}
 }
 
+// declareStepCommandOverrides declares a Test or Lint step's overrides once per
+// step: a fix round re-executes the step into the same step log.
+func declareStepCommandOverrides(sctx *pipeline.StepContext, name string) {
+	if !sctx.Fixing {
+		declareCommandOverrides(sctx, name)
+	}
+}
+
 func executeRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
 	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, sctx.Config.CommandOverrides[name].Nice)
 }
