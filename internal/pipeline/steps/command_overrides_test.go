@@ -67,6 +67,28 @@ func TestConfiguredChecks_AddWithoutMaskingEitherFailure(t *testing.T) {
 	}
 }
 
+func TestRepositoryCommand_InheritsDaemonToolchainAndParallelismEnvironment(t *testing.T) {
+	t.Setenv("GOMAXPROCS", "3")
+	t.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator)+filepath.Join(t.TempDir(), "operator-toolchain"))
+	command := `printf '%s\n%s\n' "$PATH" "$GOMAXPROCS"`
+	if runtime.GOOS == "windows" {
+		command = "echo %PATH%& echo %GOMAXPROCS%"
+	}
+	var logs []string
+	sctx := commandOverrideContext(t, config.CommandOverride{Additional: []string{command}})
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	out, code, err := runRepositoryCommand(sctx, "test", command)
+	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(out, "\r\n", "\n")), "\n")
+	if err != nil || code != 0 || len(lines) != 2 || strings.TrimSpace(lines[0]) != os.Getenv("PATH") || strings.TrimSpace(lines[1]) != "3" {
+		t.Fatalf("overridden command saw (%q, %d, %v), want the daemon's PATH and GOMAXPROCS unchanged", out, code, err)
+	}
+	for _, line := range logs {
+		if strings.Contains(line, "operator-toolchain") {
+			t.Fatalf("inherited environment value reached the step log: %q", line)
+		}
+	}
+}
+
 func TestRepositoryCommand_LowersOSPriority(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("nice is a POSIX scheduling knob")

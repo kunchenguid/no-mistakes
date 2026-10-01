@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -107,5 +108,39 @@ func TestCommandConfiguration_AppendsRecoveryAndOverrideRemoval(t *testing.T) {
 		if snapshot.EffectiveConfig.Commands.Test != "team-tests" || (i == 0 && len(snapshot.EffectiveConfig.CommandOverrides["test"].Additional) != 1) || (i == 1 && (snapshot.Event != "resume" || len(snapshot.EffectiveConfig.CommandOverrides) != 0)) {
 			t.Fatalf("snapshot %d = %+v", i, snapshot)
 		}
+	}
+}
+
+func TestCommandConfiguration_RecordsInheritedCommandEnvironment(t *testing.T) {
+	t.Setenv("GOMAXPROCS", "3")
+	t.Setenv("CARGO_BUILD_JOBS", "")
+	os.Unsetenv("CARGO_BUILD_JOBS")
+	dir := t.TempDir()
+	cfg := &config.Config{CommandOverrides: map[string]config.CommandOverride{"test": {Additional: []string{"extra-tests"}}}}
+	if err := recordCommandConfiguration(dir, "start", cfg); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, commandConfigurationFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		InheritedEnv map[string]*string `json:"inherited_environment"`
+	}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.InheritedEnv["PATH"]; got == nil || *got != os.Getenv("PATH") {
+		t.Fatalf("PATH not recorded as inherited: %v", snapshot.InheritedEnv)
+	}
+	if got := snapshot.InheritedEnv["GOMAXPROCS"]; got == nil || *got != "3" {
+		t.Fatalf("GOMAXPROCS not recorded as inherited: %v", snapshot.InheritedEnv)
+	}
+	if _, ok := snapshot.InheritedEnv["CARGO_BUILD_JOBS"]; ok {
+		t.Fatalf("unset variable recorded: %v", snapshot.InheritedEnv)
+	}
+	if info, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("snapshot is not private: %v, %v", info, err)
 	}
 }

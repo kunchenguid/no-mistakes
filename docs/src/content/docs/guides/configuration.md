@@ -39,7 +39,7 @@ For Azure DevOps, authenticate the `az` CLI with either `az devops login` or `AZ
 For machine-local checks, command scheduling priority, or commit and PR-title conventions scoped to one remote, use global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) instead of adding that configuration to the repository.
 The global reference owns remote matching, syntax, and precedence.
 Local command settings supplement the committed commands and never replace them; [Machine-local commands](/no-mistakes/reference/global-config/#machine-local-commands) owns their fields and how applied overrides are declared and recorded.
-Toolchain paths and parallelism settings come from your own environment, which the daemon captures at startup, rather than from per-command settings.
+Toolchain paths and parallelism settings come from your own environment, which the daemon captures at startup and passes unchanged to configured commands, rather than from per-command settings; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns where to set them.
 
 In practice, most teams should keep personal preferences global and repo policy
 local.
