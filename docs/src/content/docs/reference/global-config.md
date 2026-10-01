@@ -929,7 +929,7 @@ Its finding names that machine-local check and its exit code, and never attribut
 `additional` is refused for preparation and formatting, because those commands are not independent check gates.
 Replacement command strings, `command`, `replace`, `skip`, per-command `env`, unknown command names, empty additional checks, and niceness outside `0` through `19` are configuration errors.
 
-Overrides are always declared, never silent: whenever a command runs under any of these settings, its step output states `machine-local overrides applied to commands.<name>:` followed by the niceness and the added checks, and Test passes the same declaration to its agent for the testing summary.
+Overrides are always declared, never silent: whenever a command runs under any of these settings, its step log states `machine-local overrides applied to commands.<name>:` followed by the niceness and the added checks, once per step rather than per check, and Test passes the same declaration to its agent for the testing summary.
 These settings are scoped to configured shell commands and their local checks, not agents, built-in Git operations, forge commands, or repository-declared extra gates.
 
 There is no per-command environment override.
