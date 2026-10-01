@@ -161,9 +161,10 @@ submitted head, and the clean local branch has diverged from it, `axi run`
 archives that head and submits the rewritten branch; status reports
 `safety: stale_submitted_mirror` with `next_action.code: run_pipeline`. That
 lane head is the operator's own exact submission with nothing
-pipeline-authored behind it, which is the ownership the exception rests on. A lane at any other head, including a newer descendant or a
-head left by a run that moved it, keeps the full proof, and a local head that
-is merely behind is not a rewrite.
+pipeline-authored behind it, which is the ownership the exception rests on. A
+lane at any other head, including a newer descendant or a head left by a run
+that moved it, keeps the full proof, and a local head that is merely behind is
+not a rewrite.
 
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
