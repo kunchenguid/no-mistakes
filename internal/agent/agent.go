@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -1149,21 +1151,24 @@ func validateJSONObject(object map[string]any, schema map[string]any, path, fiel
 		}
 	}
 
+	// Keys are checked in sorted order so the same output always reports the
+	// same violation; map order would let an unchanged retry name a different
+	// field and read as a distinct failure.
 	properties, _ := schema["properties"].(map[string]any)
 	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
-		for key := range object {
+		for _, key := range slices.Sorted(maps.Keys(object)) {
 			if _, ok := properties[key]; !ok {
 				return schemaViolation(joinJSONPath(field, key), "%scontains unknown field %q", formatJSONPath(path), key)
 			}
 		}
 	}
 
-	for key, propSchema := range properties {
+	for _, key := range slices.Sorted(maps.Keys(properties)) {
 		child, ok := object[key]
 		if !ok {
 			continue
 		}
-		if err := validateJSONValue(child, propSchema, joinJSONPath(path, key), joinJSONPath(field, key)); err != nil {
+		if err := validateJSONValue(child, properties[key], joinJSONPath(path, key), joinJSONPath(field, key)); err != nil {
 			return err
 		}
 	}

@@ -1317,3 +1317,36 @@ func TestValidateStructuredOutput_ReportsTheFailingSchemaField(t *testing.T) {
 		})
 	}
 }
+
+// An unchanged output with several invalid properties must report the same
+// violation on every validation, or Review's retry attribution would read a
+// repeated failure as failures across distinct fields.
+func TestValidateStructuredOutput_RepeatedOutputReportsTheSameViolation(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {
+			"risk_scope": {"type": "string", "enum": ["source-or-external"]},
+			"tested": {"type": ["array", "null"]},
+			"a": {}, "b": {}, "c": {}, "d": {}, "e": {}, "f": {}, "g": {}, "h": {}
+		}
+	}`)
+	for _, tc := range []struct{ name, output string }{
+		{"two invalid properties", `{"risk_scope": "everything", "tested": "yes", "a": 1, "b": 1, "c": 1, "d": 1, "e": 1, "f": 1, "g": 1, "h": 1}`},
+		{"two unknown fields", `{"notes": 1, "extra": 1, "a": 1, "b": 1, "c": 1, "d": 1, "e": 1, "f": 1, "g": 1, "h": 1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]struct{}{}
+			for range 200 {
+				var violation *SchemaViolation
+				if err := validateStructuredOutput(json.RawMessage(tc.output), schema); !errors.As(err, &violation) {
+					t.Fatalf("validateStructuredOutput() = %v, want a *SchemaViolation", err)
+				}
+				fields[violation.Field] = struct{}{}
+			}
+			if len(fields) != 1 {
+				t.Fatalf("the same output was rejected for different fields %v, want one", fields)
+			}
+		})
+	}
+}

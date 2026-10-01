@@ -153,6 +153,15 @@ func TestReviewSchemaRetryExhaustionJourney(t *testing.T) {
 					if step.Status != types.StepStatusCompleted {
 						t.Fatalf("review status = %s, want completed after a valid retry", step.Status)
 					}
+					reviews := 0
+					for _, inv := range h.AgentInvocations() {
+						if strings.Contains(inv.Prompt, "branch: schema-recovers") && strings.Contains(inv.Prompt, "Review the code changes and return structured findings") {
+							reviews++
+						}
+					}
+					if reviews != 2 {
+						t.Fatalf("review agent invocations for schema-recovers = %d, want the rejected review plus one retry", reviews)
+					}
 					return
 				}
 			}
