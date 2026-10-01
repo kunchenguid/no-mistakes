@@ -30,6 +30,7 @@ type releasedRewriteGate struct {
 	base      string
 	submitted string
 	rewritten string
+	runID     string
 	env       *axiEnv
 	done      chan error
 }
@@ -110,7 +111,7 @@ func newReleasedRewriteGate(t *testing.T, status types.RunStatus, handlers map[s
 	t.Cleanup(func() { client.Close() })
 	chdir(t, dir)
 	return &releasedRewriteGate{
-		dir: dir, gateDir: gateDir, base: base, submitted: submitted, rewritten: rewritten,
+		dir: dir, gateDir: gateDir, base: base, submitted: submitted, rewritten: rewritten, runID: run.ID,
 		env:  &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client},
 		done: done,
 	}
@@ -229,6 +230,35 @@ func TestTriggerRunRefusesReleasedRunMirrorThatMovedPastTheSubmittedHead(t *test
 	}
 }
 
+func TestTriggerRunRefusesCustodyReturnedRunMirrorForRewrittenBranch(t *testing.T) {
+	g := newReleasedRewriteGate(t, types.RunCompleted, map[string]func(context.Context, json.RawMessage) (interface{}, error){
+		ipc.MethodGetRunsForHead: noRunsForHead,
+		ipc.MethodGetActiveRun:   noActiveRun,
+	})
+	// Custody was returned rather than the branch released, so the exact-head
+	// allowance does not apply even though the lane still names the submitted
+	// head and the local branch was rewritten.
+	if err := g.env.d.SetRunCustodyReturned(g.runID); err != nil {
+		t.Fatal(err)
+	}
+	if got := cliGit(t, g.gateDir, "rev-parse", "refs/heads/main"); got != g.submitted {
+		t.Fatalf("gate branch = %s, want the submitted head %s", got, g.submitted)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	runID, err := triggerRun(ctx, g.env, "main", nil, "", "", false, "")
+	if err == nil || runID != "" || !strings.Contains(err.Error(), "at-risk commit") {
+		t.Fatalf("custody-returned rewrite must keep the at-risk refusal: run=%q err=%v", runID, err)
+	}
+	if got := cliGit(t, g.gateDir, "rev-parse", "refs/heads/main"); got != g.submitted {
+		t.Fatalf("refusal moved the gate branch to %s, want untouched %s", got, g.submitted)
+	}
+	if tags := cliGit(t, g.gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("refusal created archive tags:\n%s", tags)
+	}
+}
+
 func TestTriggerProofRunArchivesReleasedRunSubmittedMirrorForRewrittenBranch(t *testing.T) {
 	const nonce, generation = "nonce-released-rewrite", "generation-1"
 	var g *releasedRewriteGate
@@ -311,7 +341,7 @@ func TestReleasedRunSubmittedHeadForFreshRun(t *testing.T) {
 		want   string
 	}{
 		{name: "released and rewritten", mutate: func(*branchsync.State) {}, head: rewritten, want: submitted},
-		{name: "custody returned with the same evidence", mutate: func(s *branchsync.State) { s.State = branchsync.StateCustodyReturned }, head: rewritten, want: submitted},
+		{name: "custody returned with the same evidence", mutate: func(s *branchsync.State) { s.State = branchsync.StateCustodyReturned }, head: rewritten},
 		{name: "cancelled run releases too", mutate: func(s *branchsync.State) { s.Pipeline.Status = string(types.RunCancelled) }, head: rewritten, want: submitted},
 		{name: "head moved since inspection", mutate: func(*branchsync.State) {}, head: "3333333333333333333333333333333333333333", want: ""},
 		{name: "other branch", mutate: func(s *branchsync.State) { s.Local.Branch = "other" }, head: rewritten, want: ""},

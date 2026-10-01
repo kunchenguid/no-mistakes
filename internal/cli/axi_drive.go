@@ -621,11 +621,10 @@ func freshRunBranchOwnershipBlock(state branchsync.State) *branchsync.State {
 // since ended. The next revision of such a branch is a rewrite - a rebase onto
 // a moved base, an amend - which the ordinary push refuses as non-fast-forward
 // and the containment proof refuses as at-risk content. When the branch is
-// released (user_owned, or custody_returned with the same evidence) by a
-// terminal run that never published and whose head never moved off the
-// submitted head, that mirror head is the operator's own exact submission:
-// nothing pipeline-authored sits behind it, and the operator is the one
-// replacing it. Reconciliation then archives it under
+// released (user_owned) by a terminal run that never published and whose
+// head never moved off the submitted head, that mirror head is the operator's
+// own exact submission: nothing pipeline-authored sits behind it, and the
+// operator is the one replacing it. Reconciliation then archives it under
 // refs/tags/no-mistakes-abandoned/<branch>/<sha> before the push, exactly as
 // pipeline publication does for the same head. The allowance names one exact
 // commit; a lane that moved to any other head, including a newer descendant,
@@ -639,9 +638,7 @@ func releasedRunSubmittedHeadForFreshRun(state branchsync.State, branch, head st
 	if state.Local.Branch != branch || state.Local.Head != head || !state.Local.Clean || state.Relation != branchsync.RelationDiverged {
 		return ""
 	}
-	switch state.State {
-	case branchsync.StateUserOwned, branchsync.StateCustodyReturned:
-	default:
+	if state.State != branchsync.StateUserOwned {
 		return ""
 	}
 	if !types.RunStatus(state.Pipeline.Status).Terminal() {
