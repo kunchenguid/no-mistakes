@@ -137,6 +137,10 @@ func (a *baseAttribution) classify(headOutput, baseOutput string) {
 // the run worktree's object store, runs the trusted commands.prepare there
 // when configured, then testCmd. A separate clone rather than a linked
 // worktree keeps the gate repository and the run worktree untouched.
+// Preparation is cleaned exactly as on the head, so only its ignored
+// materialization reaches the base suite, and prepare plus test share the
+// Test budget (test_agent_timeout): a base run that outlives it is stopped
+// and reported unavailable rather than holding the head's finding back.
 func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (string, int, error) {
 	scratch, err := os.MkdirTemp("", "no-mistakes-test-base-")
 	if err != nil {
@@ -154,9 +158,20 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 	if _, err := stepGitRun(sctx, "-C", checkout, "checkout", "--quiet", "--detach", baseSHA); err != nil {
 		return "", 0, fmt.Errorf("check out base commit %s: %w", shortSHA(baseSHA), err)
 	}
+	ctx, cancel, budget := testAgentContext(sctx)
+	defer cancel()
+	exceeded := func() error {
+		if ctx.Err() != nil && sctx.Ctx.Err() == nil {
+			return fmt.Errorf("base run exceeded %s", budget)
+		}
+		return nil
+	}
 	env := stepEnvironment(sctx)
 	if prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare); prepareCmd != "" {
-		output, exitCode, err := runShellCommandWithPriority(sctx.Ctx, checkout, env, prepareCmd, sctx.Config.CommandOverrides["prepare"].Nice)
+		output, exitCode, err := runShellCommandWithPriority(ctx, checkout, env, prepareCmd, sctx.Config.CommandOverrides["prepare"].Nice)
+		if err := exceeded(); err != nil {
+			return "", 0, err
+		}
 		if err != nil {
 			return "", 0, fmt.Errorf("prepare base checkout: %w", err)
 		}
@@ -166,12 +181,27 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 		if exitCode != 0 {
 			return "", 0, fmt.Errorf("prepare command exited with code %d on the base checkout", exitCode)
 		}
+		if err := cleanupPreparationChanges(ctx, checkout, baseSHA, nil); err != nil {
+			if err := exceeded(); err != nil {
+				return "", 0, err
+			}
+			return "", 0, fmt.Errorf("clean base preparation changes: %w", err)
+		}
 	}
-	output, exitCode, err := runShellCommandWithPriority(sctx.Ctx, checkout, env, testCmd, sctx.Config.CommandOverrides["test"].Nice)
+	output, exitCode, err := runShellCommandWithPriority(ctx, checkout, env, testCmd, sctx.Config.CommandOverrides["test"].Nice)
+	if err := exceeded(); err != nil {
+		return "", 0, err
+	}
 	if err != nil {
 		return "", 0, fmt.Errorf("run test command on base: %w", err)
 	}
 	logCommandOutput(sctx, output, "Test (base)", types.StepTest)
+	// The shell's own "cannot execute" and "not found" codes mean the suite
+	// never ran on the base (typically an ignored dependency the fresh clone
+	// lacks), which is not a base test failure.
+	if exitCode == 126 || exitCode == 127 {
+		return "", 0, fmt.Errorf("test command could not run on the base checkout (exit code %d)", exitCode)
+	}
 	return output, exitCode, nil
 }
 

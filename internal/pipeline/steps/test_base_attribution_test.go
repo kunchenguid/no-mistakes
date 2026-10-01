@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -331,5 +333,66 @@ func TestBaseAttributionUnrecognizedBaseFailureCannotBeSeparated(t *testing.T) {
 	rendered := classifiedAttribution(2, head, base).render()
 	if !strings.Contains(rendered, "could not be separated") || strings.Contains(rendered, "Introduced") {
 		t.Fatalf("render() = %q, want a could-not-be-separated note", rendered)
+	}
+}
+
+// A base preparation that edits a tracked file is reset before the base suite
+// runs, as on the head, so the base result reflects the base commit's files.
+func TestTestStep_BaseAttributionResetsBasePreparationChanges(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := attributionRepo(t, "TestFlakyOnMain\n", "TestFlakyOnMain\nTestInjectedByPrepare\n", true)
+	sctx.Config.Commands.Prepare = "echo TestInjectedByPrepare >> failures.txt"
+
+	head := "--- FAIL: TestFlakyOnMain\n--- FAIL: TestInjectedByPrepare\nFAIL\texample.com/suite\t0.1s\n"
+	a, err := attributeTestFailures(sctx, "./suite.sh", sctx.Run.BaseSHA, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.unavailable != "" || !slices.Contains(a.introduced, "example.com/suite: --- FAIL: TestInjectedByPrepare") {
+		t.Fatalf("attribution = %+v, want the prepare edit reverted before the base suite", a)
+	}
+}
+
+// A base suite that hangs is stopped at the Test budget and reported
+// unavailable, while the head's failing command still parks promptly.
+func TestTestStep_BaseAttributionStopsABaseRunPastTheTestBudget(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := attributionRepo(t, "", "TestBrokenByChange\n", true)
+	sctx.Config.Commands.Test = "grep -q TestBrokenByChange failures.txt || sleep 60; ./suite.sh"
+	sctx.Config.TestAgentTimeout = 500 * time.Millisecond
+
+	started := time.Now()
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 30*time.Second {
+		t.Fatalf("Execute took %s, want the base run stopped at its budget", elapsed)
+	}
+	if outcome.ExitCode != 1 || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, want the failing command to park", outcome)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(findings.Summary, "unavailable") || !strings.Contains(findings.Summary, "base run exceeded 500ms") {
+		t.Fatalf("summary = %q, want attribution unavailable for the expired base run", findings.Summary)
+	}
+}
+
+// A base command the shell cannot find (here an ignored runner the fresh
+// clone lacks) never ran the suite, so it is not reported as a base failure.
+func TestTestStep_BaseAttributionCommandNotFoundOnBaseIsUnavailable(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := attributionRepo(t, "", "TestBrokenByChange\n", true)
+	testCmd := "if grep -q TestBrokenByChange failures.txt; then ./suite.sh; else ./node_modules/.bin/runner; fi"
+
+	a, err := attributeTestFailures(sctx, testCmd, sctx.Run.BaseSHA, "--- FAIL: TestBrokenByChange\nFAIL\texample.com/suite\t0.1s\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(a.unavailable, "exit code 127") {
+		t.Fatalf("attribution = %+v, want unavailable naming exit code 127", a)
 	}
 }
