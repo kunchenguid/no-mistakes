@@ -31,6 +31,13 @@ const (
 // "could not separate" attribution instead of a guessed one.
 var testFailureLine = regexp.MustCompile(`^(?:--- FAIL: |FAILED |not ok |[✕✗×] )|\.\.\. FAILED$`)
 
+// goPackageResult is the `FAIL\tpkg` / `ok  \tpkg` line that closes a go test
+// package's block. It names the package of the per-test lines printed before
+// it, which carry only the test name, so same-named tests in different
+// packages are told apart. The tab keeps jest's space-separated `FAIL file`
+// header out.
+var goPackageResult = regexp.MustCompile(`^(?:FAIL|ok)\s*\t(\S+)`)
+
 var (
 	ansiEscape         = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
 	testDurationSuffix = regexp.MustCompile(`\s*\(\d+(?:\.\d+)?\s*(?:s|ms|µs|us)\)|\s+\d+(?:\.\d+)?s$`)
@@ -45,6 +52,10 @@ type baseAttribution struct {
 	baseExitCode int
 	introduced   []string
 	preexisting  []string
+	// ambiguous holds failures whose name could not be qualified with a
+	// package and occurs more than once on a side while also failing on the
+	// base, so matching it would be a guess.
+	ambiguous []string
 	// unavailable explains why no base result exists; every failure then
 	// stays attributed to the change, exactly as without the opt-in.
 	unavailable string
@@ -74,20 +85,38 @@ func attributeTestFailures(sctx *pipeline.StepContext, testCmd, baseSHA, headOut
 		return attribution, nil
 	}
 	attribution.baseExitCode = baseExitCode
+	attribution.classify(headOutput, baseOutput)
+	return attribution, nil
+}
+
+// classify splits the head's recognized failures by whether they also fail in
+// baseOutput. A failing base with no recognized failure lines leaves every
+// list empty, so render reports that the two could not be separated rather
+// than listing every head failure as introduced.
+func (a *baseAttribution) classify(headOutput, baseOutput string) {
 	baseFailures := map[string]bool{}
-	if baseExitCode != 0 {
-		for _, line := range testFailureLines(baseOutput) {
+	baseAmbiguous := map[string]bool{}
+	if a.baseExitCode != 0 {
+		var lines []string
+		lines, baseAmbiguous = testFailureLines(baseOutput)
+		if len(lines) == 0 {
+			return
+		}
+		for _, line := range lines {
 			baseFailures[line] = true
 		}
 	}
-	for _, line := range testFailureLines(headOutput) {
-		if baseFailures[line] {
-			attribution.preexisting = append(attribution.preexisting, line)
-		} else {
-			attribution.introduced = append(attribution.introduced, line)
+	headLines, headAmbiguous := testFailureLines(headOutput)
+	for _, line := range headLines {
+		switch {
+		case !baseFailures[line]:
+			a.introduced = append(a.introduced, line)
+		case headAmbiguous[line] || baseAmbiguous[line]:
+			a.ambiguous = append(a.ambiguous, line)
+		default:
+			a.preexisting = append(a.preexisting, line)
 		}
 	}
-	return attribution, nil
 }
 
 // runTestCommandOnBase checks baseSHA out into a throwaway clone that shares
@@ -132,24 +161,50 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 
 // testFailureLines returns the recognized failure lines of output in order,
 // deduplicated, and normalized so run-to-run noise (durations, TAP ordinals,
-// colors, indentation) does not make the same failure look new.
-func testFailureLines(output string) []string {
-	seen := map[string]bool{}
-	var lines []string
+// colors, indentation) does not make the same failure look new. A go test
+// line is prefixed with the package its block closes with. ambiguous names
+// the lines that could not be qualified that way and occur more than once, so
+// they may be different tests sharing a name.
+func testFailureLines(output string) (lines []string, ambiguous map[string]bool) {
+	type failure struct {
+		line      string
+		qualified bool
+	}
+	var failures []failure
+	var pendingGo []int
 	for _, raw := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
 		line := strings.TrimSpace(ansiEscape.ReplaceAllString(raw, ""))
+		if m := goPackageResult.FindStringSubmatch(line); m != nil {
+			for _, i := range pendingGo {
+				failures[i] = failure{line: m[1] + ": " + failures[i].line, qualified: true}
+			}
+			pendingGo = nil
+			continue
+		}
 		if !testFailureLine.MatchString(line) {
 			continue
 		}
 		line = tapOrdinal.ReplaceAllString(line, "not ok")
 		line = strings.TrimSpace(testDurationSuffix.ReplaceAllString(line, ""))
-		if line == "" || seen[line] {
+		if line == "" {
 			continue
 		}
-		seen[line] = true
-		lines = append(lines, line)
+		if strings.HasPrefix(line, "--- FAIL: ") {
+			pendingGo = append(pendingGo, len(failures))
+		}
+		failures = append(failures, failure{line: line})
 	}
-	return lines
+	seen := map[string]int{}
+	ambiguous = map[string]bool{}
+	for _, f := range failures {
+		seen[f.line]++
+		if seen[f.line] == 1 {
+			lines = append(lines, f.line)
+		} else if !f.qualified {
+			ambiguous[f.line] = true
+		}
+	}
+	return lines, ambiguous
 }
 
 // render is the attribution the Test step puts ahead of the failing command's
@@ -163,10 +218,10 @@ func (a baseAttribution) render() string {
 		return "Base attribution: commands.test passes on base commit " + base + ", so this change introduced the failure." + renderAttributedList("Introduced by this change", a.introduced)
 	}
 	header := fmt.Sprintf("Base attribution: commands.test also fails on base commit %s (exit code %d).", base, a.baseExitCode)
-	if len(a.introduced) == 0 && len(a.preexisting) == 0 {
-		return header + " No individual failures were recognized, so introduced and pre-existing failures could not be separated."
+	if len(a.introduced) == 0 && len(a.preexisting) == 0 && len(a.ambiguous) == 0 {
+		return header + " Individual failures were not recognized in both outputs, so introduced and pre-existing failures could not be separated."
 	}
-	return header + renderAttributedList("Introduced by this change", a.introduced) + renderAttributedList("Pre-existing on the base commit", a.preexisting)
+	return header + renderAttributedList("Introduced by this change", a.introduced) + renderAttributedList("Pre-existing on the base commit", a.preexisting) + renderAttributedList("Ambiguous, could not attribute", a.ambiguous)
 }
 
 func renderAttributedList(label string, lines []string) string {

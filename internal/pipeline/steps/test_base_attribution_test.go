@@ -168,14 +168,70 @@ func TestTestFailureLinesNormalizesRunnerNoise(t *testing.T) {
 		"ok  \tgithub.com/x/z\t0.1s",
 		"PASS",
 	}, "\n")
-	got := testFailureLines(output)
+	got, ambiguous := testFailureLines(output)
 	want := []string{
-		"--- FAIL: TestA",
+		"github.com/x/y: --- FAIL: TestA",
 		"FAILED tests/test_api.py::test_login - AssertionError",
 		"not ok - parses empty input",
 		"test parser::empty ... FAILED",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("testFailureLines() = %q, want %q", got, want)
+	}
+	if len(ambiguous) != 0 {
+		t.Fatalf("ambiguous = %v, want none for package-qualified duplicates", ambiguous)
+	}
+}
+
+func classifiedAttribution(baseExitCode int, headOutput, baseOutput string) baseAttribution {
+	a := baseAttribution{baseSHA: "0123456789abcdef", baseExitCode: baseExitCode}
+	a.classify(headOutput, baseOutput)
+	return a
+}
+
+// go test prints only the test name on a failure line, so a same-named test
+// failing in another package must be keyed by its package and not matched
+// against the base's failure.
+func TestBaseAttributionKeysGoFailuresByPackage(t *testing.T) {
+	t.Parallel()
+	base := "--- FAIL: TestParse (0.01s)\nFAIL\nFAIL\texample.com/pkg/a\t0.1s\nok  \texample.com/pkg/b\t0.1s\n"
+	head := "--- FAIL: TestParse (0.01s)\nFAIL\nFAIL\texample.com/pkg/a\t0.1s\n--- FAIL: TestParse (0.02s)\nFAIL\nFAIL\texample.com/pkg/b\t0.1s\n"
+	a := classifiedAttribution(1, head, base)
+	if strings.Join(a.introduced, "|") != "example.com/pkg/b: --- FAIL: TestParse" {
+		t.Fatalf("introduced = %q, want the pkg/b regression", a.introduced)
+	}
+	if strings.Join(a.preexisting, "|") != "example.com/pkg/a: --- FAIL: TestParse" || len(a.ambiguous) != 0 {
+		t.Fatalf("preexisting = %q ambiguous = %q, want only pkg/a pre-existing", a.preexisting, a.ambiguous)
+	}
+}
+
+// A name that cannot be qualified and occurs more than once may be different
+// tests, so a match against the base is never claimed as pre-existing.
+func TestBaseAttributionUnqualifiedDuplicateIsAmbiguous(t *testing.T) {
+	t.Parallel()
+	base := "FAIL src/a.test.js\n  ✕ parses input (3 ms)\n"
+	head := "FAIL src/a.test.js\n  ✕ parses input (4 ms)\nFAIL src/b.test.js\n  ✕ parses input (2 ms)\n  ✕ renders (1 ms)\n"
+	a := classifiedAttribution(1, head, base)
+	if strings.Join(a.ambiguous, "|") != "✕ parses input" || len(a.preexisting) != 0 {
+		t.Fatalf("ambiguous = %q preexisting = %q, want the duplicate name ambiguous", a.ambiguous, a.preexisting)
+	}
+	if strings.Join(a.introduced, "|") != "✕ renders" {
+		t.Fatalf("introduced = %q", a.introduced)
+	}
+	if rendered := a.render(); !strings.Contains(rendered, "Ambiguous, could not attribute (1):\n- ✕ parses input") || strings.Contains(rendered, "Pre-existing") {
+		t.Fatalf("render() = %q", rendered)
+	}
+}
+
+// A base that fails without any recognized per-test line (here a build
+// failure, whose aggregate line is deliberately ignored) cannot say which head
+// failures it shares, so nothing is listed as introduced.
+func TestBaseAttributionUnrecognizedBaseFailureCannotBeSeparated(t *testing.T) {
+	t.Parallel()
+	base := "# example.com/pkg/a\na.go:3:1: syntax error\nFAIL\texample.com/pkg/a [build failed]\n"
+	head := "--- FAIL: TestX (0.01s)\nFAIL\nFAIL\texample.com/pkg/a\t0.1s\n"
+	rendered := classifiedAttribution(2, head, base).render()
+	if !strings.Contains(rendered, "could not be separated") || strings.Contains(rendered, "Introduced") {
+		t.Fatalf("render() = %q, want a could-not-be-separated note", rendered)
 	}
 }
