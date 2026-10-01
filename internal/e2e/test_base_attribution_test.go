@@ -123,7 +123,7 @@ exit 0
 			testScript:  goFailures,
 			branchFiles: map[string]string{"regression": "x\n", ".no-mistakes.yaml": "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: true\ncommands:\n  test: sh scripts/test.sh\ntest:\n  base_attribution: true\n"},
 			wantPark:    true, wantBaseRun: false,
-			wantAbsent:  []string{"Base attribution"},
+			wantAbsent: []string{"Base attribution"},
 		},
 		{
 			name:    "passing_command_never_runs_base",
