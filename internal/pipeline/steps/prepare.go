@@ -103,8 +103,18 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 // syncPopulatedSubmodules resets every populated submodule to its recorded
 // commit without fetching. An edit inside a submodule cannot be committed by
 // the superproject, and a rebase moves the recorded pointer but not the
-// checkout, so either would otherwise be validated in place of the head.
+// checkout, so either would otherwise be validated in place of the head. A
+// rebase that drops a gitlink leaves its checkout behind as an untracked
+// nested repository, which is removed the way a parent submodule's clean
+// removes a nested one.
 func syncPopulatedSubmodules(sctx *pipeline.StepContext) error {
+	orphaned, err := removeOrphanedSubmoduleCheckouts(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("remove submodule checkouts HEAD no longer records: %w", err)
+	}
+	if len(orphaned) > 0 {
+		sctx.Log(fmt.Sprintf("removed submodule checkouts HEAD no longer records: %s", strings.Join(orphaned, ", ")))
+	}
 	moved, discarded, err := resetPreparedSubmodules(sctx.Ctx, sctx.WorkDir)
 	if err != nil {
 		return fmt.Errorf("reset submodules to recorded commits: %w", err)
@@ -116,6 +126,32 @@ func syncPopulatedSubmodules(sctx *pipeline.StepContext) error {
 		sctx.Log(fmt.Sprintf("discarded uncommitted changes inside submodules: %s", strings.Join(discarded, ", ")))
 	}
 	return nil
+}
+
+// removeOrphanedSubmoduleCheckouts removes each untracked, non-ignored nested
+// repository in the superproject. Status lists such a repository as a single
+// directory entry even with every untracked file listed, and the index cannot
+// record it as a gitlink, so ordinary untracked files are never touched.
+func removeOrphanedSubmoduleCheckouts(ctx context.Context, workDir string) ([]string, error) {
+	status, err := git.RunRaw(ctx, workDir, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all")
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, entry := range strings.Split(strings.TrimSuffix(string(status), "\x00"), "\x00") {
+		if !strings.HasPrefix(entry, "?? ") || !strings.HasSuffix(entry, "/") {
+			continue
+		}
+		path := strings.TrimSuffix(entry[3:], "/")
+		if !submoduleWorktreeInitialized(workDir, path) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(workDir, filepath.FromSlash(path))); err != nil {
+			return nil, err
+		}
+		removed = append(removed, path)
+	}
+	return removed, nil
 }
 
 func preparationMarkerPath(ctx context.Context, workDir string) (string, error) {

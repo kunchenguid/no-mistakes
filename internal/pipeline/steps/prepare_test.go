@@ -905,6 +905,59 @@ func TestEnsurePrepared_FollowsOuterSubmoduleThatDropsANestedSubmodule(t *testin
 	}
 }
 
+// A rebased head can drop a top-level submodule preparation populated. Git
+// leaves its checkout behind as an untracked nested repository, which the
+// configured command must not see, while pending untracked files and ignored
+// output at the root survive.
+func TestEnsurePrepared_RemovesTopLevelSubmoduleTheHeadDropped(t *testing.T) {
+	dir, baseSHA, headSHA := setupNestedSubmodules(t)
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git --version"})
+	sctx.Shared = &pipeline.RunShared{}
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	gitCmd(t, dir, "rm", "-q", "--cached", "outer")
+	gitCmd(t, dir, "rm", "-q", ".gitmodules")
+	gitCmd(t, dir, "commit", "-m", "rebased onto base that dropped outer")
+	if !submoduleWorktreeInitialized(dir, "outer") {
+		t.Fatal("fixture lost the populated outer checkout")
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".gitignore")
+	gitCmd(t, dir, "commit", "-m", "ignore build output")
+	if err := os.MkdirAll(filepath.Join(dir, "ignored", "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Join(dir, "ignored", "repo"), "init", "-q")
+	if err := os.MkdirAll(filepath.Join(dir, "pending"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pending", "fix.txt"), []byte("pending fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare before rerun: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "outer")); !os.IsNotExist(err) {
+		t.Fatalf("dropped submodule checkout survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pending", "fix.txt")); err != nil {
+		t.Fatalf("pending untracked file was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ignored", "repo", ".git")); err != nil {
+		t.Fatalf("ignored nested repository was removed: %v", err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "removed submodule checkouts HEAD no longer records: outer") {
+		t.Fatalf("removed submodule checkout was not logged: %q", logs)
+	}
+}
+
 func TestEnsurePrepared_RestoresIntentToAdd(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "intent.go"), []byte("package intent\n"), 0o644); err != nil {
