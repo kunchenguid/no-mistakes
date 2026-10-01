@@ -164,6 +164,7 @@ func TestTestFailureLinesNormalizesRunnerNoise(t *testing.T) {
 		"FAIL\tgithub.com/x/y\t0.512s",
 		"FAILED tests/test_api.py::test_login - AssertionError",
 		"not ok 7 - parses empty input",
+		"not ok 8 - parses input # time=4ms",
 		"test parser::empty ... FAILED",
 		"ok  \tgithub.com/x/z\t0.1s",
 		"PASS",
@@ -173,6 +174,7 @@ func TestTestFailureLinesNormalizesRunnerNoise(t *testing.T) {
 		"github.com/x/y: --- FAIL: TestA",
 		"FAILED tests/test_api.py::test_login - AssertionError",
 		"not ok - parses empty input",
+		"not ok - parses input",
 		"test parser::empty ... FAILED",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {

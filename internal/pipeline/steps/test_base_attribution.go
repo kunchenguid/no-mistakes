@@ -40,7 +40,7 @@ var goPackageResult = regexp.MustCompile(`^(?:FAIL|ok)\s*\t(\S+)`)
 
 var (
 	ansiEscape         = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
-	testDurationSuffix = regexp.MustCompile(`\s*\(\d+(?:\.\d+)?\s*(?:s|ms|µs|us)\)|\s+\d+(?:\.\d+)?s$`)
+	testDurationSuffix = regexp.MustCompile(`\s*\(\d+(?:\.\d+)?\s*(?:s|ms|µs|us)\)|\s+\d+(?:\.\d+)?s$|\s*# time=\d+(?:\.\d+)?m?s$`)
 	tapOrdinal         = regexp.MustCompile(`^not ok \d+`)
 )
 
