@@ -194,7 +194,7 @@ func testFailureLines(output string) (lines []string, qualified map[string]bool)
 			pendingGo = append(pendingGo, len(failures))
 		}
 		if strings.HasPrefix(line, "FAILED ") {
-			line, _, _ = strings.Cut(line, " - ")
+			line = pytestTestID(line)
 			if strings.Contains(line, "::") {
 				qualified[line] = true
 			}
@@ -209,6 +209,28 @@ func testFailureLines(output string) (lines []string, qualified map[string]bool)
 		}
 	}
 	return lines, qualified
+}
+
+// pytestTestID drops the " - reason" pytest appends to a FAILED line. The
+// reason starts at the first " - " outside any [...] parameter id, so a
+// parametrized id that itself contains " - " stays whole.
+func pytestTestID(line string) string {
+	depth := 0
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		case ' ':
+			if depth == 0 && strings.HasPrefix(line[i:], " - ") {
+				return line[:i]
+			}
+		}
+	}
+	return line
 }
 
 // render is the attribution the Test step puts ahead of the failing command's
