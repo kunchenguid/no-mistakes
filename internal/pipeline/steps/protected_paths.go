@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -65,8 +66,10 @@ func isPopulatedRecordedSubmodule(sctx *pipeline.StepContext, path string) (bool
 // unstageSubmodulePointerMoves keeps catch-all staging from recording a
 // submodule checkout as a new pointer. A rebase moves the recorded pointer but
 // not the populated checkout, so `git add -A` would commit the stale checkout
-// as a silent revert of the base's submodule bump; pipeline corrections never
-// move a submodule pointer.
+// as a silent revert of the base's submodule bump, and a populated checkout
+// whose gitlink the base removed would be re-added as an embedded repository;
+// pipeline corrections never move a submodule pointer. A gitlink addition the
+// staged .gitmodules registers is a deliberately added submodule and stays.
 func unstageSubmodulePointerMoves(sctx *pipeline.StepContext) error {
 	raw, err := stepGitRunRaw(sctx, "diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none")
 	if err != nil {
@@ -74,9 +77,25 @@ func unstageSubmodulePointerMoves(sctx *pipeline.StepContext) error {
 	}
 	fields := strings.Split(strings.TrimSuffix(raw, "\x00"), "\x00")
 	var moved []string
+	var registered map[string]bool
 	for i := 0; i+1 < len(fields); i += 2 {
 		modes := strings.Fields(strings.TrimPrefix(fields[i], ":"))
-		if len(modes) >= 2 && modes[0] == "160000" && modes[1] == "160000" {
+		if len(modes) < 2 || modes[1] != "160000" {
+			continue
+		}
+		if modes[0] == "160000" {
+			moved = append(moved, fields[i+1])
+			continue
+		}
+		if modes[0] != "000000" {
+			continue
+		}
+		if registered == nil {
+			if registered, err = stagedRegisteredSubmodules(sctx); err != nil {
+				return fmt.Errorf("check staged submodule pointers: %w", err)
+			}
+		}
+		if !registered[fields[i+1]] {
 			moved = append(moved, fields[i+1])
 		}
 	}
@@ -88,4 +107,28 @@ func unstageSubmodulePointerMoves(sctx *pipeline.StepContext) error {
 	}
 	sctx.Log(fmt.Sprintf("left submodule pointers as recorded: %s", strings.Join(moved, ", ")))
 	return nil
+}
+
+// stagedRegisteredSubmodules returns the submodule paths the staged .gitmodules
+// registers.
+func stagedRegisteredSubmodules(sctx *pipeline.StepContext) (map[string]bool, error) {
+	registered := map[string]bool{}
+	if _, err := stepGitRun(sctx, "cat-file", "-e", ":.gitmodules"); err != nil {
+		return registered, nil
+	}
+	out, err := stepGitRunRaw(sctx, "config", "--null", "--blob", ":.gitmodules", "--get-regexp", `^submodule\..*\.path$`)
+	if err != nil {
+		if strings.Contains(err.Error(), "exit status 1") {
+			return registered, nil
+		}
+		return nil, fmt.Errorf("list staged submodules: %w", err)
+	}
+	paths, err := parseRegisteredSubmodulePaths([]byte(out))
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range paths {
+		registered[filepath.ToSlash(path)] = true
+	}
+	return registered, nil
 }

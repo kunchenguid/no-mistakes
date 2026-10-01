@@ -441,6 +441,57 @@ func TestEnsurePrepared_DiscardsFixAgentEditInsidePreparedSubmodule(t *testing.T
 	}
 }
 
+// A submodule configured with `update = rebase` would rebase a fix agent's
+// commit onto the recorded one instead of checking that commit out, so the
+// rerun would validate content the head does not record.
+func TestEnsurePrepared_ResetsSubmoduleConfiguredToRebase(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "push", remote, "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "config", "--file", ".gitmodules", "submodule.module.update", "rebase")
+	gitCmd(t, dir, "add", ".gitmodules")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	recorded := gitCmd(t, dir, "rev-parse", "HEAD:module")
+	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
+	sctx.Shared = &pipeline.RunShared{}
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	module := filepath.Join(dir, "module")
+	if err := os.WriteFile(filepath.Join(module, "agent.txt"), []byte("agent commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, module, "add", "agent.txt")
+	gitCmd(t, module, "commit", "-m", "agent commit inside submodule")
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare before rerun: %v", err)
+	}
+	if got := gitCmd(t, module, "rev-parse", "HEAD"); got != recorded {
+		t.Fatalf("submodule checkout = %s, want recorded %s", got, recorded)
+	}
+	if _, err := os.Stat(filepath.Join(module, "agent.txt")); !os.IsNotExist(err) {
+		t.Fatalf("agent commit content survived the reset: %v", err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "checked out submodules at their recorded commits: module") {
+		t.Fatalf("reset submodule was not logged: %q", logs)
+	}
+}
+
 // A file a fix agent creates inside a submodule is untracked there, so neither
 // the forced checkout nor the superproject commit removes or carries it. The
 // rerun must not see it, while ignored build output inside the submodule
