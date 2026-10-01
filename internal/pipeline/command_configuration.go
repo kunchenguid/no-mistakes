@@ -58,6 +58,9 @@ func recordCommandConfiguration(logDir, event string, cfg *config.Config) error 
 	if err != nil {
 		return fmt.Errorf("open command configuration evidence: %w", err)
 	}
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("restrict command configuration evidence permissions: %w", errors.Join(err, file.Close()))
+	}
 	_, writeErr := file.Write(append(payload, '\n'))
 	err = errors.Join(writeErr, file.Sync(), file.Close())
 	if err != nil {

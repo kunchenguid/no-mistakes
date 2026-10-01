@@ -51,6 +51,55 @@ func TestExecutor_CommandConfigurationRecordedBeforeChecks(t *testing.T) {
 	}
 }
 
+func TestExecutor_CommandConfigurationRestrictsExistingFileBeforeChecks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not implement POSIX permission bits")
+	}
+	database, p, run, repo := setupTest(t)
+	path := filepath.Join(p.RunLogDir(run.ID), commandConfigurationFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := []byte("{\"event\":\"previous\"}\n")
+	if err := os.WriteFile(path, previous, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{CommandOverrides: map[string]config.CommandOverride{"test": {Additional: []string{"extra-tests"}}}}
+	step := &adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("snapshot permissions before checks = %04o, want 0600", got)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(string(data), string(previous)) {
+			t.Fatalf("previous snapshot was overwritten: %q", data)
+		}
+		var snapshot struct {
+			InheritedEnv map[string]string `json:"inherited_environment"`
+		}
+		if err := json.Unmarshal(data[len(previous):], &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := snapshot.InheritedEnv["PATH"]; !ok || got != os.Getenv("PATH") {
+			t.Fatal("inherited PATH missing from the appended snapshot")
+		}
+		return &StepOutcome{}, nil
+	}}
+	executor := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExecutor_NoOverrideCreatesNoCommandConfigurationEvidence(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	executor := NewExecutor(database, p, &config.Config{}, nil, []Step{newPassStep(types.StepTest)}, nil)
@@ -85,11 +134,18 @@ func TestCommandConfiguration_AppendsRecoveryAndOverrideRemoval(t *testing.T) {
 	if err := recordCommandConfiguration(dir, "start", cfg); err != nil {
 		t.Fatal(err)
 	}
+	path := filepath.Join(dir, commandConfigurationFile)
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg.CommandOverrides = nil
 	if err := recordCommandConfiguration(dir, "resume", cfg); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, commandConfigurationFile))
+	if info, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("resumed snapshot is not private: %v, %v", info, err)
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
