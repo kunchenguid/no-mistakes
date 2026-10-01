@@ -277,7 +277,7 @@ func TestEnsurePrepared_ResetsRegisteredSubmodule(t *testing.T) {
 	}
 }
 
-func TestEnsurePrepared_RestoresDirtyInitializedSubmodule(t *testing.T) {
+func TestEnsurePrepared_DiscardsPendingEditInInitializedSubmodule(t *testing.T) {
 	dir, baseSHA, _ := setupGitRepo(t)
 	remote := t.TempDir()
 	gitCmd(t, remote, "init", "--bare")
@@ -300,21 +300,25 @@ func TestEnsurePrepared_RestoresDirtyInitializedSubmodule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "module", "module.txt"), []byte("pending before prepare\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	beforeStatus := gitStatusPorcelain(t, dir)
 
 	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: dirtySubmodulePreparationCommand()})
 	sctx.Shared = &pipeline.RunShared{}
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare with dirty initialized submodule: %v", err)
 	}
 	if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != moduleHead {
 		t.Fatalf("submodule head after preparation = %q, want %q", got, moduleHead)
 	}
-	if got := readFile(t, filepath.Join(dir, "module", "module.txt")); strings.ReplaceAll(got, "\r\n", "\n") != "pending before prepare\n" {
-		t.Fatalf("submodule worktree after preparation = %q, want pending state", got)
+	if got := readFile(t, filepath.Join(dir, "module", "module.txt")); strings.ReplaceAll(got, "\r\n", "\n") != "base\n" {
+		t.Fatalf("submodule worktree after preparation = %q, want the recorded content", got)
 	}
-	if got := gitStatusPorcelain(t, dir); got != beforeStatus {
-		t.Fatalf("parent status after preparation = %q, want %q", got, beforeStatus)
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("parent status after preparation = %q, want clean", got)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "discarded uncommitted changes inside submodules: module") {
+		t.Fatalf("discarded submodule edit was not logged: %q", logs)
 	}
 }
 
