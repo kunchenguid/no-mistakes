@@ -132,6 +132,7 @@ Previous test findings to address:
 	var baselineFindings []Finding
 	var baselineSummary string
 	var baselineExitCode int
+	var attributionSection string
 	if testCmd != "" {
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
 			return nil, fmt.Errorf("prepare test dependencies: %w", err)
@@ -153,6 +154,14 @@ Previous test findings to address:
 			}}
 			baselineSummary = projectedOutput
 			baselineExitCode = exitCode
+			if sctx.Config.Test.BaseAttribution {
+				attribution, err := attributeTestFailures(sctx, testCmd, baseSHA, output)
+				if err != nil {
+					return nil, err
+				}
+				attributionSection = attribution.render()
+				baselineSummary = attributionSection + "\n\n" + baselineSummary
+			}
 		}
 	}
 	if repairCut != nil {
@@ -184,6 +193,9 @@ Previous test findings to address:
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		} else {
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command failed with exit code %d: `%s`\n", baselineExitCode, testCmd)
+			if attributionSection != "" {
+				configuredTestCommand += sanitizePromptMultilineText(attributionSection) + "\n"
+			}
 		}
 	}
 	trustedRunbook := trustedTestInstructionsSection(sctx) + budgetCutGuidanceSection(sctx)
