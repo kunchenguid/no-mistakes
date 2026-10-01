@@ -378,7 +378,7 @@ func TestEnsurePrepared_KeepsSubmoduleInitializedByPreparationAtRecordedCommit(t
 	}
 	// The configured commands build against the checkout preparation made, so
 	// it must survive; the commit the command made inside it must not.
-	if got, err := os.ReadFile(filepath.Join(dir, "module", "module.txt")); err != nil || string(got) != "base\n" {
+	if got, err := os.ReadFile(filepath.Join(dir, "module", "module.txt")); err != nil || strings.ReplaceAll(string(got), "\r\n", "\n") != "base\n" {
 		t.Fatalf("submodule checkout after preparation = %q, %v; want recorded module.txt", got, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "module", "prepared.txt")); !os.IsNotExist(err) {
