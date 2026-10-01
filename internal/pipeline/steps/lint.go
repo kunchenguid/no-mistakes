@@ -16,6 +16,9 @@ type LintStep struct{}
 func (s *LintStep) Name() types.StepName { return types.StepLint }
 
 func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if sctx.Config.Commands.Lint != "" || len(sctx.Config.CommandOverrides["lint"].Additional) > 0 {
+		declareCommandOverrides(sctx, "lint")
+	}
 	outcome, err := s.executeRepositoryLint(sctx)
 	if err != nil || len(sctx.Config.CommandOverrides["lint"].Additional) == 0 {
 		return outcome, err
@@ -205,15 +208,8 @@ Previous lint findings to address:
 		return nil, fmt.Errorf("prepare lint dependencies: %w", err)
 	}
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
-	runBaseline := runRepositoryCommand
-	if len(sctx.Config.CommandOverrides["lint"].Additional) > 0 {
-		runBaseline = executeRepositoryCommand
-	}
-	output, exitCode, err := runBaseline(sctx, "lint", lintCmd)
+	output, exitCode, err := executeRepositoryCommand(sctx, "lint", lintCmd)
 	if err != nil {
-		if declaration := commandOverrideDeclaration("lint", sctx.Config.CommandOverrides["lint"]); declaration != "" && len(sctx.Config.CommandOverrides["lint"].Additional) > 0 {
-			sctx.Log(declaration)
-		}
 		logConfiguredCommandOutput(sctx, output, types.StepLint)
 		return nil, fmt.Errorf("run lint command: %w", err)
 	}

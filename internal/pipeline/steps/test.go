@@ -138,6 +138,7 @@ Previous test findings to address:
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
 			return nil, fmt.Errorf("prepare test dependencies: %w", err)
 		}
+		declareCommandOverrides(sctx, "test")
 		if testCmd != "" {
 			sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
 		}

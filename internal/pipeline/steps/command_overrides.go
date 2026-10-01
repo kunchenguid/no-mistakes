@@ -9,11 +9,14 @@ import (
 )
 
 func runRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
-	override := sctx.Config.CommandOverrides[name]
-	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
+	declareCommandOverrides(sctx, name)
+	return executeRepositoryCommand(sctx, name, command)
+}
+
+func declareCommandOverrides(sctx *pipeline.StepContext, name string) {
+	if declaration := commandOverrideDeclaration(name, sctx.Config.CommandOverrides[name]); declaration != "" {
 		sctx.Log(declaration)
 	}
-	return executeRepositoryCommand(sctx, name, command)
 }
 
 func executeRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
@@ -78,9 +81,6 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 		checks = append(checks, checkResult{Command: additional, Local: true})
 	}
 	var output strings.Builder
-	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
-		sctx.Log(declaration)
-	}
 	for i := range checks {
 		if err := sctx.Ctx.Err(); err != nil {
 			return output.String(), checks[:i], err
