@@ -60,6 +60,24 @@ func TestReleasedBranchRewriteOffersFreshRunWhenGateLaneHoldsSubmittedHead(t *te
 		}
 	})
 
+	t.Run("dirty worktree keeps the plain released classification", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCompleted)
+		rewriteReleasedBranch(t, f)
+		// `axi run` refuses a dirty worktree, so run_pipeline could not be
+		// followed; the branch stays plain user_owned like any released branch.
+		mustWrite(t, filepath.Join(f.local, "file.txt"), "feature, revised, uncommitted\n")
+		state := f.service.InspectCached(f.ctx)
+		if state.State != StateUserOwned || state.Relation != RelationDiverged {
+			t.Fatalf("state = %s relation = %s, want user_owned/diverged", state.State, state.Relation)
+		}
+		if state.Safety != "user_owned" || state.NextAction != nil {
+			t.Fatalf("safety = %s next action = %#v, want plain user_owned with no next action", state.Safety, state.NextAction)
+		}
+		if state.Error != "" {
+			t.Fatalf("dirty released rewrite must not read as an error: %q", state.Error)
+		}
+	})
+
 	t.Run("lane moved past the submitted head", func(t *testing.T) {
 		f := newUnmovedRecoverFixture(t, types.RunCompleted)
 		// Another commit reached the lane without a run of its own; the lane

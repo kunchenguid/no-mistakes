@@ -2533,18 +2533,20 @@ func exactCommitRefCompatible(ctx context.Context, repoDir, ref, expected string
 // from that exact submitted head, an ordinary gate push is refused as
 // non-fast-forward, and the content proof refuses the changed patch as at risk.
 // That lane head is the operator's own exact submission with nothing
-// pipeline-authored behind it, so status reports SafetyStaleSubmittedMirror with
-// run_pipeline: the fresh `axi run` archives the head and submits the rewritten
-// branch (internal/cli/axi_drive.go releasedRunSubmittedHeadForFreshRun). A lane
-// at any other head keeps the plain released classification, and a local head
-// that is merely behind is not a rewrite.
+// pipeline-authored behind it, so when the worktree is clean status reports
+// SafetyStaleSubmittedMirror with run_pipeline: the fresh `axi run` archives the
+// head and submits the rewritten branch (internal/cli/axi_drive.go
+// releasedRunSubmittedHeadForFreshRun). A dirty worktree keeps the plain
+// released classification, because `axi run` refuses it and the action could
+// not be followed. A lane at any other head keeps the plain released
+// classification too, and a local head that is merely behind is not a rewrite.
 func (s *Service) classifyUserOwned(ctx context.Context, state *State) {
 	state.State = StateUserOwned
 	state.Safety = "user_owned"
 	state.Error = ""
 	state.NextAction = nil
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, state.Pipeline.CurrentHead)
-	if state.Relation == RelationDiverged && s.gateLaneHoldsReleasedSubmittedHead(ctx, *state) {
+	if state.Local.Clean && state.Relation == RelationDiverged && s.gateLaneHoldsReleasedSubmittedHead(ctx, *state) {
 		state.Safety = SafetyStaleSubmittedMirror
 		state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 	}
