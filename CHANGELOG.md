@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.86.0](https://github.com/kunchenguid/no-mistakes/compare/v1.85.3...v1.86.0) (2026-10-01)
+
+
+### Features
+
+* **cli:** accept run intent from files or stdin ([#1273](https://github.com/kunchenguid/no-mistakes/issues/1273)) ([71cb1ea](https://github.com/kunchenguid/no-mistakes/commit/71cb1ea0d5c0b3372567389e5d615528e2009dd6))
+* **config:** add machine-local additional checks and nice priority to repository_overrides ([#1270](https://github.com/kunchenguid/no-mistakes/issues/1270)) ([f4b85ae](https://github.com/kunchenguid/no-mistakes/commit/f4b85ae161cef8f14e289cc90aebae044ed570b9))
+* **pipeline:** attribute failing Test command output to the change or the base ([#1274](https://github.com/kunchenguid/no-mistakes/issues/1274)) ([44e3370](https://github.com/kunchenguid/no-mistakes/commit/44e337034dec1d822fcd32cbde7cc8699045c525))
+
+
+### Bug Fixes
+
+* **cli:** follow the run after the answer that resumes the reviewer ([#1261](https://github.com/kunchenguid/no-mistakes/issues/1261)) ([cf93ddc](https://github.com/kunchenguid/no-mistakes/commit/cf93ddc28b79ecff5500d07a9d57e0ff0276e7c8))
+* **pipeline:** scope branch changes against the effective PR base ([#1267](https://github.com/kunchenguid/no-mistakes/issues/1267)) ([e043200](https://github.com/kunchenguid/no-mistakes/commit/e0432007c17c3a64e49bb5d6d8a325a573882660))
+
 ## [1.85.3](https://github.com/kunchenguid/no-mistakes/compare/v1.85.2...v1.85.3) (2026-09-29)
 
 
