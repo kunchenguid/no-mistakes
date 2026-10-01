@@ -27,9 +27,17 @@ func stagePipelineChanges(sctx *pipeline.StepContext) error {
 			}
 			file := entry[3:]
 			for _, pattern := range sctx.Config.ProtectedPaths {
-				if matchIgnorePattern(file, pattern) {
-					return &pipeline.ProtectedPathError{Path: file, Rule: pattern}
+				if !matchIgnorePattern(file, pattern) {
+					continue
 				}
+				populated, err := isPopulatedRecordedSubmodule(sctx, file)
+				if err != nil {
+					return fmt.Errorf("check protected_paths: %w", err)
+				}
+				if populated {
+					break
+				}
+				return &pipeline.ProtectedPathError{Path: file, Rule: pattern}
 			}
 		}
 	}
@@ -37,6 +45,21 @@ func stagePipelineChanges(sctx *pipeline.StepContext) error {
 		return err
 	}
 	return unstageSubmodulePointerMoves(sctx)
+}
+
+// isPopulatedRecordedSubmodule reports whether path is a gitlink in HEAD that is
+// still a checked-out submodule in the worktree. Its status entry is a pointer
+// or content difference that catch-all staging never records, so it is not a
+// protected-path edit; an added or removed submodule is still checked.
+func isPopulatedRecordedSubmodule(sctx *pipeline.StepContext, path string) (bool, error) {
+	if !submoduleWorktreeInitialized(sctx.WorkDir, path) {
+		return false, nil
+	}
+	entry, err := stepGitRunRaw(sctx, "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", path)
+	if err != nil {
+		return false, err
+	}
+	return strings.HasPrefix(entry, "160000 "), nil
 }
 
 // unstageSubmodulePointerMoves keeps catch-all staging from recording a

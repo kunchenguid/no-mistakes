@@ -436,7 +436,7 @@ func TestEnsurePrepared_DiscardsFixAgentEditInsidePreparedSubmodule(t *testing.T
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("submodule still differs from the head: %q", got)
 	}
-	if !strings.Contains(strings.Join(logs, "\n"), "discarding changes: module") {
+	if !strings.Contains(strings.Join(logs, "\n"), "discarded uncommitted changes inside submodules: module") {
 		t.Fatalf("discarded submodule edit was not logged: %q", logs)
 	}
 }
@@ -501,7 +501,7 @@ func TestEnsurePrepared_DiscardsFixAgentNewFileInsidePreparedSubmodule(t *testin
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("submodule still differs from the head: %q", got)
 	}
-	if !strings.Contains(strings.Join(logs, "\n"), "discarding changes: module") {
+	if !strings.Contains(strings.Join(logs, "\n"), "discarded uncommitted changes inside submodules: module") {
 		t.Fatalf("discarded submodule file was not logged: %q", logs)
 	}
 }

@@ -671,6 +671,65 @@ func TestStagePipelineChanges_KeepsRecordedSubmodulePointer(t *testing.T) {
 	}
 }
 
+// A populated submodule under a protected path shows in status once a rebase
+// moves its recorded pointer or a command leaves content inside it, but
+// catch-all staging never records either, so it is not a protected-path edit.
+// A newly added submodule under that path is still refused.
+func TestStagePipelineChanges_PopulatedProtectedSubmoduleIsNotAnEdit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "lib.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "lib.txt")
+	gitCmd(t, seed, "commit", "-m", "lib base")
+	gitCmd(t, seed, "push", remote, "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "third_party/lib")
+	gitCmd(t, dir, "commit", "-m", "add lib")
+
+	lib := filepath.Join(dir, "third_party", "lib")
+	stale := gitCmd(t, lib, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(lib, "lib.txt"), []byte("bumped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, lib, "commit", "-am", "bump lib")
+	bumped := gitCmd(t, lib, "rev-parse", "HEAD")
+	gitCmd(t, lib, "checkout", "-q", stale)
+	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+bumped+",third_party/lib")
+	gitCmd(t, dir, "commit", "-m", "base bumped lib")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(lib, "build.out"), []byte("built\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContext(t, &mockAgent{}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ProtectedPaths = []string{"third_party/**"}
+	committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "")
+	if err != nil {
+		t.Fatalf("populated protected submodule refused the fix commit: %v", err)
+	}
+	if !committed {
+		t.Fatal("fix commit was not created")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD:third_party/lib"); got != bumped {
+		t.Errorf("fix commit recorded submodule pointer %s, want %s", got, bumped)
+	}
+
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "third_party/added")
+	err = stagePipelineChanges(sctx)
+	var protected *pipeline.ProtectedPathError
+	if !errors.As(err, &protected) {
+		t.Fatalf("newly added protected submodule error = %v, want a protected-path refusal", err)
+	}
+}
+
 func TestProtectedPaths_UnreadableStatusFailsClosed(t *testing.T) {
 	t.Parallel()
 	sctx := newTestContext(t, &mockAgent{}, t.TempDir(), "", "", config.Commands{})
