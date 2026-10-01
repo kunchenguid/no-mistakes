@@ -26,15 +26,13 @@ var (
 // materialization (for example node_modules) and submodules checked out at
 // their recorded commits survive preparation; its tracked and ordinary
 // untracked mutations are removed so setup cannot ride into a later pipeline
-// fix commit. Every call, including the rerun after a fix round, then forces
-// each populated submodule back to the commit the superproject records, so a
-// configured command never validates submodule content the head lacks.
+// fix commit.
 func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 	prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare)
 	if prepareCmd == "" {
 		return nil
 	}
-	if err := sctx.Shared.EnsurePrepared(func() error {
+	return sctx.Shared.EnsurePrepared(func() error {
 		marker, err := preparationMarkerPath(sctx.Ctx, sctx.WorkDir)
 		if err != nil {
 			return err
@@ -94,64 +92,7 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 			return fmt.Errorf("write preparation marker: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return syncPopulatedSubmodules(sctx)
-}
-
-// syncPopulatedSubmodules resets every populated submodule to its recorded
-// commit without fetching. An edit inside a submodule cannot be committed by
-// the superproject, and a rebase moves the recorded pointer but not the
-// checkout, so either would otherwise be validated in place of the head. A
-// rebase that drops a gitlink leaves its checkout behind as an untracked
-// nested repository, which is removed the way a parent submodule's clean
-// removes a nested one.
-func syncPopulatedSubmodules(sctx *pipeline.StepContext) error {
-	orphaned, err := removeOrphanedSubmoduleCheckouts(sctx.Ctx, sctx.WorkDir)
-	if err != nil {
-		return fmt.Errorf("remove submodule checkouts HEAD no longer records: %w", err)
-	}
-	if len(orphaned) > 0 {
-		sctx.Log(fmt.Sprintf("removed submodule checkouts HEAD no longer records: %s", strings.Join(orphaned, ", ")))
-	}
-	moved, discarded, err := resetPreparedSubmodules(sctx.Ctx, sctx.WorkDir)
-	if err != nil {
-		return fmt.Errorf("reset submodules to recorded commits: %w", err)
-	}
-	if len(moved) > 0 {
-		sctx.Log(fmt.Sprintf("checked out submodules at their recorded commits: %s", strings.Join(moved, ", ")))
-	}
-	if len(discarded) > 0 {
-		sctx.Log(fmt.Sprintf("discarded uncommitted changes inside submodules: %s", strings.Join(discarded, ", ")))
-	}
-	return nil
-}
-
-// removeOrphanedSubmoduleCheckouts removes each untracked, non-ignored nested
-// repository in the superproject. Status lists such a repository as a single
-// directory entry even with every untracked file listed, and the index cannot
-// record it as a gitlink, so ordinary untracked files are never touched.
-func removeOrphanedSubmoduleCheckouts(ctx context.Context, workDir string) ([]string, error) {
-	status, err := git.RunRaw(ctx, workDir, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all")
-	if err != nil {
-		return nil, err
-	}
-	var removed []string
-	for _, entry := range strings.Split(strings.TrimSuffix(string(status), "\x00"), "\x00") {
-		if !strings.HasPrefix(entry, "?? ") || !strings.HasSuffix(entry, "/") {
-			continue
-		}
-		path := strings.TrimSuffix(entry[3:], "/")
-		if !submoduleWorktreeInitialized(workDir, path) {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(workDir, filepath.FromSlash(path))); err != nil {
-			return nil, err
-		}
-		removed = append(removed, path)
-	}
-	return removed, nil
+	})
 }
 
 func preparationMarkerPath(ctx context.Context, workDir string) (string, error) {
@@ -179,7 +120,7 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 	if _, err := git.Run(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", "git clean -ffd"); err != nil {
 		return err
 	}
-	if _, _, err := resetPreparedSubmodules(ctx, workDir); err != nil {
+	if err := resetPreparedSubmodules(ctx, workDir); err != nil {
 		return err
 	}
 	if _, err := git.Run(ctx, workDir, "clean", "-ffd"); err != nil {
@@ -317,75 +258,24 @@ func initializePreparationSubmodules(ctx context.Context, submodules []preparati
 		if !submodule.initialized {
 			continue
 		}
-		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--force", "--checkout", "--", submodule.path); err != nil {
+		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--force", "--", submodule.path); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// resetPreparedSubmodules returns every populated submodule, including one the
-// command initialized itself, to its recorded commit without fetching, and
-// removes untracked files inside it. It returns the paths whose checkout was at
-// another commit and, separately, those with their own uncommitted content. A
-// submodule checked out at its gitlink is the tracked tree the
+// resetPreparedSubmodules returns every submodule checkout preparation left
+// behind, including one the command initialized itself, to its recorded
+// commit. A submodule checked out at its gitlink is the tracked tree the
 // configured commands build against, not a setup mutation, so it is kept
-// rather than deinitialized. Each level is listed from its parent's reset
-// checkout, so a nested submodule the recorded parent no longer registers is
-// left alone.
-func resetPreparedSubmodules(ctx context.Context, workDir string) ([]string, []string, error) {
-	var moved, discarded []string
-	var reset func(string) error
-	reset = func(parentWorkDir string) error {
-		registered, err := registeredSubmodulePaths(ctx, parentWorkDir)
-		if err != nil {
-			return err
-		}
-		for _, path := range registered {
-			if !submoduleWorktreeInitialized(parentWorkDir, path) {
-				continue
-			}
-			submoduleWorkDir := filepath.Join(parentWorkDir, path)
-			rel, _ := filepath.Rel(workDir, submoduleWorkDir)
-			rel = filepath.ToSlash(rel)
-			recorded, err := git.Run(ctx, parentWorkDir, "rev-parse", ":"+filepath.ToSlash(path))
-			if err != nil {
-				return fmt.Errorf("resolve recorded commit of submodule %s: %w", rel, err)
-			}
-			recorded = strings.TrimSpace(recorded)
-			if _, err := git.Run(ctx, submoduleWorkDir, "cat-file", "-e", recorded+"^{commit}"); err != nil {
-				return fmt.Errorf("submodule %s: commit %s recorded by HEAD is not available locally; no-mistakes does not fetch submodules, so commands.prepare or a manual fetch inside the submodule must provide it", rel, recorded)
-			}
-			current, err := git.HeadSHA(ctx, submoduleWorkDir)
-			if err != nil {
-				return fmt.Errorf("resolve checkout of submodule %s: %w", rel, err)
-			}
-			if current != recorded {
-				moved = append(moved, rel)
-			}
-			status, err := git.Run(ctx, submoduleWorkDir, "status", "--porcelain", "--ignore-submodules=all")
-			if err != nil {
-				return fmt.Errorf("check submodule %s: %w", rel, err)
-			}
-			if strings.TrimSpace(status) != "" {
-				discarded = append(discarded, rel)
-			}
-			if _, err := git.Run(ctx, parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--force", "--checkout", "--", path); err != nil {
-				return err
-			}
-			if _, err := git.Run(ctx, submoduleWorkDir, "clean", "-ffd"); err != nil {
-				return fmt.Errorf("clean submodule %s: %w", path, err)
-			}
-			if err := reset(submoduleWorkDir); err != nil {
-				return err
-			}
-		}
-		return nil
+// rather than deinitialized; a moved submodule HEAD is still undone here.
+func resetPreparedSubmodules(ctx context.Context, workDir string) error {
+	current, err := preparationSubmodules(ctx, workDir)
+	if err != nil {
+		return err
 	}
-	if err := reset(workDir); err != nil {
-		return nil, nil, err
-	}
-	return moved, discarded, nil
+	return initializePreparationSubmodules(ctx, current)
 }
 
 func registeredSubmodulePaths(ctx context.Context, workDir string) ([]string, error) {
@@ -396,21 +286,17 @@ func registeredSubmodulePaths(ctx context.Context, workDir string) ([]string, er
 		}
 		return nil, fmt.Errorf("list registered submodules: %w", err)
 	}
-	return parseRegisteredSubmodulePaths(out)
-}
-
-func parseRegisteredSubmodulePaths(out []byte) ([]string, error) {
 	var paths []string
 	for _, entry := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
 		_, path, ok := strings.Cut(entry, "\n")
 		if !ok {
 			return nil, fmt.Errorf("invalid registered submodule entry %q", entry)
 		}
-		p, err := preparationRelativePath(path)
+		path, err = preparationRelativePath(path)
 		if err != nil {
 			return nil, fmt.Errorf("invalid submodule path: %w", err)
 		}
-		paths = append(paths, p)
+		paths = append(paths, path)
 	}
 	return paths, nil
 }

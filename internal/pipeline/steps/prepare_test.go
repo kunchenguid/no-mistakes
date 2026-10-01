@@ -277,7 +277,7 @@ func TestEnsurePrepared_ResetsRegisteredSubmodule(t *testing.T) {
 	}
 }
 
-func TestEnsurePrepared_DiscardsPendingEditInInitializedSubmodule(t *testing.T) {
+func TestEnsurePrepared_RestoresDirtyInitializedSubmodule(t *testing.T) {
 	dir, baseSHA, _ := setupGitRepo(t)
 	remote := t.TempDir()
 	gitCmd(t, remote, "init", "--bare")
@@ -300,25 +300,21 @@ func TestEnsurePrepared_DiscardsPendingEditInInitializedSubmodule(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(dir, "module", "module.txt"), []byte("pending before prepare\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	beforeStatus := gitStatusPorcelain(t, dir)
 
 	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: dirtySubmodulePreparationCommand()})
 	sctx.Shared = &pipeline.RunShared{}
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare with dirty initialized submodule: %v", err)
 	}
 	if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != moduleHead {
 		t.Fatalf("submodule head after preparation = %q, want %q", got, moduleHead)
 	}
-	if got := readFile(t, filepath.Join(dir, "module", "module.txt")); strings.ReplaceAll(got, "\r\n", "\n") != "base\n" {
-		t.Fatalf("submodule worktree after preparation = %q, want the recorded content", got)
+	if got := readFile(t, filepath.Join(dir, "module", "module.txt")); strings.ReplaceAll(got, "\r\n", "\n") != "pending before prepare\n" {
+		t.Fatalf("submodule worktree after preparation = %q, want pending state", got)
 	}
-	if got := gitStatusPorcelain(t, dir); got != "" {
-		t.Fatalf("parent status after preparation = %q, want clean", got)
-	}
-	if !strings.Contains(strings.Join(logs, "\n"), "discarded uncommitted changes inside submodules: module") {
-		t.Fatalf("discarded submodule edit was not logged: %q", logs)
+	if got := gitStatusPorcelain(t, dir); got != beforeStatus {
+		t.Fatalf("parent status after preparation = %q, want %q", got, beforeStatus)
 	}
 }
 
@@ -390,271 +386,6 @@ func TestEnsurePrepared_KeepsSubmoduleInitializedByPreparationAtRecordedCommit(t
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("preparation left submodule mutation: %q", got)
-	}
-}
-
-// A fix agent's edit inside a submodule cannot be staged by the superproject,
-// so the commit leaves it out. The rerun of the configured command must then
-// see the recorded submodule tree, not the uncommitted edit.
-func TestEnsurePrepared_DiscardsFixAgentEditInsidePreparedSubmodule(t *testing.T) {
-	dir, baseSHA, _ := setupGitRepo(t)
-	remote := t.TempDir()
-	gitCmd(t, remote, "init", "--bare")
-	seed := t.TempDir()
-	gitCmd(t, seed, "init", "-b", "main")
-	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, seed, "add", "module.txt")
-	gitCmd(t, seed, "commit", "-m", "module base")
-	gitCmd(t, seed, "push", remote, "main")
-	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
-	gitCmd(t, dir, "commit", "-m", "add module")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
-
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
-	sctx.Shared = &pipeline.RunShared{}
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(dir, "module", "module.txt"), []byte("agent edit\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	committed, err := commitAgentFixesWithResult(sctx, types.StepTest, "fix tests", "")
-	if err != nil {
-		t.Fatalf("commit agent fixes: %v", err)
-	}
-	if committed {
-		t.Fatal("superproject committed an edit inside the submodule")
-	}
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare before rerun: %v", err)
-	}
-	if got, err := os.ReadFile(filepath.Join(dir, "module", "module.txt")); err != nil || string(got) != "base\n" {
-		t.Fatalf("submodule file before rerun = %q, %v; want the recorded content", got, err)
-	}
-	if got := gitStatusPorcelain(t, dir); got != "" {
-		t.Fatalf("submodule still differs from the head: %q", got)
-	}
-	if !strings.Contains(strings.Join(logs, "\n"), "discarded uncommitted changes inside submodules: module") {
-		t.Fatalf("discarded submodule edit was not logged: %q", logs)
-	}
-}
-
-// A submodule configured with `update = rebase` would rebase a fix agent's
-// commit onto the recorded one instead of checking that commit out, so the
-// rerun would validate content the head does not record.
-func TestEnsurePrepared_ResetsSubmoduleConfiguredToRebase(t *testing.T) {
-	dir, baseSHA, _ := setupGitRepo(t)
-	remote := t.TempDir()
-	gitCmd(t, remote, "init", "--bare")
-	seed := t.TempDir()
-	gitCmd(t, seed, "init", "-b", "main")
-	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, seed, "add", "module.txt")
-	gitCmd(t, seed, "commit", "-m", "module base")
-	gitCmd(t, seed, "push", remote, "main")
-	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
-	gitCmd(t, dir, "config", "--file", ".gitmodules", "submodule.module.update", "rebase")
-	gitCmd(t, dir, "add", ".gitmodules")
-	gitCmd(t, dir, "commit", "-m", "add module")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	recorded := gitCmd(t, dir, "rev-parse", "HEAD:module")
-	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
-
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
-	sctx.Shared = &pipeline.RunShared{}
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-
-	module := filepath.Join(dir, "module")
-	if err := os.WriteFile(filepath.Join(module, "agent.txt"), []byte("agent commit\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, module, "add", "agent.txt")
-	gitCmd(t, module, "commit", "-m", "agent commit inside submodule")
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare before rerun: %v", err)
-	}
-	if got := gitCmd(t, module, "rev-parse", "HEAD"); got != recorded {
-		t.Fatalf("submodule checkout = %s, want recorded %s", got, recorded)
-	}
-	if _, err := os.Stat(filepath.Join(module, "agent.txt")); !os.IsNotExist(err) {
-		t.Fatalf("agent commit content survived the reset: %v", err)
-	}
-	if !strings.Contains(strings.Join(logs, "\n"), "checked out submodules at their recorded commits: module") {
-		t.Fatalf("reset submodule was not logged: %q", logs)
-	}
-}
-
-// A file a fix agent creates inside a submodule is untracked there, so neither
-// the forced checkout nor the superproject commit removes or carries it. The
-// rerun must not see it, while ignored build output inside the submodule
-// survives.
-func TestEnsurePrepared_DiscardsFixAgentNewFileInsidePreparedSubmodule(t *testing.T) {
-	dir, baseSHA, _ := setupGitRepo(t)
-	remote := t.TempDir()
-	gitCmd(t, remote, "init", "--bare")
-	seed := t.TempDir()
-	gitCmd(t, seed, "init", "-b", "main")
-	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(seed, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, seed, "add", "module.txt", ".gitignore")
-	gitCmd(t, seed, "commit", "-m", "module base")
-	gitCmd(t, seed, "push", remote, "main")
-	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
-	gitCmd(t, dir, "commit", "-m", "add module")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
-
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
-	sctx.Shared = &pipeline.RunShared{}
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "module", "build"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "module", "build", "out.o"), []byte("built\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(filepath.Join(dir, "module", "missing.h"), []byte("agent file\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	committed, err := commitAgentFixesWithResult(sctx, types.StepTest, "fix tests", "")
-	if err != nil {
-		t.Fatalf("commit agent fixes: %v", err)
-	}
-	if committed {
-		t.Fatal("superproject committed a new file inside the submodule")
-	}
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare before rerun: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "module", "missing.h")); !os.IsNotExist(err) {
-		t.Fatalf("agent's new submodule file survived before rerun: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "module", "build", "out.o")); err != nil {
-		t.Fatalf("ignored submodule build output was removed: %v", err)
-	}
-	if got := gitStatusPorcelain(t, dir); got != "" {
-		t.Fatalf("submodule still differs from the head: %q", got)
-	}
-	if !strings.Contains(strings.Join(logs, "\n"), "discarded uncommitted changes inside submodules: module") {
-		t.Fatalf("discarded submodule file was not logged: %q", logs)
-	}
-}
-
-// A rebase onto a base that bumped a submodule moves the recorded pointer but
-// not the populated checkout. The next configured command must run against the
-// pointer the rebased head records.
-func TestEnsurePrepared_ChecksOutPointerMovedAfterPreparation(t *testing.T) {
-	dir, baseSHA, _ := setupGitRepo(t)
-	remote := t.TempDir()
-	gitCmd(t, remote, "init", "--bare")
-	seed := t.TempDir()
-	gitCmd(t, seed, "init", "-b", "main")
-	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, seed, "add", "module.txt")
-	gitCmd(t, seed, "commit", "-m", "module base")
-	gitCmd(t, seed, "push", remote, "main")
-	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
-	gitCmd(t, dir, "commit", "-m", "add module")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
-
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
-	sctx.Shared = &pipeline.RunShared{}
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-
-	module := filepath.Join(dir, "module")
-	stale := gitCmd(t, module, "rev-parse", "HEAD")
-	if err := os.WriteFile(filepath.Join(module, "module.txt"), []byte("bumped\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, module, "commit", "-am", "bump module")
-	bumped := gitCmd(t, module, "rev-parse", "HEAD")
-	gitCmd(t, module, "checkout", "-q", stale)
-	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+bumped+",module")
-	gitCmd(t, dir, "commit", "-m", "rebased onto base that bumped module")
-
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare before rerun: %v", err)
-	}
-	if got := gitCmd(t, module, "rev-parse", "HEAD"); got != bumped {
-		t.Fatalf("submodule checkout = %s, want the rebased head's pointer %s", got, bumped)
-	}
-	if got, err := os.ReadFile(filepath.Join(dir, "module", "module.txt")); err != nil || string(got) != "bumped\n" {
-		t.Fatalf("submodule file = %q, %v; want the bumped content", got, err)
-	}
-	if got := gitStatusPorcelain(t, dir); got != "" {
-		t.Fatalf("submodule still differs from the head: %q", got)
-	}
-}
-
-// no-mistakes never fetches submodules, so a rebased head whose submodule
-// pointer names a commit that is not available locally must fail by naming
-// that cause instead of running the configured command against the old tree.
-func TestEnsurePrepared_UnfetchedPointerMovedAfterPreparationFailsNamingTheCause(t *testing.T) {
-	dir, baseSHA, _ := setupGitRepo(t)
-	remote := t.TempDir()
-	gitCmd(t, remote, "init", "--bare")
-	seed := t.TempDir()
-	gitCmd(t, seed, "init", "-b", "main")
-	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, seed, "add", "module.txt")
-	gitCmd(t, seed, "commit", "-m", "module base")
-	gitCmd(t, seed, "push", remote, "main")
-	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
-	gitCmd(t, dir, "commit", "-m", "add module")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
-
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git -c protocol.file.allow=always submodule update --init module"})
-	sctx.Shared = &pipeline.RunShared{}
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("bumped\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, seed, "commit", "-am", "bump module")
-	gitCmd(t, seed, "push", remote, "main")
-	bumped := gitCmd(t, seed, "rev-parse", "HEAD")
-	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+bumped+",module")
-	gitCmd(t, dir, "commit", "-m", "rebased onto base that bumped module")
-
-	err := ensurePrepared(sctx, types.StepTest)
-	if err == nil {
-		t.Fatal("prepare before rerun succeeded with the recorded submodule commit unavailable")
-	}
-	for _, want := range []string{"module", bumped, "not available locally", "commands.prepare"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not name %q", err, want)
-		}
 	}
 }
 
@@ -864,97 +595,6 @@ func TestEnsurePrepared_KeepsNestedSubmoduleInitializedByPreparation(t *testing.
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("preparation left nested submodule mutation: %q", got)
-	}
-}
-
-// A rebased head can bump an outer submodule to a commit that no longer
-// registers a nested submodule preparation populated. The reset must follow
-// the bumped outer checkout instead of resetting the vanished nested path.
-func TestEnsurePrepared_FollowsOuterSubmoduleThatDropsANestedSubmodule(t *testing.T) {
-	dir, baseSHA, headSHA := setupNestedSubmodules(t)
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git --version"})
-	sctx.Shared = &pipeline.RunShared{}
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-
-	outer := filepath.Join(dir, "outer")
-	stale := gitCmd(t, outer, "rev-parse", "HEAD")
-	gitCmd(t, outer, "rm", "-q", "inner")
-	gitCmd(t, outer, "commit", "-m", "drop inner")
-	dropped := gitCmd(t, outer, "rev-parse", "HEAD")
-	gitCmd(t, outer, "checkout", "-q", stale)
-	gitCmd(t, outer, "submodule", "update", "--init", "--no-fetch", "inner")
-	if _, err := os.Stat(filepath.Join(outer, "inner", "inner.txt")); err != nil {
-		t.Fatalf("fixture did not repopulate the nested submodule: %v", err)
-	}
-	gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+dropped+",outer")
-	gitCmd(t, dir, "commit", "-m", "rebased onto base that dropped inner")
-
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare before rerun: %v", err)
-	}
-	if got := gitCmd(t, outer, "rev-parse", "HEAD"); got != dropped {
-		t.Fatalf("outer checkout = %s, want the rebased head's pointer %s", got, dropped)
-	}
-	if _, err := os.Stat(filepath.Join(outer, "inner")); !os.IsNotExist(err) {
-		t.Fatalf("dropped nested submodule checkout survived: %v", err)
-	}
-	if got := gitStatusPorcelain(t, dir); got != "" {
-		t.Fatalf("submodules still differ from the head: %q", got)
-	}
-}
-
-// A rebased head can drop a top-level submodule preparation populated. Git
-// leaves its checkout behind as an untracked nested repository, which the
-// configured command must not see, while pending untracked files and ignored
-// output at the root survive.
-func TestEnsurePrepared_RemovesTopLevelSubmoduleTheHeadDropped(t *testing.T) {
-	dir, baseSHA, headSHA := setupNestedSubmodules(t)
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: "git --version"})
-	sctx.Shared = &pipeline.RunShared{}
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-
-	gitCmd(t, dir, "rm", "-q", "--cached", "outer")
-	gitCmd(t, dir, "rm", "-q", ".gitmodules")
-	gitCmd(t, dir, "commit", "-m", "rebased onto base that dropped outer")
-	if !submoduleWorktreeInitialized(dir, "outer") {
-		t.Fatal("fixture lost the populated outer checkout")
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, dir, "add", ".gitignore")
-	gitCmd(t, dir, "commit", "-m", "ignore build output")
-	if err := os.MkdirAll(filepath.Join(dir, "ignored", "repo"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, filepath.Join(dir, "ignored", "repo"), "init", "-q")
-	if err := os.MkdirAll(filepath.Join(dir, "pending"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "pending", "fix.txt"), []byte("pending fix\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := ensurePrepared(sctx, types.StepTest); err != nil {
-		t.Fatalf("prepare before rerun: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "outer")); !os.IsNotExist(err) {
-		t.Fatalf("dropped submodule checkout survived: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "pending", "fix.txt")); err != nil {
-		t.Fatalf("pending untracked file was removed: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "ignored", "repo", ".git")); err != nil {
-		t.Fatalf("ignored nested repository was removed: %v", err)
-	}
-	if !strings.Contains(strings.Join(logs, "\n"), "removed submodule checkouts HEAD no longer records: outer") {
-		t.Fatalf("removed submodule checkout was not logged: %q", logs)
 	}
 }
 
