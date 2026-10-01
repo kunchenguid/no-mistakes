@@ -311,6 +311,9 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	if recovered.Recovered {
 		if recovered.State == branchsync.StateUserOwned {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Nothing to recover; cancellation already released this branch to you.")
+			if recovered.Safety == branchsync.SafetyStaleSubmittedMirror {
+				fmt.Fprintln(cmd.OutOrStdout(), "  The gate still holds that run's submitted head; a fresh `no-mistakes axi run` archives it and validates the rewritten branch.")
+			}
 		} else if recovered.Recovery != nil && recovered.Recovery.Source == "remote_rewritten" {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Push binding rebound to the verified live remote head; the superseded pipeline head stays anchored.")
 		} else {
@@ -418,6 +421,9 @@ func humanSyncSummary(state branchsync.State) string {
 		}
 		return "custody returned; the branch is yours - start a fresh run when ready"
 	case branchsync.StateUserOwned:
+		if state.Safety == branchsync.SafetyStaleSubmittedMirror {
+			return "run ended before the pipeline changed anything and the branch was rewritten since; a fresh run archives the submitted head still on the gate and validates the current head"
+		}
 		return "run ended before the pipeline changed anything; the branch and head are yours and immediately usable"
 	case branchsync.StatePushInProgress:
 		return "pipeline branch update is in progress; synchronization is unavailable"

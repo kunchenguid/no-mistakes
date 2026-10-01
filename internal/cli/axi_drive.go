@@ -586,7 +586,12 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 }
 
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
-	state := inspectAxiBranchSync(ctx, env)
+	return freshRunBranchOwnershipBlock(inspectAxiBranchSync(ctx, env))
+}
+
+// freshRunBranchOwnershipBlock returns the branch-sync state that must stop a
+// fresh submission, or nil when the push may proceed.
+func freshRunBranchOwnershipBlock(state branchsync.State) *branchsync.State {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		// The ownership block exists to keep a fresh push from discarding
@@ -604,6 +609,49 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 	default:
 		return nil
 	}
+}
+
+// releasedRunSubmittedHeadForFreshRun returns the private mirror head a fresh
+// submission of branch may archive under the Decision 41-A exception, or ""
+// when the ordinary containment proof must decide.
+//
+// The gate's branch ref is advanced by the push step after publication, so a
+// workflow that skips that step (a review server such as Gerrit publishes the
+// change itself) leaves the ref at the submitted head of a run that has long
+// since ended. The next revision of such a branch is a rewrite - a rebase onto
+// a moved base, an amend - which the ordinary push refuses as non-fast-forward
+// and the containment proof refuses as at-risk content. When the branch is
+// released (user_owned, or custody_returned with the same evidence) by a
+// terminal run that never published and whose head never moved off the
+// submitted head, that mirror head is the operator's own exact submission:
+// nothing pipeline-authored sits behind it, and the operator is the one
+// replacing it. Reconciliation then archives it under
+// refs/tags/no-mistakes-abandoned/<branch>/<sha> before the push, exactly as
+// pipeline publication does for the same head. The allowance names one exact
+// commit; a lane that moved to any other head, including a newer descendant,
+// still goes through the full proof, and a local head that is merely behind
+// is not a rewrite.
+//
+// state must describe head: the caller passes the branch-sync inspection taken
+// for the commit it is about to push, and a head that moved since inspection
+// gets no allowance.
+func releasedRunSubmittedHeadForFreshRun(state branchsync.State, branch, head string) string {
+	if state.Local.Branch != branch || state.Local.Head != head || !state.Local.Clean || state.Relation != branchsync.RelationDiverged {
+		return ""
+	}
+	switch state.State {
+	case branchsync.StateUserOwned, branchsync.StateCustodyReturned:
+	default:
+		return ""
+	}
+	if !types.RunStatus(state.Pipeline.Status).Terminal() {
+		return ""
+	}
+	submitted := state.Pipeline.SubmittedHead
+	if submitted == "" || state.Pipeline.CurrentHead != submitted || state.Pipeline.PushedHead != "" {
+		return ""
+	}
+	return submitted
 }
 
 // triggerRun starts a fresh run for branch: it pushes the current HEAD through
@@ -633,7 +681,8 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 		// a matching terminal run may predate this push, so do not attach to it.
 		priorRunIDs = nil
 	}
-	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+	ownershipState := inspectAxiBranchSync(ctx, env)
+	if state := freshRunBranchOwnershipBlock(ownershipState); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
 	// The ownership lookup above is an IPC boundary. Preserve AXI's existing
@@ -652,7 +701,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, submissionHead); err != nil {
 		return "", err
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, releasedRunSubmittedHeadForFreshRun(ownershipState, branch, submissionHead))
 	if err != nil {
 		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
 	}
@@ -744,11 +793,28 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if opt := formatOmitIntentPushOption(omitIntent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+	ownershipState := inspectAxiBranchSync(ctx, env)
+	if state := freshRunBranchOwnershipBlock(ownershipState); state != nil {
 		return nil, &branchOwnershipError{state: *state}
+	}
+	// The proof push submits the immutable headSHA sampled by the caller, so
+	// the mirror is reconciled for exactly that commit, and the archived head
+	// rides along as the run's base the same way an ordinary submission's does.
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, headSHA, releasedRunSubmittedHeadForFreshRun(ownershipState, branch, headSHA))
+	if err != nil {
+		return nil, fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	if opt := formatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
 	}
 	pushErr := git.PushCommitWithOptionsSkippingHooks(ctx, ".", gate.RemoteName, headSHA, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
+		restoreErr := gate.RestoreReconciledBranch(restoreCtx, env.p.RepoDir(env.repo.ID), branch, reconciliation)
+		cancel()
+		if restoreErr != nil {
+			return nil, fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
+		}
 		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 			return nil, &branchOwnershipError{state: *state}
 		}
