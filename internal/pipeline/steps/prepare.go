@@ -370,11 +370,11 @@ func parseRegisteredSubmodulePaths(out []byte) ([]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("invalid registered submodule entry %q", entry)
 		}
-		path, err = preparationRelativePath(path)
+		p, err := preparationRelativePath(path)
 		if err != nil {
 			return nil, fmt.Errorf("invalid submodule path: %w", err)
 		}
-		paths = append(paths, path)
+		paths = append(paths, p)
 	}
 	return paths, nil
 }
