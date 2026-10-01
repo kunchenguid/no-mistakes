@@ -1278,3 +1278,42 @@ func TestFinalizeTextResult_ProseWithNonJSONFenceReturnsEndedWithProseError(t *t
 		t.Fatalf("expected ended with prose error, got: %v", err)
 	}
 }
+
+func TestValidateStructuredOutput_ReportsTheFailingSchemaField(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["findings", "risk_rationale"],
+		"properties": {
+			"risk_rationale": {"type": "string"},
+			"findings": {"type": "array", "items": {
+				"type": "object",
+				"required": ["review_scope"],
+				"properties": {"review_scope": {"type": "string", "enum": ["source", "tests"]}}
+			}}
+		}
+	}`)
+	for _, tc := range []struct {
+		name, output, wantField, wantMessage string
+	}{
+		{"top-level type is no field", `[]`, "", "JSON output must be object"},
+		{"unknown field is named by its key", `{"findings": [], "risk_rationale": "r", "notes": 1}`, "notes", `JSON output contains unknown field "notes"`},
+		{"missing top-level field", `{"findings": []}`, "risk_rationale", `JSON output missing required field "risk_rationale"`},
+		{"missing nested field drops the index", `{"findings": [{"review_scope": "source"}, {}], "risk_rationale": "r"}`, "findings.review_scope", `JSON output findings[1] missing required field "review_scope"`},
+		{"invalid nested field drops the index", `{"findings": [{"review_scope": "other"}], "risk_rationale": "r"}`, "findings.review_scope", "JSON output findings[0].review_scope must match one of the allowed values"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateStructuredOutput(json.RawMessage(tc.output), schema)
+			var violation *SchemaViolation
+			if !errors.As(err, &violation) {
+				t.Fatalf("validateStructuredOutput() = %v, want a *SchemaViolation", err)
+			}
+			if violation.Field != tc.wantField {
+				t.Errorf("Field = %q, want %q", violation.Field, tc.wantField)
+			}
+			if err.Error() != tc.wantMessage {
+				t.Errorf("error = %q, want %q", err, tc.wantMessage)
+			}
+		})
+	}
+}

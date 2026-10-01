@@ -474,7 +474,7 @@ Risk assessment (after listing all findings):
 		validationErrors = append(validationErrors, err)
 		if attempt == reviewAnalyzerMaxAttempts {
 			if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
-				return nil, fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %s: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors), err)
+				return nil, fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err)
 			}
 			return nil, fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err)
 		}
@@ -809,15 +809,15 @@ func distinctReviewValidationFailures(failures []error) string {
 	fields := make([]string, 0, len(failures))
 	seen := make(map[string]struct{}, len(failures))
 	for _, failure := range failures {
-		field := reviewValidationField(failure.Error())
-		if field == "" {
+		var violation *agent.SchemaViolation
+		if !errors.As(failure, &violation) || violation.Field == "" {
 			continue
 		}
-		if _, ok := seen[field]; ok {
+		if _, ok := seen[violation.Field]; ok {
 			continue
 		}
-		seen[field] = struct{}{}
-		fields = append(fields, field)
+		seen[violation.Field] = struct{}{}
+		fields = append(fields, violation.Field)
 	}
 	if len(fields) < 2 {
 		return ""
@@ -825,28 +825,12 @@ func distinctReviewValidationFailures(failures []error) string {
 	return strings.Join(fields, ", ")
 }
 
-func reviewValidationField(message string) string {
-	if _, suffix, ok := strings.Cut(message, `missing required field "`); ok {
-		field, _, _ := strings.Cut(suffix, `"`)
-		if field != "" {
-			return field
-		}
-	}
-	if _, suffix, ok := strings.Cut(message, "JSON output "); ok {
-		words := strings.Fields(suffix)
-		if len(words) > 0 {
-			return strings.Trim(words[0], `"'`)
-		}
-	}
-	return ""
-}
-
 func reviewValidationAttempts(failures []error) string {
-	attempts := make([]string, 0, len(failures))
+	var attempts strings.Builder
 	for i, failure := range failures {
-		attempts = append(attempts, fmt.Sprintf("attempt %d: %s", i+1, strings.ReplaceAll(failure.Error(), "\n", "; ")))
+		fmt.Fprintf(&attempts, "attempt %d: %s; ", i+1, strings.ReplaceAll(failure.Error(), "\n", "; "))
 	}
-	return strings.Join(attempts, "; ")
+	return attempts.String()
 }
 
 // reviewRetryNote is the only thing a rerun review learns from the attempt
