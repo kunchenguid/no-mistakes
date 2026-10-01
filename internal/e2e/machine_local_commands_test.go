@@ -70,11 +70,11 @@ func TestMachineLocalCommandOverridesJourney(t *testing.T) {
 		h := NewHarness(t, SetupOpts{Agent: "claude"})
 		marker := filepath.Join(t.TempDir(), "marker")
 		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-team-test"),
-			`printf 'team nice=%s\n' "$(nice)" >> "`+marker+`"
+			`printf 'team nice=%s\n' "$(ps -o nice= -p $$)" >> "`+marker+`"
 exit 0
 `)
 		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-local-smoke"),
-			`printf 'local nice=%s\n' "$(nice)" >> "`+marker+`"
+			`printf 'local nice=%s\n' "$(ps -o nice= -p $$)" >> "`+marker+`"
 exit 0
 `)
 		setupMachineLocalCommands(t, h, `    commands:

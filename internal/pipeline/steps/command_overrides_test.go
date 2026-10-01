@@ -191,11 +191,27 @@ func TestTestStep_OverriddenPassIsDeclared(t *testing.T) {
 		t.Fatalf("outcome = %+v, %v", outcome, err)
 	}
 	want := `machine-local overrides applied to commands.test: additional checks "exit 0"`
-	if !strings.Contains(strings.Join(logs, "\n"), want) {
-		t.Fatalf("step output does not declare the overrides:\n%s", strings.Join(logs, "\n"))
+	if got := strings.Count(strings.Join(logs, "\n"), want); got != 1 {
+		t.Fatalf("step log declares the overrides %d times, want once:\n%s", got, strings.Join(logs, "\n"))
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "Baseline ran with "+want) {
 		t.Fatal("agent prompt does not declare the overrides")
+	}
+}
+
+func TestLintStep_OverriddenPassIsDeclaredOnce(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{Lint: "exit 0"})
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"lint": {Additional: []string{"exit 0"}}}
+	outcome, err := (&LintStep{}).Execute(sctx)
+	if err != nil || outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, %v", outcome, err)
+	}
+	want := `machine-local overrides applied to commands.lint: additional checks "exit 0"`
+	if got := strings.Count(strings.Join(logs, "\n"), want); got != 1 {
+		t.Fatalf("step log declares the overrides %d times, want once:\n%s", got, strings.Join(logs, "\n"))
 	}
 }
 

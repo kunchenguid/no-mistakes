@@ -205,8 +205,15 @@ Previous lint findings to address:
 		return nil, fmt.Errorf("prepare lint dependencies: %w", err)
 	}
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
-	output, exitCode, err := runRepositoryCommand(sctx, "lint", lintCmd)
+	runBaseline := runRepositoryCommand
+	if len(sctx.Config.CommandOverrides["lint"].Additional) > 0 {
+		runBaseline = executeRepositoryCommand
+	}
+	output, exitCode, err := runBaseline(sctx, "lint", lintCmd)
 	if err != nil {
+		if declaration := commandOverrideDeclaration("lint", sctx.Config.CommandOverrides["lint"]); declaration != "" && len(sctx.Config.CommandOverrides["lint"].Additional) > 0 {
+			sctx.Log(declaration)
+		}
 		logConfiguredCommandOutput(sctx, output, types.StepLint)
 		return nil, fmt.Errorf("run lint command: %w", err)
 	}

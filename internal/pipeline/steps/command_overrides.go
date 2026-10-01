@@ -13,7 +13,11 @@ func runRepositoryCommand(sctx *pipeline.StepContext, name, command string) (str
 	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
 		sctx.Log(declaration)
 	}
-	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, override.Nice)
+	return executeRepositoryCommand(sctx, name, command)
+}
+
+func executeRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
+	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, sctx.Config.CommandOverrides[name].Nice)
 }
 
 // commandOverrideDeclaration states every machine-local override applied to a
@@ -75,7 +79,7 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 	}
 	var output strings.Builder
 	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
-		fmt.Fprintf(&output, "%s\n", declaration)
+		sctx.Log(declaration)
 	}
 	for i := range checks {
 		if err := sctx.Ctx.Err(); err != nil {
@@ -87,7 +91,7 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 		} else if len(override.Additional) > 0 {
 			fmt.Fprintf(&output, "\nconfigured %s command: %s\n", name, checks[i].Command)
 		}
-		out, code, err := runRepositoryCommand(sctx, name, checks[i].Command)
+		out, code, err := executeRepositoryCommand(sctx, name, checks[i].Command)
 		output.WriteString(out)
 		if err != nil {
 			return output.String(), checks[:i], err
