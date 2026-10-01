@@ -17,8 +17,8 @@ import (
 
 // attributionRepo commits a failing-suite script on main, then a feature
 // commit that changes it, and returns the step context for the feature head.
-// The script prints one go-test style failure line per name in failures.txt
-// and exits non-zero when there is any.
+// The script prints one go-test style failure line per name in failures.txt,
+// closed by its package's result line, and exits non-zero when there is any.
 func attributionRepo(t *testing.T, baseFailures, headFailures string, attribution bool) (*pipeline.StepContext, *mockAgent, string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -27,7 +27,7 @@ func attributionRepo(t *testing.T, baseFailures, headFailures string, attributio
 	dir := t.TempDir()
 	gitCmd(t, dir, "init", "--quiet")
 	gitCmd(t, dir, "checkout", "--quiet", "-b", "main")
-	script := "#!/bin/sh\nstatus=0\nwhile read -r name; do [ -n \"$name\" ] && echo \"--- FAIL: $name (0.0${RANDOM:-1}s)\" && status=1; done < failures.txt\nexit $status\n"
+	script := "#!/bin/sh\nstatus=0\nwhile read -r name; do [ -n \"$name\" ] && echo \"--- FAIL: $name (0.0${RANDOM:-1}s)\" && status=1; done < failures.txt\n[ $status -eq 0 ] || printf 'FAIL\\texample.com/suite\\t0.1s\\n'\nexit $status\n"
 	write := func(name, content string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
 			t.Fatal(err)
@@ -77,8 +77,8 @@ func TestTestStep_BaseAttributionSeparatesIntroducedFromPreexisting(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	introduced := "Introduced by this change (1):\n- --- FAIL: TestBrokenByChange\n"
-	preexisting := "Pre-existing on the base commit (1):\n- --- FAIL: TestFlakyOnMain"
+	introduced := "Introduced by this change (1):\n- example.com/suite: --- FAIL: TestBrokenByChange\n"
+	preexisting := "Pre-existing on the base commit (1):\n- example.com/suite: --- FAIL: TestFlakyOnMain"
 	for _, want := range []string{"also fails on base commit", introduced, preexisting} {
 		if !strings.Contains(findings.Summary, want) {
 			t.Fatalf("summary missing %q:\n%s", want, findings.Summary)
@@ -87,7 +87,7 @@ func TestTestStep_BaseAttributionSeparatesIntroducedFromPreexisting(t *testing.T
 			t.Fatalf("evidence prompt missing %q:\n%s", want, lastPrompt(ag))
 		}
 	}
-	if strings.Contains(findings.Summary, "Introduced by this change (1):\n- --- FAIL: TestFlakyOnMain") {
+	if strings.Contains(findings.Summary, "Introduced by this change (1):\n- example.com/suite: --- FAIL: TestFlakyOnMain") {
 		t.Fatalf("pre-existing failure attributed to the change:\n%s", findings.Summary)
 	}
 	if len(findings.Items) == 0 || findings.Items[0].Description != "configured test command failed with exit code 1" || findings.Items[0].Severity != "error" {
@@ -124,11 +124,32 @@ func TestTestStep_BaseAttributionGreenBaseBlamesTheChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(findings.Summary, "passes on base commit") || !strings.Contains(findings.Summary, "Introduced by this change (1):\n- --- FAIL: TestBrokenByChange") {
+	if !strings.Contains(findings.Summary, "passes on base commit") || !strings.Contains(findings.Summary, "Introduced by this change (1):\n- example.com/suite: --- FAIL: TestBrokenByChange") {
 		t.Fatalf("summary = %q, want the change named as the cause", findings.Summary)
 	}
 	if strings.Contains(findings.Summary, "Pre-existing") {
 		t.Fatalf("summary claims pre-existing failures on a green base:\n%s", findings.Summary)
+	}
+}
+
+// A base preparation that succeeds still leaves its output in the Test log,
+// as normal preparation does, so an unexpected base result can be explained.
+func TestTestStep_BaseAttributionLogsSuccessfulBasePreparation(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := attributionRepo(t, "TestFlakyOnMain\n", "TestFlakyOnMain\nTestBrokenByChange\n", true)
+	sctx.Config.Commands.Prepare = "[ -x suite.sh ] && echo base-prepared-ok"
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+
+	a, err := attributeTestFailures(sctx, "./suite.sh", sctx.Run.BaseSHA, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.unavailable != "" || a.baseExitCode != 1 {
+		t.Fatalf("attribution = %+v, want a completed failing base run", a)
+	}
+	if !containsLog(logs, "base-prepared-ok") {
+		t.Fatalf("successful base preparation output missing from the log: %q", logs)
 	}
 }
 
@@ -169,10 +190,10 @@ func TestTestFailureLinesNormalizesRunnerNoise(t *testing.T) {
 		"ok  \tgithub.com/x/z\t0.1s",
 		"PASS",
 	}, "\n")
-	got, ambiguous := testFailureLines(output)
+	got, qualified := testFailureLines(output)
 	want := []string{
 		"github.com/x/y: --- FAIL: TestA",
-		"FAILED tests/test_api.py::test_login - AssertionError",
+		"FAILED tests/test_api.py::test_login",
 		"not ok - parses empty input",
 		"not ok - parses input",
 		"test parser::empty ... FAILED",
@@ -180,8 +201,8 @@ func TestTestFailureLinesNormalizesRunnerNoise(t *testing.T) {
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("testFailureLines() = %q, want %q", got, want)
 	}
-	if len(ambiguous) != 0 {
-		t.Fatalf("ambiguous = %v, want none for package-qualified duplicates", ambiguous)
+	if !qualified["github.com/x/y: --- FAIL: TestA"] || !qualified["FAILED tests/test_api.py::test_login"] || len(qualified) != 2 {
+		t.Fatalf("qualified = %v, want only the go package and pytest id lines", qualified)
 	}
 }
 
@@ -207,21 +228,37 @@ func TestBaseAttributionKeysGoFailuresByPackage(t *testing.T) {
 	}
 }
 
-// A name that cannot be qualified and occurs more than once may be different
-// tests, so a match against the base is never claimed as pre-existing.
-func TestBaseAttributionUnqualifiedDuplicateIsAmbiguous(t *testing.T) {
+// jest/vitest and TAP lines carry no file or suite identity, so a name failing
+// once on each side may be a different test: it is never claimed as
+// pre-existing, while a name only the head fails is still introduced.
+func TestBaseAttributionUnqualifiedMatchIsAmbiguous(t *testing.T) {
 	t.Parallel()
-	base := "FAIL src/a.test.js\n  ✕ parses input (3 ms)\n"
-	head := "FAIL src/a.test.js\n  ✕ parses input (4 ms)\nFAIL src/b.test.js\n  ✕ parses input (2 ms)\n  ✕ renders (1 ms)\n"
+	base := "FAIL src/a.test.js\n  ✕ parses input (3 ms)\nnot ok 1 - loads config\n"
+	head := "FAIL src/b.test.js\n  ✕ parses input (4 ms)\n  ✕ renders (1 ms)\nnot ok 3 - loads config # time=2ms\n"
 	a := classifiedAttribution(1, head, base)
-	if strings.Join(a.ambiguous, "|") != "✕ parses input" || len(a.preexisting) != 0 {
-		t.Fatalf("ambiguous = %q preexisting = %q, want the duplicate name ambiguous", a.ambiguous, a.preexisting)
+	if strings.Join(a.ambiguous, "|") != "✕ parses input|not ok - loads config" || len(a.preexisting) != 0 {
+		t.Fatalf("ambiguous = %q preexisting = %q, want the unqualified matches ambiguous", a.ambiguous, a.preexisting)
 	}
 	if strings.Join(a.introduced, "|") != "✕ renders" {
 		t.Fatalf("introduced = %q", a.introduced)
 	}
-	if rendered := a.render(); !strings.Contains(rendered, "Ambiguous, could not attribute (1):\n- ✕ parses input") || strings.Contains(rendered, "Pre-existing") {
+	if rendered := a.render(); !strings.Contains(rendered, "Ambiguous, could not attribute (2):\n- ✕ parses input\n- not ok - loads config") || strings.Contains(rendered, "Pre-existing") {
 		t.Fatalf("render() = %q", rendered)
+	}
+}
+
+// pytest's reason after the test id carries assertion values, so the same
+// test failing with a different message on the head is still pre-existing.
+func TestBaseAttributionKeysPytestFailuresByTestID(t *testing.T) {
+	t.Parallel()
+	base := "FAILED tests/test_api.py::test_login - AssertionError: assert 1 == 2\n"
+	head := "FAILED tests/test_api.py::test_login - AssertionError: assert 3 == 2\nFAILED tests/test_api.py::test_logout - KeyError\n"
+	a := classifiedAttribution(1, head, base)
+	if strings.Join(a.preexisting, "|") != "FAILED tests/test_api.py::test_login" || len(a.ambiguous) != 0 {
+		t.Fatalf("preexisting = %q ambiguous = %q, want test_login pre-existing", a.preexisting, a.ambiguous)
+	}
+	if strings.Join(a.introduced, "|") != "FAILED tests/test_api.py::test_logout" {
+		t.Fatalf("introduced = %q", a.introduced)
 	}
 }
 

@@ -52,9 +52,9 @@ type baseAttribution struct {
 	baseExitCode int
 	introduced   []string
 	preexisting  []string
-	// ambiguous holds failures whose name could not be qualified with a
-	// package and occurs more than once on a side while also failing on the
-	// base, so matching it would be a guess.
+	// ambiguous holds failures that also fail on the base but carry no
+	// package or file identity, so the match may be a different test sharing
+	// the name.
 	ambiguous []string
 	// unavailable explains why no base result exists; every failure then
 	// stays attributed to the change, exactly as without the opt-in.
@@ -95,10 +95,8 @@ func attributeTestFailures(sctx *pipeline.StepContext, testCmd, baseSHA, headOut
 // than listing every head failure as introduced.
 func (a *baseAttribution) classify(headOutput, baseOutput string) {
 	baseFailures := map[string]bool{}
-	baseAmbiguous := map[string]bool{}
 	if a.baseExitCode != 0 {
-		var lines []string
-		lines, baseAmbiguous = testFailureLines(baseOutput)
+		lines, _ := testFailureLines(baseOutput)
 		if len(lines) == 0 {
 			return
 		}
@@ -106,12 +104,14 @@ func (a *baseAttribution) classify(headOutput, baseOutput string) {
 			baseFailures[line] = true
 		}
 	}
-	headLines, headAmbiguous := testFailureLines(headOutput)
+	// A key carries its package or file in its own text, so a head line that
+	// is qualified matches only an identically qualified base line.
+	headLines, qualified := testFailureLines(headOutput)
 	for _, line := range headLines {
 		switch {
 		case !baseFailures[line]:
 			a.introduced = append(a.introduced, line)
-		case headAmbiguous[line] || baseAmbiguous[line]:
+		case !qualified[line]:
 			a.ambiguous = append(a.ambiguous, line)
 		default:
 			a.preexisting = append(a.preexisting, line)
@@ -146,8 +146,10 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 		if err != nil {
 			return "", 0, fmt.Errorf("prepare base checkout: %w", err)
 		}
-		if exitCode != 0 {
+		if output != "" {
 			logCommandOutput(sctx, output, "Prepare (base)", types.StepTest)
+		}
+		if exitCode != 0 {
 			return "", 0, fmt.Errorf("prepare command exited with code %d on the base checkout", exitCode)
 		}
 	}
@@ -161,22 +163,21 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 
 // testFailureLines returns the recognized failure lines of output in order,
 // deduplicated, and normalized so run-to-run noise (durations, TAP ordinals,
-// colors, indentation) does not make the same failure look new. A go test
-// line is prefixed with the package its block closes with. ambiguous names
-// the lines that could not be qualified that way and occur more than once, so
-// they may be different tests sharing a name.
-func testFailureLines(output string) (lines []string, ambiguous map[string]bool) {
-	type failure struct {
-		line      string
-		qualified bool
-	}
-	var failures []failure
+// colors, indentation, pytest's failure reason) does not make the same
+// failure look new. A go test line is prefixed with the package its block
+// closes with. qualified names the lines that carry a package or file
+// identity (a packaged go test or a pytest `path::test` id); any other line
+// may be a different test sharing the name.
+func testFailureLines(output string) (lines []string, qualified map[string]bool) {
+	var failures []string
+	qualified = map[string]bool{}
 	var pendingGo []int
 	for _, raw := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
 		line := strings.TrimSpace(ansiEscape.ReplaceAllString(raw, ""))
 		if m := goPackageResult.FindStringSubmatch(line); m != nil {
 			for _, i := range pendingGo {
-				failures[i] = failure{line: m[1] + ": " + failures[i].line, qualified: true}
+				failures[i] = m[1] + ": " + failures[i]
+				qualified[failures[i]] = true
 			}
 			pendingGo = nil
 			continue
@@ -192,19 +193,22 @@ func testFailureLines(output string) (lines []string, ambiguous map[string]bool)
 		if strings.HasPrefix(line, "--- FAIL: ") {
 			pendingGo = append(pendingGo, len(failures))
 		}
-		failures = append(failures, failure{line: line})
+		if strings.HasPrefix(line, "FAILED ") {
+			line, _, _ = strings.Cut(line, " - ")
+			if strings.Contains(line, "::") {
+				qualified[line] = true
+			}
+		}
+		failures = append(failures, line)
 	}
-	seen := map[string]int{}
-	ambiguous = map[string]bool{}
-	for _, f := range failures {
-		seen[f.line]++
-		if seen[f.line] == 1 {
-			lines = append(lines, f.line)
-		} else if !f.qualified {
-			ambiguous[f.line] = true
+	seen := map[string]bool{}
+	for _, line := range failures {
+		if !seen[line] {
+			seen[line] = true
+			lines = append(lines, line)
 		}
 	}
-	return lines, ambiguous
+	return lines, qualified
 }
 
 // render is the attribution the Test step puts ahead of the failing command's
