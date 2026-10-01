@@ -163,7 +163,7 @@ Previous test findings to address:
 			baselineSummary = projectedOutput
 			baselineExitCode = failed[0].ExitCode
 			if sctx.Config.Test.BaseAttribution && !failed[0].Local {
-				attribution, err := attributeTestFailures(sctx, testCmd, baseSHA, output)
+				attribution, err := attributeTestFailures(sctx, testCmd, baseSHA, failed[0].Output)
 				if err != nil {
 					return nil, err
 				}

@@ -42,6 +42,7 @@ type checkResult struct {
 	Command  string
 	Local    bool
 	ExitCode int
+	Output   string
 }
 
 func (r checkResult) description(name string) string {
@@ -92,6 +93,7 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 			return output.String(), checks[:i], err
 		}
 		checks[i].ExitCode = code
+		checks[i].Output = out
 		if len(override.Additional) > 0 {
 			fmt.Fprintf(&output, "\nexit code: %d\n", code)
 		}

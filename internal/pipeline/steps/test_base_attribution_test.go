@@ -190,7 +190,7 @@ func TestTestFailureLinesNormalizesRunnerNoise(t *testing.T) {
 		"ok  \tgithub.com/x/z\t0.1s",
 		"PASS",
 	}, "\n")
-	got, qualified := testFailureLines(output)
+	got, qualified, unattributed := testFailureLines(output)
 	want := []string{
 		"github.com/x/y: --- FAIL: TestA",
 		"FAILED tests/test_api.py::test_login",
@@ -203,6 +203,49 @@ func TestTestFailureLinesNormalizesRunnerNoise(t *testing.T) {
 	}
 	if !qualified["github.com/x/y: --- FAIL: TestA"] || !qualified["FAILED tests/test_api.py::test_login"] || len(qualified) != 2 {
 		t.Fatalf("qualified = %v, want only the go package and pytest id lines", qualified)
+	}
+	if len(unattributed) != 0 {
+		t.Fatalf("unattributed = %q, want none when every failing package has a per-test line", unattributed)
+	}
+}
+
+// A package that fails with no per-test line (here a build failure) must be
+// named, so a head that also keeps a pre-existing failure never reads as
+// introducing nothing.
+func TestBaseAttributionNamesPackagesFailingWithoutAPerTestLine(t *testing.T) {
+	t.Parallel()
+	base := "--- FAIL: TestFoo (0.01s)\nFAIL\nFAIL\texample.com/pkg/a\t0.1s\nok  \texample.com/pkg/b\t0.1s\n"
+	head := "--- FAIL: TestFoo (0.01s)\nFAIL\nFAIL\texample.com/pkg/a\t0.1s\n# example.com/pkg/b\nb.go:3:1: syntax error\nFAIL\texample.com/pkg/b [build failed]\n"
+	a := classifiedAttribution(1, head, base)
+	if strings.Join(a.preexisting, "|") != "example.com/pkg/a: --- FAIL: TestFoo" || len(a.introduced) != 0 {
+		t.Fatalf("preexisting = %q introduced = %q", a.preexisting, a.introduced)
+	}
+	rendered := a.render()
+	if !strings.Contains(rendered, "Failures without a per-test line (could not be attributed) (1):\n- FAIL example.com/pkg/b [build failed]") {
+		t.Fatalf("render() = %q, want pkg/b named as unattributed", rendered)
+	}
+	if same := classifiedAttribution(1, head, head); len(same.unattributed) != 0 {
+		t.Fatalf("unattributed = %q, want a build failure shared with the base left out", same.unattributed)
+	}
+}
+
+// A machine-local additional check never runs on the base, so its failures
+// must not be classified against it.
+func TestTestStep_BaseAttributionIgnoresMachineLocalChecks(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := attributionRepo(t, "TestFlakyOnMain\n", "TestFlakyOnMain\nTestBrokenByChange\n", true)
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"test": {Additional: []string{"echo '--- FAIL: TestLocalOnly'; exit 1"}}}
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(findings.Summary, "Introduced by this change (1):\n- example.com/suite: --- FAIL: TestBrokenByChange\n") {
+		t.Fatalf("summary = %q, want only the repository command's failure classified", findings.Summary)
 	}
 }
 

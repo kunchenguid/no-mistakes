@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -56,6 +57,10 @@ type baseAttribution struct {
 	// package or file identity, so the match may be a different test sharing
 	// the name.
 	ambiguous []string
+	// unattributed holds head package results that failed without any
+	// per-test line (a build failure, a TestMain or init panic) and did not
+	// fail that way on the base, so no test inside them can be attributed.
+	unattributed []string
 	// unavailable explains why no base result exists; every failure then
 	// stays attributed to the change, exactly as without the opt-in.
 	unavailable string
@@ -95,18 +100,27 @@ func attributeTestFailures(sctx *pipeline.StepContext, testCmd, baseSHA, headOut
 // than listing every head failure as introduced.
 func (a *baseAttribution) classify(headOutput, baseOutput string) {
 	baseFailures := map[string]bool{}
+	baseUnattributed := map[string]bool{}
 	if a.baseExitCode != 0 {
-		lines, _ := testFailureLines(baseOutput)
+		lines, _, unattributed := testFailureLines(baseOutput)
 		if len(lines) == 0 {
 			return
 		}
 		for _, line := range lines {
 			baseFailures[line] = true
 		}
+		for _, line := range unattributed {
+			baseUnattributed[line] = true
+		}
 	}
 	// A key carries its package or file in its own text, so a head line that
 	// is qualified matches only an identically qualified base line.
-	headLines, qualified := testFailureLines(headOutput)
+	headLines, qualified, headUnattributed := testFailureLines(headOutput)
+	for _, line := range headUnattributed {
+		if !baseUnattributed[line] {
+			a.unattributed = append(a.unattributed, line)
+		}
+	}
 	for _, line := range headLines {
 		switch {
 		case !baseFailures[line]:
@@ -142,7 +156,7 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 	}
 	env := stepEnvironment(sctx)
 	if prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare); prepareCmd != "" {
-		output, exitCode, err := runShellCommandWithProcessEnv(sctx.Ctx, checkout, env, prepareCmd)
+		output, exitCode, err := runShellCommandWithPriority(sctx.Ctx, checkout, env, prepareCmd, sctx.Config.CommandOverrides["prepare"].Nice)
 		if err != nil {
 			return "", 0, fmt.Errorf("prepare base checkout: %w", err)
 		}
@@ -153,7 +167,7 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 			return "", 0, fmt.Errorf("prepare command exited with code %d on the base checkout", exitCode)
 		}
 	}
-	output, exitCode, err := runShellCommandWithProcessEnv(sctx.Ctx, checkout, env, testCmd)
+	output, exitCode, err := runShellCommandWithPriority(sctx.Ctx, checkout, env, testCmd, sctx.Config.CommandOverrides["test"].Nice)
 	if err != nil {
 		return "", 0, fmt.Errorf("run test command on base: %w", err)
 	}
@@ -167,14 +181,21 @@ func runTestCommandOnBase(sctx *pipeline.StepContext, testCmd, baseSHA string) (
 // failure look new. A go test line is prefixed with the package its block
 // closes with. qualified names the lines that carry a package or file
 // identity (a packaged go test or a pytest `path::test` id); any other line
-// may be a different test sharing the name.
-func testFailureLines(output string) (lines []string, qualified map[string]bool) {
+// may be a different test sharing the name. unattributed lists the go
+// `FAIL pkg` results that closed a block without any per-test failure line.
+func testFailureLines(output string) (lines []string, qualified map[string]bool, unattributed []string) {
 	var failures []string
 	qualified = map[string]bool{}
 	var pendingGo []int
 	for _, raw := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
 		line := strings.TrimSpace(ansiEscape.ReplaceAllString(raw, ""))
 		if m := goPackageResult.FindStringSubmatch(line); m != nil {
+			if len(pendingGo) == 0 && strings.HasPrefix(line, "FAIL") {
+				result := strings.Join(strings.Fields(testDurationSuffix.ReplaceAllString(line, "")), " ")
+				if !slices.Contains(unattributed, result) {
+					unattributed = append(unattributed, result)
+				}
+			}
 			for _, i := range pendingGo {
 				failures[i] = m[1] + ": " + failures[i]
 				qualified[failures[i]] = true
@@ -208,7 +229,7 @@ func testFailureLines(output string) (lines []string, qualified map[string]bool)
 			lines = append(lines, line)
 		}
 	}
-	return lines, qualified
+	return lines, qualified, unattributed
 }
 
 // pytestTestID drops the " - reason" pytest appends to a FAILED line. The
@@ -241,14 +262,16 @@ func (a baseAttribution) render() string {
 	}
 	base := shortSHA(a.baseSHA)
 	if a.baseExitCode == 0 {
-		return "Base attribution: commands.test passes on base commit " + base + ", so this change introduced the failure." + renderAttributedList("Introduced by this change", a.introduced)
+		return "Base attribution: commands.test passes on base commit " + base + ", so this change introduced the failure." + renderAttributedList("Introduced by this change", a.introduced) + renderAttributedList(unattributedLabel, a.unattributed)
 	}
 	header := fmt.Sprintf("Base attribution: commands.test also fails on base commit %s (exit code %d).", base, a.baseExitCode)
-	if len(a.introduced) == 0 && len(a.preexisting) == 0 && len(a.ambiguous) == 0 {
+	if len(a.introduced) == 0 && len(a.preexisting) == 0 && len(a.ambiguous) == 0 && len(a.unattributed) == 0 {
 		return header + " Individual failures were not recognized in both outputs, so introduced and pre-existing failures could not be separated."
 	}
-	return header + renderAttributedList("Introduced by this change", a.introduced) + renderAttributedList("Pre-existing on the base commit", a.preexisting) + renderAttributedList("Ambiguous, could not attribute", a.ambiguous)
+	return header + renderAttributedList("Introduced by this change", a.introduced) + renderAttributedList("Pre-existing on the base commit", a.preexisting) + renderAttributedList("Ambiguous, could not attribute", a.ambiguous) + renderAttributedList(unattributedLabel, a.unattributed)
 }
+
+const unattributedLabel = "Failures without a per-test line (could not be attributed)"
 
 func renderAttributedList(label string, lines []string) string {
 	if len(lines) == 0 {
