@@ -43,6 +43,7 @@ type Harness struct {
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
 	agentName         string // claude / codex / grok / opencode / antigravity
+	agentSelection    string // mirrors SetupOpts.AgentSelection; "" = agentName
 	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
 	globalConfigExtra string // mirrors SetupOpts.GlobalConfigExtra
 	daemonOwn         *e2edaemon.Ownership
@@ -55,6 +56,12 @@ type SetupOpts struct {
 	// `auto` detection finds the requested one first via config), but only
 	// the chosen one is exercised.
 	Agent string
+
+	// AgentSelection replaces the generated `agent:` value. Tests for the
+	// quota-auto selection mode need the mode where every other test names one
+	// harness; they supply the mode here and its candidate list through
+	// GlobalConfigExtra, because a second `agent:` line would be a duplicate key.
+	AgentSelection string
 
 	// Scenario is an optional path to a YAML scenario file. If empty the
 	// fake agent uses its built-in clean-response default.
@@ -108,6 +115,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 		AgentLog:          filepath.Join(root, "fakeagent.log"),
 		Scenario:          opts.Scenario,
 		agentName:         opts.Agent,
+		agentSelection:    opts.AgentSelection,
 		allowRepoCommands: opts.AllowRepoCommands,
 		globalConfigExtra: opts.GlobalConfigExtra,
 	}
@@ -209,6 +217,10 @@ func (h *Harness) writeGlobalConfig() {
 		h.t.Fatalf("mkdir nm home: %v", err)
 	}
 	binLink := filepath.Join(h.BinDir, h.agentName)
+	selection := h.agentSelection
+	if selection == "" {
+		selection = h.agentName
+	}
 	cfg := fmt.Sprintf(`agent: %s
 log_level: debug
 agent_path_override:
@@ -220,7 +232,7 @@ auto_fix:
   review: 0
   document: 0
   ci: 0
-`, h.agentName, h.agentName, binLink)
+`, selection, h.agentName, binLink)
 	if extra := strings.TrimSpace(h.globalConfigExtra); extra != "" {
 		cfg += extra + "\n"
 	}

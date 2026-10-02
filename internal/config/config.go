@@ -18,6 +18,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
+	"github.com/kunchenguid/no-mistakes/internal/quota"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/kunchenguid/no-mistakes/internal/worktrees"
@@ -136,9 +137,18 @@ const (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
-	SourceYAML           []byte              `yaml:"-"`
-	Agent                types.AgentName     `yaml:"agent"`
-	Agents               []types.AgentName   `yaml:"-"`
+	SourceYAML []byte            `yaml:"-"`
+	Agent      types.AgentName   `yaml:"agent"`
+	Agents     []types.AgentName `yaml:"-"`
+	// AgentCandidates is the ordered candidate list that `agent: quota-auto`
+	// selects between (see internal/quota). It is global-only for the same
+	// reason agent_config is: it decides whose credentials and whose paid
+	// allowance a run spends, which describes this machine rather than the
+	// repository being validated, so no pushed branch may set it.
+	AgentCandidates []string `yaml:"-"`
+	// QuotaAXIPath is the quota-axi executable that supplies routing evidence.
+	// It is global-only: the tool reads this machine's local credentials.
+	QuotaAXIPath         string              `yaml:"quota_axi_path"`
 	ACPXPath             string              `yaml:"acpx_path"`
 	ForgejoAXIPath       string              `yaml:"forgejo_axi_path"`
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
@@ -212,6 +222,8 @@ type GlobalConfig struct {
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
 	Agent                   agentList                  `yaml:"agent"`
+	AgentCandidates         []string                   `yaml:"agent_candidates"`
+	QuotaAXIPath            string                     `yaml:"quota_axi_path"`
 	ACPXPath                string                     `yaml:"acpx_path"`
 	ForgejoAXIPath          string                     `yaml:"forgejo_axi_path"`
 	ACPRegistryOverrides    map[string]string          `yaml:"acp_registry_overrides"`
@@ -691,6 +703,14 @@ type Config struct {
 	CaptureEvalProvenance bool
 	Agent                 types.AgentName
 	Agents                []types.AgentName
+	// AgentCandidates is the operator's raw ordered candidate list, validated at
+	// load; internal/quota parses each entry. QuotaAuto reports whether the
+	// resolved selection is `agent: quota-auto`, which decides whether those
+	// candidates are consulted at all: a repository that pins its own agent
+	// outranks the machine-local routing mode (see merge).
+	AgentCandidates       []string
+	QuotaAuto             bool
+	QuotaAXIPath          string
 	ACPXPath              string
 	ForgejoAXIPath        string
 	ACPRegistryOverrides  map[string]string
@@ -1119,6 +1139,8 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # for example: agent: [codex, grok]
 # Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, devin, acp:<target>
 # "auto" detects the first available native agent or ACP alias on your system
+# "quota-auto" selects between the harnesses listed in agent_candidates by their
+# measured provider quota (see the global config reference for the gates)
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
 # "devin" is an ACP alias for acp:devin using devin acp via acpx
@@ -1128,6 +1150,12 @@ agent: auto
 
 # Optional path to the user-installed acpx binary for acp:<target> agents and ACP aliases
 # acpx_path: acpx
+
+# Ordered candidate list for agent: quota-auto, optionally as harness@provider
+# agent_candidates: [claude, codex]
+
+# Optional path to the quota-axi binary that supplies quota-auto routing evidence
+# quota_axi_path: quota-axi
 
 # forgejo-axi executable used for Forgejo provider operations
 forgejo_axi_path: forgejo-axi
@@ -1428,6 +1456,10 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 // exec.LookPath.
 func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
 	candidates := c.configuredAgents()
+	if hasAgent(candidates, types.AgentQuotaAuto) {
+		return c.resolveQuotaAutoAgent(ctx, lookPath, candidates)
+	}
+	c.QuotaAuto = false
 	if len(candidates) <= 1 {
 		c.Agent = firstAgent(candidates)
 		c.Agents = copyAgents(candidates)
@@ -1459,6 +1491,89 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 	c.Agent = resolved[0]
 	c.Agents = resolved
 	return nil
+}
+
+// resolveQuotaAutoAgent resolves `agent: quota-auto`: the ordered candidate list
+// becomes the run's eligible set, in the operator's own order, and internal/quota
+// picks between those members by measured provider quota.
+//
+// Only the harness half of eligibility is decided here, offline: each candidate
+// must resolve to an installed harness (the same probe every other agent
+// selection uses). Whether the provider behind it is set up, class-capable and
+// has runway is a live question with live evidence, so it is answered per
+// selection in internal/quota rather than cached here.
+func (c *Config) resolveQuotaAutoAgent(ctx context.Context, lookPath func(string) (string, error), configured []types.AgentName) error {
+	if len(configured) != 1 {
+		return fmt.Errorf("parse global config: agent: %s cannot be combined with other agent names; list the harnesses it may choose between in agent_candidates", types.AgentQuotaAuto)
+	}
+	if len(c.AgentCandidates) == 0 {
+		return fmt.Errorf("parse global config: agent: %s needs agent_candidates, the ordered list of harnesses it may choose between (for example agent_candidates: [claude, codex])", types.AgentQuotaAuto)
+	}
+	names := make([]types.AgentName, 0, len(c.AgentCandidates))
+	for index, raw := range c.AgentCandidates {
+		candidate, err := quota.ParseCandidate(raw)
+		if err != nil {
+			return fmt.Errorf("parse global config: agent_candidates[%d]: %w", index, err)
+		}
+		names = append(names, candidate.Agent)
+	}
+	runnable, err := c.resolveAgentList(ctx, names, lookPath)
+	if err != nil {
+		return err
+	}
+	c.QuotaAuto = true
+	c.Agents = runnable
+	c.Agent = runnable[0]
+	return nil
+}
+
+// parseQuotaCandidates validates the raw candidate list at load time, so a typo
+// is a config error rather than a run that discovers it mid-pipeline.
+func parseQuotaCandidates(raw []string) ([]string, error) {
+	if len(raw) > maxAgentCandidates {
+		return nil, fmt.Errorf("parse global config: agent_candidates lists %d harnesses; the limit is %d", len(raw), maxAgentCandidates)
+	}
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for index, entry := range raw {
+		candidate, err := quota.ParseCandidate(entry)
+		if err != nil {
+			return nil, fmt.Errorf("parse global config: agent_candidates[%d]: %w", index, err)
+		}
+		key := candidate.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// QuotaAutoSelected reports whether the configured agent selection is the
+// quota-auto mode, asked before ResolveAgent has replaced the mode with a
+// concrete harness. It exists so a caller can take the unchanged single-agent
+// path without resolving the selection twice.
+func (c *Config) QuotaAutoSelected() bool {
+	return hasAgent(c.configuredAgents(), types.AgentQuotaAuto)
+}
+
+// maxAgentCandidates bounds the candidate list. Every selection point reads
+// evidence for the whole list and records a per-candidate verdict, so the list is
+// the one part of this feature whose cost is unbounded by configuration.
+const maxAgentCandidates = 8
+
+// hasAgent reports whether a configured agent name appears in the list.
+func hasAgent(names []types.AgentName, want types.AgentName) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Config) configuredAgents() []types.AgentName {
@@ -2005,6 +2120,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
 		Agent:                   types.AgentAuto,
 		Agents:                  []types.AgentName{types.AgentAuto},
+		QuotaAXIPath:            quota.DefaultAXIPath,
 		ForgejoAXIPath:          "forgejo-axi",
 		CITimeout:               DefaultCITimeout,
 		StepQuietWarning:        DefaultStepQuietWarning,
@@ -2195,6 +2311,19 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if len(raw.Agent) > 0 {
 		cfg.Agents = copyAgents(raw.Agent)
 		cfg.Agent = firstAgent(cfg.Agents)
+	}
+	if raw.AgentCandidates != nil {
+		candidates, err := parseQuotaCandidates(raw.AgentCandidates)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AgentCandidates = candidates
+	}
+	if len(cfg.AgentCandidates) > 0 && cfg.Agent != types.AgentQuotaAuto {
+		return nil, fmt.Errorf("parse global config: agent_candidates is only meaningful with agent: %s, but agent is %s", types.AgentQuotaAuto, cfg.Agent)
+	}
+	if raw.QuotaAXIPath != "" {
+		cfg.QuotaAXIPath = raw.QuotaAXIPath
 	}
 	if raw.ACPXPath != "" {
 		cfg.ACPXPath = raw.ACPXPath
@@ -3190,6 +3319,8 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	cfg := &Config{
 		Agent:                 global.Agent,
 		Agents:                copyAgents(global.Agents),
+		AgentCandidates:       append([]string(nil), global.AgentCandidates...),
+		QuotaAXIPath:          global.QuotaAXIPath,
 		ACPXPath:              global.ACPXPath,
 		ForgejoAXIPath:        global.ForgejoAXIPath,
 		ACPRegistryOverrides:  global.ACPRegistryOverrides,

@@ -106,8 +106,11 @@ type recoveredRunPlan struct {
 	gateDir string
 	cfg     *config.Config
 	agent   agent.Agent
-	steps   []pipeline.Step
-	forge   *forgecontext.Context
+	// stepBoundary re-selects the run's agent at a step boundary under
+	// agent: quota-auto, and is nil for every pinned selection.
+	stepBoundary func(context.Context, types.StepName) error
+	steps        []pipeline.Step
+	forge        *forgecontext.Context
 }
 
 func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
@@ -176,7 +179,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, fmt.Errorf("resolve forge profile: %w", err)
 	}
-	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
+	ag, stepBoundary, err := m.newRunPipelineAgent(ctx, cfg, run.ID, nextStepForRun(m.db, run.ID, execSteps), m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		return nil, err
 	}
@@ -187,14 +190,15 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		}
 	}
 	return &recoveredRunPlan{
-		run:     run,
-		repo:    repo,
-		workDir: workDir,
-		gateDir: gateDir,
-		cfg:     cfg,
-		agent:   ag,
-		steps:   execSteps,
-		forge:   forgeCtx,
+		run:          run,
+		repo:         repo,
+		workDir:      workDir,
+		gateDir:      gateDir,
+		cfg:          cfg,
+		agent:        ag,
+		stepBoundary: stepBoundary,
+		steps:        execSteps,
+		forge:        forgeCtx,
 	}, nil
 }
 
@@ -298,6 +302,40 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	if err != nil {
 		return nil, err
 	}
+	return withReviewRolesAgent(ctx, cfg, primary, evidenceRoot, lookPath, environment)
+}
+
+// newRunPipelineAgent resolves the pipeline agent for one run, and under
+// agent: quota-auto also returns the step-boundary hook that keeps the run
+// routable. Every other selection mode takes the unchanged path.
+func (m *RunManager) newRunPipelineAgent(ctx context.Context, cfg *config.Config, runID string, firstStep types.StepName, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, func(context.Context, types.StepName) error, error) {
+	if !cfg.QuotaAutoSelected() {
+		ag, err := newPipelineAgent(ctx, cfg, evidenceRoot, lookPath, environment)
+		return ag, nil, err
+	}
+	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
+		return nil, nil, err
+	}
+	if !cfg.QuotaAuto {
+		// The resolved selection is not the mode: a repository's trusted agent
+		// pin outranks this machine's routing mode. Build the pinned run.
+		primary, err := newAgentChain(cfg, cfg.Agent, evidenceRoot, environment)
+		if err != nil {
+			return nil, nil, err
+		}
+		wrapped, err := withReviewRolesAgent(ctx, cfg, primary, evidenceRoot, lookPath, environment)
+		if err != nil {
+			_ = primary.Close()
+			return nil, nil, err
+		}
+		return wrapped, nil, nil
+	}
+	return m.quotaAutoPipelineAgent(ctx, cfg, runID, firstStep, evidenceRoot, lookPath, environment)
+}
+
+// withReviewRolesAgent wires the operator's review-loop role routing around a
+// run's primary agent.
+func withReviewRolesAgent(ctx context.Context, cfg *config.Config, primary agent.Agent, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	roles := make(map[string]agent.Agent, len(cfg.ReviewAgents))
 	for _, role := range config.ReviewAgentRoles {
 		entry, ok := cfg.ReviewAgents[role]
@@ -332,12 +370,18 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
 	}
-	agents := cfg.Agents
-	if len(agents) == 0 {
-		agents = []types.AgentName{cfg.Agent}
-	}
-	created := make([]agent.Agent, 0, len(agents))
-	for _, name := range agents {
+	return newAgentChain(cfg, cfg.Agent, evidenceRoot, environment)
+}
+
+// newAgentChain builds the run agent for one primary harness: the primary first,
+// then the run's other resolved agents as launch-failure fallbacks. The chain is
+// what keeps every pre-quota-auto configuration byte-identical, and under
+// quota-auto it is what makes the selected harness primary without giving up the
+// fallback the operator already had.
+func newAgentChain(cfg *config.Config, primary types.AgentName, evidenceRoot string, environment runenv.Overlay) (agent.Agent, error) {
+	order := chainOrder(cfg, primary)
+	created := make([]agent.Agent, 0, len(order))
+	for _, name := range order {
 		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
@@ -363,6 +407,23 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 		}
 	}
 	return ag, nil
+}
+
+// chainOrder puts the primary harness first and keeps the run's other resolved
+// agents behind it, in their configured order.
+func chainOrder(cfg *config.Config, primary types.AgentName) []types.AgentName {
+	agents := cfg.Agents
+	if len(agents) == 0 {
+		agents = []types.AgentName{cfg.Agent}
+	}
+	order := make([]types.AgentName, 0, len(agents)+1)
+	order = append(order, primary)
+	for _, name := range agents {
+		if name != primary {
+			order = append(order, name)
+		}
+	}
+	return order
 }
 
 func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
@@ -405,6 +466,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor.SetStepBoundaryFunc(plan.stepBoundary)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
 		go func() {
@@ -1578,10 +1640,14 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		return "", fmt.Errorf("resolve forge profile: %w", err)
 	}
 
-	// Create agent. In demo mode, newPipelineAgent returns a no-op agent, and it
-	// wires review-role routing plus the trusted-opt-out gate-neutralization
-	// fail-closed check.
-	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
+	execSteps := steps.WithCustomGates(m.steps(), cfg.Gates)
+
+	// Create agent. In demo mode, newRunPipelineAgent returns a no-op agent, and
+	// it wires review-role routing plus the trusted-opt-out gate-neutralization
+	// fail-closed check. Under agent: quota-auto it also makes this run's opening
+	// routing decision from live provider quota and returns the step-boundary hook
+	// that keeps the run routable afterwards (see internal/quota).
+	ag, stepBoundary, err := m.newRunPipelineAgent(ctx, cfg, run.ID, nextStepForRun(m.db, run.ID, execSteps), m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("create_agent")
@@ -1606,7 +1672,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		return "", fmt.Errorf("record gates: %w", err)
 	}
 
-	execSteps := steps.WithCustomGates(m.steps(), cfg.Gates)
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,
@@ -1619,6 +1684,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetStepBoundaryFunc(stepBoundary)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {

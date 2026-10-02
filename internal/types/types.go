@@ -289,7 +289,12 @@ const (
 type AgentName string
 
 const (
-	AgentAuto        AgentName = "auto"
+	AgentAuto AgentName = "auto"
+	// AgentQuotaAuto selects the pipeline agent by measured provider quota from
+	// the operator's ordered candidate list (see internal/quota). It is a
+	// selection mode, not a harness: it never names a binary, and it is refused
+	// everywhere a concrete harness is required.
+	AgentQuotaAuto   AgentName = "quota-auto"
 	AgentClaude      AgentName = "claude"
 	AgentCodex       AgentName = "codex"
 	AgentGrok        AgentName = "grok"
