@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.86.1](https://github.com/kunchenguid/no-mistakes/compare/v1.86.0...v1.86.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **pipeline:** attribute review schema-retry exhaustion across distinct fields ([#1283](https://github.com/kunchenguid/no-mistakes/issues/1283)) ([728ffe0](https://github.com/kunchenguid/no-mistakes/commit/728ffe0f226527a77358bb265be6073c0786367e))
+* **pipeline:** declare machine-local command overrides once per step ([#1276](https://github.com/kunchenguid/no-mistakes/issues/1276)) ([d402d5f](https://github.com/kunchenguid/no-mistakes/commit/d402d5f62de686d24eca3146f37a0792e85f8c85))
+* **pipeline:** keep submodules that commands.prepare checks out ([#1279](https://github.com/kunchenguid/no-mistakes/issues/1279)) ([6675304](https://github.com/kunchenguid/no-mistakes/commit/667530452f6eede6989beeff224954594942d35e))
+
 ## [1.86.0](https://github.com/kunchenguid/no-mistakes/compare/v1.85.3...v1.86.0) (2026-10-01)
 
 
