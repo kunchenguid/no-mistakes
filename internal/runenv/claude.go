@@ -22,5 +22,5 @@ func CallerClaudeConfigDir() (string, error) {
 	if !filepath.IsAbs(dir) {
 		return "", fmt.Errorf("%s must be an absolute path, got %q", ClaudeConfigDirEnvVar, dir)
 	}
-	return filepath.Clean(dir), nil
+	return dir, nil
 }
