@@ -361,10 +361,7 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 		errStr = err.Error()
 	}
 	description := fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command.", err)
-	lower := strings.ToLower(errStr)
-	isBranchNotFound := strings.Contains(lower, "no pull requests found for branch")
-	mentionsSHA := isHexSHAInText(errStr)
-	if isBranchNotFound && mentionsSHA {
+	if isSHABranchSelectorError(errStr) {
 		description += " The error indicates a commit SHA was used as the PR selector (gh pr view <sha>). gh pr view only accepts a PR number, URL, or branch name — never a bare SHA. Resolve the PR first via `gh pr list --search <sha>` or `gh api repos/{owner}/{repo}/commits/<sha>/pulls`, then use `gh pr view <number>` / `gh pr checks <number>`."
 	} else {
 		description += " For GitHub errors involving 'pr checks --json', gh >= 2.50 is required."
@@ -384,29 +381,25 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 	}
 }
 
-func isHexSHAInText(s string) bool {
-	for _, token := range strings.Fields(s) {
-		clean := strings.Trim(token, "`'\".,:;()[]{}<>")
-		if len(clean) < 7 || len(clean) > 40 {
-			continue
-		}
-		isHex := true
-		allDigits := true
-		for _, r := range clean {
-			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
-				if r < '0' || r > '9' {
-					allDigits = false
-				}
-				continue
-			}
-			isHex = false
-			break
-		}
-		if isHex && !allDigits {
-			return true
+func isSHABranchSelectorError(s string) bool {
+	_, suffix, found := strings.Cut(strings.ToLower(s), "no pull requests found for branch")
+	if !found {
+		return false
+	}
+	tokens := strings.Fields(suffix)
+	if len(tokens) == 0 {
+		return false
+	}
+	selector := strings.Trim(tokens[0], "`'\".,:;()[]{}<>")
+	if len(selector) < 7 || len(selector) > 40 {
+		return false
+	}
+	for _, r := range selector {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
 		}
 	}
-	return false
+	return strings.ContainsAny(selector, "abcdef")
 }
 
 // ciFixAgentTimeoutOutcome parks the CI step for a decision after the auto-fix

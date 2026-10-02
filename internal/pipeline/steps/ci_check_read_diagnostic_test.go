@@ -29,6 +29,11 @@ func TestCICheckReadFailureOutcome_SelectorBoundaries(t *testing.T) {
 		{"non hex character", missingBranch + "abc123g", false},
 		{"branch path", missingBranch + "feature/abc1234", false},
 		{"non SHA branch", missingBranch + "feature/foo", false},
+		{"SHA before branch failure", "commit abc1234: " + missingBranch + "feature/foo", false},
+		{"SHA after branch failure", missingBranch + "'feature/foo' at commit abc1234", false},
+		{"numeric selector with unrelated SHA", missingBranch + "1000000 at commit abc1234", false},
+		{"invalid selector with unrelated SHA", missingBranch + "abc123g at commit abc1234", false},
+		{"missing selector with unrelated SHA", "commit abc1234: " + missingBranch, false},
 		{"SHA without branch failure", "gh pr checks: permission denied for commit abc1234", false},
 	}
 	for _, tc := range cases {

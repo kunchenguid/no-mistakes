@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -34,9 +38,31 @@ func TestCIStep_PersistentSelectorErrorDiagnostic(t *testing.T) {
 			ag := &stepstest.MockAgent{AgentName: "test"}
 			sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			providerError := "no pull requests found for branch '" + tc.selector + "'"
-			sctx.Env = stepstest.FakeCIGHChecksError(t, "OPEN", "MERGEABLE", providerError)
+			binDir := stepstest.FakeCLIBinDir(t)
+			stepstest.LinkFakeCLI(t, binDir, "gh")
 			commandLog := filepath.Join(t.TempDir(), "provider-commands.log")
-			sctx.Env = append(sctx.Env, "FAKE_CLI_LOG="+commandLog)
+			sctx.Env = stepstest.FakeCLIEnv(binDir, map[string]string{
+				"FAKE_CLI_MODE":        "ci-gh",
+				"FAKE_CLI_STATE":       "OPEN",
+				"FAKE_CLI_MERGEABLE":   "MERGEABLE",
+				"FAKE_CLI_PR_HEAD_ERR": providerError,
+				"FAKE_CLI_LOG":         commandLog,
+			})
+			// Exercise the actual selector at the provider's public interface.
+			// CIStep below always selects a numeric PR from its recorded URL.
+			ghName := "gh"
+			if runtime.GOOS == "windows" {
+				ghName += ".exe"
+			}
+			host := github.New(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+				cmd := exec.CommandContext(ctx, filepath.Join(binDir, ghName), args...)
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), sctx.Env...)
+				return cmd
+			}, nil, "github.com", "test/repo")
+			if _, err := host.GetChecks(context.Background(), &scm.PR{Number: tc.selector, HeadSHA: headSHA}); err == nil || !strings.Contains(err.Error(), providerError) {
+				t.Fatalf("PR-head lookup must surface selector stderr: %v", err)
+			}
 			prURL := "https://github.com/test/repo/pull/42"
 			sctx.Run.PRURL = &prURL
 			sctx.Config.CITimeout = time.Minute
@@ -90,23 +116,29 @@ func TestCIStep_PersistentSelectorErrorDiagnostic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			checkReads := 0
+			headReads, selectorReads := 0, 0
 			for _, line := range strings.Split(strings.TrimSpace(string(commands)), "\n") {
 				args := strings.Fields(line)
-				if len(args) >= 4 && args[0] == "api" && args[1] == "--hostname" {
-					args = append([]string{"api"}, args[3:]...)
+				allowed := len(args) >= 2 && args[0] == "auth" && args[1] == "status"
+				if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+					isHeadRead := strings.Contains(line, "--json headRefOid")
+					if args[2] == tc.selector && isHeadRead {
+						selectorReads++
+						allowed = true
+					}
+					if args[2] == "42" {
+						allowed = true
+						if isHeadRead {
+							headReads++
+						}
+					}
 				}
-				if len(args) >= 2 && args[0] == "api" && args[1] == "graphql" {
-					checkReads++
-				}
-				allowed := len(args) >= 2 && ((args[0] == "auth" && args[1] == "status") || (args[0] == "api" && args[1] == "graphql"))
-				allowed = allowed || (len(args) >= 3 && args[0] == "pr" && args[1] == "view" && args[2] == "42")
 				if !allowed {
-					t.Fatalf("diagnostic performed an unexpected operation (must not resolve or repair): %s", line)
+					t.Fatalf("diagnostic performed an unexpected operation (must not read checks, resolve or repair): %s", line)
 				}
 			}
-			if checkReads != steps.ConsecutiveCheckErrorLimit() {
-				t.Fatalf("provider made %d API reads, want only %d check reads and no SHA lookup", checkReads, steps.ConsecutiveCheckErrorLimit())
+			if selectorReads != 1 || headReads != steps.ConsecutiveCheckErrorLimit() {
+				t.Fatalf("provider made %d selector lookups and %d monitor head reads, want 1 and %d", selectorReads, headReads, steps.ConsecutiveCheckErrorLimit())
 			}
 			t.Logf("Synthetic provider failure; emitted end-user finding:\n%s", outcome.Findings)
 		})
