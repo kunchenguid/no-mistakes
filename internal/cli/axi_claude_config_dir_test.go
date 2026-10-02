@@ -13,26 +13,27 @@ import (
 )
 
 func TestAxiRunReattachRequiresTheCallersClaudeProfile(t *testing.T) {
-	const bound = "/caller/.claude1"
 	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{})
-	boundRun := func(status types.RunStatus) *ipc.RunInfo {
-		run := fx.running()
-		run.Status = status
-		run.ClaudeConfigDir = bound
-		return run
-	}
-	fx.setGetActive(func(context.Context) (*ipc.RunInfo, error) { return boundRun(types.RunRunning), nil })
-	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) { return boundRun(types.RunCompleted), nil })
 
 	for _, tc := range []struct {
-		name, env string
-		refused   bool
+		name, bound, env string
+		refused          bool
 	}{
-		{"same profile", bound, false},
-		{"unset requests no profile", "", false},
-		{"other profile", "/caller/.claude2", true},
+		{"same profile", "/caller/.claude1", "/caller/.claude1", false},
+		{"same profile as the push hook bound it", "/caller/.claude1/", "/caller/.claude1/", false},
+		{"unset requests no profile", "/caller/.claude1", "", false},
+		{"other profile", "/caller/.claude1", "/caller/.claude2", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			bound := tc.bound
+			boundRun := func(status types.RunStatus) *ipc.RunInfo {
+				run := fx.running()
+				run.Status = status
+				run.ClaudeConfigDir = bound
+				return run
+			}
+			fx.setGetActive(func(context.Context) (*ipc.RunInfo, error) { return boundRun(types.RunRunning), nil })
+			fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) { return boundRun(types.RunCompleted), nil })
 			t.Setenv(runenv.ClaudeConfigDirEnvVar, tc.env)
 			cmd := newAxiRunCmd()
 			cmd.SetArgs(nil)

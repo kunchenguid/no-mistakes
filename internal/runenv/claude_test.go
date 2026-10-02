@@ -9,7 +9,8 @@ func TestCallerClaudeConfigDir(t *testing.T) {
 	}{
 		{env: "", want: ""},
 		{env: "  ", want: ""},
-		{env: "/caller/.claude1/", want: "/caller/.claude1"},
+		{env: "/caller/.claude1", want: "/caller/.claude1"},
+		{env: " /caller/.claude1/ ", want: "/caller/.claude1/"},
 		{env: ".claude1", refused: true},
 		{env: "~/.claude1", refused: true},
 	} {
