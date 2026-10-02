@@ -53,6 +53,27 @@ func DetectProviderWithForgejoBaseURL(remoteURL, forgejoBaseURL string) Provider
 	return DetectProviderContextWithForgejoBaseURL(context.Background(), remoteURL, forgejoBaseURL)
 }
 
+// ForgejoEnvironment carries the Forgejo settings provider detection may
+// consult. SSHDomain mirrors Forgejo's own SSH_DOMAIN setting: the hostname an
+// instance publishes in SSH clone URLs when it differs from the web host in
+// BaseURL. Named fields keep two hostname-shaped strings from being swapped at
+// a call site.
+type ForgejoEnvironment struct {
+	BaseURL   string
+	SSHDomain string
+}
+
+// DetectProviderContextWithForgejo is DetectProviderContextWithForgejoBaseURL
+// plus the declared SSH hostname, so a self-hosted Forgejo whose SSH_DOMAIN
+// differs from its web host is recognized from an SSH remote. Hosted providers
+// and glab-, gh-, and tea-configured hosts are consulted first; against the
+// remaining hostname guesses the declared domain has exactly the standing a
+// FORGEJO_BASE_URL match already has. An SSH domain is inert without a valid
+// base URL.
+func DetectProviderContextWithForgejo(ctx context.Context, remoteURL string, forgejo ForgejoEnvironment) Provider {
+	return detectProviderWithForgejo(ctx, remoteURL, forgejo, lookupSSHHostname)
+}
+
 // DetectProviderStaticContext identifies providers from the remote URL and
 // SSH HostName resolution without consulting ambient gh, glab, or forgejo
 // configuration. It is used when a caller already selected an explicit
@@ -85,10 +106,17 @@ func DetectProviderContextWithForgejoBaseURL(ctx context.Context, remoteURL, for
 }
 
 func detectProvider(ctx context.Context, remoteURL string, lookup sshHostnameLookup) Provider {
-	return detectProviderWithForgejoBaseURL(ctx, remoteURL, os.Getenv("FORGEJO_BASE_URL"), lookup)
+	return detectProviderWithForgejo(ctx, remoteURL, ForgejoEnvironment{
+		BaseURL:   os.Getenv("FORGEJO_BASE_URL"),
+		SSHDomain: os.Getenv("FORGEJO_SSH_DOMAIN"),
+	}, lookup)
 }
 
 func detectProviderWithForgejoBaseURL(ctx context.Context, remoteURL, forgejoBaseURL string, lookup sshHostnameLookup) Provider {
+	return detectProviderWithForgejo(ctx, remoteURL, ForgejoEnvironment{BaseURL: forgejoBaseURL}, lookup)
+}
+
+func detectProviderWithForgejo(ctx context.Context, remoteURL string, forgejo ForgejoEnvironment, lookup sshHostnameLookup) Provider {
 	originalHost := ExtractHost(remoteURL)
 	host := resolveHost(ctx, remoteURL, lookup)
 	if host == "" {
@@ -111,10 +139,16 @@ func detectProviderWithForgejoBaseURL(ctx context.Context, remoteURL, forgejoBas
 		return ProviderGitea
 	}
 	if strings.EqualFold(host, originalHost) {
-		if forgejoBaseMatchesRemote(forgejoBaseURL, remoteURL) {
+		if forgejoBaseMatchesRemote(forgejo.BaseURL, remoteURL) {
 			return ProviderForgejo
 		}
-	} else if forgejoBaseMatchesResolvedRemote(forgejoBaseURL, remoteURL, host) {
+	} else if forgejoBaseMatchesResolvedRemote(forgejo.BaseURL, remoteURL, host) {
+		return ProviderForgejo
+	}
+	// A declared SSH domain deliberately has the same standing as the base-URL
+	// matches above: consulted after the hosted providers and the glab, gh, and
+	// tea configs, and ahead of the substring host heuristic below.
+	if forgejoSSHDomainMatchesRemote(forgejo, remoteURL, host) {
 		return ProviderForgejo
 	}
 	if host == "codeberg.org" || strings.Contains(host, "forgejo") {
@@ -266,6 +300,32 @@ func forgejoBaseMatchesResolvedRemote(baseRaw, remoteRaw, resolvedHost string) b
 	return ok && forgejoPathsMatch(base.Path, remotePath)
 }
 
+// forgejoSSHDomainMatchesRemote reports whether remote is an SSH origin of the
+// configured Forgejo instance reached through its declared SSH hostname.
+// Forgejo's SSH_DOMAIN setting lets an instance publish clone URLs on a host
+// that differs from its web base URL, which no comparison against that base URL
+// can match. The base URL stays required and its path prefix must still match:
+// the SSH domain only names the clone host of an already-configured instance,
+// never a new one.
+func forgejoSSHDomainMatchesRemote(forgejo ForgejoEnvironment, remoteRaw, resolvedHost string) bool {
+	domain, err := NormalizeForgejoSSHDomain(forgejo.SSHDomain)
+	if err != nil {
+		return false
+	}
+	_, base, err := NormalizeForgejoBaseURL(forgejo.BaseURL)
+	if err != nil {
+		return false
+	}
+	if !ForgejoSSHDomainMatchesHost(resolvedHost, domain) {
+		return false
+	}
+	_, remotePath, remoteScheme, ok := providerRemoteParts(remoteRaw)
+	if !ok || remoteScheme != "ssh" {
+		return false
+	}
+	return forgejoPathsMatch(base.Path, remotePath)
+}
+
 func forgejoPathsMatch(basePath, remotePath string) bool {
 	prefix := providerPathParts(basePath)
 	remote := providerPathParts(remotePath)
@@ -351,6 +411,120 @@ func NormalizeForgejoBaseURL(raw string) (string, *url.URL, error) {
 	parsed.RawPath = ""
 	return strings.TrimRight(parsed.String(), "/"), parsed, nil
 }
+
+// errInvalidForgejoSSHDomain carries no part of the rejected value on purpose.
+// This error reaches a step's skip reason, the step log, and the run database,
+// and an operator can paste a clone URL with an embedded credential into the
+// setting, so the text stays static the way NormalizeForgejoBaseURL keeps its
+// credentials rejection value-free.
+var errInvalidForgejoSSHDomain = errors.New("invalid Forgejo SSH domain; expected a bare hostname or IP address, with an optional port")
+
+// NormalizeForgejoSSHDomain canonicalizes a declared Forgejo SSH domain to a
+// lowercase bare host. Only an ASCII DNS hostname or an IP address is accepted,
+// because nothing else can equal a remote's resolved host. A port is accepted
+// and dropped, since an instance's SSH clone port varies independently of its
+// hostname. A value carrying a scheme, path, credentials, query, or fragment is
+// rejected rather than trimmed into something host-shaped, so a malformed
+// setting fails closed exactly as an invalid base URL does. The error names
+// nothing from the value; see errInvalidForgejoSSHDomain.
+func NormalizeForgejoSSHDomain(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	// The character filter rejects every shape a bare hostname cannot have: a
+	// scheme or path (/), credentials (@), a query (?), and a fragment (#).
+	if value == "" || strings.ContainsAny(value, "/@?#\\") {
+		return "", errInvalidForgejoSSHDomain
+	}
+	// Parsing through a synthetic authority leaves host and port syntax,
+	// including a bracketed IPv6 literal, to net/url instead of hand-rolled
+	// splitting.
+	parsed, err := url.Parse("ssh://" + value)
+	if err != nil {
+		return "", errInvalidForgejoSSHDomain
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	if !matchableSSHDomainHost(hostname) {
+		return "", errInvalidForgejoSSHDomain
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		// One spelling per address, so two ways of writing the same IPv6 address
+		// still compare equal.
+		return ip.String(), nil
+	}
+	return hostname, nil
+}
+
+// ForgejoSSHDomainMatchesHost reports whether a remote's resolved host is the
+// host that an already-normalized Forgejo SSH domain names. The resolved host
+// goes through the domain normalizer too, so an IPv6 remote host, which keeps
+// its brackets through host extraction, matches the same address declared as the
+// domain. That keeps the settings NormalizeForgejoSSHDomain accepts identical to
+// the settings that can match a remote.
+func ForgejoSSHDomainMatchesHost(resolvedHost, normalizedDomain string) bool {
+	if normalizedDomain == "" {
+		return false
+	}
+	return canonicalSSHHost(resolvedHost) == canonicalSSHHost(normalizedDomain)
+}
+
+// canonicalSSHHost reduces a host to the spelling NormalizeForgejoSSHDomain
+// produces. A remote's resolved host reaches this code in three shapes: a name,
+// a bare IP address from a URL's Hostname, and a bracketed IPv6 address from
+// host extraction. Brackets come off first and an address is only then stripped
+// of a port, because stripPort would otherwise read the last group of an
+// unbracketed IPv6 address as one.
+func canonicalSSHHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if inner, bracketed := strings.CutPrefix(host, "["); bracketed {
+		if end := strings.Index(inner, "]"); end >= 0 {
+			inner = inner[:end]
+		}
+		host = inner
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	stripped := stripPort(host)
+	if ip := net.ParseIP(stripped); ip != nil {
+		return ip.String()
+	}
+	return stripped
+}
+
+// matchableSSHDomainHost reports whether host is an IP address or an ASCII DNS
+// hostname, the only two shapes a resolved remote host can ever equal. A
+// wildcard, a trailing dot, an empty label, a label edged by a hyphen or an
+// underscore, a non-ASCII name, and the ":" that an unbracketed IPv6 literal
+// collapses to are all rejected, so a setting that could never match fails
+// loudly at the source instead of being stored and quietly ignored.
+func matchableSSHDomainHost(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		// A hyphen and an underscore may join characters inside a label but
+		// never begin or end one. Underscores earn their place because internal
+		// DNS and an ssh -G HostName directive both hand back such names
+		// verbatim, and the value has to compare equal to one of those.
+		if isLabelJoiner(label[0]) || isLabelJoiner(label[len(label)-1]) {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			char := label[i]
+			if (char < 'a' || char > 'z') && (char < '0' || char > '9') && !isLabelJoiner(char) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isLabelJoiner(char byte) bool { return char == '-' || char == '_' }
 
 func ForgejoRemoteSchemeSupported(scheme string) bool {
 	switch strings.ToLower(scheme) {
