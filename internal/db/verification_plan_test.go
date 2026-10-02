@@ -24,7 +24,7 @@ func TestVerificationPlanCannotBeChangedOrRebound(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent := &RunIntent{Summary: "  unchanged intent\n", Source: RunIntentSourceAgent, Score: 1}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", intent, "", "", "", "", false, plan)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", intent, "", "", "", "", false, plan, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestVerificationPlanCannotBeChangedOrRebound(t *testing.T) {
 	if err != nil || got.VerificationPlan == nil || *got.VerificationPlan != *plan || got.Intent == nil || *got.Intent != intent.Summary {
 		t.Fatalf("read snapshot and intent: %+v %v", got, err)
 	}
-	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", intent, "", "", "", "", false, plan); err == nil {
+	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", intent, "", "", "", "", false, plan, ""); err == nil {
 		t.Fatal("same capture attached to another run")
 	}
 	absent, err := d.InsertRun(repo.ID, "without-plan", "head", "base")

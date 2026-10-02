@@ -254,6 +254,19 @@ When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts a
 When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
 tea 0.x has no CLI-specific override env var (unlike `GLAB_CONFIG_DIR`/`GH_CONFIG_DIR`); no-mistakes always looks for its configured logins at `$XDG_CONFIG_HOME/tea/config.yml`, falling back to `~/.config/tea/config.yml` when `XDG_CONFIG_HOME` is unset. When `TEA_CONFIG_DIR` is unset, tea 1.0's configured instances are read from `hosts.yml` in that same directory. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
 
+## `CLAUDE_CONFIG_DIR`
+
+Claude Code profile directory that a run's pipeline agents use.
+
+|         |                                   |
+| ------- | --------------------------------- |
+| Type    | `string`                          |
+| Default | (none): the daemon's own value    |
+
+The daemon does not inherit your shell's `CLAUDE_CONFIG_DIR`. Each run therefore carries the value from the process that started it: `git push` to the gate, `axi run`, `rerun`, or a rerun from the TUI. The run stores the value, and every agent subprocess of that run (including retries and recovery after a daemon restart) gets it. The value must be an absolute path: a relative one, or a quoted `~/...`, is refused before the run starts. When the variable is unset, the run keeps the daemon's own environment. This is the behavior from before per-run profiles.
+
+`axi status` shows a run's profile as `claude_config_dir`. `axi run` refuses to reattach to an active run bound to a different profile. Abort that run to start one with your profile. With the variable unset, `axi run` reattaches to any active run, as it does without `--model`/`--effort`.
+
 ## `COMPACT_ADVISER_DISABLE`
 
 Kill-switch injected into every pipeline agent subprocess so compact-adviser stays inert during unattended work.
