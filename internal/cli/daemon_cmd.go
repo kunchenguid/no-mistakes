@@ -234,6 +234,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
 				ReviewerProfile:        reviewer,
+				ClaudeConfigDir:        strings.TrimSpace(os.Getenv(runenv.ClaudeConfigDirEnvVar)),
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,

@@ -320,6 +320,10 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 	if err := profile.ValidateRequest(); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
+	claudeConfigDir, err := runenv.CallerClaudeConfigDir()
+	if err != nil {
+		return emitError(cmd, 2, err.Error(), "Export CLAUDE_CONFIG_DIR as an absolute path, for example $HOME/.claude1")
+	}
 	if err := validateAxiWait(wait); err != nil {
 		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
 	}
@@ -425,6 +429,10 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 			}
 			if !active.PiProfile.Matches(profile) {
 				return emitError(cmd, 2, "active run has a different Pi profile; omit --model/--effort to reattach")
+			}
+			if err := conflictingActiveRunClaudeConfigDir(active, claudeConfigDir); err != nil {
+				return emitError(cmd, 2, err.Error(),
+					"Set CLAUDE_CONFIG_DIR to the active run's value to reattach, or abort the active run before starting a new one")
 			}
 			if err := conflictingActiveRunPRBaseBranch(active, baseBranch); err != nil {
 				return emitError(cmd, 2, err.Error(),
@@ -944,6 +952,10 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	if err != nil {
 		return "", err
 	}
+	params.ClaudeConfigDir, err = runenv.CallerClaudeConfigDir()
+	if err != nil {
+		return "", err
+	}
 	if _, err := verificationplan.Resolve(env.p.RunInputsDir(), planID, env.repo.ID, branch, params.CallerHeadSHA); err != nil {
 		return "", err
 	}
@@ -1066,6 +1078,10 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	} else if receipt != nil {
 		return receipt, nil
 	}
+	claudeConfigDir, err := runenv.CallerClaudeConfigDir()
+	if err != nil {
+		return nil, err
+	}
 	var result ipc.StartFreshRunResult
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		CommitIdentity:  identity,
@@ -1074,6 +1090,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
 		ClosingIssueRefs: closesIssues, PRTitle: prText.Title, PRBody: prText.Body,
 		ReviewerProfile: agentcfg.OptionalReviewerProfile(profiles),
+		ClaudeConfigDir: claudeConfigDir,
 	}, &result); err != nil {
 		return nil, fmt.Errorf("start fresh run: %w", err)
 	}
@@ -1183,6 +1200,20 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 
 func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, baseBranch string) *ipc.RerunParams {
 	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, PRBaseBranch: baseBranch}
+}
+
+// conflictingActiveRunClaudeConfigDir refuses a reattach that would leave the
+// caller believing its Claude profile drives a run bound to another one. An
+// unset caller requests no profile and reattaches, as with the Pi profile.
+func conflictingActiveRunClaudeConfigDir(run *ipc.RunInfo, requested string) error {
+	if run == nil || requested == "" || run.ClaudeConfigDir == requested {
+		return nil
+	}
+	bound := run.ClaudeConfigDir
+	if bound == "" {
+		bound = "the daemon's default"
+	}
+	return fmt.Errorf("active run %s uses Claude profile %s, not the caller's CLAUDE_CONFIG_DIR %q", run.ID, bound, requested)
 }
 
 // conflictingActiveRunOmitIntent reports when --no-publish-intent would be

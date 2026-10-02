@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
@@ -156,6 +157,8 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			dir := t.TempDir()
 			p := paths.WithRoot(makeSocketSafeTempDir(t))
 			t.Setenv("NM_HOME", p.Root())
+			const claudeProfile = "/caller/.claude1"
+			t.Setenv(runenv.ClaudeConfigDirEnvVar, claudeProfile)
 			if err := p.EnsureDirs(); err != nil {
 				t.Fatal(err)
 			}
@@ -247,8 +250,8 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			if params["fresh_launch"] != nil {
 				t.Fatal("explicit rerun marked as a fresh launch")
 			}
-			if (!dirty && params["caller_head_sha"] != wantHead) || params["repo_id"] != repo.ID || params["intent"] != "keep the caller's changes" {
-				t.Fatalf("rerun request = %v, want caller head %q and original repo/intent", params, wantHead)
+			if (!dirty && params["caller_head_sha"] != wantHead) || params["repo_id"] != repo.ID || params["intent"] != "keep the caller's changes" || params["claude_config_dir"] != claudeProfile {
+				t.Fatalf("rerun request = %v, want caller head %q, Claude profile %q and original repo/intent", params, wantHead, claudeProfile)
 			}
 			if !strings.Contains(out.String(), "Rerun started") {
 				t.Fatalf("missing rerun confirmation: %s", out.String())
@@ -276,8 +279,8 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
 				params = <-requests
-				if params["caller_head_sha"] != wantHead || params["fresh_launch"] != true {
-					t.Fatalf("AXI omitted fresh-launch identity or known head: %v", params)
+				if params["caller_head_sha"] != wantHead || params["fresh_launch"] != true || params["claude_config_dir"] != claudeProfile {
+					t.Fatalf("AXI omitted fresh-launch identity or known head or Claude profile: %v", params)
 				}
 				t.Logf("AXI no-op push fallback IPC request: %v; run_id=%s", params, runID)
 

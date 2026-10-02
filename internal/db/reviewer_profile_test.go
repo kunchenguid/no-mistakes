@@ -15,7 +15,7 @@ func TestReviewerSelectionImmutableAndReceiptBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	pin := &agentcfg.ReviewerProfile{Agent: types.AgentCodex, Model: "review-model", Effort: agentcfg.EffortHigh}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "nonce", "gen", "digest", "", false, nil, pin)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "nonce", "gen", "digest", "", false, nil, "", pin)
 	if err != nil {
 		t.Fatal(err)
 	}
