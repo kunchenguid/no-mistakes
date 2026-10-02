@@ -218,7 +218,9 @@ func TestPreparePiOutputKeepsTheSchemaContract(t *testing.T) {
 	if !found {
 		t.Fatal("missing schema declaration")
 	}
-	parameters, _, _ := strings.Cut(tail, ";\n")
+	// The embedded template is checked out with CRLF line endings on Windows.
+	line, _, _ := strings.Cut(tail, "\n")
+	parameters := strings.TrimSuffix(strings.TrimRight(line, "\r"), ";")
 	for _, tc := range []struct {
 		output string
 		valid  bool
