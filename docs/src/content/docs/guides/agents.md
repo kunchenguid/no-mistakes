@@ -300,7 +300,12 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns create and resume one Pi session per run via `--session <UUID>` when the configured fixer roles support resume. A non-resumable later-round fixer makes those turns cold; see the [later-round role overrides](/no-mistakes/reference/global-config/#later-round-role-overrides) reference.
 Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config) unless the run has an opt-in [per-run Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles). Native mapping is `--model` and `--thinking`.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
-When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
+When structured output is requested, no-mistakes loads a temporary extension with a terminating `no_mistakes_output` tool whose parameters carry the schema and require provider-side strict JSON-schema generation.
+This uses Pi's [constrained tool sampling](https://github.com/earendil-works/pi/tree/main/packages/ai#constrained-sampling-for-tools) and [terminating structured-output tool](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/structured-output.ts), not the JSON event mode as a model-output constraint.
+Structured invocations require Pi 0.82.0 or later and a provider/model supporting strict JSON-schema tools; an unsupported capability, a missing extension, or an ordinary final text response fails rather than silently falling back to prompt-only JSON.
+The adapter still validates the submitted result, keeping required fields and the existing nullable-optional-field contract unchanged.
+The extension is invocation-scoped, works with `--no-extensions`, and keeps its result-submission tool available even with `--no-tools` or a tool allowlist.
+Invocations without a schema retain the ordinary final-text path.
 
 ## Copilot CLI
 

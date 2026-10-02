@@ -1,0 +1,34 @@
+import { VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const parameters = __NO_MISTAKES_SCHEMA__;
+
+export default function (pi: ExtensionAPI) {
+	// Earlier releases silently ignore constrainedSampling, so a successful
+	// tool call alone would not prove that generation was schema-constrained.
+	const version = /^(\d+)\.(\d+)\.(\d+)$/.exec(VERSION);
+	if (!version || (Number(version[1]) === 0 && Number(version[2]) < 82)) {
+		throw new Error("no-mistakes structured output requires Pi >= 0.82.0");
+	}
+
+	pi.registerTool({
+		name: "no_mistakes_output",
+		label: "Final output",
+		description: "Submit the final result matching the requested schema. Call this as your final and only remaining tool call, instead of writing a final assistant response.",
+		exposure: "model-only",
+		parameters,
+		constrainedSampling: { type: "json_schema", strict: "require" },
+		async execute(_id, output) {
+			return {
+				content: [{ type: "text", text: JSON.stringify(output) }],
+				details: { output },
+				terminate: true,
+			};
+		},
+	});
+
+	pi.on("before_agent_start", () => {
+		// --no-tools and explicit allowlists must still permit submitting the
+		// result; this tool cannot execute external operations or modify files.
+		pi.setActiveTools([...new Set([...pi.getActiveTools(), "no_mistakes_output"])]);
+	});
+}

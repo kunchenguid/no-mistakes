@@ -61,7 +61,15 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		// turn a recovery attempt into an arbitrary session-file selection.
 		return nil, fmt.Errorf("invalid pi session identity")
 	}
+	extension, cleanup, err := preparePiOutput(opts.JSONSchema)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
 	args := a.buildArgs(opts.Session)
+	if extension != "" {
+		args = append(args, "--extension", extension)
+	}
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
@@ -131,6 +139,17 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 
 	text := pp.finalText()
+	if len(opts.JSONSchema) > 0 {
+		text = pp.finalOutputToolText()
+		if text == "" {
+			retErr := fmt.Errorf("pi did not submit a terminating schema-constrained %s result; requires Pi >= 0.82.0 and a provider/model supporting strict JSON-schema tools", piOutputTool)
+			if stderr != "" {
+				retErr = fmt.Errorf("%w: %s", retErr, stderr)
+			}
+			emitAgentExited(opts, "pi", pid, retErr)
+			return failedResult(pp.usage, pp.sessionID), retErr
+		}
+	}
 	res, err := finalizeTextResult("pi", text, opts.JSONSchema, pp.usage)
 	if res != nil {
 		res.Model = pp.model
@@ -253,21 +272,13 @@ func piArgTakesValue(arg string) bool {
 	}
 }
 
-// buildPiPrompt appends a JSON-output contract to the user prompt when a
-// schema is provided. Pi has no equivalent of codex's --output-schema flag,
-// so we inline the schema in the prompt the same way gnhf does.
 func buildPiPrompt(prompt string, schema json.RawMessage) string {
 	if len(schema) == 0 {
 		return prompt
 	}
-	pretty, err := json.MarshalIndent(json.RawMessage(schema), "", "  ")
-	if err != nil {
-		pretty = []byte(schema)
-	}
 	return prompt + "\n\n## no-mistakes final output contract\n\n" +
-		"When the iteration is complete, your final assistant response must be only valid JSON matching this JSON Schema. " +
-		"Do not wrap it in Markdown fences. Do not include prose before or after the JSON object.\n\n" +
-		string(pretty)
+		"When the iteration is complete, submit the result by calling no_mistakes_output as your final and only remaining tool call. " +
+		"Its parameters enforce the requested JSON Schema. Do not write a final assistant JSON or prose response instead."
 }
 
 // piParser tracks the streaming state of one Pi run. It accumulates text
@@ -285,6 +296,7 @@ type piParser struct {
 	usage          TokenUsage
 	seenUsage      map[string]struct{}
 	assistantError string
+	outputTools    map[string]string
 }
 
 func (p *piParser) parse(ctx context.Context, r io.Reader) error {
@@ -336,6 +348,8 @@ func (p *piParser) handleEvent(event map[string]any) {
 		p.recordAssistantUsage(event["message"])
 	case "agent_end":
 		p.rememberAgentEnd(event["messages"])
+	case "tool_execution_end":
+		p.rememberOutputTool(event)
 	}
 }
 
