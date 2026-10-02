@@ -146,7 +146,11 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 			profiles = append(profiles, agentcfg.InheritReviewerProfile(source.ReviewerProfile))
 		}
 		ctx = callerrestrictions.WithLaunchRecord(ctx, source.CallerRestrictions)
-		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, inheritRunPRText(source, db.RunPRText{}), launch, source.TranscriptHomes, profiles...)
+		claudeConfigDir := ""
+		if source.ClaudeConfigDir != nil {
+			claudeConfigDir = *source.ClaudeConfigDir
+		}
+		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, inheritRunPRText(source, db.RunPRText{}), launch, source.TranscriptHomes, claudeConfigDir, profiles...)
 		link = launch.link
 		link.RunID = continuation
 		return continuation, err

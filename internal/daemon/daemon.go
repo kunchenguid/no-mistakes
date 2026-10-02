@@ -1527,7 +1527,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, err
 		}
 		ctx = callerrestrictions.WithLaunchRecord(ctx, p.CallerRestrictions)
-		runID, err := mgr.handleRerun(integration.WithRemote(ctx, p.BaseRemote), p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.PiProfile, p.ReviewerProfile)
+		runID, err := mgr.handleRerun(integration.WithRemote(ctx, p.BaseRemote), p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.ClaudeConfigDir, p.PiProfile, p.ReviewerProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1747,6 +1747,9 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	}
 	if link, err := d.GetRunRetryBySource(r.ID); err == nil && link != nil {
 		info.RetriedBy = link.RunID
+	}
+	if r.ClaudeConfigDir != nil {
+		info.ClaudeConfigDir = *r.ClaudeConfigDir
 	}
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))

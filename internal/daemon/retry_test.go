@@ -301,7 +301,7 @@ func (f *retryFixture) continuationOf(t *testing.T, source *db.Run) *db.Run {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil)
+	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -94,7 +94,7 @@ func TestPRStep_BriefIsSeparateFromStoredIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	intentRecord := &db.RunIntent{Summary: source, Source: db.RunIntentSourceAgent, SessionID: "review-session", Score: 1}
-	run, err := sctx.DB.InsertRunWithIntentAndLaunchNonce(repo.ID, "refs/heads/feature", headSHA, baseSHA, intentRecord, "launch-nonce", "validation-generation", "immutable-intent-digest", "", false, nil)
+	run, err := sctx.DB.InsertRunWithIntentAndLaunchNonce(repo.ID, "refs/heads/feature", headSHA, baseSHA, intentRecord, "launch-nonce", "validation-generation", "immutable-intent-digest", "", false, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
