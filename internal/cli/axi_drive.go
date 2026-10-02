@@ -431,8 +431,12 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 				return emitError(cmd, 2, "active run has a different Pi profile; omit --model/--effort to reattach")
 			}
 			if err := conflictingActiveRunClaudeConfigDir(active, claudeConfigDir); err != nil {
+				reattach := "Set CLAUDE_CONFIG_DIR to the active run's value"
+				if active.ClaudeConfigDir == "" {
+					reattach = "Unset CLAUDE_CONFIG_DIR"
+				}
 				return emitError(cmd, 2, err.Error(),
-					"Set CLAUDE_CONFIG_DIR to the active run's value to reattach, or abort the active run before starting a new one")
+					reattach+" to reattach, or abort the active run before starting a new one")
 			}
 			if err := conflictingActiveRunPRBaseBranch(active, baseBranch); err != nil {
 				return emitError(cmd, 2, err.Error(),
