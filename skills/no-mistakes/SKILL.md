@@ -53,7 +53,7 @@ task along with the command:
      a feature branch**. If the user is on the repository's default branch,
      create a feature branch first - the gate validates committed history on a
      non-default branch, so the work must land there before you run.
-  3. **Then validate**, passing the user's task as your `--intent`. The task
+  3. **Then validate**, passing the user's task as explicit intent. The task
      text is exactly what the user set out to accomplish, in their own words, so
      it *is* the intent - preserve requirements stated directly by the user,
      including constraints, exclusions, acceptance criteria, and later decisions;
@@ -120,14 +120,18 @@ If it shows an active run on another branch, leave that run alone and start vali
 
 ## Intent is required
 
-When you start a run you must pass `--intent`: **what the user set out to
+When you start a new run you must supply explicit intent through exactly one of
+`--intent TEXT`, `--intent-file PATH`, or `--intent -` (stdin until EOF):
+**what the user set out to
 accomplish** - the goal or request behind this work, in their terms. This is not
 a description of the diff or the files you changed; it is the objective the
 change is meant to achieve. You know it from the conversation, so pass it
-directly - no-mistakes uses it verbatim instead of inferring it from local agent
-transcripts (slower and flakier).
+directly - no-mistakes uses the supplied intent instead of inferring it from local
+agent transcripts. Empty or whitespace-only input is rejected, never inferred.
+For input handling, whitespace preservation, and reattachment semantics, see the
+[CLI intent input reference](https://kunchenguid.github.io/no-mistakes/reference/cli/#intent-input).
 
-Err on the side of completeness, not brevity. The review step uses `--intent`
+Err on the side of completeness, not brevity. The review step uses explicit intent
 to tell a deliberate decision apart from a mistake, so a thin one-line summary
 makes it flag things the user already chose. Capture the nuance: the user's
 goal, the specific decisions and tradeoffs they made along the way, any
@@ -210,6 +214,8 @@ Run the pipeline and decide on its findings as they come up:
 
     Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome, subject to the same default `--wait 8m` hold.
 
+    A review gate whose findings are `question-<id>` rows is waiting on answers to its reviewer's questions, not on a verdict: answer each with `no-mistakes axi answer --question <id> --answer "<one of its options>"` instead of approving or fixing. The answer that closes the last open question blocks exactly like `respond` and returns the next `gate:` or outcome; any other answer returns at once.
+
     Extra flags on `respond`:
     - `--wait` bounds the hold (default 8m).
     - `--reason "the operator's explanation"` records an explicitly authorized Test exception with `--step test --action approve`.
@@ -266,6 +272,7 @@ If it reports `next_action.code` is `continue_active_run`, the pipeline still ow
 When `next_action.code` is `recover_custody`, run its exact `next_action.command` rather than reconstructing one. That is `no-mistakes axi sync --recover` to take a still-available preserved pipeline head, or `no-mistakes axi sync --recover --keep-local` in two keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits, or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain `--recover` or `rerun` for a reported keep-local action. `no-mistakes rerun` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
 Ordinary recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
 The ordinary containment proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
+When `next_action.code` is `recover_remote_rewritten`, the configured push target was force-rewritten outside the pipeline after a terminal run: run exact `no-mistakes axi sync --recover`. It re-verifies the live target, anchors the superseded pipeline head under `refs/no-mistakes/recover-rewritten/<run>/<generation>`, and rebinds only the recorded push binding to the verified live head; it never moves your branch, the gate, or the remote. It refuses `--keep-local`, a live head or target that changes during recovery, a head it cannot anchor, and a merged or closed PR. Afterwards follow the ordinary `next_action` it reports.
 When `next_action.code` is `adopt_published`, a custody-returned branch was rebased after its gate lane stopped moving: run `no-mistakes axi sync --adopt-published`. It verifies the configured push target already has the exact rebased local head, preserves the old lane head, and updates only that stale gate lane. If the target differs or changes during verification, it refuses without replacing the lane.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated `--recover` there is a harmless no-op.
 A dirty worktree, or divergence that cannot be proven contained, makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`. The same flag is the recovery when an accessible gate confirms that the verified preserved head is missing and recovery refs are compatible: it returns custody at the current local head without requiring that object.
@@ -353,7 +360,7 @@ no-mistakes axi sync --check  # freshly verify an offered synchronization plan
 no-mistakes axi sync          # apply only an offered guarded synchronization
 no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi sync --adopt-published  # adopt an exactly published rebased head into its stale gate lane
-no-mistakes axi logs --step <name> --full   # full log output of one step
+no-mistakes axi logs --step <name> --full   # one step's recorded findings, complete summary, and full log
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 ```
@@ -380,7 +387,7 @@ help[6]:
   Run `no-mistakes axi respond --action approve` to accept this step and continue
   Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)
   Run `no-mistakes axi respond --action skip` to skip this step
-  Run `no-mistakes axi logs --step review --full` to read the full step log
+  Run `no-mistakes axi logs --step review --full` to read the complete step summary and log
   A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
   Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
 ```

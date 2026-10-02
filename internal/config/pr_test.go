@@ -9,12 +9,12 @@ import (
 func TestPRPublicationPolicyTrustedEvenWithCommandsOptIn(t *testing.T) {
 	t.Parallel()
 	no, yes := false, true
-	pushed := &RepoConfig{PR: PRRaw{BaseBranch: "feature-base", Template: "evil.md", PublishIntent: &yes}}
-	trusted := &RepoConfig{PR: PRRaw{BaseBranch: "trusted-base", Template: ".github/pull_request_template.md", PublishIntent: &no}}
+	pushed := &RepoConfig{PR: PRRaw{BaseBranch: "feature-base", Template: "evil.md", PublishIntent: &yes, Appendix: PRAppendixMinimal}}
+	trusted := &RepoConfig{PR: PRRaw{BaseBranch: "trusted-base", Template: ".github/pull_request_template.md", PublishIntent: &no, Appendix: PRAppendixCollapsed}}
 	for _, allow := range []bool{false, true} {
 		got := EffectiveRepoConfig(pushed, trusted, allow)
 		cfg := Merge(DefaultGlobalConfig(), got)
-		if cfg.PR.Template != trusted.PR.Template || cfg.PR.PublishesIntent() {
+		if cfg.PR.Template != trusted.PR.Template || cfg.PR.PublishesIntent() || cfg.PR.AppendixMode() != PRAppendixCollapsed {
 			t.Fatalf("allow=%v: pushed publication policy won: %+v", allow, cfg.PR)
 		}
 		wantBase := "trusted-base"
@@ -26,17 +26,44 @@ func TestPRPublicationPolicyTrustedEvenWithCommandsOptIn(t *testing.T) {
 		}
 		for _, absent := range []*RepoConfig{nil, {}} {
 			got = EffectiveRepoConfig(pushed, absent, allow)
-			if got.PR.Template != "" || got.PR.PublishIntent != nil {
+			if got.PR.Template != "" || got.PR.PublishIntent != nil || got.PR.Appendix != "" {
 				t.Fatalf("allow=%v: absent trusted policy inherited pushed values: %+v", allow, got.PR)
 			}
 		}
 		got = EffectiveRepoConfig(nil, trusted, allow)
-		if got.PR.Template != trusted.PR.Template || got.PR.PublishIntent == nil || *got.PR.PublishIntent {
+		if got.PR.Template != trusted.PR.Template || got.PR.PublishIntent == nil || *got.PR.PublishIntent || got.PR.Appendix != PRAppendixCollapsed {
 			t.Fatalf("allow=%v: trusted policy lost when pushed copy absent", allow)
 		}
 	}
-	if pushed.PR.Template != "evil.md" || !*pushed.PR.PublishIntent {
+	if pushed.PR.Template != "evil.md" || !*pushed.PR.PublishIntent || pushed.PR.Appendix != PRAppendixMinimal {
 		t.Fatal("trust merge mutated caller input")
+	}
+}
+
+func TestLoadRepo_PRAppendix(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"", PRAppendixFull, PRAppendixCollapsed, PRAppendixMinimal} {
+		raw := "pr: {}\n"
+		if mode != "" {
+			raw = "pr:\n  appendix: " + mode + "\n"
+		}
+		repo, err := LoadRepoFromBytes([]byte(raw))
+		if err != nil {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
+		got := Merge(DefaultGlobalConfig(), repo).PR.AppendixMode()
+		want := mode
+		if want == "" {
+			want = PRAppendixFull
+		}
+		if got != want {
+			t.Fatalf("mode %q resolved to %q", mode, got)
+		}
+	}
+	for _, mode := range []string{"hidden", "FULL", "none", "off"} {
+		if _, err := LoadRepoFromBytes([]byte("pr:\n  appendix: " + mode + "\n")); err == nil {
+			t.Fatalf("pr.appendix %q accepted", mode)
+		}
 	}
 }
 

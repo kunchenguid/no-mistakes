@@ -285,9 +285,12 @@ afterwards does the executor register the gate as waiting. An answer landing in
 between is recorded on disk, but `axi answer` finds no gate to release and says
 so - and the gate then parks on a snapshot that is already stale, with no
 reviewer left to read the answer. So the parked review gate re-checks the
-conversation on a timer (`pipeline.ApprovalGateResumer`, the same cadence as
-[`gate_reconcile_interval`](/no-mistakes/reference/global-config/)) and, once
-nothing is open, resumes the reviewer itself.
+conversation on a timer (`pipeline.ApprovalGateResumer`) and, once nothing is
+open, resumes the reviewer itself. A live park checks immediately as it
+registers, then on the cadence of
+[`gate_reconcile_interval`](/no-mistakes/reference/global-config/); a park
+restored by daemon recovery has no immediate check, so its first re-check is
+one `gate_reconcile_interval` away.
 
 It resumes rather than completing, which is the distinction that interface
 exists for: completing the step here would approve the run's head off the stale
@@ -309,6 +312,23 @@ and, once no question is open, sends one `respond --action answer` to the
 daemon. The executor then resumes the reviewer's own session with the answers as
 its next message. From the reviewer's side an answer arrives as a message it did
 not ask for - a push - and it never learns that time passed.
+
+The caller is pushed to as well. The answer that closes the last open question
+does not return once it is recorded: like `axi respond`, it follows the run to
+its next decision point - the finalize turn's gate (findings, or a new
+question), `checks-passed`, or the outcome - bounded by `--wait`. Returning
+earlier left a driving agent with neither a gate to answer nor an outcome to
+report, while the finalize turn's next park reached nobody. The daemon's answer
+result carries `closed_last` for this, because `resumed` is false for an answer
+that lands before the park registers, even though the gate's resumer releases
+that park moments later. Such a park briefly still lists the answered question,
+so a question park seen right after the answer gets one
+`gate_reconcile_timeout` to leave before it is taken for a new question. That
+grace is sized for the immediate first re-check a live park gets. A park
+restored by a daemon restart has no such check, so an answer racing that
+restart can see the grace expire and get the park it just answered back:
+reattach with `axi run` rather than answering again, which records only an
+orphan answer and releases nothing.
 
 A live `--input-format stream-json` stdin channel to a held-open subprocess was
 considered and rejected: a park lasts tens of minutes to hours, a daemon restart

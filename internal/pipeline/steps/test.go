@@ -33,7 +33,8 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 	ctx := sctx.Ctx
 	startHead := sctx.Run.HeadSHA
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := effectivePRBaseBranch(sctx)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -131,30 +132,48 @@ Previous test findings to address:
 
 	testCmd := sctx.Config.Commands.Test
 	tested := []string{}
+	var baselineResults []checkResult
 	var baselineFindings []Finding
 	var baselineSummary string
 	var baselineExitCode int
-	if testCmd != "" {
+	var attributionSection string
+	if testCmd != "" || len(sctx.Config.CommandOverrides["test"].Additional) > 0 {
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
 			return nil, fmt.Errorf("prepare test dependencies: %w", err)
 		}
-		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
-		output, exitCode, err := runStepShellCommand(sctx, testCmd)
+		declareStepCommandOverrides(sctx, "test")
+		if testCmd != "" {
+			sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
+		}
+		output, results, err := runConfiguredChecks(sctx, "test", testCmd)
 		if err != nil {
 			logConfiguredCommandOutput(sctx, output, types.StepTest)
 			return nil, fmt.Errorf("run test command: %w", err)
 		}
-		tested = append(tested, testCmd)
+		baselineResults = results
+		for _, result := range results {
+			tested = append(tested, result.Command)
+		}
 
 		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
-		if exitCode != 0 {
-			baselineFindings = []Finding{{
-				Severity:    "error",
-				Category:    types.FindingCategoryTestCommand,
-				Description: fmt.Sprintf("configured test command failed with exit code %d", exitCode),
-			}}
+		if failed := failedChecks(results); len(failed) > 0 {
+			for _, result := range failed {
+				baselineFindings = append(baselineFindings, Finding{
+					Severity:    "error",
+					Category:    types.FindingCategoryTestCommand,
+					Description: result.description("test"),
+				})
+			}
 			baselineSummary = projectedOutput
-			baselineExitCode = exitCode
+			baselineExitCode = failed[0].ExitCode
+			if sctx.Config.Test.BaseAttribution && !failed[0].Local {
+				attribution, err := attributeTestFailures(sctx, testCmd, baseSHA, failed[0].Output)
+				if err != nil {
+					return nil, err
+				}
+				attributionSection = attribution.render()
+				baselineSummary = attributionSection + "\n\n" + baselineSummary
+			}
 		}
 	}
 	if repairCut != nil {
@@ -168,11 +187,17 @@ Previous test findings to address:
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create test evidence dir: %w", err)
 	}
-	if testCmd == "" {
+	failedBaseline := failedChecks(baselineResults)
+	for _, result := range failedBaseline {
+		if result.Local {
+			sctx.Log(fmt.Sprintf("machine-local test check failed: %s, asking agent to gather live evidence...", result.Command))
+		} else {
+			sctx.Log("configured test command failed, asking agent to gather live evidence...")
+		}
+	}
+	if len(failedBaseline) == 0 && len(baselineResults) == 0 {
 		sctx.Log("no test command configured, asking agent to run tests...")
-	} else if baselineExitCode != 0 {
-		sctx.Log("configured test command failed, asking agent to gather live evidence...")
-	} else {
+	} else if len(failedBaseline) == 0 {
 		sctx.Log("baseline tests passed, asking agent to gather live evidence...")
 	}
 	reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + planSection + testguidance.Rule
@@ -181,12 +206,23 @@ Previous test findings to address:
 		evidenceGuidance = fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree; they are published to the repository's %s branch automatically and linked from the PR: %s", sctx.Config.Test.Evidence.Branch, evidenceDir)
 	}
 	configuredTestCommand := ""
-	if testCmd != "" {
-		if baselineExitCode == 0 {
-			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
-		} else {
-			configuredTestCommand = fmt.Sprintf("\nConfigured test command failed with exit code %d: `%s`\n", baselineExitCode, testCmd)
+	for _, result := range baselineResults {
+		switch {
+		case result.Local && result.ExitCode == 0:
+			configuredTestCommand += fmt.Sprintf("\nMachine-local test check (the operator's addition, not the repository's command) already ran successfully as baseline: `%s`\n", result.Command)
+		case result.Local:
+			configuredTestCommand += fmt.Sprintf("\nMachine-local test check (the operator's addition, not the repository's command) failed with exit code %d: `%s`\n", result.ExitCode, result.Command)
+		case result.ExitCode == 0:
+			configuredTestCommand += fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", result.Command)
+		default:
+			configuredTestCommand += fmt.Sprintf("\nConfigured test command failed with exit code %d: `%s`\n", result.ExitCode, result.Command)
+			if attributionSection != "" {
+				configuredTestCommand += sanitizePromptMultilineText(attributionSection) + "\n"
+			}
 		}
+	}
+	if declaration := commandOverrideDeclaration("test", sctx.Config.CommandOverrides["test"]); declaration != "" && len(baselineResults) > 0 {
+		configuredTestCommand += fmt.Sprintf("Baseline ran with %s. Declare these overrides in testing_summary.\n", declaration)
 	}
 	trustedRunbook := trustedTestInstructionsSection(sctx) + budgetCutGuidanceSection(sctx)
 	fallbackGuidance := `- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible.

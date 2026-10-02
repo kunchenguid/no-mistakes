@@ -36,8 +36,10 @@ For Azure DevOps, authenticate the `az` CLI with either `az devops login` or `AZ
 - **Global config** is for your machine-level defaults.
 - **Repo config** is for codebase-specific behavior that should travel with the repo.
 
-For machine-local commit or PR-title conventions scoped to one remote, use global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) instead of adding that configuration to the repository.
-The global reference owns remote matching and precedence.
+For machine-local checks, command scheduling priority, or commit and PR-title conventions scoped to one remote, use global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) instead of adding that configuration to the repository.
+The global reference owns remote matching, syntax, and precedence.
+Local command settings supplement the committed commands and never replace them; [Machine-local commands](/no-mistakes/reference/global-config/#machine-local-commands) owns their fields and how applied overrides are declared and recorded.
+Toolchain paths and parallelism settings come from your own environment, which the daemon captures at startup and passes unchanged to configured commands, rather than from per-command settings; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns where to set them.
 
 In practice, most teams should keep personal preferences global and repo policy
 local.
@@ -60,7 +62,9 @@ The rest of this page covers only the cross-cutting rules that involve both file
 - Repo config overrides global config field by field: repo `agent` replaces the global `agent` (including a full ordered fallback list), while `auto_fix`, `ci`, `commit`, `intent`, and the repository-scoped `test.evidence` fields overlay individual fields and fall through to the global default for anything unset (`intent.disabled_readers` adds to the globally disabled readers instead of replacing them). For commit and PR-title format precedence, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides). Local evidence location and retention are machine-wide and remain global-only; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) owns the exact boundary.
 - Repo `providers` fields override the matching global fields. The [Global Config Reference](/no-mistakes/reference/global-config/#providersgithubdraft_pull_requests) and [Repo Config Reference](/no-mistakes/reference/repo-config/#providersgithubdraft_pull_requests) own the supported providers, defaults, and behavior.
 - `agent_path_override`, `agent_config`, `agent_args_override`, `review_agents`, `acpx_path`, `acp_registry_overrides`, `ci_timeout`, `daemon_connect_timeout`, `branch_sync_remote_timeout`, `gate_reconcile_interval`, `gate_reconcile_timeout`, `step_quiet_warning`, `agent_timeout`, `review_agent_timeout`, `test_agent_timeout`, `log_level`, and `session_reuse` are global-only fields.
-- The [Repo Config Reference](/no-mistakes/reference/repo-config/) security note owns the repository-only fields and their trust rules. In particular, `commands` and `agent` are read from the trusted default branch unless trusted `allow_repo_commands: true` permits their pushed-branch values; that opt-in does not apply to every gate-control field.
+- The [Repo Config Reference](/no-mistakes/reference/repo-config/) security note owns the repository-only fields and their trust rules.
+  Repository `commands` and `agent` are read from the trusted default branch unless trusted `allow_repo_commands: true` permits their pushed-branch values; that opt-in does not apply to every gate-control field.
+  Matching machine-local `repository_overrides.commands` supplements those commands without replacing them, and cannot be supplied by the pushed branch.
 - no-mistakes reloads global config while setting up each run, so edits made before starting a run apply to it. [Per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) are the exception for model and effort. For repeatable profiles (for example fast versus deep Codex settings), use separately initialized `NM_HOME` roots; `NM_HOME` moves all no-mistakes state, not just config.
 
 ## House rules for part of the tree
@@ -71,7 +75,8 @@ These blocks steer a gate agent, so they are read from your default branch rathe
 
 ## Explicit commands versus agent detection
 
-Explicit `commands.test` and `commands.lint` give you deterministic local baseline behavior. Test always follows its optional command with agent-driven end-user scenarios; empty `commands.lint` folds lint into the document step's combined housekeeping pass.
+Explicit `commands.test` and `commands.lint` give you deterministic local baseline behavior.
+Test always follows its optional command and any machine-local additional checks with agent-driven end-user scenarios; empty `commands.lint` folds lint into the document step's combined housekeeping pass, even with additional local lint checks.
 When a clean run worktree needs ignored dependencies, configure `commands.prepare` once instead of repeating installation. Its [repository reference](/no-mistakes/reference/repo-config/#commandsprepare) owns sharing across configured commands and the trusted agent-only Test opt-in.
 An empty `commands.format` runs no separate formatter, so configure it explicitly when the push step must format agent changes.
 Test evidence is collected locally; GitHub.com/GHEC PRs also upload supported screenshots and recordings unless that is turned off. The [Test step reference](/no-mistakes/reference/pipeline-steps/#test) owns the live-validation behavior, and the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) owns evidence location, cleanup, GitHub attachments, orphan-branch publication, and fail-closed behavior.

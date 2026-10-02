@@ -542,6 +542,60 @@ func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 	return nil
 }
 
+// PushRebind is the exact verified state a rewritten-remote recovery may
+// rebind from and the live head it rebinds to. UpstreamURL and ForkURL are the
+// repo target the live head was verified against.
+type PushRebind struct {
+	Status             types.RunStatus
+	ExpectedPushed     string
+	ExpectedGeneration int64
+	ExpectedHead       string
+	PRState            *string
+	CustodyReturned    bool
+	UpstreamURL        string
+	ForkURL            string
+	TargetKind         string
+	TargetFingerprint  string
+	Ref                string
+	Head               string
+}
+
+// RebindRunPushedHead moves a terminal run's push binding to a head the
+// configured target was verified to hold after a rewrite outside the pipeline.
+// It is a single compare-and-swap over the exact binding and repo target the
+// caller verified (run status, pushed head, generation, recorded run head and
+// custody state, target kind,
+// fingerprint, ref, no active push, no retired PR, no other non-terminal run
+// on the same repo branch, and the repo's current upstream and fork URLs) and
+// reports whether it applied. head_sha follows only
+// when it equalled the old binding, so a custody-returned run keeps its own
+// recorded head.
+func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
+	result, err := d.sql.Exec(
+		`UPDATE runs SET head_sha = CASE WHEN head_sha = last_pushed_sha THEN ? ELSE head_sha END, last_pushed_sha = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ?
+		WHERE id = ? AND status = ? AND last_pushed_sha = ? AND COALESCE(push_generation, 0) = ?
+			AND head_sha = ? AND (custody_returned_at IS NOT NULL) = ?
+			AND push_target_kind = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0
+			AND pr_state IS ? AND COALESCE(pr_state, '') NOT IN ('merged', 'closed')
+			AND NOT EXISTS (SELECT 1 FROM runs other WHERE other.repo_id = runs.repo_id AND other.branch = runs.branch AND other.id <> runs.id
+				AND other.status NOT IN (?, ?, ?, ?))
+			AND EXISTS (SELECT 1 FROM repos WHERE repos.id = runs.repo_id AND repos.upstream_url = ? AND COALESCE(repos.fork_url, '') = ?)`,
+		rebind.Head, rebind.Head, now(), id, string(rebind.Status), rebind.ExpectedPushed, rebind.ExpectedGeneration,
+		rebind.ExpectedHead, rebind.CustodyReturned,
+		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref, rebind.PRState,
+		string(types.RunCompleted), string(types.RunFailed), string(types.RunCancelled), string(types.RunCIMonitorInterrupted),
+		rebind.UpstreamURL, rebind.ForkURL,
+	)
+	if err != nil {
+		return false, fmt.Errorf("rebind run pushed head: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rebind run pushed head: %w", err)
+	}
+	return affected == 1, nil
+}
+
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
 // returned custody of this run's branch to the operator worktree. Stamping is
 // idempotent: the first timestamp wins so the record keeps the original

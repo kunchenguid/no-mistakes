@@ -187,8 +187,8 @@ type GlobalConfig struct {
 	// session_reuse: false to force every invocation cold.
 	SessionReuse  bool          `yaml:"-"`
 	ForgeProfiles ForgeProfiles `yaml:"forge_profiles"`
-	// RepositoryOverrides scopes machine-local commit and PR-title formats to
-	// canonicalized remote host/owner/repository identities.
+	// RepositoryOverrides scopes machine-local settings to canonicalized
+	// remote host/owner/repository identities.
 	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
 	AutoFix             AutoFixRaw
 	// CI is the operator's own CI-step floor. It is the only place the rerun
@@ -269,8 +269,9 @@ type ForgeProfiles map[string]ForgeProfile
 
 // RepositoryOverride contains machine-local settings for one normalized remote.
 type RepositoryOverride struct {
-	Commit GlobalCommitRaw `yaml:"commit"`
-	PR     RepositoryPRRaw `yaml:"pr"`
+	Commit   GlobalCommitRaw            `yaml:"commit"`
+	PR       RepositoryPRRaw            `yaml:"pr"`
+	Commands map[string]CommandOverride `yaml:"commands"`
 }
 
 // RepositoryPRRaw contains machine-local per-repository PR title settings.
@@ -299,11 +300,11 @@ type RepoConfig struct {
 	// the pushed branch controls nothing that executes.
 	AllowRepoCommands bool `yaml:"allow_repo_commands"`
 	// PR carries pull-request settings. BaseBranch controls where a PR lands,
-	// Template and PublishIntent control trusted publication policy, and
-	// TitleFormat controls repository title convention. EffectiveRepoConfig keeps
-	// BaseBranch trusted-only unless the repository opts into pushed settings,
-	// leaves TitleFormat on the pushed branch, and keeps Template and
-	// PublishIntent trusted-only.
+	// Template, PublishIntent, and Appendix control trusted publication policy,
+	// and TitleFormat controls repository title convention. EffectiveRepoConfig
+	// keeps BaseBranch trusted-only unless the repository opts into pushed
+	// settings, leaves TitleFormat on the pushed branch, and keeps Template,
+	// PublishIntent, and Appendix trusted-only.
 	AutoFix AutoFixRaw `yaml:"auto_fix"`
 	CI      CIRaw      `yaml:"ci"`
 	// Rebase is gate-control: EffectiveRepoConfig keeps it trusted-only so a
@@ -407,10 +408,12 @@ type PRRaw struct {
 	// repository explicitly opts into pushed-branch settings with
 	// allow_repo_commands.
 	BaseBranch string `yaml:"base_branch"`
-	// Template and PublishIntent are repository-only publication policy. Both
-	// remain trusted-only even when allow_repo_commands is enabled.
+	// Template, PublishIntent, and Appendix are repository-only publication
+	// policy. All three remain trusted-only even when allow_repo_commands is
+	// enabled. Appendix empty means full.
 	Template      string `yaml:"template"`
 	PublishIntent *bool  `yaml:"publish_intent"`
+	Appendix      string `yaml:"appendix"`
 	// TitleFormat controls PR title rendering when set. It is a non-executing
 	// repository convention and is therefore read from the pushed branch.
 	TitleFormat *string `yaml:"title_format"`
@@ -707,6 +710,7 @@ type Config struct {
 	SessionReuse          bool
 	Eval                  Eval
 	Commands              Commands
+	CommandOverrides      map[string]CommandOverride
 	// Gates are the repository's extra checks, already trusted-only by the
 	// time they reach here (EffectiveRepoConfig sourced them from the trusted
 	// default-branch copy).
@@ -812,7 +816,9 @@ type PR struct {
 	Template   string
 	// Nil preserves the historical default: publish the extracted intent.
 	PublishIntent *bool
-	TitleFormat   string
+	// Appendix is full, collapsed, or minimal. Empty preserves full.
+	Appendix    string
+	TitleFormat string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -842,6 +848,13 @@ type TestRaw struct {
 	// repair turns. Repository-only and trusted-only regardless of
 	// allow_repo_commands; a pushed branch cannot authorize this trigger.
 	Prepare bool `yaml:"prepare"`
+	// BaseAttribution re-runs a failing commands.test on the run's base commit
+	// and reports which failures the change introduced and which already
+	// fail without it. Repository-only and trusted-only regardless of
+	// allow_repo_commands: it spends a second suite run and executes
+	// commands.prepare and commands.test on another checkout, so a pushed
+	// branch cannot authorize it.
+	BaseAttribution bool `yaml:"base_attribution"`
 	// Instructions is the repository's live-validation runbook: how to stand
 	// the product up in an isolated environment so the test step can drive
 	// end-user scenarios against the real thing. It is injected into the test
@@ -894,11 +907,12 @@ type EvidenceRaw struct {
 	MaxRuns   *int    `yaml:"max_runs"`
 }
 
-// Test is the resolved test-step config. Prepare, Instructions and
-// AllowApproveOverFailure come from the trusted default-branch repo config
-// only (see TestRaw).
+// Test is the resolved test-step config. Prepare, BaseAttribution,
+// Instructions and AllowApproveOverFailure come from the trusted
+// default-branch repo config only (see TestRaw).
 type Test struct {
 	Prepare                 bool
+	BaseAttribution         bool
 	Evidence                Evidence
 	Instructions            string
 	AllowApproveOverFailure string
@@ -2490,6 +2504,9 @@ func validatePRRaw(pr PRRaw) error {
 			return err
 		}
 	}
+	if err := validatePRAppendix(pr.Appendix); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2571,7 +2588,8 @@ func validatePathInstructionGlob(pattern string) error {
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
 // budget) is trusted-only because every rerun it authorizes is another
 // provider-side workflow run billed to the repository. These gate-control
-// fields ignore allowRepoCommands, as do pr.template and pr.publish_intent.
+// fields ignore allowRepoCommands, as do pr.template, pr.publish_intent, and
+// pr.appendix.
 // PR.BaseBranch is the explicit exception: the
 // allowRepoCommands opt-in also permits a pushed PR target because it controls
 // where a maintainer-authorized PR lands, not code execution.
@@ -2590,10 +2608,11 @@ func validatePathInstructionGlob(pattern string) error {
 // since they cannot run arbitrary shell, select a process, or spend the
 // maintainer's CI minutes.
 // The exceptions inside test are prepare, which eagerly runs setup before an
-// agent-only Test, evidence.branch, which names a git ref the daemon pushes to,
-// instructions, which steers the gate that validates the pushed branch, and
-// allow_approve_over_failure, which waives the required check for an
-// approved-over-failure commands.test. All four are trusted-only.
+// agent-only Test, base_attribution, which re-runs a failing commands.test on
+// the base commit, evidence.branch, which names a git ref the daemon pushes
+// to, instructions, which steers the gate that validates the pushed branch,
+// and allow_approve_over_failure, which waives the required check for an
+// approved-over-failure commands.test. All five are trusted-only.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -2665,6 +2684,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// The eager setup trigger is trusted-only even when executable command
 		// values may come from the pushed branch.
 		effective.Test.Prepare = trusted.Test.Prepare
+		// Base attribution spends a second suite run and executes commands on
+		// another checkout, so it is trusted-only like the prepare trigger.
+		effective.Test.BaseAttribution = trusted.Test.BaseAttribution
 		// test.allow_approve_over_failure opts the required check into
 		// accepting a Test step approved over a failing commands.test. It is
 		// trusted-only for the same reason no_ci is: a pushed branch must not
@@ -2674,13 +2696,15 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// trusted-only unless the repository explicitly opts into pushed
 		// settings alongside commands and agent selection. TitleFormat is a
 		// non-executing convention and remains sourced from the pushed copy.
-		// pr.template and pr.publish_intent control public narrative policy, so
-		// they remain trusted-only regardless of the commands opt-in.
+		// pr.template, pr.publish_intent, and pr.appendix control public
+		// narrative policy, so they remain trusted-only regardless of the
+		// commands opt-in.
 		if !allowRepoCommands {
 			effective.PR.BaseBranch = trusted.PR.BaseBranch
 		}
 		effective.PR.Template = trusted.PR.Template
 		effective.PR.PublishIntent = trusted.PR.PublishIntent
+		effective.PR.Appendix = trusted.PR.Appendix
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.ProtectedPaths = nil
@@ -2693,12 +2717,14 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Test.Evidence.Branch = nil
 		effective.Test.Instructions = ""
 		effective.Test.Prepare = false
+		effective.Test.BaseAttribution = false
 		effective.Test.AllowApproveOverFailure = ""
 		if !allowRepoCommands {
 			effective.PR.BaseBranch = ""
 		}
 		effective.PR.Template = ""
 		effective.PR.PublishIntent = nil
+		effective.PR.Appendix = ""
 	}
 	if allowRepoCommands {
 		return &effective
@@ -3060,8 +3086,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	return merge(global, repo, nil)
 }
 
-// MergeForRemote combines global and per-repo config, applying a matching
-// machine-local repository override between the global defaults and repo config.
+// MergeForRemote combines global and per-repo config. Matching machine-local
+// formats sit between global defaults and repo formats; command execution
+// settings supplement the repository commands without replacing them.
 func MergeForRemote(global *GlobalConfig, repo *RepoConfig, remote string) *Config {
 	var override *RepositoryOverride
 	if global != nil {
@@ -3110,6 +3137,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	// to describe. repo here is the EffectiveRepoConfig result, so this value
 	// is already trusted-only.
 	test.Prepare = repo.Test.Prepare
+	test.BaseAttribution = repo.Test.BaseAttribution
 	test.Instructions = strings.TrimSpace(repo.Test.Instructions)
 	test.AllowApproveOverFailure = strings.TrimSpace(repo.Test.AllowApproveOverFailure)
 
@@ -3151,6 +3179,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		BaseBranch:    strings.TrimSpace(repo.PR.BaseBranch),
 		Template:      repo.PR.Template,
 		PublishIntent: repo.PR.PublishIntent,
+		Appendix:      repo.PR.Appendix,
 	}
 	if override != nil && override.PR.TitleFormat != nil {
 		pr.TitleFormat = *override.PR.TitleFormat
@@ -3207,6 +3236,10 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
 		NoCI:                   repo.NoCI,
+	}
+
+	if override != nil {
+		cfg.CommandOverrides = copyCommandOverrides(override.Commands)
 	}
 
 	if repo.Agent != "" {

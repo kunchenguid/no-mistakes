@@ -425,6 +425,10 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
 	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx, provider)
+	if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" &&
+		((bodyLimit > 0 && scm.PRBodyLen(marker) > bodyLimit) || len(marker) > maxPullRequestBodyBytes) {
+		return prContent{}, fmt.Errorf("pipeline attestation exceeds PR body limit")
+	}
 
 	titleRules := prTitlePromptRules(sctx)
 	scopeRules := prTitleScopeRules(sctx)
@@ -461,7 +465,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		fallback, fallbackErr := fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit)
+		fallback, fallbackErr := fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 		return fallback, fallbackErr
 	}
 
@@ -483,16 +487,16 @@ Final diff paths and statuses:
 					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
 				if bodyLimit > 0 {
-					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
+					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 				} else {
-					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
+					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx, provider)
 				}
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit)
+	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 }
 
 func (s *PRStep) draftConfiguredPRTitle(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string) (string, error) {
@@ -650,7 +654,7 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 // log dumps while keeping its Intent, What Changed, Risk, and Pipeline
 // narrative intact. prependIntentSectionWithinLimit is the final backstop
 // when even that core overruns.
-func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
+func assemblePRBodyFull(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
 	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD)
 	full := prependIntentSection(sections, sctx)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
@@ -717,9 +721,9 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
 }
 
-func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
+func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, maxBytes int) string {
 	body = stripGeneratedSections(body)
-	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+	sections := appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxBytes)
 	// Neutralized for the same reason as in prependIntentSection: intent is
 	// agent-extracted text placed ahead of the pipeline section.
 	cleaned := neutralizeAttestationMarkers(publicPRIntent(sctx))
@@ -729,17 +733,17 @@ func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.St
 
 	intent := "## Intent\n\n" + cleaned
 	separator := "\n\n"
-	if len(intent)+len(separator)+len(sections) <= maxPullRequestBodyBytes {
+	if len(intent)+len(separator)+len(sections) <= maxBytes {
 		return intent + separator + sections
 	}
-	sectionsBudget := maxPullRequestBodyBytes - len(separator) - len(intent)
+	sectionsBudget := maxBytes - len(separator) - len(intent)
 	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD))
 	if sectionsBudget > 0 && (minimumSectionsBytes == 0 || sectionsBudget >= minimumSectionsBytes) {
 		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget)
 		return intent + separator + sections
 	}
 
-	intentBudget := maxPullRequestBodyBytes - len(separator) - len(sections)
+	intentBudget := maxBytes - len(separator) - len(sections)
 	if intentBudget <= 0 {
 		return sections
 	}
@@ -1491,7 +1495,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) (prContent, error) {
+func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	title, err := renderPRTitle(sctx, "update pull request")
 	if err != nil {
 		return prContent{}, err
@@ -1503,9 +1507,9 @@ func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingM
 	}
 	body = neutralizeAttestationMarkers(body)
 	if bodyLimit > 0 {
-		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit)
+		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 	} else {
-		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
+		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx, provider)
 	}
 	return prContent{
 		Title: title,

@@ -665,7 +665,7 @@ Raise this if your environment's Git credential helper (for example `gh auth git
 
 ### gate_reconcile_interval
 
-How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and clears the gate when the PR was merged or closed.
+How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and clears the gate when the PR was merged or closed, and to a [review gate parked on its reviewer's own questions](/no-mistakes/concepts/review-conversation/), which resumes the reviewer once none are open.
 
 |         |                        |
 | ------- | ---------------------- |
@@ -889,7 +889,7 @@ A `commit.branch_pattern` in `.no-mistakes.yaml` takes precedence and clears any
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine apply ticket conventions to a single repository without adding settings to that repository.
+This lets one machine add checks, lower command scheduling priority, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -909,11 +909,63 @@ repository_overrides:
       title_format: '{{.Branch}}: {{.Title}}'
 ```
 
-Supported fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
+Formatting fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
 A `commit.branch_replacement` must be paired with `commit.branch_pattern` in the same override.
 Precedence is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
 As with the global replacement, a repository `commit.branch_pattern` replaces the matching machine-local pattern and clears its replacement.
 Repositories matching no block keep existing global and built-in behavior.
+
+#### Machine-local commands
+
+A matching `commands` block supplements the repository's trusted commands; it never changes their strings or removes them.
+Repository command selection still comes from the trusted default branch, or the pushed branch only with trusted `allow_repo_commands: true`.
+Only the operator's global config can supply these local settings, never a repository's `.no-mistakes.yaml`.
+With no matching command override, execution remains unchanged.
+
+```yaml
+repository_overrides:
+  https://github.com/acme/widget.git:
+    commands:
+      test:
+        additional:
+          - /opt/local-checks/widget-smoke
+        nice: 10
+      lint:
+        additional:
+          - /opt/local-checks/widget-policy
+      prepare:
+        nice: 10
+```
+
+| Field | Supported commands | Meaning |
+| --- | --- | --- |
+| `additional` | `test`, `lint` | Ordered list of separate shell checks added after the repository check; every check must succeed |
+| `nice` | `prepare`, `test`, `lint`, `format` | POSIX niceness adjustment from `0` to `19`; `0` leaves scheduling unchanged |
+
+Test runs the committed command first, then each added command in a separate shell, retaining a failure from either source even when another check succeeds.
+Test still performs its unconditional agent-driven end-user scenarios afterwards.
+Lint runs additional checks after the existing lint duty, including agent-driven lint when `commands.lint` is empty.
+An added check's failure parks the step rather than silently passing; existing explicit approval rules still apply.
+Its finding names that machine-local check and its exit code, and never attributes the failure to the committed command, including when the committed command is empty.
+`additional` is refused for preparation and formatting, because those commands are not independent check gates.
+Replacement command strings, `command`, `replace`, `skip`, per-command `env`, unknown command names, empty additional checks, and niceness outside `0` through `19` are configuration errors.
+
+Overrides are always declared, never silent: whenever a command runs under any of these settings, its step log states `machine-local overrides applied to commands.<name>:` followed by the niceness and the added checks, once per step rather than per check, and Test passes the same declaration to its agent for the testing summary.
+These settings are scoped to configured shell commands and their local checks, not agents, built-in Git operations, forge commands, or repository-declared extra gates.
+
+There is no per-command environment override.
+Toolchain paths (such as `PATH`) and parallelism settings (such as `GOMAXPROCS`) come from the operator's own environment, which the daemon captures at startup and passes to every configured command; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns where to set them.
+
+`nice: 10` invokes the POSIX `nice -n 10` utility around the command shell, adding ten to its inherited niceness, not setting an absolute priority.
+Positive niceness is refused on Windows; set resource limits in the operator's own environment there.
+A missing `nice` utility fails the command rather than silently ignoring the request.
+
+Before executing an opted-in run, no-mistakes records the full resolved configuration in `<NM_HOME>/logs/<run-id>/command-config.ndjson`, including the unchanged team command strings, added checks, niceness, trusted-config SHA, and tool build.
+It also records the values configured commands inherit from the daemon's environment for `PATH`, `GOMAXPROCS`, `MAKEFLAGS`, `CARGO_BUILD_JOBS`, and `CMAKE_BUILD_PARALLEL_LEVEL`, omitting any that are unset; these values appear only in this file, never in step logs, agent prompts, findings, or the PR.
+This record is independent of optional eval capture.
+Recovery appends a new snapshot of the configuration it resolves, including removal of a previously active local override.
+A snapshot write failure stops execution before checks run.
+The file is private local evidence, restricted to owner-only permissions on POSIX on every write (including a file left from an earlier snapshot) and excluded from PR and test-evidence publication.
 
 ### intent
 

@@ -360,7 +360,15 @@ type AnswerReviewQuestionResult struct {
 	Open    int      `json:"open"`
 	OpenIDs []string `json:"open_ids,omitempty"`
 	Resumed bool     `json:"resumed"`
-	Note    string   `json:"note,omitempty"`
+	// ClosedLast is true when this answer closed the last question that was
+	// open before it, whether or not a parked gate was there to release yet.
+	// It tells the caller the run is moving again because of this answer, so
+	// the caller follows it to the next decision point exactly as
+	// `axi respond` does. Resumed alone cannot say that: an answer that lands
+	// before the park registers resumes nothing itself, and the gate's own
+	// resumer releases that park when it registers.
+	ClosedLast bool   `json:"closed_last,omitempty"`
+	Note       string `json:"note,omitempty"`
 }
 
 // CancelRunResult confirms the run cancellation request was accepted.

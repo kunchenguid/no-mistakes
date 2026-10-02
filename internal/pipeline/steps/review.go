@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -28,7 +29,8 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := effectivePRBaseBranch(sctx)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +142,7 @@ Context:
 - base commit: %s
 - target commit: %s
 - review scope: %s
-- default branch: %s
+- base branch: %s
 - ignore patterns: %s
 
 Rules:
@@ -164,7 +166,7 @@ Previous review findings to address:
 			baseSHA,
 			sctx.Run.HeadSHA,
 			reviewScope,
-			sctx.Repo.DefaultBranch,
+			baseBranch,
 			ignorePatterns,
 			historySection,
 			previousFindings,
@@ -319,7 +321,7 @@ Context:
 - base commit: %s
 - target commit: %s
 - review scope: %s
-- default branch: %s
+- base branch: %s
 - ignore patterns: %s
 
 Task:
@@ -341,7 +343,7 @@ Task:
 - Treat security issues, performance regressions, breaking changes, insufficient error handling, and a computation that returns a wrong value, label, or set without failing as risks.
 - Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.
 - Report reviewed_paths as the exact set of changed files you actually read and judged in this pass. It is a coverage record, not a summary: list a changed file only if your findings verdict for it is current, and never list a file you did not examine. A file you omit is treated as unreviewed by the pipeline, never as clean.
-
+%s
 Rules:
 - Anchor every finding to a specific file and one-indexed line number in the changed code when possible.
 - When you report a defect, enumerate in that same finding every other place in the changed code where the same invariant is violated or must hold (another axis, direction, or representation; a sibling call path, command, action, or state transition; another consumer of the same input, field, or record), each as file:line with a few words. Report the class once, anchored at the primary site, instead of one site now and its siblings after the next fix. When the defect is incomplete validation of an input, response, or record, list every consumed field that is still unvalidated in that one finding.
@@ -377,8 +379,9 @@ Risk assessment (after listing all findings):
 		baseSHA,
 		sctx.Run.HeadSHA,
 		reviewScope,
-		sctx.Repo.DefaultBranch,
+		baseBranch,
 		ignorePatterns,
+		reviewCoverageSection(reviewable),
 		historySection,
 		pathInstructions,
 		agent.MemoryFilesRule,
@@ -455,6 +458,7 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	}
 	var findings Findings
+	var validationErrors []error
 	for attempt := 1; ; attempt++ {
 		result, err := s.runReviewAgent(sctx, "agent review", sessionRole, opts)
 		if err == nil {
@@ -465,7 +469,11 @@ Risk assessment (after listing all findings):
 		} else if !agent.IsStructuredOutputRejected(err) || sctx.Ctx.Err() != nil || errors.Is(err, errReviewAgentTimeout) {
 			return nil, err
 		}
+		validationErrors = append(validationErrors, err)
 		if attempt == reviewAnalyzerMaxAttempts {
+			if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
+				return nil, fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err)
+			}
 			return nil, fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err)
 		}
 		sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, reviewAnalyzerMaxAttempts))
@@ -492,19 +500,8 @@ Risk assessment (after listing all findings):
 	// must not have a fresh review inherit questions an earlier run asked.
 	// Delivering an answer to a finalize turn is the read-side case and is
 	// handled above; this is the ask-side one.
-	conv, err := loadReviewConversation(sctx, askDir)
-	if err != nil {
+	if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
 		return nil, err
-	}
-	recordAnsweredQuestions(sctx, conv)
-	questionFindings := openReviewQuestionFindings(conv)
-	if len(questionFindings) > 0 {
-		if conv.QuestionsIncomplete {
-			sctx.Log("review parked: the reviewer's question history could not be read in full, so answers are refused and this gate needs a human decision")
-		} else {
-			sctx.Log(fmt.Sprintf("review is waiting on answers to %d question(s)", len(conv.Open())))
-		}
-		findings.Items = append(findings.Items, questionFindings...)
 	}
 	needsApproval := hasBlockingFindings(findings.Items)
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
@@ -513,10 +510,27 @@ Risk assessment (after listing all findings):
 		// reviewed_paths is not a legacy pass: the field is optional in the
 		// schema only so an older payload still parses, and an absent list is
 		// the same missing evidence as an empty or partial one (VISION.md R4:
-		// every review pass covers the complete change). The head parks for
-		// approval instead, and the log names what was left unverified.
-		sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
-		needsApproval = true
+		// every review pass covers the complete change).
+		//
+		// Before parking, one focused completion turn reviews exactly the
+		// uncovered files and merges its record into this round's. Self-reported
+		// coverage is lossy in exactly this way on real multi-file diffs (a
+		// 15-file branch saw three consecutive zero-finding rounds each omit a
+		// different file), and the only non-waiver path used to be a full
+		// re-review that re-rolled the same dice after a fixer round with
+		// nothing to fix. The completion turn keeps the operator out of that
+		// loop; whatever is still uncovered after it parks with the explicit
+		// remainder named, so a partial or fabricated record never approves.
+		completed, err := s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
+		if err != nil {
+			return nil, err
+		}
+		findings = completed
+		needsApproval = hasBlockingFindings(findings.Items)
+		if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
+			sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
+			needsApproval = true
+		}
 	}
 	findingsJSON, _ := json.Marshal(findings)
 
@@ -534,6 +548,214 @@ Risk assessment (after listing all findings):
 // reviewAnalyzerMaxAttempts bounds the review turns one Execute spends on
 // output that fails validation, including the first.
 const reviewAnalyzerMaxAttempts = 3
+
+// coveragePathLine renders one branch-controlled path as a single prompt line.
+// A git path may itself contain an embedded newline (changedPathList preserves
+// raw paths from the NUL-delimited diff), so printing one verbatim into a
+// bullet would let branch-controlled text escape the list and read as a
+// separate review instruction. Every line break and control character becomes
+// a visible backslash escape while ordinary bytes are kept, so the reviewer
+// still sees the exact path it must report in reviewed_paths but can never see
+// a second line the branch authored. A path that really contains one of those
+// characters therefore fails the coverage check loudly instead of silently
+// becoming prompt structure.
+func coveragePathLine(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case unicode.IsControl(r) || r == '\u2028' || r == '\u2029':
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// reviewCoverageSection enumerates the trusted reviewable changed-file set in
+// the review prompt. The coverage gate holds the round to exactly this set,
+// but the prompt used to leave its enumeration to the reviewer, which had to
+// reconstruct it from its own diff reading and then retype it into
+// reviewed_paths - a lossy round trip that dropped a different handful of
+// files on each of three consecutive real rounds. Handing the reviewer the
+// canonical list turns the coverage record into a checklist it can verify
+// itself before returning; the honest-reporting rules are unchanged, so a
+// file the reviewer did not examine still must not be listed.
+func reviewCoverageSection(paths []string) string {
+	var b strings.Builder
+	b.WriteString("\nChanged files this review is held to (computed by the pipeline from the branch diff, minus ignored paths):\n")
+	for _, p := range paths {
+		fmt.Fprintf(&b, "- %s\n", coveragePathLine(p))
+	}
+	b.WriteString("- A complete review pass examines every listed file and reports each one it actually read and judged in reviewed_paths.\n")
+	b.WriteString("- The pipeline treats any listed file missing from reviewed_paths as unreviewed and parks the head for approval; it never treats an omission as clean.\n")
+	return b.String()
+}
+
+// reviewCoverageCompletionSection is the focused coverage pass's only extra
+// prompt input. It rides the FULL review prompt (the same context the first
+// turn saw, plus any finalize-turn answers), so a cold or resumed completion
+// turn can act on it without any other memory of the pass.
+func reviewCoverageCompletionSection(missing []string) string {
+	var b strings.Builder
+	b.WriteString("\n\nFocused coverage completion:\n")
+	b.WriteString("- The review pass you just completed returned no blocking findings, but its reviewed_paths did not cover every changed file this review is held to. The files still unverified are:\n")
+	for _, p := range missing {
+		fmt.Fprintf(&b, "  - %s\n", coveragePathLine(p))
+	}
+	b.WriteString("- Review ONLY the files listed above in this turn: read each one's change in the branch diff, trace it, and judge it under the same rules as the rest of this review.\n")
+	b.WriteString("- Return the complete review JSON again. List in reviewed_paths exactly the files you examined in THIS turn; the pipeline merges your record with the earlier pass. Never list a file you did not examine.\n")
+	b.WriteString("- Report any defect you find in those files as a finding in the same JSON. If they are clean, return an empty findings array.\n")
+	return b.String()
+}
+
+// completeCoverageGaps runs at most one focused review turn over exactly the
+// reviewable files the just-finished pass did not cover, and merges its
+// findings and coverage record into the round's. It runs only on a round that
+// would otherwise park SOLELY on a coverage gap (zero blocking findings), so
+// a healthy full-coverage review costs nothing extra and a round with
+// findings parks unchanged.
+//
+// Every failure of the completion turn is fail-closed to today's explicit
+// park, never to an approval and never to a failed run: the first turn's
+// review was readable, and an optional completion that crashes must not turn
+// it into either a certification it did not earn or a lost verdict. The merge
+// keeps the strict coverage rule intact - the union is re-checked by
+// reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
+// still fails the round and is named in the park message.
+func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
+	if sctx.EvalReplay {
+		// Eval replay scores the review's findings against captured gold and
+		// never consumes the reviewed_paths certification, so the completion
+		// turn - which exists only to satisfy that certification gate - must
+		// not run there. Spending it would add an agent invocation the
+		// captured baseline does not charge and double the candidate's
+		// recorded cost; replay runs exactly the captured review pass, schema
+		// retries included, and the strict coverage check below still parks
+		// the incomplete record.
+		return findings, nil
+	}
+	missing := uncoveredReviewablePaths(findings.ReviewedPaths, reviewable)
+	if len(missing) == 0 {
+		// Nothing in-scope is missing; the park comes from out-of-scope
+		// reviewed_paths entries, which more review cannot cure.
+		return findings, nil
+	}
+	if hasInvalidReviewedPath(findings.ReviewedPaths) {
+		// The record already carries an entry that is not a path at all. That
+		// entry makes reviewedPathsCoverReviewable fail no matter what the
+		// completion turn covers, so the round can only park; running the turn
+		// would spend an agent call on an uncurable record.
+		return findings, nil
+	}
+	sctx.Log(fmt.Sprintf("review coverage incomplete; running one focused review pass over %d unverified file(s): %s", len(missing), strings.Join(missing, ", ")))
+	completionOpts := opts
+	completionOpts.Prompt = basePrompt + reviewCoverageCompletionSection(missing)
+	completionOpts.Purpose = "review-coverage"
+	result, err := s.runReviewAgent(sctx, "agent review coverage", role, completionOpts)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("focused coverage pass failed (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
+		return findings, nil
+	}
+	completion, err := parseReviewAnalyzerOutput(result)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("focused coverage pass returned invalid findings (%s); parking on the incomplete coverage record", strings.ReplaceAll(err.Error(), "\n", "; ")))
+		return findings, nil
+	}
+	// The completion turn runs in the same pre-push phase as the first pass, so
+	// it is held to the same ownership boundary: a finding whose only claim is
+	// that this run's push, PR, or CI is not present yet is phase-invalid here
+	// exactly as it is there. Without this the merge re-imported the class the
+	// first pass had already dropped and parked the round on it.
+	if stripped, n := stripDeferredPipelineOwnedDeliveryFindings(completion); n > 0 {
+		sctx.Log(fmt.Sprintf("dropped %d deferred pipeline-owned delivery finding(s) from the focused coverage pass (owned by later push/PR/CI steps)", n))
+		completion = stripped
+	}
+	findings.Items = append(findings.Items, completion.Items...)
+	findings.ReviewedPaths = mergeReviewedPaths(findings.ReviewedPaths, completion.ReviewedPaths)
+	mergeReviewRisk(&findings, completion)
+	// The completion turn's prompt is the full review prompt, protocol section
+	// included, so it can legitimately ask its own substantiated question about
+	// the file it was sent to cover. That question lands in the same askDir
+	// this round already read once above; re-reading it here is the only way
+	// such a question is ever seen, since nothing reads the conversation again
+	// after this turn returns.
+	if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
+		return findings, err
+	}
+	return findings, nil
+}
+
+// mergeReviewRisk reconciles the round's risk assessment with a focused
+// completion turn's own assessment of the file(s) it covered. The two turns
+// judge disjoint parts of the same change, so the merged assessment is
+// whichever one is worse, taken as a whole triple: a completion turn that
+// finds a real defect the first pass missed must not leave the round
+// reporting the first pass's now-stale, lower risk level and rationale.
+//
+// A completion turn with no remaining finding of its own never moves the
+// assessment, whatever level it reports: the label has nothing behind it, and
+// its only findings may have been stripped as deferred pipeline-owned delivery
+// after the turn returned. With a surviving finding, the completion turn's
+// assessment wins when its level is at least as severe - an equal level still
+// replaces the first pass's now-stale "clean" rationale beside the new defect.
+func mergeReviewRisk(findings *Findings, completion Findings) {
+	if len(completion.Items) == 0 {
+		// A completion turn that returned no remaining finding must not move the
+		// round's risk assessment, even when it labeled the change more severe.
+		// The label has no finding behind it, and its only findings may have
+		// been stripped as deferred pipeline-owned delivery after the turn
+		// returned, so adopting an elevated label here would let a dropped
+		// finding raise the risk level the round publishes.
+		return
+	}
+	if reviewRiskLevelRank(completion.RiskLevel) < reviewRiskLevelRank(findings.RiskLevel) {
+		return
+	}
+	findings.RiskLevel = completion.RiskLevel
+	findings.RiskRationale = completion.RiskRationale
+	findings.RiskScope = completion.RiskScope
+}
+
+func reviewRiskLevelRank(level string) int {
+	switch level {
+	case "high":
+		return 2
+	case "medium":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// appendOpenReviewQuestionFindings reads the review conversation the just-
+// finished turn left behind and appends one ask-user finding per still-open
+// question. Called after every turn whose prompt could have included the
+// question protocol (the initial pass and the focused coverage-completion
+// turn), since either can legitimately ask a new substantiated question.
+func (s *ReviewStep) appendOpenReviewQuestionFindings(sctx *pipeline.StepContext, askDir string, findings *Findings) error {
+	conv, err := loadReviewConversation(sctx, askDir)
+	if err != nil {
+		return err
+	}
+	recordAnsweredQuestions(sctx, conv)
+	questionFindings := openReviewQuestionFindings(conv)
+	if len(questionFindings) > 0 {
+		if conv.QuestionsIncomplete {
+			sctx.Log("review parked: the reviewer's question history could not be read in full, so answers are refused and this gate needs a human decision")
+		} else {
+			sctx.Log(fmt.Sprintf("review is waiting on answers to %d question(s)", len(conv.Open())))
+		}
+		findings.Items = append(findings.Items, questionFindings...)
+	}
+	return nil
+}
 
 // parseReviewAnalyzerOutput validates a review turn's structured findings. A
 // review that produced no structured output, or one whose risk assessment is
@@ -579,6 +801,34 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 		findings.Items[i].Severity = types.NormalizeFindingSeverity(findings.Items[i].Severity)
 	}
 	return findings, nil
+}
+
+func distinctReviewValidationFailures(failures []error) string {
+	fields := make([]string, 0, len(failures))
+	seen := make(map[string]struct{}, len(failures))
+	for _, failure := range failures {
+		var violation *agent.SchemaViolation
+		if !errors.As(failure, &violation) || violation.Field == "" {
+			continue
+		}
+		if _, ok := seen[violation.Field]; ok {
+			continue
+		}
+		seen[violation.Field] = struct{}{}
+		fields = append(fields, violation.Field)
+	}
+	if len(fields) < 2 {
+		return ""
+	}
+	return strings.Join(fields, ", ")
+}
+
+func reviewValidationAttempts(failures []error) string {
+	var attempts strings.Builder
+	for i, failure := range failures {
+		fmt.Fprintf(&attempts, "attempt %d: %s; ", i+1, strings.ReplaceAll(failure.Error(), "\n", "; "))
+	}
+	return attempts.String()
 }
 
 // reviewRetryNote is the only thing a rerun review learns from the attempt

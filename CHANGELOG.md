@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.86.1](https://github.com/kunchenguid/no-mistakes/compare/v1.86.0...v1.86.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **pipeline:** attribute review schema-retry exhaustion across distinct fields ([#1283](https://github.com/kunchenguid/no-mistakes/issues/1283)) ([728ffe0](https://github.com/kunchenguid/no-mistakes/commit/728ffe0f226527a77358bb265be6073c0786367e))
+* **pipeline:** declare machine-local command overrides once per step ([#1276](https://github.com/kunchenguid/no-mistakes/issues/1276)) ([d402d5f](https://github.com/kunchenguid/no-mistakes/commit/d402d5f62de686d24eca3146f37a0792e85f8c85))
+* **pipeline:** keep submodules that commands.prepare checks out ([#1279](https://github.com/kunchenguid/no-mistakes/issues/1279)) ([6675304](https://github.com/kunchenguid/no-mistakes/commit/667530452f6eede6989beeff224954594942d35e))
+
+## [1.86.0](https://github.com/kunchenguid/no-mistakes/compare/v1.85.3...v1.86.0) (2026-10-01)
+
+
+### Features
+
+* **cli:** accept run intent from files or stdin ([#1273](https://github.com/kunchenguid/no-mistakes/issues/1273)) ([71cb1ea](https://github.com/kunchenguid/no-mistakes/commit/71cb1ea0d5c0b3372567389e5d615528e2009dd6))
+* **config:** add machine-local additional checks and nice priority to repository_overrides ([#1270](https://github.com/kunchenguid/no-mistakes/issues/1270)) ([f4b85ae](https://github.com/kunchenguid/no-mistakes/commit/f4b85ae161cef8f14e289cc90aebae044ed570b9))
+* **pipeline:** attribute failing Test command output to the change or the base ([#1274](https://github.com/kunchenguid/no-mistakes/issues/1274)) ([44e3370](https://github.com/kunchenguid/no-mistakes/commit/44e337034dec1d822fcd32cbde7cc8699045c525))
+
+
+### Bug Fixes
+
+* **cli:** follow the run after the answer that resumes the reviewer ([#1261](https://github.com/kunchenguid/no-mistakes/issues/1261)) ([cf93ddc](https://github.com/kunchenguid/no-mistakes/commit/cf93ddc28b79ecff5500d07a9d57e0ff0276e7c8))
+* **pipeline:** scope branch changes against the effective PR base ([#1267](https://github.com/kunchenguid/no-mistakes/issues/1267)) ([e043200](https://github.com/kunchenguid/no-mistakes/commit/e0432007c17c3a64e49bb5d6d8a325a573882660))
+
+## [1.85.3](https://github.com/kunchenguid/no-mistakes/compare/v1.85.2...v1.85.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **gate:** credit recovery anchors when reconciling private mirror branches ([#1236](https://github.com/kunchenguid/no-mistakes/issues/1236)) ([bff2d06](https://github.com/kunchenguid/no-mistakes/commit/bff2d06f8019720dceb8529fef1f04acf3af4d44))
+
+## [1.85.2](https://github.com/kunchenguid/no-mistakes/compare/v1.85.1...v1.85.2) (2026-09-29)
+
+
+### Bug Fixes
+
+* **cli:** show axi finding descriptions verbatim and keep them readable after a gate resolves ([#1219](https://github.com/kunchenguid/no-mistakes/issues/1219)) ([3a5fd7e](https://github.com/kunchenguid/no-mistakes/commit/3a5fd7ed4eaaaa9f66633ac4228a0e58e5f30b18))
+
+## [1.85.1](https://github.com/kunchenguid/no-mistakes/compare/v1.85.0...v1.85.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **branchsync:** recover from rewritten remote push bindings ([#1195](https://github.com/kunchenguid/no-mistakes/issues/1195)) ([10de791](https://github.com/kunchenguid/no-mistakes/commit/10de791c738136d428f88c8d92465e56efe38c33))
+* **pipeline:** complete review coverage in one focused pass ([#1232](https://github.com/kunchenguid/no-mistakes/issues/1232)) ([ac8e342](https://github.com/kunchenguid/no-mistakes/commit/ac8e342c54b97a99936dddc238198db342b7b966))
+
+## [1.85.0](https://github.com/kunchenguid/no-mistakes/compare/v1.84.0...v1.85.0) (2026-09-27)
+
+
+### Features
+
+* **pipeline:** add configurable PR appendix modes ([#1228](https://github.com/kunchenguid/no-mistakes/issues/1228)) ([8635e4b](https://github.com/kunchenguid/no-mistakes/commit/8635e4b36e7bd0a1de2b9206ec741d485f7673ab))
+
 ## [1.84.0](https://github.com/kunchenguid/no-mistakes/compare/v1.83.2...v1.84.0) (2026-09-26)
 
 

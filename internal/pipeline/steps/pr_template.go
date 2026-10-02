@@ -196,12 +196,8 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 	if intent := publicPRIntent(sctx); intent != "" {
 		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(intent))
 	}
-	if risk != "" {
-		parts = append(parts, "## Risk Assessment\n\n"+neutralizeAttestationMarkers(risk))
+	if evidence := appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD); evidence != "" {
+		parts = append(parts, evidence)
 	}
-	if testing != "" {
-		parts = append(parts, neutralizeAttestationMarkers(testing))
-	}
-	parts = append(parts, pipelineMD)
 	return strings.Join(parts, "\n\n"), nil
 }

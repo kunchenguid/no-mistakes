@@ -39,7 +39,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			return nil, fmt.Errorf("prepare formatter dependencies: %w", err)
 		}
 		sctx.Log(fmt.Sprintf("running formatter: %s", fmtCmd))
-		output, exitCode, err := runStepShellCommand(sctx, fmtCmd)
+		output, exitCode, err := runRepositoryCommand(sctx, "format", fmtCmd)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: format command failed: %v: %s", err, output))
 		} else if exitCode != 0 {
@@ -137,8 +137,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return err
 	}
 	// Prove the private mirror is safe to reconcile BEFORE anything is
-	// published: outside the exact run-owned-head exception, unproven private
-	// content must refuse while the branch is intact. Applying the plan is deferred
+	// published: outside the exact run-owned-head exception and the
+	// recovery-anchor preservation credit, unproven private content must
+	// refuse while the branch is intact. Applying the plan is deferred
 	// until the upstream push is verified, because a refused or failed push is
 	// a designed outcome and a gate left with no branch ref would strand
 	// `rerun` and branch-sync recovery on a branch that never published.

@@ -54,13 +54,14 @@ func TestBodyIncludesGeneratedGateStepGuard(t *testing.T) {
 }
 
 func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
+	// Check the generated, installed skill's guidance contract.
 	md := Markdown()
 	for _, want := range []string{
 		"## Two ways to invoke",
 		"feature branch",
 		"Inspect `git status` before you change or commit anything",
 		"commit only the changes that belong to the user's task",
-		"passing the user's task as your `--intent`",
+		"passing the user's task as explicit intent",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("body should document the task-first flow: missing %q", want)

@@ -66,10 +66,10 @@ func validateAxiWait(wait time.Duration) error {
 }
 
 func isAxiWaitElapsed(parent, drive context.Context, err error) bool {
-	if err == nil || parent.Err() != nil || drive.Err() != context.DeadlineExceeded {
+	if err == nil || parent.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	return errors.Is(err, context.DeadlineExceeded)
+	return deadlinePassed(drive)
 }
 
 func emitAxiWaitElapsed(cmd *cobra.Command, wait time.Duration, reattach string) error {
@@ -118,7 +118,7 @@ func outcomeForRun(rv runView) string {
 func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
-	var intent string
+	var intent, intentFile string
 	var launchNonce string
 	var validationGeneration string
 	var baseBranch string
@@ -136,9 +136,15 @@ func newAxiRunCmd() *cobra.Command {
 			"accepting the result) until a decision point or outcome.\n" +
 			"Protected-path and Test unvalidated-work refusals require an explicit\n" +
 			"response, even with --yes.\n\n" +
-			"--intent is required when starting a new run: pass what the user set out\n" +
-			"to accomplish (the goal behind the change, not a description of the diff)\n" +
-			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
+			"Starting a new run requires --intent TEXT, --intent-file PATH, or --intent -\n" +
+			"(read stdin to EOF). Pass what the user set out to accomplish, not a\n" +
+			"description of the diff. Inputs are mutually exclusive and must not be\n" +
+			"empty or whitespace-only; no transcript inference is used. File/stdin\n" +
+			"text reaches the run request unchanged; ordinary runs still trim outer\n" +
+			"whitespace when storing intent. Prefer file/stdin to interpolating prose\n" +
+			"into shell commands: the caller's shell can expand\n" +
+			"backticks and dollars in --intent TEXT before no-mistakes receives it.\n" +
+			"Ordinary reattachment needs no input and keeps the existing run's intent.\n\n" +
 			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
 			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
 			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
@@ -171,9 +177,13 @@ func newAxiRunCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedIntent, err := resolveAxiRunIntent(cmd, intent, intentFile)
+			if err != nil {
+				return emitError(cmd, 2, err.Error())
+			}
 			return trackAxiSurface("axi-run", "/axi/run", telemetry.Fields{
 				"auto_yes":          autoYes,
-				"has_intent":        strings.TrimSpace(intent) != "",
+				"has_intent":        strings.TrimSpace(resolvedIntent) != "",
 				"has_skip":          strings.TrimSpace(skipValue) != "",
 				"has_base_branch":   strings.TrimSpace(baseBranch) != "",
 				"has_launch_nonce":  launchNonce != "",
@@ -188,13 +198,14 @@ func newAxiRunCmd() *cobra.Command {
 				if err != nil {
 					return emitError(cmd, 2, err.Error())
 				}
-				return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, baseBranch, noPublishIntent, launchNonce, validationGeneration, wait, profile)
+				return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, resolvedIntent, baseBranch, noPublishIntent, launchNonce, validationGeneration, wait, profile)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve eligible gates (fix findings, then accept) until a decision point or outcome; protected-path and Test unvalidated-work refusals require an explicit response")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
-	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
+	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish; '-' reads stdin to EOF (exclusive with --intent-file)")
+	cmd.Flags().StringVar(&intentFile, "intent-file", "", "read intent from this file, relative to the current directory (exclusive with --intent)")
 	cmd.Flags().StringVar(&launchNonce, "launch-nonce", "", "opaque nonce for a daemon-bound pre-drive launch receipt")
 	cmd.Flags().StringVar(&validationGeneration, "validation-generation", "", "opaque generation bound to --launch-nonce proof mode")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
@@ -331,8 +342,8 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		// the change's intent, so we take it directly instead of inferring it
 		// from transcripts. Reattaching to an in-flight run does not need it.
 		if strings.TrimSpace(intent) == "" {
-			return emitError(cmd, 2, "--intent is required to start a run",
-				`Pass what the user set out to accomplish: no-mistakes axi run --intent "the user's goal"`)
+			return emitError(cmd, 2, "--intent or --intent-file is required to start a run",
+				`Pass the user's goal with --intent TEXT, --intent-file PATH, or --intent - for stdin`)
 		}
 		if err := validateAxiRunBaseBranch(ctx, baseBranch); err != nil {
 			return emitError(cmd, 2, err.Error())
@@ -1037,11 +1048,27 @@ func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []s
 	return types.ActionFix, ids
 }
 
-// waitStepLeavesGate blocks until the named step's status changes away from the
-// gate status we just answered, or the run terminates. This prevents a
-// double-approve race: respond is asynchronous, so without waiting the next
-// event reconciliation could still observe the same gate and approve it twice.
-func waitStepLeavesGate(ctx context.Context, socketPath, runID, step, gateStatus string) error {
+// gateIdentity identifies the exact park a wait is leaving: the parked step's
+// status and the round it parked at. The status alone cannot tell a re-park
+// apart from the park just answered, since the next round can park at the same
+// status before any wait observes the intervening running state. Every
+// execution round is persisted before the step parks again (InsertStepRound),
+// so a re-park always carries a higher round count. A daemon that reports no
+// round count leaves both sides zero and degrades to the status-only check.
+type gateIdentity struct {
+	status string
+	round  int
+}
+
+func (s stepView) identity() gateIdentity {
+	return gateIdentity{status: s.Status, round: s.RoundCount}
+}
+
+// waitStepLeavesGate blocks until the named step leaves the gate we just
+// answered, or the run terminates. This prevents a double-approve race:
+// respond is asynchronous, so without waiting the next event reconciliation
+// could still observe the same gate and approve it twice.
+func waitStepLeavesGate(ctx context.Context, socketPath, runID, step string, gate gateIdentity) error {
 	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
 	defer reconciler.Close()
 	for {
@@ -1054,7 +1081,7 @@ func waitStepLeavesGate(ctx context.Context, socketPath, runID, step, gateStatus
 		}
 		for _, s := range run.Steps {
 			if string(s.StepName) == step {
-				if string(s.Status) != gateStatus {
+				if string(s.Status) != gate.status || s.RoundCount != gate.round {
 					return nil
 				}
 				break
@@ -1094,10 +1121,12 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 // ready for a human to merge), or the terminal outcome (exit 0 when passed,
 // exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
 // the fixes the pipeline applied and reporting instructions, so the agent
-// closes the loop with the user instead of stopping at "it passed".
-func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
+// closes the loop with the user instead of stopping at "it passed". lead
+// fields, when given, open the document ahead of the run object, so a command
+// that did something before driving (axi answer) reports it in the same return.
+func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, lead ...toon.Field) error {
 	rv := runViewFromIPC(run)
-	fields := []toon.Field{runObjectField(rv)}
+	fields := append(append([]toon.Field{}, lead...), runObjectField(rv))
 	hasBranchSync := false
 	if syncField := cachedBranchSyncField(cmd, run.ID); syncField != nil {
 		fields = append(fields, *syncField)
@@ -1371,7 +1400,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 
 	// Let the executor consume the response before we re-read state, so we
 	// don't immediately observe the same gate we just answered.
-	if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateStatusFor(rv, string(stepName))); err != nil {
+	if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateIdentityFor(rv, string(stepName))); err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
 			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run")
 		}
@@ -1388,16 +1417,16 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	return renderDriveResult(cmd, final, ciReady)
 }
 
-// gateStatusFor returns the current status of step in rv, defaulting to the
-// awaiting-approval status so the post-respond wait still functions if the step
-// was not found.
-func gateStatusFor(rv runView, step string) string {
+// gateIdentityFor returns the identity of step's current park in rv, defaulting
+// to the awaiting-approval status so the post-respond wait still functions if
+// the step was not found.
+func gateIdentityFor(rv runView, step string) gateIdentity {
 	for _, s := range rv.Steps {
 		if s.Name == step {
-			return s.Status
+			return s.identity()
 		}
 	}
-	return string(types.StepStatusAwaitingApproval)
+	return gateIdentity{status: string(types.StepStatusAwaitingApproval)}
 }
 
 func newAxiAbortCmd() *cobra.Command {

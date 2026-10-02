@@ -603,6 +603,127 @@ func TestProtectedPaths_Staging(t *testing.T) {
 	}
 }
 
+// A rebase onto a base that bumped a submodule moves the recorded pointer but
+// leaves a populated checkout at the old commit. Catch-all staging must not
+// commit that stale checkout back as the pointer.
+func TestStagePipelineChanges_KeepsRecordedSubmodulePointer(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		agentFix bool
+	}{
+		{"with_agent_fix", true},
+		{"stale_pointer_only", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, _ := setupGitRepo(t)
+			remote := t.TempDir()
+			gitCmd(t, remote, "init", "--bare")
+			seed := t.TempDir()
+			gitCmd(t, seed, "init", "-b", "main")
+			if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, seed, "add", "module.txt")
+			gitCmd(t, seed, "commit", "-m", "module base")
+			gitCmd(t, seed, "push", remote, "main")
+			gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+			gitCmd(t, dir, "commit", "-m", "add module")
+			stale := gitCmd(t, dir, "rev-parse", "HEAD:module")
+
+			if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("bumped\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, seed, "commit", "-am", "bump module")
+			gitCmd(t, seed, "push", remote, "main")
+			bumped := gitCmd(t, seed, "rev-parse", "HEAD")
+			gitCmd(t, filepath.Join(dir, "module"), "fetch", "origin")
+			gitCmd(t, dir, "update-index", "--cacheinfo", "160000,"+bumped+",module")
+			gitCmd(t, dir, "commit", "-m", "base bumped module")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != stale {
+				t.Fatalf("fixture checkout = %s, want stale %s", got, stale)
+			}
+			if tc.agentFix {
+				if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			sctx := newTestContext(t, &mockAgent{}, dir, baseSHA, headSHA, config.Commands{})
+			committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "")
+			if err != nil {
+				t.Fatalf("commit agent fixes: %v", err)
+			}
+			if committed != tc.agentFix {
+				t.Fatalf("committed = %v, want %v", committed, tc.agentFix)
+			}
+			if got := gitCmd(t, dir, "rev-parse", "HEAD:module"); got != bumped {
+				t.Errorf("fix commit recorded submodule pointer %s, want the base's %s (stale checkout %s)", got, bumped, stale)
+			}
+			if tc.agentFix {
+				gitCmd(t, dir, "cat-file", "-e", "HEAD:fix.txt")
+			} else if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+				t.Errorf("stale pointer alone advanced HEAD from %s to %s", headSHA, got)
+			}
+		})
+	}
+}
+
+// A rebase onto a base that removed a submodule leaves its populated checkout
+// behind, and catch-all staging would re-add it as an embedded repository the
+// base no longer registers. A submodule the change registers is still added.
+func TestStagePipelineChanges_DoesNotReAddRemovedPopulatedSubmodule(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(seed, "lib.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "lib.txt")
+	gitCmd(t, seed, "commit", "-m", "lib base")
+	gitCmd(t, seed, "push", remote, "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "lib")
+	gitCmd(t, dir, "commit", "-m", "add lib")
+	gitCmd(t, dir, "rm", "-q", "--cached", "lib")
+	gitCmd(t, dir, "rm", "-q", ".gitmodules")
+	gitCmd(t, dir, "commit", "-m", "base removed lib")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if !submoduleWorktreeInitialized(dir, "lib") {
+		t.Fatal("fixture lost the populated lib checkout")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContext(t, &mockAgent{}, dir, baseSHA, headSHA, config.Commands{})
+	committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "")
+	if err != nil {
+		t.Fatalf("commit agent fixes: %v", err)
+	}
+	if !committed {
+		t.Fatal("fix commit was not created")
+	}
+	gitCmd(t, dir, "cat-file", "-e", "HEAD:fix.txt")
+	if got := gitCmd(t, dir, "ls-tree", "HEAD", "--", "lib"); got != "" {
+		t.Fatalf("fix commit re-added the removed submodule: %q", got)
+	}
+
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "added")
+	if err := stagePipelineChanges(sctx); err != nil {
+		t.Fatalf("stage registered submodule: %v", err)
+	}
+	if got := gitCmd(t, dir, "ls-files", "--stage", "--", "added"); !strings.HasPrefix(got, "160000 ") {
+		t.Fatalf("registered submodule addition was unstaged: %q", got)
+	}
+}
+
 func TestProtectedPaths_UnreadableStatusFailsClosed(t *testing.T) {
 	t.Parallel()
 	sctx := newTestContext(t, &mockAgent{}, t.TempDir(), "", "", config.Commands{})

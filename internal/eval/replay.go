@@ -311,6 +311,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		StepResultID:          stepResultID,
 		Fixing:                fixing,
 		SkipFixExecution:      fixing,
+		EvalReplay:            true,
 		ReviewStartingHeadSHA: startingHeadSHA,
 		PreviousFindings:      previousFindings,
 		// Keep NM_HOME on the nested sandbox so replay cannot see or mutate

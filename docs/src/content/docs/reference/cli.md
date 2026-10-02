@@ -128,7 +128,8 @@ no-mistakes axi run --intent "the user's goal" --no-publish-intent
 
 | Flag            | Type     | Default | Description                                                                                          |
 | --------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `--intent`      | `string` | (none)  | What the user set out to accomplish; required to start a new run                                     |
+| `--intent`      | `string` | (none)  | What the user set out to accomplish; `-` reads stdin to EOF; exclusive with `--intent-file` |
+| `--intent-file` | `string` | (none)  | Read intent from a file relative to the caller's working directory; exclusive with `--intent` |
 | `--verification-plan` | `string` | (none) | Path to a nonempty UTF-8 verification plan, at most 64 KiB (65,536 bytes), captured as separate evidence for a new run only |
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
@@ -140,11 +141,32 @@ no-mistakes axi run --intent "the user's goal" --no-publish-intent
 | `--launch-nonce` | `string` | (none) | Non-secret correlation identifier for a durable pre-drive receipt; requires `--validation-generation` |
 | `--validation-generation` | `string` | (none) | Caller-selected validation generation bound to `--launch-nonce`; requires that flag |
 
-`--intent` is not a description of the diff.
-It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
+Explicit intent is the user's goal or request, not a description of the diff.
+no-mistakes uses the supplied text instead of transcript inference; see [Intent input](#intent-input) for transports and whitespace handling.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
-Ordinary reattachment to an in-flight run does not require `--intent`; [strict launch receipts](#strict-launch-receipts) require the original intent bytes on every retry.
+Ordinary reattachment to an in-flight run does not require intent input and never replaces that run's intent, even if new text is supplied. [Strict launch receipts](#strict-launch-receipts) require the original intent bytes on every retry, using any of the input transports below.
+
+### Intent input
+
+A new run requires exactly one of `--intent TEXT`, `--intent-file PATH`, or `--intent -` (stdin until EOF). Explicit empty or whitespace-only input is rejected, including on reattachment, and never falls back to transcript inference. `--intent` and `--intent-file` conflict even when either flag's value is empty. Missing/unreadable files and stdin read errors are rejected before starting a run or taking branch custody. No flag means stdin is not read.
+
+All three inputs must be valid UTF-8 and at most **49,122 bytes**, including whitespace. This ceiling comes from the existing single Git push-option transport: its 65,516-byte packet payload must hold the option prefix and base64-encoded intent. Oversized or malformed input is rejected before run resources open, never truncated or repaired. `--intent-file` requires a regular file (a symlink to one is allowed); directories, devices, and named pipes are rejected. Use `--intent -` for piped input: it reads until EOF, or rejects as soon as the size limit is exceeded, with no input timeout.
+
+File and stdin content reaches the existing run request unchanged, including quotes, backticks, dollar signs, Unicode, and multiline/trailing newline content. All three transports then follow the same existing run semantics: ordinary explicit intent is stored with leading/trailing whitespace removed; strict launches and runs with a verification-plan attachment preserve those bytes. This is not a universal persisted-byte guarantee. File paths are literal (`--intent-file -` names a file called `-`); only `--intent -` selects stdin. To supply the literal intent `-`, use a file or stdin.
+
+```sh
+no-mistakes axi run --intent-file ./intent.md
+no-mistakes axi run --intent - < ./intent.md
+# INTENT already contains the prose; quoting the expansion preserves it.
+printf '%s' "$INTENT" | no-mistakes axi run --intent -
+```
+
+The clean-worktree preflight still applies: keep an untracked intent file outside the worktree or ignore it.
+
+For programmatic callers, prefer a file or write the text to the process's stdin; an argument-array API without a shell also safely supports `--intent TEXT`. Avoid interpolating free-form prose into shell command source: substitutions inside double quotes (such as backticks and `$()`) run in the **caller's shell**, before no-mistakes sees the argument. File/stdin input is not shell-evaluated by no-mistakes, but does not make unrelated unsafe shell commands safe. These transports do not change intent storage, prompt use, or publication policy; they are not a privacy control. Downstream transport limits still apply.
+
+These options apply to `axi run`; the separate `no-mistakes rerun` command retains its existing inheritance and explicit-string override semantics.
 
 ### Verification plan attachment
 
@@ -152,7 +174,7 @@ Ordinary reattachment to an in-flight run does not require `--intent`; [strict l
 no-mistakes axi run --intent "the user's goal, unchanged" --verification-plan /path/to/verification-plan.txt
 ```
 
-The optional plan is author-supplied evidence, **not user intent or higher-priority instructions**. With this flag, the exact `--intent` bytes are preserved separately. Before pushing to the gate or taking branch custody, the daemon reads the source once and rejects missing, unreadable, nonregular, empty/whitespace-only, or non-UTF-8 files. Plans exceeding 64 KiB (65,536 bytes) are rejected, never truncated; accepted bytes are preserved unchanged. The read is bounded to 65,537 bytes to detect oversized input. Relative paths resolve from the caller's working directory. An older daemon that cannot capture this input is refused before the push.
+The optional plan is author-supplied evidence, **not user intent or higher-priority instructions**. With this flag, the exact intent bytes are preserved separately, as described in [Intent input](#intent-input). Before pushing to the gate or taking branch custody, the daemon reads the source once and rejects missing, unreadable, nonregular, empty/whitespace-only, or non-UTF-8 files. Plans exceeding 64 KiB (65,536 bytes) are rejected, never truncated; accepted bytes are preserved unchanged. The read is bounded to 65,537 bytes to detect oversized input. Relative paths resolve from the caller's working directory. An older daemon that cannot capture this input is refused before the push.
 
 The capture is bound to the repository, branch, and submitted commit. If HEAD advances during ordinary launch preparation and no longer matches the capture, launch is refused before changing the gate refs; retry the launch to capture the plan for the new commit.
 
@@ -164,7 +186,7 @@ Only attached runs receive plan-aware guidance. Review and Test assess the propo
 
 ### Other run options
 
-`--base-branch` is persisted on the run so rebase, PR, and CI honor it after resume.
+`--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
@@ -209,7 +231,7 @@ When the pipeline applied fixes, they include a `fixes` table and a `help` instr
 
 Supply `--launch-nonce` and `--validation-generation` together to bind a launch to an exact request instead of reattaching by branch and head alone.
 Both identifiers must be 1–128 ASCII characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, and `-`; they are non-secret correlation values and must not contain credentials.
-This mode requires the same exact `--intent` bytes on retries.
+This mode requires the same exact intent bytes on retries, whether supplied as a string, file, or stdin.
 
 ```sh
 no-mistakes axi run --intent "the user's goal" \
@@ -284,10 +306,13 @@ no-mistakes axi answer --question q1 --answer "Keep it behind a flag" --by capta
 | `--question` | `string` | (none)             | Question ID, as carried by the review gate's `question-<id>` findings, or named by the gate's omission notice when more questions are open than the gate renders as rows; required |
 | `--answer`   | `string` | (none)             | The answer, ideally one of the question's stated options; required       |
 | `--by`       | `string` | (none)             | Who answered; recorded on the PR and in the branch's settled questions   |
+| `--wait`     | `duration` | `8m`             | Maximum time the answer that closes the last open question blocks following the run, as for `axi respond`; any other answer returns at once |
 
 The run is always the current branch's active run, and there is deliberately no `--run`: `axi`'s run resolution is branch-scoped, and this command mutates, so a second selection path could land an answer meant for one branch's reviewer on another's. Run it from a clone of the repository whose run it answers - the repository is resolved from the working directory, so a directory outside any initialized repository reports `repo not initialized` rather than answering.
 
 This is not a gate response, and `axi respond` does not accept an answer. The answer is appended to the run's review conversation immediately, so a reviewer that is still working reads it at its next checkpoint and can redirect the rest of its pass. The output reports `open_questions` and `reviewer_resumed`: once no question is open, the daemon resumes that same reviewer session with the answers so it can finish its pass, rather than the caller approving or fixing to get past the gate.
+
+The answer that closes the last open question sets the run moving again, so it then behaves exactly like `axi respond` after its response: it blocks until the next `gate:`, `checks-passed`, or final `outcome:`, bounded by `--wait`, and returns that document led by the answer's own fields. That holds whether the reviewer was already parked (`reviewer_resumed: true`) or still finishing its turn, in which case the gate resumes the reviewer itself as soon as it parks. A review gate that still carries questions right after the answer is given one [`gate_reconcile_timeout`](/no-mistakes/reference/global-config/) to leave, because a park registered just after the answer landed briefly still lists the question it closed until the daemon releases it; one still there after that asks something new and is returned. Two cases end that grace differently: a park restored by a daemon restart is not re-checked until one [`gate_reconcile_interval`](/no-mistakes/reference/global-config/) has passed, so the grace can expire before it is released and the park you just answered comes back; and a `--wait` at or below the grace elapses before the grace does, so even a genuine new question is reported as an elapsed wait rather than a `gate:`. If it returns another `gate:`, answer that gate. An answer that leaves questions open, or closes none, returns at once. An elapsed wait, and a park that came back already answered, both reattach with `axi run`, never by answering again.
 
 Every answered question is recorded per branch, so a later cold reviewer receives it as settled and does not re-raise it, and the question and answer appear in the PR body's review conversation.
 
@@ -323,7 +348,7 @@ Each row reports the whole step's elapsed time as `active_for`, the displayed ex
 `round_active_for` resets when a fix round starts; older active runs created before this timing was recorded show it as empty.
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
-Gate summaries and finding descriptions are bounded in this default status view; truncated values disclose their original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.
+Finding descriptions are always rendered in full, so an `ask-user` finding can be relayed verbatim. Gate summaries are bounded in this default status view because a command gate's summary carries its command output; a truncated summary discloses its original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.
 Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
 Cached home and status rendering performs no network read and labels the remote observation `pipeline_push`; only explicit sync check or apply reports `live` freshness.
 
@@ -343,14 +368,14 @@ no-mistakes axi sync --adopt-published
 | Flag                 | Type     | Default | Description                                                                  |
 | -------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
 | `--check`            | `bool`   | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or perform `recover_remote_rewritten` |
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree   |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact evidence for a keep-local recovery; never creates or moves a Git ref |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
-Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized, custody-returned, or user-owned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
+Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized, a live-verified custody-returned no-op, a user-owned no-op, or an expected merged-and-removed no-op; blocked operational states return `1`.
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing during ordinary synchronization.
@@ -359,6 +384,12 @@ When the local gate branch is exactly at a newer same-branch pushed binding and 
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
+
+### Rewritten push target recovery
+
+When a fresh check finds the configured push target no longer equals the persisted push binding and the bound head is not its ancestor (the branch was force-rewritten outside the pipeline), it reports `state: remote_rewritten` and `safety: blocked_remote_rewritten` and never adopts the rewrite on its own. Unless the PR is merged or closed, the next action is `continue_active_run` while the owning run is active, or `next_action.code: recover_remote_rewritten` with the exact command `no-mistakes axi sync --recover` once that run is terminal. A merged or closed PR gets no recovery action for a rewritten remote.
+
+That recovery re-reads the live target, anchors the superseded pipeline head under `refs/no-mistakes/recover-rewritten/<run>/<push_generation>` in the worktree or, when only the gate has it, the local gate, confirms the live head did not change again, and then compare-and-swaps the persisted push binding (`pushed_head`, the run head, and `push_generation`) to the verified live head. It reports `recovered: true` with `recovery.source: remote_rewritten`, never changes the worktree, a branch, the gate branch, or the remote, and does not return custody. `--keep-local`, a merged or closed PR with a rewritten remote (no action is offered there), a dirty or changed invoking worktree, an unanchorable superseded head, a live head that moved again, or a binding, run, or configured push target that changed during recovery refuse without rebinding. For any terminal run with a push binding (published or custody-returned), `--recover` reports `recovered: true` only when this rebind commits for the run that still owns the branch, or when a fresh live check proves the binding already equals the live head. The latter remains an idempotent no-op for a custody-returned run even if its PR is merged or closed. An offline, deleted, advanced, changed, or otherwise unverified target refuses with `recovered: false`. A successful rebind exits `0` without a top-level `error`; any relation to the new binding, such as divergence, is reported in `branch_sync.note` and `next_action`. Afterwards, follow the ordinary `next_action` reported against the new binding.
 
 ### Published-rebase gate recovery
 
@@ -397,7 +428,7 @@ On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pi
 
 ## no-mistakes axi logs
 
-Show the log output of one pipeline step.
+Show one pipeline step's recorded findings and log output.
 
 ```sh
 no-mistakes axi logs --step review
@@ -406,16 +437,18 @@ no-mistakes axi logs --step review --run <id>
 no-mistakes axi logs --step gate.test.mutation-budget
 ```
 
-| Flag     | Type     | Default            | Description                             |
-| -------- | -------- | ------------------ | --------------------------------------- |
-| `--step` | `string` | (none)             | Step name; required                     |
-| `--run`  | `string` | current-branch run | Run ID to inspect                       |
-| `--full` | `bool`   | `false`            | Show the entire log instead of the tail |
+| Flag     | Type     | Default            | Description                                                                          |
+| -------- | -------- | ------------------ | ------------------------------------------------------------------------------------ |
+| `--step` | `string` | (none)             | Step name; required                                                                  |
+| `--run`  | `string` | current-branch run | Run ID to inspect                                                                    |
+| `--full` | `bool`   | `false`            | Show the complete summary and the entire log instead of the bounded summary and tail |
 
 When `--run` is omitted, the run is resolved the same way as [`axi status`](#no-mistakes-axi-status): this branch's run, never another branch's.
 With `--run <id>`, logs are read from exactly that run regardless of branch.
 An unknown explicit run ID exits nonzero with `error: run "<id>" not found` instead of reporting that the current branch has no run.
-Without `--full`, long logs show the last 40 lines and a help hint for the full log; when `--run <id>` selected the log, that hint retains the same run ID.
+When the step recorded findings, the output leads with its `summary` and a `findings` table whose descriptions are always complete, including after the step's gate was resolved.
+If the recorded findings cannot be parsed, a `findings_error` field reports the parse error in their place and the step log still renders.
+Without `--full`, the summary is bounded like the gate's and long logs show the last 40 lines; when either is cut, a help hint names the `--full` command, retaining the run ID when `--run <id>` selected the log.
 Step logs include native subprocess agent lifecycle lines such as `codex started pid=4242`, `codex exited pid=4242 status=success`, and transient retry messages when the selected agent supports lifecycle events.
 They also include fix-loop markers such as `auto-fix round 1/3 starting after round 1` and `user-fix round starting after round 2`.
 `--step` accepts the nine core step names and valid repository gate names such as `gate.test.mutation-budget`. Use the exact gate name shown by `axi status`.
@@ -539,12 +572,12 @@ no-mistakes sync --adopt-published
 | -------------------- | -------- | ------- | --------------------------------------------------------------- |
 | `--check`            | `bool`   | `false` | Verify and print the fresh plan without changing `HEAD`         |
 | `-y`, `--yes`        | `bool`   | `false` | Apply an eligible guarded synchronization without an interactive prompt |
-| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or perform `recover_remote_rewritten` |
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact keep-local recovery evidence without changing Git refs |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
 
-Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` and `--adopt-published` prompt the same way before they mutate a gate lane. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`.
+Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` and `--adopt-published` also prompt before their guarded changes. Rewritten-remote recovery confirms that it will anchor the superseded head and rebind the recorded push binding without moving the worktree. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 

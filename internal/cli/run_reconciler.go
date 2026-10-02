@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -78,6 +79,31 @@ func (s *ipcRunStateSource) callWithSlowReplyRetry(ctx context.Context, method s
 	}
 }
 
+// deadlinePassedErr reports a context whose deadline has already passed. Its
+// timer may not have fired yet, so ctx.Err() can still be nil; returning that
+// would read as a successful call with an empty result, which Reconcile turns
+// into a nil run and the drive loop into "run not found" instead of an elapsed
+// --wait.
+func deadlinePassedErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return context.DeadlineExceeded
+}
+
+// deadlinePassed reports whether ctx has reached its own deadline, including
+// that same window, where the timer has not fired and ctx.Err() is still nil.
+// Every caller that has to tell its own bound's expiry from an outer one asks
+// this, so there is one answer to "has this deadline passed" rather than a
+// per-caller ctx.Err() test that is wrong inside the window.
+func deadlinePassed(ctx context.Context) bool {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && !time.Now().Before(deadline)
+}
+
 func (s *ipcRunStateSource) call(ctx context.Context, method string, params, result interface{}) error {
 	client, err := ipc.Dial(s.socketPath)
 	if err != nil {
@@ -89,7 +115,7 @@ func (s *ipcRunStateSource) call(ctx context.Context, method string, params, res
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return ctx.Err()
+			return deadlinePassedErr(ctx)
 		}
 		if remaining < timeout {
 			timeout = remaining
@@ -112,7 +138,7 @@ func (s *ipcRunStateSource) probeHealth(ctx context.Context) error {
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return ctx.Err()
+			return deadlinePassedErr(ctx)
 		}
 		if remaining < timeout {
 			timeout = remaining

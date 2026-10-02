@@ -2067,6 +2067,7 @@ func (m *RunManager) HandleAnswerReviewQuestion(runID, questionID, answer, answe
 		result.Note = "recorded; it answered no open question, so no review gate was released"
 		return result, nil
 	}
+	result.ClosedLast = true
 	if err := exec.Respond(types.StepReview, types.ActionAnswer, nil); err != nil {
 		// Not an error for the caller: the answer is recorded either way, and
 		// "no step awaiting approval" is the ordinary mid-turn case.

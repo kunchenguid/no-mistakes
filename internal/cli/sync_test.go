@@ -1077,6 +1077,102 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	}
 }
 
+// TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd reproduces issue #652:
+// after an operator synchronized to the pipeline head, the push target was
+// force-rewritten outside the pipeline. The check must name the explicit
+// recovery, and that recovery must anchor the superseded pipeline head and
+// rebind the push binding without touching the worktree or the remote.
+func TestAxiSyncRecoversRemoteRewrittenBindingEndToEnd(t *testing.T) {
+	f := newCLISyncFixture(t)
+	if out, err := executeCmd("axi", "sync"); err != nil {
+		t.Fatalf("initial sync: %v\n%s", err, out)
+	}
+	writer := filepath.Join(t.TempDir(), "writer")
+	cliGit(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.remote, writer)
+	cliGit(t, writer, "config", "user.name", "Writer")
+	cliGit(t, writer, "config", "user.email", "writer@example.com")
+	cliGit(t, writer, "checkout", "feature/sync")
+	cliGit(t, writer, "checkout", "--orphan", "rewrite")
+	cliGit(t, writer, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(writer, "rewrite.txt"), []byte("rewrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, writer, "add", "rewrite.txt")
+	cliGit(t, writer, "commit", "-m", "rewrite")
+	cliGit(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/sync")
+	rewritten := cliGit(t, writer, "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "sync", "--check")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("rewritten check should exit 1, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{"state: remote_rewritten", "safety: blocked_remote_rewritten", "code: recover_remote_rewritten", "command: no-mistakes axi sync --recover"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rewritten check missing %q:\n%s", want, out)
+		}
+	}
+	t.Logf("operator check before recovery:\n%s", out)
+	previousInteractive := syncInteractive
+	syncInteractive = func() bool { return true }
+	t.Cleanup(func() { syncInteractive = previousInteractive })
+	human := newRootCmd()
+	humanOut := new(bytes.Buffer)
+	human.SetOut(humanOut)
+	human.SetErr(humanOut)
+	human.SetIn(strings.NewReader("no\n"))
+	human.SetArgs([]string{"sync", "--recover"})
+	if err := human.Execute(); err != nil {
+		t.Fatalf("human recovery confirmation: %v\n%s", err, humanOut.String())
+	}
+	for _, want := range []string{"anchors the superseded pipeline head in a ref", "rebinds the recorded", "push binding to the verified live head without moving the worktree", "Cancelled"} {
+		if !strings.Contains(humanOut.String(), want) {
+			t.Errorf("human recovery confirmation missing %q:\n%s", want, humanOut.String())
+		}
+	}
+	t.Logf("human confirmation (declined):\n%s", humanOut.String())
+	out, err = executeCmd("axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("recover: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "\nerror:") || !strings.Contains(out, "the superseded pipeline head was anchored at "+"refs/no-mistakes/recover-rewritten/"+f.runID+"/1") || !strings.Contains(out, "the branch, worktree, and remote were not changed") || !strings.Contains(out, "local and pipeline-pushed histories have diverged") || strings.Contains(out, "no files or refs were changed") {
+		t.Errorf("successful rebind must keep divergence in branch_sync.note without a top-level error:\n%s", out)
+	}
+	anchor := "refs/no-mistakes/recover-rewritten/" + f.runID + "/1"
+	for _, want := range []string{"recovered: true", "changed: false", "source: remote_rewritten", "archive_ref: " + anchor, "proof: worktree"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("recover output missing %q:\n%s", want, out)
+		}
+	}
+	for key, sha := range map[string]string{"pushed_head": rewritten, "preserved_head": f.pushed} {
+		if !toonHasValue(out, key, sha) {
+			t.Errorf("recover output missing %s %s:\n%s", key, sha, out)
+		}
+	}
+	t.Logf("operator recovery result:\n%s", out)
+	if got := cliGit(t, f.local, "rev-parse", anchor); got != f.pushed {
+		t.Fatalf("anchor = %s, want superseded pipeline head %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("recover moved HEAD to %s", got)
+	}
+	if got := cliGit(t, f.remote, "rev-parse", "refs/heads/feature/sync"); got != rewritten {
+		t.Fatalf("recover moved the remote to %s", got)
+	}
+
+	out, _ = executeCmd("axi", "sync", "--check")
+	if strings.Contains(out, "blocked_remote_rewritten") || !toonHasValue(out, "pushed_head", rewritten) {
+		t.Fatalf("post-recover check still stranded:\n%s", out)
+	}
+	t.Logf("operator check after recovery:\n%s", out)
+}
+
+// toonHasValue reports whether TOON output renders key with value, which the
+// encoder quotes when a SHA could otherwise read as a number.
+func toonHasValue(out, key, value string) bool {
+	return strings.Contains(out, key+": "+value+"\n") || strings.Contains(out, key+": \""+value+"\"\n")
+}
+
 func TestAxiSyncRecoverReturnsCustodyEndToEnd(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	out, err := executeCmd("axi", "sync", "--recover")
