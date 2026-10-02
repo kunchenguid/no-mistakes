@@ -18,11 +18,13 @@ func TestAxiRunReattachRequiresTheCallersClaudeProfile(t *testing.T) {
 	for _, tc := range []struct {
 		name, bound, env string
 		refused          bool
+		hint             string
 	}{
-		{"same profile", "/caller/.claude1", "/caller/.claude1", false},
-		{"same profile as the push hook bound it", "/caller/.claude1/", "/caller/.claude1/", false},
-		{"unset requests no profile", "/caller/.claude1", "", false},
-		{"other profile", "/caller/.claude1", "/caller/.claude2", true},
+		{name: "same profile", bound: "/caller/.claude1", env: "/caller/.claude1"},
+		{name: "same profile as the push hook bound it", bound: "/caller/.claude1/", env: "/caller/.claude1/"},
+		{name: "unset requests no profile", bound: "/caller/.claude1", env: ""},
+		{name: "other profile", bound: "/caller/.claude1", env: "/caller/.claude2", refused: true, hint: "Set CLAUDE_CONFIG_DIR to the active run's value to reattach"},
+		{name: "run on the daemon's default", bound: "", env: "/caller/.claude2", refused: true, hint: "Unset CLAUDE_CONFIG_DIR to reattach"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bound := tc.bound
@@ -45,6 +47,9 @@ func TestAxiRunReattachRequiresTheCallersClaudeProfile(t *testing.T) {
 			refused := errors.As(err, &ee) && ee.code == 2 && strings.Contains(out.String(), "uses Claude profile "+bound)
 			if refused != tc.refused {
 				t.Fatalf("refused = %v, want %v: %v\n%s", refused, tc.refused, err, out.String())
+			}
+			if !strings.Contains(out.String(), tc.hint) {
+				t.Fatalf("refusal hint = %q, want it to contain %q", out.String(), tc.hint)
 			}
 			if !tc.refused && (err != nil || !strings.Contains(out.String(), "claude_config_dir: "+bound)) {
 				t.Fatalf("reattach did not report the bound profile: %v\n%s", err, out.String())
