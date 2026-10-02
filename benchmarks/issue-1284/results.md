@@ -1,6 +1,93 @@
 # Pi schema enforcement: issue #1284
 
-## Result
+## Expanded result
+
+The larger real benchmark is also **flat**: main and the change each produced **30/30 schema-valid first attempts and 30/30 completed Review analyzer runs**.
+Neither arm needed a schema rerun or an adapter retry, and neither exhausted validation.
+The reported drift was not reproduced, so these measurements do not demonstrate a reliability improvement.
+The supported generation-time constraint is the mechanism change; the observed success rate is unchanged.
+
+| Real historical workload | Changed files | Insertions / deletions | Main first-valid / completed | Strict first-valid / completed |
+| --- | ---: | ---: | ---: | ---: |
+| Machine-local command overrides | 20 | 1293 / 37 | 10/10 / 10/10 | 10/10 / 10/10 |
+| Focused Review coverage completion | 12 | 1054 / 34 | 10/10 / 10/10 | 10/10 / 10/10 |
+| Following the reviewer after an answer | 20 | 1136 / 38 | 10/10 / 10/10 | 10/10 / 10/10 |
+| Total | | | **30/30 / 30/30** | **30/30 / 30/30** |
+
+All 60 launches reported exactly the complete changed-file set.
+Main returned `needs_approval: true` in all 30 runs; the change did so in 29 of 30.
+The remaining changed-arm run returned no findings and did not need approval.
+“Completed” still means a readable analyzer outcome, not an approved executor gate or a shipped change.
+No findings were approved or fixed during measurement.
+These are schema measurements, not a finding-accuracy or recall evaluation.
+
+### Expanded method and evidence
+
+The baseline was freshly fetched main at `667530452f6eede6989beeff224954594942d35e`.
+The changed production implementation was pinned to `e07fd4ade4bea4581ccadc790849fc62fbdcce47`.
+Both binaries were built from archived source, with the identical measurement harness copied into each build.
+The harness and script hashes, all workload parent/head commits, Pi version, model, thinking level, and repetition count are recorded in [`large/manifest.json`](large/manifest.json).
+
+The existing isolated task worktree was temporarily checked out at each historical workload head, so file tools saw the actual reviewed snapshot rather than today's files.
+Each batch restored the task branch, and the script refused any worktree mutation instead of discarding it.
+No additional checkout, registered Git worktree, worktree-pool operation, daemon, or background service was created.
+The three workloads were reviewed in round-robin order for ten repetitions each.
+Within every pair, main and strict ran consecutively; the first arm alternated between pairs, giving each arm five first positions per workload.
+This is deterministic interleaving, not randomized ordering.
+
+All 60 launches used the real Pi **0.99.1** CLI and personal `openai-codex/gpt-6.1-sol` OAuth credentials, with thinking **high** and cold `--no-session` invocations.
+Every successful serving-model report matched that provider and model exactly.
+No fake CLI, stub, mock, recorded provider reply, substituted model, or payload mutation supplied the measurement.
+The same discovery flags, trusted defaults, historical-base pin, `EvalReplay` behavior, and ordinary production validation/retry path described below applied to both arms.
+The parent context bounded each Review to 20 minutes; no invocation reached that limit.
+The optional coverage-completion turn remained disabled and was unnecessary because every launch already reported complete coverage.
+
+[`large/runs.jsonl`](large/runs.jsonl) preserves the 60 outcome records in launch order.
+Each record contains the implementation and workload commits, repetition and sequence, concrete adapter attempts, Review-level calls, raw validated output, typed failed schema field when present, errors, retry counts, completion/exhaustion, wall time, findings, and reviewed paths.
+The first-attempt metric uses the first **concrete adapter attempt**, so an internal retry cannot hide an initially rejected response.
+Schema-field attribution comes from `agent.SchemaViolation`, not guessed field names parsed out of error text.
+There were no failed fields in this cohort.
+Unreported token usage is omitted rather than stored as zero.
+Keys and raw request payloads are not part of the evidence.
+The published copy replaces home-directory prefixes with `~` through the repository's existing `internal/safepath.RedactText` boundary; no measurement counters or verdicts are changed.
+The unredacted capture remains local.
+
+The measurement window was 2026-10-02 **01:07–06:44 UTC**, including machine-slot and load waits between batches.
+Each batch owned the shared heavy-run slot, ran under `nice -n 10`, and waited for one-minute load at or below 10 before each Review launch.
+
+| Arm | Median seconds | Minimum seconds | Maximum seconds |
+| --- | ---: | ---: | ---: |
+| Main | 259.736 | 189.310 | 414.419 |
+| Strict | 226.161 | 144.117 | 438.548 |
+
+These timings are descriptive, not a demonstrated speed or cost improvement.
+Provider caching, scheduling, hidden provider state, and the fixed small workload set limit what this one window can establish.
+Thirty successes on each side do not prove a universal reliability rate or show that the original failures cannot recur under different conditions.
+
+### Reproduce the expanded measurement
+
+From a clean task branch, with the historical commits and usable personal credentials present:
+
+```sh
+nice -n 10 bash benchmarks/issue-1284/measure-large.sh \
+  667530452f6eede6989beeff224954594942d35e \
+  e07fd4ade4bea4581ccadc790849fc62fbdcce47 \
+  .tmp/pi-schema-large-new 10 1
+```
+
+Claim the appropriate machine-wide heavy-run slot atomically before each invocation and release it afterward.
+The final argument runs one interleaved pair per invocation to stay within the harness's foreground-command bound.
+Repeat the same command until it reports 60/60 launches complete; it resumes only an intact result prefix with identical implementation, workload, CLI, and harness pins.
+It stops on provider, authentication, quota, process, or unexpected serving-model failures and does not replace failed launches silently.
+This spends real provider quota and temporarily changes only the existing task worktree's HEAD.
+Export the completed capture before publishing it:
+
+```sh
+go run ./benchmarks/issue-1284/export \
+  < .tmp/pi-schema-large-new/runs.jsonl > public-runs.jsonl
+```
+
+## Pilot result
 
 The observed schema reliability was **flat**, not improved.
 The reported schema drift was not reproduced on this workload.
@@ -67,6 +154,7 @@ Provider cache state and elapsed-time changes are therefore confounders; no spee
 ## Per-launch evidence
 
 Raw outcome records: [`baseline.jsonl`](baseline.jsonl) and [`strict.jsonl`](strict.jsonl).
+The pilot predates concrete-attempt instrumentation, so its first-attempt counts refer to the first Review-level call and do not separately measure adapter-internal retries.
 Each row records UTC start time, workload commits, adapter attempts, schema-validation success, reported model/provider, token usage, elapsed time, complete findings, and reviewed paths.
 Token counters retain Pi's raw input, output, and cache-read semantics; input is not computed by subtracting cache reads.
 
@@ -82,7 +170,7 @@ Token counters retain Pi's raw input, output, and cache-read semantics; input is
 Findings mostly concern the same nested-submodule cleanup ordering, with normal model variation in wording and severity.
 This is not a labeled finding-recall or correctness evaluation.
 
-## Reproduce
+## Reproduce the pilot
 
 From this branch's repository root, with usable personal credentials and the workload commits present:
 
