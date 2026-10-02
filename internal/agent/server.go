@@ -72,11 +72,22 @@ func getAvailablePort() (int, error) {
 	return port, nil
 }
 
+// healthProbe describes how startServerWithPort decides a spawned server is
+// ready. path is polled with GET (plus headers) until it answers 200. reject,
+// when set, maps a non-200 status to a fatal error so a server that is UP but
+// answering with the wrong API or refusing the credentials fails at once
+// instead of running out the health deadline; nil keeps polling every status.
+type healthProbe struct {
+	path    string
+	headers map[string]string
+	reject  func(status int) error
+}
+
 // startServerWithPort spawns the server process on a given port and waits for health.
 // The process is not tied to ctx - it outlives individual Run calls and is stopped via shutdown().
 // ctx is only used for the health check timeout.
 // agentName tags the PID tracking file so crash-recovery can identify orphans.
-func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int, environment runenv.Overlay, extraEnv ...[]string) (*managedServer, error) {
+func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, probe healthProbe, port int, environment runenv.Overlay, extraEnv ...[]string) (*managedServer, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
@@ -118,7 +129,7 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 	}()
 
 	// Wait for health check to pass.
-	if err := srv.waitForHealth(ctx, healthPath); err != nil {
+	if err := srv.waitForHealth(ctx, probe); err != nil {
 		slog.Warn("managed agent server startup failed", "agent", agentName, "pid", cmd.Process.Pid, "error", err)
 		srv.shutdown()
 		return nil, err
@@ -144,9 +155,10 @@ func formatHealthTimeout(d time.Duration) string {
 
 // waitForHealth polls the health endpoint until it returns 200 or timeout.
 // If the server process exits before becoming healthy, it returns immediately
-// with an exit error instead of waiting out the health-check deadline.
-func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
-	url := s.baseURL() + path
+// with an exit error instead of waiting out the health-check deadline, and a
+// status the probe rejects ends the wait the same way.
+func (s *managedServer) waitForHealth(ctx context.Context, probe healthProbe) error {
+	url := s.baseURL() + probe.path
 	client := &http.Client{Timeout: 2 * time.Second}
 	timeout := s.healthTimeout
 	if timeout <= 0 {
@@ -165,11 +177,23 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 		default:
 		}
 
-		resp, err := client.Get(url)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return fmt.Errorf("server health request: %w", err)
+		}
+		for k, v := range probe.headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := client.Do(req)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
+			}
+			if probe.reject != nil {
+				if rejectErr := probe.reject(resp.StatusCode); rejectErr != nil {
+					return rejectErr
+				}
 			}
 		}
 

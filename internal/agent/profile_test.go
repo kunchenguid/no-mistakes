@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -208,10 +207,12 @@ func TestACPWithoutModelKeepsItsPreviousArgv(t *testing.T) {
 	}
 }
 
-// TestOpenCodeProfileRidesTheMessageBody covers the one harness whose launch
+// TestOpenCodeProfileRidesTheSessionBody covers the one harness whose launch
 // command cannot carry either knob: `opencode serve` exits with usage on an
-// unknown flag, so an argv pin would take the server down instead of tuning it.
-func TestOpenCodeProfileRidesTheMessageBody(t *testing.T) {
+// unknown flag, so an argv pin would take the server down instead of tuning
+// it. opencode 2.x selects model and variant per session, so both ride the
+// session-create payload as a Model.Ref.
+func TestOpenCodeProfileRidesTheSessionBody(t *testing.T) {
 	ag, err := NewWithOptions(types.AgentOpenCode, "opencode", nil, Options{
 		Profile: agentcfg.Profile{Model: "openai/gpt-5", Effort: agentcfg.EffortHigh},
 	})
@@ -223,37 +224,32 @@ func TestOpenCodeProfileRidesTheMessageBody(t *testing.T) {
 	if len(oc.extraArgs) != 0 {
 		t.Fatalf("opencode serve argv gained %v; the server rejects model flags", oc.extraArgs)
 	}
-	body := oc.messageBody("prompt", nil)
+	body := oc.sessionBody(t.TempDir())
 	model, ok := body["model"].(map[string]string)
-	if !ok || model["providerID"] != "openai" || model["modelID"] != "gpt-5" {
-		t.Fatalf("message body model = %#v", body["model"])
+	if !ok || model["providerID"] != "openai" || model["id"] != "gpt-5" {
+		t.Fatalf("session body model = %#v", body["model"])
 	}
-	if body["variant"] != "high" {
-		t.Fatalf("message body variant = %#v, want high", body["variant"])
+	if model["variant"] != "high" {
+		t.Fatalf("session body variant = %#v, want high", model["variant"])
 	}
 }
 
-func TestOpenCodeWithoutProfileSendsNoModelOrVariant(t *testing.T) {
+func TestOpenCodeWithoutProfileSendsNoModel(t *testing.T) {
 	ag, err := NewWithOptions(types.AgentOpenCode, "opencode", nil, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ag.Close()
-	body := ag.(*opencodeAgent).messageBody("prompt", json.RawMessage(`{"type":"object"}`))
+	cwd := t.TempDir()
+	body := ag.(*opencodeAgent).sessionBody(cwd)
 	if _, ok := body["model"]; ok {
-		t.Fatalf("message body pinned a model with no profile: %#v", body)
+		t.Fatalf("session body pinned a model with no profile: %#v", body)
 	}
-	if _, ok := body["variant"]; ok {
-		t.Fatalf("message body pinned a variant with no profile: %#v", body)
+	location, ok := body["location"].(map[string]string)
+	if !ok || location["directory"] != cwd {
+		t.Fatalf("session body location = %#v, want the run's cwd", body["location"])
 	}
-	if _, ok := body["format"]; ok {
-		t.Fatalf("message body used root structured-output format: %#v", body)
-	}
-	info, ok := body["info"].(map[string]any)
-	if !ok {
-		t.Fatalf("message body omitted structured-output info: %#v", body)
-	}
-	if _, ok := info["format"]; !ok {
-		t.Fatalf("message body omitted structured-output info.format: %#v", body)
+	if _, ok := body["permissions"]; !ok {
+		t.Fatalf("session body omitted the blanket permission ruleset: %#v", body)
 	}
 }
