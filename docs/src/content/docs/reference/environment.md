@@ -267,6 +267,8 @@ The daemon reads [its own environment](#environment-the-daemon-sees) once at sta
 
 `axi status` shows a run's profile as `claude_config_dir`. `axi run` refuses to reattach to an active run bound to a different profile; a run started with the variable unset counts as a different profile. To reattach, set the variable to the run's value, or unset it when the run has none. Abort that run to start one with your profile. With the variable unset, `axi run` reattaches to any active run, as it does without `--model`/`--effort`.
 
+This refusal applies only when `axi run` reattaches by branch. A replay with `--launch-nonce` ([strict launch receipts](/no-mistakes/reference/cli/#strict-launch-receipts)) does not compare the profile: it reattaches to the run that owns the nonce, and that run keeps the profile it started with.
+
 ## `COMPACT_ADVISER_DISABLE`
 
 Kill-switch injected into every pipeline agent subprocess so compact-adviser stays inert during unattended work.
