@@ -82,7 +82,7 @@ func (a *piAgent) structuredOutputPath(ctx context.Context, opts RunOpts) (bool,
 		cmd.Dir = opts.CWD
 		cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
 		shellenv.ConfigureShellCommand(cmd)
-		out, err := cmd.Output()
+		out, err := shellenv.OutputShellCommand(cmd)
 		if err != nil {
 			return false, fmt.Sprintf("pi --version failed: %v", err)
 		}
