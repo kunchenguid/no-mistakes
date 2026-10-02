@@ -113,7 +113,11 @@ The documented RPC prompt command likewise has no schema option.
 Pi does expose a supported generation-time mechanism through extensions.
 The [Pi AI constrained-tool contract](https://github.com/earendil-works/pi/tree/main/packages/ai#constrained-sampling-for-tools) specifies `constrainedSampling: { type: "json_schema", strict: "require" }`, which fails rather than falling back when the provider/model cannot honor strict sampling.
 Pi's [structured-output example](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/structured-output.ts) demonstrates `terminate: true` for a final result tool without a follow-up model call.
-The installed changelog records constrained tool sampling as introduced in **0.82.0**; the invocation extension checks the exported `VERSION` before registering the tool so older versions cannot silently ignore that request.
+The installed changelog records constrained tool sampling as introduced in **0.82.0**, and earlier releases silently ignore the request.
+The adapter therefore probes `pi --version` in Go and loads the strict output-tool extension only for 0.82.0 or later (a prerelease such as `0.82.0-beta` sorts before its release).
+For an older or unidentifiable Pi, or when the provider/model refuses the strict tool with Pi's `requires JSON-schema constrained sampling` error (which it raises before sending the request), the adapter falls back to the prompt-inlined schema and validates the final text against the same schema afterwards; a refusal is retried once on that path and remembered for the agent's lifetime, and the step log names which path ran.
+On the strict path, a run that ends without calling the output tool alone is a structured-output rejection, so Review's bounded schema rerun applies.
+The measured runs below used Pi 0.99.1 on openai-codex, which takes the strict path, so this fallback does not change them.
 
 Before changing the adapter, a real Pi request on the target model accepted a tiny strict-required output tool.
 A documented `before_provider_request` hook observed `strict: true` on that tool's OpenAI request declaration.
