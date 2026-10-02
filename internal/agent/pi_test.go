@@ -144,7 +144,7 @@ func TestNewWithOptions_PiCombinesNeutralizationAndRunEnvironment(t *testing.T) 
 
 func TestPiAgent_BuildPromptNamesOutputTool(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
-	prompt := buildPiPrompt("do a thing", schema)
+	prompt := buildPiPrompt("do a thing", schema, true)
 	if !strings.Contains(prompt, "do a thing") {
 		t.Errorf("prompt missing user prompt: %s", prompt)
 	}
@@ -159,10 +159,22 @@ func TestPiAgent_BuildPromptNamesOutputTool(t *testing.T) {
 	}
 }
 
+func TestPiAgent_BuildPromptInlinesSchemaWithoutStrictOutput(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	prompt := buildPiPrompt("do a thing", schema, false)
+	if !strings.Contains(prompt, "no-mistakes final output contract") || !strings.Contains(prompt, `"summary"`) {
+		t.Errorf("prompt path must inline the schema: %s", prompt)
+	}
+	if strings.Contains(prompt, "no_mistakes_output") {
+		t.Errorf("prompt path must not name the absent output tool: %s", prompt)
+	}
+}
+
 func TestPiAgent_BuildPromptOmitsContractWhenSchemaEmpty(t *testing.T) {
-	prompt := buildPiPrompt("do a thing", nil)
-	if prompt != "do a thing" {
-		t.Errorf("expected raw prompt when no schema, got: %q", prompt)
+	for _, strict := range []bool{true, false} {
+		if prompt := buildPiPrompt("do a thing", nil, strict); prompt != "do a thing" {
+			t.Errorf("expected raw prompt when no schema, got: %q", prompt)
+		}
 	}
 }
 
@@ -379,7 +391,7 @@ printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"conten
 }
 
 func TestPiAgent_SchemaRejectedOutputStillReportsUsage(t *testing.T) {
-	bin := writePiOutputFixture(t, piOutputEvents(`{"ok":"not a boolean"}`), "")
+	bin := writePiOutputFixture(t, piStrictVersion, piOutputEvents(`{"ok":"not a boolean"}`), nil, "")
 
 	result, err := (&piAgent{bin: bin}).Run(context.Background(), RunOpts{
 		Prompt:     "review",

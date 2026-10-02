@@ -1,11 +1,18 @@
 package agent
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 //go:embed pi_output.ts.tmpl
@@ -13,9 +20,107 @@ var piOutputExtension string
 
 const piOutputTool = "no_mistakes_output"
 
+// piLifecycleOutputPath is the adapter-control lifecycle phase that names, in
+// the step log, which structured-output path an invocation took.
+const piLifecycleOutputPath = "structured_output"
+
 // Pi's documented constrainedSampling strict=require contract was introduced
-// in 0.82.0. The extension's VERSION guard prevents older releases from silently
-// treating the final output tool as ordinary unconstrained function calling.
+// in 0.82.0; earlier releases silently ignore it, so a successful tool call
+// there would not prove that generation was schema-constrained.
+var piStrictOutputMinVersion = [3]int{0, 82, 0}
+
+// piStrictUnsupported is the error pi-ai raises before any request is sent
+// when the selected provider/model (or this schema) cannot take a
+// strict=require JSON-schema tool.
+var piStrictUnsupported = fmt.Sprintf("Tool %q requires JSON-schema constrained sampling", piOutputTool)
+
+type piOutputSupport struct {
+	mu          sync.Mutex
+	probed      bool
+	version     string
+	unsupported bool
+}
+
+// runStructured runs one invocation on the strict output-tool path when Pi and
+// the provider support it, and otherwise on the prompt-inlined schema path
+// whose final text is validated against the same schema.
+func (a *piAgent) runStructured(ctx context.Context, opts RunOpts) (*Result, error) {
+	if len(opts.JSONSchema) == 0 {
+		return a.runOnce(ctx, opts, false)
+	}
+	strict, reason := a.structuredOutputPath(ctx, opts)
+	if !strict {
+		emitLifecycle(opts, LifecycleEvent{Agent: "pi", Phase: piLifecycleOutputPath, Message: "pi structured output: prompt-inlined schema (" + reason + ")"})
+		return a.runOnce(ctx, opts, false)
+	}
+	emitLifecycle(opts, LifecycleEvent{Agent: "pi", Phase: piLifecycleOutputPath, Message: "pi structured output: strict schema-constrained " + piOutputTool + " tool"})
+	result, err := a.runOnce(ctx, opts, true)
+	if err == nil || !strings.Contains(err.Error(), piStrictUnsupported) {
+		return result, err
+	}
+	a.output.mu.Lock()
+	a.output.unsupported = true
+	a.output.mu.Unlock()
+	emitAgentControl(opts, LifecycleEvent{
+		Agent:   "pi",
+		Phase:   LifecyclePhaseFallback,
+		Message: "pi provider/model cannot take strict JSON-schema tools; retrying with the prompt-inlined schema",
+	})
+	return a.runOnce(ctx, opts, false)
+}
+
+// structuredOutputPath reports whether the strict output tool is available,
+// or why not. A successful version probe and a provider refusal are cached for
+// the agent's lifetime; a failed probe is retried on the next invocation.
+func (a *piAgent) structuredOutputPath(ctx context.Context, opts RunOpts) (bool, string) {
+	a.output.mu.Lock()
+	defer a.output.mu.Unlock()
+	if !a.output.probed {
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(probeCtx, a.bin, "--version")
+		cmd.Dir = opts.CWD
+		cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
+		shellenv.ConfigureShellCommand(cmd)
+		out, err := cmd.Output()
+		if err != nil {
+			return false, fmt.Sprintf("pi --version failed: %v", err)
+		}
+		a.output.probed = true
+		if fields := strings.Fields(string(out)); len(fields) > 0 {
+			a.output.version = fields[0]
+		}
+	}
+	if !piVersionSupportsStrictOutput(a.output.version) {
+		return false, fmt.Sprintf("pi version %q predates %d.%d.%d", a.output.version, piStrictOutputMinVersion[0], piStrictOutputMinVersion[1], piStrictOutputMinVersion[2])
+	}
+	if a.output.unsupported {
+		return false, "provider/model cannot take strict JSON-schema tools"
+	}
+	return true, ""
+}
+
+// piVersionSupportsStrictOutput compares a semantic version with the strict
+// output minimum, ordering a prerelease before its own release.
+func piVersionSupportsStrictOutput(version string) bool {
+	version, _, _ = strings.Cut(strings.TrimPrefix(version, "v"), "+")
+	core, _, prerelease := strings.Cut(version, "-")
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return false
+		}
+		if n != piStrictOutputMinVersion[i] {
+			return n > piStrictOutputMinVersion[i]
+		}
+	}
+	return !prerelease
+}
+
 func preparePiOutput(schema json.RawMessage) (string, func(), error) {
 	if len(schema) == 0 {
 		return "", func() {}, nil

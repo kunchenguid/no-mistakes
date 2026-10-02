@@ -13,6 +13,10 @@ import (
 // provider response. Session header + message_end + agent_end follow Pi's
 // documented JSON stream and the adapter's existing wire regressions.
 func runPi(args []string, input io.Reader, scenario *Scenario) int {
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Println("0.99.1")
+		return 0
+	}
 	data, err := io.ReadAll(input)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
