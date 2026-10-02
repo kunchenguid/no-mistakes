@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -585,6 +586,16 @@ func testAgentTimeout(sctx *pipeline.StepContext) time.Duration {
 		return sctx.Config.TestAgentTimeout
 	}
 	return config.DefaultTestAgentTimeout
+}
+
+// testAgentContext bounds the base-checkout prepare and test commands by
+// test_agent_timeout. The deadline is a child of the step context, so agent
+// turns still receive a stall budget from RunAgentBudget instead of inheriting
+// an absolute parent deadline.
+func testAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
+	timeout := testAgentTimeout(sctx)
+	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errTestAgentTimeout)
+	return ctx, cancel, timeout
 }
 
 var errTestAgentTimeout = errors.New("test agent timeout")
