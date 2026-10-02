@@ -21,7 +21,8 @@ const claudeHOMEProbeReply = `{"type":"assistant","message":{"usage":{"input_tok
 {"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":12,"output_tokens":3}}
 `
 
-const piHOMEProbeReply = `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"final-1","name":"no_mistakes_output","arguments":` + piReviewOutput + `}]}]}` + "\n" + piReviewToolResult
+const piHOMEProbeReply = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"findings\":[],\"risk_level\":\"low\",\"risk_rationale\":\"clean\",\"risk_scope\":\"source-or-external\"}"}]}]}
+`
 
 // TestReplayUsesCallerHOMEAndKeepsIsolatedNMHOME is the behavioral half of
 // dropping eval's empty-HOME rewrite: candidates inherit the caller's HOME

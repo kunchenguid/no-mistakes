@@ -1,15 +1,8 @@
-import { VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const parameters = __NO_MISTAKES_SCHEMA__;
 
 export default function (pi: ExtensionAPI) {
-	// Earlier releases silently ignore constrainedSampling, so a successful
-	// tool call alone would not prove that generation was schema-constrained.
-	const version = /^(\d+)\.(\d+)\.(\d+)$/.exec(VERSION);
-	if (!version || (Number(version[1]) === 0 && Number(version[2]) < 82)) {
-		throw new Error("no-mistakes structured output requires Pi >= 0.82.0");
-	}
-
 	pi.registerTool({
 		name: "no_mistakes_output",
 		label: "Final output",

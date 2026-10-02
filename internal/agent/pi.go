@@ -24,6 +24,9 @@ type piAgent struct {
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
 	subprocessContext
+	// output caches whether this Pi binary and provider can take the strict
+	// schema-constrained output tool; see structuredOutputPath.
+	output piOutputSupport
 }
 
 func (a *piAgent) Name() string { return "pi" }
@@ -48,26 +51,26 @@ func (a *piAgent) NeutralizesGateInstructions() bool {
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
-		return a.runOnce(ctx, opts)
+		return a.runStructured(ctx, opts)
 	})
 }
 
 func (a *piAgent) Close() error { return nil }
 
-func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Result, error) {
 	if opts.Session != nil && opts.Session.ID != "" && !isPiSessionID(opts.Session.ID) {
 		// Pi accepts a path or partial UUID for --session. no-mistakes persists
 		// only the full UUID that Pi minted, so corrupt local metadata cannot
 		// turn a recovery attempt into an arbitrary session-file selection.
 		return nil, fmt.Errorf("invalid pi session identity")
 	}
-	extension, cleanup, err := preparePiOutput(opts.JSONSchema)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
 	args := a.buildArgs(opts.Session)
-	if extension != "" {
+	if strict {
+		extension, cleanup, err := preparePiOutput(opts.JSONSchema)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
 		args = append(args, "--extension", extension)
 	}
 	cmd := exec.CommandContext(ctx, a.bin, args...)
@@ -89,7 +92,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	pid := started.pid()
 	emitAgentStarted(opts, "pi", pid)
 
-	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema)
+	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema, strict)
 	stdinErrCh := writeNativeAgentStdin(stdin, prompt)
 
 	var stderrBuf []byte
@@ -139,13 +142,14 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 
 	text := pp.finalText()
-	if len(opts.JSONSchema) > 0 {
+	if strict {
 		text = pp.finalOutputToolText()
 		if text == "" {
-			retErr := fmt.Errorf("pi did not submit a terminating schema-constrained %s result; requires Pi >= 0.82.0 and a provider/model supporting strict JSON-schema tools", piOutputTool)
+			retErr := fmt.Errorf("pi did not finish by calling %s alone", piOutputTool)
 			if stderr != "" {
 				retErr = fmt.Errorf("%w: %s", retErr, stderr)
 			}
+			retErr = rejectStructuredOutput(retErr)
 			emitAgentExited(opts, "pi", pid, retErr)
 			return failedResult(pp.usage, pp.sessionID), retErr
 		}
@@ -272,9 +276,23 @@ func piArgTakesValue(arg string) bool {
 	}
 }
 
-func buildPiPrompt(prompt string, schema json.RawMessage) string {
+// buildPiPrompt appends a JSON-output contract to the user prompt when a
+// schema is provided. On the strict path the schema is the output tool's
+// parameters; otherwise it is inlined in the prompt the same way gnhf does and
+// the final text is validated afterwards.
+func buildPiPrompt(prompt string, schema json.RawMessage, strict bool) string {
 	if len(schema) == 0 {
 		return prompt
+	}
+	if !strict {
+		pretty, err := json.MarshalIndent(json.RawMessage(schema), "", "  ")
+		if err != nil {
+			pretty = []byte(schema)
+		}
+		return prompt + "\n\n## no-mistakes final output contract\n\n" +
+			"When the iteration is complete, your final assistant response must be only valid JSON matching this JSON Schema. " +
+			"Do not wrap it in Markdown fences. Do not include prose before or after the JSON object.\n\n" +
+			string(pretty)
 	}
 	return prompt + "\n\n## no-mistakes final output contract\n\n" +
 		"When the iteration is complete, submit the result by calling no_mistakes_output as your final and only remaining tool call. " +

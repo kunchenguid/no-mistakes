@@ -18,12 +18,13 @@ import (
 // 100 input, 20 output, and 30 cache-read tokens.
 func piReviewReply(t *testing.T, review string) string {
 	t.Helper()
-	if !json.Valid([]byte(review)) {
-		t.Fatal("invalid fixture JSON")
+	text, err := json.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return fmt.Sprintf(`{"type":"message_end","message":{"role":"assistant","provider":"xai","model":"grok-4.6","stopReason":"toolUse","content":[{"type":"toolCall","id":"final-1","name":"no_mistakes_output","arguments":%s}],"usage":{"input":100,"output":20,"cacheRead":30}}}
-{"type":"tool_execution_end","toolCallId":"final-1","toolName":"no_mistakes_output","isError":false,"result":{"terminate":true,"details":{"output":%s}}}
-`, review, review)
+	return fmt.Sprintf(`{"type":"message_end","message":{"role":"assistant","provider":"xai","model":"grok-4.6","content":[{"type":"text","text":%s}],"usage":{"input":100,"output":20,"cacheRead":30}}}
+{"type":"agent_end","messages":[]}
+`, text)
 }
 
 // installFakePiSequence installs a pi that answers its nth invocation with
