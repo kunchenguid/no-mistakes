@@ -122,6 +122,8 @@ providers:
     draft_pull_requests: false
   azuredevops:
     draft_pull_requests: false
+  origin:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -214,7 +216,7 @@ The configured branch is used for PR creation and pipeline integration and chang
 When unset and without a per-run override, no-mistakes targets the repository's forge default branch.
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
-A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, and Gitea) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
+A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, Gitea, and Cursor Origin) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
 Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
@@ -224,7 +226,7 @@ An empty value is valid and means "fall back to the forge default branch"; a non
 
 ### pr.template
 
-Use a repository Markdown template for the public narrative, followed by no-mistakes' protected evidence appendix. Supported on **GitHub, GitLab, Gitea, Forgejo, Azure DevOps, and Bitbucket Cloud**, using each backend's authenticated raw-description transport. Forgejo requires `forgejo-axi` with the raw `api` command (contract verified against 1.3.0); an older CLI without it fails rather than using a preview. Self-hosted instances use the existing provider routing.
+Use a repository Markdown template for the public narrative, followed by no-mistakes' protected evidence appendix. Supported on **GitHub, GitLab, Gitea, Forgejo, Azure DevOps, Bitbucket Cloud, and Cursor Origin**, using each backend's authenticated raw-description transport (`origin pr view --json` for Cursor Origin). Forgejo requires `forgejo-axi` with the raw `api` command (contract verified against 1.3.0); an older CLI without it fails rather than using a preview. Self-hosted instances use the existing provider routing.
 
 | | |
 | --- | --- |
@@ -304,7 +306,7 @@ Choose how much of the generated Risk, Testing, and Pipeline tail is visible aft
 
 `collapsed` folds those three sections into one closed `Validation` details block. The narrative, and the Intent section when it is published, stay outside the block. Within the body limit, opening the block shows the same recorded evidence `full` would have published. If an ordinary body exceeds the limit, Testing is dropped before pipeline history is shortened; the attestation is retained. Bitbucket Cloud escapes raw HTML, so `collapsed` stays on the `full` appendix there instead of printing the details tags as text.
 
-`minimal` keeps a single risk line (the recorded level and rationale, on one line) and the pipeline attestation. Testing logs, pipeline round history, and the Risk and Pipeline headings are omitted. The attestation marker stays in its host-specific form: an HTML comment on GitHub, GitLab, Gitea, Forgejo, and Azure, and a visible text fence on an owned Bitbucket description. Ordinary unowned Bitbucket descriptions still omit the comment.
+`minimal` keeps a single risk line (the recorded level and rationale, on one line) and the pipeline attestation. Testing logs, pipeline round history, and the Risk and Pipeline headings are omitted. The attestation marker stays in its host-specific form: an HTML comment on GitHub, GitLab, Gitea, Forgejo, Azure, and Cursor Origin, and a visible text fence on an owned Bitbucket description. Ordinary unowned Bitbucket descriptions still omit the comment.
 
 An unrecognized value fails config parsing closed. Body size limits and truncation still apply in every mode. A templated body that cannot fit still fails instead of dropping author text. The marker remains the one `require-no-mistakes` binds to the PR head.
 
@@ -688,7 +690,7 @@ Answering that gate with `fix` is still honored: the fix round you asked for rep
 
 Reruns are skipped when:
 
-- The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, and Gitea reach the approval gate without a rerun).
+- The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, Gitea, and Cursor Origin reach the approval gate without a rerun).
 - The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a cancelled check naming only the workflow run re-runs the whole workflow, while other run-only links re-run failed jobs; an unrecognized link is widened into neither.
 - The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
 
@@ -944,6 +946,15 @@ Override the [global Bitbucket draft setting](/no-mistakes/reference/global-conf
 ### providers.azuredevops.draft_pull_requests
 
 Override the [global Azure DevOps draft setting](/no-mistakes/reference/global-config/#providersazuredevopsdraft_pull_requests) for this repo.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits from global (default `false`) |
+
+### providers.origin.draft_pull_requests
+
+Override the [global Cursor Origin draft setting](/no-mistakes/reference/global-config/#providersorigindraft_pull_requests) for this repo.
 
 | | |
 |---|---|

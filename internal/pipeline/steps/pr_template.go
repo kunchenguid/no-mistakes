@@ -30,7 +30,7 @@ var templatePRContentSchema = json.RawMessage(`{
 
 func supportsPRTemplates(provider scm.Provider) bool {
 	switch provider {
-	case scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderForgejo, scm.ProviderAzureDevOps, scm.ProviderBitbucket:
+	case scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderForgejo, scm.ProviderAzureDevOps, scm.ProviderBitbucket, scm.ProviderOrigin:
 		return true
 	default:
 		return false

@@ -32,6 +32,13 @@ func TestDetectProvider(t *testing.T) {
 		{"https://forgejo.example/user/repo.git", ProviderForgejo},
 		{"https://forgejo.gitlab.example/user/repo.git", ProviderForgejo},
 		{"https://forgejo.github.com.example/user/repo.git", ProviderForgejo},
+		{"https://origin.cursor.com/owner/repo.git", ProviderOrigin},
+		{"git@origin.cursor.com:owner/repo.git", ProviderOrigin},
+		{"https://cursor.com/codebase/owner/repo/pull/6", ProviderOrigin},
+		{"https://cursor.com/changelog", ProviderUnknown},
+		{"https://origin.cursor.com.example.net/owner/repo.git", ProviderUnknown},
+		{"https://notorigin.cursor.com.evil.test/owner/repo.git", ProviderUnknown},
+		{"https://cursor.com.example.net/codebase/owner/repo/pull/6", ProviderUnknown},
 		{"https://example.com/user/repo.git", ProviderUnknown},
 	}
 
@@ -71,6 +78,12 @@ func TestDetectProvider_SSHHostAlias(t *testing.T) {
 			url:      "git@forgejo-github:owner/repo.git",
 			hostname: "github.com",
 			want:     ProviderGitHub,
+		},
+		{
+			name:     "Cursor Origin SSH alias",
+			url:      "git@origin-work:owner/repo.git",
+			hostname: "origin.cursor.com",
+			want:     ProviderOrigin,
 		},
 	}
 
