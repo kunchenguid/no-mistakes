@@ -147,8 +147,24 @@ revalidated from Review after the run has already published. The replacement
 head must still be review-approved, and the force push to the configured target
 stays leased on the same last pushed head. Ownership is not containment evidence. The
 exception does not extend to another recorded head, an agent-created head, an
-abbreviated SHA, or an external, newer, or divergent private head. Fresh AXI
-submissions do not receive this exception.
+abbreviated SHA, or an external, newer, or divergent private head.
+
+A fresh AXI submission receives the same exception in exactly one case. Only
+the push step advances the private lane, so a workflow that skips it because a
+review server publishes the change itself leaves the lane at the submitted head
+of a run that has long since ended, and the branch's next revision is a
+rewrite - a rebase onto a moved base, an amend - that an ordinary gate push
+refuses as non-fast-forward and the content proof refuses as at-risk. When the
+branch is released (`user_owned`) by a terminal run that never published and
+whose head never moved off its submitted head, the lane still names that exact
+submitted head, and the clean local branch has diverged from it, `axi run`
+archives that head and submits the rewritten branch; status reports
+`safety: stale_submitted_mirror` with `next_action.code: run_pipeline`. That
+lane head is the operator's own exact submission with nothing
+pipeline-authored behind it, which is the ownership the exception rests on. A
+lane at any other head, including a newer descendant or a head left by a run
+that moved it, keeps the full proof, and a local head that is merely behind is
+not a rewrite.
 
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
