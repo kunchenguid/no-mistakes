@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.87.0](https://github.com/kunchenguid/no-mistakes/compare/v1.86.1...v1.87.0) (2026-10-03)
+
+
+### Features
+
+* **pipeline:** add opt-in still-working caps for agent timeouts ([#1128](https://github.com/kunchenguid/no-mistakes/issues/1128)) ([08f6c3d](https://github.com/kunchenguid/no-mistakes/commit/08f6c3d60e64c41106d545d8f552b9174c50d26a))
+* **pipeline:** add structured --closes issue references for generated PRs ([#1288](https://github.com/kunchenguid/no-mistakes/issues/1288)) ([4c9f642](https://github.com/kunchenguid/no-mistakes/commit/4c9f6423c8e7570fe8a3d5516c78391654591d95))
+
+
+### Bug Fixes
+
+* **daemon:** reap leftover run worktrees and never-cleaned run logs ([#1188](https://github.com/kunchenguid/no-mistakes/issues/1188)) ([449215e](https://github.com/kunchenguid/no-mistakes/commit/449215e26838bb85108178578618f128b70158ba))
+
 ## [1.86.1](https://github.com/kunchenguid/no-mistakes/compare/v1.86.0...v1.86.1) (2026-10-02)
 
 
