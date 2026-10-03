@@ -524,7 +524,7 @@ func (p Provider) CLIName() string {
 	case ProviderGitLab:
 		return "glab"
 	case ProviderBitbucket:
-		return "bb"
+		return "twg"
 	case ProviderAzureDevOps:
 		return "az"
 	case ProviderForgejo:
@@ -543,7 +543,7 @@ func (p Provider) AuthCheckCommand() []string {
 	case ProviderGitLab:
 		return []string{"glab", "auth", "status"}
 	case ProviderBitbucket:
-		return []string{"bb", "profile", "which"}
+		return []string{"twg", "whoami"}
 	case ProviderAzureDevOps:
 		return []string{"az", "account", "show"}
 	case ProviderForgejo:

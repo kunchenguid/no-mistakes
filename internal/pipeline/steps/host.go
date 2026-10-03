@@ -8,10 +8,10 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
+	"github.com/kunchenguid/no-mistakes/internal/scm/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/scm/forgejo"
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitea"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
@@ -95,16 +95,12 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// this provider can safely consume fork_url for PR creation.
 			return nil, "fork PR routing for Bitbucket is not implemented"
 		}
-		client, err := bitbucket.NewClientFromEnv(sctx.Env)
-		if err != nil {
-			return nil, err.Error()
-		}
 		repo, err := resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
 		if err != nil {
 			return nil, err.Error()
 		}
 		draft := sctx.Config != nil && sctx.Config.Providers.Bitbucket.DraftPullRequests
-		return bitbucket.NewHost(client, repo, draft), ""
+		return bitbucket.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, repo, draft), ""
 	case scm.ProviderAzureDevOps:
 		if sctx.Repo.ForkURL != "" {
 			// Fork PR routing for Azure DevOps is intentionally not half-wired,
