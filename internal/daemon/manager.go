@@ -1489,7 +1489,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 	}()
 
-	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
+	if err := git.BindUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
 		return "", fmt.Errorf("configure worktree git identity: %w", err)

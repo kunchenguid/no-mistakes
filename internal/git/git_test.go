@@ -159,7 +159,7 @@ func TestRemoveRemote(t *testing.T) {
 	}
 }
 
-func TestCopyLocalUserIdentity(t *testing.T) {
+func TestBindUserIdentity(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)
 	dst := initTestRepo(t)
@@ -167,8 +167,8 @@ func TestCopyLocalUserIdentity(t *testing.T) {
 	run(t, dst, "git", "config", "--local", "--unset", "user.name")
 	run(t, dst, "git", "config", "--local", "--unset", "user.email")
 
-	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
-		t.Fatalf("CopyLocalUserIdentity failed: %v", err)
+	if err := BindUserIdentity(ctx, src, dst); err != nil {
+		t.Fatalf("BindUserIdentity failed: %v", err)
 	}
 
 	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Test" {
@@ -176,6 +176,218 @@ func TestCopyLocalUserIdentity(t *testing.T) {
 	}
 	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "test@test.com" {
 		t.Fatalf("user.email = %q, want %q", got, "test@test.com")
+	}
+}
+
+// The checkout's effective identity may live anywhere in its config stack -
+// the common case is a global file, which repository-local reads miss. A bare
+// gate clone has no config of its own, so only propagating the effective
+// identity keeps pipeline commits authored by the same party as the
+// operator's own commits (issue #924).
+func TestBindUserIdentityPropagatesEffectiveIdentity(t *testing.T) {
+	ctx := context.Background()
+
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[user]\n\tname = Global User\n\temail = global@example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	dst := filepath.Join(parent, "dst")
+	run(t, parent, "git", "init", src)
+	run(t, parent, "git", "init", dst)
+
+	if err := BindUserIdentity(ctx, src, dst); err != nil {
+		t.Fatalf("BindUserIdentity failed: %v", err)
+	}
+	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Global User" {
+		t.Fatalf("user.name = %q, want %q", got, "Global User")
+	}
+	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "global@example.com" {
+		t.Fatalf("user.email = %q, want %q", got, "global@example.com")
+	}
+}
+
+// A checkout that resolves no identity anywhere leaves the worktree to the
+// daemon host's ambient or auto-detected identity. BindUserIdentity refuses
+// rather than letting a commit be published under it.
+func TestBindUserIdentityRefusesUnboundWorktree(t *testing.T) {
+	ctx := context.Background()
+
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	dst := filepath.Join(parent, "dst")
+	run(t, parent, "git", "init", src)
+	run(t, parent, "git", "init", dst)
+
+	for _, k := range []string{
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+	} {
+		if v, ok := os.LookupEnv(k); ok {
+			os.Unsetenv(k)
+			t.Cleanup(func() { os.Setenv(k, v) })
+		}
+	}
+
+	err := BindUserIdentity(ctx, src, dst)
+	if err == nil {
+		t.Fatal("expected BindUserIdentity to refuse an unbound worktree")
+	}
+	if !strings.Contains(err.Error(), "cannot bind a git identity") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// GIT_AUTHOR_*/GIT_COMMITTER_* in the daemon's environment are an explicit
+// binding and must keep their precedence: nothing is stamped, nothing fails.
+func TestBindUserIdentityEnvironmentBinds(t *testing.T) {
+	ctx := context.Background()
+
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	dst := filepath.Join(parent, "dst")
+	run(t, parent, "git", "init", src)
+	run(t, parent, "git", "init", dst)
+
+	t.Setenv("GIT_AUTHOR_NAME", "Env User")
+	t.Setenv("GIT_AUTHOR_EMAIL", "env-author@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "Env User")
+	t.Setenv("GIT_COMMITTER_EMAIL", "env-committer@example.com")
+
+	if err := BindUserIdentity(ctx, src, dst); err != nil {
+		t.Fatalf("BindUserIdentity failed: %v", err)
+	}
+	if got := run(t, dst, "git", "var", "GIT_AUTHOR_IDENT"); !strings.HasPrefix(got, "Env User <env-author@example.com>") {
+		t.Fatalf("author ident = %q, want env-bound identity", got)
+	}
+}
+
+func TestBindUserIdentityPropagatesRoleSpecificIdentity(t *testing.T) {
+	ctx := context.Background()
+
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	dst := filepath.Join(parent, "dst")
+	run(t, parent, "git", "init", src)
+	run(t, parent, "git", "init", dst)
+
+	run(t, src, "git", "config", "user.name", "Generic User")
+	run(t, src, "git", "config", "user.email", "generic@example.com")
+	run(t, src, "git", "config", "author.name", "Author User")
+	run(t, src, "git", "config", "author.email", "author@example.com")
+
+	for _, k := range []string{
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+	} {
+		if v, ok := os.LookupEnv(k); ok {
+			os.Unsetenv(k)
+			t.Cleanup(func() { os.Setenv(k, v) })
+		}
+	}
+
+	if err := BindUserIdentity(ctx, src, dst); err != nil {
+		t.Fatalf("BindUserIdentity failed: %v", err)
+	}
+	if got := run(t, dst, "git", "var", "GIT_AUTHOR_IDENT"); !strings.HasPrefix(got, "Author User <author@example.com>") {
+		t.Fatalf("author ident = %q, want role-specific author identity", got)
+	}
+	if got := run(t, dst, "git", "var", "GIT_COMMITTER_IDENT"); !strings.HasPrefix(got, "Generic User <generic@example.com>") {
+		t.Fatalf("committer ident = %q, want generic committer identity", got)
+	}
+}
+
+func TestBindUserIdentityRefusesStaleSharedIdentityOnLocalFallback(t *testing.T) {
+	ctx := context.Background()
+
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	run(t, parent, "git", "init", src)
+
+	// dst is a linked worktree of a gate without extensions.worktreeConfig,
+	// so identity config falls back to the gate's shared local config - which
+	// an earlier run has already stamped with a different identity, including
+	// role keys this checkout does not set.
+	gate := filepath.Join(parent, "gate")
+	run(t, parent, "git", "init", gate)
+	run(t, gate, "git", "config", "user.name", "Stale User")
+	run(t, gate, "git", "config", "user.email", "stale@example.com")
+	run(t, gate, "git", "config", "author.name", "Stale Author")
+	run(t, gate, "git", "config", "author.email", "stale-author@example.com")
+	writeFile(t, filepath.Join(gate, "README.md"), "# gate\n")
+	run(t, gate, "git", "add", ".")
+	run(t, gate, "git", "commit", "-m", "initial")
+	dst := filepath.Join(parent, "wt")
+	run(t, gate, "git", "worktree", "add", "--detach", dst)
+
+	run(t, src, "git", "config", "user.name", "Current User")
+	run(t, src, "git", "config", "user.email", "current@example.com")
+
+	for _, k := range []string{
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+	} {
+		if v, ok := os.LookupEnv(k); ok {
+			os.Unsetenv(k)
+			t.Cleanup(func() { os.Setenv(k, v) })
+		}
+	}
+
+	err := BindUserIdentity(ctx, src, dst)
+	if err == nil {
+		t.Fatal("BindUserIdentity succeeded despite a stale shared-config identity")
+	}
+	if !strings.Contains(err.Error(), "cannot bind a git identity") {
+		t.Fatalf("error = %q, want bind failure", err)
+	}
+	// The stamp writes our values over the stale ones (legacy fallback
+	// behavior), but the bind attempt must never clear keys an active run
+	// may be using.
+	if got := run(t, dst, "git", "config", "--local", "--get", "--default", "", "user.name"); got != "Current User" {
+		t.Fatalf("user.name = %q, want stamped value", got)
+	}
+}
+
+func TestBindUserIdentityRefusesNoIdentityEvenWithStaleSharedConfig(t *testing.T) {
+	ctx := context.Background()
+
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	run(t, parent, "git", "init", src)
+
+	gate := filepath.Join(parent, "gate")
+	run(t, parent, "git", "init", gate)
+	run(t, gate, "git", "config", "user.name", "Stale User")
+	run(t, gate, "git", "config", "user.email", "stale@example.com")
+	writeFile(t, filepath.Join(gate, "README.md"), "# gate\n")
+	run(t, gate, "git", "add", ".")
+	run(t, gate, "git", "commit", "-m", "initial")
+	dst := filepath.Join(parent, "wt")
+	run(t, gate, "git", "worktree", "add", "--detach", dst)
+
+	for _, k := range []string{
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+	} {
+		if v, ok := os.LookupEnv(k); ok {
+			os.Unsetenv(k)
+			t.Cleanup(func() { os.Setenv(k, v) })
+		}
+	}
+
+	err := BindUserIdentity(ctx, src, dst)
+	if err == nil {
+		t.Fatal("BindUserIdentity succeeded with no bindable identity; stale shared config leaked")
+	}
+	if !strings.Contains(err.Error(), "cannot bind a git identity") {
+		t.Fatalf("error = %q, want bind failure", err)
+	}
+	// The stale keys must be left untouched - an active run may be using them.
+	if got := run(t, dst, "git", "config", "--local", "--get", "--default", "", "user.name"); got != "Stale User" {
+		t.Fatalf("stale user.name = %q, want it left untouched", got)
 	}
 }
 

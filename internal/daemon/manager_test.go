@@ -675,7 +675,7 @@ func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 // creation and git-identity setup concurrently. All runs share one gate bare
 // repo, so writing identity with `git config --local` (which targets the bare's
 // shared config) made the two startups race on <bare>/config.lock and fail one
-// run with "could not lock config file ...: File exists". CopyLocalUserIdentity
+// run with "could not lock config file ...: File exists". BindUserIdentity
 // now writes per-worktree, so the startups no longer contend. The race window
 // is during synchronous startRun, so a failure surfaces directly as the
 // push_received call's error. macOS-only in practice (Linux file locking and

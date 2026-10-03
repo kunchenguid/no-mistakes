@@ -707,8 +707,23 @@ func CommitAll(ctx context.Context, dir, message string) error {
 	return err
 }
 
-// CopyLocalUserIdentity copies local user.name and user.email from srcDir into
-// dstDir. Missing values in srcDir are ignored.
+// BindUserIdentity binds the commit identity the run worktree at dstDir will
+// use to the identity effective in the operator's checkout at srcDir, so every
+// pipeline-authored commit is published by the same party as the operator's
+// own commits. A gate repository is a bare clone, and clone carries no
+// repository-local config, so without this binding every pipeline commit
+// falls through to the daemon host's ambient or auto-detected identity - a
+// wrong attribution an immutable commit object can never shed (issue #924).
+//
+// Resolution mirrors `git commit` run in srcDir: the effective identity keys
+// across the whole config stack (local wins over global and system, and
+// includeIf sections keyed on the checkout's remote apply) are stamped into
+// dstDir, not just the repository-local keys. author.* and committer.* are
+// copied alongside user.* so a checkout that overrides one role keeps that
+// role-specific identity on its pipeline commits. GIT_AUTHOR_*,
+// GIT_COMMITTER_* and GIT_CONFIG_* already in the daemon's environment keep
+// their normal precedence over the stamped values, the same precedence they
+// have for the operator's own commits.
 //
 // The write into dstDir uses per-worktree scope (`git config --worktree`) when
 // the repository has worktree config enabled. dstDir is typically a linked
@@ -718,18 +733,39 @@ func CommitAll(ctx context.Context, dir, message string) error {
 // on that single lock and one fails with "could not lock config file ...
 // config: File exists". Writing per-worktree puts each run's identity in its own
 // <bare>/worktrees/<id>/config.worktree, so concurrent startups never contend.
-// Older Git without `--worktree` support falls back to `--local`.
-func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
-	for _, key := range []string{"user.name", "user.email"} {
-		value, err := Run(ctx, srcDir, "config", "--local", "--get", "--default", "", key)
+// Older Git without `--worktree` support falls back to `--local`, the shared
+// config. That path can only stamp values, never safely clear stale ones
+// (another run may be committing with them right now), so binding is proven
+// by comparison instead: dstDir must resolve the same identity srcDir does.
+//
+// After stamping, `git var` under user.useConfigOnly resolves the author and
+// committer in both directories - honoring config, GIT_CONFIG_* and
+// GIT_AUTHOR_*/GIT_COMMITTER_* (explicit binds that keep their normal
+// precedence), while refusing to answer from auto-detection. When the
+// checkout cannot establish an identity the run fails here, and when the
+// worktree resolves a different one (a stale shared-config value, or a
+// concurrently-stamping sibling) the run fails here too, rather than
+// publishing commits under an identity that is not the operator's.
+func BindUserIdentity(ctx context.Context, srcDir, dstDir string) error {
+	for _, ident := range []string{"GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"} {
+		if _, err := varIdent(ctx, srcDir, ident); err != nil {
+			return fmt.Errorf("cannot bind a git identity for pipeline commits: no %s resolves "+
+				"from the checkout's config or the environment - set user.name and "+
+				"user.email in the checkout (or export GIT_AUTHOR_*/GIT_COMMITTER_* for the daemon) "+
+				"so commits are not published under an ambient identity", ident)
+		}
+	}
+	scope := "--worktree"
+	for _, key := range identityKeys {
+		value, err := Run(ctx, srcDir, "config", "--get", "--default", "", key)
 		if err != nil {
 			return err
 		}
 		if value == "" {
 			continue
 		}
-		if _, err := Run(ctx, dstDir, "config", "--worktree", key, value); err != nil {
-			if !isWorktreeConfigWriteUnavailable(err) {
+		if _, err := Run(ctx, dstDir, "config", scope, key, value); err != nil {
+			if scope == "--local" || !isWorktreeConfigWriteUnavailable(err) {
 				return err
 			}
 			// Per-worktree config is not usable here (Git too old for the
@@ -737,12 +773,53 @@ func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
 			// extensions.worktreeConfig enabled). Fall back to the shared
 			// local config. Such gates also lack per-worktree isolation, so
 			// this matches the legacy behavior.
+			scope = "--local"
 			if _, err := Run(ctx, dstDir, "config", "--local", key, value); err != nil {
 				return err
 			}
 		}
 	}
+	for _, ident := range []string{"GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"} {
+		want, err := varIdent(ctx, srcDir, ident)
+		if err != nil {
+			return err
+		}
+		got, err := varIdent(ctx, dstDir, ident)
+		if err != nil {
+			return fmt.Errorf("cannot bind a git identity for pipeline commits: %s does not "+
+				"resolve in the run worktree: %w", ident, err)
+		}
+		if got != want {
+			return fmt.Errorf("cannot bind a git identity for pipeline commits: %s resolves to "+
+				"%q in the run worktree but the checkout commits as %q - remove the stale identity "+
+				"from the gate's shared config or enable extensions.worktreeConfig on it", ident, got, want)
+		}
+	}
 	return nil
+}
+
+// identityKeys are the config keys a commit in the operator's checkout can
+// resolve its author and committer from: user.* backs both roles and
+// author.* / committer.* override it per role.
+var identityKeys = []string{
+	"user.name", "user.email",
+	"author.name", "author.email",
+	"committer.name", "committer.email",
+}
+
+// varIdent resolves an identity variable exactly as a commit in dir would,
+// under user.useConfigOnly so auto-detected identity does not count. The
+// " epoch timezone" suffix is dropped so two resolutions of the same identity
+// compare equal regardless of when they ran.
+func varIdent(ctx context.Context, dir, ident string) (string, error) {
+	out, err := Run(ctx, dir, "-c", "user.useConfigOnly=true", "var", ident)
+	if err != nil {
+		return "", err
+	}
+	if i := strings.Index(out, ">"); i >= 0 {
+		out = out[:i+1]
+	}
+	return out, nil
 }
 
 // isWorktreeConfigWriteUnavailable reports whether a `git config --worktree`
