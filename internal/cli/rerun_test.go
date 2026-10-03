@@ -157,7 +157,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			dir := t.TempDir()
 			p := paths.WithRoot(makeSocketSafeTempDir(t))
 			t.Setenv("NM_HOME", p.Root())
-			const claudeProfile = "/caller/.claude1"
+			claudeProfile := absTestPath("/caller/.claude1")
 			t.Setenv(runenv.ClaudeConfigDirEnvVar, claudeProfile)
 			if err := p.EnsureDirs(); err != nil {
 				t.Fatal(err)
