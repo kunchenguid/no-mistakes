@@ -46,15 +46,24 @@ var closingKeywordLinePattern = regexp.MustCompile(`(?i)^(?:(?:[-*+]|[0-9]+[.)])
 var closingReferencePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*|#[1-9][0-9]*)`)
 
 // extractClosingKeywordLines returns the distinct standalone closing-keyword
-// lines of body, outside fenced and indented code blocks.
+// lines of body, outside fenced and indented code blocks, HTML <code>/<pre>
+// elements, and HTML comments: the references GitHub treats as closing,
+// matching what neutralizeClosingReferences leaves alone.
 func extractClosingKeywordLines(body string) []string {
 	seen := map[string]struct{}{}
 	var lines []string
 	var fence markdownFence
+	var htmlCode string
+	inComment := false
 	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
 		inFence := fence.marker != 0
 		fence.consume(raw)
 		if inFence || fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
+			continue
+		}
+		inHTML := htmlCode != "" || inComment
+		inComment = consumeHTMLCommentsAndCode(raw, inComment, &htmlCode)
+		if inHTML {
 			continue
 		}
 		line := strings.TrimSpace(raw)
@@ -71,7 +80,31 @@ func extractClosingKeywordLines(body string) []string {
 	return lines
 }
 
-var closingReferenceInTextPattern = regexp.MustCompile(`(?i)\b((?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+)((?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+)?#[1-9][0-9]*|https?://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(?:issues|pull)/[1-9][0-9]*)\b`)
+// consumeHTMLCommentsAndCode advances the HTML comment and <code>/<pre>
+// element state across line and reports whether a comment is still open
+// after it.
+func consumeHTMLCommentsAndCode(line string, inComment bool, htmlCode *string) bool {
+	keep := func(text string) string { return text }
+	for {
+		if inComment {
+			end := strings.Index(line, "-->")
+			if end < 0 {
+				return true
+			}
+			line, inComment = line[end+len("-->"):], false
+			continue
+		}
+		start := strings.Index(line, "<!--")
+		if start < 0 {
+			outsideHTMLCode(line, htmlCode, keep)
+			return false
+		}
+		outsideHTMLCode(line[:start], htmlCode, keep)
+		line, inComment = line[start+len("<!--"):], true
+	}
+}
+
+var closingReferenceInTextPattern =regexp.MustCompile(`(?i)\b((?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+)((?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+)?#[1-9][0-9]*|https?://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(?:issues|pull)/[1-9][0-9]*)\b`)
 
 // neutralizeClosingReferences puts every closing-keyword reference in
 // pipeline-generated PR text, including an issue or pull request URL, in an

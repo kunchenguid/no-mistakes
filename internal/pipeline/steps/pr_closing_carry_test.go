@@ -200,3 +200,28 @@ func TestOrdinaryIssuesBlockHasNoLedgerOnBitbucket(t *testing.T) {
 		t.Fatal("bitbucket must not carry closing lines")
 	}
 }
+
+// A closing line inside an HTML <pre> element is not live (GitHub closes
+// nothing there, and neutralization leaves it alone), so it is never carried
+// into the Issues section as the author's, while a real author line is.
+func TestPRStep_ClosingLineInHTMLPreIsNotCarried(t *testing.T) {
+	t.Parallel()
+	runs := newPRStepRuns(t, nil)
+	created := runs.create()
+	runs.authorEdits(created + "\n\n<pre>\nFixes #12\n</pre>\n\nCloses #4\n")
+
+	updated := runs.update()
+	if got := closingLinesOf(updated); got != "Closes #4" {
+		t.Fatalf("closing lines = %q, want only the author's live line carried:\n%s", got, updated)
+	}
+}
+
+// A body the pipeline never published carries its live closing lines, but
+// not ones inside a multi-line HTML comment or <code> element.
+func TestAuthorClosingLinesSkipHTMLCommentsAndCode(t *testing.T) {
+	body := "Summary\n\n<!--\nTemplate example:\nCloses #3\n-->\n\n<code>\nResolves #5\n</code>\n\nCloses #4\n"
+	got := authorClosingLines(body)
+	if strings.Join(got, "|") != "Closes #4" {
+		t.Fatalf("author closing lines = %q, want only the live line", got)
+	}
+}
