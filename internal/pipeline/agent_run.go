@@ -64,7 +64,7 @@ func (sctx *StepContext) RunAgentContext(parent context.Context, opts agent.RunO
 // optional still-working cap, and cause (Review and Test). The parent must
 // not already carry that budget as a context deadline, or the activity-aware
 // extension cannot run. A working cap equal to timeout does not extend the
-// turn, and one shorter than timeout is treated as unset.
+// turn.
 func (sctx *StepContext) RunAgentBudget(parent context.Context, timeout, working time.Duration, cause error, opts agent.RunOpts) (*agent.Result, error) {
 	return sctx.runAgent(parent, opts, "", timeout, working, cause)
 }
@@ -465,9 +465,6 @@ func bindAgentDeadline(parent context.Context, timeout, working time.Duration, c
 	}
 	if cause == nil {
 		cause = ErrAgentTimeout
-	}
-	if working < timeout {
-		working = 0
 	}
 	budget := &agentBudget{timeout: timeout, working: working, cause: cause, start: time.Now()}
 	if working <= timeout {

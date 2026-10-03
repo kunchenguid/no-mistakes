@@ -171,7 +171,7 @@ func TestRunAgent_StreamingWithoutAWorkingCapStopsAtTheSilentBudget(t *testing.T
 	if err == nil || !errors.Is(err, ErrAgentTimeout) {
 		t.Fatalf("error = %v, want ErrAgentTimeout", err)
 	}
-	if elapsed >= 2*stall {
+	if elapsed >= 2*time.Second {
 		t.Fatalf("unset cap let a working agent run %s, want a cut at the %s silent budget", elapsed, stall)
 	}
 	want := regexp.MustCompile(`^agent timed out after 40ms \(silent budget; no still-working cap is set; ran \S+\); agent last produced output \S+ ago \(\d+ observed\)$`)
@@ -210,7 +210,7 @@ func TestRunAgent_CapEqualToTheSilentBudgetIsReportedAsTheCap(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrAgentTimeout) {
 		t.Fatalf("error = %v, want ErrAgentTimeout", err)
 	}
-	if elapsed >= 2*stall {
+	if elapsed >= 2*time.Second {
 		t.Fatalf("equal cap let a working agent run %s, want a cut at %s", elapsed, stall)
 	}
 	want := regexp.MustCompile(`^agent timed out at its 40ms still-working cap \(silent budget 40ms; ran \S+\); agent last produced output \S+ ago \(\d+ observed\)$`)
