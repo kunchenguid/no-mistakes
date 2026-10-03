@@ -28,7 +28,8 @@ The suppression is limited to those correction-commit invocations. It does not c
 Agent roles that can write, repair, or review tests reject tests whose only evidence is matching implementation source text, tokens, syntax, or incidental snapshots.
 They instead require an executable interface or a typed or normalized semantic model that proves observable behavior.
 Reading a file remains valid when that file is itself an owned output or data contract, and deterministic tests may inspect the final emitted agent prompt as a generated interface; model interpretation is reserved for development-only evaluation.
-Review flags every newly added violation and requires same-pattern tests encountered directly in the accepted change's scope to be removed or made semantic, without expanding the change into a repository-wide test cleanup.
+Tests must also use an independent oracle: an expected result from a specification, worked example, published constant, external contract, or independently justified property rather than the code under test. Agents should name the public behavior, the oracle's source, and a plausible wrong behavior the test would reject. Tests that only check their own mocks, compare a result to itself, or copy the implementation's expected-value rule can let a shared mistake pass. External-boundary mocks, constants, snapshots, and computed expectations remain legitimate when they check an independent contract.
+Review flags every newly added source-content-only violation and requires same-pattern tests encountered directly in the accepted change's scope to be removed or made semantic. Within that same scope, it also flags newly added or changed tests that lack an independent oracle and names the behavior, oracle source, and wrong behavior an in-scope replacement would reject, without expanding the change into a repository-wide test cleanup.
 
 ## Finding decision history
 
