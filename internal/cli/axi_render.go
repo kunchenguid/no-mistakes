@@ -119,9 +119,12 @@ type runView struct {
 	Branch           string
 	Status           string
 	HeadSHA          string
-	PRURL            string
-	CIReady          bool
-	CIReadyNoCI      bool
+	// ReviewApprovedHeadSHA is the commit the last completed Review approved.
+	// Empty means no approval is recorded, so status omits it. Reporting only.
+	ReviewApprovedHeadSHA string
+	PRURL                 string
+	CIReady               bool
+	CIReadyNoCI           bool
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -137,17 +140,18 @@ type runView struct {
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
-		ID:                 r.ID,
-		Branch:             r.Branch,
-		Status:             string(r.Status),
-		HeadSHA:            r.HeadSHA,
-		CIReady:            r.CIReady,
-		CIReadyNoCI:        r.CIReadyNoCI,
-		AwaitingAgentSince: r.AwaitingAgentSince,
-		CIOverrideReason:   r.CIOverrideReason,
-		TestOverrideReason: r.TestOverrideReason,
-		PiProfile:          r.PiProfile,
-		VerificationPlan:   r.VerificationPlan,
+		ID:                    r.ID,
+		Branch:                r.Branch,
+		Status:                string(r.Status),
+		HeadSHA:               r.HeadSHA,
+		ReviewApprovedHeadSHA: deref(r.ReviewApprovedHeadSHA),
+		CIReady:               r.CIReady,
+		CIReadyNoCI:           r.CIReadyNoCI,
+		AwaitingAgentSince:    r.AwaitingAgentSince,
+		CIOverrideReason:      r.CIOverrideReason,
+		TestOverrideReason:    r.TestOverrideReason,
+		PiProfile:             r.PiProfile,
+		VerificationPlan:      r.VerificationPlan,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -185,13 +189,14 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 	rv := runView{
-		PiProfile:          r.PiProfile,
-		VerificationPlan:   r.VerificationPlan,
-		ID:                 r.ID,
-		Branch:             r.Branch,
-		Status:             string(r.Status),
-		HeadSHA:            r.HeadSHA,
-		AwaitingAgentSince: r.AwaitingAgentSince,
+		PiProfile:             r.PiProfile,
+		VerificationPlan:      r.VerificationPlan,
+		ID:                    r.ID,
+		Branch:                r.Branch,
+		Status:                string(r.Status),
+		HeadSHA:               r.HeadSHA,
+		ReviewApprovedHeadSHA: deref(r.ReviewApprovedHeadSHA),
+		AwaitingAgentSince:    r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -486,6 +491,16 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
+	// reviewed_head_sha is the stored Review approval. head_reviewed says
+	// whether the head this document is about is still that commit. Both are
+	// omitted when Review has not recorded an approval, so an absent field is
+	// not the same fact as a head that moved after approval.
+	if approved := strings.TrimSpace(rv.ReviewApprovedHeadSHA); approved != "" {
+		fields = append(fields,
+			toon.Field{Key: "reviewed_head_sha", Value: approved},
+			toon.Field{Key: "head_reviewed", Value: strings.TrimSpace(rv.HeadSHA) == approved},
+		)
+	}
 	if rv.TestOverrideReason != "" {
 		fields = append(fields, toon.Field{Key: "test_override_reason", Value: rv.TestOverrideReason})
 	}

@@ -234,6 +234,7 @@ Report those exceptions rather than describing Test as clean.
 It retains exit code 0: missing verification is not a failing code verdict.
 `run.automatic_skips` names each affected step and cause, and `run.head_sha` gives the full recorded head in both drive output and `axi status`.
 Report that missing evidence; this outcome does not establish CI readiness or a merge.
+For the review-approved head fields shared by gate, outcome, and status documents, see [`axi status`](#no-mistakes-axi-status).
 Explicit per-run skips retain their existing behavior.
 If the run also has a Test or CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible.
 Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
@@ -349,6 +350,14 @@ no-mistakes axi status --run <id>
 | Flag    | Type     | Default            | Description               |
 | ------- | -------- | ------------------ | ------------------------- |
 | `--run` | `string` | current-branch run | Inspect a specific run ID |
+
+`run.head` is the short recorded head and `run.head_sha` is the full one.
+When Review has recorded an approval, the same run object (under `run:` or `other_branch_run:`, and on every gate and outcome document, which share it) also includes `reviewed_head_sha` and `head_reviewed`.
+`reviewed_head_sha` is the commit the last completed Review approved.
+`head_reviewed` is `true` when `head_sha` is still that commit and `false` when Document, Lint, a Test repair, a CI repair, or any other later step has moved the head.
+Both fields are omitted when no approval is recorded: Review has not finished, Review was skipped, or the approval was revoked for revalidation.
+An omitted field is not the same fact as `head_reviewed: false`.
+The fields are reporting only. They do not change pipeline behavior and they do not gate publication.
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
