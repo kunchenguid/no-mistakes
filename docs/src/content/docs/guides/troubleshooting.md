@@ -297,7 +297,7 @@ Older config files may still contain an explicit `ci_timeout: "4h"` value; updat
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
 You can approve, fix, or skip from the TUI or `no-mistakes axi respond`.
 
-A park that happens **before** the timeout, with a finding that CI checks could not be read from the provider, means the check read itself is failing (after 6 consecutive failed polls, the step stops waiting instead of spinning to `ci_timeout`). The finding is provider-neutral and the step log shows the underlying provider error; for GitHub, a `gh` older than 2.50 rejects the `gh pr checks --json` call and needs upgrading. The same park on GitLab, Bitbucket Cloud, or Azure DevOps points at that provider's CLI or credentials instead.
+A park that happens **before** the timeout, with a finding that CI checks could not be read from the provider, means the check read itself is persistently failing, not that a CI job failed. Read the finding and the underlying provider error in the step log before choosing a remedy; a GitHub selector error is not necessarily a CLI version problem. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the failure threshold and diagnostic guidance, including SHA-selector misuse and provider CLI or credential checks.
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 
 ## Step looks quiet or wedged
