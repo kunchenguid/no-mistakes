@@ -46,24 +46,15 @@ var closingKeywordLinePattern = regexp.MustCompile(`(?i)^(?:(?:[-*+]|[0-9]+[.)])
 var closingReferencePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*|#[1-9][0-9]*)`)
 
 // extractClosingKeywordLines returns the distinct standalone closing-keyword
-// lines of body, outside fenced and indented code blocks, HTML <code>/<pre>
-// elements, and HTML comments: the references GitHub treats as closing,
-// matching what neutralizeClosingReferences leaves alone.
+// lines of body whose whole text is live (liveTextScanner), so it counts
+// exactly the references GitHub treats as closing.
 func extractClosingKeywordLines(body string) []string {
 	seen := map[string]struct{}{}
 	var lines []string
-	var fence markdownFence
-	var htmlCode string
-	inComment := false
+	scanner := liveTextScanner{comments: true}
+	keep := func(text string) string { return text }
 	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		inFence := fence.marker != 0
-		fence.consume(raw)
-		if inFence || fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
-			continue
-		}
-		inHTML := htmlCode != "" || inComment
-		inComment = consumeHTMLCommentsAndCode(raw, inComment, &htmlCode)
-		if inHTML {
+		if _, live := scanner.line(raw, keep); !live {
 			continue
 		}
 		line := strings.TrimSpace(raw)
@@ -80,55 +71,83 @@ func extractClosingKeywordLines(body string) []string {
 	return lines
 }
 
-// consumeHTMLCommentsAndCode advances the HTML comment and <code>/<pre>
-// element state across line and reports whether a comment is still open
-// after it.
-func consumeHTMLCommentsAndCode(line string, inComment bool, htmlCode *string) bool {
-	keep := func(text string) string { return text }
+// liveTextScanner walks text line by line and finds its live parts: outside
+// fenced and indented code blocks, inline code spans, HTML <code>/<pre>
+// elements (which may span lines), and, when comments is set, HTML comments.
+// Inline code is split off first, so a backticked tag never opens element or
+// comment state. It is the one definition of live text shared by
+// neutralizeClosingReferences and extractClosingKeywordLines.
+type liveTextScanner struct {
+	fence     markdownFence
+	htmlCode  string
+	inComment bool
+	comments  bool
+}
+
+// line applies rewrite to the live parts of raw and reports whether all of
+// raw is live.
+func (s *liveTextScanner) line(raw string, rewrite func(string) string) (string, bool) {
+	inFence := s.fence.marker != 0
+	s.fence.consume(raw)
+	if inFence || s.fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
+		return raw, false
+	}
+	live := 0
+	out := outsideInlineCode(raw, func(text string) string {
+		return s.outsideHTML(text, func(text string) string {
+			live += len(text)
+			return rewrite(text)
+		})
+	})
+	return out, live == len(raw)
+}
+
+// outsideHTML applies rewrite to the parts of text outside HTML <code>/<pre>
+// elements and, when tracked, HTML comments.
+func (s *liveTextScanner) outsideHTML(text string, rewrite func(string) string) string {
+	if !s.comments {
+		return outsideHTMLCode(text, &s.htmlCode, rewrite)
+	}
+	var b strings.Builder
 	for {
-		if inComment {
-			end := strings.Index(line, "-->")
+		if s.inComment {
+			end := strings.Index(text, "-->")
 			if end < 0 {
-				return true
+				b.WriteString(text)
+				return b.String()
 			}
-			line, inComment = line[end+len("-->"):], false
+			b.WriteString(text[:end+len("-->")])
+			text, s.inComment = text[end+len("-->"):], false
 			continue
 		}
-		start := strings.Index(line, "<!--")
+		start := strings.Index(text, "<!--")
 		if start < 0 {
-			outsideHTMLCode(line, htmlCode, keep)
-			return false
+			b.WriteString(outsideHTMLCode(text, &s.htmlCode, rewrite))
+			return b.String()
 		}
-		outsideHTMLCode(line[:start], htmlCode, keep)
-		line, inComment = line[start+len("<!--"):], true
+		b.WriteString(outsideHTMLCode(text[:start], &s.htmlCode, rewrite))
+		b.WriteString(text[start : start+len("<!--")])
+		text, s.inComment = text[start+len("<!--"):], true
 	}
 }
 
-var closingReferenceInTextPattern =regexp.MustCompile(`(?i)\b((?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+)((?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+)?#[1-9][0-9]*|https?://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(?:issues|pull)/[1-9][0-9]*)\b`)
+var closingReferenceInTextPattern = regexp.MustCompile(`(?i)\b((?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+)((?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+)?#[1-9][0-9]*|https?://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(?:issues|pull)/[1-9][0-9]*)\b`)
 
 // neutralizeClosingReferences puts every closing-keyword reference in
 // pipeline-generated PR text, including an issue or pull request URL, in an
-// inline code span ("Fixes `#12`"), outside fenced, indented, and inline code
-// and HTML <code>/<pre> elements (a tested command renders as <code>).
-// GitHub ignores a reference in code, so nothing the pipeline publishes can
-// close an issue; only the Issues section carries live ones.
+// inline code span ("Fixes `#12`"), in its live parts (liveTextScanner; a
+// tested command renders as <code>). GitHub ignores a reference in code, so
+// nothing the pipeline publishes can close an issue; only the Issues section
+// carries live ones.
 func neutralizeClosingReferences(s string) string {
 	if !closingReferenceInTextPattern.MatchString(s) {
 		return s
 	}
 	lines := strings.Split(s, "\n")
-	var fence markdownFence
-	var htmlCode string
+	var scanner liveTextScanner
 	for i, raw := range lines {
-		inFence := fence.marker != 0
-		fence.consume(raw)
-		if inFence || fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
-			continue
-		}
-		lines[i] = outsideInlineCode(raw, func(text string) string {
-			return outsideHTMLCode(text, &htmlCode, func(text string) string {
-				return closingReferenceInTextPattern.ReplaceAllString(text, "${1}`${2}`")
-			})
+		lines[i], _ = scanner.line(raw, func(text string) string {
+			return closingReferenceInTextPattern.ReplaceAllString(text, "${1}`${2}`")
 		})
 	}
 	return strings.Join(lines, "\n")

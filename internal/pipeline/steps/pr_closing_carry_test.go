@@ -225,3 +225,28 @@ func TestAuthorClosingLinesSkipHTMLCommentsAndCode(t *testing.T) {
 		t.Fatalf("author closing lines = %q, want only the live line", got)
 	}
 }
+
+// Inline code never opens HTML element or comment state: prose naming
+// `<pre>`, `<code>` and `<!--` leaves later author lines and the Issues
+// section live, so the author's line is carried and --closes still verifies.
+func TestPRStep_BacktickedHTMLDoesNotHideLaterClosingLines(t *testing.T) {
+	t.Parallel()
+	runs := newPRStepRuns(t, nil)
+	created := runs.create()
+	runs.authorEdits("Skips HTML `<pre>`/`<code>` elements and `<!--` comments.\n\nCloses #4\n\n" + created)
+
+	updated := runs.update("9")
+	if got := closingLinesOf(updated); got != "Closes #4|Closes #9" {
+		t.Fatalf("closing lines = %q, want the author's line and the requested one:\n%s", got, updated)
+	}
+}
+
+func TestClosingKeywordLinesAfterBacktickedHTMLStayLive(t *testing.T) {
+	body := "Uses `<pre>`, `<code>` and `<!--` here.\n\n## Issues\n\nCloses #9\n"
+	if got := closingLinesOf(body); got != "Closes #9" {
+		t.Fatalf("closing lines = %q, want the Issues line live", got)
+	}
+	if got := neutralizeClosingReferences("Uses `<pre>` here.\nFixes #3"); got != "Uses `<pre>` here.\nFixes `#3`" {
+		t.Fatalf("neutralized = %q", got)
+	}
+}
