@@ -225,6 +225,13 @@ type GlobalConfig struct {
 	Commit GlobalCommitRaw
 	Intent GlobalIntentRaw
 	Test   TestRaw
+	// Review carries the operator's own review guidance for every gated
+	// repository. Only path_instructions exists here: like review_agents it
+	// comes from this machine, never from a pushed branch, and it can only add
+	// requirements to a review, so it sits outside the trusted-default-branch
+	// boundary. Merge renders it alongside, never instead of, the repository's
+	// trusted rules.
+	Review OperatorReviewRaw
 	// Eval is resolved at load time because it is global-only: it describes
 	// this machine's local eval corpus (disk, retention, whether review rounds
 	// record replay provenance), never a repository policy. Keeping it out of
@@ -266,6 +273,7 @@ type globalConfigRaw struct {
 	Commit                    GlobalCommitRaw            `yaml:"commit"`
 	Intent                    GlobalIntentRaw            `yaml:"intent"`
 	Test                      TestRaw                    `yaml:"test"`
+	Review                    OperatorReviewRaw          `yaml:"review"`
 	Eval                      EvalRaw                    `yaml:"eval"`
 	// Jev is the retired jev.review_assist pre-brief block. The feature was
 	// removed after the offline trial showed its candidate listing cannot
@@ -295,10 +303,21 @@ type ForgeProfile struct {
 type ForgeProfiles map[string]ForgeProfile
 
 // RepositoryOverride contains machine-local settings for one normalized remote.
+// Review and Document are additive guidance only: they are rendered alongside
+// the repository's trusted rules and can never replace or remove them.
 type RepositoryOverride struct {
 	Commit   GlobalCommitRaw            `yaml:"commit"`
 	PR       RepositoryPRRaw            `yaml:"pr"`
 	Commands map[string]CommandOverride `yaml:"commands"`
+	Review   OperatorReviewRaw          `yaml:"review"`
+	Document DocumentRaw                `yaml:"document"`
+}
+
+// OperatorReviewRaw is the review block the operator's global config may set,
+// globally or per repository. It deliberately has no conversation flag: that
+// one parks the gate for a human and stays the repository's decision.
+type OperatorReviewRaw struct {
+	PathInstructions []PathInstruction `yaml:"path_instructions"`
 }
 
 // RepositoryPRRaw contains machine-local per-repository PR title settings.
@@ -470,10 +489,14 @@ type PathInstruction struct {
 // same constants and TestReviewPathInstructionsSectionStaysWithinAccountedBytes
 // is the drift check.
 const (
-	ReviewPathInstructionsHeading    = "Repository review instructions for the changed paths (trusted, from the default branch). Each block below applies only to the files listed under its path, and adds to the requirements above:"
-	ReviewPathInstructionsPathLabel  = "path: "
-	ReviewPathInstructionsFilesLabel = "matched files: "
-	ReviewPathInstructionsRulesLabel = "instructions:"
+	ReviewPathInstructionsHeading = "Repository review instructions for the changed paths (trusted, from the default branch). Each block below applies only to the files listed under its path, and adds to the requirements above:"
+	// The operator headings name the operator's own config as the source so
+	// the reviewer never reads a machine-local rule as the repository's.
+	ReviewGlobalPathInstructionsHeading     = "Machine-local review instructions for the changed paths (from the operator's global no-mistakes config, applied to every repository; not from this repository). Each block below applies only to the files listed under its path, and adds to the requirements above:"
+	ReviewRepositoryPathInstructionsHeading = "Machine-local review instructions for the changed paths (from the operator's global no-mistakes config, scoped to this repository; not from this repository). Each block below applies only to the files listed under its path, and adds to the requirements above:"
+	ReviewPathInstructionsPathLabel         = "path: "
+	ReviewPathInstructionsFilesLabel        = "matched files: "
+	ReviewPathInstructionsRulesLabel        = "instructions:"
 	// ReviewPathInstructionsMaxFilesBytes bounds the matched-file list a single
 	// block may print. A broad glob can match hundreds of files, so the review
 	// step truncates the list deterministically and states the remaining count;
@@ -489,12 +512,17 @@ const (
 // invocation outright instead of degrading. The budget is therefore validated
 // when the config is parsed - before a run starts - rather than truncated
 // silently at review time.
+//
+// The caps bound the COMBINED set every source contributes to one review
+// prompt (see Review.ValidatePathInstructionsBudget), because the prompt
+// budget is the same however many configs the entries came from.
 const (
 	// MaxReviewPathInstructions is the largest number of path_instructions
-	// entries a repository may configure.
+	// entries a review prompt may carry.
 	MaxReviewPathInstructions = 32
-	// MaxReviewPathInstructionsBytes is the largest review-prompt section
-	// path_instructions may produce, measured by ReviewPathInstructionsBytes.
+	// MaxReviewPathInstructionsBytes is the most review-prompt bytes the
+	// path_instructions sections of every source may produce together, each
+	// measured like ReviewPathInstructionsBytes.
 	// It leaves room for the entry cap to be reached with a rule of ordinary
 	// length, so neither cap makes the other unusable.
 	MaxReviewPathInstructionsBytes = 16384
@@ -508,10 +536,14 @@ const (
 // matched-file list is truncated to its allowance, so the result is an upper
 // bound on the real section for any diff.
 func ReviewPathInstructionsBytes(entries []PathInstruction) int {
+	return pathInstructionsSectionBytes(ReviewPathInstructionsHeading, entries)
+}
+
+func pathInstructionsSectionBytes(heading string, entries []PathInstruction) int {
 	if len(entries) == 0 {
 		return 0
 	}
-	total := len("\n\n") + len(ReviewPathInstructionsHeading) + len("\n")
+	total := len("\n\n") + len(heading) + len("\n")
 	for i, entry := range entries {
 		if i > 0 {
 			total += len("\n\n")
@@ -857,12 +889,17 @@ type PR struct {
 // policy in the document prompt.
 type Document struct {
 	Instructions string
+	// RepositoryInstructions come from the repository_overrides entry matching
+	// the repository's remote and are rendered before, never instead of,
+	// Instructions.
+	RepositoryInstructions string
 }
 
-// Review is the resolved review-step config. Both fields come from the trusted
-// default-branch repo config: PathInstructions scope extra review guidance to
-// the changed paths each glob matches, and Conversation decides whether the
-// reviewer may ask questions while it works.
+// Review is the resolved review-step config. Conversation and PathInstructions
+// come from the trusted default-branch repo config: PathInstructions scope extra
+// review guidance to the changed paths each glob matches, and Conversation
+// decides whether the reviewer may ask questions while it works. The two
+// operator lists come from the global config and only ever add rules.
 type Review struct {
 	// Conversation is true when the reviewer may ask the operator questions
 	// mid-pass. It gates the whole protocol: the prompt section, the
@@ -870,6 +907,87 @@ type Review struct {
 	// reviewer session a finalize turn resumes, and `no-mistakes axi answer`.
 	Conversation     bool
 	PathInstructions []PathInstruction
+	// GlobalPathInstructions come from the global config's review block.
+	GlobalPathInstructions []PathInstruction
+	// RepositoryPathInstructions come from the repository_overrides entry
+	// matching the repository's remote.
+	RepositoryPathInstructions []PathInstruction
+}
+
+// PathInstructionSource is one provenance-labeled set of review path
+// instructions. Each source renders as its own section under its own heading.
+type PathInstructionSource struct {
+	// Label names the source in step logs and budget errors.
+	Label   string
+	Heading string
+	Entries []PathInstruction
+}
+
+// PathInstructionSources returns the configured sources in prompt order:
+// global, then per-repository machine-local, then the repository's trusted
+// rules. Sources without entries are omitted.
+func (r Review) PathInstructionSources() []PathInstructionSource {
+	all := []PathInstructionSource{
+		{Label: "machine-local global", Heading: ReviewGlobalPathInstructionsHeading, Entries: r.GlobalPathInstructions},
+		{Label: "machine-local per-repository", Heading: ReviewRepositoryPathInstructionsHeading, Entries: r.RepositoryPathInstructions},
+		{Label: "trusted", Heading: ReviewPathInstructionsHeading, Entries: r.PathInstructions},
+	}
+	out := make([]PathInstructionSource, 0, len(all))
+	for _, source := range all {
+		if len(source.Entries) > 0 {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+// ValidatePathInstructionsBudget checks the combined entries of every source
+// against the review-prompt caps. Each config file is validated on its own when
+// it is parsed, but the repository's trusted copy changes independently of the
+// operator's config, so only the merged set can prove the combined prompt fits.
+func (r Review) ValidatePathInstructionsBudget() error {
+	return validatePathInstructionsBudget(r.PathInstructionSources())
+}
+
+// PathInstructionsPromptBytes is the upper bound on the review-prompt bytes
+// every source's section can add together, measured like
+// ReviewPathInstructionsBytes.
+func (r Review) PathInstructionsPromptBytes() int {
+	return pathInstructionSourcesBytes(r.PathInstructionSources())
+}
+
+func pathInstructionSourcesBytes(sources []PathInstructionSource) int {
+	total := 0
+	for _, source := range sources {
+		total += pathInstructionsSectionBytes(source.Heading, source.Entries)
+	}
+	return total
+}
+
+func validatePathInstructionsBudget(sources []PathInstructionSource) error {
+	entries, bytes := 0, pathInstructionSourcesBytes(sources)
+	counts := make([]string, 0, len(sources))
+	for _, source := range sources {
+		entries += len(source.Entries)
+		counts = append(counts, fmt.Sprintf("%d %s", len(source.Entries), source.Label))
+	}
+	if len(sources) < 2 {
+		if entries > MaxReviewPathInstructions {
+			return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", entries, MaxReviewPathInstructions)
+		}
+		if bytes > MaxReviewPathInstructionsBytes {
+			return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt, at most %d are allowed so the prompt stays within budget", bytes, MaxReviewPathInstructionsBytes)
+		}
+		return nil
+	}
+	combined := strings.Join(counts, ", ")
+	if entries > MaxReviewPathInstructions {
+		return fmt.Errorf("review.path_instructions has %d entries combined (%s), at most %d are allowed; remove machine-local entries from the global config", entries, combined, MaxReviewPathInstructions)
+	}
+	if bytes > MaxReviewPathInstructionsBytes {
+		return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt combined (%s), at most %d are allowed so the prompt stays within budget; shorten or remove machine-local entries in the global config", bytes, combined, MaxReviewPathInstructionsBytes)
+	}
+	return nil
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -2431,6 +2549,10 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.RepositoryOverrides = overrides
 	}
+	if err := validateOperatorReview(raw.Review, cfg.RepositoryOverrides); err != nil {
+		return nil, err
+	}
+	cfg.Review = raw.Review
 	if raw.AutoFix.CI == nil {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
@@ -2644,10 +2766,17 @@ func validatePRRaw(pr PRRaw) error {
 // invalid block has to fail here, before it merges, rather than brick the
 // repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
-	if len(review.PathInstructions) > MaxReviewPathInstructions {
-		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(review.PathInstructions), MaxReviewPathInstructions)
+	if err := validatePathInstructionEntries(review.PathInstructions); err != nil {
+		return err
 	}
-	for i, entry := range review.PathInstructions {
+	return validatePathInstructionsBudget([]PathInstructionSource{{Heading: ReviewPathInstructionsHeading, Entries: review.PathInstructions}})
+}
+
+func validatePathInstructionEntries(entries []PathInstruction) error {
+	if len(entries) > MaxReviewPathInstructions {
+		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(entries), MaxReviewPathInstructions)
+	}
+	for i, entry := range entries {
 		path := strings.TrimSpace(entry.Path)
 		if path == "" {
 			return fmt.Errorf("review.path_instructions[%d].path must not be empty", i)
@@ -2662,8 +2791,32 @@ func validateReviewRaw(review ReviewRaw) error {
 			return fmt.Errorf("review.path_instructions[%d].path %q is not a valid glob: %w", i, path, err)
 		}
 	}
-	if total := ReviewPathInstructionsBytes(review.PathInstructions); total > MaxReviewPathInstructionsBytes {
-		return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt, at most %d are allowed so the prompt stays within budget", total, MaxReviewPathInstructionsBytes)
+	return nil
+}
+
+// validateOperatorReview checks the operator's global review block on its own
+// and together with every repository_overrides review block, so a global
+// config that could never fit the prompt fails when it loads rather than at
+// the first matching run.
+func validateOperatorReview(global OperatorReviewRaw, overrides RepositoryOverrides) error {
+	if err := validatePathInstructionEntries(global.PathInstructions); err != nil {
+		return err
+	}
+	globalSource := PathInstructionSource{Label: "machine-local global", Heading: ReviewGlobalPathInstructionsHeading, Entries: global.PathInstructions}
+	if err := validatePathInstructionsBudget([]PathInstructionSource{globalSource}); err != nil {
+		return err
+	}
+	for key, override := range overrides {
+		if err := validatePathInstructionEntries(override.Review.PathInstructions); err != nil {
+			return fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
+		}
+		sources := Review{
+			GlobalPathInstructions:     global.PathInstructions,
+			RepositoryPathInstructions: override.Review.PathInstructions,
+		}.PathInstructionSources()
+		if err := validatePathInstructionsBudget(sources); err != nil {
+			return fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
+		}
 	}
 	return nil
 }
@@ -3403,13 +3556,14 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		// repo is the EffectiveRepoConfig result, so both values are already
-		// trusted-only. Like document.instructions and test.instructions, the
-		// review block is resolved from the repository alone - global config
-		// carries no review block to overlay.
+		// repo is the EffectiveRepoConfig result, so both repository values are
+		// already trusted-only. The operator's path instructions are added as
+		// separate sources rather than overlaid: they can only add rules, never
+		// replace or remove the repository's.
 		Review: Review{
-			Conversation:     repo.Review.Conversation,
-			PathInstructions: resolvePathInstructions(repo.Review.PathInstructions),
+			Conversation:           repo.Review.Conversation,
+			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
+			GlobalPathInstructions: resolvePathInstructions(global.Review.PathInstructions),
 		},
 		PR:            pr,
 		ForgeProfiles: global.ForgeProfiles,
@@ -3422,6 +3576,8 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 
 	if override != nil {
 		cfg.CommandOverrides = copyCommandOverrides(override.Commands)
+		cfg.Review.RepositoryPathInstructions = resolvePathInstructions(override.Review.PathInstructions)
+		cfg.Document.RepositoryInstructions = strings.TrimSpace(override.Document.Instructions)
 	}
 
 	if repo.Agent != "" {

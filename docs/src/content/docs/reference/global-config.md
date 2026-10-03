@@ -84,6 +84,9 @@ ci:
 rebase:
   strategy: rebase # or: merge
 
+review:
+  path_instructions: []
+
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
   # branch_pattern: '^PROJ/([0-9]+)$'
@@ -890,6 +893,39 @@ rebase:
 
 A value in the trusted repository config overrides this global value in both directions. When the trusted repository config omits the key, this global value applies. An unrecognized value fails the config closed rather than falling back to the default, so a typo cannot quietly keep rewriting history a maintainer asked to stop rewriting.
 
+### review.path_instructions
+
+Machine-local review guidance that applies to every repository this machine gates.
+Use it for house rules you hold in every repository, including ones you do not control and so cannot commit a [`review.path_instructions`](/no-mistakes/reference/repo-config/#reviewpath_instructions) to.
+For a rule that holds in one repository only, use a matching [`repository_overrides`](#repository_overrides) entry instead.
+
+| | |
+|---|---|
+| Type | `object[]` with `path` (`string`) and `instructions` (`string`, multiline) |
+| Default | Empty |
+
+```yaml
+review:
+  path_instructions:
+    - path: "**/*.vue"
+      instructions: |
+        Repeated instances of a component are driven from a computed, not stacked v-ifs.
+```
+
+Entries match, render, and validate exactly like the repository field, whose reference owns those rules.
+They only add guidance: the repository's own trusted rules always apply alongside them, and nothing here can remove or replace one.
+The reviewer receives each source as its own section, in this order: this global list, then the matching `repository_overrides` entry's list, then the repository's trusted list.
+The two machine-local headings say the rules come from the operator's global config and not from the repository, so a machine-local rule never reads as the repository's own.
+The step log names the source of every rule it applied or skipped.
+
+The entry and byte limits apply to the combined set from all three sources, because they share one review prompt.
+This global list together with each `repository_overrides` list is checked when the config loads.
+The repository's trusted list changes independently, so the combined set is checked again when each run starts and when a run is recovered after a daemon restart: a run whose combined rules exceed a limit fails before any step runs or resumes, with an error naming each source's entry count, rather than silently dropping a rule.
+Shorten or remove your machine-local entries to fix it.
+
+Only `path_instructions` is accepted under this block. `review.conversation` stays a repository decision, because an open question parks the gate.
+Changes apply to the next run, and to a run recovered after a daemon restart, which re-reads this file.
+
 ### commit.fix_message
 
 Template for the subject of commits created by the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs.
@@ -960,7 +996,7 @@ A `commit.branch_pattern` in `.no-mistakes.yaml` takes precedence and clears any
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine add checks, lower command scheduling priority, or apply ticket conventions without adding settings to that repository.
+This lets one machine add checks, lower command scheduling priority, add review and documentation guidance, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -982,9 +1018,33 @@ repository_overrides:
 
 Formatting fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
 A `commit.branch_replacement` must be paired with `commit.branch_pattern` in the same override.
-Precedence is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
+Precedence for these formatting fields is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
 As with the global replacement, a repository `commit.branch_pattern` replaces the matching machine-local pattern and clears its replacement.
 Repositories matching no block keep existing global and built-in behavior.
+
+#### Machine-local review and documentation guidance
+
+A matching entry can add review rules and documentation policy for that one repository, without committing anything to it:
+
+```yaml
+repository_overrides:
+  https://gitlab.example.com/group/app-one.git:
+    review:
+      path_instructions:
+        - path: "**/*.cs"
+          instructions: |
+            Sync wording is always "sync from <upstream>": it is a one-way overwrite, never a merge.
+    document:
+      instructions: |
+        Configuration keys are owned by docs/reference/config.md.
+```
+
+`review.path_instructions` behaves like the [global list](#reviewpath_instructions): its rules render in their own labeled section after the global rules and before the repository's trusted rules, and they count toward the same combined limits.
+`document.instructions` is added to the document step's prompt in a labeled section before the repository's trusted [`document.instructions`](/no-mistakes/reference/repo-config/#documentinstructions), and like that field it augments the built-in placement policy and cannot weaken it.
+Both are additive only: the repository's trusted values still apply in full.
+Under `review` only `path_instructions` is accepted, and under `document` only `instructions`; settings that could weaken a gate, such as `no_ci`, `allow_repo_commands`, or `pr.base_branch`, are not accepted here.
+
+Eval replay cases store no remote URL, so a replay does not apply a matching entry's review or documentation guidance.
 
 #### Machine-local commands
 

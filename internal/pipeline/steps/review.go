@@ -254,17 +254,20 @@ Previous review findings to address:
 	}
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + settledQuestionsPromptSection(sctx) + supersededReviewHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + planSection + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
-	// Path-scoped repository review guidance, taken from the trusted
-	// default-branch config copy (regardless of allow_repo_commands) so a pushed
-	// branch cannot steer the reviewer that gates it. Selection runs against the
-	// complete changed-file set, never the ignore-filtered one, so a pushed
-	// ignore_patterns entry cannot suppress a trusted rule. Only blocks whose
-	// glob matches a changed path are appended, so a repository with none
-	// configured - or none relevant to this diff - gets the prompt above
-	// unchanged.
-	pathInstructionMatches := matchPathInstructions(changed, sctx.Config.Review.PathInstructions)
-	logPathInstructions(sctx.Log, pathInstructionMatches)
-	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
+	// Path-scoped review guidance, taken from the operator's global config and
+	// from the trusted default-branch config copy (regardless of
+	// allow_repo_commands), so a pushed branch cannot steer the reviewer that
+	// gates it. Selection runs against the complete changed-file set, never the
+	// ignore-filtered one, so a pushed ignore_patterns entry cannot suppress a
+	// rule. Only blocks whose glob matches a changed path are appended, so a
+	// run with none configured - or none relevant to this diff - gets the
+	// prompt above unchanged.
+	pathInstructions := ""
+	for _, source := range sctx.Config.Review.PathInstructionSources() {
+		matches := matchPathInstructions(changed, source.Entries)
+		logPathInstructions(sctx.Log, source.Label, matches)
+		pathInstructions += reviewPathInstructionsSection(source.Heading, matches)
+	}
 
 	// The authorization/privacy obligation below specializes the existing
 	// concrete-state trace only when changed behavior crosses a potentially
