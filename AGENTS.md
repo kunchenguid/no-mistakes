@@ -80,6 +80,12 @@ Safest local verification sequence after non-trivial changes:
 - There is NO review round cap and none may be added (captain's ruling 2026-09-15). The question protocol section is appended LAST, after `pathInstructions` and `agent.MemoryFilesRule`, because the off-state guarantee is append-only: the on-prompt must be the off-prompt plus that section and nothing else (`TestReviewStep_ConversationOffIsTodaysReview`). It used to sit at the end of `historySection`, which upstream's later `MemoryFilesRule` then followed, inserting it mid-prompt and breaking the prefix property.
 
 
+**Disk Retention: Leftover Worktrees, Run Logs, Evidence (issue #1093)**
+
+- A run's own worktree and `<NM_HOME>/evidence/<run-id>` are already removed the instant the run finishes (`RunManager.removeRunWorktree` / `cleanupRunEvidence`). `worktreeReapPolicy` (`internal/daemon/worktree_reap.go`, config: `worktree.retention`/`worktree.max_runs`, global-only like `test.evidence`'s local-storage fields) is a safety net, not the normal path: it only ever reclaims a leftover a `git worktree remove` failure (e.g. a vendored `.git` under a large `node_modules` tree) or a since-resolved `protected_paths` refusal left behind, under the DEFAULT `<NM_HOME>/worktrees` tree only - a configured `worktree_roots` placement is the operator's own directory and is left to the startup-only `cleanupOrphanWorktrees` sweep. `reapWorktrees` reuses `defaultTreeOrphanWorktrees`/`removableOrphanWorktree`/`removeOrphanWorktree` for eligibility and the git-remove-then-`os.RemoveAll`-fallback removal, and runs after every finished run (`cleanupRunEvidence`) and again at daemon startup, so a long-lived daemon converges on the budget instead of waiting for a restart.
+- `<NM_HOME>/logs/<run-id>` (per-run step-log text, `paths.RunLogDir`) had no reaper at all before this and is bounded by `reapRunLogs` (`internal/daemon/run_log_reap.go`), reusing `test.evidence.retention`/`max_runs` rather than adding a second config surface for the same kind of per-run diagnostic artifact. `no-mistakes axi logs --run <id>` already treats a missing step log as an ordinary "not recorded" case, so reaping an old run's directory degrades the same way evidence retention already does.
+- Regressions: `internal/daemon/worktree_reap_test.go`, `internal/daemon/run_log_reap_test.go`, `internal/config/config_worktree_test.go`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
