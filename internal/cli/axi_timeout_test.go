@@ -87,6 +87,45 @@ func TestDriveRun_SlowGetRunRetriesAfterHealthProbe(t *testing.T) {
 	}
 }
 
+// On a heavily loaded host the health probe itself answers late. It must be
+// bounded by daemon_connect_timeout, not a fixed 250ms, or the retry path
+// declares a live daemon dead (#1167).
+func TestDriveRun_SlowHealthProbeOnALiveDaemonStillRetries(t *testing.T) {
+	setDriveGetRunTimeout(t, 60*time.Millisecond)
+	t.Setenv("NM_DAEMON_CONNECT_TIMEOUT", "5s")
+
+	var getRunCalls atomic.Int32
+	socketPath := filepath.Join(makeSocketSafeTempDir(t), "slow-health.sock")
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodHealth, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		if err := sleepOrDone(ctx, 600*time.Millisecond); err != nil {
+			return nil, err
+		}
+		return &ipc.HealthResult{Status: "ok"}, nil
+	})
+	srv.Handle(ipc.MethodGetRun, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		if getRunCalls.Add(1) == 1 {
+			if err := sleepOrDone(ctx, 180*time.Millisecond); err != nil {
+				return nil, err
+			}
+		}
+		return &ipc.GetRunResult{Run: &ipc.RunInfo{ID: "run-1", Status: types.RunCompleted}}, nil
+	})
+	srv.HandleStream(ipc.MethodSubscribe, hangSubscribe)
+	startIPCServer(t, srv, socketPath)
+
+	client := dialReady(t, socketPath)
+	defer client.Close()
+
+	run, _, err := driveRun(context.Background(), io.Discard, client, socketPath, "run-1", false)
+	if err != nil {
+		t.Fatalf("slow health reply from a live daemon treated as failure: %v", err)
+	}
+	if run == nil || run.Status != types.RunCompleted {
+		t.Fatalf("run = %+v, want completed", run)
+	}
+}
+
 func TestDriveRun_GetRunRPCErrorIsNotRetried(t *testing.T) {
 	// The deadline is generous so the immediate RPC error always wins the race
 	// on a loaded runner; a short one let the attempt time out first and take

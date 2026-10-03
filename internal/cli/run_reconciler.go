@@ -134,7 +134,7 @@ func (s *ipcRunStateSource) probeHealth(ctx context.Context) error {
 	}
 	defer client.Close()
 
-	timeout := ipc.DefaultDialTimeout
+	timeout := ipc.HealthTimeout(s.socketPath)
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {

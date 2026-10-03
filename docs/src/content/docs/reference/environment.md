@@ -28,14 +28,14 @@ A push is handled by the root that owns the gate it was pushed to, not by the ro
 
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 
-Override how long a CLI client waits for an existing daemon socket to accept a connection before failing instead of hanging.
+Override [`daemon_connect_timeout`](/no-mistakes/reference/global-config/#daemon_connect_timeout), which bounds connection attempts and daemon health replies separately.
 
 |         |                                                                                                   |
 | ------- | ------------------------------------------------------------------------------------------------- |
 | Type    | `string` (Go duration)                                                                            |
 | Default | unset (falls back to the `daemon_connect_timeout` global config value, itself defaulting to `3s`) |
 
-Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead. The config value is read from the root whose socket is being dialed, not from the root `NM_HOME` names, so a push handled by the root that owns the gate also waits for the timeout that root configured.
+Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty value uses the config value (or its default); an unparsable or non-positive value uses the `3s` default instead of reading the config. The config value is read from the root whose socket is being dialed, not from the root `NM_HOME` names, so a push handled by the root that owns the gate also waits for the timeout that root configured.
 
 ## `FORGEJO_BASE_URL`
 

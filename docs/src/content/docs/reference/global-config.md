@@ -620,7 +620,7 @@ It bounds only the Test step, and no other step or environment variable override
 
 ### daemon_connect_timeout
 
-Maximum time a CLI client waits for an existing daemon socket to accept a connection before failing instead of hanging. Guards against a daemon process that is alive but stuck or unresponsive.
+Maximum wait applied separately to a CLI client's connection attempt to an existing daemon socket and to the subsequent health reply. All daemon health probes use this limit, including status and AXI run driving; an AXI probe also honors the caller's remaining wait deadline. Start/stop polling keeps its overall deadlines, but each health probe can take up to this limit. Guards against a daemon process that is alive but stuck or unresponsive. On a heavily loaded host a healthy daemon can take longer than usual to answer; raise this value instead of restarting the daemon, which would stop every in-flight run.
 
 |         |                        |
 | ------- | ---------------------- |

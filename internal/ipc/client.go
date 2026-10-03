@@ -99,6 +99,15 @@ func connectTimeout(socketPath string) time.Duration {
 	return d
 }
 
+// HealthTimeout is the read deadline for a daemon health reply on socketPath.
+// It is the same daemon_connect_timeout that bounds the dial, so one setting
+// decides how long a client waits for a live daemon before calling it
+// unresponsive. A fixed sub-second deadline reported a healthy daemon on a
+// heavily loaded host as broken (#1167).
+func HealthTimeout(socketPath string) time.Duration {
+	return connectTimeout(socketPath)
+}
+
 // Client connects to the IPC server over the platform transport.
 type Client struct {
 	conn    net.Conn
@@ -107,12 +116,7 @@ type Client struct {
 	mu      sync.Mutex // serializes calls on a single connection
 }
 
-const (
-	// DefaultDialTimeout is the read deadline used for the daemon health check
-	// dial made by callers outside this package (see internal/daemon/selfexec.go).
-	DefaultDialTimeout = 250 * time.Millisecond
-	defaultCallTimeout = 30 * time.Second
-)
+const defaultCallTimeout = 30 * time.Second
 
 // Dial connects to the IPC server at the given endpoint path.
 func Dial(socketPath string) (*Client, error) {

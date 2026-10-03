@@ -60,12 +60,7 @@ If the PID file points at a process that's no longer running, remove it and run 
 This error always means a genuinely live daemon: the lock it reports cannot go stale (see [Daemon & Worktrees](/no-mistakes/concepts/daemon/) for the singleton-lock model).
 Manage that daemon with `no-mistakes daemon status` and `no-mistakes daemon stop` instead of deleting the lock file - deleting the file does not release the lock and only weakens the guard.
 
-If the socket exists and the process is running but stuck or unresponsive, `no-mistakes` bounds the connection wait with [`daemon_connect_timeout`](/no-mistakes/reference/global-config/#daemon_connect_timeout) and fails fast with an error naming the socket path instead of silently starting a second daemon. Restart the stuck daemon:
-
-```sh
-no-mistakes daemon stop
-no-mistakes daemon start
-```
+If the daemon accepts the connection but does not answer its health check in time, the error includes `daemon health did not reply within <timeout>`. Commands that ensure the daemon is running also explain that it is running but slow to respond. This is common on a heavily loaded host (many parallel agents or builds), and the daemon is usually healthy. Do not restart it, because a restart stops every in-flight run. Retry, or raise [`daemon_connect_timeout`](/no-mistakes/reference/global-config/#daemon_connect_timeout) (or set [`NM_DAEMON_CONNECT_TIMEOUT`](/no-mistakes/reference/environment/#nm_daemon_connect_timeout) for one command). Restart only if the daemon stays unresponsive with a generous timeout.
 
 If the socket file exists but nothing answers at all (a dead socket left behind by an unclean exit, e.g. a crash or `SIGKILL`), commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) now fail fast with a `connect to daemon socket` error instead of silently starting a replacement daemon. The error message itself includes a `(run 'no-mistakes daemon start' to recover)` hint - run `no-mistakes daemon start` directly to recover, since it self-heals past a dead socket and starts a fresh daemon.
 
