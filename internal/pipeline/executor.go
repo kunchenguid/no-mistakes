@@ -1163,7 +1163,8 @@ rounds:
 			// omission marker never has one, so leaving them in makes
 			// hasUnanchoredFinding true and refuses to clear ANY selected
 			// finding while a question is open; a question that does carry a
-			// file instead poisons that path in reportedFiles. Either way an
+			// file and a line instead reads as a nearby report and vetoes
+			// clearing any pending finding within the line window. Either way an
 			// answered-and-verified finding would stay outstanding for a reason
 			// that has nothing to do with it.
 			verificationFindings := dropReviewQuestionFindingsJSON(roundFindings)
