@@ -1292,8 +1292,8 @@ func TestAssembleDraftPRBody_ReservesRoomForIssuesUnderALimit(t *testing.T) {
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("assembled body = %d units, want <= %d:\n%s", scm.PRBodyLen(got), limit, got)
 	}
-	if !strings.HasSuffix(got, "## Issues\n\nCloses #42\n\n"+renderClosingLedger([]string{"Closes #42"})) {
-		t.Fatalf("Issues section and ledger missing or not last:\n%s", got)
+	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
+		t.Fatalf("Issues section missing or not last:\n%s", got)
 	}
 }
 
@@ -1713,8 +1713,16 @@ func TestAssembleDraftPRBody_GitHubKeepsIssuesWithinTheByteBudget(t *testing.T) 
 	got := assembleDraftPRBody(sctx, body, "low risk", "", "", 0, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
-	if !strings.HasSuffix(got, "## Issues\n\nCloses #42\n\n"+renderClosingLedger([]string{"Closes #42"})) {
-		t.Fatalf("Issues section and ledger missing or not last (len %d)", len(got))
+	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
+		t.Fatalf("Issues section missing or not last (len %d)", len(got))
+	}
+	sealed, err := sealClosingLedger(sctx, scm.ProviderGitHub, got)
+	if err != nil {
+		t.Fatalf("the ledger must fit the room reserved for it: %v", err)
+	}
+	assertGitHubBodyLimitForTest(t, sealed)
+	if lines, ok := parseClosingLedger(sealed); !ok || strings.Join(lines, "|") != "Closes #42" {
+		t.Fatalf("ledger = %q, %v", lines, ok)
 	}
 }
 

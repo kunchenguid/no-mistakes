@@ -190,101 +190,70 @@ func TestClosingLedgerIsOnlyTheOneThePipelineAppends(t *testing.T) {
 	}
 }
 
-// Bitbucket Cloud escapes raw HTML, so it gets no ledger and carries nothing.
-func TestOrdinaryIssuesBlockHasNoLedgerOnBitbucket(t *testing.T) {
+// Bitbucket Cloud escapes raw HTML and Azure DevOps caps the body size, so
+// neither gets a ledger and neither carries anything.
+func TestNoLedgerOnBitbucketOrAzureDevOps(t *testing.T) {
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"5"}}
-	if got := ordinaryIssuesBlock(sctx, scm.ProviderBitbucket); got != "## Issues\n\nCloses #5" {
-		t.Fatalf("bitbucket block = %q", got)
-	}
-	if carriesClosingLines(scm.ProviderBitbucket) {
-		t.Fatal("bitbucket must not carry closing lines")
-	}
-}
-
-// A closing line inside an HTML <pre> element is not live (GitHub closes
-// nothing there, and neutralization leaves it alone), so it is never carried
-// into the Issues section as the author's, while a real author line is.
-func TestPRStep_ClosingLineInHTMLPreIsNotCarried(t *testing.T) {
-	t.Parallel()
-	runs := newPRStepRuns(t, nil)
-	created := runs.create()
-	runs.authorEdits(created + "\n\n<pre>\nFixes #12\n</pre>\n\nCloses #4\n")
-
-	updated := runs.update()
-	if got := closingLinesOf(updated); got != "Closes #4" {
-		t.Fatalf("closing lines = %q, want only the author's live line carried:\n%s", got, updated)
+	body := "## What Changed\n\n- x\n\n" + ordinaryIssuesBlock(sctx)
+	for _, provider := range []scm.Provider{scm.ProviderBitbucket, scm.ProviderAzureDevOps} {
+		if carriesClosingLines(provider) {
+			t.Fatalf("%s must not carry closing lines", provider)
+		}
+		if got, err := sealClosingLedger(sctx, provider, body); err != nil || got != body {
+			t.Fatalf("%s sealed body = %q, %v; want it unchanged", provider, got, err)
+		}
 	}
 }
 
-// A body the pipeline never published carries its live closing lines, but
-// not ones inside a multi-line HTML comment or <code> element.
-func TestAuthorClosingLinesSkipHTMLCommentsAndCode(t *testing.T) {
-	body := "Summary\n\n<!--\nTemplate example:\nCloses #3\n-->\n\n<code>\nResolves #5\n</code>\n\nCloses #4\n"
-	got := authorClosingLines(body)
-	if strings.Join(got, "|") != "Closes #4" {
-		t.Fatalf("author closing lines = %q, want only the live line", got)
+// A body too large for the ledger fails closed instead of publishing without it.
+func TestSealClosingLedgerFailsClosedOverTheSizeCap(t *testing.T) {
+	sctx := &pipeline.StepContext{}
+	if _, err := sealClosingLedger(sctx, scm.ProviderGitHub, strings.Repeat("x", maxPullRequestBodyBytes)); err == nil {
+		t.Fatal("a body without room for the ledger must fail")
 	}
 }
 
-// Inline code never opens HTML element or comment state: prose naming
-// `<pre>`, `<code>` and `<!--` leaves later author lines and the Issues
-// section live, so the author's line is carried and --closes still verifies.
-func TestPRStep_BacktickedHTMLDoesNotHideLaterClosingLines(t *testing.T) {
+// Pipeline text the extractor reads as a closing line, whatever construct it
+// sits in, is recorded in the ledger when published, so a later update never
+// carries it as the author's.
+func TestPRStep_PipelineClosingLinesAreLedgeredNotCarried(t *testing.T) {
+	for name, intent := range map[string]string{
+		"pre element":                 "Refactor X\n<pre>\nFixes #12\n</pre>",
+		"unterminated inline comment": "Drops stray <!-- markers\nFixes #12",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			runs := newPRStepRuns(t, nil)
+			runs.sctx.UserIntent = intent
+			created := runs.create()
+			if lines, ok := parseClosingLedger(created); !ok || len(lines) != len(extractClosingKeywordLines(created)) {
+				t.Fatalf("ledger = %q, %v; want every published closing line:\n%s", lines, ok, created)
+			}
+
+			updated := runs.update()
+			if strings.Contains(updated, "## Issues") {
+				t.Fatalf("an update must carry nothing from pipeline text:\n%s", updated)
+			}
+			if got := authorClosingLines(updated); got != nil {
+				t.Fatalf("author closing lines = %q, want none", got)
+			}
+		})
+	}
+}
+
+// Prose naming HTML tags in inline code does not hide a later author line:
+// it is carried, and a requested reference still verifies.
+func TestPRStep_BacktickedHTMLDoesNotHideAuthorClosingLines(t *testing.T) {
 	t.Parallel()
 	runs := newPRStepRuns(t, nil)
 	created := runs.create()
 	runs.authorEdits("Skips HTML `<pre>`/`<code>` elements and `<!--` comments.\n\nCloses #4\n\n" + created)
 
 	updated := runs.update("9")
-	if got := closingLinesOf(updated); got != "Closes #4|Closes #9" {
-		t.Fatalf("closing lines = %q, want the author's line and the requested one:\n%s", got, updated)
+	if got := strings.Join(authorClosingLines(updated), "|"); got != "Closes #4" {
+		t.Fatalf("author closing lines = %q, want the carried line:\n%s", got, updated)
 	}
-}
-
-func TestClosingKeywordLinesAfterBacktickedHTMLStayLive(t *testing.T) {
-	body := "Uses `<pre>`, `<code>` and `<!--` here.\n\n## Issues\n\nCloses #9\n"
-	if got := closingLinesOf(body); got != "Closes #9" {
-		t.Fatalf("closing lines = %q, want the Issues line live", got)
-	}
-	if got := neutralizeClosingReferences("Uses `<pre>` here.\nFixes #3"); got != "Uses `<pre>` here.\nFixes `#3`" {
-		t.Fatalf("neutralized = %q", got)
-	}
-}
-
-// A <pre> inside an HTML comment opens no element state, so the next line of
-// the intent is published neutralized and a later update carries nothing.
-func TestPRStep_PreInsideCommentDoesNotHideAClosingLine(t *testing.T) {
-	t.Parallel()
-	runs := newPRStepRuns(t, nil)
-	runs.sctx.UserIntent = "Refactor X\n<!-- wrap output in <pre> -->\nFixes #12"
-	created := runs.create()
-	if !strings.Contains(created, "Fixes `#12`") || closingLinesOf(created) != "" {
-		t.Fatalf("intent's Fixes #12 must be published neutralized:\n%s", created)
-	}
-
-	updated := runs.update()
-	if got := closingLinesOf(updated); got != "" {
-		t.Fatalf("closing lines = %q, want nothing carried from pipeline text:\n%s", got, updated)
-	}
-}
-
-// The neutralizer leaves no line behind that extraction would count as a live
-// closing line.
-func TestNeutralizedTextHasNoLiveClosingLine(t *testing.T) {
-	inputs := []string{
-		"Fixes #1",
-		"Uses `<pre>`, `<code>` and `<!--` here.\nFixes #2",
-		"<pre>\nFixes #3\n</pre>\nFixes #4",
-		"<code>Fixes #5</code>\nFixes #6",
-		"<!--\nCloses #7\n-->\nCloses #8",
-		"<!-- wrap output in <pre> -->\nFixes #9",
-		"```\nFixes #10\n```\nFixes #11",
-		"    Fixes #12\n\nFixes #13",
-		"- Resolves owner/repo#14\n1. Closes #15.",
-	}
-	for _, in := range inputs {
-		if got := extractClosingKeywordLines(neutralizeClosingReferences(in)); len(got) != 0 {
-			t.Errorf("neutralizeClosingReferences(%q) left live closing lines %q", in, got)
-		}
+	if !strings.Contains(updated, "## Issues\n\nCloses #4\nCloses #9") {
+		t.Fatalf("Issues section must carry the author's line and add the requested one:\n%s", updated)
 	}
 }

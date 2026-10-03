@@ -25,12 +25,13 @@ import (
 // An ordinary update replaces the whole body, so it carries the AUTHOR's own
 // standalone closing lines over into the Issues section
 // (sctx.CarriedClosingLines) instead of dropping them (issue #763). Which
-// lines are the author's is never guessed from headings: the body records the
-// closing lines the pipeline itself added for --closes in a hidden ledger
-// comment (closingLedgerPrefix), and every other live closing line in a body
-// carrying that ledger must be the author's, because nothing else the pipeline
-// writes carries a live closing keyword. See authorClosingLines for bodies
-// without a ledger.
+// lines are the author's is never guessed from headings: the body records
+// every closing line the pipeline itself published (the --closes lines and
+// anything its own text left that the extractor reads as a closing line) in a
+// hidden ledger comment (closingLedgerPrefix, sealClosingLedger), so every
+// other closing line in a body carrying that ledger appeared after
+// publication and is the author's. See authorClosingLines for bodies without
+// a ledger.
 
 const issuesSectionHeading = "## Issues"
 
@@ -46,15 +47,15 @@ var closingKeywordLinePattern = regexp.MustCompile(`(?i)^(?:(?:[-*+]|[0-9]+[.)])
 var closingReferencePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*|#[1-9][0-9]*)`)
 
 // extractClosingKeywordLines returns the distinct standalone closing-keyword
-// lines of body whose whole text is live (liveTextScanner), so it counts
-// exactly the references GitHub treats as closing.
+// lines of body, outside fenced and indented code blocks.
 func extractClosingKeywordLines(body string) []string {
 	seen := map[string]struct{}{}
 	var lines []string
-	var scanner liveTextScanner
-	keep := func(text string) string { return text }
+	var fence markdownFence
 	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		if _, live := scanner.line(raw, keep); !live {
+		inFence := fence.marker != 0
+		fence.consume(raw)
+		if inFence || fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
 			continue
 		}
 		line := strings.TrimSpace(raw)
@@ -71,80 +72,31 @@ func extractClosingKeywordLines(body string) []string {
 	return lines
 }
 
-// liveTextScanner walks text line by line and finds its live parts: outside
-// fenced and indented code blocks, inline code spans, HTML <code>/<pre>
-// elements and HTML comments (both may span lines). Inline code is split off
-// first, so a backticked tag never opens element or comment state, and a
-// comment's contents never open element state. It is the one definition of
-// live text shared by neutralizeClosingReferences and
-// extractClosingKeywordLines.
-type liveTextScanner struct {
-	fence     markdownFence
-	htmlCode  string
-	inComment bool
-}
-
-// line applies rewrite to the live parts of raw and reports whether all of
-// raw is live.
-func (s *liveTextScanner) line(raw string, rewrite func(string) string) (string, bool) {
-	inFence := s.fence.marker != 0
-	s.fence.consume(raw)
-	if inFence || s.fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
-		return raw, false
-	}
-	live := 0
-	out := outsideInlineCode(raw, func(text string) string {
-		return s.outsideHTML(text, func(text string) string {
-			live += len(text)
-			return rewrite(text)
-		})
-	})
-	return out, live == len(raw)
-}
-
-// outsideHTML applies rewrite to the parts of text outside HTML <code>/<pre>
-// elements and HTML comments.
-func (s *liveTextScanner) outsideHTML(text string, rewrite func(string) string) string {
-	var b strings.Builder
-	for {
-		if s.inComment {
-			end := strings.Index(text, "-->")
-			if end < 0 {
-				b.WriteString(text)
-				return b.String()
-			}
-			b.WriteString(text[:end+len("-->")])
-			text, s.inComment = text[end+len("-->"):], false
-			continue
-		}
-		start := strings.Index(text, "<!--")
-		if start < 0 {
-			b.WriteString(outsideHTMLCode(text, &s.htmlCode, rewrite))
-			return b.String()
-		}
-		b.WriteString(outsideHTMLCode(text[:start], &s.htmlCode, rewrite))
-		b.WriteString(text[start : start+len("<!--")])
-		text, s.inComment = text[start+len("<!--"):], true
-	}
-}
-
 var closingReferenceInTextPattern = regexp.MustCompile(`(?i)\b((?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+)((?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+)?#[1-9][0-9]*|https?://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(?:issues|pull)/[1-9][0-9]*)\b`)
 
 // neutralizeClosingReferences puts every closing-keyword reference in
 // pipeline-generated PR text, including an issue or pull request URL, in an
-// inline code span ("Fixes `#12`"), in its live parts (liveTextScanner; a
-// tested command renders as <code>). GitHub ignores a reference in code, so
-// nothing the pipeline publishes can close an issue; only the Issues section
-// carries live ones.
+// inline code span ("Fixes `#12`"), outside fenced, indented, and inline code
+// and HTML <code>/<pre> elements (a tested command renders as <code>).
+// GitHub ignores a reference in code, so nothing the pipeline publishes can
+// close an issue; only the Issues section carries live ones.
 func neutralizeClosingReferences(s string) string {
 	if !closingReferenceInTextPattern.MatchString(s) {
 		return s
 	}
 	lines := strings.Split(s, "\n")
-	var scanner liveTextScanner
+	var fence markdownFence
+	var htmlCode string
 	for i, raw := range lines {
-		lines[i], _ = scanner.line(raw, func(text string) string {
-			return closingReferenceInTextPattern.ReplaceAllString(text, "${1}`${2}`")
+		inFence := fence.marker != 0
+		fence.consume(raw)
+		if inFence || fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
+			continue
+		}
+		lines[i] = outsideInlineCode(raw, func(text string) string {
+			return outsideHTMLCode(text, &htmlCode, func(text string) string {
+				return closingReferenceInTextPattern.ReplaceAllString(text, "${1}`${2}`")
+			})
 		})
 	}
 	return strings.Join(lines, "\n")
@@ -295,8 +247,8 @@ func issuesSection(sctx *pipeline.StepContext, authorText string) string {
 	return renderIssuesSection(requestedClosingLines(sctx, extractClosingKeywordLines(authorText)))
 }
 
-// closingLedgerPrefix opens the hidden record of the closing lines an
-// ordinary body's Issues section added for --closes. It is pipeline
+// closingLedgerPrefix opens the hidden record of every closing line an
+// ordinary body was published with, except carried author lines. It is pipeline
 // bookkeeping, not evidence of authorship: it only lets the next ordinary
 // update tell those lines apart from closing lines the author added.
 const (
@@ -374,28 +326,52 @@ func authorClosingLines(body string) []string {
 	return live
 }
 
-// ordinaryIssuesBlock renders the trailing block of an ordinary body: the
-// Issues section (carried author lines first, then requested refs they do not
-// already close) followed, on providers that render HTML comments, by the
-// ledger of the lines added for --closes. Bitbucket Cloud escapes raw HTML,
-// so it gets no ledger and carries nothing (see the PR step).
-func ordinaryIssuesBlock(sctx *pipeline.StepContext, provider scm.Provider) string {
+// ordinaryIssuesBlock renders the Issues section of an ordinary body: carried
+// author lines first, then requested refs they do not already close.
+func ordinaryIssuesBlock(sctx *pipeline.StepContext) string {
 	var carried []string
 	if sctx != nil {
 		carried = sctx.CarriedClosingLines
 	}
 	requested := requestedClosingLines(sctx, carried)
-	section := renderIssuesSection(append(append([]string(nil), carried...), requested...))
-	if prBodyFlavorFor(provider) != prBodyHTML {
-		return section
-	}
-	return appendIssuesSection(section, renderClosingLedger(requested))
+	return renderIssuesSection(append(append([]string(nil), carried...), requested...))
 }
 
-// carriesClosingLines reports whether an ordinary update on provider carries
-// author closing lines over; it needs the ledger, so HTML-rendering forges.
+// carriesClosingLines reports whether an ordinary body on provider carries
+// the ledger and so author closing lines over: forges that render HTML
+// comments and have no body-size limit that could shed the ledger.
 func carriesClosingLines(provider scm.Provider) bool {
-	return prBodyFlavorFor(provider) == prBodyHTML
+	return prBodyFlavorFor(provider) == prBodyHTML && scm.MaxPRBodyChars(provider) == 0
+}
+
+// closingLedgerReserveBytes is room kept free when an ordinary body is fitted
+// to the size cap for ledger entries beyond the requested lines.
+const closingLedgerReserveBytes = 1024
+
+// sealClosingLedger appends the ledger to a final ordinary body about to be
+// published: every closing line the extractor sees in it except the carried
+// author lines. Whatever construct a pipeline-published line sat in, the next
+// update reads it with the same extractor and finds it listed, so only lines
+// that appeared after publication are carried as the author's.
+func sealClosingLedger(sctx *pipeline.StepContext, provider scm.Provider, body string) (string, error) {
+	if !carriesClosingLines(provider) {
+		return body, nil
+	}
+	carried := make(map[string]struct{}, len(sctx.CarriedClosingLines))
+	for _, line := range sctx.CarriedClosingLines {
+		carried[strings.ToLower(line)] = struct{}{}
+	}
+	published := []string{}
+	for _, line := range extractClosingKeywordLines(body) {
+		if _, ok := carried[strings.ToLower(line)]; !ok {
+			published = append(published, line)
+		}
+	}
+	body = appendIssuesSection(body, renderClosingLedger(published))
+	if len(body) > maxPullRequestBodyBytes {
+		return "", fmt.Errorf("render closing issues: PR body exceeds the size limit after recording its closing lines")
+	}
+	return body, nil
 }
 
 // refreshCarriedClosingLines re-derives the author's closing lines from a
@@ -403,12 +379,12 @@ func carriesClosingLines(provider scm.Provider) bool {
 // update was drafting, replaces body's trailing Issues block. The re-read is
 // authoritative both ways: lines added since the first read are carried, and
 // lines the author removed are not written back.
-func refreshCarriedClosingLines(sctx *pipeline.StepContext, provider scm.Provider, body, latestBody string, bodyLimit int) (string, error) {
+func refreshCarriedClosingLines(sctx *pipeline.StepContext, body, latestBody string, bodyLimit int) (string, error) {
 	latest := authorClosingLines(latestBody)
 	if sameClosingLines(sctx.CarriedClosingLines, latest) {
 		return body, nil
 	}
-	previous := ordinaryIssuesBlock(sctx, provider)
+	previous := ordinaryIssuesBlock(sctx)
 	if previous != "" {
 		if !strings.HasSuffix(body, previous) {
 			return "", fmt.Errorf("verify closing issues: cannot locate the Issues section to reconcile closing lines changed while the update was drafting")
@@ -416,7 +392,7 @@ func refreshCarriedClosingLines(sctx *pipeline.StepContext, provider scm.Provide
 		body = strings.TrimRight(strings.TrimSuffix(body, previous), "\n")
 	}
 	sctx.CarriedClosingLines = latest
-	body = appendIssuesSection(body, ordinaryIssuesBlock(sctx, provider))
+	body = appendIssuesSection(body, ordinaryIssuesBlock(sctx))
 	if len(body) > maxPullRequestBodyBytes || (bodyLimit > 0 && scm.PRBodyLen(body) > bodyLimit) {
 		return "", fmt.Errorf("verify closing issues: PR body exceeds provider budget after carrying over the author's closing lines")
 	}
@@ -547,10 +523,13 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 // Issues section last, reserving its room up front so body-limit truncation
 // sheds generated evidence rather than a closing reference.
 func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
-	section := ordinaryIssuesBlock(sctx, provider)
+	section := ordinaryIssuesBlock(sctx)
 	reserve := 0
 	if section != "" {
 		reserve = len("\n\n" + section)
+	}
+	if carriesClosingLines(provider) {
+		reserve += len("\n\n"+renderClosingLedger(requestedClosingLines(sctx, nil))) + closingLedgerReserveBytes
 	}
 	if bodyLimit > 0 {
 		if section != "" {
