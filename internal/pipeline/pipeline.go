@@ -130,6 +130,10 @@ type StepContext struct {
 	// ClosingIssueRefs are the explicit --closes values claimed from the DB at
 	// PR-step start. Steps read this snapshot instead of mutable run state.
 	ClosingIssueRefs []string
+	// CarriedClosingLines are the author's standalone closing-keyword lines
+	// from the live body that an ordinary full-body PR update carries into its
+	// Issues section instead of dropping them.
+	CarriedClosingLines []string
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,

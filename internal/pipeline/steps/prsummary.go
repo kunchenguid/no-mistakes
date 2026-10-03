@@ -1637,7 +1637,7 @@ func escapePipelineFoldMarkers(s string) string {
 // And it neutralizes closing references (neutralizeClosingReferences), since
 // every PR-body site that generates text passes through here.
 func neutralizeAttestationMarkers(s string) string {
-	return neutralizeClosingReferences(escapePRAppendixMarkers(strings.ReplaceAll(s, pipelineAttestationCommentPrefix, escapedPipelineAttestationCommentPrefix)))
+	return neutralizeClosingReferences(escapeClosingLedgerMarkers(escapePRAppendixMarkers(strings.ReplaceAll(s, pipelineAttestationCommentPrefix, escapedPipelineAttestationCommentPrefix))))
 }
 
 func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult, flavor prBodyFlavor) {
