@@ -987,7 +987,7 @@ func reviewAgentWorkingTimeout(cfg *config.Config) time.Duration {
 var errReviewAgentTimeout = errors.New("review agent timeout")
 
 // reviewAgentError renders one review invocation's budget expiry. The shared
-// agent-run seam supplies which bound cut the turn (stall budget or hard cap),
+// agent-run seam supplies which bound cut the turn (silent budget, stall budget, or still-working cap),
 // how long it ran, and the measured activity evidence.
 func reviewAgentError(timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(err, errReviewAgentTimeout) {

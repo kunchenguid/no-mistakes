@@ -564,7 +564,7 @@ A late successful return after cancellation is rejected, so post-agent commits a
 
 The diagnostic names which bound cut the invocation and how long it ran, and separately reports what activity was actually measured.
 With no still-working cap set it reads `after 30m0s (silent budget; no still-working cap is set; ran 30m0s)`, which claims nothing about output or child processes because nothing checked them.
-With a cap set it reads `after 30m0s (stall budget, then no recent output or live child process; ran 42m0s)` for a turn that went idle, or `at its 1h0m0s still-working cap (silent budget 30m0s, still active; ran 1h0m0s)` for a turn that reached the cap.
+With a cap set it reads `after 30m0s (stall budget, then no recent output or live child process; ran 42m0s)` for a turn that went idle, or `at its 1h0m0s still-working cap (silent budget 30m0s; ran 1h0m0s)` for a turn that reached the cap.
 Evidence resets whenever a retry or fallback starts a replacement attempt, including provider fallback, failed session resume, and OpenCode's prompt-only structured-output fallback, so the diagnostic describes only the attempt that reached the deadline:
 
 - `agent produced no output at all in 30m0s after its subprocess started (pid=1234)` - the current attempt launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.

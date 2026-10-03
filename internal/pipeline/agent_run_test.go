@@ -67,7 +67,7 @@ func TestRunAgent_HangingAgentFailsAfterTimeout(t *testing.T) {
 	}
 }
 
-func TestAgentTimeoutHardCapAndIdleGrace(t *testing.T) {
+func TestAgentTimeoutIdleGrace(t *testing.T) {
 	t.Parallel()
 	if got := AgentTimeoutIdleGrace(30 * time.Minute); got != config.DefaultStepQuietWarning {
 		t.Fatalf("idle grace for 30m = %s, want %s", got, config.DefaultStepQuietWarning)
@@ -114,7 +114,7 @@ func TestRunAgent_StreamingPastStallBudgetSucceeds(t *testing.T) {
 	}
 }
 
-func TestRunAgent_SilentAgentDoesNotWaitForHardCap(t *testing.T) {
+func TestRunAgent_SilentAgentStopsAtTheSilentBudget(t *testing.T) {
 	t.Parallel()
 	const stall = 250 * time.Millisecond
 	ag := &hangingAgent{
@@ -180,7 +180,46 @@ func TestRunAgent_StreamingWithoutAWorkingCapStopsAtTheSilentBudget(t *testing.T
 	}
 }
 
-func TestRunAgent_StreamingAgentHitsHardCap(t *testing.T) {
+func TestRunAgent_CapEqualToTheSilentBudgetIsReportedAsTheCap(t *testing.T) {
+	t.Parallel()
+	const stall = 40 * time.Millisecond
+	ag := &hangingAgent{
+		name: "never-finishes-equal",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(2 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-tick.C:
+					opts.OnChunk("still going\n")
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall, AgentWorkingTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= 2*stall {
+		t.Fatalf("equal cap let a working agent run %s, want a cut at %s", elapsed, stall)
+	}
+	want := regexp.MustCompile(`^agent timed out at its 40ms still-working cap \(silent budget 40ms; ran \S+\); agent last produced output \S+ ago \(\d+ observed\)$`)
+	if !want.MatchString(err.Error()) {
+		t.Fatalf("error = %q, want the configured cap named as the bound followed only by the measured activity", err)
+	}
+}
+
+func TestRunAgent_StreamingAgentHitsTheWorkingCap(t *testing.T) {
 	t.Parallel()
 	const stall = 40 * time.Millisecond
 	ag := &hangingAgent{
@@ -213,14 +252,14 @@ func TestRunAgent_StreamingAgentHitsHardCap(t *testing.T) {
 	if !strings.Contains(err.Error(), "last produced output") {
 		t.Fatalf("error = %q, want a busy-agent diagnosis at the still-working cap", err)
 	}
-	if !strings.Contains(err.Error(), "agent timed out at its 60ms still-working cap (silent budget 40ms") {
+	if !strings.Contains(err.Error(), "agent timed out at its 60ms still-working cap (silent budget 40ms; ran ") {
 		t.Fatalf("error = %q, want the still-working cap named as the bound", err)
 	}
 	if elapsed < stall {
 		t.Fatalf("busy agent cut after %s, want to pass the %s stall budget", elapsed, stall)
 	}
 	if elapsed > 500*time.Millisecond {
-		t.Fatalf("busy agent hung for %s, want a bounded hard-cap fail", elapsed)
+		t.Fatalf("busy agent hung for %s, want a bounded still-working-cap fail", elapsed)
 	}
 }
 

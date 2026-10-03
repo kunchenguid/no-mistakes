@@ -63,8 +63,8 @@ func (sctx *StepContext) RunAgentContext(parent context.Context, opts agent.RunO
 // RunAgentBudget is RunAgentContext with a step-specific silent budget,
 // optional still-working cap, and cause (Review and Test). The parent must
 // not already carry that budget as a context deadline, or the activity-aware
-// extension cannot run. A working cap that is not greater than timeout does
-// not extend the turn.
+// extension cannot run. A working cap equal to timeout does not extend the
+// turn, and one shorter than timeout is treated as unset.
 func (sctx *StepContext) RunAgentBudget(parent context.Context, timeout, working time.Duration, cause error, opts agent.RunOpts) (*agent.Result, error) {
 	return sctx.runAgent(parent, opts, "", timeout, working, cause)
 }
@@ -424,16 +424,17 @@ type agentBudget struct {
 // bound names which limit cut the invocation and how long it actually ran.
 // With no cap the silent budget is a plain deadline that never looked at
 // activity, so that label claims nothing about output or children. With a
-// cap, a deadline that fired is the cap and a cancel before it is the watcher
-// finding the turn idle.
+// cap, a deadline that fired is the cap, which also cuts a quiet turn still
+// inside its idle window, so that label claims no activity either; a cancel
+// before the cap is the watcher finding the turn idle.
 func (b *agentBudget) bound(deadlineExceeded bool) string {
 	ran := roundActivity(time.Since(b.start))
-	if b.working <= b.timeout {
+	if b.working <= 0 {
 		return fmt.Sprintf("after %s (silent budget; no still-working cap is set; ran %s)",
 			b.timeout, ran)
 	}
 	if deadlineExceeded {
-		return fmt.Sprintf("at its %s still-working cap (silent budget %s, still active; ran %s)",
+		return fmt.Sprintf("at its %s still-working cap (silent budget %s; ran %s)",
 			b.working, b.timeout, ran)
 	}
 	return fmt.Sprintf("after %s (stall budget, then no recent output or live child process; ran %s)",
@@ -464,6 +465,9 @@ func bindAgentDeadline(parent context.Context, timeout, working time.Duration, c
 	}
 	if cause == nil {
 		cause = ErrAgentTimeout
+	}
+	if working < timeout {
+		working = 0
 	}
 	budget := &agentBudget{timeout: timeout, working: working, cause: cause, start: time.Now()}
 	if working <= timeout {
@@ -537,7 +541,7 @@ func classifyAgentRun(ctx context.Context, budget *agentBudget, activity *agentA
 	// self-explanatory, even when it carries a cause of its own, and must not
 	// be dressed up as an agent fault. Stall-budget cancels use
 	// WithCancelCause, so ctx.Err() is Canceled while Cause is the budget's;
-	// hard-cap cancels are DeadlineExceeded with that same cause.
+	// still-working-cap cancels are DeadlineExceeded with that same cause.
 	if budget != nil && errors.Is(cause, budget.cause) {
 		bound := budget.bound(errors.Is(ctx.Err(), context.DeadlineExceeded))
 		if errors.Is(cause, ErrAgentTimeout) {

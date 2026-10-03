@@ -516,7 +516,7 @@ func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T)
 
 	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
-		t.Fatal("expected progress-only review to hit its hard cap")
+		t.Fatal("expected progress-only review to hit its invocation budget")
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {

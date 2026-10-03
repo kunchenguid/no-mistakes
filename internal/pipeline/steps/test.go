@@ -631,7 +631,7 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 				"Reported: %v. %s "+
 				"Re-running the same request costs another full budget, so no further attempt is made automatically. "+
 				"If this repository's targeted tests or evidence gathering routinely stay quiet longer than the default %s, raise test_agent_timeout in global config. "+
-				"If the turn was still producing output or running a child process, set test_agent_working_timeout there instead: without that still-working cap every turn stops at test_agent_timeout. "+
+				"If the turn was still producing output or running a child process, set or raise test_agent_working_timeout there instead: a turn runs past test_agent_timeout only up to that still-working cap. "+
 				"Respond with fix to spend another budget: a repair turn runs only for selected findings other than this budget cut, then validation re-runs. Or abort and retry after raising the budget.",
 			err, cause, config.DefaultTestAgentTimeout),
 	}}
@@ -805,7 +805,7 @@ func porcelainPaths(status string) []string {
 }
 
 // testAgentError renders a Test-invocation budget expiry. The shared
-// agent-run seam supplies which bound cut the turn (stall budget or hard cap),
+// agent-run seam supplies which bound cut the turn (silent budget, stall budget, or still-working cap),
 // how long it ran, and the measured activity evidence.
 func testAgentError(timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(err, errTestAgentTimeout) {
