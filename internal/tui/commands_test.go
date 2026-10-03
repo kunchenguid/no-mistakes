@@ -132,7 +132,8 @@ func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
 func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	dir := tuiIdentityCheckout(t)
 	t.Chdir(dir)
-	t.Setenv(runenv.ClaudeConfigDirEnvVar, "/caller/.claude1")
+	claudeProfile := filepath.VolumeName(os.TempDir()) + "/caller/.claude1"
+	t.Setenv(runenv.ClaudeConfigDirEnvVar, claudeProfile)
 	sock := testSocketPath(t)
 	srv := startTestIPCServer(t, sock)
 	srv.Handle(ipc.MethodProbeCommitIdentity, func(context.Context, json.RawMessage) (interface{}, error) {
@@ -156,7 +157,7 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 		if err := json.Unmarshal(raw, &params); err != nil {
 			return nil, err
 		}
-		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" || params.ClaudeConfigDir != "/caller/.claude1" {
+		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" || params.ClaudeConfigDir != claudeProfile {
 			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
 		}
 		if params.CommitIdentity == nil || params.CommitIdentity.AuthorName != "TUI Submitter" || params.CommitIdentity.CommitterEmail != "tui@example.test" {

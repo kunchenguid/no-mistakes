@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,11 +22,11 @@ func TestAxiRunReattachRequiresTheCallersClaudeProfile(t *testing.T) {
 		refused          bool
 		hint             string
 	}{
-		{name: "same profile", bound: "/caller/.claude1", env: "/caller/.claude1"},
-		{name: "same profile as the push hook bound it", bound: "/caller/.claude1/", env: "/caller/.claude1/"},
-		{name: "unset requests no profile", bound: "/caller/.claude1", env: ""},
-		{name: "other profile", bound: "/caller/.claude1", env: "/caller/.claude2", refused: true, hint: "Set CLAUDE_CONFIG_DIR to the active run's value to reattach"},
-		{name: "run on the daemon's default", bound: "", env: "/caller/.claude2", refused: true, hint: "Unset CLAUDE_CONFIG_DIR to reattach"},
+		{name: "same profile", bound: absTestPath("/caller/.claude1"), env: absTestPath("/caller/.claude1")},
+		{name: "same profile as the push hook bound it", bound: absTestPath("/caller/.claude1/"), env: absTestPath("/caller/.claude1/")},
+		{name: "unset requests no profile", bound: absTestPath("/caller/.claude1"), env: ""},
+		{name: "other profile", bound: absTestPath("/caller/.claude1"), env: absTestPath("/caller/.claude2"), refused: true, hint: "Set CLAUDE_CONFIG_DIR to the active run's value to reattach"},
+		{name: "run on the daemon's default", bound: "", env: absTestPath("/caller/.claude2"), refused: true, hint: "Unset CLAUDE_CONFIG_DIR to reattach"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bound := tc.bound
@@ -71,4 +73,10 @@ func TestAxiRunRefusesARelativeClaudeConfigDir(t *testing.T) {
 	if !errors.As(err, &ee) || ee.code != 2 || !strings.Contains(out.String(), "must be an absolute path") {
 		t.Fatalf("relative CLAUDE_CONFIG_DIR = %v\n%s", err, out.String())
 	}
+}
+
+// absTestPath makes a POSIX-style path absolute on every platform: Windows
+// needs a volume name, and forward slashes keep TOON output unescaped.
+func absTestPath(path string) string {
+	return filepath.VolumeName(os.TempDir()) + path
 }
