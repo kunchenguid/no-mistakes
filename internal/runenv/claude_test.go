@@ -1,6 +1,10 @@
 package runenv
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestCallerClaudeConfigDir(t *testing.T) {
 	for _, tc := range []struct {
@@ -9,8 +13,8 @@ func TestCallerClaudeConfigDir(t *testing.T) {
 	}{
 		{env: "", want: ""},
 		{env: "  ", want: ""},
-		{env: "/caller/.claude1", want: "/caller/.claude1"},
-		{env: " /caller/.claude1/ ", want: "/caller/.claude1/"},
+		{env: absTestPath("/caller/.claude1"), want: absTestPath("/caller/.claude1")},
+		{env: " " + absTestPath("/caller/.claude1/") + " ", want: absTestPath("/caller/.claude1/")},
 		{env: ".claude1", refused: true},
 		{env: "~/.claude1", refused: true},
 	} {
@@ -20,4 +24,10 @@ func TestCallerClaudeConfigDir(t *testing.T) {
 			t.Errorf("CLAUDE_CONFIG_DIR=%q: got %q, %v; want %q, refused=%v", tc.env, got, err, tc.want, tc.refused)
 		}
 	}
+}
+
+// absTestPath makes a POSIX-style path absolute on every platform; Windows
+// needs a volume name.
+func absTestPath(path string) string {
+	return filepath.VolumeName(os.TempDir()) + path
 }
