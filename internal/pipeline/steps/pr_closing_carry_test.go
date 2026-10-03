@@ -250,3 +250,41 @@ func TestClosingKeywordLinesAfterBacktickedHTMLStayLive(t *testing.T) {
 		t.Fatalf("neutralized = %q", got)
 	}
 }
+
+// A <pre> inside an HTML comment opens no element state, so the next line of
+// the intent is published neutralized and a later update carries nothing.
+func TestPRStep_PreInsideCommentDoesNotHideAClosingLine(t *testing.T) {
+	t.Parallel()
+	runs := newPRStepRuns(t, nil)
+	runs.sctx.UserIntent = "Refactor X\n<!-- wrap output in <pre> -->\nFixes #12"
+	created := runs.create()
+	if !strings.Contains(created, "Fixes `#12`") || closingLinesOf(created) != "" {
+		t.Fatalf("intent's Fixes #12 must be published neutralized:\n%s", created)
+	}
+
+	updated := runs.update()
+	if got := closingLinesOf(updated); got != "" {
+		t.Fatalf("closing lines = %q, want nothing carried from pipeline text:\n%s", got, updated)
+	}
+}
+
+// The neutralizer leaves no line behind that extraction would count as a live
+// closing line.
+func TestNeutralizedTextHasNoLiveClosingLine(t *testing.T) {
+	inputs := []string{
+		"Fixes #1",
+		"Uses `<pre>`, `<code>` and `<!--` here.\nFixes #2",
+		"<pre>\nFixes #3\n</pre>\nFixes #4",
+		"<code>Fixes #5</code>\nFixes #6",
+		"<!--\nCloses #7\n-->\nCloses #8",
+		"<!-- wrap output in <pre> -->\nFixes #9",
+		"```\nFixes #10\n```\nFixes #11",
+		"    Fixes #12\n\nFixes #13",
+		"- Resolves owner/repo#14\n1. Closes #15.",
+	}
+	for _, in := range inputs {
+		if got := extractClosingKeywordLines(neutralizeClosingReferences(in)); len(got) != 0 {
+			t.Errorf("neutralizeClosingReferences(%q) left live closing lines %q", in, got)
+		}
+	}
+}

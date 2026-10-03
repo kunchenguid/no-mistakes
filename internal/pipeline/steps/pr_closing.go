@@ -51,7 +51,7 @@ var closingReferencePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9-]+/[A-Za-z0-
 func extractClosingKeywordLines(body string) []string {
 	seen := map[string]struct{}{}
 	var lines []string
-	scanner := liveTextScanner{comments: true}
+	var scanner liveTextScanner
 	keep := func(text string) string { return text }
 	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
 		if _, live := scanner.line(raw, keep); !live {
@@ -73,15 +73,15 @@ func extractClosingKeywordLines(body string) []string {
 
 // liveTextScanner walks text line by line and finds its live parts: outside
 // fenced and indented code blocks, inline code spans, HTML <code>/<pre>
-// elements (which may span lines), and, when comments is set, HTML comments.
-// Inline code is split off first, so a backticked tag never opens element or
-// comment state. It is the one definition of live text shared by
-// neutralizeClosingReferences and extractClosingKeywordLines.
+// elements and HTML comments (both may span lines). Inline code is split off
+// first, so a backticked tag never opens element or comment state, and a
+// comment's contents never open element state. It is the one definition of
+// live text shared by neutralizeClosingReferences and
+// extractClosingKeywordLines.
 type liveTextScanner struct {
 	fence     markdownFence
 	htmlCode  string
 	inComment bool
-	comments  bool
 }
 
 // line applies rewrite to the live parts of raw and reports whether all of
@@ -103,11 +103,8 @@ func (s *liveTextScanner) line(raw string, rewrite func(string) string) (string,
 }
 
 // outsideHTML applies rewrite to the parts of text outside HTML <code>/<pre>
-// elements and, when tracked, HTML comments.
+// elements and HTML comments.
 func (s *liveTextScanner) outsideHTML(text string, rewrite func(string) string) string {
-	if !s.comments {
-		return outsideHTMLCode(text, &s.htmlCode, rewrite)
-	}
 	var b strings.Builder
 	for {
 		if s.inComment {
