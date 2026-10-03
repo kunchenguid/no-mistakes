@@ -26,7 +26,6 @@ type fixExecutionOptions struct {
 	ErrorPrefix             string
 	FallbackSummary         string
 	AfterAgentRun           func(*agent.Result) error
-	AgentContext            context.Context
 	// RunAgent overrides the agent-call seam while leaving preparation and
 	// post-agent commit work on the step context. Review uses it to apply a
 	// fresh review_agent_timeout stall budget at the instant each fixer starts.
@@ -505,11 +504,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.RunAgent != nil {
 		result, err = opts.RunAgent(runOpts)
 	} else {
-		agentCtx := sctx.Ctx
-		if opts.AgentContext != nil {
-			agentCtx = opts.AgentContext
-		}
-		result, err = sctx.RunAgentSessionContext(agentCtx, opts.SessionRole, runOpts)
+		result, err = sctx.RunAgentSessionContext(sctx.Ctx, opts.SessionRole, runOpts)
 	}
 	if err != nil {
 		if opts.ErrorPrefix == "" {

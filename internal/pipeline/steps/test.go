@@ -631,6 +631,7 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 				"Reported: %v. %s "+
 				"Re-running the same request costs another full budget, so no further attempt is made automatically. "+
 				"If this repository's targeted tests or evidence gathering routinely stay quiet longer than the default %s, raise test_agent_timeout in global config. "+
+				"If the turn was still producing output or running a child process, set test_agent_working_timeout there instead: without that still-working cap every turn stops at test_agent_timeout. "+
 				"Respond with fix to spend another budget: a repair turn runs only for selected findings other than this budget cut, then validation re-runs. Or abort and retry after raising the budget.",
 			err, cause, config.DefaultTestAgentTimeout),
 	}}

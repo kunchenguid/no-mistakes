@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -68,15 +69,6 @@ func TestRunAgent_HangingAgentFailsAfterTimeout(t *testing.T) {
 
 func TestAgentTimeoutHardCapAndIdleGrace(t *testing.T) {
 	t.Parallel()
-	if got := AgentWorkingLimit(30*time.Minute, 0); got != 30*time.Minute {
-		t.Fatalf("unset cap = %s, want the 30m silent budget", got)
-	}
-	if got := AgentWorkingLimit(30*time.Minute, 45*time.Minute); got != 45*time.Minute {
-		t.Fatalf("set cap = %s, want 45m", got)
-	}
-	if got := AgentWorkingLimit(30*time.Minute, 10*time.Minute); got != 30*time.Minute {
-		t.Fatalf("cap below the silent budget = %s, want no extension", got)
-	}
 	if got := AgentTimeoutIdleGrace(30 * time.Minute); got != config.DefaultStepQuietWarning {
 		t.Fatalf("idle grace for 30m = %s, want %s", got, config.DefaultStepQuietWarning)
 	}
@@ -182,8 +174,9 @@ func TestRunAgent_StreamingWithoutAWorkingCapStopsAtTheSilentBudget(t *testing.T
 	if elapsed >= 2*stall {
 		t.Fatalf("unset cap let a working agent run %s, want a cut at the %s silent budget", elapsed, stall)
 	}
-	if !strings.Contains(err.Error(), "last produced output") {
-		t.Fatalf("error = %q, want the measured activity of a working turn", err)
+	want := regexp.MustCompile(`^agent timed out after 40ms \(silent budget; no still-working cap is set; ran \S+\); agent last produced output \S+ ago \(\d+ observed\)$`)
+	if !want.MatchString(err.Error()) {
+		t.Fatalf("error = %q, want the unset-cap bound followed only by the measured activity", err)
 	}
 }
 
@@ -1059,8 +1052,8 @@ func TestRunAgent_LaunchedAgentWithoutAChildIsCutAtTheStallBudget(t *testing.T) 
 	if elapsed >= 2*stall {
 		t.Fatalf("childless agent ran %s, want a cut at the %s stall budget", elapsed, stall)
 	}
-	if !strings.Contains(err.Error(), "stall budget") {
-		t.Fatalf("error = %q, want the stall budget named as the bound", err)
+	if !strings.Contains(err.Error(), "silent budget; no still-working cap is set") {
+		t.Fatalf("error = %q, want the silent budget named as the bound", err)
 	}
 }
 

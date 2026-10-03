@@ -528,7 +528,7 @@ func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T)
 	if run.Error == nil {
 		t.Fatal("durable timeout error is nil")
 	}
-	if strings.Contains(*run.Error, "produced no output at all") || strings.Contains(*run.Error, "silent") {
+	if strings.Contains(*run.Error, "produced no output at all") || strings.Contains(*run.Error, "silent for") {
 		t.Fatalf("actively streaming review was mislabelled silent: %q", *run.Error)
 	}
 	if !strings.Contains(*run.Error, "invocation budget") || !strings.Contains(*run.Error, "last produced output") {

@@ -398,19 +398,6 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 	return activity
 }
 
-// AgentWorkingLimit is the absolute deadline for one invocation. working is
-// the configured still-working cap. Zero, or any value that is not greater
-// than timeout, means the cap is unset and the deadline is timeout.
-func AgentWorkingLimit(timeout, working time.Duration) time.Duration {
-	if timeout <= 0 {
-		return 0
-	}
-	if working > timeout {
-		return working
-	}
-	return timeout
-}
-
 // AgentTimeoutIdleGrace is how long an invocation may stay quiet after the
 // stall budget before it is cancelled. Production 30m budgets use the same
 // 10m quiet window AXI already treats as "this looks stalled"; shorter test
@@ -435,11 +422,17 @@ type agentBudget struct {
 }
 
 // bound names which limit cut the invocation and how long it actually ran.
-// A deadline that fired with no configured cap is the silent budget. A
-// deadline that fired past that budget is the still-working cap.
+// With no cap the silent budget is a plain deadline that never looked at
+// activity, so that label claims nothing about output or children. With a
+// cap, a deadline that fired is the cap and a cancel before it is the watcher
+// finding the turn idle.
 func (b *agentBudget) bound(deadlineExceeded bool) string {
 	ran := roundActivity(time.Since(b.start))
-	if deadlineExceeded && b.working > b.timeout {
+	if b.working <= b.timeout {
+		return fmt.Sprintf("after %s (silent budget; no still-working cap is set; ran %s)",
+			b.timeout, ran)
+	}
+	if deadlineExceeded {
 		return fmt.Sprintf("at its %s still-working cap (silent budget %s, still active; ran %s)",
 			b.working, b.timeout, ran)
 	}
@@ -448,7 +441,8 @@ func (b *agentBudget) bound(deadlineExceeded bool) string {
 }
 
 // AgentBudgetBound renders which bound cut an invocation for a step's own
-// timeout message: the stall budget or the hard cap, plus the elapsed time.
+// timeout message: the silent budget or the still-working cap, plus the
+// elapsed time.
 // Errors the shared seam did not diagnose fall back to naming timeout.
 func AgentBudgetBound(err error, timeout time.Duration) string {
 	var inv *agentInvocationError

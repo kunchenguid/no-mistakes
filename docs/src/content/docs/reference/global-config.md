@@ -562,11 +562,13 @@ Most agent-driven mutation steps fail the run, CI auto-fix parks for a user deci
 The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the approval behavior.
 A late successful return after cancellation is rejected, so post-agent commits and PR content cannot use work from a timed-out turn.
 
-The diagnostic names which bound cut the invocation and how long it ran, for example `after 30m0s (stall budget, then no recent output or live child process; ran 30m0s)` or `at its 1h0m0s still-working cap (silent budget 30m0s, still active; ran 1h0m0s)`, and separately reports what activity was actually measured.
+The diagnostic names which bound cut the invocation and how long it ran, and separately reports what activity was actually measured.
+With no still-working cap set it reads `after 30m0s (silent budget; no still-working cap is set; ran 30m0s)`, which claims nothing about output or child processes because nothing checked them.
+With a cap set it reads `after 30m0s (stall budget, then no recent output or live child process; ran 42m0s)` for a turn that went idle, or `at its 1h0m0s still-working cap (silent budget 30m0s, still active; ran 1h0m0s)` for a turn that reached the cap.
 Evidence resets whenever a retry or fallback starts a replacement attempt, including provider fallback, failed session resume, and OpenCode's prompt-only structured-output fallback, so the diagnostic describes only the attempt that reached the deadline:
 
 - `agent produced no output at all in 30m0s after its subprocess started (pid=1234)` - the current attempt launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.
-- `agent last produced output 4s ago (312 observed)` - the current attempt was working right up to cancellation. The turn needed the idle/hard-cap extension, or the request is too large for one turn.
+- `agent last produced output 4s ago (312 observed)` - the current attempt was working right up to cancellation. Set the still-working cap, raise it if it is already set, or split a request that is too large for one turn.
 - `agent produced no output at all in 30m0s and never reported a subprocess start` - the current attempt never reached a running agent process.
 
 Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr.
@@ -589,7 +591,7 @@ A bare context cancellation is omitted because it adds no evidence.
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
 Raise it when those turns routinely stay quiet longer than this budget.
-A still-working turn continues past it only when [`agent_working_timeout`](#agent_working_timeout) is set.
+With [`agent_working_timeout`](#agent_working_timeout) unset, this budget also stops a turn that is still working, so set that cap when busy turns are cut here.
 It is global-only: repository config and environment variables cannot override it.
 
 ### agent_working_timeout
@@ -628,7 +630,7 @@ That diagnostic carries the same measured evidence and adapter report described 
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
 Raise it when reviews routinely stay quiet longer than this budget.
-A still-working review continues past it only when [`review_agent_working_timeout`](#review_agent_working_timeout) is set.
+With [`review_agent_working_timeout`](#review_agent_working_timeout) unset, this budget also stops a review that is still working, so set that cap when busy reviews are cut here.
 It bounds only the Review step, and no other step or environment variable overrides it.
 
 ### review_agent_working_timeout
@@ -671,7 +673,7 @@ You can also abort, raise this value, and retry.
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
 Raise it when targeted tests or evidence gathering routinely stay quiet longer than this budget.
-A still-working Test turn continues past it only when [`test_agent_working_timeout`](#test_agent_working_timeout) is set.
+With [`test_agent_working_timeout`](#test_agent_working_timeout) unset, this budget also stops a Test turn that is still working, so set that cap when busy turns are cut here.
 The shipped default stays a silent bound and is not raised automatically.
 It bounds only the Test step, and no other step or environment variable overrides it.
 
