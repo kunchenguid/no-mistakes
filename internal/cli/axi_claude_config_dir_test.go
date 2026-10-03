@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	toon "github.com/toon-format/toon-go"
 )
 
 func TestAxiRunReattachRequiresTheCallersClaudeProfile(t *testing.T) {
@@ -53,8 +54,19 @@ func TestAxiRunReattachRequiresTheCallersClaudeProfile(t *testing.T) {
 			if !strings.Contains(out.String(), tc.hint) {
 				t.Fatalf("refusal hint = %q, want it to contain %q", out.String(), tc.hint)
 			}
-			if !tc.refused && (err != nil || !strings.Contains(out.String(), "claude_config_dir: "+bound)) {
-				t.Fatalf("reattach did not report the bound profile: %v\n%s", err, out.String())
+			if tc.refused {
+				return
+			}
+			if err != nil {
+				t.Fatalf("reattach failed: %v\n%s", err, out.String())
+			}
+			var doc struct {
+				Run struct {
+					ClaudeConfigDir string `toon:"claude_config_dir"`
+				} `toon:"run"`
+			}
+			if err := toon.Unmarshal(out.Bytes(), &doc); err != nil || doc.Run.ClaudeConfigDir != bound {
+				t.Fatalf("reattach reported profile %q, want %q: %v\n%s", doc.Run.ClaudeConfigDir, bound, err, out.String())
 			}
 		})
 	}
@@ -76,7 +88,7 @@ func TestAxiRunRefusesARelativeClaudeConfigDir(t *testing.T) {
 }
 
 // absTestPath makes a POSIX-style path absolute on every platform: Windows
-// needs a volume name, and forward slashes keep TOON output unescaped.
+// needs a volume name.
 func absTestPath(path string) string {
 	return filepath.VolumeName(os.TempDir()) + path
 }
