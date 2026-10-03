@@ -294,6 +294,60 @@ func parseClosingLedger(body string) (lines []string, ok bool) {
 	return lines, true
 }
 
+// carryableClosingLines is the stricter reader the carry uses: the lines of
+// extractClosingKeywordLines(body) that lie wholly outside inline code spans
+// (split off first, so a backticked tag opens nothing), HTML comments, and
+// HTML <pre>/<code> elements, where GitHub closes nothing. It only ever
+// drops lines from the extractor's result, so a quirk can never promote one.
+func carryableClosingLines(body string) []string {
+	carryable := map[string]struct{}{}
+	var fence markdownFence
+	var htmlCode string
+	inComment := false
+	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		inFence := fence.marker != 0
+		fence.consume(raw)
+		if inFence || fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
+			continue
+		}
+		outside := 0
+		outsideInlineCode(raw, func(text string) string {
+			for text != "" {
+				if inComment {
+					end := strings.Index(text, "-->")
+					if end < 0 {
+						return ""
+					}
+					text, inComment = text[end+len("-->"):], false
+					continue
+				}
+				start := strings.Index(text, "<!--")
+				if start < 0 {
+					start = len(text)
+				} else {
+					inComment = true
+				}
+				outsideHTMLCode(text[:start], &htmlCode, func(live string) string {
+					outside += len(live)
+					return live
+				})
+				text = strings.TrimPrefix(text[start:], "<!--")
+			}
+			return ""
+		})
+		if outside == len(raw) {
+			carryable[strings.ToLower(strings.TrimSpace(raw))] = struct{}{}
+		}
+	}
+	var lines []string
+	for _, line := range extractClosingKeywordLines(body) {
+		if _, ok := carryable[strings.ToLower(line)]; ok {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // authorClosingLines returns the standalone closing lines of a live ordinary
 // body that are the author's, for an update about to replace that body:
 //   - a body with a ledger: every live closing line the ledger does not list;
@@ -303,7 +357,7 @@ func parseClosingLedger(body string) (lines []string, ok bool) {
 //     existed, or one with an ambiguous ledger): none, as before, because its
 //     generated text may carry live closing lines that are not the author's.
 func authorClosingLines(body string) []string {
-	live := extractClosingKeywordLines(body)
+	live := carryableClosingLines(body)
 	if len(live) == 0 {
 		return nil
 	}

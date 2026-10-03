@@ -257,3 +257,53 @@ func TestPRStep_BacktickedHTMLDoesNotHideAuthorClosingLines(t *testing.T) {
 		t.Fatalf("Issues section must carry the author's line and add the requested one:\n%s", updated)
 	}
 }
+
+// GitHub closes nothing from a line inside an HTML comment or a <pre>/<code>
+// element, so the carry never republishes one as a live line.
+func TestAuthorClosingLinesSkipCommentsAndHTMLCode(t *testing.T) {
+	for name, tc := range map[string]struct{ body, want string }{
+		"PR template comment": {"<!--\nFixes #123\n-->\n\nSummary of the change.", ""},
+		"pre element":         {"Summary\n\n<pre>\nFixes #9\n</pre>\n\nCloses #4", "Closes #4"},
+		"code element":        {"<code>\nResolves #8\n</code>\nCloses #4", "Closes #4"},
+		"backticked tags":     {"Skips `<pre>` and `<!--` markers.\n\nCloses #4", "Closes #4"},
+	} {
+		if got := strings.Join(authorClosingLines(tc.body), "|"); got != tc.want {
+			t.Errorf("%s: author closing lines = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// The carry's reader only ever drops lines from the extractor's result.
+func TestCarryableClosingLinesAreASubsetOfExtracted(t *testing.T) {
+	for _, body := range []string{
+		"Closes #1\n<!--\nFixes #2\n-->\nFixes #3",
+		"<pre>\nCloses #4\n</pre>\n`<pre>`\nCloses #5",
+		"Drops stray <!-- markers\nFixes #6",
+		"```\nFixes #7\n```\n    Fixes #8\n- Resolves owner/repo#9",
+		"<code>Fixes #10</code>\nCloses #11.",
+	} {
+		extracted := map[string]bool{}
+		for _, line := range extractClosingKeywordLines(body) {
+			extracted[line] = true
+		}
+		for _, line := range carryableClosingLines(body) {
+			if !extracted[line] {
+				t.Errorf("carryableClosingLines(%q) promoted %q", body, line)
+			}
+		}
+	}
+}
+
+// An author's commented-out closing line in a ledgered body is not carried;
+// a live one is.
+func TestPRStep_CommentedOutAuthorClosingLineIsNotCarried(t *testing.T) {
+	t.Parallel()
+	runs := newPRStepRuns(t, nil)
+	created := runs.create()
+	runs.authorEdits(created + "\n\n<!--\nCloses #5\n-->\n\nCloses #4\n")
+
+	updated := runs.update()
+	if got := closingLinesOf(updated); got != "Closes #4" {
+		t.Fatalf("closing lines = %q, want only the live author line carried:\n%s", got, updated)
+	}
+}
