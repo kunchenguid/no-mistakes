@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -195,8 +196,13 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 
 // stepGitRunRaw preserves NUL-delimited paths and porcelain status columns.
 func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
+	return stepGitRunInput(sctx, nil, args...)
+}
+
+func stepGitRunInput(sctx *pipeline.StepContext, input io.Reader, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
+	cmd.Stdin = input
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""

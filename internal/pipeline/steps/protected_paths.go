@@ -2,6 +2,8 @@ package steps
 
 import (
 	"fmt"
+	"io"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -10,34 +12,186 @@ import (
 
 // stagePipelineChanges guards every pipeline-owned catch-all staging path,
 // including Push's leftover commit. Refusal preserves the index and worktree.
+// New tool caches and scratch files stay in the run worktree but out of commits.
 func stagePipelineChanges(sctx *pipeline.StepContext) error {
-	if len(sctx.Config.ProtectedPaths) > 0 {
-		// Disable renames so both source and destination are checked, and list
-		// individual untracked files so a protected path inside a new directory
-		// cannot hide behind the directory entry. NULs preserve unusual names.
-		status, err := stepGitRunRaw(sctx, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=none")
-		if err != nil {
-			return fmt.Errorf("check protected_paths: %w", err)
+	// List individual untracked files so protected paths cannot hide behind
+	// a directory entry. Renames carry the destination, then the source, as
+	// separate NUL-delimited paths; both must be checked and staged together.
+	status, err := stepGitRunRaw(sctx, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--renames", "--ignore-submodules=none")
+	if err != nil {
+		return fmt.Errorf("check protected_paths and scratch: %w", err)
+	}
+	var changed, unstage []string
+	scratch := newScratchExclusions()
+	entries := strings.Split(strings.TrimSuffix(status, "\x00"), "\x00")
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if entry == "" {
+			continue
 		}
-		for _, entry := range strings.Split(strings.TrimSuffix(status, "\x00"), "\x00") {
-			if entry == "" {
-				continue
+		if len(entry) < 4 || entry[2] != ' ' {
+			return fmt.Errorf("check protected_paths and scratch: invalid git status entry %q", entry)
+		}
+		file := entry[3:]
+		files := []string{file}
+		if strings.ContainsAny(entry[:2], "RC") {
+			i++
+			if i >= len(entries) || entries[i] == "" {
+				return fmt.Errorf("check protected_paths and scratch: missing source for %q", entry)
 			}
-			if len(entry) < 4 || entry[2] != ' ' {
-				return fmt.Errorf("check protected_paths: invalid git status entry %q", entry)
-			}
-			file := entry[3:]
+			files = append(files, entries[i])
+		}
+		for _, changedPath := range files {
 			for _, pattern := range sctx.Config.ProtectedPaths {
-				if matchIgnorePattern(file, pattern) {
-					return &pipeline.ProtectedPathError{Path: file, Rule: pattern}
+				if matchIgnorePattern(changedPath, pattern) {
+					return &pipeline.ProtectedPathError{Path: changedPath, Rule: pattern}
 				}
 			}
 		}
+		if len(files) == 1 && (entry[:2] == "??" || entry[0] == 'A' || entry[1] == 'A') && scratch.add(file) {
+			if entry[:2] != "??" {
+				unstage = append(unstage, file)
+			}
+			continue
+		}
+		changed = append(changed, files...)
 	}
-	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
+	if len(unstage) > 0 {
+		if _, err := stepGitRunInput(sctx, nulPathspecs(literalPathspecs(unstage)), "rm", "--cached", "-f", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+			return err
+		}
+	}
+	specs := append([]string{"."}, scratch.pathspecs(changed)...)
+	if _, err := stepGitRunInput(sctx, nulPathspecs(specs), "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
 		return err
 	}
+	if summary := scratch.summary(); summary != "" {
+		sctx.Log("left new tool caches and scratch out of the commit (still in the run worktree): " + summary)
+	}
 	return unstageSubmodulePointerMoves(sctx)
+}
+
+func literalPathspecs(files []string) []string {
+	specs := make([]string, len(files))
+	for i, file := range files {
+		specs[i] = ":(literal)" + file
+	}
+	return specs
+}
+
+func nulPathspecs(specs []string) io.Reader {
+	return strings.NewReader(strings.Join(specs, "\x00") + "\x00")
+}
+
+// scratchCacheDirs are directory names that only ever hold tool caches or
+// installed dependencies. A new file under one is never an intended change.
+var scratchCacheDirs = map[string]bool{
+	"node_modules":  true,
+	".cache":        true,
+	".corepack":     true,
+	".npm":          true,
+	".pnpm-store":   true,
+	"__pycache__":   true,
+	".pytest_cache": true,
+	".mypy_cache":   true,
+	".ruff_cache":   true,
+}
+
+// scratchRoot reports whether a new path is a tool cache or an ad-hoc scratch
+// file, and the path to exclude for it. Tracked files are never classified.
+func scratchRoot(file string) (root, reason string, ok bool) {
+	isDir := strings.HasSuffix(file, "/")
+	parts := strings.Split(strings.TrimSuffix(file, "/"), "/")
+	dirs := parts
+	if !isDir {
+		dirs = parts[:len(parts)-1]
+	}
+	inCache := false
+	for i, part := range dirs {
+		if i == 0 && part == "scratch" {
+			return part, "scratch directory", true
+		}
+		if scratchCacheDirs[part] || (part == "corepack" && inCache) {
+			return strings.Join(parts[:i+1], "/"), "tool cache", true
+		}
+		inCache = inCache || part == "cache" || strings.HasPrefix(part, ".")
+	}
+	base := parts[len(parts)-1]
+	if !isDir && len(parts) == 2 && (parts[0] == "tests" || parts[0] == "test") && strings.HasPrefix(base, "_") {
+		switch path.Ext(base) {
+		case ".sh", ".bash", ".zsh":
+			return file, "scratch script", true
+		}
+	}
+	return "", "", false
+}
+
+type scratchExclusion struct {
+	root   string
+	reason string
+	files  []string
+}
+
+type scratchExclusions struct {
+	byRoot map[string]*scratchExclusion
+	order  []string
+}
+
+func newScratchExclusions() *scratchExclusions {
+	return &scratchExclusions{byRoot: map[string]*scratchExclusion{}}
+}
+
+func (s *scratchExclusions) add(file string) bool {
+	root, reason, ok := scratchRoot(file)
+	if !ok {
+		return false
+	}
+	ex := s.byRoot[root]
+	if ex == nil {
+		ex = &scratchExclusion{root: root, reason: reason}
+		s.byRoot[root] = ex
+		s.order = append(s.order, root)
+	}
+	ex.files = append(ex.files, file)
+	return true
+}
+
+// pathspecs excludes each cache directory whole, keeping the pathspec list
+// short for large caches, unless a tracked change lies under it; then only its
+// untracked files are excluded so the tracked change is still staged.
+func (s *scratchExclusions) pathspecs(changed []string) []string {
+	var specs []string
+	for _, root := range s.order {
+		ex := s.byRoot[root]
+		excluded := []string{root}
+		for _, file := range changed {
+			if strings.HasPrefix(file, root+"/") {
+				excluded = ex.files
+				break
+			}
+		}
+		for _, file := range excluded {
+			specs = append(specs, ":(exclude,literal)"+file)
+		}
+	}
+	return specs
+}
+
+func (s *scratchExclusions) summary() string {
+	const maxNamed = 10
+	var named []string
+	for _, root := range s.order[:min(len(s.order), maxNamed)] {
+		ex := s.byRoot[root]
+		if len(ex.files) == 1 && ex.files[0] == root {
+			named = append(named, fmt.Sprintf("%s (%s)", root, ex.reason))
+		} else {
+			named = append(named, fmt.Sprintf("%s/ (%s, %d files)", root, ex.reason, len(ex.files)))
+		}
+	}
+	if len(s.order) > maxNamed {
+		named = append(named, fmt.Sprintf("and %d more", len(s.order)-maxNamed))
+	}
+	return strings.Join(named, ", ")
 }
 
 // unstageSubmodulePointerMoves keeps catch-all staging from recording a
