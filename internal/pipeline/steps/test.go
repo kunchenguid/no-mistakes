@@ -111,7 +111,7 @@ Previous test findings to address:
 			Prompt:          fixPrompt,
 			FallbackSummary: "fix test failures",
 			RunAgent: func(runOpts agent.RunOpts) (*agent.Result, error) {
-				result, runErr := sctx.RunAgentBudget(sctx.Ctx, fixTimeout, errTestAgentTimeout, runOpts)
+				result, runErr := sctx.RunAgentBudget(sctx.Ctx, fixTimeout, testAgentWorkingTimeout(sctx), errTestAgentTimeout, runOpts)
 				if runErr != nil {
 					return nil, testAgentError(fixTimeout, "agent fix tests", runErr)
 				}
@@ -370,7 +370,7 @@ func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error
 			))
 		}
 		timeout := testAgentTimeout(sctx)
-		result, err := sctx.RunAgentBudget(sctx.Ctx, timeout, errTestAgentTimeout, agent.RunOpts{
+		result, err := sctx.RunAgentBudget(sctx.Ctx, timeout, testAgentWorkingTimeout(sctx), errTestAgentTimeout, agent.RunOpts{
 			Prompt:     current,
 			CWD:        sctx.WorkDir,
 			JSONSchema: testFindingsSchema,
@@ -586,6 +586,13 @@ func testAgentTimeout(sctx *pipeline.StepContext) time.Duration {
 		return sctx.Config.TestAgentTimeout
 	}
 	return config.DefaultTestAgentTimeout
+}
+
+func testAgentWorkingTimeout(sctx *pipeline.StepContext) time.Duration {
+	if sctx == nil || sctx.Config == nil {
+		return 0
+	}
+	return sctx.Config.TestAgentWorkingTimeout
 }
 
 // testAgentContext bounds the base-checkout prepare and test commands by

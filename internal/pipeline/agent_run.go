@@ -19,7 +19,7 @@ import (
 // budget; a late successful return after this cause is still a timeout.
 var ErrAgentTimeout = errors.New("agent timeout")
 
-// AgentTimeout is the per-invocation budget applied at the shared agent-run
+// AgentTimeout is the silent-kill budget applied at the shared agent-run
 // seam. A positive Config.AgentTimeout wins; otherwise the default (30m).
 func AgentTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.AgentTimeout > 0 {
@@ -28,55 +28,67 @@ func AgentTimeout(cfg *config.Config) time.Duration {
 	return config.DefaultAgentTimeout
 }
 
+// AgentWorkingTimeout is the optional still-working cap for the shared seam.
+// Zero means the cap is unset and a turn stops at AgentTimeout.
+func AgentWorkingTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.AgentWorkingTimeout
+}
+
 // RunAgent executes one agent invocation with a deadline scoped only to that
 // call. The parent StepContext.Ctx is left unchanged so post-agent work
 // (commits, git, parsing) is not cancelled by the invocation budget.
 //
 // If the parent context already has a deadline (intent extraction, caller
 // cancellation), that bound is honored and no shorter default is stacked.
-// Otherwise AgentTimeout is applied as a stall budget: a silent invocation
-// is cancelled there, while one still producing output or still waiting on a
-// live child process may continue until it goes idle or hits
-// AgentTimeoutHardCap. A late successful return after the
-// deadline is rejected.
+// Otherwise AgentTimeout is the silent-kill budget. A turn still producing
+// output or waiting on a live child continues only until AgentWorkingTimeout
+// when that cap is set; an unset cap does not extend the turn. A late
+// successful return after the deadline is rejected.
 func (sctx *StepContext) RunAgent(opts agent.RunOpts) (*agent.Result, error) {
 	parent := context.Background()
 	if sctx != nil {
 		parent = sctx.Ctx
 	}
-	return sctx.runAgent(parent, opts, "", 0, nil)
+	return sctx.runAgent(parent, opts, "", 0, 0, nil)
 }
 
 // RunAgentContext is RunAgent with an explicit parent.
 func (sctx *StepContext) RunAgentContext(parent context.Context, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, "", 0, nil)
+	return sctx.runAgent(parent, opts, "", 0, 0, nil)
 }
 
-// RunAgentBudget is RunAgentContext with a step-specific stall budget and
-// cause (Review and Test). The parent must not already carry that budget as a
-// context deadline, or the activity-aware extension cannot run.
-func (sctx *StepContext) RunAgentBudget(parent context.Context, timeout time.Duration, cause error, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, "", timeout, cause)
+// RunAgentBudget is RunAgentContext with a step-specific silent budget,
+// optional still-working cap, and cause (Review and Test). The parent must
+// not already carry that budget as a context deadline, or the activity-aware
+// extension cannot run. A working cap that is not greater than timeout does
+// not extend the turn.
+func (sctx *StepContext) RunAgentBudget(parent context.Context, timeout, working time.Duration, cause error, opts agent.RunOpts) (*agent.Result, error) {
+	return sctx.runAgent(parent, opts, "", timeout, working, cause)
 }
 
 // RunAgentSessionContext is RunAgentSession with an explicit parent.
 func (sctx *StepContext) RunAgentSessionContext(parent context.Context, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, role, 0, nil)
+	return sctx.runAgent(parent, opts, role, 0, 0, nil)
 }
 
-// RunAgentSessionBudget is RunAgentSessionContext with a step-specific stall
-// budget and cause so a fixer turn can use review_agent_timeout without
-// installing an absolute parent deadline.
-func (sctx *StepContext) RunAgentSessionBudget(parent context.Context, timeout time.Duration, cause error, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(parent, opts, role, timeout, cause)
+// RunAgentSessionBudget is RunAgentSessionContext with a step-specific silent
+// budget and optional still-working cap so a fixer turn can use
+// review_agent_timeout without installing an absolute parent deadline.
+func (sctx *StepContext) RunAgentSessionBudget(parent context.Context, timeout, working time.Duration, cause error, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
+	return sctx.runAgent(parent, opts, role, timeout, working, cause)
 }
 
-func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, sessionRole SessionRole, timeout time.Duration, cause error) (*agent.Result, error) {
+func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, sessionRole SessionRole, timeout, working time.Duration, cause error) (*agent.Result, error) {
 	var ag agent.Agent
 	if timeout <= 0 {
 		timeout = AgentTimeout(nil)
+		working = 0
 		if sctx != nil {
 			timeout = AgentTimeout(sctx.Config)
+			working = AgentWorkingTimeout(sctx.Config)
 		}
 	}
 	if cause == nil {
@@ -86,7 +98,7 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 		ag = sctx.Agent
 	}
 	activity := observeAgentActivity(&opts)
-	return invokeAgent(parent, timeout, cause, activity, func(ctx context.Context) (*agent.Result, error) {
+	return invokeAgent(parent, timeout, working, cause, activity, func(ctx context.Context) (*agent.Result, error) {
 		if sessionRole != "" && sctx != nil && sctx.Sessions != nil {
 			return sctx.Sessions.Run(ctx, ag, sessionRole, opts, sctx.Log)
 		}
@@ -97,8 +109,8 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	})
 }
 
-func invokeAgent(parent context.Context, timeout time.Duration, cause error, activity *agentActivity, run func(context.Context) (*agent.Result, error)) (*agent.Result, error) {
-	ctx, cancel, budget := bindAgentDeadline(parent, timeout, cause, activity)
+func invokeAgent(parent context.Context, timeout, working time.Duration, cause error, activity *agentActivity, run func(context.Context) (*agent.Result, error)) (*agent.Result, error) {
+	ctx, cancel, budget := bindAgentDeadline(parent, timeout, working, cause, activity)
 	result, err := run(ctx)
 	runErr := classifyAgentRun(ctx, budget, activity, err)
 	cancel()
@@ -386,16 +398,17 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 	return activity
 }
 
-// AgentTimeoutHardCap is the fail-closed bound for an invocation that is
-// still producing output, or still waiting on a live child process, when the
-// stall budget expires. A silent invocation
-// is cancelled at the stall budget itself; this cap is the replacement bound
-// so a chatty turn cannot run forever.
-func AgentTimeoutHardCap(timeout time.Duration) time.Duration {
+// AgentWorkingLimit is the absolute deadline for one invocation. working is
+// the configured still-working cap. Zero, or any value that is not greater
+// than timeout, means the cap is unset and the deadline is timeout.
+func AgentWorkingLimit(timeout, working time.Duration) time.Duration {
 	if timeout <= 0 {
 		return 0
 	}
-	return timeout * 2
+	if working > timeout {
+		return working
+	}
+	return timeout
 }
 
 // AgentTimeoutIdleGrace is how long an invocation may stay quiet after the
@@ -412,21 +425,23 @@ func AgentTimeoutIdleGrace(timeout time.Duration) time.Duration {
 	return config.DefaultStepQuietWarning
 }
 
-// agentBudget is the stall budget the shared seam applied to one invocation.
+// agentBudget is the silent budget and optional still-working cap the shared
+// seam applied to one invocation.
 type agentBudget struct {
 	timeout time.Duration
+	working time.Duration
 	cause   error
 	start   time.Time
 }
 
-// bound names which limit cut the invocation and how long it actually ran,
-// so an operator can tell a quiet turn stopped at the stall budget from a
-// working one stopped at the hard cap.
-func (b *agentBudget) bound(hardCap bool) string {
+// bound names which limit cut the invocation and how long it actually ran.
+// A deadline that fired with no configured cap is the silent budget. A
+// deadline that fired past that budget is the still-working cap.
+func (b *agentBudget) bound(deadlineExceeded bool) string {
 	ran := roundActivity(time.Since(b.start))
-	if hardCap {
-		return fmt.Sprintf("at its %s hard cap (twice the %s stall budget, still active; ran %s)",
-			AgentTimeoutHardCap(b.timeout), b.timeout, ran)
+	if deadlineExceeded && b.working > b.timeout {
+		return fmt.Sprintf("at its %s still-working cap (silent budget %s, still active; ran %s)",
+			b.working, b.timeout, ran)
 	}
 	return fmt.Sprintf("after %s (stall budget, then no recent output or live child process; ran %s)",
 		b.timeout, ran)
@@ -443,7 +458,7 @@ func AgentBudgetBound(err error, timeout time.Duration) string {
 	return fmt.Sprintf("after %s", timeout)
 }
 
-func bindAgentDeadline(parent context.Context, timeout time.Duration, cause error, activity *agentActivity) (context.Context, context.CancelFunc, *agentBudget) {
+func bindAgentDeadline(parent context.Context, timeout, working time.Duration, cause error, activity *agentActivity) (context.Context, context.CancelFunc, *agentBudget) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -456,12 +471,15 @@ func bindAgentDeadline(parent context.Context, timeout time.Duration, cause erro
 	if cause == nil {
 		cause = ErrAgentTimeout
 	}
-	budget := &agentBudget{timeout: timeout, cause: cause, start: time.Now()}
+	budget := &agentBudget{timeout: timeout, working: working, cause: cause, start: time.Now()}
+	if working <= timeout {
+		ctx, cancel := context.WithTimeoutCause(parent, timeout, cause)
+		return ctx, cancel, budget
+	}
 	activity.enableChildTracking()
-	hardCap := AgentTimeoutHardCap(timeout)
 	idle := AgentTimeoutIdleGrace(timeout)
 	cancelCtx, cancelCause := context.WithCancelCause(parent)
-	ctx, deadlineCancel := context.WithDeadlineCause(cancelCtx, budget.start.Add(hardCap), cause)
+	ctx, deadlineCancel := context.WithDeadlineCause(cancelCtx, budget.start.Add(working), cause)
 	stop := make(chan struct{})
 	var once sync.Once
 	cancel := func() {
@@ -618,6 +636,7 @@ func (e *agentInvocationError) Unwrap() []error {
 type timeoutAgent struct {
 	inner   agent.Agent
 	timeout time.Duration
+	working time.Duration
 }
 
 func (a *timeoutAgent) Name() string { return a.inner.Name() }
@@ -644,7 +663,7 @@ func (a *timeoutAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Resu
 		}
 	}
 	activity := observeAgentActivity(&opts)
-	return invokeAgent(ctx, a.timeout, ErrAgentTimeout, activity, func(runCtx context.Context) (*agent.Result, error) {
+	return invokeAgent(ctx, a.timeout, a.working, ErrAgentTimeout, activity, func(runCtx context.Context) (*agent.Result, error) {
 		return a.inner.Run(runCtx, opts)
 	})
 }

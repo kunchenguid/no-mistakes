@@ -963,7 +963,7 @@ func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, ste
 
 func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
 	timeout := reviewAgentTimeout(sctx.Config)
-	result, err := sctx.RunAgentSessionBudget(sctx.Ctx, timeout, errReviewAgentTimeout, role, opts)
+	result, err := sctx.RunAgentSessionBudget(sctx.Ctx, timeout, reviewAgentWorkingTimeout(sctx.Config), errReviewAgentTimeout, role, opts)
 	if err != nil {
 		err = reviewAgentError(timeout, prefix, err)
 	}
@@ -975,6 +975,13 @@ func reviewAgentTimeout(cfg *config.Config) time.Duration {
 		return cfg.ReviewAgentTimeout
 	}
 	return config.DefaultReviewAgentTimeout
+}
+
+func reviewAgentWorkingTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.ReviewAgentWorkingTimeout
 }
 
 var errReviewAgentTimeout = errors.New("review agent timeout")

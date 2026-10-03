@@ -40,11 +40,12 @@ const (
 	// DefaultStepQuietWarning is how long a running/fixing step can go without
 	// a new log or lifecycle activity before AXI status marks it quiet.
 	DefaultStepQuietWarning = 10 * time.Minute
-	// DefaultAgentTimeout is the stall budget for one pipeline agent invocation
-	// that does not install a more specific deadline, so a silent agent cannot
-	// leave a run active forever. A still-working invocation may continue until
-	// it goes idle or hits twice this budget. Review and Test keep their own
-	// knobs; this is the default-by-construction budget for every other step.
+	// DefaultAgentTimeout is the silent-kill budget for one pipeline agent
+	// invocation that does not install a more specific deadline, so a silent
+	// agent cannot leave a run active forever. A still-working invocation
+	// continues past it only when the matching working timeout is set.
+	// Review and Test keep their own knobs; this is the default-by-construction
+	// budget for every other step.
 	DefaultAgentTimeout = 30 * time.Minute
 	// DefaultReviewAgentTimeout is the stall budget for one review or
 	// review-fix invocation. Every later invocation derives a fresh budget, so
@@ -165,14 +166,17 @@ type GlobalConfig struct {
 	// directory-scoped toolchain configuration (mise, direnv), which resolves
 	// by path ancestry and therefore never reaches a worktree under NM_HOME.
 	// Placement is resolved for every consumer in internal/worktrees.
-	WorktreeRoots           map[string]string `yaml:"worktree_roots"`
-	CITimeout               time.Duration     `yaml:"-"`
-	StepQuietWarning        time.Duration     `yaml:"-"`
-	AgentTimeout            time.Duration     `yaml:"-"`
-	ReviewAgentTimeout      time.Duration     `yaml:"-"`
-	TestAgentTimeout        time.Duration     `yaml:"-"`
-	DaemonConnectTimeout    time.Duration     `yaml:"-"`
-	BranchSyncRemoteTimeout time.Duration     `yaml:"-"`
+	WorktreeRoots             map[string]string `yaml:"worktree_roots"`
+	CITimeout                 time.Duration     `yaml:"-"`
+	StepQuietWarning          time.Duration     `yaml:"-"`
+	AgentTimeout              time.Duration     `yaml:"-"`
+	ReviewAgentTimeout        time.Duration     `yaml:"-"`
+	TestAgentTimeout          time.Duration     `yaml:"-"`
+	AgentWorkingTimeout       time.Duration     `yaml:"-"`
+	ReviewAgentWorkingTimeout time.Duration     `yaml:"-"`
+	TestAgentWorkingTimeout   time.Duration     `yaml:"-"`
+	DaemonConnectTimeout      time.Duration     `yaml:"-"`
+	BranchSyncRemoteTimeout   time.Duration     `yaml:"-"`
 	// GateReconcileInterval / GateReconcileTimeout bound how often and how
 	// long a parked approval gate is rechecked. They are machine-local
 	// operator knobs (slow hosts, contended gh auth) and global-only so a
@@ -212,34 +216,37 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                   agentList                  `yaml:"agent"`
-	ACPXPath                string                     `yaml:"acpx_path"`
-	ForgejoAXIPath          string                     `yaml:"forgejo_axi_path"`
-	ACPRegistryOverrides    map[string]string          `yaml:"acp_registry_overrides"`
-	AgentPathOverride       map[string]string          `yaml:"agent_path_override"`
-	AgentArgsOverride       map[string][]string        `yaml:"agent_args_override"`
-	AgentConfig             map[string]agentProfileRaw `yaml:"agent_config"`
-	ReviewAgents            map[string]ReviewAgent     `yaml:"review_agents"`
-	WorktreeRoots           map[string]string          `yaml:"worktree_roots"`
-	CITimeout               string                     `yaml:"ci_timeout"`
-	DaemonConnectTimeout    string                     `yaml:"daemon_connect_timeout"`
-	BranchSyncRemoteTimeout string                     `yaml:"branch_sync_remote_timeout"`
-	GateReconcileInterval   string                     `yaml:"gate_reconcile_interval"`
-	GateReconcileTimeout    string                     `yaml:"gate_reconcile_timeout"`
-	BabysitTimeout          string                     `yaml:"babysit_timeout"`
-	StepQuietWarning        string                     `yaml:"step_quiet_warning"`
-	AgentTimeout            string                     `yaml:"agent_timeout"`
-	ReviewAgentTimeout      string                     `yaml:"review_agent_timeout"`
-	TestAgentTimeout        string                     `yaml:"test_agent_timeout"`
-	LogLevel                string                     `yaml:"log_level"`
-	SessionReuse            *bool                      `yaml:"session_reuse"`
-	AutoFix                 AutoFixRaw                 `yaml:"auto_fix"`
-	CI                      CIRaw                      `yaml:"ci"`
-	Rebase                  RebaseRaw                  `yaml:"rebase"`
-	Commit                  GlobalCommitRaw            `yaml:"commit"`
-	Intent                  GlobalIntentRaw            `yaml:"intent"`
-	Test                    TestRaw                    `yaml:"test"`
-	Eval                    EvalRaw                    `yaml:"eval"`
+	Agent                     agentList                  `yaml:"agent"`
+	ACPXPath                  string                     `yaml:"acpx_path"`
+	ForgejoAXIPath            string                     `yaml:"forgejo_axi_path"`
+	ACPRegistryOverrides      map[string]string          `yaml:"acp_registry_overrides"`
+	AgentPathOverride         map[string]string          `yaml:"agent_path_override"`
+	AgentArgsOverride         map[string][]string        `yaml:"agent_args_override"`
+	AgentConfig               map[string]agentProfileRaw `yaml:"agent_config"`
+	ReviewAgents              map[string]ReviewAgent     `yaml:"review_agents"`
+	WorktreeRoots             map[string]string          `yaml:"worktree_roots"`
+	CITimeout                 string                     `yaml:"ci_timeout"`
+	DaemonConnectTimeout      string                     `yaml:"daemon_connect_timeout"`
+	BranchSyncRemoteTimeout   string                     `yaml:"branch_sync_remote_timeout"`
+	GateReconcileInterval     string                     `yaml:"gate_reconcile_interval"`
+	GateReconcileTimeout      string                     `yaml:"gate_reconcile_timeout"`
+	BabysitTimeout            string                     `yaml:"babysit_timeout"`
+	StepQuietWarning          string                     `yaml:"step_quiet_warning"`
+	AgentTimeout              string                     `yaml:"agent_timeout"`
+	ReviewAgentTimeout        string                     `yaml:"review_agent_timeout"`
+	TestAgentTimeout          string                     `yaml:"test_agent_timeout"`
+	AgentWorkingTimeout       string                     `yaml:"agent_working_timeout"`
+	ReviewAgentWorkingTimeout string                     `yaml:"review_agent_working_timeout"`
+	TestAgentWorkingTimeout   string                     `yaml:"test_agent_working_timeout"`
+	LogLevel                  string                     `yaml:"log_level"`
+	SessionReuse              *bool                      `yaml:"session_reuse"`
+	AutoFix                   AutoFixRaw                 `yaml:"auto_fix"`
+	CI                        CIRaw                      `yaml:"ci"`
+	Rebase                    RebaseRaw                  `yaml:"rebase"`
+	Commit                    GlobalCommitRaw            `yaml:"commit"`
+	Intent                    GlobalIntentRaw            `yaml:"intent"`
+	Test                      TestRaw                    `yaml:"test"`
+	Eval                      EvalRaw                    `yaml:"eval"`
 	// Jev is the retired jev.review_assist pre-brief block. The feature was
 	// removed after the offline trial showed its candidate listing cannot
 	// reach the review findings it is meant to surface. The key stays in the
@@ -686,31 +693,34 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	ReplayGlobalYAML      []byte
-	ReplayRepoYAML        []byte
-	TrustedConfigSHA      string
-	CaptureEvalProvenance bool
-	Agent                 types.AgentName
-	Agents                []types.AgentName
-	ACPXPath              string
-	ForgejoAXIPath        string
-	ACPRegistryOverrides  map[string]string
-	AgentPathOverride     map[string]string
-	AgentArgsOverride     map[string][]string
-	AgentConfig           map[string]agentcfg.Profile
-	ReviewAgents          map[string]ReviewAgent
-	CITimeout             time.Duration
-	StepQuietWarning      time.Duration
-	AgentTimeout          time.Duration
-	ReviewAgentTimeout    time.Duration
-	TestAgentTimeout      time.Duration
-	GateReconcileInterval time.Duration
-	GateReconcileTimeout  time.Duration
-	LogLevel              string
-	SessionReuse          bool
-	Eval                  Eval
-	Commands              Commands
-	CommandOverrides      map[string]CommandOverride
+	ReplayGlobalYAML          []byte
+	ReplayRepoYAML            []byte
+	TrustedConfigSHA          string
+	CaptureEvalProvenance     bool
+	Agent                     types.AgentName
+	Agents                    []types.AgentName
+	ACPXPath                  string
+	ForgejoAXIPath            string
+	ACPRegistryOverrides      map[string]string
+	AgentPathOverride         map[string]string
+	AgentArgsOverride         map[string][]string
+	AgentConfig               map[string]agentcfg.Profile
+	ReviewAgents              map[string]ReviewAgent
+	CITimeout                 time.Duration
+	StepQuietWarning          time.Duration
+	AgentTimeout              time.Duration
+	ReviewAgentTimeout        time.Duration
+	TestAgentTimeout          time.Duration
+	AgentWorkingTimeout       time.Duration
+	ReviewAgentWorkingTimeout time.Duration
+	TestAgentWorkingTimeout   time.Duration
+	GateReconcileInterval     time.Duration
+	GateReconcileTimeout      time.Duration
+	LogLevel                  string
+	SessionReuse              bool
+	Eval                      Eval
+	Commands                  Commands
+	CommandOverrides          map[string]CommandOverride
 	// Gates are the repository's extra checks, already trusted-only by the
 	// time they reach here (EffectiveRepoConfig sourced them from the trusted
 	// default-branch copy).
@@ -1152,22 +1162,35 @@ ci_timeout: "168h"
 # only; it never cancels work.
 step_quiet_warning: "10m"
 
-# Stall budget for one pipeline agent invocation that does not install a more
-# specific deadline (document, lint, rebase, PR, CI-fix, and auto-fix). A silent
-# agent is cancelled here; a still-working one may continue until it goes idle
-# or hits twice this budget.
+# Silent-kill budget for one pipeline agent invocation that does not install a
+# more specific deadline (document, lint, rebase, PR, CI-fix, and auto-fix).
+# A turn with no output and no live child stops here. A still-working turn
+# continues past it only when agent_working_timeout is set.
 agent_timeout: "30m"
 
-# Stall budget for one Review agent invocation. Each optional fixer and each
-# fresh independent rereviewer receives a new full budget. A silent review is
-# cancelled here; a still-working one may continue until idle or twice this.
+# Optional cap for a turn that is still producing output or waiting on a live
+# child. Unset means no extension past agent_timeout. Must be at least
+# agent_timeout. The 10-minute quiet stop still ends a turn that goes idle.
+# agent_working_timeout: "1h"
+
+# Silent-kill budget for one Review agent invocation. Each optional fixer and
+# each fresh independent rereviewer receives a new full budget. A still-working
+# review continues past it only when review_agent_working_timeout is set.
 review_agent_timeout: "30m"
 
-# Stall budget for one Test-step agent invocation, including the post-test
+# Optional still-working cap for Review. Unset means no extension past
+# review_agent_timeout. Must be at least review_agent_timeout.
+# review_agent_working_timeout: "1h"
+
+# Silent-kill budget for one Test-step agent invocation, including the post-test
 # evidence-gathering turn. A silent test agent parks for a decision instead of
-# leaving the run active. A still-working one may continue until idle or twice
-# this budget, so a long targeted run is not cut solely for provider slowness.
+# leaving the run active. A still-working one continues past it only when
+# test_agent_working_timeout is set.
 test_agent_timeout: "30m"
+
+# Optional still-working cap for Test. Unset means no extension past
+# test_agent_timeout. Must be at least test_agent_timeout.
+# test_agent_working_timeout: "1h"
 
 # Maximum time a CLI client waits for an existing daemon socket to accept a
 # connection before failing instead of hanging.
@@ -2273,6 +2296,36 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.TestAgentTimeout = d
 	}
+	if raw.AgentWorkingTimeout != "" {
+		d, err := parsePositiveDuration("agent_working_timeout", raw.AgentWorkingTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AgentWorkingTimeout = d
+	}
+	if raw.ReviewAgentWorkingTimeout != "" {
+		d, err := parsePositiveDuration("review_agent_working_timeout", raw.ReviewAgentWorkingTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.ReviewAgentWorkingTimeout = d
+	}
+	if raw.TestAgentWorkingTimeout != "" {
+		d, err := parsePositiveDuration("test_agent_working_timeout", raw.TestAgentWorkingTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.TestAgentWorkingTimeout = d
+	}
+	if err := validateWorkingCap("agent_working_timeout", "agent_timeout", cfg.AgentWorkingTimeout, cfg.AgentTimeout); err != nil {
+		return nil, err
+	}
+	if err := validateWorkingCap("review_agent_working_timeout", "review_agent_timeout", cfg.ReviewAgentWorkingTimeout, cfg.ReviewAgentTimeout); err != nil {
+		return nil, err
+	}
+	if err := validateWorkingCap("test_agent_working_timeout", "test_agent_timeout", cfg.TestAgentWorkingTimeout, cfg.TestAgentTimeout); err != nil {
+		return nil, err
+	}
 	if raw.DaemonConnectTimeout != "" {
 		d, err := parsePositiveDuration("daemon_connect_timeout", raw.DaemonConnectTimeout)
 		if err != nil {
@@ -2417,6 +2470,15 @@ func parsePositiveDuration(name, value string) (time.Duration, error) {
 		return 0, fmt.Errorf("parse %s %q: duration must be positive", name, value)
 	}
 	return d, nil
+}
+
+// validateWorkingCap rejects a still-working cap shorter than its silent budget.
+// An unset cap (zero) is the opt-out: the turn stops at the silent budget.
+func validateWorkingCap(capName, silentName string, cap, silent time.Duration) error {
+	if cap <= 0 || cap >= silent {
+		return nil
+	}
+	return fmt.Errorf("%s (%s) must be at least %s (%s)", capName, cap, silentName, silent)
 }
 
 // LoadRepo reads per-repo config from dir/.no-mistakes.yaml.
@@ -3189,24 +3251,27 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	}
 
 	cfg := &Config{
-		Agent:                 global.Agent,
-		Agents:                copyAgents(global.Agents),
-		ACPXPath:              global.ACPXPath,
-		ForgejoAXIPath:        global.ForgejoAXIPath,
-		ACPRegistryOverrides:  global.ACPRegistryOverrides,
-		AgentPathOverride:     global.AgentPathOverride,
-		AgentArgsOverride:     global.AgentArgsOverride,
-		AgentConfig:           global.AgentConfig,
-		ReviewAgents:          global.ReviewAgents,
-		CITimeout:             global.CITimeout,
-		StepQuietWarning:      global.StepQuietWarning,
-		AgentTimeout:          global.AgentTimeout,
-		ReviewAgentTimeout:    global.ReviewAgentTimeout,
-		TestAgentTimeout:      global.TestAgentTimeout,
-		GateReconcileInterval: global.GateReconcileInterval,
-		GateReconcileTimeout:  global.GateReconcileTimeout,
-		LogLevel:              global.LogLevel,
-		SessionReuse:          global.SessionReuse,
+		Agent:                     global.Agent,
+		Agents:                    copyAgents(global.Agents),
+		ACPXPath:                  global.ACPXPath,
+		ForgejoAXIPath:            global.ForgejoAXIPath,
+		ACPRegistryOverrides:      global.ACPRegistryOverrides,
+		AgentPathOverride:         global.AgentPathOverride,
+		AgentArgsOverride:         global.AgentArgsOverride,
+		AgentConfig:               global.AgentConfig,
+		ReviewAgents:              global.ReviewAgents,
+		CITimeout:                 global.CITimeout,
+		StepQuietWarning:          global.StepQuietWarning,
+		AgentTimeout:              global.AgentTimeout,
+		ReviewAgentTimeout:        global.ReviewAgentTimeout,
+		TestAgentTimeout:          global.TestAgentTimeout,
+		AgentWorkingTimeout:       global.AgentWorkingTimeout,
+		ReviewAgentWorkingTimeout: global.ReviewAgentWorkingTimeout,
+		TestAgentWorkingTimeout:   global.TestAgentWorkingTimeout,
+		GateReconcileInterval:     global.GateReconcileInterval,
+		GateReconcileTimeout:      global.GateReconcileTimeout,
+		LogLevel:                  global.LogLevel,
+		SessionReuse:              global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
 		Eval:           global.Eval,

@@ -137,7 +137,7 @@ type StepContext struct {
 // from the session that prescribed the fixes under review. Every other agent
 // invocation goes through RunAgent.
 func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(sctx.Ctx, opts, role, 0, nil)
+	return sctx.runAgent(sctx.Ctx, opts, role, 0, 0, nil)
 }
 
 // StepOutcome is the result of executing a pipeline step.

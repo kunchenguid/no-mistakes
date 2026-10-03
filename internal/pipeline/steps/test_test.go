@@ -87,6 +87,7 @@ func TestTestStep_StreamingEvidenceAfterStallBudgetCompletes(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.TestAgentTimeout = stall
+	sctx.Config.TestAgentWorkingTimeout = 4 * stall
 
 	outcome, err := (&TestStep{}).Execute(sctx)
 	if err != nil {

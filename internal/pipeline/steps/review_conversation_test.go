@@ -280,7 +280,7 @@ func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testin
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	// Each invocation's deadline is recorded against the real clock at call
 	// time: the budget starts when the turn starts, so a turn that sees its
-	// full hard cap ahead of it has not been charged for anything before it.
+	// full silent budget ahead of it has not been charged for anything before it.
 	var remaining []time.Duration
 	var convDir string
 	turn := 0
@@ -326,10 +326,10 @@ func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testin
 	if len(remaining) != 2 {
 		t.Fatalf("expected 2 review invocations, got %d", len(remaining))
 	}
-	hardCap := pipeline.AgentTimeoutHardCap(30 * time.Minute)
+	want := 30 * time.Minute
 	for i, got := range remaining {
-		if got > hardCap || got < hardCap-time.Minute {
-			t.Fatalf("review turn %d started with %s of budget, want a fresh %s hard cap", i+1, got, hardCap)
+		if got > want+time.Second || got < want-time.Minute {
+			t.Fatalf("review turn %d started with %s of budget, want a fresh %s silent budget", i+1, got, want)
 		}
 	}
 }

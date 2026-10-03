@@ -309,7 +309,7 @@ It is only a liveness signal.
 It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
 
 A quiet Review step still ends on its own: each fixer or reviewer invocation is independently bounded by [`review_agent_timeout`](/no-mistakes/reference/global-config/#review_agent_timeout).
-A silent invocation is cancelled at that stall budget; a still-working one may continue until it goes idle or hits twice the budget, after which the run fails with a timeout diagnostic in the step log.
+A silent invocation is cancelled at that budget. A still-working one continues only until its configured still-working cap, and otherwise stops at this budget. The run then fails with a timeout diagnostic in the step log.
 An invocation that emitted output reports measured last-activity evidence, while a no-output invocation reports its measured no-output duration.
 `step_quiet_warning` remains status-only; the idle window after the stall budget is a fixed 10 minutes (or the budget itself when shorter).
 A quiet Test step is bounded the same way by [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout), covering the post-test evidence-gathering agent and a Test-repair turn.

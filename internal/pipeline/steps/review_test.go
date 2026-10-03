@@ -310,14 +310,13 @@ func TestReviewStep_WallClockTimeoutPreservesTheAgentReport(t *testing.T) {
 
 // TestReviewStep_EachAgentInvocationGetsItsOwnBudget pins the
 // review_agent_timeout ownership contract across two complete auto-fix cycles.
-// Each fixer and each independent rereviewer must start with a fresh hard cap,
-// not leftover stall time from the previous turn.
+// Each fixer and each independent rereviewer must start with a fresh silent
+// budget, not leftover time from the previous turn.
 func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
 	const timeout = 30 * time.Minute
-	hardCap := pipeline.AgentTimeoutHardCap(timeout)
 	type call struct {
 		fixTurn   bool
 		remaining time.Duration
@@ -369,10 +368,10 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 		if calls[i].fixTurn != wantFix[i] {
 			t.Fatalf("turn order = %+v, want review, fix, rereview, fix, rereview", calls)
 		}
-		// Visible deadline is the hard cap (2x stall budget). Leftover stall
-		// time from a previous turn would be far smaller than timeout itself.
-		if calls[i].remaining < timeout || calls[i].remaining > hardCap+time.Second {
-			t.Errorf("call %d started with %v remaining, want a fresh hard cap around %v", i+1, calls[i].remaining, hardCap)
+		// Visible deadline is the silent budget when no still-working cap is
+		// set. Leftover time from a previous turn would be far smaller.
+		if calls[i].remaining > timeout+time.Second || calls[i].remaining < timeout-time.Minute {
+			t.Errorf("call %d started with %v remaining, want a fresh silent budget around %v", i+1, calls[i].remaining, timeout)
 		}
 	}
 }
@@ -484,6 +483,7 @@ func TestReviewStep_StreamingPastStallBudgetCompletes(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ReviewAgentTimeout = stall
+	sctx.Config.ReviewAgentWorkingTimeout = 4 * stall
 
 	outcome, err := (&ReviewStep{}).Execute(sctx)
 	if err != nil {
