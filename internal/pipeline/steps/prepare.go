@@ -313,6 +313,16 @@ func preparationRelativePath(path string) (string, error) {
 	return path, nil
 }
 
+// preparationPatchDiffArgs pin every diff option that user git config can
+// otherwise turn into output `git apply` rejects when the snapshot is
+// restored: diff.submodule=log renders a dirty submodule as prose instead of
+// a Subproject line, diff.noprefix drops the a/ and b/ prefixes apply strips,
+// color.ui=always embeds escape codes, and a textconv driver rewrites content.
+var preparationPatchDiffArgs = []string{
+	"--no-ext-diff", "--no-textconv", "--no-color", "--binary",
+	"--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
+}
+
 func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, name string) error {
 	head, err := git.HeadSHA(ctx, workDir)
 	if err != nil {
@@ -340,8 +350,8 @@ func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, na
 		path string
 		args []string
 	}{
-		{stagedPatch, []string{"diff", "--no-ext-diff", "--binary", "--cached"}},
-		{unstagedPatch, []string{"diff", "--no-ext-diff", "--binary"}},
+		{stagedPatch, append(append([]string{"diff"}, preparationPatchDiffArgs...), "--cached")},
+		{unstagedPatch, append([]string{"diff"}, preparationPatchDiffArgs...)},
 	} {
 		contents, err := git.RunRaw(ctx, workDir, patch.args...)
 		if err != nil {
