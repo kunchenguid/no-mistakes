@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.87.1](https://github.com/kunchenguid/no-mistakes/compare/v1.87.0...v1.87.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **scm:** canonicalize GitHub and GitLab SSH-over-HTTPS endpoints after ssh -G ([#1307](https://github.com/kunchenguid/no-mistakes/issues/1307)) ([78d2668](https://github.com/kunchenguid/no-mistakes/commit/78d2668783b2e1736402e4207589a7cfc4e14a48)), closes [#561](https://github.com/kunchenguid/no-mistakes/issues/561)
+
 ## [1.87.0](https://github.com/kunchenguid/no-mistakes/compare/v1.86.1...v1.87.0) (2026-10-03)
 
 
