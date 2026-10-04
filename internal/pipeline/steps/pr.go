@@ -179,7 +179,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			// This update replaces the whole body. Carry the author's own
 			// closing lines over so it never silently unlinks an issue (#763).
 			if carriesClosingLines(provider) {
-				sctx.CarriedClosingLines = authorClosingLines(live.Body)
+				sctx.CarriedClosingLines, err = carriedClosingLines(ctx, sctx, host, existing, live.Body)
+				if err != nil {
+					return nil, err
+				}
 			}
 			content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 			if err != nil {
@@ -198,7 +201,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				if err != nil {
 					return nil, fmt.Errorf("re-read existing PR before publication: %w", err)
 				}
-				content.Body, err = refreshCarriedClosingLines(sctx, content.Body, latest.Body, bodyLimit)
+				carried, err := carriedClosingLines(ctx, sctx, host, existing, latest.Body)
+				if err != nil {
+					return nil, err
+				}
+				content.Body, err = refreshCarriedClosingLines(sctx, content.Body, carried, bodyLimit)
 				if err != nil {
 					return nil, err
 				}

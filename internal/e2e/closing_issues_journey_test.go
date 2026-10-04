@@ -26,6 +26,8 @@ type statefulGHPR struct {
 	Base   string `json:"base"`
 	Head   string `json:"head"`
 	State  string `json:"state"`
+	// ClosingIssues is what the fake GitHub reports the body closes.
+	ClosingIssues []string `json:"closingIssues,omitempty"`
 }
 
 type statefulGHState struct {

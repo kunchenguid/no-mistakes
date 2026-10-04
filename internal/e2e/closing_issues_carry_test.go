@@ -12,8 +12,8 @@ import (
 const closingLedgerMarker = "<!-- no-mistakes-closing-lines"
 
 // editLivePRBody stands in for the author editing the PR description on the
-// forge between runs.
-func editLivePRBody(t *testing.T, statePath, branch string, edit func(string) string) {
+// forge between runs; closes is what GitHub then reports the body closes.
+func editLivePRBody(t *testing.T, statePath, branch string, edit func(string) string, closes ...string) {
 	t.Helper()
 	state := readStatefulGH(t, statePath)
 	pr := state.PRs[branch]
@@ -21,11 +21,13 @@ func editLivePRBody(t *testing.T, statePath, branch string, edit func(string) st
 		t.Fatalf("no PR recorded for %s", branch)
 	}
 	pr.Body = edit(pr.Body)
+	pr.ClosingIssues = closes
 	writeStatefulGH(t, statePath, state)
 }
 
-// seedLivePR records a PR the pipeline never published, as if opened by hand.
-func seedLivePR(t *testing.T, statePath, branch string, number int, body string) {
+// seedLivePR records a PR the pipeline never published, as if opened by hand;
+// closes is what GitHub reports the body closes.
+func seedLivePR(t *testing.T, statePath, branch string, number int, body string, closes ...string) {
 	t.Helper()
 	state := statefulGHState{PRs: map[string]*statefulGHPR{}}
 	if prev := readStatefulGHIfExists(t, statePath); prev != nil {
@@ -39,6 +41,8 @@ func seedLivePR(t *testing.T, statePath, branch string, number int, body string)
 		Base:   "main",
 		Head:   branch,
 		State:  "OPEN",
+
+		ClosingIssues: closes,
 	}
 	writeStatefulGH(t, statePath, state)
 }
@@ -92,11 +96,11 @@ func TestAuthorClosingLinesSurviveOrdinaryUpdatesJourney(t *testing.T) {
 	}
 
 	// Scenario 1 + 4: the author adds a live closing line plus non-live
-	// commented-out and <pre> ones; a plain push carries only the live one
-	// and drops the pipeline's own Closes #95.
+	// commented-out and <pre> ones GitHub does not report as closing; a plain
+	// push carries only the live one and drops the pipeline's own Closes #95.
 	editLivePRBody(t, statePath, branch, func(b string) string {
 		return "Closes owner/repo#7\n\n<!--\nFixes #123\n-->\n\n<pre>\nFixes #9\n</pre>\n\n" + b
-	})
+	}, "owner/repo#7", "example/closes#95")
 	saveEvidence(t, "carry-02-author-edited.md", livePRBody(t, statePath, branch))
 	h.Checkout("main")
 	h.RemoveWorktree(wt)
@@ -129,7 +133,7 @@ func TestAuthorClosingLinesSurviveOrdinaryUpdatesJourney(t *testing.T) {
 	// the pipeline's Closes #12 is dropped by a run without --closes.
 	editLivePRBody(t, statePath, branch, func(b string) string {
 		return strings.Replace(b, "Closes owner/repo#7\n", "", 1)
-	})
+	}, "example/closes#12")
 	saveEvidence(t, "carry-05-author-removed.md", livePRBody(t, statePath, branch))
 	h.Checkout("main")
 	h.RemoveWorktree(wt)
@@ -156,7 +160,8 @@ func TestAuthorClosingLinesHandWrittenAndLegacyBodiesJourney(t *testing.T) {
 	const handBranch = "feature/carry-hand"
 	h.CommitChange(handBranch, "hand.txt", "hand\n", "add hand fixture")
 	seedLivePR(t, statePath, handBranch, 501,
-		"## Summary\n\nHand-written.\n\n<!--\nFixes #123\n-->\n\n<pre>\nFixes #9\n</pre>\n\nCloses #44\n")
+		"## Summary\n\nHand-written.\n\n<!--\nFixes #123\n-->\n\n<pre>\nFixes #9\n</pre>\n\nCloses #44\n",
+		"example/closes#44")
 	saveEvidence(t, "carry-07-hand-opened.md", livePRBody(t, statePath, handBranch))
 	h.PushToGate(handBranch)
 	waitPublished(t, h, handBranch, "", "hand-opened update")

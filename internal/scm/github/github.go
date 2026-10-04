@@ -392,6 +392,49 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 	return scm.PRContent{Title: *parsed.Title, Body: *parsed.Body}, nil
 }
 
+var _ scm.ClosingIssuesReader = (*Host)(nil)
+
+// GetClosingIssues returns the issues GitHub reports the live PR body closes.
+// GitHub reports them only for a PR targeting the default branch.
+func (h *Host) GetClosingIssues(ctx context.Context, pr *scm.PR) ([]string, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "closingIssuesReferences")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view: %w", err)
+	}
+	var parsed struct {
+		References *[]struct {
+			Number     int `json:"number"`
+			Repository struct {
+				Name  string `json:"name"`
+				Owner struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repository"`
+		} `json:"closingIssuesReferences"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return nil, fmt.Errorf("parse gh pr view: %w", err)
+	}
+	if parsed.References == nil {
+		return nil, fmt.Errorf("parse gh pr view: missing or null closingIssuesReferences")
+	}
+	refs := make([]string, 0, len(*parsed.References))
+	for _, ref := range *parsed.References {
+		owner, name := strings.TrimSpace(ref.Repository.Owner.Login), strings.TrimSpace(ref.Repository.Name)
+		if owner == "" || name == "" || ref.Number <= 0 {
+			return nil, fmt.Errorf("parse gh pr view: incomplete closing issue reference")
+		}
+		refs = append(refs, fmt.Sprintf("%s/%s#%d", owner, name, ref.Number))
+	}
+	return refs, nil
+}
+
 func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
 	selector, err := prSelector(pr)
 	if err != nil {

@@ -29,9 +29,10 @@ import (
 // every closing line the pipeline itself published (the --closes lines and
 // anything its own text left that the extractor reads as a closing line) in a
 // hidden ledger comment (closingLedgerPrefix, sealClosingLedger), so every
-// other closing line in a body carrying that ledger appeared after
-// publication and is the author's. See authorClosingLines for bodies without
-// a ledger.
+// closing-line occurrence beyond those in a body carrying that ledger
+// appeared after publication and is the author's. See authorClosingLines for
+// bodies without a ledger. Whether such a line is live is left to GitHub
+// (carriedClosingLines), so carry-over is GitHub-only.
 
 const issuesSectionHeading = "## Issues"
 
@@ -49,7 +50,27 @@ var closingReferencePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9-]+/[A-Za-z0-
 // extractClosingKeywordLines returns the distinct standalone closing-keyword
 // lines of body, outside fenced and indented code blocks.
 func extractClosingKeywordLines(body string) []string {
+	return distinctClosingLines(closingKeywordLineOccurrences(body))
+}
+
+// distinctClosingLines drops case-insensitive repeats, keeping first order.
+func distinctClosingLines(occurrences []string) []string {
 	seen := map[string]struct{}{}
+	var lines []string
+	for _, line := range occurrences {
+		key := strings.ToLower(line)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// closingKeywordLineOccurrences returns every standalone closing-keyword line
+// of body, duplicates included, outside fenced and indented code blocks.
+func closingKeywordLineOccurrences(body string) []string {
 	var lines []string
 	var fence markdownFence
 	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
@@ -59,15 +80,9 @@ func extractClosingKeywordLines(body string) []string {
 			continue
 		}
 		line := strings.TrimSpace(raw)
-		if !closingKeywordLinePattern.MatchString(line) {
-			continue
+		if closingKeywordLinePattern.MatchString(line) {
+			lines = append(lines, line)
 		}
-		key := strings.ToLower(line)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		lines = append(lines, line)
 	}
 	return lines
 }
@@ -294,90 +309,85 @@ func parseClosingLedger(body string) (lines []string, ok bool) {
 	return lines, true
 }
 
-// carryableClosingLines is the stricter reader the carry uses: the lines of
-// extractClosingKeywordLines(body) that lie wholly outside inline code spans
-// (split off first, so a backticked tag opens nothing), HTML comments, and
-// HTML <pre>/<code> elements, where GitHub closes nothing. It only ever
-// drops lines from the extractor's result, so a quirk can never promote one.
-func carryableClosingLines(body string) []string {
-	carryable := map[string]struct{}{}
-	var fence markdownFence
-	var htmlCode string
-	inComment := false
-	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		inFence := fence.marker != 0
-		fence.consume(raw)
-		if inFence || fence.marker != 0 || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
-			continue
-		}
-		outside := 0
-		outsideInlineCode(raw, func(text string) string {
-			for text != "" {
-				if inComment {
-					end := strings.Index(text, "-->")
-					if end < 0 {
-						return ""
-					}
-					text, inComment = text[end+len("-->"):], false
-					continue
-				}
-				start := strings.Index(text, "<!--")
-				if start < 0 {
-					start = len(text)
-				} else {
-					inComment = true
-				}
-				outsideHTMLCode(text[:start], &htmlCode, func(live string) string {
-					outside += len(live)
-					return live
-				})
-				text = strings.TrimPrefix(text[start:], "<!--")
-			}
-			return ""
-		})
-		if outside == len(raw) {
-			carryable[strings.ToLower(strings.TrimSpace(raw))] = struct{}{}
-		}
-	}
-	var lines []string
-	for _, line := range extractClosingKeywordLines(body) {
-		if _, ok := carryable[strings.ToLower(line)]; ok {
-			lines = append(lines, line)
-		}
-	}
-	return lines
-}
-
-// authorClosingLines returns the standalone closing lines of a live ordinary
-// body that are the author's, for an update about to replace that body:
-//   - a body with a ledger: every live closing line the ledger does not list;
+// authorClosingLines returns the distinct standalone closing lines of a live
+// ordinary body that are the author's candidates for carrying, for an update
+// about to replace that body:
+//   - a body with a ledger: every closing-line occurrence the ledger does not
+//     account for, counted per case-insensitive line text, so an author's own
+//     copy of a pipeline-published line is still the author's;
 //   - a body the pipeline never published (no ledger, attestation, or
-//     signature): every live closing line;
+//     signature): every closing line;
 //   - anything else (a body an older no-mistakes published before the ledger
 //     existed, or one with an ambiguous ledger): none, as before, because its
-//     generated text may carry live closing lines that are not the author's.
+//     generated text may carry closing lines that are not the author's.
+//
+// Whether a candidate is live is GitHub's call, not this parser's: see
+// carriedClosingLines.
 func authorClosingLines(body string) []string {
-	live := carryableClosingLines(body)
-	if len(live) == 0 {
+	occurrences := closingKeywordLineOccurrences(body)
+	if len(occurrences) == 0 {
 		return nil
 	}
 	if recorded, ok := parseClosingLedger(body); ok {
-		pipelineOwned := make(map[string]struct{}, len(recorded))
+		remaining := make(map[string]int, len(recorded))
 		for _, line := range recorded {
-			pipelineOwned[strings.ToLower(strings.TrimSpace(line))] = struct{}{}
+			remaining[strings.ToLower(strings.TrimSpace(line))]++
 		}
 		var author []string
-		for _, line := range live {
-			if _, owned := pipelineOwned[strings.ToLower(line)]; !owned {
-				author = append(author, line)
+		for _, line := range occurrences {
+			key := strings.ToLower(line)
+			if remaining[key] > 0 {
+				remaining[key]--
+				continue
 			}
+			author = append(author, line)
 		}
-		return author
+		return distinctClosingLines(author)
 	}
 	if closingLedgerMarkerPattern.MatchString(body) || strings.Contains(body, pipelineAttestationCommentPrefix) || strings.Contains(body, noMistakesPRSignature) {
 		return nil
 	}
-	return live
+	return distinctClosingLines(occurrences)
+}
+
+// carriedClosingLines returns the author's closing lines of the live body
+// that GitHub itself reports the PR closes: a line is carried only when every
+// reference on it is among the live PR's closing issues, so a line GitHub
+// does not treat as closing (inside an HTML comment or a <pre>/<code>
+// element, say) is never republished as a live one. A failed lookup fails
+// closed rather than guessing.
+func carriedClosingLines(ctx context.Context, sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, body string) ([]string, error) {
+	candidates := authorClosingLines(body)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	reader, ok := host.(scm.ClosingIssuesReader)
+	if !ok {
+		return nil, fmt.Errorf("verify closing issues: provider cannot report the issues the pull request closes")
+	}
+	refs, err := reader.GetClosingIssues(ctx, pr)
+	if err != nil {
+		return nil, fmt.Errorf("verify closing issues: read the issues the pull request closes: %w", err)
+	}
+	repo := prRepository(sctx)
+	closed := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		closed[strings.ToLower(closingissues.Localize(ref, repo))] = struct{}{}
+	}
+	var lines []string
+	for _, line := range candidates {
+		live := true
+		for target := range closingTargets([]string{line}, repo) {
+			if _, ok := closed[target]; !ok {
+				live = false
+				break
+			}
+		}
+		if live {
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
 }
 
 // ordinaryIssuesBlock renders the Issues section of an ordinary body: carried
@@ -392,10 +402,10 @@ func ordinaryIssuesBlock(sctx *pipeline.StepContext) string {
 }
 
 // carriesClosingLines reports whether an ordinary body on provider carries
-// the ledger and so author closing lines over: forges that render HTML
-// comments and have no body-size limit that could shed the ledger.
+// the ledger and so author closing lines over: GitHub only, the one forge
+// that reports which issues a PR body closes (carriedClosingLines).
 func carriesClosingLines(provider scm.Provider) bool {
-	return prBodyFlavorFor(provider) == prBodyHTML && scm.MaxPRBodyChars(provider) == 0
+	return provider == scm.ProviderGitHub
 }
 
 // closingLedgerReserveBytes is room kept free when an ordinary body is fitted
@@ -403,23 +413,26 @@ func carriesClosingLines(provider scm.Provider) bool {
 const closingLedgerReserveBytes = 1024
 
 // sealClosingLedger appends the ledger to a final ordinary body about to be
-// published: every closing line the extractor sees in it except the carried
-// author lines. Whatever construct a pipeline-published line sat in, the next
+// published: every closing-line occurrence the extractor sees in it, with
+// duplicates, except one occurrence per carried author line. Whatever construct a pipeline-published line sat in, the next
 // update reads it with the same extractor and finds it listed, so only lines
 // that appeared after publication are carried as the author's.
 func sealClosingLedger(sctx *pipeline.StepContext, provider scm.Provider, body string) (string, error) {
 	if !carriesClosingLines(provider) {
 		return body, nil
 	}
-	carried := make(map[string]struct{}, len(sctx.CarriedClosingLines))
+	carried := make(map[string]int, len(sctx.CarriedClosingLines))
 	for _, line := range sctx.CarriedClosingLines {
-		carried[strings.ToLower(line)] = struct{}{}
+		carried[strings.ToLower(line)]++
 	}
 	published := []string{}
-	for _, line := range extractClosingKeywordLines(body) {
-		if _, ok := carried[strings.ToLower(line)]; !ok {
-			published = append(published, line)
+	for _, line := range closingKeywordLineOccurrences(body) {
+		key := strings.ToLower(line)
+		if carried[key] > 0 {
+			carried[key]--
+			continue
 		}
+		published = append(published, line)
 	}
 	body = appendIssuesSection(body, renderClosingLedger(published))
 	if len(body) > maxPullRequestBodyBytes {
@@ -428,13 +441,12 @@ func sealClosingLedger(sctx *pipeline.StepContext, provider scm.Provider, body s
 	return body, nil
 }
 
-// refreshCarriedClosingLines re-derives the author's closing lines from a
+// refreshCarriedClosingLines takes the author's closing lines carried from a
 // live body re-read just before the write and, when they changed while the
 // update was drafting, replaces body's trailing Issues block. The re-read is
 // authoritative both ways: lines added since the first read are carried, and
 // lines the author removed are not written back.
-func refreshCarriedClosingLines(sctx *pipeline.StepContext, body, latestBody string, bodyLimit int) (string, error) {
-	latest := authorClosingLines(latestBody)
+func refreshCarriedClosingLines(sctx *pipeline.StepContext, body string, latest []string, bodyLimit int) (string, error) {
 	if sameClosingLines(sctx.CarriedClosingLines, latest) {
 		return body, nil
 	}

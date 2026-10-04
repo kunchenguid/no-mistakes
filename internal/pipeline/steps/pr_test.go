@@ -502,7 +502,7 @@ func TestPRStep_OrdinaryUpdateRendersRequestedIssuesOnce(t *testing.T) {
 	}
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_CLOSING_ISSUES=owner/repo#7,test/repo#42")
 	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"99", "42", "owner/repo#7"}); err != nil {
 		t.Fatal(err)
 	}
