@@ -23,6 +23,10 @@ type ghStatefulPR struct {
 	Base   string `json:"base"`
 	Head   string `json:"head"`
 	State  string `json:"state"`
+	// ClosingIssues stands in for GitHub's own judgement of which issues the
+	// body closes (owner/repository#number); the e2e test sets it alongside
+	// an author edit.
+	ClosingIssues []string `json:"closingIssues,omitempty"`
 }
 
 type ghStatefulState struct {
@@ -158,15 +162,16 @@ func runGhStatefulPRStub(args []string) int {
 	}
 	// view
 	fields := map[string]any{
-		"number":      pr.Number,
-		"url":         pr.URL,
-		"title":       pr.Title,
-		"body":        pr.Body,
-		"state":       pr.State,
-		"baseRefName": pr.Base,
-		"headRefName": pr.Head,
-		"mergeable":   "MERGEABLE",
-		"headRefOid":  ghStatefulHeadOID(repo, pr.Head),
+		"number":                  pr.Number,
+		"url":                     pr.URL,
+		"title":                   pr.Title,
+		"body":                    pr.Body,
+		"state":                   pr.State,
+		"baseRefName":             pr.Base,
+		"headRefName":             pr.Head,
+		"mergeable":               "MERGEABLE",
+		"headRefOid":              ghStatefulHeadOID(repo, pr.Head),
+		"closingIssuesReferences": ghStatefulClosingIssues(pr.ClosingIssues),
 	}
 	if jq := argAfter(args, "--jq"); strings.HasPrefix(jq, ".") {
 		if value, ok := fields[strings.TrimPrefix(jq, ".")]; ok {
@@ -200,6 +205,24 @@ func (s *ghStatefulState) lookup(args []string) *ghStatefulPR {
 		}
 	}
 	return nil
+}
+
+// ghStatefulClosingIssues renders refs in the closingIssuesReferences shape.
+func ghStatefulClosingIssues(refs []string) []map[string]any {
+	out := []map[string]any{}
+	for _, ref := range refs {
+		slug, number, _ := strings.Cut(ref, "#")
+		owner, name, _ := strings.Cut(slug, "/")
+		n, err := strconv.Atoi(number)
+		if err != nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"number":     n,
+			"repository": map[string]any{"name": name, "owner": map[string]string{"login": owner}},
+		})
+	}
+	return out
 }
 
 // ghStatefulHeadOID reads the PR head from the forge's git remote (the e2e

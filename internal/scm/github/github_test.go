@@ -803,6 +803,31 @@ func TestGetPRContentReadsTitleAndBody(t *testing.T) {
 	}
 }
 
+func TestGetClosingIssuesReadsGitHubsReferences(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json closingIssuesReferences": {stdout: `{"closingIssuesReferences":[{"number":4,"repository":{"name":"repo","owner":{"login":"test"}}},{"number":7,"repository":{"name":"other","owner":{"login":"owner"}}}]}` + "\n"},
+	}), nil, "", "test/repo")
+
+	got, err := host.GetClosingIssues(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetClosingIssues() error = %v", err)
+	}
+	if strings.Join(got, ",") != "test/repo#4,owner/other#7" {
+		t.Fatalf("GetClosingIssues() = %q", got)
+	}
+}
+
+func TestGetClosingIssuesFailsClosedOnMissingField(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json closingIssuesReferences": {stdout: "{}\n"},
+	}), nil, "", "test/repo")
+	if _, err := host.GetClosingIssues(context.Background(), &scm.PR{Number: "42"}); err == nil {
+		t.Fatal("GetClosingIssues() without closingIssuesReferences: expected error, got nil")
+	}
+}
+
 func TestGetPRContentFailsClosedWithoutIdentity(t *testing.T) {
 	t.Parallel()
 	host := New(githubTestCmdFactory(nil), nil, "", "test/repo")

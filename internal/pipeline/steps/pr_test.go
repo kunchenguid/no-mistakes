@@ -488,8 +488,9 @@ func TestPRStep_ClosesFailsWhenCreateReturnsNoVerifiableIdentity(t *testing.T) {
 	}
 }
 
-// An ordinary update regenerates the whole body; the requested references
-// render in the Issues section exactly once each.
+// An ordinary update regenerates the whole body. The author's own closing
+// lines are carried into the Issues section (#763), and a requested reference
+// they already close is not repeated, so each issue is closed exactly once.
 func TestPRStep_OrdinaryUpdateRendersRequestedIssuesOnce(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -501,7 +502,7 @@ func TestPRStep_OrdinaryUpdateRendersRequestedIssuesOnce(t *testing.T) {
 	}
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_CLOSING_ISSUES=owner/repo#7,test/repo#42")
 	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"99", "42", "owner/repo#7"}); err != nil {
 		t.Fatal(err)
 	}
@@ -514,12 +515,10 @@ func TestPRStep_OrdinaryUpdateRendersRequestedIssuesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(updated)
-	for _, line := range []string{"Closes owner/repo#7", "Closes #42", "Closes #99"} {
-		if strings.Count(body, line) != 1 {
-			t.Fatalf("updated body should contain %q exactly once:\n%s", line, body)
-		}
+	if got := strings.Join(extractClosingKeywordLines(body), "|"); got != "Closes owner/repo#7|Fixes #42|Closes #99" {
+		t.Fatalf("closing lines = %q, want the author's two lines carried and only #99 added:\n%s", got, body)
 	}
-	if strings.Contains(body, "Fixes #42") || !strings.Contains(body, "## Issues") {
+	if strings.Contains(body, "Keep this context.") || !strings.Contains(body, "## Issues") {
 		t.Fatalf("updated body must be regenerated with a stable Issues section:\n%s", body)
 	}
 }
@@ -1716,6 +1715,14 @@ func TestAssembleDraftPRBody_GitHubKeepsIssuesWithinTheByteBudget(t *testing.T) 
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
 		t.Fatalf("Issues section missing or not last (len %d)", len(got))
+	}
+	sealed, err := sealClosingLedger(sctx, scm.ProviderGitHub, got)
+	if err != nil {
+		t.Fatalf("the ledger must fit the room reserved for it: %v", err)
+	}
+	assertGitHubBodyLimitForTest(t, sealed)
+	if lines, ok := parseClosingLedger(sealed); !ok || strings.Join(lines, "|") != "Closes #42" {
+		t.Fatalf("ledger = %q, %v", lines, ok)
 	}
 }
 
