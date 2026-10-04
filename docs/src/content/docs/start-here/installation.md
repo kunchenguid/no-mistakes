@@ -51,11 +51,13 @@ make install
 - **Optional, for PRs and CI:**
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)
+  - `forgejo-axi` (Forgejo)
   - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
   - `az` CLI with the `azure-devops` extension (Azure DevOps)
   - `tea` CLI (Gitea)
+  - or a configured [provider plugin](/no-mistakes/reference/global-config/#provider_plugins) for custom hosts
 
-Run `no-mistakes doctor` to check native agents, ACP aliases such as `cursor` and `devin`, provider tools, and whether the configured global runner can start a validation gate.
+Run `no-mistakes doctor` to check native agents, ACP aliases such as `cursor` and `devin`, provider tools, configured provider plugins, and whether the configured global runner can start a validation gate.
 Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR and CI setup per host.

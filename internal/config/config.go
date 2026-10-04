@@ -210,6 +210,9 @@ type GlobalConfig struct {
 	// session_reuse: false to force every invocation cold.
 	SessionReuse  bool          `yaml:"-"`
 	ForgeProfiles ForgeProfiles `yaml:"forge_profiles"`
+	// ProviderPlugins are operator-installed PR/CI provider executables keyed
+	// by plugin name. Global-only: see ProviderPlugin.
+	ProviderPlugins ProviderPlugins `yaml:"-"`
 	// RepositoryOverrides scopes machine-local settings to canonicalized
 	// remote host/owner/repository identities.
 	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
@@ -275,10 +278,11 @@ type globalConfigRaw struct {
 	// otherwise reject the whole document as an unknown field. Setting either
 	// key is reported as deprecated at load and has no effect; the resolved
 	// config has no Jev to configure.
-	Jev                 retiredJev          `yaml:"jev"`
-	ForgeProfiles       ForgeProfiles       `yaml:"forge_profiles"`
-	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
-	Providers           ProvidersRaw        `yaml:"providers"`
+	Jev                 retiredJev                   `yaml:"jev"`
+	ForgeProfiles       ForgeProfiles                `yaml:"forge_profiles"`
+	ProviderPlugins     map[string]providerPluginRaw `yaml:"provider_plugins"`
+	RepositoryOverrides RepositoryOverrides          `yaml:"repository_overrides"`
+	Providers           ProvidersRaw                 `yaml:"providers"`
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
@@ -758,6 +762,9 @@ type Config struct {
 	Review         Review
 	PR             PR
 	ForgeProfiles  ForgeProfiles
+	// ProviderPlugins is copied from global config only (see ProviderPlugin);
+	// no repository layer can add or change an entry.
+	ProviderPlugins ProviderPlugins
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -2424,6 +2431,14 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.ForgeProfiles = profiles
 	}
+	plugins, err := normalizeProviderPlugins(raw.ProviderPlugins)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProviderPluginsAgainstForgeProfiles(plugins, cfg.ForgeProfiles); err != nil {
+		return nil, err
+	}
+	cfg.ProviderPlugins = plugins
 	if raw.RepositoryOverrides != nil {
 		overrides, err := normalizeRepositoryOverrides(raw.RepositoryOverrides)
 		if err != nil {
@@ -3411,9 +3426,10 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 			Conversation:     repo.Review.Conversation,
 			PathInstructions: resolvePathInstructions(repo.Review.PathInstructions),
 		},
-		PR:            pr,
-		ForgeProfiles: global.ForgeProfiles,
-		Providers:     providers,
+		PR:              pr,
+		ForgeProfiles:   global.ForgeProfiles,
+		ProviderPlugins: global.ProviderPlugins,
+		Providers:       providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

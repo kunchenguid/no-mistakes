@@ -29,6 +29,12 @@ var templatePRContentSchema = json.RawMessage(`{
 }`)
 
 func supportsPRTemplates(provider scm.Provider) bool {
+	// Provider plugins implement raw content reads through the required
+	// "pr view" subcommand, which is the whole contract templates and
+	// pre-push attestation need.
+	if provider.IsPlugin() {
+		return true
+	}
 	switch provider {
 	case scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderForgejo, scm.ProviderAzureDevOps, scm.ProviderBitbucket:
 		return true

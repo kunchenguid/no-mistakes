@@ -31,6 +31,47 @@ const (
 	ProviderUnknown     Provider = "unknown"
 )
 
+// pluginProviderPrefix namespaces operator-configured provider plugins
+// (global provider_plugins). The prefix keeps a plugin identity from ever
+// colliding with a built-in provider, so every built-in switch on Provider
+// keeps falling through to its default branch for a plugin.
+const pluginProviderPrefix = "plugin:"
+
+// BuiltinProviders lists the provider names compiled into no-mistakes. Plugin
+// names must not reuse them, so an operator reading "provider gitea" in a log
+// never has to wonder which implementation ran.
+var BuiltinProviders = []Provider{
+	ProviderGitHub,
+	ProviderGitLab,
+	ProviderBitbucket,
+	ProviderAzureDevOps,
+	ProviderForgejo,
+	ProviderGitea,
+	ProviderUnknown,
+}
+
+// PluginProvider returns the provider identity for the configured provider
+// plugin name.
+func PluginProvider(name string) Provider {
+	return Provider(pluginProviderPrefix + name)
+}
+
+// PluginName reports the configured plugin name when p identifies a provider
+// plugin.
+func (p Provider) PluginName() (string, bool) {
+	name, ok := strings.CutPrefix(string(p), pluginProviderPrefix)
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// IsPlugin reports whether p identifies an operator-configured provider plugin.
+func (p Provider) IsPlugin() bool {
+	_, ok := p.PluginName()
+	return ok
+}
+
 type sshHostnameLookup func(context.Context, string) (string, error)
 
 // DetectProvider identifies the SCM provider for url. SSH host aliases are

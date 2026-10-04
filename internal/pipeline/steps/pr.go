@@ -93,6 +93,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if pluginContractBroken(err) {
+			return nil, err
+		}
 		if err := refuseSkipWithClosingIssues(sctx, err.Error()); err != nil {
 			return nil, err
 		}
@@ -117,7 +120,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
-	bodyLimit := scm.MaxPRBodyChars(provider)
+	bodyLimit := scm.HostMaxPRBodyChars(host)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
 	if err != nil {

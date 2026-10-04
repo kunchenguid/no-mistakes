@@ -104,6 +104,16 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
+	if err != nil && pluginContractBroken(err) {
+		// A provider plugin that broke its contract during the repair (for
+		// example a malformed pr check-logs answer, or a broken status
+		// handshake while attesting the repaired head) would break it the
+		// same way on every retry; fail the step like any other plugin
+		// violation. This precedes the unsettled-attestation park, which
+		// would otherwise present the broken integration as a repair
+		// awaiting approval.
+		return nil, err
+	}
 	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
 		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
 		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
@@ -183,7 +193,10 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	const maxLogBytes = 32 * 1024
 	var logOutput string
 	if host.Capabilities().FailedCheckLogs {
-		logOutput = fetchCILogOutput(ctx, host, pr, sctx.Run.Branch, sctx.Run.HeadSHA, targets.Checks, maxLogBytes)
+		logOutput, err = fetchCILogOutput(ctx, host, pr, sctx.Run.Branch, sctx.Run.HeadSHA, targets.Checks, maxLogBytes)
+		if err != nil {
+			return ciRepairResult{}, err
+		}
 	}
 
 	// Build prompt based on what issues are present
@@ -289,9 +302,13 @@ CI logs:
 	return repair, nil
 }
 
-func fetchCILogOutput(ctx context.Context, host scm.Host, pr *scm.PR, branch, headSHA string, targets []scm.CheckTarget, maxBytes int) string {
+// fetchCILogOutput returns the selected checks' log evidence. A failed
+// retrieval is marked in the evidence and the repair proceeds without it; the
+// only error is a provider plugin's contract violation (pluginPollFailsStep),
+// which fails the step like every other plugin call.
+func fetchCILogOutput(ctx context.Context, host scm.Host, pr *scm.PR, branch, headSHA string, targets []scm.CheckTarget, maxBytes int) (string, error) {
 	if maxBytes <= 0 || len(targets) == 0 {
-		return ""
+		return "", nil
 	}
 	targeted, ok := host.(scm.TargetedFailedCheckLogsHost)
 	if !ok {
@@ -300,10 +317,13 @@ func fetchCILogOutput(ctx context.Context, host scm.Host, pr *scm.PR, branch, he
 			names = append(names, target.Name)
 		}
 		raw, err := host.FetchFailedCheckLogs(ctx, pr, branch, headSHA, names)
+		if err != nil && pluginPollFailsStep(err) {
+			return "", err
+		}
 		if err != nil {
 			slog.Warn("failed to fetch CI logs", "err", err)
 		}
-		return boundedCILogEvidence("Selected CI checks", raw, err, maxBytes)
+		return boundedCILogEvidence("Selected CI checks", raw, err, maxBytes), nil
 	}
 
 	logs, err := targeted.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
@@ -337,7 +357,7 @@ func fetchCILogOutput(ctx context.Context, host scm.Host, pr *scm.PR, branch, he
 		parts = append(parts, part)
 		available -= len(part)
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n\n"), nil
 }
 
 func boundedCILogEvidence(label, raw string, retrievalErr error, maxBytes int) string {
@@ -758,7 +778,7 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if err := publishRunHead(sctx, headSHA, headSHA, nil); err != nil {
 		if errors.Is(err, errAttestationWriteFailed) {
-			return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIAttestationUnsettled, shortObjectID(headSHA), err)
+			return ciRepairResult{}, fmt.Errorf("%w at %s: %w", errCIAttestationUnsettled, shortObjectID(headSHA), err)
 		}
 		return ciRepairResult{}, err
 	}
@@ -791,8 +811,13 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // (matches the PR step's own skip semantics); or no PR exists yet for this
 // branch. It never mints an attestation for a PR that was not raised through
 // no-mistakes - restampPRAttestationWithSteps already enforces that. Any
-// other failure (PR discovery errors, or a discoverable PR whose write does
-// not settle) is wrapped in errAttestationWriteFailed and returned.
+// other failure (PR discovery errors, a provider plugin whose status
+// handshake broke its contract - the PR step fails on that too, see
+// pluginContractBroken - or a discoverable PR whose write does not
+// settle) is wrapped in errAttestationWriteFailed and returned, keeping the
+// provider error in the chain so a CI repair can tell a provider plugin
+// contract violation (which fails the step) from an unsettled write (which
+// parks).
 func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult) error {
 	provider := resolvedProvider(sctx)
 	if !supportsPRTemplates(provider) {
@@ -810,6 +835,9 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		return nil
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
+		if pluginContractBroken(err) {
+			return fmt.Errorf("%w: %w", errAttestationWriteFailed, err)
+		}
 		if sctx.Log != nil {
 			sctx.Log(fmt.Sprintf("skipping attestation write: %v", err))
 		}
@@ -817,17 +845,17 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	}
 	discovered, err := host.FindPR(sctx.Ctx, branch, "")
 	if err != nil {
-		return fmt.Errorf("%w: find pull request: %v", errAttestationWriteFailed, err)
+		return fmt.Errorf("%w: find pull request: %w", errAttestationWriteFailed, err)
 	}
 	pr, err := bindExistingPR(sctx, host, discovered)
 	if err != nil {
-		return fmt.Errorf("%w: resolve pull request: %v", errAttestationWriteFailed, err)
+		return fmt.Errorf("%w: resolve pull request: %w", errAttestationWriteFailed, err)
 	}
 	if pr == nil {
 		return nil
 	}
 	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
-		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
+		return fmt.Errorf("%w: %w", errAttestationWriteFailed, err)
 	}
 	return nil
 }
@@ -876,7 +904,7 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 			// Azure's adapter clamps ordinary descriptions. Owned writes must
 			// fail before that boundary can cut off author text or the digest.
 			if rebound && hasPRAppendixMarkers(updated) {
-				if err := validateOwnedPRBudget(updated, scm.MaxPRBodyChars(host.Provider())); err != nil {
+				if err := validateOwnedPRBudget(updated, scm.HostMaxPRBodyChars(host)); err != nil {
 					return err
 				}
 			}

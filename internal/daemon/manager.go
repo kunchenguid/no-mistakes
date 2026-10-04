@@ -173,6 +173,9 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		return nil, err
 	}
 	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
+	if err == nil {
+		err = forgecontext.RefuseProviderPluginOverlap(ctx, forgeCtx, cfg.ProviderPlugins, repo.UpstreamURL)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve forge profile: %w", err)
 	}
@@ -1596,6 +1599,9 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}
 	}
 	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
+	if err == nil {
+		err = forgecontext.RefuseProviderPluginOverlap(ctx, forgeCtx, cfg.ProviderPlugins, repo.UpstreamURL)
+	}
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("resolve forge profile: %s", err))
 		trackStartFailure("resolve_forge_profile")

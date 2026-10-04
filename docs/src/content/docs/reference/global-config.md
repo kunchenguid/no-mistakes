@@ -69,6 +69,11 @@ forge_profiles:
   gitlab-work:
     glab_config_dir: ~/.config/glab-work
 
+provider_plugins:
+  ssm:
+    command: ~/bin/nm-ssm-plugin
+    hosts: ["*.sourcemanager.dev"]
+
 auto_fix:
   rebase: 3
   review: 0
@@ -508,9 +513,39 @@ Deliberate scope boundaries, so profiles never duplicate what other layers own:
 - **Executable selection stays with the machine.** Which `gh`, `glab`, or `git` runs is owned by `PATH` and the existing command resolution, not by profile configuration.
 - **Credential-helper context stays with Git configuration.** Profiles point at provider CLI config directories and never model or store credential material; credentials remain in the CLI's own store.
 
+### provider_plugins
+
+Optional machine-local PR and CI support for hosts no-mistakes does not ship a provider for, such as a company-internal forge or Google Cloud Secure Source Manager. Each entry names an AXI-shaped CLI that implements the [provider plugin protocol](/no-mistakes/reference/provider-plugin-protocol/) and the hosts it serves:
+
+```yaml
+provider_plugins:
+  ssm:
+    command: ~/bin/nm-ssm-plugin
+    args: ["--location", "us-central1"]
+    hosts: ["*.sourcemanager.dev"]
+    timeout: 2m
+    draft_pull_requests: false
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `command` | yes | Executable to run. A bare name is resolved from the run's `PATH`; a path must be absolute or begin with `~/`. Relative paths are refused because plugins run with the run worktree as their working directory. |
+| `args` | no | Arguments passed verbatim on every invocation, before the subcommand words (`<command> <args...> pr view 7 ... --json`). PR bodies travel in a private `--body-file`, never in argv, so they never appear in a process listing. |
+| `hosts` | yes | Host patterns the plugin claims: an exact host name or SSH alias as it appears in the remote, or `*.<domain>` for any subdomain (not the apex). No scheme, port, path, or user. |
+| `timeout` | no | Bound for one plugin invocation (Go duration). Defaults to `2m`. |
+| `draft_pull_requests` | no | Passes `--draft` to `pr create`. Defaults to `false`. |
+
+Names are 1-63 lowercase letters, digits, `-`, or `_` and must not reuse a built-in provider name. A run's provider shows up as `plugin:<name>`.
+
+Selection happens per run, before built-in detection and forge profiles: the remote's literal host token is matched first, then its SSH `HostName` resolution. An exact pattern beats a wildcard, and a longer wildcard beats a shorter one. Two plugins (or one plugin twice) may not list the same pattern, and a host that a [`forge_profiles`](#forge_profiles) entry claims may not also be claimed by a plugin; both are configuration errors. Because a forge profile matches the remote's literal host while a plugin also matches its SSH `HostName`, an overlap that only appears after alias resolution (a profile keyed by an SSH alias whose `HostName` a plugin claims) is refused when the run starts, with an error naming both.
+
+`provider_plugins` is global-only. A plugin runs with your credentials for every repository on its hosts, so a repository `.no-mistakes.yaml` can never add, change, or redirect one; a `provider_plugins` block there is ignored.
+
+Plugins run through the same environment as built-in provider CLIs (the daemon's login-shell environment plus any forge-profile overlay) with the run worktree as the working directory. A plugin whose `status` exits non-zero (for example, not authenticated) makes the PR and CI steps skip with its message, reported under `run.automatic_skips`; a plugin that breaks the protocol (unreadable output, wrong protocol version, timeout) fails the step instead, in its `status` handshake or in any later call (a timeout during the CI step's repeated polls or log retrieval is handled like any failed read instead). `no-mistakes doctor` lists configured plugins and checks that each command resolves; it does not run the plugin, because the handshake is per repository.
+
 ### ci_timeout
 
-How long the CI step monitors an open PR, including provider CI status and on GitHub, GitLab, Forgejo, or Azure DevOps PR mergeability, before giving up.
+How long the CI step monitors an open PR, including provider CI status and PR mergeability (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), before giving up.
 
 |         |                                                 |
 | ------- | ----------------------------------------------- |
@@ -521,7 +556,7 @@ Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open.
-If it later develops an actual GitHub, GitLab, Forgejo, or Azure DevOps merge conflict, the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
+If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
@@ -831,7 +866,7 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |
-| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus GitHub, GitLab, Forgejo, and Azure DevOps merge conflicts |
+| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus merge conflicts on GitHub, GitLab, Forgejo, Azure DevOps, and provider plugins declaring `mergeable_state` |
 
 Legacy alias: `auto_fix.babysit`.
 

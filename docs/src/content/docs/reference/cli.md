@@ -675,6 +675,7 @@ Checks:
 - ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`, and `devin` plus `acpx` for `devin`
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
 - Every configured [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry, reported as `forge <host>`: the profile resolves and validates, its provider CLI is installed, and that CLI is authenticated for the profile's host
+- Every configured [`provider_plugins`](/no-mistakes/reference/global-config/#provider_plugins) entry, reported as `plugin <name>`: that its command executable resolves
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 
@@ -682,7 +683,7 @@ The standalone runner rows inspect default binary names; each ACP alias row (`cu
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
 
-`doctor` checks `gh` and `az` availability. [Provider Integration](/no-mistakes/guides/provider-integration/) owns the separate setup checks for GitLab, Forgejo, Bitbucket Cloud, Gitea, and the Azure DevOps extension and PAT.
+`doctor` checks `gh` and `az` availability, and that each configured [provider plugin](/no-mistakes/reference/global-config/#provider_plugins) command resolves (it does not run the plugin's handshake). [Provider Integration](/no-mistakes/guides/provider-integration/) owns the separate setup checks for GitLab, Forgejo, Bitbucket Cloud, Gitea, and the Azure DevOps extension and PAT.
 
 `tea` stays docs-only like `glab`, `forgejo-axi`, and Bitbucket's env vars, rather than an active `doctor` check like `gh`/`az`: Gitea is almost always self-hosted, so a bare "`tea` not found" row would be a near-universal, low-value warning for the vast majority of users who have no Gitea instance at all.
 
