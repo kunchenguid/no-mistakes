@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,6 +152,7 @@ func annotateRunView(env *axiEnv, rv *runView) {
 	if env == nil || rv == nil {
 		return
 	}
+	rv.PostReviewCommits = postReviewCommitCount(env, rv)
 	quietWarning := configQuietWarning(env)
 	for i := range rv.Steps {
 		step := &rv.Steps[i]
@@ -171,6 +173,36 @@ func annotateRunView(env *axiEnv, rv *runView) {
 			}
 		}
 	}
+}
+
+// postReviewCommitCount counts the commits on the run's head after its
+// review-approved head: what Document, Lint, a Test or CI repair, or any other
+// later step committed that Review never saw. It reads the gate repository the
+// run's worktree shares objects with. 0 - and so omitted - when no approval is
+// recorded, the head is the approved head, or the count cannot be read.
+func postReviewCommitCount(env *axiEnv, rv *runView) int {
+	if env.d == nil || env.p == nil || rv.ID == "" || rv.HeadSHA == "" {
+		return 0
+	}
+	run, err := env.d.GetRun(rv.ID)
+	if err != nil || run == nil || run.ReviewApprovedHeadSHA == nil {
+		return 0
+	}
+	approved := strings.TrimSpace(*run.ReviewApprovedHeadSHA)
+	if approved == "" || strings.EqualFold(approved, rv.HeadSHA) {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := git.Run(ctx, env.p.RepoDir(run.RepoID), "rev-list", "--count", approved+".."+rv.HeadSHA)
+	if err != nil {
+		return 0
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0
+	}
+	return count
 }
 
 func configQuietWarning(env *axiEnv) time.Duration {

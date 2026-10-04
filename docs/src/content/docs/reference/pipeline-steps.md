@@ -152,6 +152,19 @@ Follow-up review passes use the history to avoid re-reporting user-ignored findi
 
 **Default auto-fix limit:** `0`.
 
+### Post-review pass
+
+Steps after Review can commit: Document edits, Lint and Test repairs, a repository gate's repair, and Push's own formatter or leftover-change commit.
+By default Push publishes any descendant of the review-approved commit, so those commits reach the pull request without review; [`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status) counts them as `post_review_commits`.
+
+With trusted [`review.post_review_pass: true`](/no-mistakes/reference/repo-config/#reviewpost_review_pass), Push stops before publishing whenever the head it would publish is past the review-approved commit, and the Review step runs again over exactly the commits after that approval:
+
+- The base commit is the review-approved commit, so the reviewable set and the coverage contract are the files those commits changed. The prompt tells the reviewer the commits are pipeline-authored and that the approved change is context only.
+- Findings, the gate, and `auto_fix.review` rounds work as in any review. The pass starts a fresh outstanding set and shares the step's `auto_fix.review` budget, as a restart at Review does. Its first round is recorded with trigger `post_review` and labelled in the PR body's Review details.
+- When the pass completes, clean or approved at its gate, the review-approved commit advances to the head it reviewed and Push runs again from the top; a commit that run makes gets a pass of its own. Skipping the pass at its gate publishes without it, and aborting fails the run.
+- Test, Document, and Lint are not re-run and the step order is unchanged. A daemon restart while the pass is parked resumes the pass and then Push.
+- CI repairs made after publication are outside the pass; [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs) governs them.
+
 ### Pipeline HEAD continuity
 
 At entry to every repository gate and every core step from Test through CI, no-mistakes compares the live worktree `HEAD` with the pipeline-recorded head. An equal head or a pipeline-descendant commit continues. A backward reset, divergent sibling, or unverifiable relationship fails the run before that step performs work, including for steps that would not create a commit.
@@ -236,6 +249,7 @@ Pushes the validated branch to the configured push target.
 
 - If `commands.format` is set, ensures [`commands.prepare`](/no-mistakes/reference/repo-config/#commandsprepare) has succeeded once for the isolated worktree, then runs the formatter
 - Commits any uncommitted changes left by pipeline agents or the formatter with message `no-mistakes: apply agent fixes`
+- With [`review.post_review_pass`](/no-mistakes/reference/repo-config/#reviewpost_review_pass) on, publishes nothing while the head it would publish is past the review-approved commit: Review first runs a [post-review pass](#post-review-pass) over exactly those commits, then Push runs again from the top. A Review step skipped by `--skip` or at the pass's own gate asks for no pass
 - Without fork routing, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
 - With GitHub fork routing, the push target is `repos.fork_url`
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable

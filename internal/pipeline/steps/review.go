@@ -30,9 +30,14 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 	ctx := sctx.Ctx
 	baseBranch := effectivePRBaseBranch(sctx)
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
-	if err != nil {
-		return nil, err
+	// A post-review pass reviews only what landed after the approved head, so
+	// that head is its base; the earlier change was already reviewed.
+	baseSHA := sctx.PostReviewPassFrom
+	if baseSHA == "" {
+		baseSHA, err = resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+		if err != nil {
+			return nil, err
+		}
 	}
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
@@ -41,6 +46,9 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 
 	reviewScope := fmt.Sprintf("branch changes between %s and %s", baseSHA, sctx.Run.HeadSHA)
+	if sctx.PostReviewPassFrom != "" {
+		reviewScope = fmt.Sprintf("commits made after Review approved %s, through %s", baseSHA, sctx.Run.HeadSHA)
+	}
 	if sctx.Fixing {
 		startingHeadSHA := sctx.ReviewStartingHeadSHA
 		if startingHeadSHA == "" {
@@ -252,7 +260,7 @@ Previous review findings to address:
 	if err != nil {
 		return nil, err
 	}
-	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + settledQuestionsPromptSection(sctx) + supersededReviewHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + planSection + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + settledQuestionsPromptSection(sctx) + supersededReviewHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + postReviewPassClause(sctx) + userIntentPromptSection(sctx) + planSection + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
 	// Path-scoped review guidance, taken from the operator's global config and
 	// from the trusted default-branch config copy (regardless of
@@ -901,6 +909,25 @@ Fix-round provenance:
 - When a defect you report is in code a prior fix round changed, or is a sibling site of an invariant a prior fix round addressed, say so in the description: name the round, and whether that fix introduced the defect, left this sibling behind, or moved the defect. List every remaining sibling site so one fix round can close the class.
 - When the defects you are reporting are located in code a prior fix round introduced, and that code exceeds what the original finding required, report a single "ask-user" finding recommending that the prior round be reverted to the minimal fix, instead of filing further repairs on that machinery.
 `, fromSHA, toSHA)
+}
+
+// postReviewPassClause frames a post-review pass (review.post_review_pass):
+// the commits under review were written by the pipeline's own later steps
+// after Review approved the change, so they get the author-grade standard, and
+// the already-approved change is context rather than scope. Documentation and
+// comment edits are named explicitly because they are what those steps most
+// often commit, and a false claim in prose passes every other gate.
+func postReviewPassClause(sctx *pipeline.StepContext) string {
+	if sctx == nil || sctx.PostReviewPassFrom == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+Post-review pass:
+- Review approved commit %s earlier in this run. Every commit after it was made by a later pipeline step (Document, Lint, a Test repair, a repository gate's repair, or the formatter before Push) and has not been reviewed. Those commits are the change under review in this pass; the base commit above is the approved commit.
+- Read the already-approved change only as context for these commits.
+- Review these pipeline-authored commits with exactly the same adversarial standard as the author's original changes. A documentation or comment edit is in scope: check that every claim it makes is true of the code, and report one that removes or contradicts something an earlier step added or a recorded human decision requires.
+`, sctx.PostReviewPassFrom)
 }
 
 // approvedReviewOutcome captures the immutable commit examined by this full

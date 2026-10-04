@@ -1430,6 +1430,9 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 			inner.WriteString(fixRoundLine(r))
 			inner.WriteString("\n")
 		}
+		if r.IsPostReviewPass() {
+			inner.WriteString("Post-review pass over the commits made after Review approved:\n\n")
+		}
 
 		if r.FindingsJSON == nil {
 			switch {

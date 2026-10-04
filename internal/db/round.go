@@ -33,9 +33,11 @@ type StepRound struct {
 	ID           string
 	StepResultID string
 	Round        int
-	// Trigger is "initial", "auto_fix", or "answer" (a review turn resumed
+	// Trigger is "initial", "auto_fix", "answer" (a review turn resumed
 	// once every question it left open was answered - not a fix round, since
-	// no code changed); legacy "user_fix" is treated as "auto_fix".
+	// no code changed), or "post_review" (the first turn of a review pass over
+	// the commits made after Review approved, see review.post_review_pass);
+	// legacy "user_fix" is treated as "auto_fix".
 	Trigger          string
 	FindingsJSON     *string // nullable - findings produced by this round
 	ReviewedHeadSHA  *string // non-authoritative commit candidate captured by a review round
@@ -84,6 +86,14 @@ type StepRoundStats struct {
 // rounds count: they were fix rounds dispatched by an explicit user selection.
 func (r *StepRound) IsFixRound() bool {
 	return r.Trigger == "auto_fix" || r.Trigger == "user_fix"
+}
+
+// RoundTriggerPostReview labels the first round of a post-review pass.
+const RoundTriggerPostReview = "post_review"
+
+// IsPostReviewPass reports whether this round opened a post-review pass.
+func (r *StepRound) IsPostReviewPass() bool {
+	return r.Trigger == RoundTriggerPostReview
 }
 
 // StepFixSummaries returns one result per fix round for a step, in round order.

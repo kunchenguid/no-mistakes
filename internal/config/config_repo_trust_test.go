@@ -694,3 +694,36 @@ func TestLoadRepoConfig_ReviewConversationRejectsANonBoolean(t *testing.T) {
 		t.Fatal("review.conversation: true did not parse as on")
 	}
 }
+
+// review.post_review_pass decides whether a branch's pipeline-authored commits
+// are reviewed before they are published, so a pushed branch can neither turn
+// it off for itself nor buy itself the pass; a missing key is off.
+func TestEffectiveRepoConfig_ReviewPostReviewPassTrustedOnlyAndDefaultsOff(t *testing.T) {
+	on := &RepoConfig{Review: ReviewRaw{PostReviewPass: true}}
+	off := &RepoConfig{}
+	for _, tc := range []struct {
+		name              string
+		pushed, trusted   *RepoConfig
+		allowRepoCommands bool
+		want              bool
+	}{
+		{name: "pushed-only on is ignored", pushed: on, trusted: off, want: false},
+		{name: "pushed-only on with no trusted copy is ignored", pushed: on, trusted: nil, want: false},
+		{name: "the commands opt-in does not let a pushed on through", pushed: on, trusted: off, allowRepoCommands: true, want: false},
+		{name: "a pushed branch cannot decline a trusted on", pushed: off, trusted: on, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Merge(&GlobalConfig{}, EffectiveRepoConfig(tc.pushed, tc.trusted, tc.allowRepoCommands))
+			if got.Review.PostReviewPass != tc.want {
+				t.Fatalf("review.post_review_pass = %v, want %v", got.Review.PostReviewPass, tc.want)
+			}
+		})
+	}
+	cfg, err := LoadRepoFromBytes([]byte("review:\n  post_review_pass: true\n"))
+	if err != nil || !cfg.Review.PostReviewPass {
+		t.Fatalf("review.post_review_pass: true did not parse as on: %v", err)
+	}
+	if Merge(&GlobalConfig{}, &RepoConfig{}).Review.PostReviewPass {
+		t.Fatal("review.post_review_pass defaults on")
+	}
+}
