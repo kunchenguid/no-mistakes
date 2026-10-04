@@ -112,7 +112,7 @@ Repositories can opt into [`protected_paths`](/no-mistakes/reference/repo-config
 
 ## Step rounds
 
-Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database.
+Each execution of a step (initial run, post-review pass, or follow-up auto-fix run) is recorded as a "round" in the database.
 A round stores its findings, duration, any selected finding IDs and whether that selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and any one-line fix summary from that execution.
 That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
 AXI status uses the same round history and the persisted auto-fix limit to show the active fix attempt, for example `auto-fix 1/3` or `fix 2`.
@@ -122,6 +122,7 @@ The full round history remains available in the run log.
 
 Round trigger types:
 - `initial` - first execution
+- `post_review` - first review round over commits made after Review approved them, when [`review.post_review_pass`](/no-mistakes/reference/repo-config/#reviewpost_review_pass) is enabled
 - `auto_fix` - triggered by the automatic fix loop
 - `auto_fix` - also used when you press `f` in the TUI or use `no-mistakes axi respond --action fix` to run a follow-up fix
 
