@@ -381,7 +381,7 @@ no-mistakes axi sync --adopt-published
 | -------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
 | `--check`            | `bool`   | `false` | Verify the live target and exact plan without changing `HEAD`                |
 | `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or perform `recover_remote_rewritten` |
-| `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head without touching the worktree; after custody return, retry a proven stale submitted mirror handoff |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact evidence for a keep-local recovery; never creates or moves a Git ref |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
 
@@ -435,6 +435,8 @@ Status uses the same `recoverySourceAvailable` classification as recovery and ac
 A verified archive plan reports its evidence in `branch_sync.recovery`, keeps `next_action.code: recover_custody`, and sets the command to exactly `no-mistakes axi sync --recover --keep-local`. That action leaves the worktree and local branch at `recovery.required_head`, leaves the divergent archive at `recovery.preserved_head`, and never merges, replays, fast-forwards, resets to, or otherwise selects the archived history. Running plain `--recover` against this plan refuses without adding an anchor or moving a ref.
 
 For the alternative validation path and its refusal conditions, see [`no-mistakes rerun`](#no-mistakes-rerun); it is not offered for the archive-backed keep-local plan.
+If a never-pushed run already returned custody but its private mirror still points at the exact submitted head, `axi sync --recover --keep-local` can retry that same handoff after later local work. It requires the run's submitted head, recovered head, custody stamp, both run recovery anchors, the pre-recovery local anchor, a clean current branch descended from the recorded recovered head, and a content-preservation merge proof. The existing gate planner archives the submitted mirror head before compare-and-swap deleting only that exact ref; the next pipeline publication uses an ordinary push. Missing or contradictory evidence, dropped content, unrelated mirror commits, or concurrent ref movement refuses. Repeating after success is a no-op.
+
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 

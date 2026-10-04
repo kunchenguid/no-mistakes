@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -178,6 +179,7 @@ type Service struct {
 	beforeRecoverBranchMove           func()
 	afterRecoverBranchMove            func()
 	beforeRecoverRebind               func()
+	beforeRecoveredMirrorCAS          func()
 }
 
 // remoteTimeout returns the bounded deadline budget for one remote
@@ -579,6 +581,113 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 	return verified
 }
 
+// reconcileReturnedMirror retries the original custody-to-private-mirror
+// handoff only for the exact recovered run. The gate planner still owns the
+// archive and compare-and-swap deletion; this method only supplies the
+// additional run/recovery lineage proof that is unavailable to a fresh push.
+func (s *Service) reconcileReturnedMirror(ctx context.Context, state State, run *db.Run) State {
+	branch := state.Local.Branch
+	branchRef := "refs/heads/" + branch
+	if run == nil || s.Repo == nil || strings.TrimSpace(s.GateDir) == "" || branch == "" || branch != run.Branch || state.Pipeline.RunID != run.ID {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_identity", "the returned run, current branch, or private mirror is unavailable or mismatched; no mirror refs were changed")
+	}
+	if !state.Local.Clean {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_dirty", "the recovered branch must be clean before its private mirror can be reconciled; no mirror refs were changed")
+	}
+
+	submitted := ptr(run.SubmittedHeadSHA)
+	recovered := run.HeadSHA
+	if submitted == "" || recovered == "" {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_metadata", "the returned run is missing its submitted or recovered head; no mirror refs were changed")
+	}
+
+	gateHead, exists, err := git.DirectRefTarget(ctx, s.GateDir, branchRef)
+	if err != nil {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_ref", "the private mirror ref could not be read safely; no mirror refs were changed")
+	}
+	if exists && gateHead == state.Local.Head {
+		state.Recovered = true
+		state.Changed = false
+		return state
+	}
+	if !exists && gate.ArchivedHeadRecorded(ctx, s.GateDir, branch, submitted) {
+		state.Recovered = true
+		state.Changed = false
+		return state
+	}
+	if !exists || gateHead != submitted {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_unexpected_head", "the private mirror no longer points at this run's exact submitted head; inspect the mirror before retrying; no mirror refs were changed")
+	}
+
+	if !terminalRunStatus(run.Status) || run.CustodyReturnedAt == nil || run.TerminalHeadVerifiedAt == nil ||
+		run.LastPushedSHA != nil || run.RepoID != s.Repo.ID || run.SubmittedHeadSHA == nil {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_metadata", "the run lacks complete terminal custody evidence for this handoff; no mirror refs were changed")
+	}
+	if branchNow, err := git.CurrentBranch(ctx, s.workDir()); err != nil || branchNow != branch {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_identity", "the checked-out branch changed before mirror reconciliation; no mirror refs were changed")
+	}
+	headNow, err := git.HeadSHA(ctx, s.workDir())
+	cleanNow, _ := worktreeClean(ctx, s.workDir())
+	if err != nil || headNow != state.Local.Head || !cleanNow || !isAncestor(ctx, s.workDir(), recovered, headNow) {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_lineage", "the clean current branch is not the recorded recovered head or its descendant; no mirror refs were changed")
+	}
+	if !exactRecoveryCommit(ctx, s.workDir(), custody.RecoveryRef(run.ID), recovered) ||
+		!exactRecoveryCommit(ctx, s.GateDir, custody.RecoveryRef(run.ID), recovered) ||
+		!exactRecoveryCommit(ctx, s.workDir(), custody.RecoveryLocalRef(run.ID), submitted) ||
+		(recovered != submitted && !preservedContainsLocalWork(ctx, s.workDir(), submitted, recovered)) {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_lineage", "the run's recovery anchors do not prove that the exact submitted content survives in the recorded recovered lineage; no mirror refs were changed")
+	}
+
+	plan, err := gate.PlanStaleBranchReconciliation(ctx, s.GateDir, s.workDir(), branch, headNow, submitted)
+	if err != nil || !plan.Reconcile || plan.PreviousHead != submitted {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_plan", "the existing private-mirror planner could not prove this exact handoff safe; no mirror refs were changed")
+	}
+	currentRun, runErr := s.DB.GetRun(run.ID)
+	currentBranch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	currentHead, headErr := git.HeadSHA(ctx, s.workDir())
+	currentClean, _ := worktreeClean(ctx, s.workDir())
+	mirrorNow, mirrorExists, mirrorErr := git.DirectRefTarget(ctx, s.GateDir, branchRef)
+	if runErr != nil || currentRun == nil || currentRun.ID != run.ID || currentRun.RepoID != run.RepoID ||
+		currentRun.Branch != branch || currentRun.SubmittedHeadSHA == nil || ptr(currentRun.SubmittedHeadSHA) != submitted ||
+		currentRun.HeadSHA != recovered || currentRun.Status != run.Status || currentRun.CustodyReturnedAt == nil ||
+		currentRun.TerminalHeadVerifiedAt == nil || currentRun.LastPushedSHA != nil || branchErr != nil || currentBranch != branch ||
+		headErr != nil || currentHead != headNow || !currentClean || mirrorErr != nil || !mirrorExists || mirrorNow != submitted {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_assumptions_changed", "the run, branch, or private mirror changed while the handoff was being planned; no mirror refs were changed")
+	}
+
+	if s.beforeRecoveredMirrorCAS != nil {
+		s.beforeRecoveredMirrorCAS()
+	}
+	result, err := gate.ApplyStaleBranchReconciliation(ctx, s.GateDir, plan)
+	if err != nil || !result.Reconciled || result.PreviousHead != submitted {
+		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_race", "the private mirror changed during its guarded handoff; the existing archive and compare-and-swap protections prevented an overwrite; retry after inspecting current refs")
+	}
+	fresh, _, _ := s.inspect(ctx)
+	fresh.Recovered = true
+	fresh.Changed = true
+	fresh.Safety = "mirror_reconciled"
+	return fresh
+}
+
+func sameTimestamp(a, b *int64) bool {
+	return a != nil && b != nil && *a == *b
+}
+
+func exactRecoveryCommit(ctx context.Context, dir, ref, expected string) bool {
+	if strings.TrimSpace(dir) == "" || expected == "" {
+		return false
+	}
+	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && symbolic != "" {
+		return false
+	}
+	target, exists, err := git.ExactRefTarget(ctx, dir, ref)
+	if err != nil || !exists || target != expected {
+		return false
+	}
+	objectType, err := git.Run(ctx, dir, "cat-file", "-t", target)
+	return err == nil && objectType == "commit"
+}
+
 // Recover returns custody of a branch stranded by a TERMINAL run whose MOVED
 // pipeline head was never published: cancelled or failed before the push with
 // pipeline commits in the gate, or terminal after a push with additional
@@ -664,7 +773,10 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 // Recovery ends with persisted custody-return stamps on the recovered run or
 // stranded stack; inspection then reports custody_returned (never-pushed runs)
 // or the ordinary classification against the last push binding (pushed runs),
-// both pointing at run_pipeline as the next step.
+// both pointing at run_pipeline as the next step. For an already-returned,
+// never-pushed run, plain --recover stays a no-op; the explicit --keep-local
+// retry may reconcile the stale submitted mirror only after the run's recorded
+// recovery anchors, current descendant, and content-preservation proof agree.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -677,6 +789,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return rebound
 	}
 	if run != nil && run.CustodyReturnedAt != nil {
+		if keepLocal {
+			return s.reconcileReturnedMirror(ctx, state, run)
+		}
 		state.Recovered = true
 		state.Changed = false
 		return state
