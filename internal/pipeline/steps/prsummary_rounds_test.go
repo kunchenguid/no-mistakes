@@ -291,3 +291,25 @@ func TestBuildPipelineSummary_FailedTestRoundIncludesTestedDetails(t *testing.T)
 		t.Fatalf("expected failed test round to include tested command details, got:\n%s", md)
 	}
 }
+
+// A skipped step that recorded an empty round never checked anything; the
+// body must say it was skipped instead of claiming "No issues found".
+func TestBuildPipelineSummary_SkippedStepWithEmptyRoundIsNotAPass(t *testing.T) {
+	t.Parallel()
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepIntent, Status: types.StepStatusSkipped},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", DurationMS: 5}},
+	}
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+	if !strings.Contains(md, "**Intent** - skipped") {
+		t.Fatalf("expected a capitalized skipped Intent line, got:\n%s", md)
+	}
+	if strings.Contains(md, "No issues found") {
+		t.Fatalf("skipped step claimed a pass:\n%s", md)
+	}
+	if !strings.Contains(md, "Step was skipped.") {
+		t.Fatalf("expected the skipped detail, got:\n%s", md)
+	}
+}
