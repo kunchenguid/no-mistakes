@@ -256,6 +256,123 @@ func TestExecutor_RecoveredPostReviewPassResumesAtPush(t *testing.T) {
 	}
 }
 
+// Skipped steps between Review and Push still belong to a parked post-review
+// pass. Recovery must use the Review round history rather than requiring a
+// completed row before the pending Push row.
+func TestExecutor_RecoveredPostReviewPassWithSkippedStepsResumesAtPush(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	approvedHead := run.HeadSHA
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, approvedHead); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, postReviewDocumentHead); err != nil {
+		t.Fatal(err)
+	}
+	records := map[types.StepName]*db.StepResult{}
+	for _, name := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
+		sr, err := database.InsertStepResult(run.ID, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records[name] = sr
+	}
+	for _, name := range []types.StepName{types.StepTest, types.StepDocument, types.StepLint} {
+		if err := database.CompleteStepWithStatus(records[name].ID, types.StepStatusSkipped, 0, 10, "skipped for recovery test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reviewID := records[types.StepReview].ID
+	if err := database.StartStep(reviewID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"r1","severity":"error","file":"README.md","line":3,"description":"documents a flag the code does not have","action":"auto-fix"}]}`
+	if err := database.SetStepFindings(reviewID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertReviewStepRound(reviewID, 1, "initial", nil, nil, approvedHead, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertReviewStepRound(reviewID, 2, db.RoundTriggerPostReview, &findings, nil, postReviewDocumentHead, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(reviewID, types.StepStatusAwaitingApproval, 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var testCalls, documentCalls, lintCalls, pushCalls int
+	var fixBase string
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		if !sctx.Fixing {
+			return nil, fmt.Errorf("expected the recovered post-review fix round")
+		}
+		fixBase = sctx.PostReviewPassFrom
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, postReviewFixedHead); err != nil {
+			return nil, err
+		}
+		sctx.Run.HeadSHA = postReviewFixedHead
+		return &StepOutcome{ReviewedPaths: []string{"README.md"}, ReviewablePaths: []string{"README.md"}, ReviewApprovedHeadSHA: postReviewFixedHead}, nil
+	}}
+	neverRun := func(name types.StepName, calls *int) Step {
+		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+			*calls++
+			return nil, fmt.Errorf("%s ran during post-review recovery", name)
+		}}
+	}
+	steps := []Step{
+		review,
+		neverRun(types.StepTest, &testCalls),
+		neverRun(types.StepDocument, &documentCalls),
+		neverRun(types.StepLint, &lintCalls),
+		pushUntilReviewed(&pushCalls),
+	}
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 1}}, nil, steps, nil)
+
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for exec.Respond(types.StepReview, types.ActionFix, []string{"r1"}) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("recovered post-review gate never accepted a response")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("recovered executor timed out")
+	}
+
+	if fixBase != approvedHead {
+		t.Fatalf("recovered fix round reviewed from %q, want the approved head %s", fixBase, approvedHead)
+	}
+	if testCalls != 0 || documentCalls != 0 || lintCalls != 0 || pushCalls != 1 {
+		t.Fatalf("calls test=%d document=%d lint=%d push=%d, want 0/0/0/1: recovery returns to Push", testCalls, documentCalls, lintCalls, pushCalls)
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewApprovedHeadSHA == nil || *got.ReviewApprovedHeadSHA != postReviewFixedHead {
+		t.Fatalf("review-approved head = %#v, want %s", got.ReviewApprovedHeadSHA, postReviewFixedHead)
+	}
+	if got.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed", got.Status)
+	}
+}
+
 // Only a review gate may sit before completed steps; anything else after a gate
 // is still an unrecoverable plan.
 func TestExecutor_RecoveredGateRefusesCompletedStepsAfterANonReviewGate(t *testing.T) {

@@ -880,6 +880,21 @@ func (e *Executor) runContext(ctx context.Context) context.Context {
 	return git.WithEnvironment(ctx, e.forge.Environment)
 }
 
+// latestOpeningRoundIsPostReview identifies the durable opening turn for the
+// current review cycle. Fix and answer rounds can follow it without changing
+// which pass is being recovered.
+func latestOpeningRoundIsPostReview(rounds []*db.StepRound) bool {
+	for index := len(rounds) - 1; index >= 0; index-- {
+		switch rounds[index].Trigger {
+		case db.RoundTriggerPostReview:
+			return true
+		case "initial":
+			return false
+		}
+	}
+	return false
+}
+
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	results, err := e.db.GetStepsByRun(runID)
 	if err != nil {
@@ -928,6 +943,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				autoFixes:              autoFixes,
 				lastRoundID:            latest.ID,
 				selectedOutstandingIDs: retainFindingIDsByIdentity(*result.FindingsJSON, selectedOutstandingIDs, identity),
+				postReviewPass:         latestOpeningRoundIsPostReview(rounds),
 			}
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
@@ -947,11 +963,10 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			}
 			continue
 		}
-		// Completed steps after the gate are a post-review pass and nothing
-		// else: Review parked while every step up to the one that requested
-		// the pass had already completed.
-		if result.Status == types.StepStatusCompleted && gate.step.Name() == types.StepReview && !sawPending {
-			gate.postReviewPass = true
+		// A post-review pass parks Review while every step up to the step that
+		// requested the pass remains completed or skipped. Durable round history
+		// identifies the pass; row order only validates that shape.
+		if result.Status == types.StepStatusCompleted && gate.postReviewPass && !sawPending {
 			continue
 		}
 		if result.Status != types.StepStatusSkipped {
