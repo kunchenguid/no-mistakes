@@ -267,6 +267,8 @@ Creates or updates a pull request.
 - The `az` CLI with the `azure-devops` extension is not installed or not authenticated for Azure DevOps
 - A legacy or manually edited non-GitHub repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only (this includes provider-plugin hosts)
 
+**Tags:** a pushed tag (`refs/tags/...`) never gets a PR. The PR step peels the run head and the tag on the push target to commits, fails if they differ, and otherwise skips with the verified commit as the reason. CI then waits for the workflow runs that push of that tag triggered on that commit (GitHub only; runs for the same commit from branches or PRs do not count). It passes only when at least one run reported and all settled without failing; a failing run, a timeout, an unavailable or unauthenticated host, or a provider that cannot read tag runs stops at an approval gate instead of passing or skipping. Retrying the gate re-polls the tag runs; CI repair never pushes over a tag.
+
 **Behavior:**
 - Checks for an existing PR on the branch, matching by branch alone rather than filtering by base, so a still-open PR against a since-changed [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is found and updated instead of orphaned behind a duplicate
 - If one exists, updates it. If not, creates a new one against the configured base branch, or the per-run `--base-branch` override when set.

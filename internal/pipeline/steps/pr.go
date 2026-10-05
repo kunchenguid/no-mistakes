@@ -71,6 +71,18 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	ctx := sctx.Ctx
 
+	if ref, ok := runTagRef(sctx); ok {
+		sha, err := verifyPublishedTag(sctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		reason := fmt.Sprintf("%s is a tag at %s; tags are delivered without a pull request", ref, sha)
+		if err := refuseSkipWithClosingIssues(sctx, reason); err != nil {
+			return nil, err
+		}
+		sctx.Log(reason)
+		return &pipeline.StepOutcome{Skipped: true, SkipReason: reason}, nil
+	}
 	branch := sctx.Run.Branch
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")

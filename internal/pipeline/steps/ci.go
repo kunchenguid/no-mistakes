@@ -301,7 +301,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	}
 	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
+	ref, isTag := runTagRef(sctx)
 	if host == nil {
+		if isTag {
+			return ciFailureOutcome(nil, false, fmt.Sprintf("CI for tag %s is unverified: %s", ref, skipReason)), nil
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
@@ -309,8 +313,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if pluginContractBroken(err) {
 			return nil, err
 		}
+		if isTag {
+			return ciFailureOutcome(nil, false, fmt.Sprintf("CI for tag %s is unverified: %v", ref, err)), nil
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
+	}
+	if isTag {
+		return s.monitorTagChecks(sctx, host, ref)
 	}
 
 	// Get PR URL from run record

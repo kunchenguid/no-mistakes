@@ -360,6 +360,13 @@ type MergedProof struct {
 	MergedBy       string
 }
 
+// TagChecksHost is implemented by hosts that can read the checks a tag push
+// triggered on the commit the tag peels to. Tags have no PR, so this is their
+// CI evidence; runs for the same commit from other refs do not count.
+type TagChecksHost interface {
+	GetTagChecks(ctx context.Context, tag, sha string) ([]Check, error)
+}
+
 // MergedProofHost is implemented by hosts that can prove which exact PR head
 // was merged. The expected head must be checked even when the PR is already
 // merged, because merge and monitor polling can race.

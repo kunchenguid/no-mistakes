@@ -458,7 +458,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		return nil, err
 	}
 	if headSHA != "" {
-		runs, err := h.getWorkflowRunChecks(ctx, headSHA)
+		runs, err := h.getWorkflowRunChecks(ctx, headSHA, "")
 		if err != nil {
 			return nil, err
 		}
@@ -473,6 +473,16 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		}
 	}
 	return checks, nil
+}
+
+// GetTagChecks reads the workflow runs a push of tag triggered on sha. Runs
+// for the same commit from branch pushes or PRs are not tag evidence.
+func (h *Host) GetTagChecks(ctx context.Context, tag, sha string) ([]scm.Check, error) {
+	runs, err := h.getWorkflowRunChecks(ctx, sha, tag)
+	if err != nil {
+		return nil, err
+	}
+	return h.collapseLatestByName(runs), nil
 }
 
 func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, error) {
@@ -774,7 +784,9 @@ func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error
 	return headSHA, nil
 }
 
-func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
+// getWorkflowRunChecks lists runs for headSHA; a non-empty tag narrows them to
+// runs triggered by pushing that tag.
+func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA, tag string) ([]scm.Check, error) {
 	repo := h.repoSlug()
 	endpoint := "repos/{owner}/{repo}/actions/runs"
 	if repo != "" {
@@ -789,6 +801,9 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		"-f", "per_page=100",
 		"--paginate", "--slurp",
 	)
+	if tag != "" {
+		args = append(args, "-f", "branch="+tag, "-f", "event=push")
+	}
 	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
