@@ -356,6 +356,25 @@ func commitPipelineCorrectionWithCleanup(
 	return commitErr
 }
 
+// withCommitTrailers appends commit.trailers rendered for producer. Changes not
+// attributable to a single invocation get none rather than a guessed agent.
+func withCommitTrailers(sctx *pipeline.StepContext, message string, producer *agent.Result) (string, error) {
+	if producer == nil || len(sctx.Config.Commit.Trailers) == 0 {
+		return message, nil
+	}
+	// A fallback chain reports the agent that actually ran in Provider; a bare
+	// adapter leaves it empty, and then the step agent is the one that ran.
+	agentName := producer.Provider
+	if agentName == "" && sctx.Agent != nil {
+		agentName = sctx.Agent.Name()
+	}
+	trailers, err := sctx.Config.Commit.RenderTrailers(config.TrailerData{Agent: agentName, Model: producer.Model})
+	if err != nil {
+		return "", err
+	}
+	return message + "\n\n" + strings.Join(trailers, "\n"), nil
+}
+
 // stagedChangesPresent is the handoff between catch-all staging and commit.
 // Worktree status can become stale when an agent completes a rebase itself, or
 // can report dirt that `git add -A` cannot put in the superproject index. Only
@@ -369,11 +388,13 @@ func stagedChangesPresent(gitRun gitRunner) (bool, error) {
 }
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
-	_, err := commitAgentFixesWithResult(sctx, stepName, summary, fallbackSummary)
+	_, err := commitAgentFixesWithResult(sctx, stepName, summary, fallbackSummary, nil)
 	return err
 }
 
-func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) (bool, error) {
+// commitAgentFixesWithResult commits the worktree changes left by producer, the
+// agent invocation that made them. A nil producer commits without trailers.
+func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, producer *agent.Result) (bool, error) {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return false, err
@@ -399,6 +420,10 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	commitMessage, err := sctx.Config.Commit.RenderFixMessageForBranch(stepName, summary, sctx.Run.Branch)
 	if err != nil {
 		return false, fmt.Errorf("render %s fix commit message: %w", stepName, err)
+	}
+	commitMessage, err = withCommitTrailers(sctx, commitMessage, producer)
+	if err != nil {
+		return false, fmt.Errorf("render %s fix commit trailers: %w", stepName, err)
 	}
 	if err := stagePipelineChanges(sctx); err != nil {
 		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
@@ -524,7 +549,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		}
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
-	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary)
+	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary, result)
 	if err != nil {
 		return "", err
 	}

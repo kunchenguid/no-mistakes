@@ -510,7 +510,7 @@ func TestProtectedPaths_AllAutomaticCommitPathsRefuseWithoutMutation(t *testing.
 			return err
 		}},
 		{"ci", func(sctx *pipeline.StepContext) error {
-			_, err := (&CIStep{}).commitRepair(sctx, "repair checks")
+			_, err := (&CIStep{}).commitRepair(sctx, "repair checks", nil)
 			return err
 		}},
 	} {
@@ -652,7 +652,7 @@ func TestStagePipelineChanges_KeepsRecordedSubmodulePointer(t *testing.T) {
 			}
 
 			sctx := newTestContext(t, &mockAgent{}, dir, baseSHA, headSHA, config.Commands{})
-			committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "")
+			committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "", nil)
 			if err != nil {
 				t.Fatalf("commit agent fixes: %v", err)
 			}
@@ -703,7 +703,7 @@ func TestStagePipelineChanges_DoesNotReAddRemovedPopulatedSubmodule(t *testing.T
 	}
 
 	sctx := newTestContext(t, &mockAgent{}, dir, baseSHA, headSHA, config.Commands{})
-	committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "")
+	committed, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "", nil)
 	if err != nil {
 		t.Fatalf("commit agent fixes: %v", err)
 	}

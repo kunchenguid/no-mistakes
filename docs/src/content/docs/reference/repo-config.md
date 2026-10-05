@@ -96,6 +96,8 @@ commit:
   # branch_pattern: '([A-Z]+-[0-9]+)'
   # To use the captured identifier in the subject:
   # fix_message: "{{.Branch}}: {{.Summary}}"
+  # trailers:
+  #   - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
 
 intent:
   enabled: true
@@ -817,6 +819,20 @@ For example, `branch_pattern: '([A-Z]+-[0-9]+)'` extracts `PROJ-123` from `featu
 When either template uses `{{.Branch}}` and the pattern does not find a non-empty identifier, rendering fails safely instead of producing an empty prefix.
 
 This non-executing field is read from the pushed branch without enabling `allow_repo_commands`.
+
+### commit.trailers
+
+Override the trailers appended to agent-produced commits for this repository.
+
+| | |
+| --- | --- |
+| Type | `list` of `string` templates |
+| Default | Inherits from global config, where it is unset |
+
+The entries follow the [global `commit.trailers` placeholders and validation rules](/no-mistakes/reference/global-config/#committrailers).
+A list here replaces the inherited one rather than extending it, and `trailers: []` turns inherited trailers off for this repository.
+
+This non-executing field is read from the pushed branch without enabling `allow_repo_commands`, like `commit.fix_message`: it shapes only the messages of commits the pipeline makes on that branch.
 
 ### intent
 

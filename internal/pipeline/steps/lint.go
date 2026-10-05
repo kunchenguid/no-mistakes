@@ -145,7 +145,7 @@ Previous lint findings to address:
 			}
 			sctx.Log(fmt.Sprintf("warning: could not parse lint summary: %v", err))
 		}
-		committed, err := commitAgentFixesWithResult(sctx, s.Name(), summary, "fix lint issues")
+		committed, err := commitAgentFixesWithResult(sctx, s.Name(), summary, "fix lint issues", result)
 		if err != nil {
 			return nil, err
 		}

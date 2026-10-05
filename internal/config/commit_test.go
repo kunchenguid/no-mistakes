@@ -436,3 +436,123 @@ func TestLoadRepo_CommitBranchReplacementIsInert(t *testing.T) {
 		t.Fatalf("BranchValue() = %q, want %q", got, want)
 	}
 }
+
+func TestCommitRenderTrailers_UsesInvocationIdentity(t *testing.T) {
+	t.Parallel()
+
+	commit := Commit{Trailers: []string{
+		"Co-Authored-By: no-mistakes {{.Agent}} <noreply@example.com>",
+		"Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}",
+	}}
+	got, err := commit.RenderTrailers(TrailerData{Agent: "codex", Model: "gpt-5.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"Co-Authored-By: no-mistakes codex <noreply@example.com>",
+		"Assisted-by: no-mistakes:codex:gpt-5.5",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("RenderTrailers() = %q, want %q", got, want)
+	}
+}
+
+func TestCommitRenderTrailers_ReducesAgentReportedValuesToOneToken(t *testing.T) {
+	t.Parallel()
+
+	commit := Commit{Trailers: []string{"Assisted-by: {{.Agent}}:{{.Model}}"}}
+	tests := []struct {
+		name         string
+		agent, model string
+		want         string
+	}{
+		{name: "unreported model", agent: "claude", want: "Assisted-by: claude:unknown"},
+		{name: "unreported agent", model: "m1", want: "Assisted-by: unknown:m1"},
+		{name: "injected trailer line", agent: "claude", model: "claude-opus-5-5\nSigned-off-by: someone", want: "Assisted-by: claude:claude-opus-5-5"},
+		{name: "markup only", agent: "claude", model: "<script>", want: "Assisted-by: claude:script"},
+		{name: "nothing usable", agent: "claude", model: "<>", want: "Assisted-by: claude:unknown"},
+		{name: "overlong", agent: "claude", model: strings.Repeat("m", 100), want: "Assisted-by: claude:" + strings.Repeat("m", maxTrailerValueBytes)},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := commit.RenderTrailers(TrailerData{Agent: tt.agent, Model: tt.model})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0] != tt.want {
+				t.Fatalf("RenderTrailers() = %q, want [%q]", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadGlobal_CommitTrailers(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadGlobalFromBytes([]byte("commit:\n  trailers:\n    - 'Assisted-by: {{.Agent}}:{{.Model}}'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Commit.Trailers == nil || len(*cfg.Commit.Trailers) != 1 || (*cfg.Commit.Trailers)[0] != "Assisted-by: {{.Agent}}:{{.Model}}" {
+		t.Fatalf("commit.trailers = %v, want the configured trailer", cfg.Commit.Trailers)
+	}
+}
+
+func TestLoadGlobal_RejectsInvalidCommitTrailers(t *testing.T) {
+	tests := map[string]string{
+		"summary placeholder": "commit:\n  trailers: ['Note: {{.Summary}}']\n",
+		"step placeholder":    "commit:\n  trailers: ['Note: {{.Step}}']\n",
+		"unknown placeholder": "commit:\n  trailers: ['Note: {{.Unknown}}']\n",
+		"template function":   "commit:\n  trailers: ['Note: {{printf \"%s\" .Agent}}']\n",
+		"conditional":         "commit:\n  trailers: ['Note: {{if .Agent}}x{{end}}']\n",
+		"not a trailer":       "commit:\n  trailers: ['assisted by {{.Agent}}']\n",
+		"empty value":         "commit:\n  trailers: ['Assisted-by:']\n",
+		"empty entry":         "commit:\n  trailers: ['']\n",
+		"multiline":           "commit:\n  trailers:\n    - |-\n      Assisted-by: a\n      Signed-off-by: b\n",
+		"escape control":      "commit:\n  trailers: [\"Assisted-by: \\u001b{{.Agent}}\"]\n",
+		"bidi override":       "commit:\n  trailers: [\"Assisted-by: \\u202e{{.Agent}}\"]\n",
+		"oversized":           "commit:\n  trailers: ['Assisted-by: " + strings.Repeat("x", maxTrailerBytes) + "']\n",
+		"too many":            "commit:\n  trailers: [" + strings.TrimSuffix(strings.Repeat("'Assisted-by: x', ", maxTrailers+1), ", ") + "]\n",
+	}
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadGlobalFromBytes([]byte(data)); err == nil {
+				t.Fatal("LoadGlobalFromBytes() accepted invalid commit.trailers")
+			}
+			if _, err := LoadRepoFromBytes([]byte(data)); err == nil {
+				t.Fatal("LoadRepoFromBytes() accepted invalid commit.trailers")
+			}
+		})
+	}
+}
+
+func TestMerge_CommitTrailersPrecedence(t *testing.T) {
+	t.Parallel()
+
+	globalTrailers := []string{"Assisted-by: global:{{.Agent}}"}
+	repoTrailers := []string{"Assisted-by: repo:{{.Agent}}"}
+	var none []string
+	tests := []struct {
+		name   string
+		global CommitRaw
+		repo   CommitRaw
+		want   []string
+	}{
+		{name: "default", want: nil},
+		{name: "global", global: CommitRaw{Trailers: &globalTrailers}, want: globalTrailers},
+		{name: "repo replaces global", global: CommitRaw{Trailers: &globalTrailers}, repo: CommitRaw{Trailers: &repoTrailers}, want: repoTrailers},
+		{name: "repo empty list clears global", global: CommitRaw{Trailers: &globalTrailers}, repo: CommitRaw{Trailers: &none}, want: nil},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Merge(&GlobalConfig{Commit: GlobalCommitRaw{CommitRaw: tt.global}}, &RepoConfig{Commit: tt.repo})
+			if strings.Join(cfg.Commit.Trailers, "\n") != strings.Join(tt.want, "\n") || len(cfg.Commit.Trailers) != len(tt.want) {
+				t.Fatalf("commit.trailers = %q, want %q", cfg.Commit.Trailers, tt.want)
+			}
+		})
+	}
+}

@@ -90,6 +90,8 @@ commit:
   # branch_replacement: 'PROJ-${1}'
   # To use the captured identifier in the subject:
   # fix_message: "{{.Branch}}: {{.Summary}}"
+  # trailers:
+  #   - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
 
 intent:
   enabled: true
@@ -957,6 +959,39 @@ Malformed replacement syntax fails configuration loading with an actionable erro
 The expanded identifier is subject to the existing UTF-8, control-character, unsafe-Unicode, and rendered-subject validation.
 A `commit.branch_pattern` in `.no-mistakes.yaml` takes precedence and clears any inherited machine-wide replacement, including one from a matching repository override, so a replacement cannot be applied to a different pattern.
 
+### commit.trailers
+
+Git trailers appended to each commit made from a single agent invocation's changes, naming the agent and model that produced them.
+
+| | |
+| --- | --- |
+| Type | `list` of `string` templates |
+| Default | Unset, so commits carry no trailers |
+
+Each entry renders to one trailer line. It supports literal text and two Go-style placeholders:
+
+| Variable | Value |
+| --- | --- |
+| `{{.Agent}}` | The agent that actually ran the invocation; with an `agent` fallback list, the one that answered, not the first configured |
+| `{{.Model}}` | The model the agent reported serving the invocation, or `unknown` when it reports none |
+
+For example, this renders `Assisted-by: no-mistakes:codex:gpt-5.5` on a fix made by Codex after a fallback from Claude:
+
+```yaml
+commit:
+  trailers:
+    - "Co-Authored-By: no-mistakes {{.Agent}} <noreply@example.com>"
+    - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
+```
+
+`{{.Agent}}` and `{{.Model}}` come from agent output, so each is cut to its first whitespace-separated token, reduced to letters, digits, and `-_.:/`, and limited to 64 bytes; a value with nothing left renders as `unknown`.
+Claude, Codex, Grok, and Pi report the model they served; other agents render `unknown`.
+Every entry must render to a `Key: value` line that git recognizes as a trailer. Entries are limited to 1,024 bytes and 16 placeholders, the list to 16 entries, and the same template restrictions and unsafe-character rules as `commit.fix_message` apply.
+An invalid entry fails configuration loading, and a render failure at commit time leaves the changes unstaged.
+
+Trailers are added to Review, Test, Document, and Lint fix commits, operator-authorized repository gate repairs, and CI repair commits. Commits that no single invocation produced get none rather than a guessed agent: the Push step's catch-all commit, a CI repair retried after a protected-path refusal, and rebase or merge commits that an agent writes itself.
+A per-repo [`commit.trailers`](/no-mistakes/reference/repo-config/#committrailers) list or a matching [`repository_overrides`](#repository_overrides) entry replaces this list rather than extending it; an empty list clears it.
+
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
@@ -980,7 +1015,7 @@ repository_overrides:
       title_format: '{{.Branch}}: {{.Title}}'
 ```
 
-Formatting fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
+Formatting fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, `commit.trailers`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
 A `commit.branch_replacement` must be paired with `commit.branch_pattern` in the same override.
 Precedence is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
 As with the global replacement, a repository `commit.branch_pattern` replaces the matching machine-local pattern and clears its replacement.

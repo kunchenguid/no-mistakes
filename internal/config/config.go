@@ -1366,6 +1366,12 @@ ci:
 #   fix_message: "no-mistakes({{.Step}}): {{.Summary}}"
 # To use the captured identifier in the subject, replace fix_message with:
 #   fix_message: "{{.Branch}}: {{.Summary}}"
+# Trailers appended to commits made from one agent invocation's changes.
+# Available variables: {{.Agent}} (the agent that actually ran) and
+# {{.Model}} (the model it reported, or "unknown"). Repo config may replace
+# the list.
+#   trailers:
+#     - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
 
 # User-intent extraction. When you push a branch, no-mistakes can read recent
 # transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev, Pi,
@@ -3346,6 +3352,17 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	if repo.Commit.BranchPattern != nil {
 		commit.BranchPattern = *repo.Commit.BranchPattern
 		commit.BranchReplacement = ""
+	}
+	// Each layer replaces the list rather than extending it, and an explicit
+	// empty list clears trailers set by a lower layer.
+	trailerLayers := []*[]string{global.Commit.Trailers, nil, repo.Commit.Trailers}
+	if override != nil {
+		trailerLayers[1] = override.Commit.Trailers
+	}
+	for _, trailers := range trailerLayers {
+		if trailers != nil {
+			commit.Trailers = append([]string{}, (*trailers)...)
+		}
 	}
 
 	providers := Providers{}
