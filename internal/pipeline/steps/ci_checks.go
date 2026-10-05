@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -355,11 +356,21 @@ func terminalCheckTargetsForNames(checks []scm.Check, names []string) []scm.Chec
 }
 
 func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
+	errStr := ""
+	if err != nil {
+		errStr = err.Error()
+	}
+	description := fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command.", err)
+	if isSHABranchSelectorError(errStr) {
+		description += " The error indicates a commit SHA was used as the PR selector (gh pr view <sha>). gh pr view only accepts a PR number, URL, or branch name — never a bare SHA. Resolve the PR first via `gh pr list --search <sha>` or `gh api repos/{owner}/{repo}/commits/<sha>/pulls`, then use `gh pr view <number>` / `gh pr checks <number>`."
+	} else {
+		description += " For GitHub errors involving 'pr checks --json', gh >= 2.50 is required."
+	}
 	findings := Findings{
 		Summary: "CI checks could not be read from the provider",
 		Items: []Finding{{
 			Severity:    "warning",
-			Description: fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command. For GitHub errors involving 'pr checks --json', gh >= 2.50 is required.", err),
+			Description: description,
 			Action:      types.ActionAskUser,
 		}},
 	}
@@ -368,6 +379,27 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),
 	}
+}
+
+func isSHABranchSelectorError(s string) bool {
+	_, suffix, found := strings.Cut(strings.ToLower(s), "no pull requests found for branch")
+	if !found {
+		return false
+	}
+	tokens := strings.Fields(suffix)
+	if len(tokens) == 0 {
+		return false
+	}
+	selector := strings.Trim(tokens[0], "`'\".,:;()[]{}<>")
+	if len(selector) < 7 || len(selector) > 40 {
+		return false
+	}
+	for _, r := range selector {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return strings.ContainsAny(selector, "abcdef")
 }
 
 // ciFixAgentTimeoutOutcome parks the CI step for a decision after the auto-fix

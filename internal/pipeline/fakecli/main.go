@@ -577,6 +577,10 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		if headErr := os.Getenv("FAKE_CLI_PR_HEAD_ERR"); headErr != "" {
+			fmt.Fprintln(os.Stderr, headErr)
+			os.Exit(1)
+		}
 		fmt.Println(fakePRHeadSHA())
 		os.Exit(0)
 	}

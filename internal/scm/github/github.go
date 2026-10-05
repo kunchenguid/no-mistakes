@@ -763,9 +763,12 @@ func (h *Host) checkStartedAfter(a, b scm.Check) (bool, bool) {
 func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
-	out, err := h.cmd(ctx, "gh", args...).Output()
+	var stderr bytes.Buffer
+	cmd := h.cmd(ctx, "gh", args...)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view head commit: %w", err)
+		return "", fmt.Errorf("gh pr view head commit: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	headSHA := strings.TrimSpace(string(out))
 	if headSHA == "" {
