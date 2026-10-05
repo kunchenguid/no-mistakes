@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.88.0](https://github.com/kunchenguid/no-mistakes/compare/v1.87.1...v1.88.0) (2026-10-05)
+
+
+### Features
+
+* add Nix flake packaging and refuse self-update in the Nix store ([#1324](https://github.com/kunchenguid/no-mistakes/issues/1324)) ([4cf8134](https://github.com/kunchenguid/no-mistakes/commit/4cf8134b853b218af70c7f4d60a9a5e7c1822d84))
+* **config:** add commit.trailers naming the agent and model behind fix commits ([#1329](https://github.com/kunchenguid/no-mistakes/issues/1329)) ([18f3fe3](https://github.com/kunchenguid/no-mistakes/commit/18f3fe3a1a0b13ee951088ec18e9dd5ddcf03de2))
+* **testguidance:** require independent test oracles ([#1305](https://github.com/kunchenguid/no-mistakes/issues/1305)) ([1495bd4](https://github.com/kunchenguid/no-mistakes/commit/1495bd43d59ed9f6bf9662d599fd0dacb621d780))
+
+
+### Bug Fixes
+
+* **pipeline:** render skipped steps as skipped ([#1315](https://github.com/kunchenguid/no-mistakes/issues/1315)) ([3bbdc42](https://github.com/kunchenguid/no-mistakes/commit/3bbdc420119f323b19666d359bbb79a7211a0e75))
+* **steps:** pin preparation snapshot diff format ([#1314](https://github.com/kunchenguid/no-mistakes/issues/1314)) ([e5a08d4](https://github.com/kunchenguid/no-mistakes/commit/e5a08d4ff6f1f219bd9cba6a7e3c6d0e7271ae46)), closes [#1311](https://github.com/kunchenguid/no-mistakes/issues/1311)
+
 ## [1.87.1](https://github.com/kunchenguid/no-mistakes/compare/v1.87.0...v1.87.1) (2026-10-04)
 
 
