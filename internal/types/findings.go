@@ -129,6 +129,11 @@ const FindingIDTestAgentTimeout = "test-agent-timeout"
 // publish the work.
 const FindingIDTestAgentUnvalidatedWork = "test-agent-unvalidated-work"
 
+// FindingIDCIDecisionReversion is the CI-step park for an auto-fix repair that
+// would undo work the branch deliberately did. A fix response there authorises
+// that exact reversion, so automatic resolvers must leave the gate to a person.
+const FindingIDCIDecisionReversion = "ci-decision-reversion"
+
 // Test scenario result constants: the vocabulary the test step's evidence
 // prompt instructs the agent to use for each derived scenario.
 //

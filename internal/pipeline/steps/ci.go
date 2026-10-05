@@ -56,7 +56,10 @@ type CIStep struct {
 	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
 	pendingRepairPublish bool
 	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
+	// authorizedRefusal is the exact decision-reversion refusal last shown at a gate.
+	// It is process-local so a restart cannot inherit a decision nobody saw here.
+	authorizedRefusal    *decisionReversionError
+	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
@@ -260,6 +263,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	// this re-entry is the retry of a retained repair a protected-path refusal
 	// interrupted: that repair is finished first and nothing new is requested.
 	repairRequested := sctx.Fixing && !retryRefusal
+	// A reversion authorisation answers only the reversion gate that showed
+	// it, so any other entry - a retained-repair retry, an approval, or a fix
+	// response that did not select that refusal - drops it unused.
+	if !repairRequested || !pipeline.HasDecisionReversionRefusal(sctx.PreviousFindings) {
+		s.authorizedRefusal = nil
+	}
 	defer func() {
 		if outcome != nil {
 			if s.pendingFixSummary != "" {
@@ -333,23 +342,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
-	if retryRefusal {
-		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
-			return nil, err
-		}
-		repair, err := s.retryProtectedPathRepair(sctx)
-		if err != nil {
-			return nil, err
-		}
-		retryRefusal = false
-		if repair.Revalidate {
-			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
-		}
-	}
 	baseBranch := effectivePRBaseBranch(sctx)
 	// A resumed run may have a different trusted configuration than the run
 	// that created this PR. Re-read the forge record without a base filter so
-	// conflict repair and tip monitoring follow the PR's actual target.
+	// conflict repair, the reversion guard and tip monitoring follow the
+	// PR's actual target.
 	if reader, ok := host.(scm.PRBaseBranchReader); ok {
 		if actual, readErr := reader.GetPRBaseBranch(ctx, pr); readErr == nil {
 			pr.BaseBranch = actual
@@ -357,6 +354,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	}
 	if strings.TrimSpace(pr.BaseBranch) != "" {
 		baseBranch = strings.TrimSpace(pr.BaseBranch)
+	}
+	if retryRefusal {
+		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+			return nil, err
+		}
+		repair, err := s.retryProtectedPathRepair(sctx, baseBranch)
+		if err != nil {
+			return nil, err
+		}
+		retryRefusal = false
+		if repair.Revalidate {
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
 	}
 	if repairRequested {
 		repairOutcome, err := s.repairFromFindings(sctx, host, pr)
@@ -697,6 +707,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						mergeConflict:       mergeConflict,
 						reruns:              s.transientReruns.used,
 						botComments:         reviewBotComments(sctx, host, pr, checks),
+						decisionCheck:       ciConfig(sctx).MatchesDecisionCheck,
 					})
 					if hasAwaitingApprovalChecks(checks) {
 						sctx.Log(ciChecksAwaitingApprovalMsg)

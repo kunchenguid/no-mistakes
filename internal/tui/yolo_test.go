@@ -24,12 +24,19 @@ func TestModel_Yolo_RefusalGatesSendNoAutomaticResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	decisionReversion, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{
+		{ID: types.FindingIDCIDecisionReversion, Severity: "blocking", Action: types.ActionAskUser, Description: "Evidence: guard.sh would be restored byte-identical to base."},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, refusal := range []struct {
 		step     types.StepName
 		findings string
 	}{
 		{types.StepDocument, pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "ledger.json", Rule: "ledger.json"}).Findings},
 		{types.StepTest, unvalidatedWork},
+		{types.StepCI, decisionReversion},
 	} {
 		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
 			t.Run(string(refusal.step)+"/"+string(status), func(t *testing.T) {

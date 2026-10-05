@@ -30,6 +30,13 @@ func HasUnvalidatedWorkRefusal(findingsJSON string) bool {
 	return hasFindingID(findingsJSON, types.FindingIDTestAgentUnvalidatedWork)
 }
 
+// HasDecisionReversionRefusal identifies a CI gate whose fix response would
+// authorise undoing work the branch deliberately did. Only a person may give
+// that authorisation, so every automatic resolver stands aside on it.
+func HasDecisionReversionRefusal(findingsJSON string) bool {
+	return hasFindingID(findingsJSON, types.FindingIDCIDecisionReversion)
+}
+
 func hasFindingID(findingsJSON, id string) bool {
 	findings, _ := types.ParseFindingsJSON(findingsJSON)
 	for _, finding := range findings.Items {

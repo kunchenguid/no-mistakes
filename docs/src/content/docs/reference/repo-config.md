@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.decision_checks`, `ci.revalidate_repairs`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -693,6 +693,44 @@ Reruns are skipped when:
 - The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, and Gitea reach the approval gate without a rerun).
 - The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a cancelled check naming only the workflow run re-runs the whole workflow, while other run-only links re-run failed jobs; an unrecognized link is widened into neither.
 - The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
+
+### ci.decision_checks
+
+Checks whose red state means a human decision is outstanding rather than that something is broken.
+
+| | |
+|---|---|
+| Type | `list of string` (shell globs) |
+| Default | empty |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  decision_checks:
+    - "workflow pin*"
+    - "Signed manifest / verify"
+```
+
+A CI check normally reports whether the code works, and the CI step's auto-fix round exists to repair the code when it does not.
+Some checks say something else entirely: a reviewed-workflow pin, a signed manifest, a policy attestation.
+Their red state is a statement that a person has not yet approved something, and the remedy is a human act, not a code change.
+
+The fix agent cannot tell the difference from the failure message, because it reasons about what a failure means rather than pattern-matching it.
+Left in its reach, the cheapest repair it can find for such a check is to undo the thing awaiting approval - delete the content the guard was meant to cover until the guard's existing evidence fits again - which leaves the check green over exactly the state the guard exists to make impossible.
+Green is worse than the red it replaced, because red is visible.
+
+A check named here leaves the fix agent's reach entirely:
+
+- It is never offered as a fix target, and its logs never reach the fix prompt. A fix selection that includes it repairs only the other selected findings.
+- When it fails, it becomes an ask-user finding naming it. Ordinary failures in the same observation stay on the gate beside it as auto-fix findings, so they still get fix rounds; the run then parks on the decision check.
+- That finding deliberately offers no fix round, and a fix selection of nothing but decision checks re-parks. The declaration is your standing decision about the check, recorded on your own default branch; a run-time answer, which any agent driving the pipeline can give, must not dissolve it. Resolve the check outside the pipeline, or approve or skip to let the run finish with the check still red.
+
+Patterns are shell globs, matched case-insensitively against the provider's check name, with `*` free to cross the `/` a forge puts between a workflow and its job (`"workflow pin*"` covers `Workflow pin / verify (pull_request)`).
+An unmatchable pattern fails this file at load time rather than silently leaving the check it names inside the fix agent's reach.
+
+Because the value is read only from the trusted default-branch copy, a pushed branch cannot take a check out of the set - which is the whole point, since the branch under judgement is the one the guard is judging.
+
+Declaring a check here does not stop the pipeline noticing it, reporting it, or re-running it; it stops the pipeline repairing it.
 
 ### ci.revalidate_repairs
 

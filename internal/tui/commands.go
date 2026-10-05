@@ -104,7 +104,7 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if step == nil || m.yoloApproved[step.StepName] {
 		return nil
 	}
-	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) || pipeline.HasUnvalidatedWorkRefusal(m.stepFindings[step.StepName]) {
+	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) || pipeline.HasUnvalidatedWorkRefusal(m.stepFindings[step.StepName]) || pipeline.HasDecisionReversionRefusal(m.stepFindings[step.StepName]) {
 		return nil
 	}
 	// Only an answer settles an open review question, so yolo has no standing

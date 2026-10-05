@@ -111,7 +111,7 @@ func TestCIStep_CommitRepairAppendsTrailers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repair, err := (&CIStep{}).commitRepair(sctx, "repair failing checks", &agent.Result{Provider: "grok", Model: "grok-5"})
+	repair, err := (&CIStep{}).commitRepair(sctx, effectivePRBaseBranch(sctx), "repair failing checks", &agent.Result{Provider: "grok", Model: "grok-5"})
 	if err != nil {
 		t.Fatal(err)
 	}

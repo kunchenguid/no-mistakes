@@ -59,7 +59,7 @@ func TestAgentHeadRecordingPreservesSharedGateRefs(t *testing.T) {
 					}
 				} else {
 					sctx.Config.CI.RevalidateRepairs = true
-					repair, err := (&CIStep{}).commitRepair(sctx, "record CI repair", nil)
+					repair, err := (&CIStep{}).commitRepair(sctx, effectivePRBaseBranch(sctx), "record CI repair", nil)
 					if err != nil || !repair.HeadAdvanced || !repair.Revalidate {
 						t.Fatalf("CI recording = %+v, err = %v", repair, err)
 					}
@@ -152,7 +152,7 @@ func TestAgentHeadRecordingUpdatesNonSharedWorktreeRef(t *testing.T) {
 				}
 			} else {
 				sctx.Config.CI.RevalidateRepairs = true
-				if _, err := (&CIStep{}).commitRepair(sctx, "record CI repair", nil); err != nil {
+				if _, err := (&CIStep{}).commitRepair(sctx, effectivePRBaseBranch(sctx), "record CI repair", nil); err != nil {
 					t.Fatal(err)
 				}
 			}

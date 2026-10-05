@@ -1097,6 +1097,10 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 				fmt.Fprintf(progress, "%s: unvalidated work in the run worktree requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
 				return run, false, nil
 			}
+			if pipeline.HasDecisionReversionRefusal(gate.FindingsJSON) {
+				fmt.Fprintf(progress, "%s: a CI repair that would undo the branch's own work requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
+				return run, false, nil
+			}
 			gateKey := gate.Name + "\x00" + gate.Status
 			if pendingGate == gateKey {
 				// Duplicate or delayed events can race persistence after a response.

@@ -188,7 +188,7 @@ func (s *attestationTransitionCI) Execute(sctx *pipeline.StepContext) (*pipeline
 	if err := os.WriteFile(filepath.Join(sctx.WorkDir, "ci-repair.txt"), []byte("repaired\n"), 0o644); err != nil {
 		return nil, err
 	}
-	repair, err := (&CIStep{}).commitRepair(sctx, "repair required check", nil)
+	repair, err := (&CIStep{}).commitRepair(sctx, effectivePRBaseBranch(sctx), "repair required check", nil)
 	if err != nil {
 		return nil, err
 	}

@@ -165,7 +165,7 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 			// provider poll and several subprocesses per case for nothing.
 			// TestCIStep_MonitorRestartsAtReviewForAHeldRepair covers the
 			// monitor turning Revalidate into RestartFrom.
-			repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+			repair, err := (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "repair the failing check", nil)
 			if err != nil {
 				t.Fatalf("CI repair returned error: %v\nlog:\n%s", err, f.log())
 			}
@@ -237,7 +237,7 @@ func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newCIRepairFixture(t, revalidate, nil)
-			repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+			repair, err := (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "repair the failing check", nil)
 			if err != nil {
 				t.Fatalf("CI repair returned error: %v", err)
 			}
@@ -279,7 +279,7 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 			os.WriteFile(filepath.Join(f.dir, "resolved.txt"), []byte("resolved"), 0o644)
 			gitCmd(t, f.dir, "add", "-A")
 			gitCmd(t, f.dir, "commit", "-m", "agent resolved the failure")
-			repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+			repair, err := (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "repair the failing check", nil)
 			if err != nil {
 				t.Fatalf("CI repair returned error: %v\nlog:\n%s", err, f.log())
 			}
@@ -315,7 +315,7 @@ func TestCIStep_PartialPublicationRecordsNothing(t *testing.T) {
 	}
 	f.sctx.GateDir = brokenGate
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+	repair, err := (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "repair the failing check", nil)
 	if err == nil {
 		t.Fatal("a publication that could not settle the gate mirror was reported as complete")
 	}
@@ -341,7 +341,7 @@ func TestCIStep_PartialPublicationRecordsNothing(t *testing.T) {
 	// With a working gate the same path completes, and the no-op push over the
 	// already-pushed head is not an obstacle.
 	f.sctx.GateDir = f.gateDir
-	repair, err = (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+	repair, err = (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "repair the failing check", nil)
 	if err != nil {
 		t.Fatalf("the next attempt did not complete the publication: %v\nlog:\n%s", err, f.log())
 	}
@@ -439,7 +439,7 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 				t.Fatal("the rewrite did not move the reviewed head")
 			}
 
-			repair, err := (&CIStep{}).commitRepair(f.sctx, "resolve merge conflict", nil)
+			repair, err := (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "resolve merge conflict", nil)
 			if err != nil {
 				t.Fatalf("a conflict repair must revalidate, not fail: %v\nlog:\n%s", err, f.log())
 			}
@@ -550,7 +550,7 @@ func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *t
 	}
 	f.sctx.Run.ReviewApprovedHeadSHA = nil
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+	repair, err := (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "repair the failing check", nil)
 	if err != nil {
 		t.Fatalf("CI repair returned error: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestCIStep_FailedRevalidationWriteDoesNotAdvanceTheLiveHead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil); err == nil {
+	if _, err := (&CIStep{}).commitRepair(f.sctx, effectivePRBaseBranch(f.sctx), "repair the failing check", nil); err == nil {
 		t.Fatal("a failed durable write was reported as a recorded repair")
 	}
 	if f.sctx.Run.HeadSHA != priorHead {

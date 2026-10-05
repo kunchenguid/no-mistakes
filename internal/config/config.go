@@ -624,7 +624,8 @@ type AutoFixRaw struct {
 // CIRaw is the YAML representation of CI-step settings.
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type CIRaw struct {
-	RerunTransient *int `yaml:"rerun_transient"`
+	RerunTransient *int      `yaml:"rerun_transient"`
+	DecisionChecks *[]string `yaml:"decision_checks"`
 	// RevalidateRepairs is a pointer so an explicit `false` in a repository's
 	// config can override a global `true`, which a plain bool could not
 	// express (it would be indistinguishable from "not set").
@@ -639,6 +640,8 @@ type CI struct {
 	// an approval gate. 0 disables reruns and restores the behavior of
 	// escalating every failure on sight.
 	RerunTransient int
+	// DecisionChecks declares provider check names whose red state requires a human decision.
+	DecisionChecks []string
 	// RevalidateRepairs selects what happens after the CI step's fix agent
 	// produces a real repair commit.
 	//
@@ -2268,6 +2271,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateTestRaw(raw.Test); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateCIRaw(raw.CI); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 	if err := validateEvalRaw(raw.Eval); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
@@ -2592,6 +2598,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		cfg.ProtectedPaths[i] = pattern
 	}
 	if err := validateTestRaw(cfg.Test); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateCIRaw(cfg.CI); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateGates(cfg.Gates); err != nil {
@@ -3207,6 +3216,9 @@ func validateRebaseRaw(r RebaseRaw) error {
 // inverting the bound, and anything above MaxCIRerunTransient is capped so a
 // typo cannot keep a run polling one commit indefinitely.
 func applyCIOverrides(dst *CI, src *CIRaw) {
+	if src.DecisionChecks != nil {
+		dst.DecisionChecks = normalizeDecisionChecks(*src.DecisionChecks)
+	}
 	if src.RerunTransient != nil {
 		dst.RerunTransient = min(max(*src.RerunTransient, 0), MaxCIRerunTransient)
 	}
@@ -3217,6 +3229,50 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	if src.RevalidateRepairs != nil {
 		dst.RevalidateRepairs = *src.RevalidateRepairs
 	}
+}
+
+func normalizeDecisionChecks(patterns []string) []string {
+	var out []string
+	for _, pattern := range patterns {
+		if trimmed := strings.TrimSpace(pattern); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func validateCIRaw(ci CIRaw) error {
+	if ci.DecisionChecks == nil {
+		return nil
+	}
+	for _, pattern := range *ci.DecisionChecks {
+		if _, err := flatGlobMatch(strings.TrimSpace(pattern), ""); err != nil {
+			return fmt.Errorf("ci.decision_checks: invalid pattern %q: %w", pattern, err)
+		}
+	}
+	return nil
+}
+
+func flatGlobMatch(pattern, name string) (bool, error) {
+	const flat = "\x00"
+	return path.Match(strings.ReplaceAll(pattern, "/", flat), strings.ReplaceAll(name, "/", flat))
+}
+
+func (c CI) MatchesDecisionCheck(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, pattern := range c.DecisionChecks {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == name {
+			return true
+		}
+		if matched, err := flatGlobMatch(pattern, name); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 // applyAutoFixOverrides applies non-nil raw values onto resolved defaults.

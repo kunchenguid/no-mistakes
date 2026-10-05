@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -46,6 +47,9 @@ type ciIssues struct {
 	// botComments are the unresolved review-thread comments left by
 	// registered review bots, fetched only when such a bot's check is red.
 	botComments []scm.ReviewComment
+	// decisionCheck reports whether trusted ci.decision_checks reserves a
+	// failing check for a human decision.
+	decisionCheck func(string) bool
 }
 
 // ciObservationFindings converts one settled observation into findings, one
@@ -63,17 +67,27 @@ type ciIssues struct {
 //     the file and line the comment is about;
 //   - a provider-attributed outcome no rerun will replace is an ask-user
 //     warning, exactly as before findings existed: nothing a fix agent does
-//     can clear it.
+//     can clear it;
+//   - a failing check trusted ci.decision_checks declares is an ask-user
+//     error, beside the other findings rather than in place of them, so the
+//     ordinary failures stay visible and repairable.
 //
-// The classification reads provider structure only - bucket, state, the
-// check suite's app identity - never check names or log text, so it is as
+// Apart from the maintainer's own ci.decision_checks declaration, the
+// classification reads provider structure only - bucket, state, the check
+// suite's app identity - never check names or log text, so it is as
 // trustworthy as the status API behind it. An empty app identity is never a
 // review bot.
 func ciObservationFindings(issues ciIssues) Findings {
 	var items []Finding
 	codeChecks := 0
+	decisionChecks := 0
 	var botChecks []reviewBotCheck
 	for _, check := range selectedFailingChecks(issues.checks, issues.failing) {
+		if issues.decisionCheck != nil && issues.decisionCheck(check.Name) {
+			decisionChecks++
+			items = append(items, ciDecisionCheckFinding(check.Name, check.ProviderID))
+			continue
+		}
 		if bot, ok := scm.ReviewBotForApp(check.App); ok {
 			botChecks = append(botChecks, reviewBotCheck{check: check, bot: bot})
 			continue
@@ -107,6 +121,13 @@ func ciObservationFindings(issues ciIssues) Findings {
 		parts = append(parts, "1 CI check failing")
 	default:
 		parts = append(parts, fmt.Sprintf("%d CI checks failing", codeChecks))
+	}
+	switch decisionChecks {
+	case 0:
+	case 1:
+		parts = append(parts, "1 CI check requiring a human decision failing")
+	default:
+		parts = append(parts, fmt.Sprintf("%d CI checks requiring a human decision failing", decisionChecks))
 	}
 	if issues.mergeConflict {
 		parts = append(parts, "PR has merge conflicts with the base branch")
@@ -371,6 +392,26 @@ func parseCIFixTargets(raw string) (ciFixTargets, error) {
 }
 
 func (t ciFixTargets) empty() bool { return len(t.Findings.Items) == 0 }
+
+// withoutDecisionChecks drops every target trusted ci.decision_checks reserves
+// for a human, so the fix agent never sees one, and returns the dropped names.
+func (t ciFixTargets) withoutDecisionChecks(cfg config.CI) (ciFixTargets, []string) {
+	var excluded []string
+	kept := ciFixTargets{Findings: types.FindingsMetadata(t.Findings), MergeConflict: t.MergeConflict}
+	for _, item := range t.Findings.Items {
+		if name := strings.TrimSpace(item.Check); name != "" && cfg.MatchesDecisionCheck(name) {
+			excluded = append(excluded, name)
+			continue
+		}
+		kept.Findings.Items = append(kept.Findings.Items, item)
+	}
+	for _, check := range t.Checks {
+		if !cfg.MatchesDecisionCheck(check.Name) {
+			kept.Checks = append(kept.Checks, check)
+		}
+	}
+	return kept, excluded
+}
 
 // description names the round's targets the way the CI step log always has.
 func (t ciFixTargets) checkNames() []string {

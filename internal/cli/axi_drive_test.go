@@ -408,6 +408,9 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 		{ID: types.FindingIDTestAgentTimeout, Severity: "warning", Action: types.ActionAskUser, Description: "budget cut"},
 		{ID: types.FindingIDTestAgentUnvalidatedWork, Severity: "error", Action: types.ActionAskUser, Description: "uncommitted changes to fix_test.go"},
 	}, "Test agent exceeded its invocation budget")
+	decisionReversion := findingsJSON(t, []types.Finding{
+		{ID: types.FindingIDCIDecisionReversion, Severity: "blocking", Action: types.ActionAskUser, Description: "Evidence: guard.sh would be restored byte-identical to base."},
+	}, "CI auto-fix round would undo the branch's own work")
 	for _, refusal := range []struct {
 		step     types.StepName
 		findings string
@@ -416,6 +419,7 @@ func TestDriveRun_YesLeavesRefusalGatesAwaitingResponse(t *testing.T) {
 	}{
 		{types.StepCI, protectedPath, "1 awaiting", "package.lock"},
 		{types.StepTest, unvalidatedWork, "2 awaiting", "fix_test.go"},
+		{types.StepCI, decisionReversion, "1 awaiting", "guard.sh"},
 	} {
 		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
 			t.Run(string(refusal.step)+"/"+string(status), func(t *testing.T) {

@@ -5,10 +5,39 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// ciConfig reads the resolved CI settings from the run context.
+func ciConfig(sctx *pipeline.StepContext) config.CI {
+	if sctx == nil || sctx.Config == nil {
+		return config.CI{}
+	}
+	return sctx.Config.CI
+}
+
+func ciDecisionCheckFinding(name, checkID string) Finding {
+	return Finding{
+		Severity:    types.FindingSeverityError,
+		Action:      types.ActionAskUser,
+		Category:    types.FindingCategoryCICheck,
+		Check:       name,
+		CheckID:     checkID,
+		Description: fmt.Sprintf("CI check failing: %s. This repository declares it in ci.decision_checks, which means its red state is a statement that a human decision is outstanding, not that something is broken. No fix round is run for it and none can be requested.", name),
+	}
+}
+
+func ciDecisionCheckOutcome(names []string) *pipeline.StepOutcome {
+	findings := Findings{Summary: "CI checks that require a human decision are failing"}
+	for _, name := range names {
+		findings.Items = append(findings.Items, ciDecisionCheckFinding(name, ""))
+	}
+	encoded, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}
+}
 
 type lastFixedIssues struct {
 	Checks        []scm.CheckTarget `json:"checks,omitempty"`
