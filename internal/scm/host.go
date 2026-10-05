@@ -285,6 +285,9 @@ var (
 	// monitoring. It prevents a late status or already-merged race from proving
 	// the wrong commit.
 	ErrHeadChanged = errors.New("pull request head changed")
+	// ErrTagProvenance means a tag's CI runs cannot be proven to come from
+	// the tag push rather than a same-named branch push.
+	ErrTagProvenance = errors.New("tag run provenance is ambiguous")
 )
 
 // ReviewComment represents a code review comment or bot finding on a pull request.

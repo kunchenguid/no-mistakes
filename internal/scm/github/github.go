@@ -4,6 +4,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"gopkg.in/yaml.v3"
 )
 
 // CmdFactory builds an exec.Cmd in the caller's workdir with the caller's env.
@@ -817,6 +819,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA, tag string) ([
 		CreatedAt    string `json:"created_at"`
 		UpdatedAt    string `json:"updated_at"`
 		HTMLURL      string `json:"html_url"`
+		Path         string `json:"path"`
 	}
 	var pages []struct {
 		TotalCount   *int          `json:"total_count"`
@@ -853,6 +856,24 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA, tag string) ([
 	}
 	if len(runIDs) != totalCount {
 		return nil, fmt.Errorf("workflow run discovery returned %d unique runs, want %d", len(runIDs), totalCount)
+	}
+	if tag != "" {
+		// The runs API reports only head_branch, which a same-named branch push
+		// shares with the tag push. Count a run only when its workflow file at
+		// this commit can be triggered by tag pushes alone.
+		tagOnly := make(map[string]bool)
+		for _, run := range raw {
+			only, seen := tagOnly[run.Path]
+			if !seen {
+				if only, err = h.workflowTriggersOnlyOnTagPush(ctx, repo, run.Path, headSHA); err != nil {
+					return nil, err
+				}
+				tagOnly[run.Path] = only
+			}
+			if !only {
+				return nil, fmt.Errorf("%w: workflow %q run %d can also be triggered by a branch push named %s", scm.ErrTagProvenance, run.Path, run.ID, tag)
+			}
+		}
 	}
 	checks := make([]scm.Check, 0, len(raw))
 	for _, run := range raw {
@@ -923,6 +944,65 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA, tag string) ([
 		checks = append(checks, scm.Check{Name: name, ProviderID: fmt.Sprintf("github-workflow-run:%d", run.ID), Bucket: bucket, Kind: scm.CheckKindRun, State: state, CompletedAt: completedAt, StartedAt: startedAt, WorkflowID: run.WorkflowID, Link: link, AwaitingApproval: awaitingApproval})
 	}
 	return checks, nil
+}
+
+// workflowTriggersOnlyOnTagPush reads the workflow file as of sha and reports
+// whether its push trigger filters tags but not branches. GitHub runs such a
+// workflow only for tag pushes; any branch filter, or an unfiltered push,
+// also runs it for a branch push with the same name.
+func (h *Host) workflowTriggersOnlyOnTagPush(ctx context.Context, repo, path, sha string) (bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return false, fmt.Errorf("%w: workflow run reports no workflow path", scm.ErrTagProvenance)
+	}
+	args := []string{"api"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, "--method", "GET", "repos/"+repo+"/contents/"+path, "-f", "ref="+sha)
+	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("gh api workflow file %s at %s: %s: %w", path, sha, strings.TrimSpace(string(out)), err)
+	}
+	var file struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.Unmarshal(out, &file); err != nil || file.Encoding != "base64" {
+		return false, fmt.Errorf("parse workflow file %s at %s: unexpected response", path, sha)
+	}
+	body, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return false, fmt.Errorf("decode workflow file %s at %s: %w", path, sha, err)
+	}
+	var workflow struct {
+		On yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(body, &workflow); err != nil {
+		return false, fmt.Errorf("parse workflow file %s at %s: %w", path, sha, err)
+	}
+	if workflow.On.Kind != yaml.MappingNode {
+		// `on: push` or `on: [push]` has no filters, so branches trigger it too.
+		return false, nil
+	}
+	var push *yaml.Node
+	for i := 0; i+1 < len(workflow.On.Content); i += 2 {
+		if workflow.On.Content[i].Value == "push" {
+			push = workflow.On.Content[i+1]
+		}
+	}
+	if push == nil || push.Kind != yaml.MappingNode {
+		return false, nil
+	}
+	tags := false
+	for i := 0; i+1 < len(push.Content); i += 2 {
+		switch push.Content[i].Value {
+		case "branches", "branches-ignore":
+			return false, nil
+		case "tags", "tags-ignore":
+			tags = true
+		}
+	}
+	return tags, nil
 }
 
 // RerunCheck re-runs the Actions work behind check for the same commit, so a

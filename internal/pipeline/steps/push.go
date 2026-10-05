@@ -166,7 +166,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	var decision forcePushDecision
 	pushObject := headBeingPushed
 	if strings.HasPrefix(ref, "refs/tags/") {
-		pushObject, decision, err = resolveTagPush(gitRun, pushURL, ref, headBeingPushed)
+		pushObject, decision, err = resolveTagPush(ctx, gitRun, sctx.GateDir, pushURL, ref, headBeingPushed)
 	} else {
 		lastSeen := lastKnownBranchTip(ctx, sctx, branch, usingFork)
 		decision, err = resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)

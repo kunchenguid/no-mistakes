@@ -2,11 +2,14 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -54,9 +57,10 @@ func verifyPublishedTag(sctx *pipeline.StepContext, ref string) (string, error) 
 
 // resolveTagPush returns the local tag object to publish for ref and how to
 // publish it. Pushing the tag object rather than its commit keeps an annotated
-// tag annotated. Tags are immutable: an existing remote tag must already be
-// that exact object, and a different one is refused, never force-moved.
-func resolveTagPush(gitRun gitRunner, pushURL, ref, head string) (string, forcePushDecision, error) {
+// tag annotated. Tags are immutable: an existing remote or gate mirror tag must
+// already be that exact object, and a different one is refused before anything
+// is published, never force-moved.
+func resolveTagPush(ctx context.Context, gitRun gitRunner, gateDir, pushURL, ref, head string) (string, forcePushDecision, error) {
 	object, err := gitRun("rev-parse", "--verify", ref)
 	if err != nil {
 		return "", forcePushDecision{}, fmt.Errorf("resolve local %s: %w", ref, err)
@@ -68,6 +72,19 @@ func resolveTagPush(gitRun gitRunner, pushURL, ref, head string) (string, forceP
 	}
 	if strings.TrimSpace(peeled) != head {
 		return "", forcePushDecision{}, fmt.Errorf("local %s peels to %s, not the reviewed head %s", ref, strings.TrimSpace(peeled), head)
+	}
+	if gateDir = strings.TrimSpace(gateDir); gateDir != "" {
+		if _, statErr := os.Stat(gateDir); statErr == nil {
+			gateTag, _, err := git.DirectRefTarget(ctx, gateDir, ref)
+			if err != nil {
+				return "", forcePushDecision{}, fmt.Errorf("inspect gate mirror %s: %w", ref, err)
+			}
+			if gateTag != "" && gateTag != object {
+				return "", forcePushDecision{}, fmt.Errorf("gate mirror tag %s is %s, not the reviewed tag object %s; tags are never moved", ref, gateTag, object)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return "", forcePushDecision{}, fmt.Errorf("stat gate mirror repository: %w", statErr)
+		}
 	}
 	current, err := lsRemoteSHA(gitRun, pushURL, ref)
 	if err != nil {
@@ -126,6 +143,9 @@ func (s *CIStep) monitorTagChecks(sctx *pipeline.StepContext, host scm.Host, ref
 			return nil, err
 		}
 		checks, err := reader.GetTagChecks(sctx.Ctx, tag, sha)
+		if errors.Is(err, scm.ErrTagProvenance) {
+			return ciFailureOutcome(nil, false, fmt.Sprintf("CI for tag %s is unverified: %v", ref, err)), nil
+		}
 		if err != nil {
 			return nil, err
 		}

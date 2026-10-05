@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +14,11 @@ import (
 )
 
 const (
-	tagRunSuccess = `[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"success","html_url":"https://github.com/up/repo/actions/runs/7"}]`
-	tagRunFailure = `[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"failure","html_url":"https://github.com/up/repo/actions/runs/7"}]`
-	tagRunPending = `[{"id":7,"workflow_id":3,"name":"release","status":"in_progress","conclusion":"","html_url":"https://github.com/up/repo/actions/runs/7"}]`
+	tagRunSuccess = `[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"success","html_url":"https://github.com/up/repo/actions/runs/7","path":".github/workflows/release.yml"}]`
+	tagRunFailure = `[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"failure","html_url":"https://github.com/up/repo/actions/runs/7","path":".github/workflows/release.yml"}]`
+	tagRunPending = `[{"id":7,"workflow_id":3,"name":"release","status":"in_progress","conclusion":"","html_url":"https://github.com/up/repo/actions/runs/7","path":".github/workflows/release.yml"}]`
+	// tagOnlyWorkflow mirrors the real skills release.yml trigger.
+	tagOnlyWorkflow = "name: Release\non:\n  push:\n    tags: [\"v*.*.*\"]\n"
 )
 
 // tagGH links the portable compiled fake gh (gh.exe on Windows) in ci-gh mode.
@@ -24,7 +27,7 @@ func tagGH(t *testing.T, vars map[string]string) (env []string, logFile string) 
 	bin := stepstest.FakeCLIBinDir(t)
 	stepstest.LinkFakeCLI(t, bin, "gh")
 	logFile = t.TempDir() + string(os.PathSeparator) + "gh.log"
-	all := map[string]string{"FAKE_CLI_MODE": "ci-gh", "FAKE_CLI_LOG": logFile}
+	all := map[string]string{"FAKE_CLI_MODE": "ci-gh", "FAKE_CLI_LOG": logFile, "FAKE_CLI_WORKFLOW_FILE": tagOnlyWorkflow}
 	for k, v := range vars {
 		all[k] = v
 	}
@@ -210,5 +213,26 @@ func TestTagPushRefusesToMoveDifferentGateMirrorTag(t *testing.T) {
 	}
 	if got := gitCmd(t, gate, "rev-parse", "refs/tags/v1"); got != r.sctx.Run.HeadSHA {
 		t.Fatalf("gate mirror tag moved to %s", got)
+	}
+	if out, err := exec.Command("git", "-C", r.upstream, "rev-parse", "--verify", "--quiet", "refs/tags/v1").CombinedOutput(); err == nil {
+		t.Fatalf("upstream received the tag before the gate conflict was refused: %s", out)
+	}
+}
+
+// A same-named branch push reports the same head_branch and event as the tag
+// push, so only a workflow that tag pushes alone can trigger counts.
+func TestTagCIGatesWhenRunCouldComeFromSameNamedBranch(t *testing.T) {
+	for name, workflow := range map[string]string{
+		"unfiltered push":   "on: push\n",
+		"branches and tags": "on:\n  push:\n    branches: [\"*\"]\n    tags: [\"v*\"]\n",
+		"paths only":        "on:\n  push:\n    paths: [\"src/**\"]\n",
+	} {
+		r := newTagRepo(t, true, false)
+		r.pushTagDirect(t, "origin")
+		r.sctx.Env, _ = tagGH(t, map[string]string{"FAKE_CLI_WORKFLOW_RUNS": tagRunSuccess, "FAKE_CLI_WORKFLOW_FILE": workflow})
+		out, err := fakeClockCI().Execute(r.sctx)
+		if err != nil || out.Skipped || !out.NeedsApproval || !strings.Contains(out.Findings, "branch push") {
+			t.Fatalf("%s: outcome=%+v err=%v, want ambiguous-provenance gate", name, out, err)
+		}
 	}
 }

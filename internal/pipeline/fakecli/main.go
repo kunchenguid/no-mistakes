@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -633,6 +634,15 @@ func fakeCIGHHandler(args []string) {
 			os.Exit(1)
 		}
 		printFakeCommitChecks(checksJSON, args)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "/contents/") {
+		// The workflow file read as of the run commit, from FAKE_CLI_WORKFLOW_FILE.
+		encoded, _ := json.Marshal(map[string]string{
+			"encoding": "base64",
+			"content":  base64.StdEncoding.EncodeToString([]byte(os.Getenv("FAKE_CLI_WORKFLOW_FILE"))),
+		})
+		fmt.Println(string(encoded))
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
