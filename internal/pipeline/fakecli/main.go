@@ -636,7 +636,7 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
-		printFakeWorkflowRuns()
+		printFakeWorkflowRuns(joined)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run rerun") {
@@ -750,7 +750,7 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
-		printFakeWorkflowRuns()
+		printFakeWorkflowRuns(joined)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run rerun") {
@@ -893,7 +893,7 @@ func fakeCIGHNoChecksHandler(args []string) {
 		os.Exit(1)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
-		printFakeWorkflowRuns()
+		printFakeWorkflowRuns(joined)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
@@ -922,8 +922,14 @@ func printFakeRunJobs() {
 	fmt.Printf("{\"jobs\":%s}\n", raw)
 }
 
-func printFakeWorkflowRuns() {
+// printFakeWorkflowRuns answers the runs listing. FAKE_CLI_WORKFLOW_RUNS_REPO
+// names an "owner/name" whose listing uses FAKE_CLI_REPO_WORKFLOW_RUNS instead,
+// so a test can give a fork and its upstream different runs.
+func printFakeWorkflowRuns(joined string) {
 	raw := os.Getenv("FAKE_CLI_WORKFLOW_RUNS")
+	if repo := os.Getenv("FAKE_CLI_WORKFLOW_RUNS_REPO"); repo != "" && strings.Contains(joined, "repos/"+repo+"/actions/runs") {
+		raw = os.Getenv("FAKE_CLI_REPO_WORKFLOW_RUNS")
+	}
 	if raw == "" {
 		raw = "[]"
 	}

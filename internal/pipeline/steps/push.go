@@ -143,9 +143,16 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// until the upstream push is verified, because a refused or failed push is
 	// a designed outcome and a gate left with no branch ref would strand
 	// `rerun` and branch-sync recovery on a branch that never published.
-	mirrorPlan, err := planGateMirrorReconciliation(ctx, sctx, ref, branch, headBeingPushed)
-	if err != nil {
-		return err
+	// Stale-branch reconciliation is branch-only; a tag mirror ref is settled
+	// below as an exact, never-moved object.
+	isTag := strings.HasPrefix(ref, "refs/tags/")
+	var mirrorPlan gatepkg.StaleBranchPlan
+	var err error
+	if !isTag {
+		mirrorPlan, err = planGateMirrorReconciliation(ctx, sctx, ref, branch, headBeingPushed)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Decide whether force-pushing would discard commits the pipeline never saw.
@@ -155,9 +162,15 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// out-of-band or stale-mirror commit fails loudly instead of silently dropping it.
 	// A bare --force-with-lease offers no protection when pushing to a URL (no
 	// remote-tracking refs), so the anchor is explicit.
-	lastSeen := lastKnownBranchTip(ctx, sctx, branch, usingFork)
 	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
-	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
+	var decision forcePushDecision
+	pushObject := headBeingPushed
+	if strings.HasPrefix(ref, "refs/tags/") {
+		pushObject, decision, err = resolveTagPush(gitRun, pushURL, ref, headBeingPushed)
+	} else {
+		lastSeen := lastKnownBranchTip(ctx, sctx, branch, usingFork)
+		decision, err = resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
+	}
 	if err != nil {
 		return fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
@@ -178,7 +191,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		// and a SHA-bound attestation depend on - which is what keeps that head
 		// from being rewritten when the branch integrated a moved base by
 		// merging rather than rebasing (rebase.strategy).
-		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, ref, "", false); err != nil {
+		if err := stepGitPushCommit(sctx, pushURL, pushObject, ref, "", false); err != nil {
 			return fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	case decision.upToDate:
@@ -191,11 +204,11 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		}
 	}
 	verifiedRemote, err := lsRemoteSHA(gitRun, pushURL, ref)
-	if err != nil || verifiedRemote != headBeingPushed {
+	if err != nil || verifiedRemote != pushObject {
 		if err != nil {
 			return fmt.Errorf("verify successful push to %s: %w", pushTarget, err)
 		}
-		return fmt.Errorf("verify successful push to %s: remote head %s does not equal pushed head %s", pushTarget, verifiedRemote, headBeingPushed)
+		return fmt.Errorf("verify successful push to %s: remote head %s does not equal pushed head %s", pushTarget, verifiedRemote, pushObject)
 	}
 	// Settle the gate mirror BEFORE recording the publication. The remote
 	// already has the head, but a run is only "published" once the gate mirror
@@ -211,7 +224,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// returning the error makes the CI monitor treat an already published
 	// repair as a failed one, and recording first and swallowing the error
 	// strands the gate behind the remote for good.
-	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed, mirrorPlan); err != nil {
+	if err := updateGateMirrorAfterPush(ctx, sctx, ref, pushObject, mirrorPlan); err != nil {
 		return err
 	}
 
@@ -290,7 +303,7 @@ func runOwnedPublishedHead(sctx *pipeline.StepContext) (string, error) {
 	return strings.TrimSpace(*run.LastPushedSHA), nil
 }
 
-func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string, mirrorPlan gatepkg.StaleBranchPlan) (err error) {
+func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, pushedObject string, mirrorPlan gatepkg.StaleBranchPlan) (err error) {
 	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {
 		return nil
 	}
@@ -322,7 +335,12 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 		}
 	}()
 
-	if fetchErr := git.FetchRemoteRef(ctx, gateDir, sctx.WorkDir, headBeingPushed, headBeingPushed); fetchErr != nil {
+	// A tag object peels to its commit; for a branch the two are the same.
+	pushedCommit, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", pushedObject+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("update gate mirror ref %s: peel pushed object: %w", ref, err)
+	}
+	if fetchErr := git.FetchRemoteRef(ctx, gateDir, sctx.WorkDir, pushedObject, pushedCommit); fetchErr != nil {
 		return fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
 	}
 
@@ -331,24 +349,27 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 		return fmt.Errorf("inspect gate mirror ref %s: %w", ref, err)
 	}
 
-	shouldUpdate := gateTip == "" || gateTip == headBeingPushed
+	if strings.HasPrefix(ref, "refs/tags/") && gateTip != "" && gateTip != pushedObject {
+		return fmt.Errorf("gate mirror tag %s is %s, not the published tag object %s; tags are never moved", ref, gateTip, pushedObject)
+	}
+	shouldUpdate := gateTip == "" || gateTip == pushedObject
 	if !shouldUpdate {
-		if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); err == nil {
+		if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", pushedObject, gateTip); err == nil {
 			// Preserve a newer descendant.
 			shouldUpdate = false
-		} else if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, headBeingPushed); err == nil {
+		} else if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, pushedObject); err == nil {
 			// Fast-forward advance from an older ancestor.
 			shouldUpdate = true
 		} else {
-			return fmt.Errorf("gate mirror ref %s at %s diverged from pushed head %s", ref, gateTip, headBeingPushed)
+			return fmt.Errorf("gate mirror ref %s at %s diverged from pushed head %s", ref, gateTip, pushedObject)
 		}
 	}
 	if shouldUpdate {
 		if !exists {
-			gateTip = strings.Repeat("0", len(headBeingPushed))
+			gateTip = strings.Repeat("0", len(pushedObject))
 		}
-		if _, updateErr := git.Run(ctx, gateDir, "update-ref", "--no-deref", ref, headBeingPushed, gateTip); updateErr != nil {
-			return fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
+		if _, updateErr := git.Run(ctx, gateDir, "update-ref", "--no-deref", ref, pushedObject, gateTip); updateErr != nil {
+			return fmt.Errorf("update gate mirror ref %s to %s: %w", ref, pushedObject, updateErr)
 		}
 	}
 	return nil

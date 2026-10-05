@@ -52,10 +52,54 @@ func verifyPublishedTag(sctx *pipeline.StepContext, ref string) (string, error) 
 	return got, nil
 }
 
+// resolveTagPush returns the local tag object to publish for ref and how to
+// publish it. Pushing the tag object rather than its commit keeps an annotated
+// tag annotated. Tags are immutable: an existing remote tag must already be
+// that exact object, and a different one is refused, never force-moved.
+func resolveTagPush(gitRun gitRunner, pushURL, ref, head string) (string, forcePushDecision, error) {
+	object, err := gitRun("rev-parse", "--verify", ref)
+	if err != nil {
+		return "", forcePushDecision{}, fmt.Errorf("resolve local %s: %w", ref, err)
+	}
+	object = strings.TrimSpace(object)
+	peeled, err := gitRun("rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", forcePushDecision{}, fmt.Errorf("peel local %s: %w", ref, err)
+	}
+	if strings.TrimSpace(peeled) != head {
+		return "", forcePushDecision{}, fmt.Errorf("local %s peels to %s, not the reviewed head %s", ref, strings.TrimSpace(peeled), head)
+	}
+	current, err := lsRemoteSHA(gitRun, pushURL, ref)
+	if err != nil {
+		return "", forcePushDecision{}, fmt.Errorf("resolve remote %s: %w", ref, err)
+	}
+	switch current {
+	case "":
+		return object, forcePushDecision{newBranch: true}, nil
+	case object:
+		return object, forcePushDecision{remoteSHA: current, upToDate: true}, nil
+	}
+	return "", forcePushDecision{}, fmt.Errorf("%s already exists on the push target as %s, not the reviewed tag object %s; tags are never moved", ref, current, object)
+}
+
+// tagHost builds the provider host for the repository the tag was pushed to.
+// Branch PRs target the upstream, but a tag pushed to a fork only ran the
+// fork's workflows.
+func tagHost(sctx *pipeline.StepContext) (scm.Host, string) {
+	if sctx.Repo == nil || strings.TrimSpace(sctx.Repo.ForkURL) == "" {
+		return buildHost(sctx, resolvedProvider(sctx))
+	}
+	repo := *sctx.Repo
+	repo.UpstreamURL, repo.ForkURL = repo.ForkURL, ""
+	forkCtx := *sctx
+	forkCtx.Repo = &repo
+	return buildHost(&forkCtx, resolvedProvider(&forkCtx))
+}
+
 // monitorTagChecks waits for the checks the tag push triggered on its commit.
 // A tag is delivered only when at least one check reported and all of them
-// settled without failing; failures, providers without tag checks, and
-// timeouts with nothing settled park for the user instead of passing.
+// settled without failing. Failures, providers without tag checks, and the
+// timeout (absolute from the first poll) park for the user instead of passing.
 func (s *CIStep) monitorTagChecks(sctx *pipeline.StepContext, host scm.Host, ref string) (*pipeline.StepOutcome, error) {
 	sha, err := verifyPublishedTag(sctx, ref)
 	if err != nil {

@@ -76,12 +76,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if err != nil {
 			return nil, err
 		}
+		// Verified tag delivery completes the PR phase; it is not a skip, which
+		// axi would report as missing publication evidence.
 		reason := fmt.Sprintf("%s is a tag at %s; tags are delivered without a pull request", ref, sha)
 		if err := refuseSkipWithClosingIssues(sctx, reason); err != nil {
 			return nil, err
 		}
 		sctx.Log(reason)
-		return &pipeline.StepOutcome{Skipped: true, SkipReason: reason}, nil
+		return &pipeline.StepOutcome{}, nil
 	}
 	branch := sctx.Run.Branch
 	if strings.HasPrefix(branch, "refs/heads/") {

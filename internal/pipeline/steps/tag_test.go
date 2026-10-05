@@ -1,104 +1,214 @@
 package steps
 
 import (
+	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
 
-// fakeTagGH answers auth and the workflow-runs listing with runsJSON; any
-// other gh call (pr list/create) fails, as GitHub rejects a tag as PR head.
-func fakeTagGH(t *testing.T, runsJSON string) (env []string, logFile string) {
+const (
+	tagRunSuccess = `[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"success","html_url":"https://github.com/up/repo/actions/runs/7"}]`
+	tagRunFailure = `[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"failure","html_url":"https://github.com/up/repo/actions/runs/7"}]`
+	tagRunPending = `[{"id":7,"workflow_id":3,"name":"release","status":"in_progress","conclusion":"","html_url":"https://github.com/up/repo/actions/runs/7"}]`
+)
+
+// tagGH links the portable compiled fake gh (gh.exe on Windows) in ci-gh mode.
+func tagGH(t *testing.T, vars map[string]string) (env []string, logFile string) {
 	t.Helper()
-	bin := t.TempDir()
-	logFile = filepath.Join(bin, "gh.log")
-	runs := filepath.Join(bin, "runs.json")
-	if err := os.WriteFile(runs, []byte(runsJSON), 0o644); err != nil {
-		t.Fatal(err)
+	bin := stepstest.FakeCLIBinDir(t)
+	stepstest.LinkFakeCLI(t, bin, "gh")
+	logFile = t.TempDir() + string(os.PathSeparator) + "gh.log"
+	all := map[string]string{"FAKE_CLI_MODE": "ci-gh", "FAKE_CLI_LOG": logFile}
+	for k, v := range vars {
+		all[k] = v
 	}
-	script := "#!/bin/sh\necho \"$*\" >> '" + logFile + "'\n" +
-		"case \"$1 $2\" in\n" +
-		"'auth status') exit 0;;\n" +
-		"'api '*) case \"$*\" in *actions/runs*) cat '" + runs + "'; exit 0;; esac;;\n" +
-		"esac\necho 'Head ref must be a branch' >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}, logFile
+	return stepstest.FakeCLIEnv(bin, all), logFile
 }
 
-func tagFixture(t *testing.T, runsJSON string, annotated bool) (*pipeline.StepContext, func() string, string) {
+type tagRepo struct {
+	sctx     *pipeline.StepContext
+	dir      string
+	upstream string
+	fork     string
+}
+
+// newTagRepo makes a disposable clone whose GitHub-shaped upstream (and fork)
+// URLs are rewritten by git to local bare repositories, so pushes and
+// ls-remote are real while gh sees github.com slugs.
+func newTagRepo(t *testing.T, annotated bool, fork bool) *tagRepo {
 	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare", "-q")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	r := &tagRepo{dir: dir, upstream: t.TempDir()}
+	gitCmd(t, r.upstream, "init", "--bare", "-q")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/up/repo")
+	gitCmd(t, dir, "config", "url."+r.upstream+".insteadOf", "https://github.com/up/repo")
 	if annotated {
-		gitCmd(t, dir, "tag", "-a", "v1", "-m", "release", headSHA)
+		gitCmd(t, dir, "tag", "-a", "v1", "-m", "release notes", headSHA)
 	} else {
 		gitCmd(t, dir, "tag", "v1", headSHA)
 	}
-	gitCmd(t, dir, "push", "-q", "origin", "refs/tags/v1")
-	env, logFile := fakeTagGH(t, runsJSON)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
+	sctx.Repo.UpstreamURL = "https://github.com/up/repo"
+	if fork {
+		r.fork = t.TempDir()
+		gitCmd(t, r.fork, "init", "--bare", "-q")
+		gitCmd(t, dir, "config", "url."+r.fork+".insteadOf", "https://github.com/fork/repo")
+		sctx.Repo.ForkURL = "https://github.com/fork/repo"
+	}
 	sctx.Run.Branch = "refs/tags/v1"
-	readLog := func() string { b, _ := os.ReadFile(logFile); return string(b) }
-	return sctx, readLog, dir
+	sctx.Config.CITimeout = time.Minute
+	r.sctx = sctx
+	return r
 }
 
-func TestTagPublicationFinishesWithoutPRAndGatesOnTagRuns(t *testing.T) {
-	for _, annotated := range []bool{true, false} {
-		sctx, readLog, _ := tagFixture(t, tagRunSuccess, annotated)
-		out, err := (&PRStep{}).Execute(sctx)
-		if err != nil {
-			t.Fatalf("annotated=%v: PR step on a tag: %v", annotated, err)
+func (r *tagRepo) pushTagDirect(t *testing.T, target string) {
+	t.Helper()
+	gitCmd(t, r.dir, "push", "-q", target, "refs/tags/v1")
+}
+
+// fakeClockCI advances its clock on every poll wait, so the absolute tag
+// timeout is reached deterministically.
+func fakeClockCI() *CIStep {
+	now := time.Unix(0, 0)
+	return (&CIStep{}).
+		SetNow(func() time.Time { return now }).
+		SetWaitForNextPoll(func(context.Context, time.Duration) error { now = now.Add(30 * time.Second); return nil })
+}
+
+func TestTagPublicationJourneyPreservesAnnotatedTagAndPasses(t *testing.T) {
+	for _, tc := range []struct{ annotated, gateHasTag bool }{{true, false}, {true, true}, {false, false}} {
+		annotated := tc.annotated
+		r := newTagRepo(t, annotated, false)
+		local := gitCmd(t, r.dir, "rev-parse", "refs/tags/v1")
+		gate := setupGateMirror(t, r.sctx)
+		if tc.gateHasTag {
+			gitCmd(t, r.dir, "push", "-q", gate, "refs/tags/v1")
 		}
-		if !out.Skipped || !strings.Contains(out.SkipReason, "tag") {
-			t.Fatalf("annotated=%v: PR outcome = %+v, want explicit tag skip", annotated, out)
+		recordReviewApproval(t, r.sctx, r.sctx.Run.HeadSHA)
+		r.sctx.Env, _ = tagGH(t, map[string]string{"FAKE_CLI_WORKFLOW_RUNS": tagRunSuccess})
+		// The second push is a retry/rerun over an already published tag.
+		for attempt := 1; attempt <= 2; attempt++ {
+			if _, err := (&PushStep{}).Execute(r.sctx); err != nil {
+				t.Fatalf("%+v push %d: %v", tc, attempt, err)
+			}
+			for name, repo := range map[string]string{"upstream": r.upstream, "gate": gate} {
+				if got := gitCmd(t, repo, "rev-parse", "refs/tags/v1"); got != local {
+					t.Fatalf("%+v push %d: %s tag object %s, want local %s", tc, attempt, name, got, local)
+				}
+			}
 		}
-		out, err = (&CIStep{}).SetPollIntervalOverride(1).Execute(sctx)
-		if err != nil {
-			t.Fatalf("annotated=%v: CI step on a tag: %v", annotated, err)
+		pr, err := (&PRStep{}).Execute(r.sctx)
+		if err != nil || pr.Skipped || pr.PRURL != "" {
+			t.Fatalf("annotated=%v PR: outcome=%+v err=%v, want completed without PR", annotated, pr, err)
 		}
-		if out.Skipped || out.NeedsApproval {
-			t.Fatalf("annotated=%v: CI outcome = %+v, want verified pass", annotated, out)
-		}
-		if log := readLog(); !strings.Contains(log, "branch=v1") || !strings.Contains(log, "event=push") || strings.Contains(log, "pr ") {
-			t.Fatalf("annotated=%v: gh calls not tag-scoped:\n%s", annotated, log)
+		ci, err := fakeClockCI().Execute(r.sctx)
+		if err != nil || ci.Skipped || ci.NeedsApproval {
+			t.Fatalf("annotated=%v CI: outcome=%+v err=%v, want verified pass", annotated, ci, err)
 		}
 	}
 }
 
-func TestTagPublicationRejectsFailedRunAndMovedTag(t *testing.T) {
-	sctx, _, dir := tagFixture(t, tagRunFailure, true)
-	out, err := (&CIStep{}).SetPollIntervalOverride(1).Execute(sctx)
-	if err != nil || !out.NeedsApproval {
-		t.Fatalf("failed tag workflow: outcome=%+v err=%v, want approval gate", out, err)
+func TestTagPushRefusesToMoveDifferentRemoteTag(t *testing.T) {
+	r := newTagRepo(t, true, false)
+	other := t.TempDir()
+	gitCmd(t, other, "clone", "-q", r.upstream, ".")
+	gitCmd(t, r.dir, "push", "-q", r.upstream, r.sctx.Run.BaseSHA+":refs/heads/main")
+	gitCmd(t, other, "fetch", "-q", "origin", "main")
+	gitCmd(t, other, "tag", "-a", "v1", "-m", "someone else", "FETCH_HEAD")
+	gitCmd(t, other, "push", "-q", "origin", "refs/tags/v1")
+	before := gitCmd(t, r.upstream, "rev-parse", "refs/tags/v1")
+	setupGateMirror(t, r.sctx)
+	recordReviewApproval(t, r.sctx, r.sctx.Run.HeadSHA)
+	_, err := (&PushStep{}).Execute(r.sctx)
+	if err == nil || !strings.Contains(err.Error(), "never moved") {
+		t.Fatalf("push over a different tag: err=%v, want refusal", err)
 	}
-	gitCmd(t, dir, "push", "-q", "-f", "origin", sctx.Run.BaseSHA+":refs/tags/v1")
-	if _, err := (&PRStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "peels to") {
+	if after := gitCmd(t, r.upstream, "rev-parse", "refs/tags/v1"); after != before {
+		t.Fatalf("remote tag moved from %s to %s", before, after)
+	}
+}
+
+func TestTagCIGatesOnFailedMissingPendingAndUnavailable(t *testing.T) {
+	cases := map[string]map[string]string{
+		"failed":      {"FAKE_CLI_WORKFLOW_RUNS": tagRunFailure},
+		"missing":     {"FAKE_CLI_WORKFLOW_RUNS": "[]"},
+		"pending":     {"FAKE_CLI_WORKFLOW_RUNS": tagRunPending},
+		"unavailable": {"FAKE_CLI_AUTH_ERR": "not logged in"},
+	}
+	for name, vars := range cases {
+		r := newTagRepo(t, true, false)
+		r.pushTagDirect(t, "origin")
+		var logFile string
+		r.sctx.Env, logFile = tagGH(t, vars)
+		out, err := fakeClockCI().Execute(r.sctx)
+		if err != nil || out.Skipped || !out.NeedsApproval {
+			t.Fatalf("%s: outcome=%+v err=%v, want approval gate", name, out, err)
+		}
+		if name != "unavailable" {
+			if log := readFile(t, logFile); !strings.Contains(log, "branch=v1") || !strings.Contains(log, "event=push") || strings.Contains(log, "pr create") {
+				t.Fatalf("%s: gh calls not tag-scoped:\n%s", name, log)
+			}
+		}
+		if name == "pending" {
+			// Retrying the gate once the run finishes green delivers the tag.
+			r.sctx.Env, _ = tagGH(t, map[string]string{"FAKE_CLI_WORKFLOW_RUNS": tagRunSuccess})
+			r.sctx.Fixing = true
+			out, err = fakeClockCI().Execute(r.sctx)
+			if err != nil || out.Skipped || out.NeedsApproval {
+				t.Fatalf("retry after pending: outcome=%+v err=%v, want pass", out, err)
+			}
+		}
+	}
+}
+
+func TestTagCIReadsRunsFromThePushTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		upstream, forkRuns string
+		wantGate           bool
+	}{
+		{"upstream green, fork failed", tagRunSuccess, tagRunFailure, true},
+		{"upstream failed, fork green", tagRunFailure, tagRunSuccess, false},
+	} {
+		r := newTagRepo(t, true, true)
+		r.pushTagDirect(t, "https://github.com/fork/repo")
+		r.sctx.Env, _ = tagGH(t, map[string]string{
+			"FAKE_CLI_WORKFLOW_RUNS":      tc.upstream,
+			"FAKE_CLI_WORKFLOW_RUNS_REPO": "fork/repo",
+			"FAKE_CLI_REPO_WORKFLOW_RUNS": tc.forkRuns,
+		})
+		out, err := fakeClockCI().Execute(r.sctx)
+		if err != nil || out.Skipped || out.NeedsApproval != tc.wantGate {
+			t.Fatalf("%s: outcome=%+v err=%v, want gate=%v", tc.name, out, err, tc.wantGate)
+		}
+	}
+}
+
+func TestTagPRRejectsMovedRemoteTag(t *testing.T) {
+	r := newTagRepo(t, true, false)
+	gitCmd(t, r.dir, "push", "-q", "-f", "origin", r.sctx.Run.BaseSHA+":refs/tags/v1")
+	if _, err := (&PRStep{}).Execute(r.sctx); err == nil || !strings.Contains(err.Error(), "peels to") {
 		t.Fatalf("moved tag: err=%v, want identity mismatch", err)
 	}
 }
 
-const tagRunSuccess = `[{"total_count":1,"workflow_runs":[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"success","html_url":"https://github.com/test/repo/actions/runs/7"}]}]`
-const tagRunFailure = `[{"total_count":1,"workflow_runs":[{"id":7,"workflow_id":3,"name":"release","status":"completed","conclusion":"failure","html_url":"https://github.com/test/repo/actions/runs/7"}]}]`
-
-func TestTagPublicationGatesWhenHostUnavailable(t *testing.T) {
-	sctx, _, _ := tagFixture(t, tagRunSuccess, false)
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho 'not logged in' >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
+func TestTagPushRefusesToMoveDifferentGateMirrorTag(t *testing.T) {
+	r := newTagRepo(t, true, false)
+	r.sctx.Env, _ = tagGH(t, nil)
+	gate := setupGateMirror(t, r.sctx)
+	gitCmd(t, r.dir, "push", "-q", gate, r.sctx.Run.HeadSHA+":refs/tags/v1")
+	recordReviewApproval(t, r.sctx, r.sctx.Run.HeadSHA)
+	_, err := (&PushStep{}).Execute(r.sctx)
+	if err == nil || !strings.Contains(err.Error(), "never moved") {
+		t.Fatalf("gate mirror holds a different tag object: err=%v, want refusal", err)
 	}
-	sctx.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}
-	out, err := (&CIStep{}).Execute(sctx)
-	if err != nil || out.Skipped || !out.NeedsApproval {
-		t.Fatalf("unavailable host on tag: outcome=%+v err=%v, want approval gate", out, err)
+	if got := gitCmd(t, gate, "rev-parse", "refs/tags/v1"); got != r.sctx.Run.HeadSHA {
+		t.Fatalf("gate mirror tag moved to %s", got)
 	}
 }

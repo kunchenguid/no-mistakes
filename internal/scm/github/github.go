@@ -784,8 +784,6 @@ func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error
 	return headSHA, nil
 }
 
-// getWorkflowRunChecks lists runs for headSHA; a non-empty tag narrows them to
-// runs triggered by pushing that tag.
 func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA, tag string) ([]scm.Check, error) {
 	repo := h.repoSlug()
 	endpoint := "repos/{owner}/{repo}/actions/runs"

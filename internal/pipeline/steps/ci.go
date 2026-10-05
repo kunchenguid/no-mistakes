@@ -300,8 +300,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		return nil, err
 	}
 	provider := resolvedProvider(sctx)
-	host, skipReason := buildHost(sctx, provider)
 	ref, isTag := runTagRef(sctx)
+	var host scm.Host
+	var skipReason string
+	if isTag {
+		host, skipReason = tagHost(sctx)
+	} else {
+		host, skipReason = buildHost(sctx, provider)
+	}
 	if host == nil {
 		if isTag {
 			return ciFailureOutcome(nil, false, fmt.Sprintf("CI for tag %s is unverified: %s", ref, skipReason)), nil
