@@ -282,13 +282,23 @@ func validateTrailers(trailers []string) error {
 		return fmt.Errorf("commit.trailers must not contain more than %d entries", maxTrailers)
 	}
 	commit := Commit{Trailers: trailers}
-	_, err := commit.RenderTrailers(TrailerData{Agent: "agent", Model: "model"})
+	_, err := commit.RenderTrailers(TrailerData{Agent: worstCaseTrailerValue, Model: worstCaseTrailerValue})
 	return err
 }
+
+// worstCaseTrailerValue is the longest value trailerValue can return, carrying
+// every punctuation byte it lets through, so an entry that renders with it at
+// config load cannot overflow or lose its trailer shape with a real agent or
+// model at commit time.
+var worstCaseTrailerValue = "-_.:/" + strings.Repeat("a", maxTrailerValueBytes-len("-_.:/"))
 
 // gitTrailerLine is the "Key: value" shape git interpret-trailers recognises,
 // so a rendered line is parsed as a trailer rather than as body text.
 var gitTrailerLine = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*: \S`)
+
+// literalTrailerKey is the "Key: " prefix an entry must spell out before its
+// first placeholder, so an agent-reported value can only ever land in the value.
+var literalTrailerKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*: `)
 
 // RenderTrailers renders commit.trailers for the agent invocation that produced
 // a commit. Agent and model are reduced to a single safe token first because
@@ -361,6 +371,12 @@ func validateTrailerTemplate(tmpl *template.Template) error {
 			}
 		default:
 			return fmt.Errorf(unsupported)
+		}
+	}
+	if placeholders > 0 {
+		key, _ := tmpl.Tree.Root.Nodes[0].(*parse.TextNode)
+		if key == nil || !literalTrailerKey.Match(bytes.TrimLeftFunc(key.Text, unicode.IsSpace)) {
+			return fmt.Errorf("must start with a literal \"Key: \" before any placeholder; {{.Agent}} and {{.Model}} are allowed only in the value")
 		}
 	}
 	return nil

@@ -509,6 +509,10 @@ func TestLoadGlobal_RejectsInvalidCommitTrailers(t *testing.T) {
 		"conditional":         "commit:\n  trailers: ['Note: {{if .Agent}}x{{end}}']\n",
 		"not a trailer":       "commit:\n  trailers: ['assisted by {{.Agent}}']\n",
 		"empty value":         "commit:\n  trailers: ['Assisted-by:']\n",
+		"agent in key":        "commit:\n  trailers: ['{{.Agent}}-assisted: yes']\n",
+		"model in key":        "commit:\n  trailers: ['Model-{{.Model}}: x']\n",
+		"agent as key":        "commit:\n  trailers: ['{{.Agent}}: x']\n",
+		"worst-case overflow": "commit:\n  trailers: ['" + trailerOfSourceBytes(maxTrailerBytes-maxTrailerValueBytes+len("{{.Model}}")+1) + "']\n",
 		"empty entry":         "commit:\n  trailers: ['']\n",
 		"multiline":           "commit:\n  trailers:\n    - |-\n      Assisted-by: a\n      Signed-off-by: b\n",
 		"escape control":      "commit:\n  trailers: [\"Assisted-by: \\u001b{{.Agent}}\"]\n",
@@ -525,6 +529,39 @@ func TestLoadGlobal_RejectsInvalidCommitTrailers(t *testing.T) {
 				t.Fatal("LoadRepoFromBytes() accepted invalid commit.trailers")
 			}
 		})
+	}
+}
+
+func trailerOfSourceBytes(n int) string {
+	const head = "Assisted-by: {{.Model}} "
+	return head + strings.Repeat("x", n-len(head))
+}
+
+func TestLoadGlobal_AcceptsCommitTrailerThatFitsItsLongestValue(t *testing.T) {
+	t.Parallel()
+
+	source := trailerOfSourceBytes(maxTrailerBytes - maxTrailerValueBytes + len("{{.Model}}"))
+	data := []byte("commit:\n  trailers: ['" + source + "']\n")
+	if _, err := LoadGlobalFromBytes(data); err != nil {
+		t.Fatalf("LoadGlobalFromBytes() rejected a trailer that fits the byte cap: %v", err)
+	}
+	longest := strings.Repeat("m", maxTrailerValueBytes)
+	got, err := Commit{Trailers: []string{source}}.RenderTrailers(TrailerData{Agent: "claude", Model: longest})
+	if err != nil {
+		t.Fatalf("RenderTrailers() failed for an entry that loaded: %v", err)
+	}
+	if len(got) != 1 || len(got[0]) != maxTrailerBytes {
+		t.Fatalf("RenderTrailers() = %d bytes, want exactly %d", len(got[0]), maxTrailerBytes)
+	}
+}
+
+func TestCommitRenderTrailers_RejectsPlaceholderInKey(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{"{{.Agent}}-assisted: yes", "Model-{{.Model}}: x", "{{.Agent}}: x"} {
+		if _, err := (Commit{Trailers: []string{source}}).RenderTrailers(TrailerData{Agent: "codex", Model: "gpt"}); err == nil {
+			t.Fatalf("RenderTrailers() accepted %q, whose key is not literal", source)
+		}
 	}
 }
 
