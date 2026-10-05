@@ -593,3 +593,51 @@ func TestMerge_CommitTrailersPrecedence(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeForRemote_CommitTrailersRepositoryOverridePrecedence(t *testing.T) {
+	t.Parallel()
+
+	const remote = "https://github.com/acme/widget"
+	tests := []struct {
+		name     string
+		override string
+		repo     string
+		remote   string
+		want     []string
+	}{
+		{name: "override replaces global", override: "['Assisted-by: machine:{{.Agent}}']", remote: remote, want: []string{"Assisted-by: machine:codex"}},
+		{name: "override empty list clears global", override: "[]", remote: remote, want: nil},
+		{name: "override without trailers keeps global", remote: remote, want: []string{"Assisted-by: global:codex"}},
+		{name: "unmatched remote keeps global", override: "['Assisted-by: machine:{{.Agent}}']", remote: "https://github.com/acme/other", want: []string{"Assisted-by: global:codex"}},
+		{name: "repo replaces override", override: "['Assisted-by: machine:{{.Agent}}']", repo: "['Assisted-by: repo:{{.Agent}}']", remote: remote, want: []string{"Assisted-by: repo:codex"}},
+		{name: "repo empty list clears override", override: "['Assisted-by: machine:{{.Agent}}']", repo: "[]", remote: remote, want: nil},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			overrideCommit := "      fix_message: 'machine {{.Summary}}'\n"
+			if tt.override != "" {
+				overrideCommit += "      trailers: " + tt.override + "\n"
+			}
+			global, err := LoadGlobalFromBytes([]byte("commit:\n  trailers: ['Assisted-by: global:{{.Agent}}']\n" +
+				"repository_overrides:\n  https://github.com/acme/widget.git:\n    commit:\n" + overrideCommit))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := &RepoConfig{}
+			if tt.repo != "" {
+				if repo, err = LoadRepoFromBytes([]byte("commit:\n  trailers: " + tt.repo + "\n")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := MergeForRemote(global, repo, tt.remote).Commit.RenderTrailers(TrailerData{Agent: "codex", Model: "gpt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(got, "\n") != strings.Join(tt.want, "\n") || len(got) != len(tt.want) {
+				t.Fatalf("rendered commit.trailers = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
