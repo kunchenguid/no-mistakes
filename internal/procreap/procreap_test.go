@@ -49,7 +49,7 @@ func (f *fakeSystem) install(t *testing.T) {
 		f.mu.Unlock()
 		return f.procs, nil
 	}
-	processCWDsFunc = func(pids []int) map[int]string {
+	processCWDsFunc = func(pids []int) (map[int]string, error) {
 		f.mu.Lock()
 		f.cwdCalls++
 		f.mu.Unlock()
@@ -59,7 +59,7 @@ func (f *fakeSystem) install(t *testing.T) {
 				out[pid] = cwd
 			}
 		}
-		return out
+		return out, nil
 	}
 	signalProcessFunc = func(pid int, sig procSignal) error {
 		f.record(pid, false, sig)

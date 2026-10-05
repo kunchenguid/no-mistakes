@@ -60,6 +60,7 @@ func (a *fallbackUsageAgent) Close() error { return nil }
 func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
+	initGitRepo(t, workDir)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,

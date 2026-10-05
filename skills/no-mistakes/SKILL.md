@@ -183,6 +183,10 @@ Run the pipeline and decide on its findings as they come up:
    `quiet`, no step log or native-agent lifecycle activity has arrived for
    longer than `step_quiet_warning`. Treat that as a liveness clue, not as
    permission to cancel, rerun, or edit the worktree yourself.
+   If status contains `partial_work`, unfinished work was saved locally or
+   retained in its original checkout. Inspect the exact ref/SHA or retained
+   path and reason. Keep that evidence until reconciliation; never push the
+   rescue SHA, approve it as validated work, or delete retained content.
 2. If the output contains a `gate:` object, the pipeline is waiting on you.
    Read its `findings` table. Each finding has an `id`, `severity`,
    `file`, `description`, and an `action` that tells you how the

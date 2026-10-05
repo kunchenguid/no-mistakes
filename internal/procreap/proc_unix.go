@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,22 +22,41 @@ const (
 	sigKill = syscall.SIGKILL
 )
 
-// cwdLookupTimeout bounds the external cwd lookup. It is a diagnostic read on
-// a cleanup path, so a wedged or missing helper must degrade to "found
-// nothing" rather than stall daemon startup or a run's teardown.
 const cwdLookupTimeout = 10 * time.Second
 
-// listProcesses reads the whole process table. `ps` is used rather than /proc
-// so one implementation covers macOS and Linux, matching how the daemon's
-// other process inspection works (internal/daemon/proc_unix.go).
 func listProcesses() ([]Process, error) {
-	cmd := exec.Command(psExecutable(), "-ww", "-eo", "pid=,ppid=,pgid=,etime=,command=")
+	cmd := exec.Command(psExecutable(), "-ww", "-o", "pid=,ppid=,pgid=,etime=,command=", "-u", strconv.Itoa(os.Geteuid()))
 	cmd.Env = cEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("enumerate processes: %w", err)
 	}
-	return parseProcessTable(string(out)), nil
+	procs := parseProcessTable(string(out))
+	lines := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines++
+		}
+	}
+	if lines == 0 || lines != len(procs) {
+		return nil, fmt.Errorf("incomplete process table")
+	}
+	// Keep command/CWD access account-scoped, but ownership expansion and
+	// ancestor protection need identities even after a tool changes its UID.
+	states, err := listProcessStates()
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[int]bool, len(procs))
+	for _, p := range procs {
+		known[p.PID] = true
+	}
+	for _, p := range states {
+		if !known[p.PID] {
+			procs = append(procs, Process{PID: p.PID, PPID: p.PPID, PGID: p.PGID, metadataOnly: true})
+		}
+	}
+	return procs, nil
 }
 
 // listProcessStates reads pid, parent, group, and state for every process.
@@ -48,9 +68,14 @@ func listProcessStates() ([]processState, error) {
 		return nil, fmt.Errorf("enumerate processes: %w", err)
 	}
 	var procs []processState
+	lines := 0
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		if len(fields) == 0 {
+			continue
+		}
+		lines++
+		if len(fields) != 4 {
 			continue
 		}
 		pid, pidErr := strconv.Atoi(fields[0])
@@ -61,13 +86,14 @@ func listProcessStates() ([]processState, error) {
 		}
 		procs = append(procs, processState{PID: pid, PPID: ppid, PGID: pgid, Stat: fields[3]})
 	}
+	if lines == 0 || lines != len(procs) {
+		return nil, fmt.Errorf("incomplete process identity table")
+	}
 	return procs, nil
 }
 
 // parseProcessTable turns `ps -eo pid=,ppid=,pgid=,etime=,command=` output
-// into Process values. Lines it cannot parse are skipped: a partially
-// readable table is still useful, and an unreadable line must never abort the
-// sweep.
+// into Process values.
 func parseProcessTable(out string) []Process {
 	var procs []Process
 	for _, line := range strings.Split(out, "\n") {
@@ -218,10 +244,13 @@ func parseLsofCWD(out string) map[int]string {
 	return cwds
 }
 
-func lsofCWDs(pids []int) map[int]string {
+func lsofCWDs(pids []int) (map[int]string, error) {
+	if len(pids) == 0 {
+		return nil, nil
+	}
 	lsof, err := exec.LookPath("lsof")
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("find working directory reader: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cwdLookupTimeout)
 	defer cancel()
@@ -231,8 +260,22 @@ func lsofCWDs(pids []int) map[int]string {
 	}
 	cmd := exec.CommandContext(ctx, lsof, "-a", "-d", "cwd", "-Fpn", "-p", strings.Join(ids, ","))
 	cmd.Env = cEnv()
-	// lsof exits nonzero when some of the pids are gone, which is expected
-	// while sweeping a dying tree; whatever it printed is still valid.
-	out, _ := cmd.Output()
-	return parseLsofCWD(string(out))
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("read process working directories: %w", ctx.Err())
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return nil, fmt.Errorf("read process working directories: %w", err)
+		}
+	}
+	cwds := parseLsofCWD(string(out))
+	var lookupErr error
+	for _, pid := range pids {
+		if !filepath.IsAbs(cwds[pid]) && processAliveFunc(pid) {
+			lookupErr = errors.Join(lookupErr, fmt.Errorf("working directory unavailable for live process %d", pid))
+		}
+	}
+	return cwds, lookupErr
 }

@@ -468,6 +468,7 @@ func TestExecutor_LogFileMultipleSteps(t *testing.T) {
 func TestExecutor_SubprocessLivenessUpdatesActivityWithoutFloodingTheStepLog(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
+	initGitRepo(t, workDir)
 
 	livenessAgent := &lifecycleEmittingAgent{
 		events: []agent.LifecycleEvent{

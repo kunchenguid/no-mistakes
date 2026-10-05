@@ -28,6 +28,9 @@ var (
 // untracked mutations are removed so setup cannot ride into a later pipeline
 // fix commit.
 func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
+	if err := sctx.CheckWorkRescue(); err != nil {
+		return err
+	}
 	prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare)
 	if prepareCmd == "" {
 		return nil
@@ -65,10 +68,18 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 		if output != "" {
 			logCommandOutput(sctx, output, "Prepare", logStep)
 		}
+		if err := errors.Join(commandErr, sctx.CheckWorkRescue()); errors.Is(err, pipeline.ErrWorkRetained) {
+			removeSnapshot = false
+			return preparationRestoreError(snapshot, err)
+		}
 
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(sctx.Ctx), prepareCleanupTimeout)
 		cleanupErr := runPreparationCleanup(cleanupCtx, sctx.WorkDir, head, snapshot.submodules)
 		cancel()
+		if err := sctx.CheckWorkRescue(); err != nil {
+			removeSnapshot = false
+			return preparationRestoreError(snapshot, errors.Join(commandErr, cleanupErr, err))
+		}
 		restoreCtx, cancelRestore := context.WithTimeout(context.WithoutCancel(sctx.Ctx), prepareRestoreTimeout)
 		restoreErr := snapshot.restore(restoreCtx)
 		cancelRestore()

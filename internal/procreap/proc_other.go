@@ -17,7 +17,7 @@ const (
 
 func listProcesses() ([]Process, error) { return nil, nil }
 
-func processCWDs(pids []int) map[int]string { return nil }
+func processCWDs(pids []int) (map[int]string, error) { return nil, nil }
 
 func processAlive(pid int) bool { return false }
 

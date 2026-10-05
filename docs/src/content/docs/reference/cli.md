@@ -332,6 +332,14 @@ Answering requires an active run, because only its executor can resume the revie
 
 ## no-mistakes axi status
 
+Runs with unfinished agent work include an optional `partial_work` object, also available when status reads the local database without a daemon connection.
+`state: saved` names the exact local `ref`, snapshot `sha`, `parent_head`, and `source_run`.
+`state: retained` names the original worktree `path` and recovery failure `reason`; a best-effort ref may also be present.
+An interrupted invocation whose shutdown could not be confirmed is retained, not reported as safely saved.
+Saved work does not imply a successful repair or successful validation.
+Keep these refs and retained paths until their unfinished work has been reconciled; see the [unfinished-work contract](/no-mistakes/reference/pipeline-steps/#step-statuses).
+Legacy runs without unfinished records omit this object.
+
 When `--run` is omitted, show this branch's run: its active run, else its most recent one.
 Resolution is scoped to the current branch and never falls back to another branch's run, because one clone commonly has several worktrees on different branches.
 On a successful status response, when the current branch has no run of its own - including a detached `HEAD`, which owns no branch and so reports `current_branch: unknown` - the output carries no run object at all.

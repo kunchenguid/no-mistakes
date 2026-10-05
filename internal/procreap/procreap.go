@@ -41,6 +41,7 @@
 package procreap
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -69,6 +70,9 @@ type Process struct {
 	PGID    int
 	Command string
 	Elapsed time.Duration
+	// metadataOnly entries were absent from the same-account snapshot. They
+	// participate in ownership/protection, never command or CWD lookup.
+	metadataOnly bool
 }
 
 // Victim is a process the sweep terminated, reported for logging.
@@ -167,7 +171,7 @@ func Sweep(opts Options) ([]Victim, error) {
 
 	candidates := make([]int, 0, len(procs))
 	for _, p := range procs {
-		if p.PID <= 1 || protected[p.PID] {
+		if p.PID <= 1 || protected[p.PID] || p.metadataOnly {
 			continue
 		}
 		if len(opts.Scopes) == 0 && opts.MinAge > 0 && p.Elapsed < opts.MinAge {
@@ -179,7 +183,7 @@ func Sweep(opts Options) ([]Victim, error) {
 		return nil, nil
 	}
 
-	cwds := processCWDsFunc(candidates)
+	cwds, lookupErr := processCWDsFunc(candidates)
 	matchers := worktreeMatchers(opts)
 	var scopes []string
 	for _, scope := range opts.Scopes {
@@ -202,12 +206,19 @@ func Sweep(opts Options) ([]Victim, error) {
 		matched[pid] = dir
 	}
 	if len(matched) == 0 {
-		return nil, nil
+		return nil, lookupErr
 	}
 
 	victims := expandVictims(matched, procs, protected)
+	for _, v := range victims {
+		if byPID[v.PID].metadataOnly {
+			// Do not erase the owned ancestry in a best-effort pre-sweep:
+			// preservation's subsequent shutdown check needs the same link.
+			return victims, fmt.Errorf("owned process %d is absent from the account-scoped process table", v.PID)
+		}
+	}
 	terminate(victims, opts.Grace)
-	return victims, nil
+	return victims, lookupErr
 }
 
 // SweepAndLog runs Sweep and reports the outcome on the daemon log. It is the

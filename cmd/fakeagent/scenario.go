@@ -61,6 +61,8 @@ type Action struct {
 
 	// DelayMS pauses before responding, for e2e tests that need an observable active run.
 	DelayMS int `yaml:"delay_ms,omitempty"`
+	// DelayAfterEditsMS simulates a turn cut after work reached the checkout.
+	DelayAfterEditsMS int `yaml:"delay_after_edits_ms,omitempty"`
 
 	// AskQuestions are raw questions.ndjson lines the fake reviewer appends to
 	// the run's review conversation before responding, which is how a real
@@ -314,7 +316,13 @@ func applyActionInDir(wd string, action Action) error {
 	if err := stageFilesInDir(wd, action.Stage); err != nil {
 		return err
 	}
-	return runGitInDir(wd, action.Git)
+	if err := runGitInDir(wd, action.Git); err != nil {
+		return err
+	}
+	if action.DelayAfterEditsMS > 0 {
+		time.Sleep(time.Duration(action.DelayAfterEditsMS) * time.Millisecond)
+	}
+	return nil
 }
 
 // runGitInDir runs each scenario git invocation in wd. A failure is returned

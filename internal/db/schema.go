@@ -1,6 +1,13 @@
 package db
 
 const schemaSQL = `
+CREATE TABLE IF NOT EXISTS run_work_rescues (
+    stop_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS run_work_rescues_run ON run_work_rescues(run_id, stop_id);
+
 CREATE TABLE IF NOT EXISTS repos (
     id             TEXT PRIMARY KEY,
     working_path   TEXT NOT NULL UNIQUE,

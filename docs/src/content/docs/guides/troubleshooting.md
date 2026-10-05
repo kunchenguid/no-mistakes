@@ -332,6 +332,10 @@ Start a new run only after abort confirms the terminal state; see the [abort com
 
 ## Worktree won't clean up
 
+An interrupted editing invocation may leave a local rescue ref or a retained checkout.
+Read `partial_work` in [`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status) before considering cleanup.
+Follow the [unfinished-work contract](/no-mistakes/reference/pipeline-steps/#step-statuses) when the named reason requires retaining the original checkout.
+
 Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` - or `<root>/<runID>` when the repository has a [configured worktree root](/no-mistakes/reference/global-config/#worktree_roots) - sticks around after a run ends.
 
 The daemon's [retention rules](/no-mistakes/concepts/daemon/#what-it-does) and [crash-recovery checks](/no-mistakes/concepts/daemon/#crash-recovery) can deliberately keep a worktree after a run ends. Inspect retained work before considering removal; for a protected-path refusal, follow the [resolution guidance](/no-mistakes/reference/repo-config/#protected_paths). Only remove a leftover after deciding its contents can be discarded:

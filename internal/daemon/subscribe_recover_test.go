@@ -699,7 +699,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 	}
 }
 
-func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
+func TestRecoverCleansUpEmptyOrphanedWorktreesAndRetainsUnboundContent(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
 		t.Fatal(err)
@@ -719,8 +719,15 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(orphanDir, "test.txt"), []byte("orphan"), 0o644)
+	emptyOrphanDir := p.WorktreeDir("some-repo", "empty-run")
+	if err := os.MkdirAll(emptyOrphanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	old := time.Now().Add(-2 * config.DefaultWorktreeRetention)
 	if err := os.Chtimes(orphanDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(emptyOrphanDir, old, old); err != nil {
 		t.Fatal(err)
 	}
 
@@ -734,9 +741,12 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
 	}, 3*time.Second)
 
-	// Orphaned worktree directory should be removed.
-	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
-		t.Errorf("orphaned worktree dir still exists: %s", orphanDir)
+	// Empty orphan storage is disposable; unknown bytes lack rescue binding.
+	if _, err := os.Stat(emptyOrphanDir); !os.IsNotExist(err) {
+		t.Errorf("empty orphaned worktree dir still exists: %s", emptyOrphanDir)
+	}
+	if got, err := os.ReadFile(filepath.Join(orphanDir, "test.txt")); err != nil || string(got) != "orphan" {
+		t.Fatalf("unbound work lost: %q %v", got, err)
 	}
 }
 

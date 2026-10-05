@@ -113,6 +113,7 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
+	PartialWork      *types.PartialWork
 	PiProfile        *agentcfg.PiProfile
 	VerificationPlan *verificationplan.Snapshot
 	ID               string
@@ -137,6 +138,7 @@ type runView struct {
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
+		PartialWork:        r.PartialWork,
 		ID:                 r.ID,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
@@ -192,6 +194,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
+	}
+	if database != nil {
+		rv.PartialWork = database.WorkRescueStatus(r.ID)
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -486,6 +491,17 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
+	if p := rv.PartialWork; p != nil {
+		fields = append(fields, toon.Field{Key: "partial_work", Value: toon.NewObject(
+			toon.Field{Key: "state", Value: p.State},
+			toon.Field{Key: "ref", Value: p.Ref},
+			toon.Field{Key: "sha", Value: p.SHA},
+			toon.Field{Key: "parent_head", Value: p.ParentHead},
+			toon.Field{Key: "source_run", Value: p.RunID},
+			toon.Field{Key: "path", Value: p.Path},
+			toon.Field{Key: "reason", Value: p.Reason},
+		)})
+	}
 	if rv.TestOverrideReason != "" {
 		fields = append(fields, toon.Field{Key: "test_override_reason", Value: rv.TestOverrideReason})
 	}

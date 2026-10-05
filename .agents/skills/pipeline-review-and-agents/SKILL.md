@@ -47,6 +47,10 @@ metadata:
 
 **Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
 
+- The shared agent return seam journals unfinished work under local rescue refs before a failed invocation returns.
+  Rescue state never grants publication or validation authority; cleanup retains uncertain or unsupported state.
+  `axi status` exposes saved refs or retained paths from the same durable records online and offline.
+
 - The review-fix prompt requires all fixes before one focused verification limited to the changed area and forbids the whole repository test/lint suite during the fix round.
   The dedicated Test and Lint steps are the authoritative gates, although their coverage may be focused when commands are unconfigured.
   This is a prompt contract, not an enforced sandbox.

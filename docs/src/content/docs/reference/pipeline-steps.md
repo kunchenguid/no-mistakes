@@ -177,6 +177,8 @@ Local Test is never a repository-wide regression-suite substitute; broad regress
 - Missing evidence for user intent can be reported as a warning with `action: ask-user`. When a host capability or OS permission is unavailable to the agent process, the agent is instructed to name the specific capability or permission and explain how to grant it before the test is rerun.
 - If the agent creates new test files (detected via `git status --porcelain`), they are recorded as informational `no-op` findings and do not require approval when tests pass.
 
+If interrupted Test work cannot be safely preserved, the step fails with a retention error before the timeout park or baseline rerun; see [unfinished work](#step-statuses).
+
 **Approval:** a `no-go` verdict adds an auto-fixable error and parks the step; an `inconclusive` verdict adds an `ask-user` warning and parks for a decision; a `no-surface` verdict adds an `ask-user` warning asking whether to proceed without live validation and parks for a decision. An expired [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) parks as an `ask-user` budget cut rather than failing the run as a code defect; approving that park is a Test exception, and approval is refused while the park reports work no Test turn validated. An `untested` scenario never parks by itself. Other test findings follow their `action`: `ask-user` pauses for approval, `auto-fix` stays eligible for the fix loop, and `no-op` is informational only.
 
 **Auto-fix:** the agent receives the previous test findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and the shared [finding decision history](#finding-decision-history), including earlier fix summaries for this step. Repair mode reproduces the specific failure, applies a root-cause fix, and re-runs only focused verification - not a complete-suite confirmation - then the step's configured baseline (if any) and evidence path run again.
@@ -365,7 +367,14 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - Settles the local gate mirror before atomically recording the published head and push binding, so a publication that stalls part way records nothing: the run stays on its pre-repair head and the next fix attempt re-enters the same path, finds the remote already at that commit, and completes it
 - Whenever a repair revalidates - either because the setting requires it or because continuity cannot be proven - restarts at Review only: Intent and Rebase keep their results, steps already skipped for the run stay skipped, the run id is unchanged, and the durable auto-fix attempt count carries across. Earlier cycles remain in the run's round history; the step's own status shows the latest cycle. The fresh Review cycle does not inherit the superseded cycle's outstanding finding carry set
 - Bounds that CI-fix agent with [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout): a silent turn is cancelled at that stall budget, a still-working one continues past that budget only when its still-working cap is set, cancellation fails the attempt with a timeout diagnostic rather than leaving the run active indefinitely, and a late successful return after cancellation is not committed
-- If the CI-fix agent exhausts that budget, pauses for user approval instead of re-issuing the same request on the next poll. A budget burn is not transient - repeating it costs another full budget - so the remaining auto-fix attempts are left for the user to spend deliberately with a fix response. The finding carries the measured timeout diagnostic. When the timed-out agent left uncommitted work in the run worktree, the finding names that worktree's path. When the agent already committed a repair, that head is recorded locally for custody and is not published; an unfinished rebase or merge is reported instead of recorded. A later fix round that adds nothing to a recorded repair still routes it through the repair rule above, so it revalidates from Review rather than staying behind the published head. Ordinary (non-timeout) fix failures keep retrying as before
+- If the CI-fix agent exhausts that budget, pauses for user approval instead of re-issuing the same request on the next poll.
+  A budget burn is not transient - repeating it costs another full budget - so the remaining auto-fix attempts are left for the user to spend deliberately with a fix response.
+  The finding carries the measured timeout diagnostic.
+  When the timed-out agent left uncommitted work in the run worktree, the finding names that worktree's path.
+  When the agent already committed a repair, that head is recorded locally for custody and is not published; an unfinished rebase or merge is reported instead of recorded.
+  A later fix round that adds nothing to a recorded repair still routes it through the repair rule above, so it revalidates from Review rather than staying behind the published head.
+  Preservation failures also park for a decision; see [unfinished work](#step-statuses).
+  Other ordinary (non-timeout) fix failures keep retrying as before
 - On GitHub, GitLab, Forgejo, or Azure DevOps merge conflict: asks the agent to rebase onto the latest PR base branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
 - If both CI failures and a GitHub, GitLab, Forgejo, or Azure DevOps merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: a trusted conclusion that the failure is not caused by the PR's code parks the selected findings as `ask-user` immediately and reports the agent's summary. Otherwise the step re-observes the settled checks and reports the same findings again, so the executor retries while `auto_fix.ci` attempts remain and parks when they are spent - the same follow-up every other step's fix round gets
@@ -381,6 +390,17 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 **Default transient rerun budget:** `0` reruns per provider-attributed check per run. GitHub pre-run failure detection is disabled at this value.
 
 ## Step statuses
+
+Stopped agent invocations preserve unfinished work separately from ordinary correction commits.
+For representable Git state, local rescue refs below `refs/no-mistakes/rescue/<run>/<step>/<stop>` store the working tree and staged content without moving HEAD or the live index.
+The first parent is the head at capture; the second parent holds staged content.
+If that head differs from the recorded pre-invocation head, the checkout is retained for continuity reconciliation.
+A rescue is unfinished evidence, never a publishable or review-approved head.
+Publication refuses while unfinished rescue state remains outstanding.
+Unsupported Git operations, ignored content, uncertain writer shutdown, and storage failures retain the original checkout and report the reason.
+Stopped-work settlement requires raw working-tree and staged-content equality with the head, plus recorded-head continuity; normalized Git cleanliness alone cannot authorize cleanup.
+Immediate, startup, and retention cleanup must preserve unfinished bytes durably or refuse deletion.
+For the saved and retained fields, see [`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status).
 
 Each step progresses through these statuses:
 

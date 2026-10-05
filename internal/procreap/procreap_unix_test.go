@@ -214,14 +214,11 @@ func parseEscapedPID(t *testing.T, output string) int {
 	return 0
 }
 
-// requireCWDLookup skips when this platform cannot resolve a process working
-// directory (no lsof, or a sandbox that hides it). The sweep degrades to a
-// no-op there, which is correct but not what these tests assert.
 func requireCWDLookup(t *testing.T) {
 	t.Helper()
 	self := os.Getpid()
-	cwds := processCWDs([]int{self})
-	if _, ok := cwds[self]; !ok {
+	cwds, err := processCWDs([]int{self})
+	if _, ok := cwds[self]; err != nil || !ok {
 		t.Skip("process working directories are not readable on this host")
 	}
 }

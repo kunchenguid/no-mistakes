@@ -206,9 +206,6 @@ func TestRemoveOrphanWorktreeReportsRemovalFailure(t *testing.T) {
 	if err := os.MkdirAll(wtDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wtDir, "file.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	// Strip write permission on the parent directory so os.RemoveAll cannot
 	// unlink wtDir's entry, after git.WorktreeRemove has already failed
 	// against the nonexistent gate repo below.
@@ -219,7 +216,12 @@ func TestRemoveOrphanWorktreeReportsRemovalFailure(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(parent, 0o755) })
 
 	wt := orphanWorktree{gateDir: filepath.Join(tmp, "nonexistent-gate"), dir: wtDir, repoID: "repo1", runID: "run1"}
-	if removeOrphanWorktree(context.Background(), wt) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if removeOrphanWorktree(context.Background(), d, wt) {
 		t.Fatal("removeOrphanWorktree reported success for a directory that is still on disk")
 	}
 	if _, err := os.Stat(wtDir); err != nil {

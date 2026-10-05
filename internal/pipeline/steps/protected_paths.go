@@ -11,6 +11,9 @@ import (
 // stagePipelineChanges guards every pipeline-owned catch-all staging path,
 // including Push's leftover commit. Refusal preserves the index and worktree.
 func stagePipelineChanges(sctx *pipeline.StepContext) error {
+	if err := sctx.CheckWorkRescue(); err != nil {
+		return err
+	}
 	if len(sctx.Config.ProtectedPaths) > 0 {
 		// Disable renames so both source and destination are checked, and list
 		// individual untracked files so a protected path inside a new directory

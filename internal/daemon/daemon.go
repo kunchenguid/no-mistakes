@@ -838,7 +838,7 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree)
 	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_cleanup")
 
 	for _, wt := range removable {
-		removeOrphanWorktree(ctx, wt)
+		removeOrphanWorktree(ctx, d, wt)
 	}
 	for _, dir := range repoDirs {
 		os.Remove(dir)
@@ -942,7 +942,22 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 // already decided on and swept (see cleanupOrphanWorktrees). It reports
 // whether the directory was actually removed, since git worktree remove and
 // its os.RemoveAll fallback can both fail and merely log a warning.
-func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) bool {
+func removeOrphanWorktree(ctx context.Context, d *db.DB, wt orphanWorktree) bool {
+	if refusal := workRescueCleanupReason(d, wt.runID, wt.dir); refusal != "" {
+		slog.Warn("preserving run worktree", "path", wt.dir, "reason", refusal)
+		return false
+	}
+	run, err := d.GetRun(wt.runID)
+	if err != nil {
+		return false
+	}
+	if run == nil {
+		if err := os.Remove(wt.dir); err != nil && !os.IsNotExist(err) {
+			slog.Warn("failed to remove empty unbound storage", "path", wt.dir, "error", err)
+			return false
+		}
+		return true
+	}
 	gateDir, wtPath := wt.gateDir, wt.dir
 	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
@@ -1602,6 +1617,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
 	}
+	info.PartialWork = d.WorkRescueStatus(r.ID)
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))
 		for _, s := range steps {

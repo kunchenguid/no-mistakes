@@ -477,13 +477,14 @@ Instructions:
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
-		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
+		if !errors.Is(err, pipeline.ErrWorkRetained) {
+			_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
+		}
 		return fmt.Errorf("agent resolve conflicts: %w", err)
 	}
 
 	// Verify rebase completed (no rebase still in progress)
 	if rebaseInProgress(ctx, sctx.WorkDir) {
-		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
 		return fmt.Errorf("agent did not complete the rebase")
 	}
 
@@ -620,25 +621,20 @@ Instructions:
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
-		_, _ = git.Run(ctx, sctx.WorkDir, "merge", "--abort")
+		if !errors.Is(err, pipeline.ErrWorkRetained) {
+			_, _ = git.Run(ctx, sctx.WorkDir, "merge", "--abort")
+		}
 		return fmt.Errorf("agent resolve conflicts: %w", err)
 	}
 
 	// An unconcluded merge would leave MERGE_HEAD set and the index conflicted,
 	// so the run would carry the reviewed head forward as if nothing happened.
 	if mergeInProgress(ctx, sctx.WorkDir) {
-		_, _ = git.Run(ctx, sctx.WorkDir, "merge", "--abort")
 		return fmt.Errorf("agent did not complete the merge")
 	}
 
-	// A conflicted rebase is the other way the worktree can be left mid
-	// operation, and git sets no MERGE_HEAD for it: an agent that abandons the
-	// merge and rebases onto the same target hits the same conflict and stops
-	// with rebase state in place. Abort it first, or the restore below would
-	// move HEAD while the interrupted rebase survives underneath it.
 	if rebaseInProgress(ctx, sctx.WorkDir) {
-		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
-		return restorePreMergeHead(ctx, sctx, preMergeHead, fmt.Errorf("agent did not merge %s into the branch: a rebase was left in progress", targetRef))
+		return fmt.Errorf("agent did not merge %s into the branch: a rebase was left in progress", targetRef)
 	}
 
 	// Concluded is not the same as merged. Requiring HEAD to have moved and to
@@ -669,17 +665,21 @@ Instructions:
 	return nil
 }
 
-// restorePreMergeHead puts the worktree back on the reviewed head before a
-// shape guard's rejection is returned. Without it a rejected merge leaves the
-// branch on whatever the agent actually produced - a rebase of the reviewed
-// head, a reset onto the target, an unrelated commit - and the step fails while
-// the invalid head stays checked out, so any later hand-off, recovery, or
-// retry reads it as the branch's real state.
-//
-// It is fail-closed: a restore that does not land back exactly on
-// preMergeHead with a clean tree is reported as part of the returned error,
-// never swallowed, so nothing is described as recovered that was not.
+// restorePreMergeHead restores the reviewed head after a concluded attempt
+// fails the merge-shape proof, only when preservation permits the reset.
+// Retained work, unverifiable writer shutdown, or a head differing from the
+// recorded run head leaves the checkout intact for continuity reconciliation.
+// A permitted restore must land exactly on preMergeHead with a clean tree;
+// otherwise the returned error never describes the rejected attempt as recovered.
 func restorePreMergeHead(ctx context.Context, sctx *pipeline.StepContext, preMergeHead string, cause error) error {
+	if err := sctx.CheckWorkRescue(); err != nil {
+		return errors.Join(cause, err)
+	}
+	if sctx.DB != nil && sctx.Run != nil {
+		if err := pipeline.PreserveRunWork(ctx, sctx.DB, sctx.Run, sctx.WorkDir, nil, cause.Error(), true); err != nil {
+			return errors.Join(cause, pipeline.ErrWorkRetained, err)
+		}
+	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--hard", preMergeHead); err != nil {
 		return fmt.Errorf("%w; restoring the branch to %s failed, the worktree is left at the rejected head: %v", cause, preMergeHead, err)
 	}
@@ -710,6 +710,9 @@ func restorePreMergeHead(ctx context.Context, sctx *pipeline.StepContext, preMer
 // shouldSkipRebase checks whether a rebase onto targetRef can be skipped.
 // Returns true if targetRef doesn't exist, is already merged, or can be fast-forwarded.
 func shouldSkipRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) (bool, error) {
+	if err := sctx.CheckWorkRescue(); err != nil {
+		return false, err
+	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", targetRef); err != nil {
 		return true, nil
 	}
