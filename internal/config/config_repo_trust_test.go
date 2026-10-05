@@ -210,12 +210,14 @@ func TestEffectiveRepoConfig_ProvidersUsePushedValues(t *testing.T) {
 				GitLab:      GitLabProviderRaw{DraftPullRequests: tc.pushed},
 				Bitbucket:   BitbucketProviderRaw{DraftPullRequests: tc.pushed},
 				AzureDevOps: AzureDevOpsProviderRaw{DraftPullRequests: tc.pushed},
+				Origin:      OriginProviderRaw{DraftPullRequests: tc.pushed},
 			}}
 			trusted := &RepoConfig{Providers: ProvidersRaw{
 				GitHub:      GitHubProviderRaw{DraftPullRequests: tc.trusted},
 				GitLab:      GitLabProviderRaw{DraftPullRequests: tc.trusted},
 				Bitbucket:   BitbucketProviderRaw{DraftPullRequests: tc.trusted},
 				AzureDevOps: AzureDevOpsProviderRaw{DraftPullRequests: tc.trusted},
+				Origin:      OriginProviderRaw{DraftPullRequests: tc.trusted},
 			}}
 
 			for _, allowRepoCommands := range []bool{false, true} {
@@ -225,6 +227,7 @@ func TestEffectiveRepoConfig_ProvidersUsePushedValues(t *testing.T) {
 					"gitlab":      got.Providers.GitLab.DraftPullRequests,
 					"bitbucket":   got.Providers.Bitbucket.DraftPullRequests,
 					"azuredevops": got.Providers.AzureDevOps.DraftPullRequests,
+					"origin":      got.Providers.Origin.DraftPullRequests,
 				}
 				for provider, draft := range providers {
 					if draft == nil || *draft != *tc.pushed {

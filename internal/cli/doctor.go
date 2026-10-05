@@ -75,6 +75,12 @@ func newDoctorCmd() *cobra.Command {
 					ok("az            ", "ok")
 				}
 
+				if _, err := exec.LookPath("origin"); err != nil {
+					warn("origin        ", "not found "+sDim.Render("(optional, needed for Cursor Origin PR/CI)"))
+				} else {
+					ok("origin        ", "ok")
+				}
+
 				p, err := paths.New()
 				if err != nil {
 					fail("data directory", fmt.Sprintf("error resolving paths (%v)", err))

@@ -437,6 +437,18 @@ func TestPRTemplateBarePinnedReadsUnderExplicitBarePolicy(t *testing.T) {
 	}
 }
 
+func TestPRTemplateSupportsOrigin(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := templateTestContext(t)
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderOrigin, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(content.Body, filledPRTemplate) {
+		t.Fatalf("body = %q, want filled template", content.Body)
+	}
+}
+
 func TestPRTemplateUnsupportedProviderIsExplicit(t *testing.T) {
 	t.Parallel()
 	sctx, ag, _ := templateTestContext(t)
