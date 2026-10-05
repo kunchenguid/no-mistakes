@@ -1,5 +1,14 @@
 # Pi schema enforcement: issue #1284
 
+## Commit-summary and CI-fix proof
+
+The additional real Pi proof is **flat**: main and the candidate each returned **10/10 schema-valid first attempts and 10/10 completed calls** across the commit-summary and CI-fix schemas.
+Each implementation ran five calls per schema.
+The candidate ended on the output tool alone in **10/10 calls**, and provider responses confirmed **openai-codex/gpt-6.1-sol in 20/20 calls**.
+These calls do not demonstrate a reliability gain on either repair schema.
+The **Review schema was benchmarked separately**, as recorded below.
+The [repair-schema report](repair-proof/results.md) contains the method, limitations, recorded outcomes, and reproduction script.
+
 ## Expanded result
 
 The larger real benchmark is also **flat**: main and the change each produced **30/30 schema-valid first attempts and 30/30 completed Review analyzer runs**.
@@ -115,9 +124,10 @@ The [Pi AI constrained-tool contract](https://github.com/earendil-works/pi/tree/
 Pi's [structured-output example](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/structured-output.ts) demonstrates `terminate: true` for a final result tool without a follow-up model call.
 The installed changelog records constrained tool sampling as introduced in **0.82.0**, and earlier releases silently ignore the request.
 The adapter therefore probes `pi --version` in Go and loads the strict output-tool extension only for 0.82.0 or later (a prerelease such as `0.82.0-beta` sorts before its release).
-For an older or unidentifiable Pi, or when the provider/model refuses the strict tool with Pi's `requires JSON-schema constrained sampling` error (which it raises before sending the request), the adapter falls back to the prompt-inlined schema and validates the final text against the same schema afterwards; a refusal is retried once on that path and remembered for the agent's lifetime, and the step log names which path ran.
+For an older or unidentifiable Pi, for configured Pi arguments that restrict the tool selection (`--no-tools` or a `--tools` allowlist, which Pi also applies to extension tools, so the model would never see the output tool), or when the provider/model refuses the strict tool with Pi's `requires JSON-schema constrained sampling` error (which it raises before sending the request), the adapter falls back to the prompt-inlined schema and validates the final text against the same schema afterwards; a refusal is retried once on that path and remembered for the agent's lifetime, and the step log names which path ran.
 On the strict path, a run that ends without calling the output tool alone is a structured-output rejection, so Review's bounded schema rerun applies.
-The measured runs below used Pi 0.99.1 on openai-codex, which takes the strict path, so this fallback does not change them.
+The measured runs below used Pi 0.99.1 on openai-codex, with no tool-restricting arguments, which takes the strict path, so this fallback does not change them.
+The shipped adapter also keeps only the keywords the Review schema uses in the strict tool declaration and enforces any other keyword, such as the commit summary's `maxLength`, on the returned output; the Review declaration measured here is unchanged by that.
 
 Before changing the adapter, a real Pi request on the target model accepted a tiny strict-required output tool.
 A documented `before_provider_request` hook observed `strict: true` on that tool's OpenAI request declaration.

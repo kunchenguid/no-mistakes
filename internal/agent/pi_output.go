@@ -91,6 +91,9 @@ func (a *piAgent) structuredOutputPath(ctx context.Context, opts RunOpts) (bool,
 			a.output.version = fields[0]
 		}
 	}
+	if flag := piToolRestrictionArg(a.extraArgs); flag != "" {
+		return false, "configured " + flag + " keeps the output tool from the model"
+	}
 	if !piVersionSupportsStrictOutput(a.output.version) {
 		return false, fmt.Sprintf("pi version %q predates %d.%d.%d", a.output.version, piStrictOutputMinVersion[0], piStrictOutputMinVersion[1], piStrictOutputMinVersion[2])
 	}
@@ -98,6 +101,24 @@ func (a *piAgent) structuredOutputPath(ctx context.Context, opts RunOpts) (bool,
 		return false, "provider/model cannot take strict JSON-schema tools"
 	}
 	return true, ""
+}
+
+// piToolRestrictionArg returns the configured flag that replaces Pi's tool
+// selection with an allowlist, or "". Pi applies that allowlist to extension
+// tools as well and an extension cannot widen it, so under --no-tools or
+// --tools the model never sees the output tool and every strict turn would end
+// in text and be rejected.
+func piToolRestrictionArg(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--no-tools", "-nt", "--tools", "-t":
+			return args[i]
+		}
+		if piArgTakesValue(args[i]) {
+			i++
+		}
+	}
+	return ""
 }
 
 // piVersionSupportsStrictOutput compares a semantic version with the strict
@@ -121,11 +142,62 @@ func piVersionSupportsStrictOutput(version string) bool {
 	return !prerelease
 }
 
+// piStrictToolKeywords are the only JSON Schema keywords the strict tool
+// declaration carries: the ones the Review schema uses, which are the ones
+// measured against a real provider. A provider refuses a strict tool over a
+// keyword it does not support as a plain request error, which the prompt-path
+// fallback cannot recognise, so every other keyword (maxLength in the
+// commit-summary schemas) stays out of the declaration and is enforced on the
+// returned output instead.
+var piStrictToolKeywords = map[string]bool{
+	"type":        true,
+	"properties":  true,
+	"items":       true,
+	"required":    true,
+	"enum":        true,
+	"description": true,
+}
+
+func piStrictToolSchema(value any) any {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	declared := make(map[string]any, len(schema))
+	for keyword, child := range schema {
+		if !piStrictToolKeywords[keyword] {
+			continue
+		}
+		switch keyword {
+		case "properties":
+			properties, ok := child.(map[string]any)
+			if !ok {
+				continue
+			}
+			kept := make(map[string]any, len(properties))
+			for name, property := range properties {
+				kept[name] = piStrictToolSchema(property)
+			}
+			declared[keyword] = kept
+		case "items":
+			declared[keyword] = piStrictToolSchema(child)
+		default:
+			declared[keyword] = child
+		}
+	}
+	return declared
+}
+
 func preparePiOutput(schema json.RawMessage) (string, func(), error) {
 	if len(schema) == 0 {
 		return "", func() {}, nil
 	}
-	parameters, err := textValidationSchema(schema)
+	var declared any
+	if err := json.Unmarshal(schema, &declared); err != nil {
+		return "", nil, fmt.Errorf("pi output schema: %w", err)
+	}
+	allowOptionalSchemaNulls(declared)
+	parameters, err := json.Marshal(piStrictToolSchema(declared))
 	if err != nil {
 		return "", nil, fmt.Errorf("pi output schema: %w", err)
 	}

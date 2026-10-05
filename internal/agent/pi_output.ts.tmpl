@@ -19,9 +19,4 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("before_agent_start", () => {
-		// --no-tools and explicit allowlists must still permit submitting the
-		// result; this tool cannot execute external operations or modify files.
-		pi.setActiveTools([...new Set([...pi.getActiveTools(), "no_mistakes_output"])]);
-	});
 }

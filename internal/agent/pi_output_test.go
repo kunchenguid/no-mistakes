@@ -81,7 +81,7 @@ func TestPiAgent_StructuredOutputUsesAnEphemeralExtension(t *testing.T) {
 	const sessionID = "019ff2f3-5f31-744b-90b8-679074ff7686"
 	cwd := t.TempDir()
 	bin := writePiOutputFixture(t, piStrictVersion, piOutputEvents(`{"ok":true}`), piTextEvents(`{"ok":true}`), sessionID)
-	pa := &piAgent{bin: bin, extraArgs: []string{"--no-extensions", "--no-tools"}}
+	pa := &piAgent{bin: bin, extraArgs: []string{"--no-extensions"}}
 	var logged []LifecycleEvent
 	result, err := pa.Run(context.Background(), RunOpts{
 		Prompt: "review", CWD: cwd,
@@ -153,6 +153,41 @@ func TestPiAgent_OlderPiUsesThePromptInlinedSchema(t *testing.T) {
 				t.Fatalf("step log must name the prompt path and why: %+v", logged)
 			}
 		})
+	}
+}
+
+func TestPiAgent_RestrictedToolsUseThePromptInlinedSchema(t *testing.T) {
+	for flag, extra := range map[string][]string{
+		"--no-tools": {"--no-tools"},
+		"-nt":        {"-nt"},
+		"--tools":    {"--tools", "read"},
+		"-t":         {"--model", "m", "-t", "read,grep"},
+	} {
+		t.Run(flag, func(t *testing.T) {
+			cwd := t.TempDir()
+			bin := writePiOutputFixture(t, piStrictVersion, piTextEvents("TOOL_NOT_AVAILABLE"), piTextEvents(`{"ok":true}`), "")
+			var logged []LifecycleEvent
+			result, err := (&piAgent{bin: bin, extraArgs: extra}).Run(context.Background(), RunOpts{
+				Prompt: "review", CWD: cwd,
+				JSONSchema:  json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`),
+				OnLifecycle: piOutputPathMessages(&logged),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(result.Output) != `{"ok":true}` {
+				t.Fatalf("output: %s", result.Output)
+			}
+			if len(logged) != 1 || !strings.Contains(logged[0].Message, "prompt-inlined schema") || !strings.Contains(logged[0].Message, "configured "+flag+" ") {
+				t.Fatalf("step log must name the prompt path and the flag: %+v", logged)
+			}
+		})
+	}
+}
+
+func TestPiAgent_AToolFlagValueIsNotARestriction(t *testing.T) {
+	if flag := piToolRestrictionArg([]string{"--system-prompt", "--no-tools", "--no-builtin-tools"}); flag != "" {
+		t.Fatalf("a flag's value was read as a tool restriction: %q", flag)
 	}
 }
 
