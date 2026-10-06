@@ -778,6 +778,94 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 	})
 }
 
+func TestIntegrationRemotePushIsNotAChangedTarget(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	product := filepath.Join(root, "product.git")
+	customer := filepath.Join(root, "customer.git")
+	mustRun(t, root, "init", "--bare", product)
+	mustRun(t, root, "init", "--bare", customer)
+
+	local := filepath.Join(root, "operator")
+	mustRun(t, root, "init", "-b", "main", local)
+	configureIdentity(t, local)
+	mustRun(t, local, "remote", "add", "origin", product)
+	mustRun(t, local, "remote", "add", "custom", customer)
+	mustWrite(t, filepath.Join(local, "file.txt"), "base\n")
+	mustRun(t, local, "add", "file.txt")
+	mustRun(t, local, "commit", "-m", "base")
+	base := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "checkout", "-b", "feature/sync")
+	mustWrite(t, filepath.Join(local, "file.txt"), "feature\n")
+	mustRun(t, local, "commit", "-am", "feature")
+	old := mustRun(t, local, "rev-parse", "HEAD")
+	mustWrite(t, filepath.Join(local, "fix.txt"), "pipeline fix\n")
+	mustRun(t, local, "add", "fix.txt")
+	mustRun(t, local, "commit", "-m", "pipeline fix")
+	pushed := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "push", "custom", "HEAD:refs/heads/feature/sync")
+	mustRun(t, local, "reset", "--hard", old)
+
+	database, err := db.Open(filepath.Join(root, "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(local, product, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/sync", old, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, pushed); err != nil {
+		t.Fatal(err)
+	}
+	customURL := mustRun(t, local, "remote", "get-url", "custom")
+	if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{
+		HeadSHA: pushed, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(customURL), Ref: "refs/heads/feature/sync",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{DB: database, Repo: repo, WorkDir: local}
+
+	without := service.InspectCached(ctx)
+	if without.State != StateTargetChanged || without.Safety != "blocked_target_changed" {
+		t.Fatalf("run with no integration remote state = %#v", without)
+	}
+
+	if err := database.SetRunBaseRemote(run.ID, "custom"); err != nil {
+		t.Fatal(err)
+	}
+	state := service.InspectCached(ctx)
+	if state.State != StateBehind || state.Safety == "blocked_target_changed" {
+		t.Fatalf("integration remote state = %#v", state)
+	}
+	if state.Target.Remote != "custom" || state.Target.URL != displayTarget(customURL) {
+		t.Fatalf("target = %#v, want custom %s", state.Target, displayTarget(customURL))
+	}
+	refreshed := service.Refresh(ctx)
+	if refreshed.State != StateBehind || refreshed.Safety != SafetySafeFastForward {
+		t.Fatalf("refresh = %#v", refreshed)
+	}
+	applied := service.Apply(ctx)
+	if !applied.Changed || applied.State != StateSynchronized {
+		t.Fatalf("apply = %#v", applied)
+	}
+	if got := mustRun(t, local, "rev-parse", "HEAD"); got != pushed {
+		t.Fatalf("HEAD = %s, want %s", got, pushed)
+	}
+	if published, err := gitpkg.Run(ctx, product, "rev-parse", "--verify", "--quiet", "refs/heads/feature/sync"); err == nil && strings.TrimSpace(published) != "" {
+		t.Fatalf("product remote received the branch at %s", published)
+	}
+}
+
 func TestLinkedWorktreeMutatesOnlyInvokingWorktree(t *testing.T) {
 	t.Parallel()
 
