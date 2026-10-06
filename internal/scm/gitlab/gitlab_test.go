@@ -49,6 +49,72 @@ func TestProjectPath(t *testing.T) {
 	}
 }
 
+func TestProjectSelectingCommandsPassOneRepoFlag(t *testing.T) {
+	t.Parallel()
+
+	const (
+		gitLabHost = "gitlab.prod.dtstack.cn"
+		project    = "customltem/dt-insight-studio"
+		repoFlag   = "-R https://gitlab.prod.dtstack.cn/customltem/dt-insight-studio"
+		mrURL      = "https://gitlab.prod.dtstack.cn/customltem/dt-insight-studio/-/merge_requests/7"
+	)
+	mr := `{"iid":7,"title":"T","description":"body","state":"opened","detailed_merge_status":"mergeable","web_url":"` + mrURL + `","head_pipeline":{"id":77}}`
+	jobs := `[{"id":55,"name":"lint","status":"failed"}]`
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature --target-branch main --output json " + repoFlag: {
+			stdout: `[{"iid":7,"web_url":"` + mrURL + `"}]` + "\n",
+		},
+		"glab mr create --source-branch feature --target-branch main --title T --description body --yes " + repoFlag: {
+			stdout: mrURL + "\n",
+		},
+		"glab mr view 7 --output json " + repoFlag:                  {stdout: mr + "\n"},
+		"glab mr update 7 --title T --description body " + repoFlag: {},
+		"glab mr update 7 --target-branch release " + repoFlag:      {},
+		"glab ci status --mr 7 --output json " + repoFlag: {
+			stderr: "unknown flag: --mr\n",
+			code:   1,
+		},
+		"glab api --paginate projects/customltem%2Fdt-insight-studio/pipelines/77/jobs": {stdout: jobs + "\n"},
+		"glab ci trace 55 " + repoFlag: {stdout: "lint failed\n"},
+	}), nil, gitLabHost, project)
+
+	ctx := context.Background()
+	pr, err := host.FindPR(ctx, "feature", "main")
+	if err != nil || pr == nil || pr.URL != mrURL {
+		t.Fatalf("FindPR() = (%+v, %v), want %s", pr, err, mrURL)
+	}
+	created, err := host.CreatePR(ctx, "feature", "main", scm.PRContent{Title: "T", Body: "body"})
+	if err != nil || created.URL != mrURL {
+		t.Fatalf("CreatePR() = (%+v, %v), want %s", created, err, mrURL)
+	}
+	content, err := host.GetPRContent(ctx, &scm.PR{Number: "7"})
+	if err != nil || content.Title != "T" || content.Body != "body" {
+		t.Fatalf("GetPRContent() = (%+v, %v)", content, err)
+	}
+	if _, err := host.UpdatePR(ctx, &scm.PR{Number: "7"}, scm.PRContent{Title: "T", Body: "body"}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if err := host.SetPRBaseBranch(ctx, &scm.PR{Number: "7"}, "release"); err != nil {
+		t.Fatalf("SetPRBaseBranch() error = %v", err)
+	}
+	state, err := host.GetPRState(ctx, &scm.PR{Number: "7"})
+	if err != nil || state != scm.PRStateOpen {
+		t.Fatalf("GetPRState() = (%q, %v)", state, err)
+	}
+	mergeable, err := host.GetMergeableState(ctx, &scm.PR{Number: "7"})
+	if err != nil || mergeable != scm.MergeableOK {
+		t.Fatalf("GetMergeableState() = (%q, %v)", mergeable, err)
+	}
+	checks, err := host.GetChecks(ctx, &scm.PR{Number: "7"})
+	if err != nil || len(checks) != 1 || checks[0].Name != "lint" {
+		t.Fatalf("GetChecks() = (%+v, %v)", checks, err)
+	}
+	logs, err := host.FetchFailedCheckLogs(ctx, &scm.PR{Number: "7"}, "", "", []string{"lint"})
+	if err != nil || logs != "lint failed" {
+		t.Fatalf("FetchFailedCheckLogs() = (%q, %v)", logs, err)
+	}
+}
+
 func TestGetMergeableStateTreatsBlockedStatusesAsResolved(t *testing.T) {
 	t.Parallel()
 
@@ -303,7 +369,7 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr list --source-branch feature/refactor --target-branch release/1.0 --output json": {
+		"glab mr list --source-branch feature/refactor --target-branch release/1.0 --output json -R https://gitlab.example.com/group/project": {
 			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"}]` + "\n",
 		},
 	}), nil, "gitlab.example.com", "group/project")
@@ -349,7 +415,7 @@ func TestFindPRRejectsURLForDifferentProject(t *testing.T) {
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr list --source-branch feature/refactor --target-branch main --output json": {
+		"glab mr list --source-branch feature/refactor --target-branch main --output json -R https://gitlab.example.com/group/project": {
 			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/other/-/merge_requests/42"}]` + "\n",
 		},
 	}), nil, "gitlab.example.com", "group/project")
@@ -710,11 +776,11 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 	// is branch-independent and works in the daemon's detached-HEAD worktree.
 	// finished_at must be captured into CompletedAt.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
+		"glab ci status --mr 123 --output json -R https://gitlab.example.com/group/project": {
 			stderr: "unknown flag: --mr\n",
 			code:   1,
 		},
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json -R https://gitlab.example.com/group/project": {
 			stdout: `{"head_pipeline":{"id":77}}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
@@ -742,11 +808,11 @@ func TestGetChecksLeavesCompletedAtZeroWhenFinishedAtMissingOrInvalid(t *testing
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
+		"glab ci status --mr 123 --output json -R group/project": {
 			stderr: "unknown flag: --mr\n",
 			code:   1,
 		},
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json -R group/project": {
 			stdout: `{"head_pipeline":{"id":77}}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
@@ -779,11 +845,11 @@ func TestGetChecksPaginatesJobsAcrossConcatenatedPages(t *testing.T) {
 	page1 := `[{"id":1,"name":"build","status":"success"}]`
 	page2 := `[{"id":2,"name":"deploy","status":"failed"}]`
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
+		"glab ci status --mr 123 --output json -R group/project": {
 			stderr: "unknown flag: --mr\n",
 			code:   1,
 		},
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json -R group/project": {
 			stdout: `{"head_pipeline":{"id":77}}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
@@ -849,11 +915,11 @@ func TestGetChecksSurfacesErrorWhenPaginatedPageIsCorrupt(t *testing.T) {
 	// output must fail the call rather than return a partial (potentially
 	// all-green) slice that hides a failed job on the dropped page.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
+		"glab ci status --mr 123 --output json -R group/project": {
 			stderr: "unknown flag: --mr\n",
 			code:   1,
 		},
-		"glab mr view 123 --output json": {
+		"glab mr view 123 --output json -R group/project": {
 			stdout: `{"head_pipeline":{"id":77}}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {

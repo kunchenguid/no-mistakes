@@ -38,15 +38,37 @@ func (h *Host) Project() string {
 	return h.projectPath
 }
 
+// repoArgs returns the -R pair when the project path is known, so glab
+// addresses that project instead of the one implied by the process working
+// directory. A bare group/project is resolved on gitlab.com (or GITLAB_HOST),
+// not on the git remote's host, so a known host is passed as an absolute
+// project URL. An empty project path omits -R.
+func (h *Host) repoArgs() []string {
+	if h == nil || h.projectPath == "" {
+		return nil
+	}
+	repo := h.projectPath
+	if host := strings.TrimSpace(h.host); host != "" {
+		repo = "https://" + host + "/" + h.projectPath
+	}
+	return []string{"-R", repo}
+}
+
+func (h *Host) glab(ctx context.Context, args ...string) *exec.Cmd {
+	return h.cmd(ctx, "glab", append(args, h.repoArgs()...)...)
+}
+
 // New builds a Host. cliAvailable reports whether the glab binary is
 // resolvable on the caller's PATH (possibly overridden by env). host is the
 // repo's GitLab hostname; when set the availability check is scoped to it via
 // --hostname so a stale credential for an unrelated configured glab host cannot
 // make this repo look unauthenticated. projectPath is the repo's "group/project"
-// path (subgroups allowed); when set, pipeline-job reads go through `glab api`
-// (REST), which is branch-independent and works in the daemon's detached-HEAD
+// path (subgroups allowed). When set, commands that select a project pass it
+// via -R (see repoArgs) and pipeline-job reads go through `glab api` (REST),
+// which is branch-independent and works in the daemon's detached-HEAD
 // worktree, where `glab ci get` refuses to run without a current branch. Both
-// are optional; empty reproduces the legacy unscoped behavior.
+// are optional; an empty project path omits -R and leaves project selection to
+// the process working directory.
 func New(cmd CmdFactory, cliAvailable func() bool, host, projectPath string) *Host {
 	return &Host{
 		cmd:          cmd,
@@ -233,7 +255,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	// -c/--closed, -M/--merged, -A/--all); passing the unknown flag fails the
 	// whole command. Rely on the open-by-default behavior.
 	args = append(args, "--output", "json")
-	cmd := h.cmd(ctx, "glab", args...)
+	cmd := h.glab(ctx, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr list: %s: %w", strings.TrimSpace(string(out)), err)
@@ -290,7 +312,7 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	if h.draft {
 		args = append(args, "--draft")
 	}
-	cmd := h.cmd(ctx, "glab", args...)
+	cmd := h.glab(ctx, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
@@ -343,7 +365,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		args = append(args, "--title", title)
 	}
 	args = append(args, "--description", content.Body)
-	cmd := h.cmd(ctx, "glab", args...)
+	cmd := h.glab(ctx, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("glab mr update: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -366,7 +388,7 @@ func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch strin
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("merge request identity is required to retarget")
 	}
-	cmd := h.cmd(ctx, "glab", "mr", "update", id, "--target-branch", baseBranch)
+	cmd := h.glab(ctx, "mr", "update", id, "--target-branch", baseBranch)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("glab mr update --target-branch: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -421,7 +443,7 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 }
 
 func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
-	cmd := h.cmd(ctx, "glab", "mr", "view", id, "--output", "json")
+	cmd := h.glab(ctx, "mr", "view", id, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return mrPayload{}, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
@@ -436,7 +458,7 @@ func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	// glab ci status --mr <id> --output json lists jobs for the MR's latest pipeline.
 	// Not all glab versions support --mr; fall back to listing pipelines by branch via view.
-	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", pr.Number, "--output", "json")
+	cmd := h.glab(ctx, "ci", "status", "--mr", pr.Number, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if !isUnsupportedMRFlagError(out) {
@@ -473,7 +495,7 @@ func isUnsupportedMRFlagError(out []byte) bool {
 
 func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	// Try fetching the MR's pipeline and listing its jobs.
-	cmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
+	cmd := h.glab(ctx, "mr", "view", pr.Number, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
@@ -518,7 +540,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 		return nil, nil
 	}
 	// Get the MR's pipeline jobs and trace the selected failures.
-	viewCmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
+	viewCmd := h.glab(ctx, "mr", "view", pr.Number, "--output", "json")
 	viewOut, err := viewCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("resolve GitLab merge request for selected logs: %w", err)
@@ -555,7 +577,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 		var outputs []string
 		var errs []error
 		for _, jobID := range jobIDs {
-			traceCmd := h.cmd(ctx, "glab", "ci", "trace", fmt.Sprintf("%d", jobID))
+			traceCmd := h.glab(ctx, "ci", "trace", fmt.Sprintf("%d", jobID))
 			traceOut, err := traceCmd.Output()
 			if err != nil {
 				errs = append(errs, fmt.Errorf("fetch GitLab job %d trace: %w", jobID, err))
