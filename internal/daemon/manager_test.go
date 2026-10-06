@@ -1246,6 +1246,285 @@ func TestRerunDropsPRURLWhenIntegrationRemoteChanges(t *testing.T) {
 	}
 }
 
+func TestRerunDropsPRURLWhenTrackingInfersAnotherRemote(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	repo, headSHA := setupTestGitRepo(t, p, d, "tracking-rerun-pr-url")
+	workDir := repo.WorkingPath
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("tracking-rerun-pr-url"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := waitForRunTerminalState(t, d, first.RunID)
+	if prior.BaseRemote != nil && *prior.BaseRemote != "" {
+		t.Fatalf("prior BaseRemote = %#v, want the origin default", prior.BaseRemote)
+	}
+	prURL := "https://gitlab.example.com/group/old/-/merge_requests/7"
+	if err := d.UpdateRunPRURL(first.RunID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	addReachableCustomRemote(t, workDir, "release")
+	gitCmd(t, workDir, "config", "branch.main.remote", "custom")
+	gitCmd(t, workDir, "config", "branch.main.merge", "refs/heads/release")
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "tracking-rerun-pr-url",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+		PRBaseBranch:  "release",
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRURL != nil && *got.PRURL != "" {
+		t.Fatalf("tracking-inferred rerun PRURL = %q, want none", *got.PRURL)
+	}
+	if got.BaseRemote == nil || *got.BaseRemote != "custom" {
+		t.Fatalf("tracking-inferred BaseRemote = %#v, want custom", got.BaseRemote)
+	}
+}
+
+func TestRerunDropsPRURLWhenConfiguredBaseInfersAnotherRemote(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	repo, _ := setupTestGitRepo(t, p, d, "configured-rerun-pr-url")
+	workDir := repo.WorkingPath
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: release\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".no-mistakes.yaml")
+	gitCmd(t, workDir, "commit", "-m", "set pr base")
+	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/main")
+	headSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("configured-rerun-pr-url"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := waitForRunTerminalState(t, d, first.RunID)
+	if prior.BaseRemote != nil && *prior.BaseRemote != "" {
+		t.Fatalf("prior BaseRemote = %#v, want the origin default before tracking", prior.BaseRemote)
+	}
+	prURL := "https://gitlab.example.com/group/old/-/merge_requests/7"
+	if err := d.UpdateRunPRURL(first.RunID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "remote", "add", "custom", "https://example.com/custom/project.git")
+	gitCmd(t, workDir, "config", "branch.main.remote", "custom")
+	gitCmd(t, workDir, "config", "branch.main.merge", "refs/heads/release")
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "configured-rerun-pr-url",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRURL != nil && *got.PRURL != "" {
+		t.Fatalf("configured-base rerun PRURL = %q, want none", *got.PRURL)
+	}
+	if got.BaseRemote == nil || *got.BaseRemote != "custom" {
+		t.Fatalf("configured-base BaseRemote = %#v, want custom", got.BaseRemote)
+	}
+	if got.PRBaseBranch != nil && *got.PRBaseBranch != "" {
+		t.Fatalf("PRBaseBranch = %#v, want the base to come from config", got.PRBaseBranch)
+	}
+}
+
+func TestRerunKeepsPRURLWhenSelectedRemoteMatches(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	repo, _ := setupTestGitRepo(t, p, d, "matching-remote-rerun-pr-url")
+	workDir := repo.WorkingPath
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: release\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".no-mistakes.yaml")
+	gitCmd(t, workDir, "commit", "-m", "set pr base")
+	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, workDir, "remote", "add", "custom", "https://example.com/custom/project.git")
+	gitCmd(t, workDir, "config", "branch.main.remote", "custom")
+	gitCmd(t, workDir, "config", "branch.main.merge", "refs/heads/release")
+	headSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("matching-remote-rerun-pr-url"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := waitForRunTerminalState(t, d, first.RunID)
+	if prior.BaseRemote == nil || *prior.BaseRemote != "custom" {
+		t.Fatalf("prior BaseRemote = %#v, want custom", prior.BaseRemote)
+	}
+	prURL := "https://gitlab.example.com/custom/project/-/merge_requests/7"
+	if err := d.UpdateRunPRURL(first.RunID, prURL); err != nil {
+		t.Fatal(err)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "matching-remote-rerun-pr-url",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRURL == nil || *got.PRURL != prURL {
+		t.Fatalf("matching-remote rerun PRURL = %#v, want %s", got.PRURL, prURL)
+	}
+	if got.BaseRemote == nil || *got.BaseRemote != "custom" {
+		t.Fatalf("matching-remote BaseRemote = %#v, want custom", got.BaseRemote)
+	}
+}
+
+func TestFreshLaunchDropsPRURLWhenIntegrationRemoteDiffers(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, head := setupTestGitRepo(t, p, d, "fresh-remote-pr-url")
+	workDir := repo.WorkingPath
+	addReachableCustomRemote(t, workDir, "release")
+	gitCmd(t, workDir, "config", "branch.main.remote", "custom")
+	gitCmd(t, workDir, "config", "branch.main.merge", "refs/heads/release")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	prior, err := d.InsertRun(repo.ID, "main", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(prior.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	const prURL = "https://gitlab.example.com/group/old/-/merge_requests/7"
+	if err := d.UpdateRunPRURL(prior.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+
+	var dropped ipc.StartFreshRunResult
+	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "main", HeadSHA: head, Intent: "open on the integration project",
+		LaunchNonce: "fresh-other-remote", ValidationGeneration: "generation", PRBaseBranch: "release",
+	}, &dropped); err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, dropped.Receipt.RunID)
+	if got.PRURL != nil && *got.PRURL != "" {
+		t.Fatalf("fresh launch PRURL = %q, want none", *got.PRURL)
+	}
+	if got.BaseRemote == nil || *got.BaseRemote != "custom" {
+		t.Fatalf("fresh launch BaseRemote = %#v, want custom", got.BaseRemote)
+	}
+}
+
+func TestFreshLaunchKeepsPRURLWhenIntegrationRemoteMatches(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, head := setupTestGitRepo(t, p, d, "fresh-same-remote-pr-url")
+	workDir := repo.WorkingPath
+	addReachableCustomRemote(t, workDir, "release")
+	gitCmd(t, workDir, "config", "branch.main.remote", "custom")
+	gitCmd(t, workDir, "config", "branch.main.merge", "refs/heads/release")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	prior, err := d.InsertRun(repo.ID, "main", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(prior.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunBaseRemote(prior.ID, "custom"); err != nil {
+		t.Fatal(err)
+	}
+	const prURL = "https://gitlab.example.com/custom/project/-/merge_requests/7"
+	if err := d.UpdateRunPRURL(prior.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+
+	var kept ipc.StartFreshRunResult
+	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "main", HeadSHA: head, Intent: "stay on the integration project",
+		LaunchNonce: "fresh-same-remote", ValidationGeneration: "generation", PRBaseBranch: "release",
+	}, &kept); err != nil {
+		t.Fatal(err)
+	}
+	same := waitForRunTerminalState(t, d, kept.Receipt.RunID)
+	if same.PRURL == nil || *same.PRURL != prURL {
+		t.Fatalf("same-remote fresh launch PRURL = %#v, want %s", same.PRURL, prURL)
+	}
+	if same.BaseRemote == nil || *same.BaseRemote != "custom" {
+		t.Fatalf("same-remote fresh launch BaseRemote = %#v, want custom", same.BaseRemote)
+	}
+}
+
+func addReachableCustomRemote(t *testing.T, workDir, branch string) {
+	t.Helper()
+	custom := filepath.Join(t.TempDir(), "custom.git")
+	gitCmd(t, "", "init", "--bare", custom)
+	gitCmd(t, workDir, "remote", "add", "custom", custom)
+	gitCmd(t, workDir, "push", "custom", "HEAD:refs/heads/"+branch)
+}
+
 func TestStartRunPersistsIntegrationRemoteFromConfiguredBase(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
