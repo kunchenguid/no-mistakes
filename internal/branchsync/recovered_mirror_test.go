@@ -104,6 +104,73 @@ func addRecoveredFollowup(t *testing.T, f *recoverFixture) string {
 	return mustRun(t, f.local, "rev-parse", "HEAD")
 }
 
+func TestRecoverKeepLocalReturnedAncestorMirrorIsNoop(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"never-pushed", "already-pushed", "last-pushed-mirror"} {
+		t.Run(name, func(t *testing.T) {
+			f := newRecoverFixture(t, types.RunCancelled)
+			pushed := name != "never-pushed"
+			mirror := f.submitted
+			if name == "last-pushed-mirror" {
+				mirror = mustRun(t, f.gate, "rev-parse", f.preserved+"^")
+				mustRun(t, f.local, "fetch", f.gate, mirror)
+			}
+			if pushed {
+				mustRun(t, f.local, "push", f.remote, mirror+":refs/heads/feature/recover")
+				if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+					HeadSHA: mirror, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			first := f.service.Recover(f.ctx, false)
+			if !first.Recovered || !first.Changed {
+				t.Fatalf("initial recovery = %#v", first)
+			}
+			mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", mirror)
+			if pushed {
+				// Prime the private observation ref used by the mandatory live
+				// remote check before comparing recovery's durable refs.
+				if state := f.service.Refresh(f.ctx); state.Error != "" {
+					t.Fatalf("refresh returned push binding = %#v", state)
+				}
+			}
+			localRefs := mustRun(t, f.local, "show-ref")
+			gateRefs := mustRun(t, f.gate, "show-ref")
+			before, err := f.db.GetRun(f.run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				state := f.service.Recover(f.ctx, true)
+				if !state.Recovered || state.Changed || state.Error != "" {
+					t.Fatalf("repeat recovery = %#v", state)
+				}
+			}
+			if got := mustRun(t, f.local, "show-ref"); got != localRefs {
+				t.Fatalf("no-op changed local refs: %s", got)
+			}
+			if got := mustRun(t, f.gate, "show-ref"); got != gateRefs {
+				t.Fatalf("no-op changed mirror refs: %s", got)
+			}
+			if got := mustRun(t, f.local, "status", "--porcelain"); got != "" {
+				t.Fatalf("no-op changed worktree: %s", got)
+			}
+			after, err := f.db.GetRun(f.run.ID)
+			if err != nil || after.UpdatedAt != before.UpdatedAt || *after.CustodyReturnedAt != *before.CustodyReturnedAt {
+				t.Fatalf("no-op changed custody record: %#v, %v", after, err)
+			}
+			if pushed {
+				mustRun(t, f.remote, "update-ref", "refs/heads/feature/recover", f.base)
+				state := f.service.Recover(f.ctx, true)
+				if state.Recovered || state.Changed || state.Safety != "blocked_recover_keep_local_not_applicable" {
+					t.Fatalf("rewritten remote must prevent no-op = %#v", state)
+				}
+			}
+		})
+	}
+}
+
 func TestRecoverKeepLocalReconcilesReturnedRebasedMirrorAfterFollowup(t *testing.T) {
 	t.Parallel()
 	f := newReturnedRebasedMirrorFixture(t, false)

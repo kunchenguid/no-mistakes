@@ -588,7 +588,7 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 func (s *Service) reconcileReturnedMirror(ctx context.Context, state State, run *db.Run) State {
 	branch := state.Local.Branch
 	branchRef := "refs/heads/" + branch
-	if run == nil || s.Repo == nil || strings.TrimSpace(s.GateDir) == "" || branch == "" || branch != run.Branch || state.Pipeline.RunID != run.ID {
+	if run == nil || s.Repo == nil || run.RepoID != s.Repo.ID || strings.TrimSpace(s.GateDir) == "" || branch == "" || branch != run.Branch || state.Pipeline.RunID != run.ID {
 		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_identity", "the returned run, current branch, or private mirror is unavailable or mismatched; no mirror refs were changed")
 	}
 	if !state.Local.Clean {
@@ -605,7 +605,11 @@ func (s *Service) reconcileReturnedMirror(ctx context.Context, state State, run 
 	if err != nil {
 		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_ref", "the private mirror ref could not be read safely; no mirror refs were changed")
 	}
-	if exists && gateHead == state.Local.Head {
+	// A bound mirror already contained by the local branch needs no deletion
+	// or recovery-lineage proof. Pushed runs reach here only after Recover's
+	// live remote check; divergent mirrors still require the handoff below.
+	if exists && (gateHead == state.Local.Head ||
+		((gateHead == submitted || gateHead == ptr(run.LastPushedSHA)) && isAncestor(ctx, s.workDir(), gateHead, state.Local.Head))) {
 		state.Recovered = true
 		state.Changed = false
 		return state
@@ -620,7 +624,7 @@ func (s *Service) reconcileReturnedMirror(ctx context.Context, state State, run 
 	}
 
 	if !terminalRunStatus(run.Status) || run.CustodyReturnedAt == nil || run.TerminalHeadVerifiedAt == nil ||
-		run.LastPushedSHA != nil || run.RepoID != s.Repo.ID || run.SubmittedHeadSHA == nil {
+		run.LastPushedSHA != nil || run.SubmittedHeadSHA == nil {
 		return blockedPlan(state, StateCustodyReturned, "blocked_recover_mirror_metadata", "the run lacks complete terminal custody evidence for this handoff; no mirror refs were changed")
 	}
 	if branchNow, err := git.CurrentBranch(ctx, s.workDir()); err != nil || branchNow != branch {
