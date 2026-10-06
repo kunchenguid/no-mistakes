@@ -42,13 +42,14 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 // effective PR base branch when possible. This keeps pipeline steps scoped to
 // the full branch, not just the last pushed delta. Outside eval replay, it fetches
 // that branch's current remote tip first (as resolveRunDefaultBranchTip does).
-// The merge-base is computed against the live base, not whatever origin/<base>
-// happened to be sitting at in the worktree - a stale local ref otherwise
-// drafts PR content (and other consumers) against an outdated base and pulls
-// in unrelated commits that already landed there.
+// The merge-base is computed against the live base, not whatever
+// <integration remote>/<base> happened to be sitting at in the worktree - a
+// stale local ref otherwise drafts PR content (and other consumers) against
+// an outdated base and pulls in unrelated commits that already landed there.
+// That remote is origin unless the run selected another.
 //
 // A fetch failure is refused rather than degraded: falling back to the
-// worktree's cached origin/<base> ref on fetch failure would silently
+// worktree's cached tracking ref on fetch failure would silently
 // reintroduce the exact stale-base bug this helper exists to eliminate, one
 // layer down. Callers return the error, which fails the step instead of
 // validating or drafting content against unverified base state.

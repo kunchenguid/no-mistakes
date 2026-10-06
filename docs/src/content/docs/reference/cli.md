@@ -135,7 +135,7 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
-| `--base-remote` | `string` | `origin` | Git remote that holds that branch and the PR project; head upstream is used when it tracks the base |
+| `--base-remote` | `string` | `origin` | Git remote that holds that branch, the PR project, and the no-fork push; head upstream is used when it tracks the base |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | GitHub issue the PR fully resolves (`95` or `owner/repo#95`); see [Closing issues](#closing-issues) |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
@@ -191,7 +191,7 @@ Only attached runs receive plan-aware guidance. Review and Test assess the propo
 
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
-`--base-remote` names the git remote that holds the integration branch and the project the pull or merge request is opened against. It defaults to `origin`. When the flag is omitted and the current branch's upstream already tracks that base branch on another remote, that remote is used. The same remote is the existence check, the fetch and rebase, and the project URL read from the working checkout. An explicit `origin` is stored and suppresses the tracking fallback. Reattaching with a different `--base-remote` is refused; omit the flag to reattach. A run that resolves to a remote other than `origin` refuses a daemon too old to record it.
+`--base-remote` names the git remote that holds the integration branch and the project the pull or merge request is opened against. It defaults to `origin`. When the flag is omitted and the current branch's upstream already tracks that base branch on another remote, that remote is used. The same remote is the existence check, the fetch and rebase, the project URL read from the working checkout, and, when no fork URL is configured, the branch push. An explicit `origin` is stored and suppresses the tracking fallback. Reattaching with a different `--base-remote` is refused; omit the flag to reattach. A run that resolves to a remote other than `origin` refuses a daemon too old to record it.
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
@@ -566,7 +566,7 @@ use rerun to bypass a gate.
 | ---- | ---- | ------- | ----------- |
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 | `--base-branch` | `string` | (none) | Integration branch for this rerun; overrides the base inherited from the selected prior run |
-| `--base-remote` | `string` | (none) | Git remote that holds the integration branch and the PR project; overrides the remote inherited from the selected prior run |
+| `--base-remote` | `string` | (none) | Git remote that holds the integration branch, the PR project, and the no-fork push; overrides the remote inherited from the selected prior run |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | GitHub issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |

@@ -71,9 +71,9 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 
 	// Stop before rebasing when the gated branch carries commits that live on
-	// the contributor's local default branch but were never pushed to
-	// origin/<default>. Rebasing onto the fresh remote default keeps those
-	// commits in the branch's history, so the PR may bundle another
+	// the contributor's local default branch but were never pushed to the
+	// integration remote's base branch. Rebasing onto that fresh remote base
+	// keeps those commits in the branch's history, so the PR may bundle another
 	// workstream's unpushed work. Surface the ambiguity for a human decision.
 	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
 		return outcome, nil
@@ -223,15 +223,17 @@ func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
 
 // detectBundledLocalDefaultCommits returns a blocking finding when the gated
 // branch carries commits that exist on the contributor's local default branch
-// but were never pushed to origin/<default>. In multi-session / monorepo setups
-// the local default branch routinely carries another workstream's unpushed
-// work; branching a fix off that local tip silently drags it into the PR when
-// the branch is rebased onto the remote default. Returns nil when no such
-// divergence is detected so the run proceeds normally.
+// but were never pushed to the integration remote's base branch. In
+// multi-session / monorepo setups the local default branch routinely carries
+// another workstream's unpushed work; branching a fix off that local tip
+// silently drags it into the PR when the branch is rebased onto the remote
+// base. Returns nil when no such divergence is detected so the run proceeds
+// normally.
 //
 // It only flags commits the branch actually carries: it reads the local default
-// tip from the working repo, confirms that tip is ahead of origin/<default> and
-// is a strict ancestor of the branch HEAD, then enumerates the unpushed commits.
+// tip from the working repo, confirms that tip is ahead of
+// <integration remote>/<base> and is a strict ancestor of the branch HEAD,
+// then enumerates the unpushed commits.
 // Equal tips are the common commit-on-main-then-name-a-branch workflow, not
 // evidence of an additional bundled workstream.
 // Detection is best-effort - if the local default tip advanced past the branch

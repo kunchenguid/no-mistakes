@@ -52,7 +52,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.
 - **Rebase next** so everything else runs against the latest upstream and pushed-branch target.
-  It also stops when the branch would silently bundle commits from a local default branch that were never pushed to `origin/<default_branch>`.
+  It also stops when the branch would silently bundle local commits that were never pushed to the integration remote's base branch. [Rebase](/no-mistakes/reference/pipeline-steps/#rebase) owns that check.
   If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
   A later run's initial review also receives fix-round provenance for any uncertified pipeline-authored commits left on the branch when a previous run's re-review did not complete.
