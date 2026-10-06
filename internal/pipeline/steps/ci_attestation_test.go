@@ -386,7 +386,7 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 	f.sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
 	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`)
 	f.sctx.Env = append(env,
-		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\",\"headRefName\":\"feature\",\"headRepository\":{\"nameWithOwner\":\"test/repo\"}}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: ci",
 		"FAKE_CLI_LOG="+logFile,
@@ -458,7 +458,7 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 	}
 	f.sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
 	f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`),
-		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\",\"headRefName\":\"feature\",\"headRepository\":{\"nameWithOwner\":\"test/repo\"}}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: ci",
 		"FAKE_CLI_PR_EDIT_ERR=provider unavailable",
@@ -519,7 +519,7 @@ func TestCIStep_PublishRepairDoesNotMintAttestation(t *testing.T) {
 	f.sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
 	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`)
 	f.sctx.Env = append(env,
-		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\",\"headRefName\":\"feature\",\"headRepository\":{\"nameWithOwner\":\"test/repo\"}}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=feat: hand rolled",
 		"FAKE_CLI_LOG="+logFile,
@@ -594,7 +594,7 @@ func TestPushStep_AttestsHeadBeforePush(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "gh.log")
 	env := fakeCIGH(t, "OPEN", `[]`)
 	sctx.Env = append(env,
-		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\",\"headRefName\":\"feature\",\"headRepository\":{\"nameWithOwner\":\"test/repo\"}}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: existing pr",
 		"FAKE_CLI_LOG="+logFile,
@@ -723,7 +723,7 @@ func TestPushStep_AttestationWriteFailureAbortsBeforePush(t *testing.T) {
 	}
 	env := fakeCIGH(t, "OPEN", `[]`)
 	sctx.Env = append(env,
-		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\",\"headRefName\":\"feature\",\"headRepository\":{\"nameWithOwner\":\"test/repo\"}}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: existing pr",
 		"FAKE_CLI_PR_EDIT_ERR=provider unavailable",
@@ -806,7 +806,7 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 		"FAKE_CLI_STATE=OPEN",
 		"FAKE_CLI_CHECKS=[]",
 		"FAKE_CLI_PR_HEAD_SHA=deadbeef",
-		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\",\"headRefName\":\"feature\",\"headRepository\":{\"nameWithOwner\":\"test/repo\"}}]",
 		"FAKE_CLI_PR_BODY_FILE=" + bodyFile,
 		"FAKE_CLI_PR_TITLE=fix: existing pr",
 		"FAKE_CLI_REAL_GIT=" + realGit,
@@ -872,7 +872,7 @@ func TestPushStep_DoesNotMintAttestation(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "gh.log")
 	env := fakeCIGH(t, "OPEN", `[]`)
 	sctx.Env = append(env,
-		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\",\"headRefName\":\"feature\",\"headRepository\":{\"nameWithOwner\":\"test/repo\"}}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 		"FAKE_CLI_PR_TITLE=feat: hand rolled",
 		"FAKE_CLI_LOG="+logFile,

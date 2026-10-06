@@ -398,6 +398,14 @@ type Host interface {
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
 }
 
+// PRHeadReader reads the current head of an existing PR by its durable identity.
+// It must also verify the source repository and branch against the configured
+// push target. Custody and rebound publication require this proof rather than
+// an inferred local head.
+type PRHeadReader interface {
+	GetPRHeadSHA(ctx context.Context, pr *PR, branch string) (string, error)
+}
+
 // PRBaseBranchReader is implemented by providers that can read the target
 // branch of an existing PR by its durable identity. CI uses it when a run is
 // resumed after repository configuration changes.

@@ -70,7 +70,7 @@ func newCIRepairFixture(t *testing.T, revalidate bool, agentAction func(workDir 
 		// attestHeadBeforePush discovers the PR via FindPR before every publish
 		// (Push and a CI repair alike), so the fixture's fake gh must be able to
 		// resolve the same PR the fixture's own persisted PRURL names.
-		`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`,
+		`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main","headRefName":"feature","headRepository":{"nameWithOwner":"test/repo"}}]`,
 	)
 	sctx.Run.PRURL = &prURL
 	sctx.Run.Branch = "refs/heads/feature"

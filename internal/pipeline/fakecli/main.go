@@ -96,6 +96,12 @@ func handleFakeCLI(mode string) {
 		fakeCIGlabSequenceHandler(args)
 	case "ci-gh-reconcile":
 		fakeCIGHReconcileHandler(args)
+	case "gh-with-intervening-push":
+		if strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0])) == "git" {
+			fakeGitInterveningPushPassthroughHandler(args)
+		} else {
+			fakeGHHandler(args)
+		}
 	case "ci-gh-with-intervening-push":
 		// A single step invocation can need both a faked gh (for the PR
 		// attestation write) and a faked git (to inject a push-time race) in
@@ -175,10 +181,23 @@ func fakeGHHandler(args []string) {
 			os.Exit(0)
 		}
 		number := extractTrailingNumber(prURL)
-		fmt.Printf("[{\"number\":%d,\"url\":%q,\"baseRefName\":%q}]\n", number, prURL, prBase)
+		head, _ := fakeCLIFlagValue(args, "--head")
+		repository := os.Getenv("FAKE_CLI_PR_HEAD_REPOSITORY")
+		if repository == "" {
+			parsed, _ := url.Parse(prURL)
+			parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+			if len(parts) >= 2 {
+				repository = parts[0] + "/" + parts[1]
+			}
+		}
+		fmt.Printf("[{\"number\":%d,\"url\":%q,\"baseRefName\":%q,\"headRefName\":%q,\"headRepository\":{\"nameWithOwner\":%q}}]\n", number, prURL, prBase, strings.TrimPrefix(head, "refs/heads/"), repository)
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
+		if strings.Contains(strings.Join(args, " "), "--json headRefOid") {
+			fmt.Println(fakePRHeadSHA())
+			os.Exit(0)
+		}
 		if strings.Contains(strings.Join(args, " "), "--json state") {
 			state := os.Getenv("FAKE_CLI_PR_STATE")
 			if state == "" {
@@ -515,6 +534,10 @@ func fakeCIGHReconcileHandler(args []string) {
 }
 
 func fakeGHHandlePRContentCommands(args []string, joined string) {
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid,headRefName,headRepository") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_PUBLICATION_JSON"))
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json title,body") {
 		if raw, ok := os.LookupEnv("FAKE_CLI_PR_CONTENT_JSON"); ok {
 			fmt.Println(raw)

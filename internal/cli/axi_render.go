@@ -113,15 +113,16 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	PiProfile        *agentcfg.PiProfile
-	VerificationPlan *verificationplan.Snapshot
-	ID               string
-	Branch           string
-	Status           string
-	HeadSHA          string
-	PRURL            string
-	CIReady          bool
-	CIReadyNoCI      bool
+	PiProfile         *agentcfg.PiProfile
+	VerificationPlan  *verificationplan.Snapshot
+	ID                string
+	Branch            string
+	PublicationBranch *string
+	Status            string
+	HeadSHA           string
+	PRURL             string
+	CIReady           bool
+	CIReadyNoCI       bool
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -139,6 +140,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
 		ID:                 r.ID,
 		Branch:             r.Branch,
+		PublicationBranch:  r.PublicationBranch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		CIReady:            r.CIReady,
@@ -189,6 +191,7 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
 		Branch:             r.Branch,
+		PublicationBranch:  r.PublicationBranch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
@@ -475,6 +478,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		{Key: "id", Value: rv.ID},
 		{Key: "branch", Value: rv.Branch},
 		{Key: "status", Value: rv.Status},
+	}
+	if rv.PublicationBranch != nil {
+		fields = append(fields, toon.Field{Key: "publication_branch", Value: *rv.PublicationBranch})
 	}
 	// Surface the parked-awaiting-agent signal right after status so one read
 	// distinguishes a run waiting for the agent to drive a gate from one that

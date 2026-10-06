@@ -746,6 +746,8 @@ Accepts any positive Go `time.ParseDuration` string. Overridable per-invocation 
 
 Maximum time guarded branch synchronization (`sync`, `axi sync`, and the TUI's sync action) waits for each remote Git operation - `ls-remote` or `fetch` - before remote verification fails closed and synchronization is refused.
 
+Also bounds each remote Git operation and the existing-PR proof used by [custody release/reconcile](/no-mistakes/reference/cli/#no-mistakes-custody-release--reconcile) and [publication rebind](/no-mistakes/reference/cli/#no-mistakes-publication-rebind).
+
 |         |                        |
 | ------- | ---------------------- |
 | Type    | `string` (Go duration) |

@@ -1438,6 +1438,17 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.StartFreshRunResult{Receipt: receipt}, nil
 	})
 
+	srv.Handle(ipc.MethodCustodyOperation, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.CustodyOperationParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		return mgr.HandleCustodyOperation(ctx, &p)
+	})
+
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err
@@ -1585,6 +1596,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		ID:                 r.ID,
 		RepoID:             r.RepoID,
 		Branch:             r.Branch,
+		PublicationBranch:  r.PublicationBranch,
 		HeadSHA:            r.HeadSHA,
 		SubmittedHeadSHA:   r.SubmittedHeadSHA,
 		BaseSHA:            r.BaseSHA,

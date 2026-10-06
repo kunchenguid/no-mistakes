@@ -119,8 +119,14 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // revalidation); pass this run's current steps (sctx.DB.GetStepsByRun) for
 // the ordinary Push step.
 func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, attestationSteps []*db.StepResult) error {
+	var publicationErr error
+	sctx, publicationErr = publicationContext(sctx)
+	if publicationErr != nil {
+		return publicationErr
+	}
+
 	ctx := sctx.Ctx
-	ref := normalizedBranchRef(sctx.Run.Branch)
+	ref := normalizedBranchRef(sctx.Run.PublishBranch())
 	branch := strings.TrimPrefix(ref, "refs/heads/")
 
 	pushURL := resolvePushURL(sctx)
@@ -143,7 +149,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// until the upstream push is verified, because a refused or failed push is
 	// a designed outcome and a gate left with no branch ref would strand
 	// `rerun` and branch-sync recovery on a branch that never published.
-	mirrorPlan, err := planGateMirrorReconciliation(ctx, sctx, ref, branch, headBeingPushed)
+	custodyRef := normalizedBranchRef(sctx.Run.Branch)
+	custodyBranch := strings.TrimPrefix(custodyRef, "refs/heads/")
+	mirrorPlan, err := planGateMirrorReconciliation(ctx, sctx, custodyRef, custodyBranch, headBeingPushed)
 	if err != nil {
 		return err
 	}
@@ -162,6 +170,13 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
 
+	if sctx.Run.PublicationBranch != nil && (decision.newBranch || (!decision.fastForward && !decision.upToDate)) {
+		return fmt.Errorf("rebound publication requires an existing branch and an append-only head; history rewrite is refused")
+	}
+	if err := assertReboundPublicationPR(sctx, decision.remoteSHA); err != nil {
+		return err
+	}
+
 	// This protocol has single-publisher scope: the daemon's
 	// startRunWithIntentSourceLocked enforces one active run per repo branch, so
 	// coordination with independent authorized publishers is outside its scope.
@@ -170,6 +185,13 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	}
 
 	switch {
+	case sctx.Run.PublicationBranch != nil:
+		// An explicit lease requires the existing branch to still have the head
+		// whose ancestry we proved. It also rejects deletion between proof and
+		// publication; a plain push could silently recreate that branch.
+		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, ref, decision.remoteSHA, true); err != nil {
+			return fmt.Errorf("rebound publication lease refused: %w", err)
+		}
 	case decision.newBranch, decision.fastForward:
 		// A branch absent from the remote creates it, and an append-only update
 		// discards nothing by construction, so both are a plain push with no
@@ -211,7 +233,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// returning the error makes the CI monitor treat an already published
 	// repair as a failed one, and recording first and swallowing the error
 	// strands the gate behind the remote for good.
-	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed, mirrorPlan); err != nil {
+	if err := updateGateMirrorAfterPush(ctx, sctx, custodyRef, headBeingPushed, mirrorPlan); err != nil {
 		return err
 	}
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -1115,6 +1116,27 @@ func TestRerunInheritsPRURLFromSelectedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := d.UpdateRunStatus(first.RunID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	previous, _ := d.GetRun(first.RunID)
+	repo, _ := d.GetRepo(previous.RepoID)
+	if err := d.RebindPublication(repo, previous, "existing", prURL, branchsync.TargetFingerprint(repo.PushURL())); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(first.RunID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := d.InsertRun(repo.ID, "main", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRURL(newer.ID, "https://github.com/test/repo/pull/43"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(newer.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
 	var rerun ipc.RerunResult
 	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
 		RepoID:        "pr-url-rerun-repo",
@@ -1127,6 +1149,9 @@ func TestRerunInheritsPRURLFromSelectedRun(t *testing.T) {
 	got := waitForRunTerminalState(t, d, rerun.RunID)
 	if got.PRURL == nil || *got.PRURL != prURL {
 		t.Fatalf("rerun PRURL = %#v, want inherited %s", got.PRURL, prURL)
+	}
+	if got.PublicationBranch == nil || *got.PublicationBranch != "existing" || got.Branch != "main" || got.PublicationTargetFingerprint == nil {
+		t.Fatalf("lost inherited publication binding: %+v", got)
 	}
 }
 
@@ -1716,5 +1741,216 @@ func TestOwnedGateAcceptsARelativeRootSpelling(t *testing.T) {
 	foreign := filepath.Join(t.TempDir(), "repos", repoID+".git")
 	if _, err := ownedGateRepoID(p, foreign); err == nil {
 		t.Fatal("a gate under another root must still be refused")
+	}
+}
+
+func TestInheritedPublicationConflictPreservesCurrentSourceRun(t *testing.T) {
+	for _, route := range []string{"rerun", "fresh"} {
+		for _, conflict := range []string{"source-owner", "publication-owner", "changed-target", "default-branch", "available"} {
+			t.Run(route+"/"+conflict, func(t *testing.T) {
+				m, params, _ := custodyManagerFixture(t)
+				m.steps = func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepReview}} }
+				mock := writeMockClaude(t, t.TempDir())
+				if err := os.WriteFile(m.paths.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mock+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(m.Shutdown)
+				previous, err := m.db.GetRun(params.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				repo, err := m.db.GetRepo(previous.RepoID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				const destination = "existing"
+				const previousPR = "https://github.com/test/repo/pull/42"
+				if err := m.db.UpdateRunStatus(previous.ID, types.RunRunning); err != nil {
+					t.Fatal(err)
+				}
+				previous, _ = m.db.GetRun(previous.ID)
+				if err := m.db.RebindPublication(repo, previous, destination, previousPR, branchsync.TargetFingerprint(repo.PushURL())); err != nil {
+					t.Fatal(err)
+				}
+				if err := m.db.UpdateRunStatus(previous.ID, types.RunFailed); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, params.WorkDir, "commit", "--allow-empty", "-m", "current validation")
+				currentHead := gitOutput(t, params.WorkDir, "rev-parse", "HEAD")
+				gitCmd(t, params.WorkDir, "push", m.paths.RepoDir(repo.ID), "HEAD:refs/heads/validation")
+				current, err := m.db.InsertRun(repo.ID, previous.Branch, currentHead, previous.HeadSHA)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := m.db.RebindPublication(repo, current, "other-destination", "https://github.com/test/repo/pull/43", branchsync.TargetFingerprint(repo.PushURL())); err != nil {
+					t.Fatal(err)
+				}
+				if err := m.db.UpdateRunStatus(current.ID, types.RunRunning); err != nil {
+					t.Fatal(err)
+				}
+				if err := m.db.SetRunAwaitingAgent(current.ID); err != nil {
+					t.Fatal(err)
+				}
+				currentCtx, cancel := context.WithCancelCause(context.Background())
+				defer cancel(nil)
+				done := make(chan struct{})
+				var once sync.Once
+				m.cancels[current.ID] = func(reason error) {
+					cancel(reason)
+					once.Do(func() { _ = m.db.UpdateRunStatus(current.ID, types.RunFailed); close(done) })
+				}
+				m.dones[current.ID] = done
+				switch conflict {
+				case "source-owner", "publication-owner":
+					branch := destination
+					if conflict == "publication-owner" {
+						branch = "competing-source"
+					}
+					owner, err := m.db.InsertRun(repo.ID, branch, currentHead, previous.HeadSHA)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if conflict == "publication-owner" {
+						if err := m.db.RebindPublication(repo, owner, destination, previousPR, branchsync.TargetFingerprint(repo.PushURL())); err != nil {
+							t.Fatal(err)
+						}
+					}
+				case "changed-target":
+					if _, err := m.db.UpdateRepoMetadata(repo.ID, repo.UpstreamURL+"-changed", repo.DefaultBranch); err != nil {
+						t.Fatal(err)
+					}
+				case "default-branch":
+					if _, err := m.db.UpdateRepoMetadata(repo.ID, repo.UpstreamURL, destination); err != nil {
+						t.Fatal(err)
+					}
+				}
+				gateHead := currentHead
+				if route == "fresh" {
+					gateHead = previous.HeadSHA
+					gitCmd(t, m.paths.RepoDir(repo.ID), "update-ref", "refs/heads/validation", gateHead)
+				}
+				before, err := m.db.GetRunsByRepo(repo.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var runID string
+				request := func() {
+					if route == "rerun" {
+						runID, err = m.HandleRerun(context.Background(), repo.ID, previous.Branch, previous.ID, nil, "", "", false, "", "", nil)
+					} else {
+						var receipt ipc.LaunchReceipt
+						receipt, err = m.HandleStartFreshRun(context.Background(), &ipc.StartFreshRunParams{RepoID: repo.ID, Branch: previous.Branch, HeadSHA: gateHead, LaunchNonce: "new-launch", ValidationGeneration: "generation", Intent: "preserve current validation"})
+						runID = receipt.RunID
+					}
+				}
+				if conflict == "available" {
+					locked := make(chan struct{})
+					unlock := make(chan struct{})
+					lockDone := make(chan struct{})
+					var once sync.Once
+					release := func() { once.Do(func() { close(unlock) }) }
+					defer release()
+					go func() {
+						_, _ = m.withBranchLock(repo.ID, destination, func() (string, error) { close(locked); <-unlock; return "", nil })
+						close(lockDone)
+					}()
+					select {
+					case <-locked:
+					case <-time.After(3 * time.Second):
+						t.Fatal("destination was not reserved")
+					}
+					requested := make(chan struct{})
+					go func() { request(); close(requested) }()
+					select {
+					case <-requested:
+						t.Error("launch bypassed destination reservation")
+					case <-time.After(20 * time.Millisecond):
+					}
+					if context.Cause(currentCtx) != nil {
+						t.Error("source cancelled before destination reservation")
+					}
+					release()
+					select {
+					case <-requested:
+					case <-time.After(5 * time.Second):
+						t.Fatal("launch did not resume after destination release")
+					}
+					select {
+					case <-lockDone:
+					case <-time.After(3 * time.Second):
+						t.Fatal("destination reservation did not stop")
+					}
+				} else {
+					request()
+				}
+				if conflict == "available" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := waitForRunTerminalState(t, m.db, runID)
+					if context.Cause(currentCtx) == nil || got.Status != types.RunCompleted || got.PublicationBranch == nil || *got.PublicationBranch != destination || got.PRURL == nil || *got.PRURL != previousPR {
+						t.Fatalf("ordinary supersession or inherited binding failed: %+v", got)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatal("contested inherited publication accepted")
+				}
+				if context.Cause(currentCtx) != nil {
+					t.Fatalf("refusal cancelled current source run: %v", context.Cause(currentCtx))
+				}
+				after, readErr := m.db.GetRunsByRepo(repo.ID)
+				if readErr != nil || len(after) != len(before) {
+					t.Fatalf("refusal created a replacement row: %d -> %d, %v", len(before), len(after), readErr)
+				}
+				current, readErr = m.db.GetRun(current.ID)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if current.Status != types.RunRunning || current.AwaitingAgentSince == nil || current.HeadSHA != currentHead || current.PublicationBranch == nil || *current.PublicationBranch != "other-destination" {
+					t.Fatalf("current validation changed: %+v", current)
+				}
+				if got := gitOutput(t, m.paths.RepoDir(repo.ID), "rev-parse", "refs/heads/validation"); got != gateHead {
+					t.Fatal("refusal moved gate")
+				}
+			})
+		}
+	}
+}
+
+func TestPublicationBranchLocksSerializeOppositeDirections(t *testing.T) {
+	m := NewRunManager(nil, nil, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan struct{})
+	go func() {
+		_, _ = m.withBranchLock("repo", "z-source", func() (string, error) { close(entered); <-release; return "", nil }, "a-destination")
+		close(firstDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first reservation did not enter")
+	}
+	secondDone := make(chan struct{})
+	go func() {
+		_, _ = m.withBranchLock("repo", "a-destination", func() (string, error) { return "", nil }, "z-source")
+		close(secondDone)
+	}()
+	select {
+	case <-secondDone:
+		t.Error("opposite reservation bypassed shared locks")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	for _, done := range []chan struct{}{firstDone, secondDone} {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("opposite reservations deadlocked")
+		}
+	}
+	if _, err := m.withBranchLock("repo", "same", func() (string, error) { return "", nil }, "same"); err != nil {
+		t.Fatal(err)
 	}
 }

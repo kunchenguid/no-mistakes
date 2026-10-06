@@ -1480,10 +1480,10 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr list --head feature/refactor --base release/1.0 --state open --json number,url,baseRefName": {
-			stdout: `[{"number":42,"url":"https://github.example.com/org/repo/pull/42","baseRefName":"release/1.0"}]` + "\n",
+		"gh pr list --head feature/refactor --base release/1.0 --repo org/repo --state open --json number,url,baseRefName,headRefName,headRepository": {
+			stdout: `[{"number":42,"url":"https://github.example.com/org/repo/pull/42","baseRefName":"release/1.0","headRefName":"feature/refactor","headRepository":{"nameWithOwner":"org/repo"}}]` + "\n",
 		},
-	}), nil, "", "")
+	}), nil, "github.example.com", "org/repo")
 
 	pr, err := host.FindPR(context.Background(), "feature/refactor", "release/1.0")
 	if err != nil {
@@ -1505,14 +1505,14 @@ func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 
 	branch := "feature/refactor"
 	host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr list --head fork-owner:" + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
+		"gh pr list --head fork-owner:" + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepository": {
 			stderr: `invalid argument: "--head" does not support "<owner>:<branch>"` + "\n",
 			code:   1,
 		},
-		"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
+		"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepository": {
 			stdout: `[` +
-				`{"number":40,"url":"https://github.com/parent/repo/pull/40","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"other-owner"}},` +
-				`{"number":42,"url":"https://github.com/parent/repo/pull/42","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}` +
+				`{"number":40,"url":"https://github.com/parent/repo/pull/40","baseRefName":"main","headRefName":"feature/refactor","headRepository":{"nameWithOwner":"other-owner/repo"}},` +
+				`{"number":42,"url":"https://github.com/parent/repo/pull/42","baseRefName":"main","headRefName":"feature/refactor","headRepository":{"nameWithOwner":"fork-owner/repo"}}` +
 				`]` + "\n",
 		},
 	}), nil, "", "parent/repo", "fork-owner/repo", false)
@@ -1536,7 +1536,7 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName": {
+		"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName,headRefName,headRepository": {
 			stderr: "api unavailable\n",
 			code:   1,
 		},
@@ -1558,7 +1558,7 @@ func TestFindPRRejectsURLForDifferentRepository(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr list --head feature/refactor --base main --repo parent/repo --state open --json number,url,baseRefName": {
+		"gh pr list --head feature/refactor --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepository": {
 			stdout: `[{"number":42,"url":"https://github.com/other/repo/pull/42","baseRefName":"main"}]` + "\n",
 		},
 	}), nil, "github.com", "parent/repo")
@@ -1578,8 +1578,8 @@ func TestFindPRRejectsURLForDifferentRepository(t *testing.T) {
 func TestFindPRReturnsJSONError(t *testing.T) {
 	t.Parallel()
 
-	const findPRListCommand = "gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName"
-	valid := `{"number":42,"url":"https://github.example.com/org/repo/pull/42","baseRefName":"main"}`
+	const findPRListCommand = "gh pr list --head feature/refactor --base main --repo org/repo --state open --json number,url,baseRefName,headRefName,headRepository"
+	valid := `{"number":42,"url":"https://github.example.com/org/repo/pull/42","baseRefName":"main","headRefName":"feature/refactor","headRepository":{"nameWithOwner":"org/repo"}}`
 	for _, output := range []string{
 		"[{\n",
 		"null\n",
@@ -1597,7 +1597,7 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 			findPRListCommand: {
 				stdout: output,
 			},
-		}), nil, "", "")
+		}), nil, "github.example.com", "org/repo")
 
 		pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
 		if err == nil {
@@ -1612,7 +1612,7 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 	}
 }
 
-func TestFindPRForkRejectsMissingHeadIdentity(t *testing.T) {
+func TestFindPRRejectsMissingHeadIdentity(t *testing.T) {
 	t.Parallel()
 
 	branch := "feature/refactor"
@@ -1622,32 +1622,34 @@ func TestFindPRForkRejectsMissingHeadIdentity(t *testing.T) {
 	}{
 		{
 			name:   "missing head ref",
-			output: `[{"number":42,"url":"https://github.com/parent/repo/pull/42","headRepositoryOwner":{"login":"fork-owner"}}]`,
+			output: `[{"number":42,"url":"https://github.com/parent/repo/pull/42","headRepository":{"nameWithOwner":"fork-owner/repo"}}]`,
 		},
 		{
-			name:   "missing head owner",
-			output: `[{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepositoryOwner":null}]`,
+			name:   "missing head repository",
+			output: `[{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepository":null}]`,
 		},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
-				"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
-					stdout: tc.output + "\n",
-				},
-			}), nil, "", "parent/repo", "fork-owner/repo", false)
+	for _, fork := range []string{"", "fork-owner/repo"} {
+		for _, tc := range tests {
+			t.Run(tc.name+"/"+fork, func(t *testing.T) {
+				host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+					"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepository": {
+						stdout: tc.output + "\n",
+					},
+				}), nil, "", "parent/repo", fork, false)
 
-			pr, err := host.FindPR(context.Background(), branch, "main")
-			if err == nil {
-				t.Fatal("FindPR() error = nil, want head identity error")
-			}
-			if !strings.Contains(err.Error(), "parse gh pr list") {
-				t.Fatalf("FindPR() error = %v, want parse context", err)
-			}
-			if pr != nil {
-				t.Fatalf("FindPR() PR = %+v, want nil", pr)
-			}
-		})
+				pr, err := host.FindPR(context.Background(), branch, "main")
+				if err == nil {
+					t.Fatal("FindPR() error = nil, want head identity error")
+				}
+				if !strings.Contains(err.Error(), "parse gh pr list") {
+					t.Fatalf("FindPR() error = %v, want parse context", err)
+				}
+				if pr != nil {
+					t.Fatalf("FindPR() PR = %+v, want nil", pr)
+				}
+			})
+		}
 	}
 }
 
@@ -1995,5 +1997,97 @@ func TestGetPRContentRequiresExplicitStrings(t *testing.T) {
 	got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
 	if err != nil || got.Title != "Author title" || got.Body != "" {
 		t.Fatalf("explicit empty body rejected: %+v, %v", got, err)
+	}
+}
+
+func TestGetPRHeadSHARequiresExplicitIdentityAndNonemptyRead(t *testing.T) {
+	t.Parallel()
+	for _, head := range []string{"published-head", ""} {
+		t.Run(head, func(t *testing.T) {
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{"gh pr view 123 --repo test/repo --json headRefOid,headRefName,headRepository": {stdout: fmt.Sprintf(`{"headRefOid":%q,"headRefName":"existing","headRepository":{"nameWithOwner":"test/repo"}}`, head)}}), nil, "", "test/repo")
+			got, err := host.GetPRHeadSHA(context.Background(), &scm.PR{Number: "123", URL: "https://github.com/test/repo/pull/123"}, "existing")
+			if head == "" {
+				if err == nil {
+					t.Fatal("empty provider proof accepted")
+				}
+			} else if err != nil || got != head {
+				t.Fatalf("head=%s err=%v", got, err)
+			}
+			if _, err := host.GetPRHeadSHA(context.Background(), &scm.PR{}, "existing"); err == nil {
+				t.Fatal("cwd-inferred PR identity accepted")
+			}
+		})
+	}
+}
+
+func TestGetPRHeadSHARejectsAnotherRepositoryOrBranch(t *testing.T) {
+	t.Parallel()
+	for _, fork := range []string{"", "fork/renamed-repo"} {
+		for _, source := range []string{"test/repo", "fork/renamed-repo", "fork/repo", "other/repo", ""} {
+			for _, branch := range []string{"existing", "other", ""} {
+				t.Run(fork+"/"+source+"/"+branch, func(t *testing.T) {
+					head := strings.Repeat("a", 40)
+					payload := fmt.Sprintf(`{"headRefOid":%q,"headRefName":%q,"headRepository":{"nameWithOwner":%q}}`, head, branch, source)
+					host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+						"gh pr view 123 --repo test/repo --json headRefOid,headRefName,headRepository": {stdout: payload},
+					}), nil, "", "test/repo", fork, false)
+					got, err := host.GetPRHeadSHA(context.Background(), &scm.PR{Number: "123"}, "existing")
+					target := "test/repo"
+					if fork != "" {
+						target = fork
+					}
+					if source == target && branch == "existing" {
+						if err != nil || got != head {
+							t.Fatalf("valid proof refused: %s %v", got, err)
+						}
+					} else if err == nil {
+						t.Fatal("foreign publication source accepted at the same SHA")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestFindPRSelectsConfiguredRepositoryAndBranch(t *testing.T) {
+	t.Parallel()
+	for _, fork := range []string{"", "fork/renamed"} {
+		target := "parent/repo"
+		if fork != "" {
+			target = fork
+		}
+		for _, matching := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/matching=%v/reverse=%v", fork, matching, reverse), func(t *testing.T) {
+					candidates := []string{
+						`{"number":40,"url":"https://github.com/parent/repo/pull/40","headRefName":"existing","headRepository":{"nameWithOwner":"foreign/repo"}}`,
+						fmt.Sprintf(`{"number":41,"url":"https://github.com/parent/repo/pull/41","headRefName":"other","headRepository":{"nameWithOwner":%q}}`, target),
+						`{"number":43,"url":"https://github.com/parent/repo/pull/43","headRefName":"existing","headRepository":{"nameWithOwner":"fork/other"}}`,
+						fmt.Sprintf(`{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"existing","headRepository":{"nameWithOwner":%q}}`, target),
+					}
+					if !matching {
+						candidates = candidates[:len(candidates)-1]
+					}
+					if reverse {
+						for i, j := 0, len(candidates)-1; i < j; i, j = i+1, j-1 {
+							candidates[i], candidates[j] = candidates[j], candidates[i]
+						}
+					}
+					host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+						"gh pr list --head existing --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepository": {stdout: "[" + strings.Join(candidates, ",") + "]"},
+					}), nil, "", "parent/repo", fork, false)
+					pr, err := host.FindPR(context.Background(), "existing", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if matching && (pr == nil || pr.Number != "42") {
+						t.Fatalf("wrong publication candidate: %+v", pr)
+					}
+					if !matching && pr != nil {
+						t.Fatalf("foreign publication adopted: %+v", pr)
+					}
+				})
+			}
+		}
 	}
 }

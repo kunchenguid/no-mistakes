@@ -130,8 +130,6 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		}
 		forkRepo := ""
 		if sctx.Repo.ForkURL != "" {
-			// forkRepo is only used to extract the fork owner for --head owner:branch;
-			// the plain slug (without host prefix) is correct here.
 			forkRepo = github.RepoSlug(sctx.Repo.ForkURL)
 		}
 		draft := sctx.Config != nil && sctx.Config.Providers.GitHub.DraftPullRequests
@@ -283,6 +281,15 @@ func buildPluginHost(sctx *pipeline.StepContext, name string, cmdFactory plugin.
 		CommandFactory:      cmdFactory,
 		ExecutableAvailable: func(executable string) bool { return stepExecutableAvailable(sctx, executable) },
 	}), ""
+}
+
+// PublicationHost shares the pipeline's provider, repository and fork routing
+// with explicit custody/publication operations. Unsupported routing refuses.
+func PublicationHost(sctx *pipeline.StepContext) (scm.Host, string) {
+	scopedCtx, scopedRepo := *sctx, *sctx.Repo
+	scopedRepo.URLsVerified = true
+	scopedCtx.Repo = &scopedRepo
+	return buildHost(&scopedCtx, resolvedProvider(&scopedCtx))
 }
 
 func detectProviderForStep(sctx *pipeline.StepContext, remoteURL string) scm.Provider {
