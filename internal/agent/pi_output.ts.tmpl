@@ -1,0 +1,22 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const parameters = __NO_MISTAKES_SCHEMA__;
+
+export default function (pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "no_mistakes_output",
+		label: "Final output",
+		description: "Submit the final result matching the requested schema. Call this as your final and only remaining tool call, instead of writing a final assistant response.",
+		exposure: "model-only",
+		parameters,
+		constrainedSampling: { type: "json_schema", strict: "require" },
+		async execute(_id, output) {
+			return {
+				content: [{ type: "text", text: JSON.stringify(output) }],
+				details: { output },
+				terminate: true,
+			};
+		},
+	});
+
+}

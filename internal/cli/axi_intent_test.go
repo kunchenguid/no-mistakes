@@ -418,3 +418,21 @@ func TestAxiRunIntentAcceptsBoundaryThroughEOF(t *testing.T) {
 		})
 	}
 }
+
+func TestAxiRunRejectsClosesWithSkipPR(t *testing.T) {
+	launched := olderDaemonFixture(t, nil)
+	writeGlobalConfig(t, "")
+	cmd := newAxiRunCmd()
+	cmd.SetArgs([]string{"--intent", "goal", "--closes", "42", "--skip", "review,pr"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.Execute()
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != 2 || !strings.Contains(out.String(), "--closes cannot be combined with --skip pr") {
+		t.Fatalf("--closes with --skip pr = %v\n%s", err, out.String())
+	}
+	if len(*launched) != 0 {
+		t.Fatalf("--closes with --skip pr launched: %v", *launched)
+	}
+}

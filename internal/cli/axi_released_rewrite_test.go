@@ -170,7 +170,7 @@ func TestTriggerRunArchivesReleasedRunSubmittedMirrorForRewrittenBranch(t *testi
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	runID, err := triggerRun(ctx, g.env, "main", nil, "", "", false, "")
+	runID, err := triggerRun(ctx, g.env, "main", nil, "", "", false, "", nil)
 	if err != nil || runID != "run-rewritten" {
 		t.Fatalf("fresh submission of the rewritten released branch: run=%q err=%v", runID, err)
 	}
@@ -215,7 +215,7 @@ func TestTriggerRunRefusesReleasedRunMirrorThatMovedPastTheSubmittedHead(t *test
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	runID, err := triggerRun(ctx, g.env, "main", nil, "", "", false, "")
+	runID, err := triggerRun(ctx, g.env, "main", nil, "", "", false, "", nil)
 	if err == nil || runID != "" || !strings.Contains(err.Error(), "at-risk commit") {
 		t.Fatalf("lane that moved past the submitted head must keep the at-risk refusal: run=%q err=%v", runID, err)
 	}
@@ -247,7 +247,7 @@ func TestTriggerRunRefusesCustodyReturnedRunMirrorForRewrittenBranch(t *testing.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	runID, err := triggerRun(ctx, g.env, "main", nil, "", "", false, "")
+	runID, err := triggerRun(ctx, g.env, "main", nil, "", "", false, "", nil)
 	if err == nil || runID != "" || !strings.Contains(err.Error(), "at-risk commit") {
 		t.Fatalf("custody-returned rewrite must keep the at-risk refusal: run=%q err=%v", runID, err)
 	}
@@ -279,7 +279,7 @@ func TestTriggerProofRunArchivesReleasedRunSubmittedMirrorForRewrittenBranch(t *
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	receipt, err := triggerProofRun(ctx, g.env, "main", g.rewritten, nil, "", "", false, nonce, generation, "")
+	receipt, err := triggerProofRun(ctx, g.env, "main", g.rewritten, nil, "", "", false, nonce, generation, "", nil)
 	if err != nil || receipt == nil || receipt.RunID != "run-proof" {
 		t.Fatalf("proof submission of the rewritten released branch: receipt=%+v err=%v", receipt, err)
 	}
@@ -309,7 +309,7 @@ func TestTriggerProofRunRejectedPushRestoresReleasedRunMirror(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	receipt, err := triggerProofRun(ctx, g.env, "main", g.rewritten, nil, "", "", false, "nonce-rejected", "generation-1", "")
+	receipt, err := triggerProofRun(ctx, g.env, "main", g.rewritten, nil, "", "", false, "nonce-rejected", "generation-1", "", nil)
 	if err == nil || receipt != nil || !strings.Contains(err.Error(), "submission-rejected") {
 		t.Fatalf("rejected proof submission: receipt=%+v err=%v", receipt, err)
 	}

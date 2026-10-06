@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -13,12 +14,15 @@ import (
 
 // TestCleanupOrphanWorktreesSweepsEveryRemovableDirectoryInOneSnapshot bounds
 // what startup cleanup pays for the sweep that has to precede every removal.
-// One snapshot per directory makes the daemon slower to start the more a crash
-// left behind: a scoped sweep has no age floor, so each snapshot enumerates
-// every process on the machine (a whole-machine lsof on darwin, capped at 10s),
-// and the whole pass runs before the socket is bound, against the startup
-// budget. Per-directory decisions must not change: an active run's worktree is
-// neither swept nor removed.
+// One snapshot per removal pass makes the daemon slower to start the more a
+// crash left behind: a scoped sweep has no age floor, so each snapshot
+// enumerates every process on the machine (a whole-machine lsof on darwin,
+// capped at 10s), and the whole pass runs before the socket is bound, against
+// the startup budget. Startup runs two passes - reapWorktrees for the default
+// tree (retention-aware) and cleanupOrphanWorktrees for operator-placed
+// leftovers (unconditional) - and each must still sweep its own directories
+// in one snapshot rather than one per directory. Per-directory decisions must
+// not change: an active run's worktree is neither swept nor removed.
 func TestCleanupOrphanWorktreesSweepsEveryRemovableDirectoryInOneSnapshot(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
@@ -56,14 +60,20 @@ func TestCleanupOrphanWorktreesSweepsEveryRemovableDirectoryInOneSnapshot(t *tes
 		sweeps = append(sweeps, wts)
 	}
 
+	// Force every eligible default-tree directory past the retention window
+	// regardless of its actual mtime, mirroring recoverOnStartup's order.
+	future := time.Now().Add(365 * 24 * time.Hour)
+	reapWorktrees(d, p, worktreeReapPolicy{Retention: time.Nanosecond}, future)
 	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
 
-	if len(sweeps) != 1 {
-		t.Fatalf("startup cleanup ran %d sweeps for 3 removable directories, want 1", len(sweeps))
+	if len(sweeps) != 2 {
+		t.Fatalf("startup cleanup ran %d sweeps, want 2 (default tree, then operator-placed leftovers)", len(sweeps))
 	}
 	swept := map[string]bool{}
-	for _, wt := range sweeps[0] {
-		swept[wt.Dir] = true
+	for _, batch := range sweeps {
+		for _, wt := range batch {
+			swept[wt.Dir] = true
+		}
 	}
 	for _, dir := range []string{firstDefault, secondDefault, recorded} {
 		if !swept[dir] {

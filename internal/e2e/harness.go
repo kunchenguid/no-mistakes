@@ -127,8 +127,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// origin) hits the fakeagent stub instead of a real, authenticated
 	// system CLI. antigravity gets a second link under its probed binary
 	// name "agy" (internal/cli/doctor.go searches that name, not the agent
-	// name).
-	for _, name := range []string{"claude", "codex", "grok", "opencode", "pi", "antigravity", "agy", "gh", "tea"} {
+	// name). nm-fake-provider-plugin is the reference provider plugin; it is
+	// inert unless a test configures it under provider_plugins.
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "pi", "antigravity", "agy", "gh", "tea", "nm-fake-provider-plugin"} {
 		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)

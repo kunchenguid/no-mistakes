@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -172,10 +171,9 @@ Previous review findings to address:
 			historySection,
 			previousFindings,
 		)
-		// Every logical agent turn owns a fresh hard wall-clock limit. The
-		// fixer keeps the step parent for synchronous preparation and commit
-		// work, so the independent rereviewer cannot inherit its spent
-		// deadline.
+		// Every logical agent turn owns a fresh stall budget. The fixer keeps
+		// the step parent for synchronous preparation and commit work, so the
+		// independent rereviewer cannot inherit its spent deadline.
 		summary, err := s.executeReviewFixWithTimeout(sctx, s.Name(), fixExecutionOptions{
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "review fix requires previous review findings",
@@ -256,17 +254,20 @@ Previous review findings to address:
 	}
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + settledQuestionsPromptSection(sctx) + supersededReviewHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + planSection + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
-	// Path-scoped repository review guidance, taken from the trusted
-	// default-branch config copy (regardless of allow_repo_commands) so a pushed
-	// branch cannot steer the reviewer that gates it. Selection runs against the
-	// complete changed-file set, never the ignore-filtered one, so a pushed
-	// ignore_patterns entry cannot suppress a trusted rule. Only blocks whose
-	// glob matches a changed path are appended, so a repository with none
-	// configured - or none relevant to this diff - gets the prompt above
-	// unchanged.
-	pathInstructionMatches := matchPathInstructions(changed, sctx.Config.Review.PathInstructions)
-	logPathInstructions(sctx.Log, pathInstructionMatches)
-	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
+	// Path-scoped review guidance, taken from the operator's global config and
+	// from the trusted default-branch config copy (regardless of
+	// allow_repo_commands), so a pushed branch cannot steer the reviewer that
+	// gates it. Selection runs against the complete changed-file set, never the
+	// ignore-filtered one, so a pushed ignore_patterns entry cannot suppress a
+	// rule. Only blocks whose glob matches a changed path are appended, so a
+	// run with none configured - or none relevant to this diff - gets the
+	// prompt above unchanged.
+	pathInstructions := ""
+	for _, source := range sctx.Config.Review.PathInstructionSources() {
+		matches := matchPathInstructions(changed, source.Entries)
+		logPathInstructions(sctx.Log, source.Label, matches)
+		pathInstructions += reviewPathInstructionsSection(source.Heading, matches)
+	}
 
 	// The authorization/privacy obligation below specializes the existing
 	// concrete-state trace only when changed behavior crosses a potentially
@@ -460,6 +461,7 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	}
 	var findings Findings
+	var validationErrors []error
 	for attempt := 1; ; attempt++ {
 		result, err := s.runReviewAgent(sctx, "agent review", sessionRole, opts)
 		if err == nil {
@@ -470,7 +472,11 @@ Risk assessment (after listing all findings):
 		} else if !agent.IsStructuredOutputRejected(err) || sctx.Ctx.Err() != nil || errors.Is(err, errReviewAgentTimeout) {
 			return nil, err
 		}
+		validationErrors = append(validationErrors, err)
 		if attempt == reviewAnalyzerMaxAttempts {
+			if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
+				return nil, fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err)
+			}
 			return nil, fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err)
 		}
 		sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, reviewAnalyzerMaxAttempts))
@@ -800,6 +806,34 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 	return findings, nil
 }
 
+func distinctReviewValidationFailures(failures []error) string {
+	fields := make([]string, 0, len(failures))
+	seen := make(map[string]struct{}, len(failures))
+	for _, failure := range failures {
+		var violation *agent.SchemaViolation
+		if !errors.As(failure, &violation) || violation.Field == "" {
+			continue
+		}
+		if _, ok := seen[violation.Field]; ok {
+			continue
+		}
+		seen[violation.Field] = struct{}{}
+		fields = append(fields, violation.Field)
+	}
+	if len(fields) < 2 {
+		return ""
+	}
+	return strings.Join(fields, ", ")
+}
+
+func reviewValidationAttempts(failures []error) string {
+	var attempts strings.Builder
+	for i, failure := range failures {
+		fmt.Fprintf(&attempts, "attempt %d: %s; ", i+1, strings.ReplaceAll(failure.Error(), "\n", "; "))
+	}
+	return attempts.String()
+}
+
 // reviewRetryNote is the only thing a rerun review learns from the attempt
 // before it: the validation error, framed as data.
 func reviewRetryNote(err error) string {
@@ -931,36 +965,36 @@ func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, ste
 }
 
 func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	ctx, cancel, timeout := s.reviewAgentContext(sctx.Ctx, sctx.Config)
-	defer cancel()
-	result, err := sctx.RunAgentSessionContext(ctx, role, opts)
+	timeout := reviewAgentTimeout(sctx.Config)
+	result, err := sctx.RunAgentSessionBudget(sctx.Ctx, timeout, reviewAgentWorkingTimeout(sctx.Config), errReviewAgentTimeout, role, opts)
 	if err != nil {
-		err = reviewAgentError(ctx, timeout, prefix, err)
+		err = reviewAgentError(timeout, prefix, err)
 	}
 	return result, err
 }
 
-func (s *ReviewStep) reviewAgentContext(parent context.Context, cfg *config.Config) (context.Context, context.CancelFunc, time.Duration) {
-	timeout := config.DefaultReviewAgentTimeout
+func reviewAgentTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ReviewAgentTimeout > 0 {
-		timeout = cfg.ReviewAgentTimeout
+		return cfg.ReviewAgentTimeout
 	}
-	now := time.Now()
-	if s != nil && s.now != nil {
-		now = s.now()
+	return config.DefaultReviewAgentTimeout
+}
+
+func reviewAgentWorkingTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return 0
 	}
-	ctx, cancel := context.WithDeadlineCause(parent, now.Add(timeout), errReviewAgentTimeout)
-	return ctx, cancel, timeout
+	return cfg.ReviewAgentWorkingTimeout
 }
 
 var errReviewAgentTimeout = errors.New("review agent timeout")
 
-// reviewAgentError renders one review invocation's absolute wall-clock expiry.
-// The measured activity evidence comes from the shared agent-run seam; the hard
-// limit is never restated as inactivity because activity does not reset it.
-func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
-	if timeout > 0 && errors.Is(context.Cause(ctx), errReviewAgentTimeout) {
-		return fmt.Errorf("%s reached its absolute wall-clock limit after %s: %w", prefix, timeout, err)
+// reviewAgentError renders one review invocation's budget expiry. The shared
+// agent-run seam supplies which bound cut the turn (silent budget, stall budget, or still-working cap),
+// how long it ran, and the measured activity evidence.
+func reviewAgentError(timeout time.Duration, prefix string, err error) error {
+	if timeout > 0 && errors.Is(err, errReviewAgentTimeout) {
+		return fmt.Errorf("%s reached its invocation budget %s: %w", prefix, pipeline.AgentBudgetBound(err, timeout), err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
 }

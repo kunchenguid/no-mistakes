@@ -683,3 +683,80 @@ func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) 
 		}
 	}
 }
+
+func TestExecutor_SkippedPRStepWithClosingIssueRefsFails(t *testing.T) {
+	for _, refs := range [][]string{nil, {"95"}} {
+		t.Run(fmt.Sprintf("closes=%v", refs), func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			if refs != nil {
+				if err := database.UpdateRunClosingIssueRefs(run.ID, refs); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pr := newPassStep(types.StepPR)
+			exec := NewExecutor(database, p, nil, nil, []Step{pr}, nil)
+			exec.SetSkippedSteps([]types.StepName{types.StepPR})
+
+			err := exec.Execute(context.Background(), run, repo, t.TempDir())
+			if got := pr.callCount(); got != 0 {
+				t.Fatalf("skipped PR step executed %d times, want 0", got)
+			}
+			steps, stepsErr := database.GetStepsByRun(run.ID)
+			if stepsErr != nil || len(steps) != 1 {
+				t.Fatalf("steps = %+v, err = %v", steps, stepsErr)
+			}
+			if refs == nil {
+				if err != nil || steps[0].Status != types.StepStatusSkipped {
+					t.Fatalf("err = %v, status = %s; want skipped", err, steps[0].Status)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "--closes requires publishing a pull request") {
+				t.Fatalf("err = %v; want --closes refusal", err)
+			}
+			if steps[0].Status != types.StepStatusFailed {
+				t.Fatalf("status = %s, want %s", steps[0].Status, types.StepStatusFailed)
+			}
+			if err := database.UpdateRunClosingIssueRefs(run.ID, []string{"95", "96"}); err == nil {
+				t.Fatal("reattach after the skipped PR step must be refused")
+			}
+		})
+	}
+}
+
+func TestExecutor_SkipRemainingPastPRStepWithClosingIssueRefsFails(t *testing.T) {
+	for _, refs := range [][]string{nil, {"95"}} {
+		t.Run(fmt.Sprintf("closes=%v", refs), func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			if refs != nil {
+				if err := database.UpdateRunClosingIssueRefs(run.ID, refs); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rebase := &mockStep{name: types.StepRebase, outcome: &StepOutcome{ExitCode: 0, SkipRemaining: true}}
+			pr := newPassStep(types.StepPR)
+			exec := NewExecutor(database, p, nil, nil, []Step{rebase, pr}, nil)
+
+			err := exec.Execute(context.Background(), run, repo, t.TempDir())
+			if got := pr.callCount(); got != 0 {
+				t.Fatalf("PR step executed %d times, want 0", got)
+			}
+			steps, stepsErr := database.GetStepsByRun(run.ID)
+			if stepsErr != nil || len(steps) != 2 {
+				t.Fatalf("steps = %+v, err = %v", steps, stepsErr)
+			}
+			if refs == nil {
+				if err != nil || steps[1].Status != types.StepStatusSkipped {
+					t.Fatalf("err = %v, status = %s; want skipped", err, steps[1].Status)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "--closes requires publishing a pull request") {
+				t.Fatalf("err = %v; want --closes refusal", err)
+			}
+			if steps[1].Status != types.StepStatusFailed {
+				t.Fatalf("status = %s, want %s", steps[1].Status, types.StepStatusFailed)
+			}
+		})
+	}
+}

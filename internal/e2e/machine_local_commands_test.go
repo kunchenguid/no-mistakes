@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,14 +68,19 @@ func testStepPrompts(h *Harness) []string {
 // the team command's priority.
 func TestMachineLocalCommandOverridesJourney(t *testing.T) {
 	t.Run("overrides_apply_are_declared_and_recorded", func(t *testing.T) {
+		priority, err := exec.Command("nice", "-n", "7", "sh", "-c", "ps -o nice= -p $$").Output()
+		if err != nil {
+			t.Fatalf("measure adjusted niceness: %v", err)
+		}
+		expectedNice := strings.TrimSpace(string(priority))
 		h := NewHarness(t, SetupOpts{Agent: "claude"})
 		marker := filepath.Join(t.TempDir(), "marker")
 		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-team-test"),
-			`printf 'team nice=%s\n' "$(nice)" >> "`+marker+`"
+			`printf 'team nice=%s\n' "$(ps -o nice= -p $$ | tr -d ' ')" >> "`+marker+`"
 exit 0
 `)
 		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-local-smoke"),
-			`printf 'local nice=%s\n' "$(nice)" >> "`+marker+`"
+			`printf 'local nice=%s\n' "$(ps -o nice= -p $$ | tr -d ' ')" >> "`+marker+`"
 exit 0
 `)
 		setupMachineLocalCommands(t, h, `    commands:
@@ -98,8 +104,8 @@ exit 0
 		}
 		t.Logf("command marker:\n%s", markerData)
 		for _, want := range []string{
-			"team nice=7",
-			"local nice=7",
+			"team nice=" + expectedNice,
+			"local nice=" + expectedNice,
 		} {
 			if !strings.Contains(string(markerData), want) {
 				t.Errorf("marker missing %q", want)
@@ -116,6 +122,9 @@ exit 0
 			if !strings.Contains(testLog, want) {
 				t.Errorf("test step log missing %q", want)
 			}
+		}
+		if got := strings.Count(testLog, "machine-local overrides applied to commands.test"); got != 1 {
+			t.Errorf("test step log declares the overrides %d times, want once", got)
 		}
 
 		prompts := testStepPrompts(h)
@@ -232,6 +241,7 @@ exit 0
       lint:
         additional:
           - nm-local-policy
+        nice: 5
 `)
 		const branch = "feature/local-lint"
 		h.CommitChange(branch, ".no-mistakes.yaml", "commands:\n  lint: 'true'\n", "configure team lint")
@@ -245,6 +255,15 @@ exit 0
 		t.Logf("lint findings: %s", *step.FindingsJSON)
 		if !strings.Contains(*step.FindingsJSON, "machine-local lint check failed with exit code 4: nm-local-policy") {
 			t.Errorf("lint finding does not name the machine-local check")
+		}
+		lintLog := readStepLog(t, h, run.ID, string(types.StepLint))
+		t.Logf("lint step log:\n%s", lintLog)
+		const lintDeclaration = `machine-local overrides applied to commands.lint: nice 5; additional checks "nm-local-policy"`
+		if got := strings.Count(lintLog, "machine-local overrides applied to commands.lint"); got != 1 {
+			t.Errorf("lint step log declares the overrides %d times, want once", got)
+		}
+		if declared, baseline := strings.Index(lintLog, lintDeclaration), strings.Index(lintLog, "running linter: true"); declared < 0 || baseline < 0 || declared > baseline {
+			t.Errorf("lint override declaration (at %d) is not logged before the baseline lint command (at %d)", declared, baseline)
 		}
 		h.CancelRun(run.ID)
 	})

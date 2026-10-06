@@ -77,16 +77,28 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	baseBranch := effectivePRBaseBranch(sctx)
 	if branch == baseBranch {
+		if err := refuseSkipWithClosingIssues(sctx, fmt.Sprintf("the branch is the PR base branch %s", branch)); err != nil {
+			return nil, err
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if err := refuseSkipWithClosingIssues(sctx, skipReason); err != nil {
+			return nil, err
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if pluginContractBroken(err) {
+			return nil, err
+		}
+		if err := refuseSkipWithClosingIssues(sctx, err.Error()); err != nil {
+			return nil, err
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
@@ -108,7 +120,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
-	bodyLimit := scm.MaxPRBodyChars(provider)
+	bodyLimit := scm.HostMaxPRBodyChars(host)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
 	if err != nil {
@@ -127,6 +139,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		} else if template != "" {
 			return nil, fmt.Errorf("provider cannot read existing PR content for author-safe template updates")
+		}
+		// Claim after the live read and before composition, so a reattach can
+		// add references until the body is actually being composed.
+		if err := claimClosingIssueRefs(sctx, host, provider); err != nil {
+			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		updated := existing
@@ -166,6 +183,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err != nil {
 				return nil, err
 			}
+			if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
+				return nil, err
+			}
 			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 				return nil, err
 			}
@@ -177,6 +197,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, fmt.Errorf("update existing pull request: %w", err)
 			}
 		}
+		if err := verifyClosingIssues(ctx, host, updated, sctx); err != nil {
+			return nil, err
+		}
 		if updated != nil && updated.URL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
 				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
@@ -186,8 +209,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 
+	if err := claimClosingIssueRefs(sctx, host, provider); err != nil {
+		return nil, err
+	}
 	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
+		return nil, err
+	}
+	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
 		return nil, err
 	}
 	sctx.Log("creating pull request...")
@@ -198,6 +227,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if created == nil || strings.TrimSpace(created.URL) == "" {
 		if template != "" {
 			return nil, fmt.Errorf("templated PR create returned no readable PR identity")
+		}
+		if len(sctx.ClosingIssueRefs) > 0 {
+			return nil, fmt.Errorf("verify closing issues: created pull request identity is unavailable")
 		}
 		return &pipeline.StepOutcome{}, nil
 	}
@@ -217,6 +249,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if actual.Body != content.Body {
 			return nil, fmt.Errorf("created PR body differs from the proposed template and evidence; refusing successful publication")
 		}
+	}
+	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
+		return nil, err
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
@@ -398,7 +433,9 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		if err != nil {
 			return prContent{}, err
 		}
-		return composeOwnedPRContent(prOwnedBody{before: neutralizeAttestationMarkers(content.Body)}, content.Title, appendix, bodyLimit)
+		narrative := neutralizeAttestationMarkers(content.Body)
+		appendix = appendIssuesSection(appendix, issuesSection(sctx, narrative))
+		return composeOwnedPRContent(prOwnedBody{before: narrative}, content.Title, appendix, bodyLimit)
 	}
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
@@ -486,11 +523,7 @@ Final diff paths and statuses:
 				if content.Title != originalTitle {
 					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
-				if bodyLimit > 0 {
-					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
-				} else {
-					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx, provider)
-				}
+				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 				return content, nil
 			}
 		}
@@ -1468,7 +1501,7 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline":
+	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues":
 		return true
 	default:
 		return false
@@ -1506,11 +1539,7 @@ func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingM
 		body = "## What Changed\n\nFinal diff unavailable; no complete scope summary was generated."
 	}
 	body = neutralizeAttestationMarkers(body)
-	if bodyLimit > 0 {
-		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
-	} else {
-		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx, provider)
-	}
+	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 	return prContent{
 		Title: title,
 		Body:  body,

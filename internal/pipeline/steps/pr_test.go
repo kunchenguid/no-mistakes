@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -426,6 +427,191 @@ func TestPRStep_CreatesConfiguredDraftPR(t *testing.T) {
 	}
 }
 
+// Once the PR step has composed the body, a reattach `--closes` update can no
+// longer appear in it, so the DB must refuse the write instead of accepting one
+// the PR will never show. Regression for the reattach-vs-snapshot race.
+func TestPRStep_ComposedBodyLocksOutLateClosingIssueRefsUpdate(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	// The closing issue references was forwarded before the PR step sampled it, so it wins.
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
+	}
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "Closes #42") {
+		t.Fatalf("expected composed PR body to carry the closing reference, got:\n%s", string(logData))
+	}
+
+	// A second `axi run --closes` now arrives too late for this body.
+	err = sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"99"})
+	if !errors.Is(err, db.ErrClosingIssueRefsLocked) {
+		t.Fatalf("late update = %v, want db.ErrClosingIssueRefsLocked", err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(run.ClosingIssueRefs, ",") != "42" {
+		t.Fatalf("closing issue references = %#v, want 42 unchanged", run.ClosingIssueRefs)
+	}
+}
+
+func TestPRStep_ClosesFailsWhenCreateReturnsNoVerifiableIdentity(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "")
+	env = append(env, "FAKE_CLI_PR_CREATE_EMPTY=1")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "created pull request identity is unavailable") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+// An ordinary update regenerates the whole body; the requested references
+// render in the Issues section exactly once each.
+func TestPRStep_OrdinaryUpdateRendersRequestedIssuesOnce(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "https://github.com/test/repo/pull/99")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	original := "## Notes\n\nKeep this context.\n\nCloses owner/repo#7\nFixes #42\n"
+	if err := os.WriteFile(bodyFile, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"99", "42", "owner/repo#7"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(updated)
+	for _, line := range []string{"Closes owner/repo#7", "Closes #42", "Closes #99"} {
+		if strings.Count(body, line) != 1 {
+			t.Fatalf("updated body should contain %q exactly once:\n%s", line, body)
+		}
+	}
+	if strings.Contains(body, "Fixes #42") || !strings.Contains(body, "## Issues") {
+		t.Fatalf("updated body must be regenerated with a stable Issues section:\n%s", body)
+	}
+}
+
+func TestExtractClosingKeywordLinesIgnoresCodeExamples(t *testing.T) {
+	body := "Closes #1\n\n```md\nCloses #2\n```\n\n    Fixes #3\n\n- Resolves owner/repo#4\n"
+	got := extractClosingKeywordLines(body)
+	if joined := strings.Join(got, ","); joined != "Closes #1,- Resolves owner/repo#4" {
+		t.Fatalf("extractClosingKeywordLines() = %q", joined)
+	}
+}
+
+func TestIssuesSectionRendersDeterministicQualifiedReferences(t *testing.T) {
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"2", "10", "owner/repo#3"}}
+	got := issuesSection(sctx, "")
+	want := "## Issues\n\nCloses #2\nCloses #10\nCloses owner/repo#3"
+	if got != want {
+		t.Fatalf("issuesSection() =\n%s\nwant:\n%s", got, want)
+	}
+	if err := verifyClosingIssuesInBody(got, sctx); err != nil {
+		t.Fatalf("rendered section does not verify: %v", err)
+	}
+}
+
+// Author text kept verbatim around an owned appendix already closes #2, so
+// the appendix must not repeat it.
+func TestIssuesSectionSkipsReferencesTheAuthorTextAlreadyCloses(t *testing.T) {
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"2", "3"}}
+	got := issuesSection(sctx, "## Overview\n\nFixes #2\n")
+	if got != "## Issues\n\nCloses #3" {
+		t.Fatalf("issuesSection() = %q", got)
+	}
+	if got := issuesSection(&pipeline.StepContext{ClosingIssueRefs: []string{"2"}}, "Fixes #2"); got != "" {
+		t.Fatalf("fully covered references rendered %q, want nothing", got)
+	}
+}
+
+// Without --closes nothing is added or inferred, even when the intent names
+// an issue.
+func TestIssuesSectionNeverInfersClosure(t *testing.T) {
+	sctx := &pipeline.StepContext{UserIntent: "Implement issue #95"}
+	if got := issuesSection(sctx, "Implement issue #95"); got != "" {
+		t.Fatalf("issuesSection() = %q, want empty without --closes", got)
+	}
+}
+
+func TestVerifyClosingIssuesFailsWhenLiveBodyDroppedARequestedReference(t *testing.T) {
+	host := &closingBodyReader{body: "## Issues\n\nCloses #2"}
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"2", "owner/repo#3"}}
+	err := verifyClosingIssues(context.Background(), host, &scm.PR{Number: "1"}, sctx)
+	if err == nil || !strings.Contains(err.Error(), "owner/repo#3") {
+		t.Fatalf("verifyClosingIssues() error = %v", err)
+	}
+}
+
+func TestVerifyClosingIssuesDoesNotAcceptReferencePrefix(t *testing.T) {
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"1"}}
+	err := verifyClosingIssuesInBody("## Issues\n\nCloses #10", sctx)
+	if err == nil || !strings.Contains(err.Error(), "#1") {
+		t.Fatalf("verifyClosingIssuesInBody() error = %v, want missing #1", err)
+	}
+}
+
+// A bare mention is not a closing reference: verification requires a
+// closing keyword line for the requested target.
+func TestVerifyClosingIssuesRejectsBareMention(t *testing.T) {
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"95"}}
+	err := verifyClosingIssuesInBody("## Intent\n\nImplement issue #95\n\nRefs #95", sctx)
+	if err == nil || !strings.Contains(err.Error(), "Closes #95") {
+		t.Fatalf("verifyClosingIssuesInBody() error = %v, want missing Closes #95", err)
+	}
+}
+
+type closingBodyReader struct {
+	scm.Host
+	body string
+}
+
+func (h *closingBodyReader) GetPRContent(context.Context, *scm.PR) (scm.PRContent, error) {
+	return scm.PRContent{Body: h.body}, nil
+}
+
+func envEntry(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
 func TestPRStep_UsesConfiguredBaseBranch(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -588,6 +774,26 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 }
 
+func TestPRStep_ClosesFailsClearlyOutsideGitHub(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "--closes currently supports GitHub repositories only") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if api.createCalls != 0 || api.updateCalls != 0 {
+		t.Fatalf("PR mutation calls = create %d, update %d; want none", api.createCalls, api.updateCalls)
+	}
+}
+
 func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -715,7 +921,7 @@ func TestPRStep_BitbucketMissingEnvSkipsBeforeBuildingContent(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 
 	step := &PRStep{}
@@ -1072,6 +1278,40 @@ func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("clamped body = %d units, want <= %d", scm.PRBodyLen(got), limit)
+	}
+}
+
+// The Issues section's room is reserved before the rest of the body is
+// fitted, so truncation sheds evidence rather than a closing reference.
+func TestAssembleDraftPRBody_ReservesRoomForIssuesUnderALimit(t *testing.T) {
+	t.Parallel()
+	limit := 400
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
+
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
+
+	if scm.PRBodyLen(got) > limit {
+		t.Fatalf("assembled body = %d units, want <= %d:\n%s", scm.PRBodyLen(got), limit, got)
+	}
+	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
+		t.Fatalf("Issues section missing or not last:\n%s", got)
+	}
+}
+
+// A section that cannot fit at all is omitted (never an unlimited budget),
+// and the pre-publication check then refuses the body.
+func TestAssembleDraftPRBody_OmitsIssuesThatCannotFit(t *testing.T) {
+	t.Parallel()
+	limit := 10
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
+
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
+
+	if strings.Contains(got, "## Issues") {
+		t.Fatalf("a section that cannot fit must be omitted, got:\n%s", got)
+	}
+	if err := verifyClosingIssuesInBody(got, sctx); err == nil {
+		t.Fatalf("a body without the reference must fail verification:\n%s", got)
 	}
 }
 
@@ -1463,6 +1703,19 @@ func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t 
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected oversized PR body to contain %q, got:\n%s", want, got)
 		}
+	}
+}
+
+func TestAssembleDraftPRBody_GitHubKeepsIssuesWithinTheByteBudget(t *testing.T) {
+	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
+	sctx.ClosingIssueRefs = []string{"42"}
+	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("x", maxPullRequestBodyBytes)
+
+	got := assembleDraftPRBody(sctx, body, "low risk", "", "", 0, scm.ProviderGitHub)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
+		t.Fatalf("Issues section missing or not last (len %d)", len(got))
 	}
 }
 
@@ -2467,6 +2720,48 @@ func TestPRStep_EmbeddedAttestationDoesNotShadowTheRealOne(t *testing.T) {
 	if !strings.Contains(content.Body, foreignSHA) {
 		t.Fatalf("embedded evidence payload was dropped instead of neutralized:\n%s", content.Body)
 	}
+}
+
+// TestPRStep_EvidenceQuotingAnOwnedBodyStaysRestampable: Testing evidence that
+// quotes a templated PR body carries that body's appendix ownership markers.
+// Copied raw into an ordinary body, they made every later restamp refuse the
+// body as ambiguously owned, so the run could never publish again.
+func TestPRStep_EvidenceQuotingAnOwnedBodyStaysRestampable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"feat(pr): keep closing references","body":"## What Changed\n\n- carry closing lines"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	quoted := "Author text\n\n" + wrapPRAppendix("## Issues\n\nCloses #95\n\n"+
+		pipelineAttestationCommentPrefix+`{"head_sha":"`+strings.Repeat("f", 40)+`","steps":[]}`+pipelineAttestationCommentClosingToken)
+	artifact, err := json.Marshal(map[string]string{"kind": "command-output", "label": "templated PR body", "content": quoted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[],"summary":"clean","testing_summary":"Captured the templated PR body.","artifacts":[` + string(artifact) + `]}`
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content.Body, "Closes #95") {
+		t.Fatalf("quoted evidence was dropped instead of neutralized:\n%s", content.Body)
+	}
+
+	newHead := strings.Repeat("ab", 20)
+	rebound, ok, err := rebindOwnedPRAttestation(content.Body, newHead, nil, pipelineAttestationPolicy{})
+	if err != nil || !ok {
+		t.Fatalf("restamp of an ordinary body quoting an owned body = ok %v, err %v:\n%s", ok, err, content.Body)
+	}
+	assertFirstAttestationBindsHead(t, rebound, newHead)
 }
 
 // assertFirstAttestationBindsHead mirrors verify.py's parse: the FIRST

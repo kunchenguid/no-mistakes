@@ -127,6 +127,9 @@ type StepContext struct {
 	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
 	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
 	OnPRMerged func(ctx context.Context, runID string)
+	// ClosingIssueRefs are the explicit --closes values claimed from the DB at
+	// PR-step start. Steps read this snapshot instead of mutable run state.
+	ClosingIssueRefs []string
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,
@@ -137,7 +140,7 @@ type StepContext struct {
 // from the session that prescribed the fixes under review. Every other agent
 // invocation goes through RunAgent.
 func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(sctx.Ctx, opts, role)
+	return sctx.runAgent(sctx.Ctx, opts, role, 0, 0, nil)
 }
 
 // StepOutcome is the result of executing a pipeline step.

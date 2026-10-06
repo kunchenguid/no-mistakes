@@ -23,6 +23,9 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := ensurePrepared(sctx, s.Name()); err != nil {
 		return nil, fmt.Errorf("prepare local lint dependencies: %w", err)
 	}
+	if sctx.Config.Commands.Lint == "" {
+		declareStepCommandOverrides(sctx, "lint")
+	}
 	output, results, err := runConfiguredChecks(sctx, "lint", "")
 	projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepLint)
 	if err != nil {
@@ -142,7 +145,7 @@ Previous lint findings to address:
 			}
 			sctx.Log(fmt.Sprintf("warning: could not parse lint summary: %v", err))
 		}
-		committed, err := commitAgentFixesWithResult(sctx, s.Name(), summary, "fix lint issues")
+		committed, err := commitAgentFixesWithResult(sctx, s.Name(), summary, "fix lint issues", result)
 		if err != nil {
 			return nil, err
 		}
@@ -204,8 +207,9 @@ Previous lint findings to address:
 	if err := ensurePrepared(sctx, s.Name()); err != nil {
 		return nil, fmt.Errorf("prepare lint dependencies: %w", err)
 	}
+	declareStepCommandOverrides(sctx, "lint")
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
-	output, exitCode, err := runRepositoryCommand(sctx, "lint", lintCmd)
+	output, exitCode, err := executeRepositoryCommand(sctx, "lint", lintCmd)
 	if err != nil {
 		logConfiguredCommandOutput(sctx, output, types.StepLint)
 		return nil, fmt.Errorf("run lint command: %w", err)

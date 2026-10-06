@@ -292,7 +292,19 @@ type claudeUsage struct {
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
+func (u claudeUsage) tokenUsage() TokenUsage {
+	return TokenUsage{
+		InputTokens:           u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+		OutputTokens:          u.OutputTokens,
+		CacheReadTokens:       u.CacheReadInputTokens,
+		CacheCreationTokens:   u.CacheCreationInputTokens,
+		Reported:              true,
+		CacheCreationReported: true,
+	}
+}
+
 type claudeMessage struct {
+	ID      string          `json:"id"`
 	Model   string          `json:"model"`
 	Usage   claudeUsage     `json:"usage"`
 	Content []claudeContent `json:"content"`
@@ -311,6 +323,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 	var textBuf string
 	var lastSessionID string
 	var lastModel string
+	usageByMsg := make(map[string]TokenUsage)
 
 	for scanner.Scan() {
 		select {
@@ -341,14 +354,9 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 			if msg.Model != "" {
 				lastModel = msg.Model
 			}
-			usage.Add(TokenUsage{
-				InputTokens:           msg.Usage.InputTokens,
-				OutputTokens:          msg.Usage.OutputTokens,
-				CacheReadTokens:       msg.Usage.CacheReadInputTokens,
-				CacheCreationTokens:   msg.Usage.CacheCreationInputTokens,
-				Reported:              true,
-				CacheCreationReported: true,
-			})
+			// Content blocks repeat cumulative usage for the same message.
+			usageByMsg[msg.ID] = msg.Usage.tokenUsage()
+			*usage = accumulateUsage(usageByMsg)
 			for _, c := range msg.Content {
 				if c.Type == "text" && c.Text != "" {
 					textBuf += c.Text
@@ -359,6 +367,10 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 			}
 
 		case "result":
+			// The invocation total includes usage absent from assistant events.
+			if event.Usage != nil {
+				*usage = event.Usage.tokenUsage()
+			}
 			if result != nil {
 				raw := make(json.RawMessage, len(line))
 				copy(raw, line)

@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.88.0](https://github.com/kunchenguid/no-mistakes/compare/v1.87.1...v1.88.0) (2026-10-05)
+
+
+### Features
+
+* add Nix flake packaging and refuse self-update in the Nix store ([#1324](https://github.com/kunchenguid/no-mistakes/issues/1324)) ([4cf8134](https://github.com/kunchenguid/no-mistakes/commit/4cf8134b853b218af70c7f4d60a9a5e7c1822d84))
+* **config:** add commit.trailers naming the agent and model behind fix commits ([#1329](https://github.com/kunchenguid/no-mistakes/issues/1329)) ([18f3fe3](https://github.com/kunchenguid/no-mistakes/commit/18f3fe3a1a0b13ee951088ec18e9dd5ddcf03de2))
+* **testguidance:** require independent test oracles ([#1305](https://github.com/kunchenguid/no-mistakes/issues/1305)) ([1495bd4](https://github.com/kunchenguid/no-mistakes/commit/1495bd43d59ed9f6bf9662d599fd0dacb621d780))
+
+
+### Bug Fixes
+
+* **pipeline:** render skipped steps as skipped ([#1315](https://github.com/kunchenguid/no-mistakes/issues/1315)) ([3bbdc42](https://github.com/kunchenguid/no-mistakes/commit/3bbdc420119f323b19666d359bbb79a7211a0e75))
+* **steps:** pin preparation snapshot diff format ([#1314](https://github.com/kunchenguid/no-mistakes/issues/1314)) ([e5a08d4](https://github.com/kunchenguid/no-mistakes/commit/e5a08d4ff6f1f219bd9cba6a7e3c6d0e7271ae46)), closes [#1311](https://github.com/kunchenguid/no-mistakes/issues/1311)
+
+## [1.87.1](https://github.com/kunchenguid/no-mistakes/compare/v1.87.0...v1.87.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **scm:** canonicalize GitHub and GitLab SSH-over-HTTPS endpoints after ssh -G ([#1307](https://github.com/kunchenguid/no-mistakes/issues/1307)) ([78d2668](https://github.com/kunchenguid/no-mistakes/commit/78d2668783b2e1736402e4207589a7cfc4e14a48)), closes [#561](https://github.com/kunchenguid/no-mistakes/issues/561)
+
+## [1.87.0](https://github.com/kunchenguid/no-mistakes/compare/v1.86.1...v1.87.0) (2026-10-03)
+
+
+### Features
+
+* **pipeline:** add opt-in still-working caps for agent timeouts ([#1128](https://github.com/kunchenguid/no-mistakes/issues/1128)) ([08f6c3d](https://github.com/kunchenguid/no-mistakes/commit/08f6c3d60e64c41106d545d8f552b9174c50d26a))
+* **pipeline:** add structured --closes issue references for generated PRs ([#1288](https://github.com/kunchenguid/no-mistakes/issues/1288)) ([4c9f642](https://github.com/kunchenguid/no-mistakes/commit/4c9f6423c8e7570fe8a3d5516c78391654591d95))
+
+
+### Bug Fixes
+
+* **daemon:** reap leftover run worktrees and never-cleaned run logs ([#1188](https://github.com/kunchenguid/no-mistakes/issues/1188)) ([449215e](https://github.com/kunchenguid/no-mistakes/commit/449215e26838bb85108178578618f128b70158ba))
+
+## [1.86.1](https://github.com/kunchenguid/no-mistakes/compare/v1.86.0...v1.86.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **pipeline:** attribute review schema-retry exhaustion across distinct fields ([#1283](https://github.com/kunchenguid/no-mistakes/issues/1283)) ([728ffe0](https://github.com/kunchenguid/no-mistakes/commit/728ffe0f226527a77358bb265be6073c0786367e))
+* **pipeline:** declare machine-local command overrides once per step ([#1276](https://github.com/kunchenguid/no-mistakes/issues/1276)) ([d402d5f](https://github.com/kunchenguid/no-mistakes/commit/d402d5f62de686d24eca3146f37a0792e85f8c85))
+* **pipeline:** keep submodules that commands.prepare checks out ([#1279](https://github.com/kunchenguid/no-mistakes/issues/1279)) ([6675304](https://github.com/kunchenguid/no-mistakes/commit/667530452f6eede6989beeff224954594942d35e))
+
 ## [1.86.0](https://github.com/kunchenguid/no-mistakes/compare/v1.85.3...v1.86.0) (2026-10-01)
 
 

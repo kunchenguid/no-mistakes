@@ -1,0 +1,17 @@
+{
+  "main": "9dc5ac8bc7fb277bef00991cd731a389a3cbca94",
+  "branch": "0c16c26c64fb5f35256ebecaf459bbe5365aa28c",
+  "pi": "~/.local/bin/pi",
+  "pi_version": "0.99.1",
+  "model": "openai-codex/gpt-6.1-sol",
+  "thinking": "high",
+  "repetitions": 5,
+  "hashes": {
+    "measure.py": "3cc8a7b1314f62985026248bdab72cf5de069d8bc2fb2e15dcf0feff34a0a162",
+    "main.go": "ffccec9ea403787b211b82d450e69c126247944c865a1c454dba9e0fcb8805d3",
+    "exports.go": "56112d3e6e45539a886a220fe61d54a1dd4442c4732937125dd3450ee064a52b",
+    "agent-export.go": "9763763e8d93574424c073d0ed37246ab35cebabfa7320aa7951bf96341f585a",
+    "observe.ts": "179b67d8d6ad6f3a5bce27f8395bfe891394c859b6e80a200b98ede310ad3a27",
+    "observe-pi.py": "677f1ad4aac010e88ff35cfc4929347a042e985ede86cfc77359d6aac0abd5a7"
+  }
+}

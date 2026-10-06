@@ -673,7 +673,7 @@ func TestOpencodeAgent_ThinkingToolChoiceFallbackSumsBothTurnsUsage(t *testing.T
 		t.Fatalf("sessions = %d, want the native attempt plus the fallback", got)
 	}
 	want := TokenUsage{
-		InputTokens: 300, OutputTokens: 30, CacheReadTokens: 12, CacheCreationTokens: 5,
+		InputTokens: 317, OutputTokens: 30, CacheReadTokens: 12, CacheCreationTokens: 5,
 		Reported: true, CacheCreationReported: true,
 	}
 	if result.Usage != want {

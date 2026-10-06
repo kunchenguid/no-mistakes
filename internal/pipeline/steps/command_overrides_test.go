@@ -191,11 +191,78 @@ func TestTestStep_OverriddenPassIsDeclared(t *testing.T) {
 		t.Fatalf("outcome = %+v, %v", outcome, err)
 	}
 	want := `machine-local overrides applied to commands.test: additional checks "exit 0"`
-	if !strings.Contains(strings.Join(logs, "\n"), want) {
-		t.Fatalf("step output does not declare the overrides:\n%s", strings.Join(logs, "\n"))
+	if got := strings.Count(strings.Join(logs, "\n"), want); got != 1 {
+		t.Fatalf("step log declares the overrides %d times, want once:\n%s", got, strings.Join(logs, "\n"))
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "Baseline ran with "+want) {
 		t.Fatal("agent prompt does not declare the overrides")
+	}
+}
+
+func TestLintStep_OverriddenPassIsDeclaredOnce(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{Lint: "exit 0"})
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"lint": {Additional: []string{"exit 0"}}}
+	outcome, err := (&LintStep{}).Execute(sctx)
+	if err != nil || outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, %v", outcome, err)
+	}
+	want := `machine-local overrides applied to commands.lint: additional checks "exit 0"`
+	if got := strings.Count(strings.Join(logs, "\n"), want); got != 1 {
+		t.Fatalf("step log declares the overrides %d times, want once:\n%s", got, strings.Join(logs, "\n"))
+	}
+}
+
+// A fix round re-executes the step into the same step log, which already
+// carries the first execution's declaration.
+func TestCommandSteps_FixRoundDoesNotRedeclareOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		step   pipeline.Step
+		cmds   config.Commands
+		output string
+	}{
+		{"test", &TestStep{}, config.Commands{Test: "exit 0"}, `{"summary":"fix tests","findings":[],"tested":["exit 0"],"testing_summary":"re-ran the command","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`},
+		{"lint", &LintStep{}, config.Commands{Lint: "exit 0"}, `{"summary":"fix lint issues"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", head)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(tc.output)}, nil
+			}}
+			sctx := newTestContext(t, ag, dir, base, head, tc.cmds)
+			sctx.Fixing = true
+			var logs []string
+			sctx.Log = func(s string) { logs = append(logs, s) }
+			sctx.Config.CommandOverrides = map[string]config.CommandOverride{tc.name: {Additional: []string{"exit 0"}}}
+			if _, err := tc.step.Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(logs, "\n")
+			if strings.Contains(joined, "machine-local overrides applied") {
+				t.Fatalf("fix round redeclared the overrides:\n%s", joined)
+			}
+			if !strings.Contains(joined, "running machine-local "+tc.name+" check: exit 0") {
+				t.Fatalf("fix round did not rerun the local check:\n%s", joined)
+			}
+		})
+	}
+}
+
+func TestLintStep_FailureBeforeTheBaselineDeclaresNothing(t *testing.T) {
+	dir, base, head := setupGitRepo(t)
+	sctx := newPreparationTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{Prepare: "exit 3", Lint: "exit 0"})
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	sctx.Config.CommandOverrides = map[string]config.CommandOverride{"lint": {Additional: []string{"exit 0"}}}
+	if _, err := (&LintStep{}).Execute(sctx); err == nil {
+		t.Fatal("failed preparation must fail the step")
+	}
+	if joined := strings.Join(logs, "\n"); strings.Contains(joined, "machine-local overrides applied") {
+		t.Fatalf("overrides declared although no lint check ran:\n%s", joined)
 	}
 }
 

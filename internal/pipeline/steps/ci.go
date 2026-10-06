@@ -306,6 +306,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if pluginContractBroken(err) {
+			return nil, err
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
@@ -353,6 +356,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	if reader, ok := host.(scm.PRBaseBranchReader); ok {
 		if actual, readErr := reader.GetPRBaseBranch(ctx, pr); readErr == nil {
 			pr.BaseBranch = actual
+		} else if pluginContractBroken(readErr) {
+			// A one-time read, not a poll: even a timeout fails closed,
+			// since falling back to the configured base could monitor or
+			// repair against a target the PR no longer has.
+			return nil, readErr
 		}
 	}
 	if strings.TrimSpace(pr.BaseBranch) != "" {
@@ -483,6 +491,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		// Check PR state (merged/closed -> exit)
 		prStateKnown := true
 		state, err := host.GetPRState(ctx, pr)
+		if err != nil && pluginPollFailsStep(err) {
+			clearCIMonitorReady(sctx)
+			return nil, err
+		}
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 			prStateKnown = false
@@ -513,6 +525,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		mergeabilityKnown := true
 		if host.Capabilities().MergeableState {
 			mergeState, mergeErr := host.GetMergeableState(ctx, pr)
+			if mergeErr != nil && pluginPollFailsStep(mergeErr) {
+				clearCIMonitorReady(sctx)
+				return nil, mergeErr
+			}
 			if mergeErr != nil {
 				sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
 				mergeabilityBlockedReason = ""
@@ -533,6 +549,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		// Check CI status - wait for all checks to complete before escalating
 		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, err := host.GetChecks(ctx, pr)
+		if err != nil && pluginPollFailsStep(err) {
+			clearCIMonitorReady(sctx)
+			return nil, err
+		}
 		if err != nil {
 			clearCIMonitorReady(sctx)
 			lastMonitorLog = ""

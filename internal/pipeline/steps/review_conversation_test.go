@@ -278,17 +278,15 @@ func TestReviewStep_AnswersResumeTheSameSessionAndFinalize(t *testing.T) {
 // the review.
 func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	// Anchored on the real clock, not a fixed date: reviewAgentContext derives
-	// an ABSOLUTE deadline from this value, so a hardcoded date makes the test
-	// pass until wall-clock time overtakes it and fail every run afterwards.
-	// Every assertion below is relative, so a relative base is equivalent.
-	clock := time.Now()
-	var deadlines []time.Time
+	// Each invocation's deadline is recorded against the real clock at call
+	// time: the budget starts when the turn starts, so a turn that sees its
+	// full silent budget ahead of it has not been charged for anything before it.
+	var remaining []time.Duration
 	var convDir string
 	turn := 0
 	ag := &deadlineRecordingAgent{onRun: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
 		if deadline, ok := ctx.Deadline(); ok {
-			deadlines = append(deadlines, deadline)
+			remaining = append(remaining, time.Until(deadline))
 		} else {
 			t.Error("review invocation ran without a deadline")
 		}
@@ -304,7 +302,7 @@ func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testin
 	sctx.Config.ReviewAgentTimeout = 30 * time.Minute
 	convDir = reviewConversationDir(sctx)
 
-	step := &ReviewStep{now: func() time.Time { return clock }}
+	step := &ReviewStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatalf("asking turn: %v", err)
@@ -313,8 +311,6 @@ func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testin
 		t.Fatalf("asking turn did not park on its question: %s", outcome.Findings)
 	}
 
-	// A 90-minute park - three times the whole review budget.
-	clock = clock.Add(90 * time.Minute)
 	if err := reviewqa.AppendAnswer(convDir, reviewqa.Answer{ID: "q1", Answer: "keep", AskOrdinal: 1}); err != nil {
 		t.Fatalf("append answer: %v", err)
 	}
@@ -327,16 +323,14 @@ func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testin
 		t.Fatalf("finalized review still carries an open question: %+v", got)
 	}
 
-	if len(deadlines) != 2 {
-		t.Fatalf("expected 2 review invocations, got %d", len(deadlines))
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 review invocations, got %d", len(remaining))
 	}
-	// Each turn owns a full budget measured from its own start, so the gap
-	// between the two deadlines is the park, not a shrinking allowance.
-	if got := deadlines[1].Sub(deadlines[0]); got != 90*time.Minute {
-		t.Fatalf("finalize deadline moved by %s, want the full 90m park (the park must not be spent)", got)
-	}
-	if got := deadlines[1].Sub(clock); got != 30*time.Minute {
-		t.Fatalf("finalize turn got %s of review budget, want the full 30m", got)
+	want := 30 * time.Minute
+	for i, got := range remaining {
+		if got > want+time.Second || got < want-time.Minute {
+			t.Fatalf("review turn %d started with %s of budget, want a fresh %s silent budget", i+1, got, want)
+		}
 	}
 }
 

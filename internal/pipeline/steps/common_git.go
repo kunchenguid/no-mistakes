@@ -40,9 +40,9 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 
 // resolveBranchBaseSHA returns the branch base commit relative to the supplied
 // effective PR base branch when possible. This keeps pipeline steps scoped to
-// the full branch, not just the last pushed delta. It fetches that branch's current
-// remote tip first (same pattern as resolveRunDefaultBranchTip) so the
-// merge-base is computed against the live base, not whatever origin/<base>
+// the full branch, not just the last pushed delta. Outside eval replay, it fetches
+// that branch's current remote tip first (as resolveRunDefaultBranchTip does).
+// The merge-base is computed against the live base, not whatever origin/<base>
 // happened to be sitting at in the worktree - a stale local ref otherwise
 // drafts PR content (and other consumers) against an outdated base and pulls
 // in unrelated commits that already landed there.

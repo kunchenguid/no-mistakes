@@ -40,18 +40,20 @@ const (
 	// DefaultStepQuietWarning is how long a running/fixing step can go without
 	// a new log or lifecycle activity before AXI status marks it quiet.
 	DefaultStepQuietWarning = 10 * time.Minute
-	// DefaultAgentTimeout bounds one pipeline agent invocation that does not
-	// install a more specific deadline, so a stalled agent cannot leave a run
-	// active forever. Review and Test keep their own knobs; this is the
-	// default-by-construction budget for every other step.
+	// DefaultAgentTimeout is the silent-kill budget for one pipeline agent
+	// invocation that does not install a more specific deadline, so a silent
+	// agent cannot leave a run active forever. A still-working invocation
+	// continues past it only when the matching working timeout is set.
+	// Review and Test keep their own knobs; this is the default-by-construction
+	// budget for every other step.
 	DefaultAgentTimeout = 30 * time.Minute
-	// DefaultReviewAgentTimeout is the absolute wall-clock limit for one
-	// review or review-fix invocation. Every later invocation derives a fresh
-	// limit, so a stalled agent is bounded without charging the next turn.
+	// DefaultReviewAgentTimeout is the stall budget for one review or
+	// review-fix invocation. Every later invocation derives a fresh budget, so
+	// a stalled agent is bounded without charging the next turn.
 	DefaultReviewAgentTimeout = 30 * time.Minute
-	// DefaultTestAgentTimeout bounds one Test-step agent invocation, including
-	// the post-test evidence-gathering turn and a Test-repair turn, so a stalled
-	// agent cannot leave a run active forever.
+	// DefaultTestAgentTimeout is the stall budget for one Test-step agent
+	// invocation, including the post-test evidence-gathering turn and a
+	// Test-repair turn, so a silent agent cannot leave a run active forever.
 	DefaultTestAgentTimeout = 30 * time.Minute
 	// DefaultDaemonConnectTimeout bounds client IPC connection attempts to a
 	// daemon socket that exists but is not accepting connections.
@@ -132,6 +134,20 @@ const (
 	// of age, so a burst of parallel runs that all land inside the retention
 	// window still cannot grow the directory without bound.
 	DefaultEvidenceMaxRuns = 200
+	// DefaultWorktreeRetention bounds how long a terminal run's leftover
+	// worktree directory survives under the default <NM_HOME>/worktrees tree.
+	// A run's worktree is already removed the moment its pipeline finishes
+	// (see daemon.RunManager.removeRunWorktree); this budget only ever governs
+	// the leftover a failed removal - or a protected-path refusal that later
+	// became removable - left behind, so it is deliberately short: these
+	// directories are often full toolchain checkouts (node_modules and the
+	// like), not the small text artifacts test.evidence.retention bounds.
+	DefaultWorktreeRetention = 24 * time.Hour
+	// DefaultWorktreeMaxRuns caps how many leftover worktree directories
+	// survive regardless of age, for the same reason DefaultEvidenceMaxRuns
+	// does: a burst of failures inside the retention window must still not
+	// grow the directory without bound.
+	DefaultWorktreeMaxRuns = 20
 )
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
@@ -164,14 +180,22 @@ type GlobalConfig struct {
 	// directory-scoped toolchain configuration (mise, direnv), which resolves
 	// by path ancestry and therefore never reaches a worktree under NM_HOME.
 	// Placement is resolved for every consumer in internal/worktrees.
-	WorktreeRoots           map[string]string `yaml:"worktree_roots"`
-	CITimeout               time.Duration     `yaml:"-"`
-	StepQuietWarning        time.Duration     `yaml:"-"`
-	AgentTimeout            time.Duration     `yaml:"-"`
-	ReviewAgentTimeout      time.Duration     `yaml:"-"`
-	TestAgentTimeout        time.Duration     `yaml:"-"`
-	DaemonConnectTimeout    time.Duration     `yaml:"-"`
-	BranchSyncRemoteTimeout time.Duration     `yaml:"-"`
+	WorktreeRoots map[string]string `yaml:"worktree_roots"`
+	// Worktree bounds how long a terminal run's leftover worktree directory
+	// survives on this machine. Global-only for the same reason as Eval: it
+	// describes local disk retention, never a repository policy, so no
+	// pushed branch may set it.
+	Worktree                  Worktree      `yaml:"-"`
+	CITimeout                 time.Duration `yaml:"-"`
+	StepQuietWarning          time.Duration `yaml:"-"`
+	AgentTimeout              time.Duration `yaml:"-"`
+	ReviewAgentTimeout        time.Duration `yaml:"-"`
+	TestAgentTimeout          time.Duration `yaml:"-"`
+	AgentWorkingTimeout       time.Duration `yaml:"-"`
+	ReviewAgentWorkingTimeout time.Duration `yaml:"-"`
+	TestAgentWorkingTimeout   time.Duration `yaml:"-"`
+	DaemonConnectTimeout      time.Duration `yaml:"-"`
+	BranchSyncRemoteTimeout   time.Duration `yaml:"-"`
 	// GateReconcileInterval / GateReconcileTimeout bound how often and how
 	// long a parked approval gate is rechecked. They are machine-local
 	// operator knobs (slow hosts, contended gh auth) and global-only so a
@@ -186,6 +210,9 @@ type GlobalConfig struct {
 	// session_reuse: false to force every invocation cold.
 	SessionReuse  bool          `yaml:"-"`
 	ForgeProfiles ForgeProfiles `yaml:"forge_profiles"`
+	// ProviderPlugins are operator-installed PR/CI provider executables keyed
+	// by plugin name. Global-only: see ProviderPlugin.
+	ProviderPlugins ProviderPlugins `yaml:"-"`
 	// RepositoryOverrides scopes machine-local settings to canonicalized
 	// remote host/owner/repository identities.
 	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
@@ -201,6 +228,13 @@ type GlobalConfig struct {
 	Commit GlobalCommitRaw
 	Intent GlobalIntentRaw
 	Test   TestRaw
+	// Review carries the operator's own review guidance for every gated
+	// repository. Only path_instructions exists here: like review_agents it
+	// comes from this machine, never from a pushed branch, and it can only add
+	// requirements to a review, so it sits outside the trusted-default-branch
+	// boundary. Merge renders it alongside, never instead of, the repository's
+	// trusted rules.
+	Review OperatorReviewRaw
 	// Eval is resolved at load time because it is global-only: it describes
 	// this machine's local eval corpus (disk, retention, whether review rounds
 	// record replay provenance), never a repository policy. Keeping it out of
@@ -211,34 +245,39 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                   agentList                  `yaml:"agent"`
-	ACPXPath                string                     `yaml:"acpx_path"`
-	ForgejoAXIPath          string                     `yaml:"forgejo_axi_path"`
-	ACPRegistryOverrides    map[string]string          `yaml:"acp_registry_overrides"`
-	AgentPathOverride       map[string]string          `yaml:"agent_path_override"`
-	AgentArgsOverride       map[string][]string        `yaml:"agent_args_override"`
-	AgentConfig             map[string]agentProfileRaw `yaml:"agent_config"`
-	ReviewAgents            map[string]ReviewAgent     `yaml:"review_agents"`
-	WorktreeRoots           map[string]string          `yaml:"worktree_roots"`
-	CITimeout               string                     `yaml:"ci_timeout"`
-	DaemonConnectTimeout    string                     `yaml:"daemon_connect_timeout"`
-	BranchSyncRemoteTimeout string                     `yaml:"branch_sync_remote_timeout"`
-	GateReconcileInterval   string                     `yaml:"gate_reconcile_interval"`
-	GateReconcileTimeout    string                     `yaml:"gate_reconcile_timeout"`
-	BabysitTimeout          string                     `yaml:"babysit_timeout"`
-	StepQuietWarning        string                     `yaml:"step_quiet_warning"`
-	AgentTimeout            string                     `yaml:"agent_timeout"`
-	ReviewAgentTimeout      string                     `yaml:"review_agent_timeout"`
-	TestAgentTimeout        string                     `yaml:"test_agent_timeout"`
-	LogLevel                string                     `yaml:"log_level"`
-	SessionReuse            *bool                      `yaml:"session_reuse"`
-	AutoFix                 AutoFixRaw                 `yaml:"auto_fix"`
-	CI                      CIRaw                      `yaml:"ci"`
-	Rebase                  RebaseRaw                  `yaml:"rebase"`
-	Commit                  GlobalCommitRaw            `yaml:"commit"`
-	Intent                  GlobalIntentRaw            `yaml:"intent"`
-	Test                    TestRaw                    `yaml:"test"`
-	Eval                    EvalRaw                    `yaml:"eval"`
+	Agent                     agentList                  `yaml:"agent"`
+	ACPXPath                  string                     `yaml:"acpx_path"`
+	ForgejoAXIPath            string                     `yaml:"forgejo_axi_path"`
+	ACPRegistryOverrides      map[string]string          `yaml:"acp_registry_overrides"`
+	AgentPathOverride         map[string]string          `yaml:"agent_path_override"`
+	AgentArgsOverride         map[string][]string        `yaml:"agent_args_override"`
+	AgentConfig               map[string]agentProfileRaw `yaml:"agent_config"`
+	ReviewAgents              map[string]ReviewAgent     `yaml:"review_agents"`
+	WorktreeRoots             map[string]string          `yaml:"worktree_roots"`
+	Worktree                  WorktreeRaw                `yaml:"worktree"`
+	CITimeout                 string                     `yaml:"ci_timeout"`
+	DaemonConnectTimeout      string                     `yaml:"daemon_connect_timeout"`
+	BranchSyncRemoteTimeout   string                     `yaml:"branch_sync_remote_timeout"`
+	GateReconcileInterval     string                     `yaml:"gate_reconcile_interval"`
+	GateReconcileTimeout      string                     `yaml:"gate_reconcile_timeout"`
+	BabysitTimeout            string                     `yaml:"babysit_timeout"`
+	StepQuietWarning          string                     `yaml:"step_quiet_warning"`
+	AgentTimeout              string                     `yaml:"agent_timeout"`
+	ReviewAgentTimeout        string                     `yaml:"review_agent_timeout"`
+	TestAgentTimeout          string                     `yaml:"test_agent_timeout"`
+	AgentWorkingTimeout       string                     `yaml:"agent_working_timeout"`
+	ReviewAgentWorkingTimeout string                     `yaml:"review_agent_working_timeout"`
+	TestAgentWorkingTimeout   string                     `yaml:"test_agent_working_timeout"`
+	LogLevel                  string                     `yaml:"log_level"`
+	SessionReuse              *bool                      `yaml:"session_reuse"`
+	AutoFix                   AutoFixRaw                 `yaml:"auto_fix"`
+	CI                        CIRaw                      `yaml:"ci"`
+	Rebase                    RebaseRaw                  `yaml:"rebase"`
+	Commit                    GlobalCommitRaw            `yaml:"commit"`
+	Intent                    GlobalIntentRaw            `yaml:"intent"`
+	Test                      TestRaw                    `yaml:"test"`
+	Review                    OperatorReviewRaw          `yaml:"review"`
+	Eval                      EvalRaw                    `yaml:"eval"`
 	// Jev is the retired jev.review_assist pre-brief block. The feature was
 	// removed after the offline trial showed its candidate listing cannot
 	// reach the review findings it is meant to surface. The key stays in the
@@ -247,10 +286,11 @@ type globalConfigRaw struct {
 	// otherwise reject the whole document as an unknown field. Setting either
 	// key is reported as deprecated at load and has no effect; the resolved
 	// config has no Jev to configure.
-	Jev                 retiredJev          `yaml:"jev"`
-	ForgeProfiles       ForgeProfiles       `yaml:"forge_profiles"`
-	RepositoryOverrides RepositoryOverrides `yaml:"repository_overrides"`
-	Providers           ProvidersRaw        `yaml:"providers"`
+	Jev                 retiredJev                   `yaml:"jev"`
+	ForgeProfiles       ForgeProfiles                `yaml:"forge_profiles"`
+	ProviderPlugins     map[string]providerPluginRaw `yaml:"provider_plugins"`
+	RepositoryOverrides RepositoryOverrides          `yaml:"repository_overrides"`
+	Providers           ProvidersRaw                 `yaml:"providers"`
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
@@ -267,10 +307,21 @@ type ForgeProfile struct {
 type ForgeProfiles map[string]ForgeProfile
 
 // RepositoryOverride contains machine-local settings for one normalized remote.
+// Review and Document are additive guidance only: they are rendered alongside
+// the repository's trusted rules and can never replace or remove them.
 type RepositoryOverride struct {
 	Commit   GlobalCommitRaw            `yaml:"commit"`
 	PR       RepositoryPRRaw            `yaml:"pr"`
 	Commands map[string]CommandOverride `yaml:"commands"`
+	Review   OperatorReviewRaw          `yaml:"review"`
+	Document DocumentRaw                `yaml:"document"`
+}
+
+// OperatorReviewRaw is the review block the operator's global config may set,
+// globally or per repository. It deliberately has no conversation flag: that
+// one parks the gate for a human and stays the repository's decision.
+type OperatorReviewRaw struct {
+	PathInstructions []PathInstruction `yaml:"path_instructions"`
 }
 
 // RepositoryPRRaw contains machine-local per-repository PR title settings.
@@ -442,10 +493,14 @@ type PathInstruction struct {
 // same constants and TestReviewPathInstructionsSectionStaysWithinAccountedBytes
 // is the drift check.
 const (
-	ReviewPathInstructionsHeading    = "Repository review instructions for the changed paths (trusted, from the default branch). Each block below applies only to the files listed under its path, and adds to the requirements above:"
-	ReviewPathInstructionsPathLabel  = "path: "
-	ReviewPathInstructionsFilesLabel = "matched files: "
-	ReviewPathInstructionsRulesLabel = "instructions:"
+	ReviewPathInstructionsHeading = "Repository review instructions for the changed paths (trusted, from the default branch). Each block below applies only to the files listed under its path, and adds to the requirements above:"
+	// The operator headings name the operator's own config as the source so
+	// the reviewer never reads a machine-local rule as the repository's.
+	ReviewGlobalPathInstructionsHeading     = "Machine-local review instructions for the changed paths (from the operator's global no-mistakes config, applied to every repository; not from this repository). Each block below applies only to the files listed under its path, and adds to the requirements above:"
+	ReviewRepositoryPathInstructionsHeading = "Machine-local review instructions for the changed paths (from the operator's global no-mistakes config, scoped to this repository; not from this repository). Each block below applies only to the files listed under its path, and adds to the requirements above:"
+	ReviewPathInstructionsPathLabel         = "path: "
+	ReviewPathInstructionsFilesLabel        = "matched files: "
+	ReviewPathInstructionsRulesLabel        = "instructions:"
 	// ReviewPathInstructionsMaxFilesBytes bounds the matched-file list a single
 	// block may print. A broad glob can match hundreds of files, so the review
 	// step truncates the list deterministically and states the remaining count;
@@ -461,12 +516,17 @@ const (
 // invocation outright instead of degrading. The budget is therefore validated
 // when the config is parsed - before a run starts - rather than truncated
 // silently at review time.
+//
+// The caps bound the COMBINED set every source contributes to one review
+// prompt (see Review.ValidatePathInstructionsBudget), because the prompt
+// budget is the same however many configs the entries came from.
 const (
 	// MaxReviewPathInstructions is the largest number of path_instructions
-	// entries a repository may configure.
+	// entries a review prompt may carry.
 	MaxReviewPathInstructions = 32
-	// MaxReviewPathInstructionsBytes is the largest review-prompt section
-	// path_instructions may produce, measured by ReviewPathInstructionsBytes.
+	// MaxReviewPathInstructionsBytes is the most review-prompt bytes the
+	// path_instructions sections of every source may produce together, each
+	// measured like ReviewPathInstructionsBytes.
 	// It leaves room for the entry cap to be reached with a rule of ordinary
 	// length, so neither cap makes the other unusable.
 	MaxReviewPathInstructionsBytes = 16384
@@ -480,10 +540,14 @@ const (
 // matched-file list is truncated to its allowance, so the result is an upper
 // bound on the real section for any diff.
 func ReviewPathInstructionsBytes(entries []PathInstruction) int {
+	return pathInstructionsSectionBytes(ReviewPathInstructionsHeading, entries)
+}
+
+func pathInstructionsSectionBytes(heading string, entries []PathInstruction) int {
 	if len(entries) == 0 {
 		return 0
 	}
-	total := len("\n\n") + len(ReviewPathInstructionsHeading) + len("\n")
+	total := len("\n\n") + len(heading) + len("\n")
 	for i, entry := range entries {
 		if i > 0 {
 			total += len("\n\n")
@@ -685,31 +749,35 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	ReplayGlobalYAML      []byte
-	ReplayRepoYAML        []byte
-	TrustedConfigSHA      string
-	CaptureEvalProvenance bool
-	Agent                 types.AgentName
-	Agents                []types.AgentName
-	ACPXPath              string
-	ForgejoAXIPath        string
-	ACPRegistryOverrides  map[string]string
-	AgentPathOverride     map[string]string
-	AgentArgsOverride     map[string][]string
-	AgentConfig           map[string]agentcfg.Profile
-	ReviewAgents          map[string]ReviewAgent
-	CITimeout             time.Duration
-	StepQuietWarning      time.Duration
-	AgentTimeout          time.Duration
-	ReviewAgentTimeout    time.Duration
-	TestAgentTimeout      time.Duration
-	GateReconcileInterval time.Duration
-	GateReconcileTimeout  time.Duration
-	LogLevel              string
-	SessionReuse          bool
-	Eval                  Eval
-	Commands              Commands
-	CommandOverrides      map[string]CommandOverride
+	ReplayGlobalYAML          []byte
+	ReplayRepoYAML            []byte
+	TrustedConfigSHA          string
+	CaptureEvalProvenance     bool
+	Agent                     types.AgentName
+	Agents                    []types.AgentName
+	ACPXPath                  string
+	ForgejoAXIPath            string
+	ACPRegistryOverrides      map[string]string
+	AgentPathOverride         map[string]string
+	AgentArgsOverride         map[string][]string
+	AgentConfig               map[string]agentcfg.Profile
+	ReviewAgents              map[string]ReviewAgent
+	CITimeout                 time.Duration
+	StepQuietWarning          time.Duration
+	AgentTimeout              time.Duration
+	ReviewAgentTimeout        time.Duration
+	TestAgentTimeout          time.Duration
+	AgentWorkingTimeout       time.Duration
+	ReviewAgentWorkingTimeout time.Duration
+	TestAgentWorkingTimeout   time.Duration
+	GateReconcileInterval     time.Duration
+	GateReconcileTimeout      time.Duration
+	LogLevel                  string
+	SessionReuse              bool
+	Eval                      Eval
+	Worktree                  Worktree
+	Commands                  Commands
+	CommandOverrides          map[string]CommandOverride
 	// Gates are the repository's extra checks, already trusted-only by the
 	// time they reach here (EffectiveRepoConfig sourced them from the trusted
 	// default-branch copy).
@@ -726,6 +794,9 @@ type Config struct {
 	Review         Review
 	PR             PR
 	ForgeProfiles  ForgeProfiles
+	// ProviderPlugins is copied from global config only (see ProviderPlugin);
+	// no repository layer can add or change an entry.
+	ProviderPlugins ProviderPlugins
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -825,12 +896,17 @@ type PR struct {
 // policy in the document prompt.
 type Document struct {
 	Instructions string
+	// RepositoryInstructions come from the repository_overrides entry matching
+	// the repository's remote and are rendered before, never instead of,
+	// Instructions.
+	RepositoryInstructions string
 }
 
-// Review is the resolved review-step config. Both fields come from the trusted
-// default-branch repo config: PathInstructions scope extra review guidance to
-// the changed paths each glob matches, and Conversation decides whether the
-// reviewer may ask questions while it works.
+// Review is the resolved review-step config. Conversation and PathInstructions
+// come from the trusted default-branch repo config: PathInstructions scope extra
+// review guidance to the changed paths each glob matches, and Conversation
+// decides whether the reviewer may ask questions while it works. The two
+// operator lists come from the global config and only ever add rules.
 type Review struct {
 	// Conversation is true when the reviewer may ask the operator questions
 	// mid-pass. It gates the whole protocol: the prompt section, the
@@ -838,6 +914,87 @@ type Review struct {
 	// reviewer session a finalize turn resumes, and `no-mistakes axi answer`.
 	Conversation     bool
 	PathInstructions []PathInstruction
+	// GlobalPathInstructions come from the global config's review block.
+	GlobalPathInstructions []PathInstruction
+	// RepositoryPathInstructions come from the repository_overrides entry
+	// matching the repository's remote.
+	RepositoryPathInstructions []PathInstruction
+}
+
+// PathInstructionSource is one provenance-labeled set of review path
+// instructions. Each source renders as its own section under its own heading.
+type PathInstructionSource struct {
+	// Label names the source in step logs and budget errors.
+	Label   string
+	Heading string
+	Entries []PathInstruction
+}
+
+// PathInstructionSources returns the configured sources in prompt order:
+// global, then per-repository machine-local, then the repository's trusted
+// rules. Sources without entries are omitted.
+func (r Review) PathInstructionSources() []PathInstructionSource {
+	all := []PathInstructionSource{
+		{Label: "machine-local global", Heading: ReviewGlobalPathInstructionsHeading, Entries: r.GlobalPathInstructions},
+		{Label: "machine-local per-repository", Heading: ReviewRepositoryPathInstructionsHeading, Entries: r.RepositoryPathInstructions},
+		{Label: "trusted", Heading: ReviewPathInstructionsHeading, Entries: r.PathInstructions},
+	}
+	out := make([]PathInstructionSource, 0, len(all))
+	for _, source := range all {
+		if len(source.Entries) > 0 {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+// ValidatePathInstructionsBudget checks the combined entries of every source
+// against the review-prompt caps. Each config file is validated on its own when
+// it is parsed, but the repository's trusted copy changes independently of the
+// operator's config, so only the merged set can prove the combined prompt fits.
+func (r Review) ValidatePathInstructionsBudget() error {
+	return validatePathInstructionsBudget(r.PathInstructionSources())
+}
+
+// PathInstructionsPromptBytes is the upper bound on the review-prompt bytes
+// every source's section can add together, measured like
+// ReviewPathInstructionsBytes.
+func (r Review) PathInstructionsPromptBytes() int {
+	return pathInstructionSourcesBytes(r.PathInstructionSources())
+}
+
+func pathInstructionSourcesBytes(sources []PathInstructionSource) int {
+	total := 0
+	for _, source := range sources {
+		total += pathInstructionsSectionBytes(source.Heading, source.Entries)
+	}
+	return total
+}
+
+func validatePathInstructionsBudget(sources []PathInstructionSource) error {
+	entries, bytes := 0, pathInstructionSourcesBytes(sources)
+	counts := make([]string, 0, len(sources))
+	for _, source := range sources {
+		entries += len(source.Entries)
+		counts = append(counts, fmt.Sprintf("%d %s", len(source.Entries), source.Label))
+	}
+	if len(sources) < 2 {
+		if entries > MaxReviewPathInstructions {
+			return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", entries, MaxReviewPathInstructions)
+		}
+		if bytes > MaxReviewPathInstructionsBytes {
+			return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt, at most %d are allowed so the prompt stays within budget", bytes, MaxReviewPathInstructionsBytes)
+		}
+		return nil
+	}
+	combined := strings.Join(counts, ", ")
+	if entries > MaxReviewPathInstructions {
+		return fmt.Errorf("review.path_instructions has %d entries combined (%s), at most %d are allowed; remove machine-local entries from the global config", entries, combined, MaxReviewPathInstructions)
+	}
+	if bytes > MaxReviewPathInstructionsBytes {
+		return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt combined (%s), at most %d are allowed so the prompt stays within budget; shorten or remove machine-local entries in the global config", bytes, combined, MaxReviewPathInstructionsBytes)
+	}
+	return nil
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -974,6 +1131,27 @@ type Eval struct {
 	// DiversifiedSize caps the official gold-only eval set. 0 means one gold
 	// case per stratum (no Hamilton bound). Unlabeled cases never fill it.
 	DiversifiedSize int
+}
+
+// WorktreeRaw is the YAML representation of local run-worktree retention
+// settings (worktree.retention, worktree.max_runs). Pointer fields distinguish
+// "not set" (nil) from explicit zero values, matching EvidenceRaw.
+type WorktreeRaw struct {
+	Retention *string `yaml:"retention"`
+	MaxRuns   *int    `yaml:"max_runs"`
+}
+
+// Worktree is the resolved local run-worktree retention config. A run's own
+// worktree is already removed the instant its pipeline finishes (see
+// daemon.RunManager.removeRunWorktree); this bounds what a failed removal -
+// or a protected-path refusal that later became removable - leaves behind, on
+// a long-lived daemon that may not restart for weeks (see
+// daemon.cleanupOrphanWorktrees for the crash-recovery counterpart, which
+// runs only at startup). Zero Retention disables age-based reaping and zero
+// MaxRuns disables the count ceiling, matching Evidence.
+type Worktree struct {
+	Retention time.Duration
+	MaxRuns   int
 }
 
 // retiredJev names exactly the two retired jev subkeys so a global config
@@ -1151,22 +1329,35 @@ ci_timeout: "168h"
 # only; it never cancels work.
 step_quiet_warning: "10m"
 
-# Maximum wall-clock time for one pipeline agent invocation that does not
-# install a more specific deadline (document, lint, rebase, PR, CI-fix, and
-# auto-fix). A stalled agent fails the run instead of leaving it active.
+# Silent-kill budget for one pipeline agent invocation that does not install a
+# more specific deadline (document, lint, rebase, PR, CI-fix, and auto-fix).
+# A turn with no output and no live child stops here. A still-working turn
+# continues past it only when agent_working_timeout is set.
 agent_timeout: "30m"
 
-# Absolute wall-clock limit for one Review agent invocation. Each optional
-# fixer and each fresh independent rereviewer receives a new full limit.
-# Activity is reported at expiry but does not reset this hard safety bound.
+# Optional cap for a turn that is still producing output or waiting on a live
+# child. Unset means no extension past agent_timeout. Must be at least
+# agent_timeout. The 10-minute quiet stop still ends a turn that goes idle.
+# agent_working_timeout: "1h"
+
+# Silent-kill budget for one Review agent invocation. Each optional fixer and
+# each fresh independent rereviewer receives a new full budget. A still-working
+# review continues past it only when review_agent_working_timeout is set.
 review_agent_timeout: "30m"
 
-# Maximum wall-clock time for one Test-step agent invocation, including the
-# post-test evidence-gathering turn. A stalled test agent parks for a decision
-# instead of leaving the run active. Raise this when targeted tests or evidence
-# gathering routinely approach 30m; the default is a stall bound, not slack
-# for a long suite.
+# Optional still-working cap for Review. Unset means no extension past
+# review_agent_timeout. Must be at least review_agent_timeout.
+# review_agent_working_timeout: "1h"
+
+# Silent-kill budget for one Test-step agent invocation, including the post-test
+# evidence-gathering turn. A silent test agent parks for a decision instead of
+# leaving the run active. A still-working one continues past it only when
+# test_agent_working_timeout is set.
 test_agent_timeout: "30m"
+
+# Optional still-working cap for Test. Unset means no extension past
+# test_agent_timeout. Must be at least test_agent_timeout.
+# test_agent_working_timeout: "1h"
 
 # Maximum time a CLI client waits for an existing daemon socket to accept a
 # connection before failing instead of hanging.
@@ -1245,6 +1436,17 @@ log_level: info
 # worktree_roots:
 #   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
 
+# A run's own worktree is already removed the instant its pipeline finishes.
+# This bounds what a rare failed removal - or a protected-path refusal that
+# later became removable - leaves behind, the same way test.evidence.retention
+# bounds evidence: retention ages leftover directories out (default 24 hours)
+# and max_runs caps how many survive regardless of age (default 20). Set
+# retention to "unlimited", or either to 0, to disable that bound. Global-only,
+# like test.evidence's retention settings.
+# worktree:
+#   retention: 24h
+#   max_runs: 20
+
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -1289,6 +1491,12 @@ ci:
 #   fix_message: "no-mistakes({{.Step}}): {{.Summary}}"
 # To use the captured identifier in the subject, replace fix_message with:
 #   fix_message: "{{.Branch}}: {{.Summary}}"
+# Trailers appended to commits made from one agent invocation's changes.
+# Available variables: {{.Agent}} (the agent that actually ran) and
+# {{.Model}} (the model it reported, or "unknown"). Repo config may replace
+# the list.
+#   trailers:
+#     - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
 
 # User-intent extraction. When you push a branch, no-mistakes can read recent
 # transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev, Pi,
@@ -2018,6 +2226,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		LogLevel:                "info",
 		SessionReuse:            true,
 		Eval:                    evalDefaults(),
+		Worktree:                worktreeDefaults(),
 	}
 }
 
@@ -2187,6 +2396,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateEvalRaw(raw.Eval); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateWorktreeRaw(raw.Worktree); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 	if err := validateRebaseRaw(raw.Rebase); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
@@ -2272,6 +2484,36 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.TestAgentTimeout = d
 	}
+	if raw.AgentWorkingTimeout != "" {
+		d, err := parsePositiveDuration("agent_working_timeout", raw.AgentWorkingTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AgentWorkingTimeout = d
+	}
+	if raw.ReviewAgentWorkingTimeout != "" {
+		d, err := parsePositiveDuration("review_agent_working_timeout", raw.ReviewAgentWorkingTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.ReviewAgentWorkingTimeout = d
+	}
+	if raw.TestAgentWorkingTimeout != "" {
+		d, err := parsePositiveDuration("test_agent_working_timeout", raw.TestAgentWorkingTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.TestAgentWorkingTimeout = d
+	}
+	if err := validateWorkingCap("agent_working_timeout", "agent_timeout", cfg.AgentWorkingTimeout, cfg.AgentTimeout); err != nil {
+		return nil, err
+	}
+	if err := validateWorkingCap("review_agent_working_timeout", "review_agent_timeout", cfg.ReviewAgentWorkingTimeout, cfg.ReviewAgentTimeout); err != nil {
+		return nil, err
+	}
+	if err := validateWorkingCap("test_agent_working_timeout", "test_agent_timeout", cfg.TestAgentWorkingTimeout, cfg.TestAgentTimeout); err != nil {
+		return nil, err
+	}
 	if raw.DaemonConnectTimeout != "" {
 		d, err := parsePositiveDuration("daemon_connect_timeout", raw.DaemonConnectTimeout)
 		if err != nil {
@@ -2313,6 +2555,14 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.ForgeProfiles = profiles
 	}
+	plugins, err := normalizeProviderPlugins(raw.ProviderPlugins)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProviderPluginsAgainstForgeProfiles(plugins, cfg.ForgeProfiles); err != nil {
+		return nil, err
+	}
+	cfg.ProviderPlugins = plugins
 	if raw.RepositoryOverrides != nil {
 		overrides, err := normalizeRepositoryOverrides(raw.RepositoryOverrides)
 		if err != nil {
@@ -2320,6 +2570,10 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.RepositoryOverrides = overrides
 	}
+	if err := validateOperatorReview(raw.Review, cfg.RepositoryOverrides); err != nil {
+		return nil, err
+	}
+	cfg.Review = raw.Review
 	if raw.AutoFix.CI == nil {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
@@ -2331,6 +2585,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg.Test = raw.Test
 	cfg.Providers = raw.Providers
 	applyEvalOverrides(&cfg.Eval, &raw.Eval)
+	applyWorktreeOverrides(&cfg.Worktree, &raw.Worktree)
 
 	return cfg, nil
 }
@@ -2416,6 +2671,15 @@ func parsePositiveDuration(name, value string) (time.Duration, error) {
 		return 0, fmt.Errorf("parse %s %q: duration must be positive", name, value)
 	}
 	return d, nil
+}
+
+// validateWorkingCap rejects a still-working cap shorter than its silent budget.
+// An unset cap (zero) is the opt-out: the turn stops at the silent budget.
+func validateWorkingCap(capName, silentName string, cap, silent time.Duration) error {
+	if cap <= 0 || cap >= silent {
+		return nil
+	}
+	return fmt.Errorf("%s (%s) must be at least %s (%s)", capName, cap, silentName, silent)
 }
 
 // LoadRepo reads per-repo config from dir/.no-mistakes.yaml.
@@ -2523,10 +2787,17 @@ func validatePRRaw(pr PRRaw) error {
 // invalid block has to fail here, before it merges, rather than brick the
 // repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
-	if len(review.PathInstructions) > MaxReviewPathInstructions {
-		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(review.PathInstructions), MaxReviewPathInstructions)
+	if err := validatePathInstructionEntries(review.PathInstructions); err != nil {
+		return err
 	}
-	for i, entry := range review.PathInstructions {
+	return validatePathInstructionsBudget([]PathInstructionSource{{Heading: ReviewPathInstructionsHeading, Entries: review.PathInstructions}})
+}
+
+func validatePathInstructionEntries(entries []PathInstruction) error {
+	if len(entries) > MaxReviewPathInstructions {
+		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(entries), MaxReviewPathInstructions)
+	}
+	for i, entry := range entries {
 		path := strings.TrimSpace(entry.Path)
 		if path == "" {
 			return fmt.Errorf("review.path_instructions[%d].path must not be empty", i)
@@ -2541,8 +2812,32 @@ func validateReviewRaw(review ReviewRaw) error {
 			return fmt.Errorf("review.path_instructions[%d].path %q is not a valid glob: %w", i, path, err)
 		}
 	}
-	if total := ReviewPathInstructionsBytes(review.PathInstructions); total > MaxReviewPathInstructionsBytes {
-		return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt, at most %d are allowed so the prompt stays within budget", total, MaxReviewPathInstructionsBytes)
+	return nil
+}
+
+// validateOperatorReview checks the operator's global review block on its own
+// and together with every repository_overrides review block, so a global
+// config that could never fit the prompt fails when it loads rather than at
+// the first matching run.
+func validateOperatorReview(global OperatorReviewRaw, overrides RepositoryOverrides) error {
+	if err := validatePathInstructionEntries(global.PathInstructions); err != nil {
+		return err
+	}
+	globalSource := PathInstructionSource{Label: "machine-local global", Heading: ReviewGlobalPathInstructionsHeading, Entries: global.PathInstructions}
+	if err := validatePathInstructionsBudget([]PathInstructionSource{globalSource}); err != nil {
+		return err
+	}
+	for key, override := range overrides {
+		if err := validatePathInstructionEntries(override.Review.PathInstructions); err != nil {
+			return fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
+		}
+		sources := Review{
+			GlobalPathInstructions:     global.PathInstructions,
+			RepositoryPathInstructions: override.Review.PathInstructions,
+		}.PathInstructionSources()
+		if err := validatePathInstructionsBudget(sources); err != nil {
+			return fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
+		}
 	}
 	return nil
 }
@@ -2873,6 +3168,63 @@ func parseEvidenceRetention(value string) (time.Duration, error) {
 	return d, nil
 }
 
+// worktreeDefaults returns the default run-worktree retention settings.
+func worktreeDefaults() Worktree {
+	return Worktree{Retention: DefaultWorktreeRetention, MaxRuns: DefaultWorktreeMaxRuns}
+}
+
+// applyWorktreeOverrides applies non-nil raw values onto resolved defaults.
+// The retention value is validated at config parse time (validateWorktreeRaw).
+func applyWorktreeOverrides(dst *Worktree, src *WorktreeRaw) {
+	if src.Retention != nil {
+		if d, err := parseWorktreeRetention(*src.Retention); err == nil {
+			dst.Retention = d
+		}
+	}
+	if src.MaxRuns != nil && *src.MaxRuns >= 0 {
+		dst.MaxRuns = *src.MaxRuns
+	}
+}
+
+// parseWorktreeRetention interprets worktree.retention with the same keyword
+// set as test.evidence.retention (see parseEvidenceRetention): "unlimited"
+// (also "none"/"off"/"never"), or any non-positive duration, disables
+// age-based reaping and resolves to 0, which keeps every leftover worktree
+// until the max_runs ceiling removes it.
+func parseWorktreeRetention(value string) (time.Duration, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "":
+		return DefaultWorktreeRetention, nil
+	case "unlimited", "none", "off", "never":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("worktree.retention: parse %q: %w", value, err)
+	}
+	if d <= 0 {
+		return 0, nil
+	}
+	return d, nil
+}
+
+// validateWorktreeRaw fails the config closed on an unparseable
+// worktree.retention or a negative worktree.max_runs, matching
+// validateTestRaw/validateEvalRaw: surfacing the typo here beats a daemon
+// that silently falls back to the default budget.
+func validateWorktreeRaw(raw WorktreeRaw) error {
+	if raw.Retention != nil {
+		if _, err := parseWorktreeRetention(*raw.Retention); err != nil {
+			return err
+		}
+	}
+	if raw.MaxRuns != nil && *raw.MaxRuns < 0 {
+		return fmt.Errorf("worktree.max_runs must be 0 (keep every leftover) or greater, got %d", *raw.MaxRuns)
+	}
+	return nil
+}
+
 // evalDefaults returns the default local evaluation-corpus settings. Both
 // halves are on by default: provenance is unrecoverable if it was not recorded
 // at review time, and a corpus nobody has to remember to collect is the only
@@ -3169,6 +3521,17 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		commit.BranchPattern = *repo.Commit.BranchPattern
 		commit.BranchReplacement = ""
 	}
+	// Each layer replaces the list rather than extending it, and an explicit
+	// empty list clears trailers set by a lower layer.
+	trailerLayers := []*[]string{global.Commit.Trailers, nil, repo.Commit.Trailers}
+	if override != nil {
+		trailerLayers[1] = override.Commit.Trailers
+	}
+	for _, trailers := range trailerLayers {
+		if trailers != nil {
+			commit.Trailers = append([]string{}, (*trailers)...)
+		}
+	}
 
 	providers := Providers{}
 	applyProvidersOverrides(&providers, &global.Providers)
@@ -3188,27 +3551,32 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	}
 
 	cfg := &Config{
-		Agent:                 global.Agent,
-		Agents:                copyAgents(global.Agents),
-		ACPXPath:              global.ACPXPath,
-		ForgejoAXIPath:        global.ForgejoAXIPath,
-		ACPRegistryOverrides:  global.ACPRegistryOverrides,
-		AgentPathOverride:     global.AgentPathOverride,
-		AgentArgsOverride:     global.AgentArgsOverride,
-		AgentConfig:           global.AgentConfig,
-		ReviewAgents:          global.ReviewAgents,
-		CITimeout:             global.CITimeout,
-		StepQuietWarning:      global.StepQuietWarning,
-		AgentTimeout:          global.AgentTimeout,
-		ReviewAgentTimeout:    global.ReviewAgentTimeout,
-		TestAgentTimeout:      global.TestAgentTimeout,
-		GateReconcileInterval: global.GateReconcileInterval,
-		GateReconcileTimeout:  global.GateReconcileTimeout,
-		LogLevel:              global.LogLevel,
-		SessionReuse:          global.SessionReuse,
+		Agent:                     global.Agent,
+		Agents:                    copyAgents(global.Agents),
+		ACPXPath:                  global.ACPXPath,
+		ForgejoAXIPath:            global.ForgejoAXIPath,
+		ACPRegistryOverrides:      global.ACPRegistryOverrides,
+		AgentPathOverride:         global.AgentPathOverride,
+		AgentArgsOverride:         global.AgentArgsOverride,
+		AgentConfig:               global.AgentConfig,
+		ReviewAgents:              global.ReviewAgents,
+		CITimeout:                 global.CITimeout,
+		StepQuietWarning:          global.StepQuietWarning,
+		AgentTimeout:              global.AgentTimeout,
+		ReviewAgentTimeout:        global.ReviewAgentTimeout,
+		TestAgentTimeout:          global.TestAgentTimeout,
+		AgentWorkingTimeout:       global.AgentWorkingTimeout,
+		ReviewAgentWorkingTimeout: global.ReviewAgentWorkingTimeout,
+		TestAgentWorkingTimeout:   global.TestAgentWorkingTimeout,
+		GateReconcileInterval:     global.GateReconcileInterval,
+		GateReconcileTimeout:      global.GateReconcileTimeout,
+		LogLevel:                  global.LogLevel,
+		SessionReuse:              global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
-		// copied straight through with no repository override step.
+		// copied straight through with no repository override step. Worktree
+		// is global-only for the same reason (see GlobalConfig.Worktree).
 		Eval:           global.Eval,
+		Worktree:       global.Worktree,
 		Commands:       repo.Commands,
 		Gates:          copyGates(repo.Gates),
 		IgnorePatterns: repo.IgnorePatterns,
@@ -3220,17 +3588,19 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		// repo is the EffectiveRepoConfig result, so both values are already
-		// trusted-only. Like document.instructions and test.instructions, the
-		// review block is resolved from the repository alone - global config
-		// carries no review block to overlay.
+		// repo is the EffectiveRepoConfig result, so both repository values are
+		// already trusted-only. The operator's path instructions are added as
+		// separate sources rather than overlaid: they can only add rules, never
+		// replace or remove the repository's.
 		Review: Review{
-			Conversation:     repo.Review.Conversation,
-			PathInstructions: resolvePathInstructions(repo.Review.PathInstructions),
+			Conversation:           repo.Review.Conversation,
+			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
+			GlobalPathInstructions: resolvePathInstructions(global.Review.PathInstructions),
 		},
-		PR:            pr,
-		ForgeProfiles: global.ForgeProfiles,
-		Providers:     providers,
+		PR:              pr,
+		ForgeProfiles:   global.ForgeProfiles,
+		ProviderPlugins: global.ProviderPlugins,
+		Providers:       providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
@@ -3239,6 +3609,8 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 
 	if override != nil {
 		cfg.CommandOverrides = copyCommandOverrides(override.Commands)
+		cfg.Review.RepositoryPathInstructions = resolvePathInstructions(override.Review.PathInstructions)
+		cfg.Document.RepositoryInstructions = strings.TrimSpace(override.Document.Instructions)
 	}
 
 	if repo.Agent != "" {

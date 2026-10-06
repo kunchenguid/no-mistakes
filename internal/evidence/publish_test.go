@@ -13,6 +13,11 @@ import (
 // git call these tests make, so drop it for the package.
 func TestMain(m *testing.M) {
 	os.Unsetenv("GIT_CONFIG_COUNT")
+	// Fixtures must not depend on the machine's system git config: some
+	// distributions ship safe.bareRepository=explicit there, which refuses
+	// the in-directory use of the bare fixture repositories these tests
+	// create. Mirrors internal/git's TestMain.
+	os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	os.Exit(m.Run())
 }
 

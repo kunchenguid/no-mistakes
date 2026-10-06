@@ -9,11 +9,26 @@ import (
 )
 
 func runRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
-	override := sctx.Config.CommandOverrides[name]
-	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
+	declareCommandOverrides(sctx, name)
+	return executeRepositoryCommand(sctx, name, command)
+}
+
+func declareCommandOverrides(sctx *pipeline.StepContext, name string) {
+	if declaration := commandOverrideDeclaration(name, sctx.Config.CommandOverrides[name]); declaration != "" {
 		sctx.Log(declaration)
 	}
-	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, override.Nice)
+}
+
+// declareStepCommandOverrides declares a Test or Lint step's overrides once per
+// step: a fix round re-executes the step into the same step log.
+func declareStepCommandOverrides(sctx *pipeline.StepContext, name string) {
+	if !sctx.Fixing {
+		declareCommandOverrides(sctx, name)
+	}
+}
+
+func executeRepositoryCommand(sctx *pipeline.StepContext, name, command string) (string, int, error) {
+	return runShellCommandWithPriority(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), command, sctx.Config.CommandOverrides[name].Nice)
 }
 
 // commandOverrideDeclaration states every machine-local override applied to a
@@ -74,9 +89,6 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 		checks = append(checks, checkResult{Command: additional, Local: true})
 	}
 	var output strings.Builder
-	if declaration := commandOverrideDeclaration(name, override); declaration != "" {
-		fmt.Fprintf(&output, "%s\n", declaration)
-	}
 	for i := range checks {
 		if err := sctx.Ctx.Err(); err != nil {
 			return output.String(), checks[:i], err
@@ -87,7 +99,7 @@ func runConfiguredChecks(sctx *pipeline.StepContext, name, command string) (stri
 		} else if len(override.Additional) > 0 {
 			fmt.Fprintf(&output, "\nconfigured %s command: %s\n", name, checks[i].Command)
 		}
-		out, code, err := runRepositoryCommand(sctx, name, checks[i].Command)
+		out, code, err := executeRepositoryCommand(sctx, name, checks[i].Command)
 		output.WriteString(out)
 		if err != nil {
 			return output.String(), checks[:i], err

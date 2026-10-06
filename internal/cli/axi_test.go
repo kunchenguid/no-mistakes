@@ -681,6 +681,20 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 	}
 }
 
+func TestAxiRunClosesFlagIsRepeatable(t *testing.T) {
+	cmd := newAxiRunCmd()
+	if err := cmd.ParseFlags([]string{"--closes", "10", "--closes", "owner/repo#2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cmd.Flags().GetStringArray("closes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got, ","); refs != "10,owner/repo#2" {
+		t.Fatalf("--closes values = %q", refs)
+	}
+}
+
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop")
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
@@ -692,6 +706,134 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	if params.PRBaseBranch != "develop" {
 		t.Fatalf("PRBaseBranch = %q, want develop", params.PRBaseBranch)
 	}
+}
+
+func TestAxiRunClosesFlagIsValidatedAndCanonicalized(t *testing.T) {
+	cmd := newAxiRunCmd()
+	if err := cmd.ParseFlags([]string{"--closes", "10", "--closes", "Owner/Repo#2", "--closes", "10"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := closingIssueRefsFromFlags(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got, ","); refs != "10,owner/repo#2" {
+		t.Fatalf("--closes = %q, want deduplicated canonical refs", refs)
+	}
+
+	bad := newAxiRunCmd()
+	if err := bad.ParseFlags([]string{"--closes", "#42"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := closingIssueRefsFromFlags(bad); err == nil || !strings.Contains(err.Error(), "invalid --closes") {
+		t.Fatalf("malformed --closes error = %v", err)
+	}
+}
+
+// An older daemon would drop closing_issue_refs from the push silently, so a
+// run with --closes probes for the capability before anything is pushed.
+func TestRequireDaemonHonorsClosingIssueRefs(t *testing.T) {
+	if err := requireDaemonHonorsClosingIssueRefs(&scriptedClosingIssueRefsUpdateClient{err: errors.New("method not found")}, nil); err != nil {
+		t.Fatalf("no --closes must not probe: %v", err)
+	}
+	old := &scriptedClosingIssueRefsUpdateClient{err: errors.New("method not found")}
+	err := requireDaemonHonorsClosingIssueRefs(old, []string{"42"})
+	if err == nil || !strings.Contains(err.Error(), "too old to honor --closes") {
+		t.Fatalf("old daemon error = %v", err)
+	}
+	current := &scriptedClosingIssueRefsUpdateClient{}
+	if err := requireDaemonHonorsClosingIssueRefs(current, []string{"42"}); err != nil {
+		t.Fatalf("current daemon refused: %v", err)
+	}
+	if params, ok := current.params.(*ipc.UpdateRunClosingIssueRefsParams); !ok || params.RunID != "" || len(params.ClosingIssueRefs) != 0 {
+		t.Fatalf("probe params = %#v, want an empty no-op update", current.params)
+	}
+}
+
+func TestForwardClosingIssueRefsToActiveRunRequiresUpdateSuccess(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{err: errors.New("database unavailable")}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42", "owner/repo#9"})
+	if err == nil || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("forward error = %v, want daemon update failure", err)
+	}
+	if client.method != ipc.MethodUpdateRunClosingIssueRefs {
+		t.Fatalf("method = %q, want %q", client.method, ipc.MethodUpdateRunClosingIssueRefs)
+	}
+	params, ok := client.params.(*ipc.UpdateRunClosingIssueRefsParams)
+	if !ok {
+		t.Fatalf("params type = %T, want *ipc.UpdateRunClosingIssueRefsParams", client.params)
+	}
+	if params.RunID != "run-1" || strings.Join(params.ClosingIssueRefs, ",") != "42,owner/repo#9" {
+		t.Fatalf("params = %#v, want run-1 with both references", params)
+	}
+}
+
+func TestForwardClosingIssueRefsToActiveRunSkipsEmptyIssue(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{}
+
+	if err := forwardClosingIssueRefsToActiveRun(client, "run-1", nil); err != nil {
+		t.Fatalf("empty issue should not update: %v", err)
+	}
+	if client.method != "" {
+		t.Fatalf("empty issue made IPC call %q", client.method)
+	}
+}
+
+// A rejection because the PR body was already composed is distinguishable from
+// a transport failure, so the caller can say "not applied, edit the PR" instead
+// of advising a retry that can never succeed.
+func TestForwardClosingIssueRefsToActiveRunReportsPRBodyAlreadyComposed(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{
+		reject: ipc.ClosingIssueRefsRejectedPRBodyComposed,
+	}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
+	if !errors.Is(err, errClosingIssueRefsPRBodyComposed) {
+		t.Fatalf("forward error = %v, want errClosingIssueRefsPRBodyComposed", err)
+	}
+	if !strings.Contains(err.Error(), "could not be applied") {
+		t.Fatalf("error %q should state the link was not applied", err.Error())
+	}
+}
+
+// A rejection with no recognized reason must stay an error rather than passing
+// as success, so an unknown refusal never reports a link that was not added.
+func TestForwardClosingIssueRefsToActiveRunRejectsUnknownReason(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{reject: "some_future_reason"}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
+	if err == nil {
+		t.Fatal("unknown rejection reason reported success")
+	}
+	if errors.Is(err, errClosingIssueRefsPRBodyComposed) {
+		t.Fatalf("unknown reason misreported as the composed-body case: %v", err)
+	}
+}
+
+type scriptedClosingIssueRefsUpdateClient struct {
+	method string
+	params interface{}
+	err    error
+	// reject, when set, makes the daemon refuse the update with this reason.
+	reject string
+}
+
+func (s *scriptedClosingIssueRefsUpdateClient) Call(method string, params interface{}, result interface{}) error {
+	s.method = method
+	s.params = params
+	if s.err != nil {
+		return s.err
+	}
+	if out, ok := result.(*ipc.UpdateRunClosingIssueRefsResult); ok {
+		if s.reject != "" {
+			out.OK = false
+			out.Reason = s.reject
+			return nil
+		}
+		out.OK = true
+	}
+	return nil
 }
 
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {

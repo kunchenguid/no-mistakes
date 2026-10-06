@@ -87,6 +87,15 @@ Deterministic CI may test the final emitted prompt delivered to an agent as an
 intentional generated interface; model interpretation belongs in
 development-only evaluation, not live-LLM CI.
 
+Use an independent oracle: the expected result must come from somewhere other
+than the code under test, such as a specification, worked example, published
+constant, external contract, or independently justified property. Name the
+public behavior, the oracle's source, and a plausible wrong behavior the test
+would reject. Do not only check your own mocks, compare a result to itself, or
+copy the implementation's expected-value rule: a shared mistake can pass both
+sides. External-boundary mocks, constants, snapshots, and computed expectations
+remain legitimate when they check an independent contract.
+
 For a regression, reproduce the reported failure when feasible: the test should
 fail before the fix and pass after it.
 

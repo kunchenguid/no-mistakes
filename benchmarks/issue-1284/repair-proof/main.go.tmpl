@@ -1,0 +1,91 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+)
+
+func main() {
+	if os.Args[1] == "--validate" {
+		kind := os.Args[2]
+		output, err := os.ReadFile(os.Args[3])
+		if err != nil {
+			panic(err)
+		}
+		opts := steps.Issue1284ProofOpts(kind, "", "", "", "")
+		result, validationErr := agent.Issue1284ProofParse(string(output), opts.JSONSchema)
+		if validationErr == nil {
+			validationErr = steps.Issue1284ProofValidate(kind, result.Output)
+		}
+		row := map[string]any{"valid": validationErr == nil}
+		if validationErr != nil {
+			row["error"] = validationErr.Error()
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(row)
+		return
+	}
+	kind, cwd, base, head, logPath := os.Args[1], os.Args[2], os.Args[3], os.Args[4], os.Args[5]
+	logs, err := os.ReadFile(logPath)
+	if err != nil {
+		panic(err)
+	}
+	opts := steps.Issue1284ProofOpts(kind, cwd, base, head, string(logs))
+	prefix := os.Getenv("NM_PROOF_PREFIX")
+	if err := os.WriteFile(prefix+".schema.json", opts.JSONSchema, 0600); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(prefix+".prompt.txt", []byte(opts.Prompt), 0600); err != nil {
+		panic(err)
+	}
+	args := []string{"--provider", "openai-codex", "--model", "gpt-6.1-sol", "--thinking", "high", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--extension", os.Getenv("NM_PROOF_OBSERVER")}
+	ag, err := agent.New("pi", os.Getenv("NM_PROOF_PI_WRAPPER"), args)
+	if err != nil {
+		panic(err)
+	}
+	defer ag.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	started := time.Now()
+	var attempts []map[string]any
+	var paths []string
+	opts.OnAttempt = func(a agent.Attempt) {
+		row := map[string]any{"seconds": a.CompletedAt.Sub(a.StartedAt).Seconds(), "success": a.Err == nil}
+		if a.Err != nil {
+			row["error"] = a.Err.Error()
+		}
+		attempts = append(attempts, row)
+	}
+	opts.OnLifecycle = func(event agent.LifecycleEvent) {
+		if event.Phase == "structured_output" || event.Phase == agent.LifecyclePhaseFallback {
+			paths = append(paths, event.Message)
+		}
+	}
+	result, runErr := ag.Run(ctx, opts)
+	row := map[string]any{"implementation": os.Getenv("NM_PROOF_IMPLEMENTATION"), "schema": kind, "started": started.UTC().Format(time.RFC3339Nano), "seconds": time.Since(started).Seconds(), "adapter_success": runErr == nil, "paths": paths, "attempts": attempts, "args": args, "schema_valid": false}
+	if runErr != nil {
+		row["error"] = runErr.Error()
+		row["schema_rejected"] = agent.IsStructuredOutputRejected(runErr)
+	}
+	if result != nil {
+		row["adapter_model"] = result.ModelProvider + "/" + result.Model
+		row["output"] = result.Output
+		if result.UsageReported {
+			row["usage"] = result.Usage
+		}
+		if result.Output != nil {
+			consumerErr := steps.Issue1284ProofValidate(kind, result.Output)
+			row["schema_valid"] = runErr == nil && consumerErr == nil
+			if consumerErr != nil {
+				row["consumer_error"] = consumerErr.Error()
+			}
+		}
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(row); err != nil {
+		panic(err)
+	}
+}

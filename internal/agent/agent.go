@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -1060,7 +1062,7 @@ func validateStructuredOutput(output, schema json.RawMessage) error {
 		return err
 	}
 
-	if err := validateJSONValue(value, parsedSchema, ""); err != nil {
+	if err := validateJSONValue(value, parsedSchema, "", ""); err != nil {
 		return fmt.Errorf("JSON output %w", err)
 	}
 	return nil
@@ -1099,69 +1101,87 @@ func decodeJSONValue(raw []byte) (any, error) {
 	return value, nil
 }
 
-func validateJSONValue(value, schema any, path string) error {
+// SchemaViolation is a structured output's rejection by the requested schema.
+// Field names the schema field that failed as a dotted path without array
+// indices (so the same field fails under one name whichever array element
+// carried it); it is empty when the failure is the whole output's own type.
+type SchemaViolation struct {
+	Field   string
+	Message string
+}
+
+func (e *SchemaViolation) Error() string { return e.Message }
+
+func schemaViolation(field, format string, args ...any) error {
+	return &SchemaViolation{Field: field, Message: fmt.Sprintf(format, args...)}
+}
+
+func validateJSONValue(value, schema any, path, field string) error {
 	schemaMap, ok := schema.(map[string]any)
 	if !ok {
 		return nil
 	}
 
 	if enum, ok := schemaMap["enum"].([]any); ok && !matchesEnum(value, enum) {
-		return fmt.Errorf("%smust match one of the allowed values", formatJSONPath(path))
+		return schemaViolation(field, "%smust match one of the allowed values", formatJSONPath(path))
 	}
 
 	if types, ok := schemaTypes(schemaMap); ok && !matchesAnyType(value, types) {
-		return fmt.Errorf("%smust be %s", formatJSONPath(path), strings.Join(types, " or "))
+		return schemaViolation(field, "%smust be %s", formatJSONPath(path), strings.Join(types, " or "))
 	}
 
 	if object, ok := value.(map[string]any); ok {
-		if err := validateJSONObject(object, schemaMap, path); err != nil {
+		if err := validateJSONObject(object, schemaMap, path, field); err != nil {
 			return err
 		}
 	}
 	if array, ok := value.([]any); ok {
-		if err := validateJSONArray(array, schemaMap, path); err != nil {
+		if err := validateJSONArray(array, schemaMap, path, field); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateJSONObject(object map[string]any, schema map[string]any, path string) error {
+func validateJSONObject(object map[string]any, schema map[string]any, path, field string) error {
 	required := stringSlice(schema["required"])
 	for _, key := range required {
 		if _, ok := object[key]; !ok {
-			return fmt.Errorf("%smissing required field %q", formatJSONPath(path), key)
+			return schemaViolation(joinJSONPath(field, key), "%smissing required field %q", formatJSONPath(path), key)
 		}
 	}
 
+	// Keys are checked in sorted order so the same output always reports the
+	// same violation; map order would let an unchanged retry name a different
+	// field and read as a distinct failure.
 	properties, _ := schema["properties"].(map[string]any)
 	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
-		for key := range object {
+		for _, key := range slices.Sorted(maps.Keys(object)) {
 			if _, ok := properties[key]; !ok {
-				return fmt.Errorf("%scontains unknown field %q", formatJSONPath(path), key)
+				return schemaViolation(joinJSONPath(field, key), "%scontains unknown field %q", formatJSONPath(path), key)
 			}
 		}
 	}
 
-	for key, propSchema := range properties {
+	for _, key := range slices.Sorted(maps.Keys(properties)) {
 		child, ok := object[key]
 		if !ok {
 			continue
 		}
-		if err := validateJSONValue(child, propSchema, joinJSONPath(path, key)); err != nil {
+		if err := validateJSONValue(child, properties[key], joinJSONPath(path, key), joinJSONPath(field, key)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateJSONArray(array []any, schema map[string]any, path string) error {
+func validateJSONArray(array []any, schema map[string]any, path, field string) error {
 	itemsSchema, ok := schema["items"]
 	if !ok {
 		return nil
 	}
 	for i, item := range array {
-		if err := validateJSONValue(item, itemsSchema, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+		if err := validateJSONValue(item, itemsSchema, fmt.Sprintf("%s[%d]", path, i), field); err != nil {
 			return err
 		}
 	}

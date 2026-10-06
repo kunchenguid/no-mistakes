@@ -31,6 +31,47 @@ const (
 	ProviderUnknown     Provider = "unknown"
 )
 
+// pluginProviderPrefix namespaces operator-configured provider plugins
+// (global provider_plugins). The prefix keeps a plugin identity from ever
+// colliding with a built-in provider, so every built-in switch on Provider
+// keeps falling through to its default branch for a plugin.
+const pluginProviderPrefix = "plugin:"
+
+// BuiltinProviders lists the provider names compiled into no-mistakes. Plugin
+// names must not reuse them, so an operator reading "provider gitea" in a log
+// never has to wonder which implementation ran.
+var BuiltinProviders = []Provider{
+	ProviderGitHub,
+	ProviderGitLab,
+	ProviderBitbucket,
+	ProviderAzureDevOps,
+	ProviderForgejo,
+	ProviderGitea,
+	ProviderUnknown,
+}
+
+// PluginProvider returns the provider identity for the configured provider
+// plugin name.
+func PluginProvider(name string) Provider {
+	return Provider(pluginProviderPrefix + name)
+}
+
+// PluginName reports the configured plugin name when p identifies a provider
+// plugin.
+func (p Provider) PluginName() (string, bool) {
+	name, ok := strings.CutPrefix(string(p), pluginProviderPrefix)
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// IsPlugin reports whether p identifies an operator-configured provider plugin.
+func (p Provider) IsPlugin() bool {
+	_, ok := p.PluginName()
+	return ok
+}
+
 type sshHostnameLookup func(context.Context, string) (string, error)
 
 // DetectProvider identifies the SCM provider for url. SSH host aliases are
@@ -157,7 +198,8 @@ func detectLegacyProviderHost(host string) Provider {
 
 // ResolveHost returns the canonical host for a remote. For SSH remotes it
 // honors HostName mappings from the user's SSH configuration while preserving
-// the original remote URL for all Git operations.
+// the original remote URL for all Git operations. The SSH-over-HTTPS endpoints
+// ssh.github.com and altssh.gitlab.com are returned as github.com and gitlab.com.
 func ResolveHost(ctx context.Context, remote string) string {
 	return resolveHost(ctx, remote, lookupSSHHostname)
 }
@@ -176,7 +218,21 @@ func resolveHost(ctx context.Context, remote string, lookup sshHostnameLookup) s
 	if resolved == "" {
 		return host
 	}
-	return resolved
+	return canonicalProviderHost(resolved)
+}
+
+// canonicalProviderHost maps the two provider SSH-over-HTTPS endpoints back
+// to the host their API clients and credential stores use. Any other
+// hostname, including GitHub Enterprise and self-hosted GitLab, is unchanged.
+func canonicalProviderHost(host string) string {
+	switch host {
+	case "ssh.github.com":
+		return "github.com"
+	case "altssh.gitlab.com":
+		return "gitlab.com"
+	default:
+		return host
+	}
 }
 
 func isSSHRemote(remote string) bool {
