@@ -125,6 +125,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			baseRemote, err := parseBaseRemotePushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			omitIntent, err := parseOmitIntentPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -174,6 +178,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				LaunchNonce:            launchNonce,
 				ValidationGeneration:   validationGeneration,
 				PRBaseBranch:           prBaseBranch,
+				BaseRemote:             baseRemote,
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
 				VerificationPlanID:     verificationPlanID,
@@ -350,6 +355,31 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 	return branch, nil
 }
 
+const baseRemotePushOptionPrefix = "no-mistakes.base-remote="
+
+func formatBaseRemotePushOption(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	return baseRemotePushOptionPrefix + remote
+}
+
+func parseBaseRemotePushOptions(options []string) (string, error) {
+	remote := ""
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, baseRemotePushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("base remote push option must not be empty")
+		}
+		remote = value
+	}
+	return remote, nil
+}
+
 // omitIntentPushOption carries axi run --no-publish-intent through a git push.
 // Like every publication control it is tighten-only: the option can only ask
 // for omission, never for publication.
@@ -405,6 +435,18 @@ func probeDaemonOmitIntent(client *ipc.Client) error {
 	}
 	if err != nil {
 		return fmt.Errorf("the running daemon is too old to honor --no-publish-intent (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
+}
+
+func requireDaemonHonorsBaseRemote(client *ipc.Client) error {
+	var result ipc.ProbeBaseRemoteResult
+	err := client.Call(ipc.MethodProbeBaseRemote, &ipc.ProbeBaseRemoteParams{}, &result)
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the base-remote capability")
+	}
+	if err != nil {
+		return fmt.Errorf("the running daemon is too old to honor --base-remote (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
 	}
 	return nil
 }

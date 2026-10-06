@@ -26,6 +26,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -1323,7 +1324,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
 	})
 
-	srv.Handle(ipc.MethodClaimLaunchReceipt, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodClaimLaunchReceipt, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		var p ipc.ClaimLaunchReceiptParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -1338,7 +1339,18 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PiProfile)
+		repo, err := d.GetRepo(p.RepoID)
+		if err != nil {
+			return nil, err
+		}
+		if repo == nil {
+			return nil, fmt.Errorf("unknown repository")
+		}
+		baseRemote, err := steps.StoredIntegrationRemote(ctx, repo.WorkingPath, p.Branch, prBaseBranch, p.BaseRemote)
+		if err != nil {
+			return nil, err
+		}
+		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, baseRemote, p.OmitIntent, p.PiProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
@@ -1350,6 +1362,9 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		}
 		if !launchPRBaseBranchMatches(run, prBaseBranch) {
 			return nil, conflictingLaunchPRBaseBranch(p.LaunchNonce)
+		}
+		if !launchBaseRemoteMatches(run, baseRemote) {
+			return nil, conflictingLaunchBaseRemote(p.LaunchNonce)
 		}
 		if p.OmitIntent && !run.OmitIntent {
 			return nil, conflictingLaunchOmitIntent(p.LaunchNonce)
@@ -1368,6 +1383,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	// Capability probe for --no-publish-intent: see ipc.ProbeOmitIntentResult.
 	srv.Handle(ipc.MethodProbeOmitIntent, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeOmitIntentResult{OK: true}, nil
+	})
+
+	srv.Handle(ipc.MethodProbeBaseRemote, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeBaseRemoteResult{OK: true}, nil
 	})
 
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1446,7 +1465,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, p.PiProfile)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.BaseRemote, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, p.PiProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1594,6 +1613,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReady:            r.CIReadyAt != nil,
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
+		BaseRemote:         r.BaseRemote,
 		OmitIntent:         r.OmitIntent,
 		PiProfile:          r.PiProfile,
 		VerificationPlan:   r.VerificationPlan,

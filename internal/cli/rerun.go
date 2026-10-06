@@ -15,13 +15,14 @@ import (
 func newRerunCmd() *cobra.Command {
 	var intent string
 	var baseBranch string
+	var baseRemote string
 	var noPublishIntent bool
 	var model, effort string
 	var closesIssues []string
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Rerun the pipeline for the current branch",
-		Long:  "Rerun the pipeline for the current branch. By default, an explicit intent from the selected prior run is inherited; otherwise intent is inferred afresh. Use --intent to replace either with a new explicit intent. A per-run PR base branch is inherited from the selected prior run unless --base-branch is set. Omission of the generated Intent section is inherited from the selected prior run; --no-publish-intent additionally keeps it out of the PR body for this rerun (tighten-only; the full intent still reaches every step prompt except PR drafting). The selected run's pull-request URL is inherited when that PR is not already merged or closed, so retarget can prove identity. --model/--effort select a new immutable Pi profile (see axi run --help); a rerun is a NEW run and does not inherit the prior model pin. Without these flags it uses global configuration. Closing references (--closes) are inherited from the selected prior run; --closes adds to them.",
+		Long:  "Rerun the pipeline for the current branch. By default, an explicit intent from the selected prior run is inherited; otherwise intent is inferred afresh. Use --intent to replace either with a new explicit intent. A per-run PR base branch is inherited from the selected prior run unless --base-branch is set. The integration remote is inherited unless --base-remote is set. Omission of the generated Intent section is inherited from the selected prior run; --no-publish-intent additionally keeps it out of the PR body for this rerun (tighten-only; the full intent still reaches every step prompt except PR drafting). The selected run's pull-request URL is inherited when that PR is not already merged or closed, so retarget can prove identity. --model/--effort select a new immutable Pi profile (see axi run --help); a rerun is a NEW run and does not inherit the prior model pin. Without these flags it uses global configuration. Closing references (--closes) are inherited from the selected prior run; --closes adds to them.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("intent") && strings.TrimSpace(intent) == "" {
@@ -89,7 +90,12 @@ func newRerunCmd() *cobra.Command {
 					return err
 				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes}, &result); err != nil {
+				if strings.TrimSpace(baseRemote) != "" {
+					if err := requireDaemonHonorsBaseRemote(client); err != nil {
+						return err
+					}
+				}
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, BaseRemote: baseRemote, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -100,6 +106,7 @@ func newRerunCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&intent, "intent", "", "explicit intent for this rerun (overrides inherited intent or fresh inference)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch for the PR for this rerun only (overrides inherited per-run base branch)")
+	cmd.Flags().StringVar(&baseRemote, "base-remote", "", "git remote that holds the integration branch and the PR project (overrides the inherited integration remote)")
 	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this rerun (adds to the inherited decision; tighten-only)")
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "GitHub issue this PR closes when merged; repeat for multiple issues (42 or owner/repo#42); adds to inherited references")
 	bindPiProfileFlags(cmd, &model, &effort)

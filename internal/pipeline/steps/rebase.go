@@ -30,12 +30,12 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	ctx := sctx.Ctx
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
 	defaultBranch := effectivePRBaseBranch(sctx)
+	remoteName := integrationRemoteName(ctx, sctx)
 	branchTarget := ""
-	pushRemote := resolveUpstreamURL(sctx)
+	pushRemote := resolvePushURL(sctx)
 	if branch != "" {
-		branchTarget = "origin/" + branch
+		branchTarget = remoteName + "/" + branch
 		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
-			pushRemote = sctx.Repo.PushURL()
 			branchTarget = forkBranchTrackingRef(branch)
 		}
 	}
@@ -63,7 +63,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if !forcePush && branch != "" && branch != defaultBranch {
 		if strings.TrimSpace(sctx.Repo.ForkURL) == "" {
 			if err := fetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
-				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
+				sctx.LogFile(fmt.Sprintf("warning: could not fetch %s/%s: %v", remoteName, branch, err))
 			}
 		} else if err := git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, pushRemote, branch, branchTarget); err != nil {
 			sctx.LogFile(fmt.Sprintf("warning: could not fetch %s: %v", branchTarget, err))
@@ -78,12 +78,12 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
 		return outcome, nil
 	}
-	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, remoteName, defaultBranch, sctx.Run.BaseSHA) {
 		findingsJSON, _ := json.Marshal(Findings{
 			Items: []Finding{{
 				Severity:    "warning",
 				File:        filepath.Join("internal", "pipeline", "steps", "rebase.go"),
-				Description: fmt.Sprintf("origin/%s advanced after the force push; manual review required before updating the default branch", defaultBranch),
+				Description: fmt.Sprintf("%s/%s advanced after the force push; manual review required before updating the default branch", remoteName, defaultBranch),
 			}},
 			Summary: fmt.Sprintf("remote %s advanced during force push", defaultBranch),
 		})
@@ -93,10 +93,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	targets := rebaseTargetsForBranch(branch, defaultBranch, branchTarget)
+	targets := rebaseTargetsForBranch(branch, defaultBranch, branchTarget, remoteName+"/"+defaultBranch)
 	if forcePush {
 		sctx.Log("force push detected, skipping " + branchTarget + " sync")
-		targets = forcePushRebaseTargets(branch, defaultBranch)
+		targets = forcePushRebaseTargets(branch, defaultBranch, remoteName)
 	}
 
 	merging := mergesMovedBase(sctx)
@@ -175,16 +175,19 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 // rebaseTargets returns the ordered list of refs to rebase onto.
 func rebaseTargets(branch, defaultBranch string) []string {
-	return rebaseTargetsForBranch(branch, defaultBranch, "origin/"+branch)
+	return rebaseTargetsForBranch(branch, defaultBranch, "origin/"+branch, "origin/"+defaultBranch)
 }
 
-func rebaseTargetsForBranch(branch, defaultBranch, branchTarget string) []string {
+func rebaseTargetsForBranch(branch, defaultBranch, branchTarget, baseTarget string) []string {
 	var targets []string
 	if branch != "" && branch != defaultBranch {
 		targets = append(targets, branchTarget)
 	}
 	if branch != defaultBranch {
-		targets = append(targets, "origin/"+defaultBranch)
+		if strings.TrimSpace(baseTarget) == "" {
+			baseTarget = "origin/" + defaultBranch
+		}
+		targets = append(targets, baseTarget)
 	}
 	return targets
 }
@@ -192,11 +195,14 @@ func rebaseTargetsForBranch(branch, defaultBranch, branchTarget string) []string
 // forcePushRebaseTargets returns rebase targets for a force push. The pushed
 // branch target is skipped because it may contain autofix commits from prior
 // pipeline runs that the force push intended to discard.
-func forcePushRebaseTargets(branch, defaultBranch string) []string {
+func forcePushRebaseTargets(branch, defaultBranch, remote string) []string {
 	if branch == defaultBranch {
 		return nil
 	}
-	return []string{"origin/" + defaultBranch}
+	if strings.TrimSpace(remote) == "" {
+		remote = "origin"
+	}
+	return []string{remote + "/" + defaultBranch}
 }
 
 // effectivePRBaseBranch resolves the integration and change-scoping base for
@@ -246,7 +252,8 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 	if localTip == "" {
 		return nil
 	}
-	remoteRef := "origin/" + defaultBranch
+	remoteName := integrationRemoteName(ctx, sctx)
+	remoteRef := remoteName + "/" + defaultBranch
 	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}"); err != nil {
 		return nil
 	}
@@ -294,8 +301,8 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 	}
 
 	description := fmt.Sprintf(
-		"branch carries %d commit(s) that exist on your local %s branch but were never pushed to origin/%s; these may be unintended bundled work (%s):\n- %s\n\nConfirm these commits belong in this PR before approving, or manually separate the intended work onto origin/%s before gating.",
-		len(commits), defaultBranch, defaultBranch, fileEvidence, strings.Join(commits, "\n- "), defaultBranch,
+		"branch carries %d commit(s) that exist on your local %s branch but were never pushed to %s/%s; these may be unintended bundled work (%s):\n- %s\n\nConfirm these commits belong in this PR before approving, or manually separate the intended work onto %s/%s before gating.",
+		len(commits), defaultBranch, remoteName, defaultBranch, fileEvidence, strings.Join(commits, "\n- "), remoteName, defaultBranch,
 	)
 	fixSummary := ""
 	if sctx.Fixing {
@@ -330,11 +337,14 @@ func isAncestor(ctx context.Context, workDir, ancestor, descendant string) bool 
 	return err == nil
 }
 
-func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, baseSHA string) bool {
+func remoteDefaultBranchAdvanced(ctx context.Context, workDir, remote, defaultBranch, baseSHA string) bool {
 	if baseSHA == "" || git.IsZeroSHA(baseSHA) {
 		return false
 	}
-	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+	if strings.TrimSpace(remote) == "" {
+		remote = "origin"
+	}
+	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", remote+"/"+defaultBranch)
 	if err != nil {
 		return false
 	}

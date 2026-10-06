@@ -696,7 +696,7 @@ func TestAxiRunClosesFlagIsRepeatable(t *testing.T) {
 }
 
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop", "")
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}

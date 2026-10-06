@@ -62,17 +62,18 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 Fetches the latest authoritative remote state, fetches the configured pushed-branch target, and integrates your branch with those refs - by rebasing onto them, or by merging them in when [`rebase.strategy: merge`](/no-mistakes/reference/repo-config/#rebasestrategy) is configured.
 
 The integration branch used below is the effective PR base described in the scope rules at the top of this page.
+The integration remote defaults to `origin`. [`axi run --base-remote`](/no-mistakes/reference/cli/) selects another one, and when that flag is omitted a head whose upstream tracks the integration branch on another remote uses that remote. The existence check, the fetch and rebase, and the project the pull or merge request is opened against all use that same remote. A non-origin fetch is written to `refs/remotes/<remote>/<branch>` and leaves `refs/remotes/origin/*` unchanged. With no fork URL, the head is pushed to that remote; a configured fork URL still receives the push.
 
 **Behavior:**
-- Fetches `origin/<PR base branch>` from the remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history. A failed base-branch fetch fails the step before any rebase or head update, rather than integrating against a possibly stale cached `origin/<PR base branch>`; the post-integration empty-diff check reuses that same fetched ref
-- Without fork routing, the pushed-branch target is `origin/<branch>`
+- Fetches `<integration remote>/<PR base branch>` from that remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history. A failed base-branch fetch fails the step before any rebase or head update, rather than integrating against a possibly stale cached tracking ref; the post-integration empty-diff check reuses that same fetched ref
+- Without fork routing, the pushed-branch target is `<integration remote>/<branch>`
 - With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
-- If the branch is not the PR base branch, tries rebasing onto the pushed-branch target first, then `origin/<PR base branch>`
+- If the branch is not the PR base branch, tries rebasing onto the pushed-branch target first, then `<integration remote>/<PR base branch>`
 - If the push rewrote branch history, skips the pushed-branch rebase target so prior remote autofix commits do not get reintroduced
-- If the push rewrote the PR base branch and `origin/<PR base branch>` advanced after that rewrite, pauses for manual approval before updating the branch
+- If the push rewrote the PR base branch and `<integration remote>/<PR base branch>` advanced after that rewrite, pauses for manual approval before updating the branch
 - If the local default tip equals the branch `HEAD`, treats those local-only commits as the intended delivery work and continues
 - If the local default tip is a strict ancestor of the branch `HEAD`, pauses with an `ask-user` finding instead of silently bundling potentially unrelated local work into the PR
-- The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<PR base branch>` and a strict ancestor of the branch `HEAD`
+- The local-default check is best-effort and only fires when the local default tip is ahead of `<integration remote>/<PR base branch>` and a strict ancestor of the branch `HEAD`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
 - If the diff against the PR base branch is empty after rebase, completes rebase and skips all remaining pipeline steps

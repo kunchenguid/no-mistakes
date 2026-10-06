@@ -448,5 +448,9 @@ func lastKnownBranchTip(ctx context.Context, sctx *pipeline.StepContext, branch 
 			}
 		}
 	}
-	return lastFetchedBranchTip(ctx, sctx.WorkDir, branch, fork)
+	remote := "origin"
+	if sctx != nil {
+		remote = integrationRemoteName(ctx, sctx)
+	}
+	return lastFetchedBranchTip(ctx, sctx.WorkDir, branch, remote, fork)
 }

@@ -36,7 +36,7 @@ func resolvedProvider(sctx *pipeline.StepContext) scm.Provider {
 	if sctx.ForgeContext != nil {
 		return sctx.ForgeContext.Provider
 	}
-	provider := detectProviderForStep(sctx, sctx.Repo.UpstreamURL)
+	provider := detectProviderForStep(sctx, stepRemoteURL(sctx))
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
 		provider = detectProviderForStep(sctx, *sctx.Run.PRURL)
 	}
@@ -59,8 +59,19 @@ func providerPluginForStep(sctx *pipeline.StepContext) (string, bool) {
 	})
 }
 
+func stepRemoteURL(sctx *pipeline.StepContext) string {
+	url, err := integrationProjectURL(sctx)
+	if err == nil && strings.TrimSpace(url) != "" {
+		return url
+	}
+	if sctx != nil && sctx.Repo != nil {
+		return sctx.Repo.UpstreamURL
+	}
+	return ""
+}
+
 func providerPluginRemote(sctx *pipeline.StepContext) string {
-	if remote := strings.TrimSpace(sctx.Repo.UpstreamURL); remote != "" {
+	if remote := strings.TrimSpace(stepRemoteURL(sctx)); remote != "" {
 		return remote
 	}
 	if sctx.Run.PRURL != nil {
@@ -104,6 +115,10 @@ func resolvedHost(sctx *pipeline.StepContext, remote string) string {
 // (unknown provider, missing Bitbucket config, etc) it returns nil and a
 // human-readable skip reason suitable for logging.
 func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, string) {
+	projectURL, projectErr := integrationProjectURL(sctx)
+	if projectErr != nil {
+		return nil, projectErr.Error()
+	}
 	cmdFactory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		return stepCmdContext(sctx, ctx, name, args...)
 	}
@@ -119,8 +134,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		// the upstream remote URL is unavailable. The hostname also scopes
 		// the auth-status check so a stale token on any other configured gh
 		// host cannot make this repo look unauthenticated.
-		host := resolvedHost(sctx, sctx.Repo.UpstreamURL)
-		repo := github.HostPrefixedSlugForHost(sctx.Repo.UpstreamURL, host)
+		host := resolvedHost(sctx, projectURL)
+		repo := github.HostPrefixedSlugForHost(projectURL, host)
 		if repo == "" && sctx.Run.PRURL != nil {
 			prHost := resolvedHost(sctx, *sctx.Run.PRURL)
 			repo = github.HostPrefixedSlugForHost(*sctx.Run.PRURL, prHost)
@@ -147,8 +162,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		return gitlab.NewWithDraft(
 			cmdFactory,
 			func() bool { return stepCLIAvailable(sctx, provider) },
-			resolvedHost(sctx, sctx.Repo.UpstreamURL),
-			gitlab.ProjectPath(sctx.Repo.UpstreamURL),
+			resolvedHost(sctx, projectURL),
+			gitlab.ProjectPath(projectURL),
 			draft,
 		), ""
 	case scm.ProviderBitbucket:
@@ -162,7 +177,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		if err != nil {
 			return nil, err.Error()
 		}
-		repo, err := resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
+		repo, err := resolveBitbucketRepoRef(projectURL, sctx.Run.PRURL)
 		if err != nil {
 			return nil, err.Error()
 		}
@@ -176,7 +191,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// end to end.
 			return nil, "fork PR routing for Azure DevOps is not implemented"
 		}
-		org, project, repo, ok := azuredevops.ParseRemote(sctx.Repo.UpstreamURL)
+		org, project, repo, ok := azuredevops.ParseRemote(projectURL)
 		if !ok && sctx.Run.PRURL != nil {
 			org, project, repo, ok = azuredevops.ParseRemote(*sctx.Run.PRURL)
 		}
@@ -190,7 +205,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			return nil, "fork PR routing for Forgejo is not implemented"
 		}
 		baseURL := forgejoBaseURLForStep(sctx)
-		remote := sctx.Repo.UpstreamURL
+		remote := projectURL
 		if strings.TrimSpace(remote) == "" && sctx.Run.PRURL != nil {
 			remote = *sctx.Run.PRURL
 		}
@@ -220,8 +235,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// provider does not implement yet.
 			return nil, "fork PR routing for Gitea is not implemented"
 		}
-		host := scm.ResolveHost(sctx.Ctx, sctx.Repo.UpstreamURL)
-		repoSlug := scm.RepoPath(sctx.Repo.UpstreamURL)
+		host := scm.ResolveHost(sctx.Ctx, projectURL)
+		repoSlug := scm.RepoPath(projectURL)
 		if repoSlug == "" {
 			return nil, "could not resolve Gitea owner/repo from the remote URL"
 		}

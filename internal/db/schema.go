@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
+    base_remote          TEXT,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
     pi_profile           TEXT,
     verification_plan    TEXT,
@@ -377,4 +378,8 @@ var migrationStatements = []string{
 	// a late --closes can still reach the Issues section; non-NULL closes that window
 	// (see UpdateRunClosingIssueRefs / ClaimClosingIssueRefsForPRBody).
 	`ALTER TABLE runs ADD COLUMN closing_issue_refs_locked_at INTEGER`,
+	// Per-run integration remote (axi run --base-remote, or the head's upstream
+	// when it already tracks the base). NULL keeps origin, including every row
+	// written before the column existed.
+	`ALTER TABLE runs ADD COLUMN base_remote TEXT`,
 }

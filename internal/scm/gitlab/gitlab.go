@@ -30,6 +30,14 @@ type Host struct {
 	draft        bool   // open created MRs as drafts (glab mr create --draft)
 }
 
+// Project returns the group/project path this host addresses.
+func (h *Host) Project() string {
+	if h == nil {
+		return ""
+	}
+	return h.projectPath
+}
+
 // New builds a Host. cliAvailable reports whether the glab binary is
 // resolvable on the caller's PATH (possibly overridden by env). host is the
 // repo's GitLab hostname; when set the availability check is scoped to it via

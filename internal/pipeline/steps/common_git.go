@@ -60,7 +60,7 @@ func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallb
 			return "", fmt.Errorf("fetch default branch %q to resolve branch base: %w", defaultBranch, err)
 		}
 	}
-	if mb := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch); mb != "" {
+	if mb := mergeBaseWithRemote(ctx, sctx.WorkDir, integrationRemoteName(ctx, sctx), defaultBranch); mb != "" {
 		return mb, nil
 	}
 	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), nil
@@ -81,7 +81,8 @@ func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext,
 		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
 			return unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
 		}
-		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+		remoteName := integrationRemoteName(ctx, sctx)
+		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", remoteName+"/"+defaultBranch)
 		if err == nil && strings.TrimSpace(sha) != "" {
 			return strings.TrimSpace(sha), true
 		}
@@ -134,16 +135,74 @@ func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string)
 }
 
 func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch string) string {
+	return mergeBaseWithRemote(ctx, workDir, "origin", defaultBranch)
+}
+
+func mergeBaseWithRemote(ctx context.Context, workDir, remote, defaultBranch string) string {
 	if strings.TrimSpace(defaultBranch) == "" {
 		return ""
 	}
-	for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
+	if strings.TrimSpace(remote) == "" {
+		remote = "origin"
+	}
+	for _, ref := range []string{remote + "/" + defaultBranch, defaultBranch} {
 		mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
 		if err == nil && strings.TrimSpace(mb) != "" {
 			return strings.TrimSpace(mb)
 		}
 	}
 	return ""
+}
+
+// integrationRemoteName is the git remote that holds this run's integration
+// branch. A persisted name wins, including an explicit origin. Otherwise, when
+// the head's upstream tracks the effective base on some other remote, that
+// remote is used. Eval replay and every other checkout stay on origin.
+func integrationRemoteName(ctx context.Context, sctx *pipeline.StepContext) string {
+	if name := runBaseRemote(sctx); name != "" {
+		return name
+	}
+	if sctx == nil || sctx.EvalReplay || sctx.Repo == nil || sctx.Run == nil {
+		return "origin"
+	}
+	if name := TrackingRemoteForBase(ctx, sctx.Repo.WorkingPath, sctx.Run.Branch, effectivePRBaseBranch(sctx)); name != "" {
+		return name
+	}
+	return "origin"
+}
+
+// integrationProjectURL is the project the PR or MR is opened against. Origin
+// keeps the registered upstream URL. Any other integration remote is read from
+// the working checkout so the project path is not stuck at the URL recorded
+// by no-mistakes init.
+func integrationProjectURL(sctx *pipeline.StepContext) (string, error) {
+	if sctx == nil || sctx.Repo == nil {
+		return "", nil
+	}
+	name := integrationRemoteName(sctx.Ctx, sctx)
+	if name == "" || name == "origin" {
+		return sctx.Repo.UpstreamURL, nil
+	}
+	dir := strings.TrimSpace(sctx.Repo.WorkingPath)
+	if dir == "" {
+		return "", fmt.Errorf("integration remote %q: working checkout is unknown", name)
+	}
+	url, err := git.GetRemoteURL(sctx.Ctx, dir, name)
+	if err != nil {
+		return "", fmt.Errorf("look up integration remote %q: %w", name, err)
+	}
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return "", fmt.Errorf("integration remote %q has an empty URL", name)
+	}
+	return url, nil
+}
+
+func integrationTrackingRef(remote, branch string) string {
+	if strings.TrimSpace(remote) == "" {
+		remote = "origin"
+	}
+	return "refs/remotes/" + remote + "/" + branch
 }
 
 // lastFetchedBranchTip returns the commit the push branch's remote-tracking ref
@@ -153,8 +212,11 @@ func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch stri
 // discarding unseen work. Returns "" when no tracking ref exists (e.g. a brand
 // new branch or a failed fetch), which makes the caller fall back to the
 // content-incorporation check rather than trusting a stale value.
-func lastFetchedBranchTip(ctx context.Context, workDir, branch string, fork bool) string {
-	trackingRef := "refs/remotes/origin/" + branch
+func lastFetchedBranchTip(ctx context.Context, workDir, branch, remote string, fork bool) string {
+	if strings.TrimSpace(remote) == "" {
+		remote = "origin"
+	}
+	trackingRef := "refs/remotes/" + remote + "/" + branch
 	if fork {
 		trackingRef = forkBranchTrackingRef(branch)
 	}
@@ -220,6 +282,17 @@ func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, bra
 }
 
 func fetchRunUpstreamBranchInner(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
+	remoteName := integrationRemoteName(ctx, sctx)
+	if remoteName != "origin" {
+		url, err := integrationProjectURL(sctx)
+		if err != nil {
+			return err
+		}
+		// Keep the fetched tip off refs/remotes/origin/*: that namespace is the
+		// registered origin, and a fetch into it would rewrite those tracking
+		// refs for every worktree that shares them.
+		return git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, url, branch, integrationTrackingRef(remoteName, branch))
+	}
 	upstreamURL := resolveUpstreamURL(sctx)
 	originURL, err := git.GetRemoteURL(ctx, sctx.WorkDir, "origin")
 	if err == nil && upstreamURL == originURL {
@@ -229,7 +302,8 @@ func fetchRunUpstreamBranchInner(ctx context.Context, sctx *pipeline.StepContext
 }
 
 // resolvePushURL returns the URL to push to: the fork when one is configured
-// (fork-based contributions, Repo.ForkURL set), else the upstream selected by
+// (fork-based contributions, Repo.ForkURL set), else a non-origin integration
+// remote's URL from the working checkout, else the upstream selected by
 // resolveUpstreamURL. A matching worktree origin can retain credentials outside
 // the database; a different URL verified from the working clone at run start
 // takes precedence without rewriting the worktree remote. Fork URLs carry no
@@ -238,6 +312,11 @@ func fetchRunUpstreamBranchInner(ctx context.Context, sctx *pipeline.StepContext
 func resolvePushURL(sctx *pipeline.StepContext) string {
 	if sctx.Repo != nil && strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 		return sctx.Repo.ForkURL
+	}
+	if integrationRemoteName(sctx.Ctx, sctx) != "origin" {
+		if url, err := integrationProjectURL(sctx); err == nil && strings.TrimSpace(url) != "" {
+			return url
+		}
 	}
 	return resolveUpstreamURL(sctx)
 }

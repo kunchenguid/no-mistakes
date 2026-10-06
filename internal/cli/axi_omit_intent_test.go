@@ -185,7 +185,7 @@ func TestAxiRunNoPublishIntentRefusesOlderDaemon(t *testing.T) {
 				cmd := &cobra.Command{}
 				cmd.SetContext(context.Background())
 				cmd.SetOut(&out)
-				err := runAxiRunWithLaunchProof(cmd, false, nil, "private goal", "", rq.flag, "", "", defaultAxiWait)
+				err := runAxiRunWithLaunchProof(cmd, false, nil, "private goal", "", "", rq.flag, "", "", defaultAxiWait)
 				if err == nil {
 					t.Fatalf("axi run should refuse an older daemon when omission may apply:\n%s", out.String())
 				}
@@ -210,7 +210,7 @@ func TestAxiRunPublishingRunReusesOlderDaemon(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	_ = runAxiRunWithLaunchProof(cmd, false, nil, "public goal", "", false, "", "", defaultAxiWait)
+	_ = runAxiRunWithLaunchProof(cmd, false, nil, "public goal", "", "", false, "", "", defaultAxiWait)
 	if strings.Contains(out.String(), "too old to honor --no-publish-intent") {
 		t.Fatalf("publishing run was refused on an older daemon:\n%s", out.String())
 	}
@@ -271,7 +271,7 @@ func TestAxiRunNoPublishIntentPassesCapableDaemonProbe(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	_ = runAxiRunWithLaunchProof(cmd, false, nil, "private goal", "", true, "", "", defaultAxiWait)
+	_ = runAxiRunWithLaunchProof(cmd, false, nil, "private goal", "", "", true, "", "", defaultAxiWait)
 	if strings.Contains(out.String(), "too old to honor --no-publish-intent") {
 		t.Fatalf("capable daemon was refused:\n%s", out.String())
 	}

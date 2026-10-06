@@ -30,11 +30,11 @@ func TestRunPiProfileImmutableAndReceiptBound(t *testing.T) {
 		t.Fatalf("read pin: %+v %v", got, err)
 	}
 	conflict := &agentcfg.PiProfile{Effort: agentcfg.EffortLow}
-	got, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", false, conflict)
+	got, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", "", false, conflict)
 	if err != nil || claimed || got.LaunchReceiptClaimedAt != nil {
 		t.Fatalf("conflict consumed receipt: %+v %v %v", got, claimed, err)
 	}
-	_, claimed, err = d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", false, &agentcfg.PiProfile{Model: pin.Model})
+	_, claimed, err = d.ClaimLaunchReceipt(repo.ID, "feature", "nonce", "head", "gen", "digest", "", "", false, &agentcfg.PiProfile{Model: pin.Model})
 	if err != nil || !claimed {
 		t.Fatalf("matching request not claimed: %v %v", claimed, err)
 	}

@@ -14,6 +14,7 @@ const (
 	MethodPushReceived              = "push_received"
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
+	MethodProbeBaseRemote           = "probe_base_remote"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
 	MethodCaptureVerificationPlan   = "capture_verification_plan"
 	MethodStartFreshRun             = "start_fresh_run"
@@ -89,6 +90,9 @@ type PushReceivedParams struct {
 	LaunchNonce          string           `json:"launch_nonce,omitempty"`
 	ValidationGeneration string           `json:"validation_generation,omitempty"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	// BaseRemote is the git remote that holds the integration branch. Empty
+	// keeps origin unless the head already tracks that branch on another remote.
+	BaseRemote string `json:"base_remote,omitempty"`
 	// OmitIntent carries the caller-side, tighten-only request to keep the
 	// generated Intent section out of the PR body. It never publishes intent
 	// a repository's trusted config disabled.
@@ -118,6 +122,7 @@ type StartFreshRunParams struct {
 	LaunchNonce          string           `json:"launch_nonce"`
 	ValidationGeneration string           `json:"validation_generation"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	BaseRemote           string           `json:"base_remote,omitempty"`
 	OmitIntent           bool             `json:"omit_intent,omitempty"`
 	ClosingIssueRefs     []string         `json:"closing_issue_refs,omitempty"`
 }
@@ -152,6 +157,17 @@ type ProbeOmitIntentResult struct {
 	OK bool `json:"ok"`
 }
 
+// ProbeBaseRemoteParams is the empty request for MethodProbeBaseRemote.
+type ProbeBaseRemoteParams struct{}
+
+// ProbeBaseRemoteResult answers MethodProbeBaseRemote. An older daemon does
+// not implement the method, so a client that needs a non-origin integration
+// remote can refuse before a push instead of letting that daemon drop the
+// field and open the PR against origin.
+type ProbeBaseRemoteResult struct {
+	OK bool `json:"ok"`
+}
+
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
@@ -164,6 +180,7 @@ type ClaimLaunchReceiptParams struct {
 	ValidationGeneration string `json:"validation_generation"`
 	IntentDigest         string `json:"intent_digest"`
 	PRBaseBranch         string `json:"pr_base_branch,omitempty"`
+	BaseRemote           string `json:"base_remote,omitempty"`
 	OmitIntent           bool   `json:"omit_intent,omitempty"`
 }
 
@@ -227,6 +244,7 @@ type RerunParams struct {
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	BaseRemote    string           `json:"base_remote,omitempty"`
 	// OmitIntent requests omission of the public Intent section for the new
 	// run. It is tighten-only: the selected prior run's decision is always
 	// inherited and this can only add to it.
@@ -452,6 +470,9 @@ type RunInfo struct {
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`
+	// BaseRemote is the persisted integration remote, when this run is not
+	// using origin by default.
+	BaseRemote *string `json:"base_remote,omitempty"`
 	// OmitIntent is true when this run was started with the caller-side,
 	// tighten-only request to keep the generated Intent section out of the
 	// PR body (see runs.omit_intent).
