@@ -716,16 +716,18 @@ ci:
   revalidate_repairs: true
 ```
 
-One rule decides how every CI repair is delivered, on every CI-fix path - automatic and manual, CI failure and merge conflict alike:
+For ordinary CI findings, one rule decides repair delivery on automatic and manual paths, including CI failures and merge conflicts:
 
 > A repair is published without revalidating only when its continuity with the reviewed, published head can be **proven**. When that continuity cannot be proven, the repair revalidates from Review.
 
 Continuity is proven when the repaired head is the run's durably review-approved commit or a descendant of it. That is the same fact the Push step's publication guard enforces, so the decision to publish and the guard that permits the push can never disagree.
 
-`revalidate_repairs` sets the intent, identically on every path:
+`revalidate_repairs` sets the intent for those ordinary repairs:
 
 - **`false` (default)** asks to publish when it is safe to. A repair that builds on the reviewed head - the ordinary case, where the fix agent adds a commit - is committed and published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses (review-approved-head continuity, that step's own remote-safety decision, remote verification, and the durable push binding all still apply), and the CI monitor keeps watching the same run for the new head. One repair costs one agent round.
 - **`true`** asks for revalidation outright: every repair is kept local, the run's review approval is revoked, and validation restarts at Review so the repaired head re-passes Review, Test, Document, and Lint before Push republishes it.
+
+Operator amendments admitted during a non-fix CI monitor always require full revalidation for a material repair, under either setting. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns that exception.
 
 CI repair publication uses the same settlement order as Push. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the publication and retry behavior.
 
@@ -751,7 +753,7 @@ That is the safety this option buys, and the reason it is offered rather than re
 This value is read only from the trusted default-branch copy of this file, like `ci.rerun_transient` and `disable_project_settings`.
 A pushed branch cannot turn a maintainer's revalidation requirement off for its own repairs, and cannot turn it on either.
 
-A value set here always wins over the operator's own [`ci.revalidate_repairs`](/no-mistakes/reference/global-config/#cirevalidate_repairs), in both directions: `true` here enables revalidation even when the global value is `false`, and an explicit `false` here opts out even when the global value is `true`.
+A value set here always wins over the operator's own [`ci.revalidate_repairs`](/no-mistakes/reference/global-config/#cirevalidate_repairs), in both directions: `true` here enables revalidation even when the global value is `false`, and an explicit `false` here opts ordinary repairs out even when the global value is `true`.
 With no trusted copy of this file, the operator's global value applies, then the built-in default of `false`.
 
 ### rebase.strategy

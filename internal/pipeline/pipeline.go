@@ -145,6 +145,8 @@ func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (
 
 // StepOutcome is the result of executing a pipeline step.
 type StepOutcome struct {
+	// admittedRound is an already durable late CI gate, reused by the live handoff.
+	admittedRound *db.StepRound
 	NeedsApproval bool // whether the step pauses for user action
 	AutoFixable   bool
 	Findings      string // JSON findings for TUI display (optional)

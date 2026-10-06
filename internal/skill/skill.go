@@ -225,6 +225,13 @@ Run the pipeline and decide on its findings as they come up:
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in
       the gate's own ` + "`findings`" + ` table.
+    - A new finding during a fresh CI monitoring execution after validation and publication, outside a fix execution, uses ` + "`--step ci --action fix --head <full-pipeline-head-sha> --add-finding '<json>'`" + `.
+      Read the exact published pipeline head from ` + "`axi status`" + `. The amendment stays in this run,
+      revokes readiness and review approval, joins the old monitor, and sends any repair through
+      Review and subsequent validation before publishing. Stale heads, active fixes and concurrent
+      amendments refuse. After full revalidation and publication, a later fresh non-fix CI execution in the same run supports another amendment. A monitor still inside a fix execution refuses, even if its status reads running.
+      An interrupted handoff retains the finding for recovery. Older daemons
+      refuse the separate amendment protocol; do not work around that refusal.
     - ` + "`--step <name>`" + ` responds to a specific step instead of the one currently
       awaiting approval. You rarely need this; omit it to answer the active gate.
 3. Repeat step 2 until the output has an ` + "`outcome:`" + ` instead of a ` + "`gate:`" + `. The

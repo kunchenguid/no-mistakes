@@ -26,6 +26,7 @@ const (
 	MethodRerun                     = "rerun"
 	MethodSubscribe                 = "subscribe"
 	MethodRespond                   = "respond"
+	MethodRespondLateCI             = "respond_late_ci"
 	MethodAnswerReview              = "answer_review_question"
 	MethodCancelRun                 = "cancel_run"
 	MethodGateContext               = "gate_context"
@@ -252,13 +253,14 @@ type SubscribeParams struct {
 // alongside agent-produced ones. Both fields only apply when Action triggers
 // a fix round.
 type RespondParams struct {
-	RunID          string               `json:"run_id"`
-	Step           types.StepName       `json:"step"`
-	Action         types.ApprovalAction `json:"action"`
-	FindingIDs     []string             `json:"finding_ids,omitempty"`
-	Instructions   map[string]string    `json:"instructions,omitempty"`
-	AddedFindings  []types.Finding      `json:"added_findings,omitempty"`
-	ApprovalReason string               `json:"approval_reason,omitempty"` // Test approval only
+	ExpectedHeadSHA string               `json:"expected_head_sha,omitempty"` // late CI findings only
+	RunID           string               `json:"run_id"`
+	Step            types.StepName       `json:"step"`
+	Action          types.ApprovalAction `json:"action"`
+	FindingIDs      []string             `json:"finding_ids,omitempty"`
+	Instructions    map[string]string    `json:"instructions,omitempty"`
+	AddedFindings   []types.Finding      `json:"added_findings,omitempty"`
+	ApprovalReason  string               `json:"approval_reason,omitempty"` // Test approval only
 }
 
 // CancelRunParams cancels an active pipeline run.

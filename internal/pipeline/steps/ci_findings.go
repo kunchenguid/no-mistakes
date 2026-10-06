@@ -335,6 +335,7 @@ type ciFixTargets struct {
 	Findings      Findings
 	Checks        []scm.CheckTarget
 	MergeConflict bool
+	LateFinding   bool
 }
 
 func parseCIFixTargets(raw string) (ciFixTargets, error) {
@@ -348,6 +349,9 @@ func parseCIFixTargets(raw string) (ciFixTargets, error) {
 	targets := ciFixTargets{Findings: findings}
 	seen := map[string]bool{}
 	for _, item := range findings.Items {
+		if item.Category == types.FindingCategoryCILateFinding {
+			targets.LateFinding = true
+		}
 		if item.Category == types.FindingCategoryCIMergeConflict {
 			targets.MergeConflict = true
 		}
@@ -448,4 +452,33 @@ func ciTerminalRepairOutcome(outcome *pipeline.StepOutcome, selected Findings, d
 	outcome.AutoFixable = false
 	outcome.Findings = string(encoded)
 	return outcome
+}
+
+func runHasLateCIAmendment(sctx *pipeline.StepContext) (bool, error) {
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, step := range steps {
+		if step.StepName != types.StepCI {
+			continue
+		}
+		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
+		if err != nil {
+			return false, err
+		}
+		for _, round := range rounds {
+			if round.FindingsJSON == nil {
+				continue
+			}
+			targets, err := parseCIFixTargets(*round.FindingsJSON)
+			if err != nil {
+				return false, err
+			}
+			if targets.LateFinding {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }

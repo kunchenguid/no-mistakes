@@ -119,6 +119,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
 	}
 	if err != nil {
+		if targets.LateFinding {
+			return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
+		}
 		// An ordinary fix failure is cheap to repeat and often works the next
 		// time: the next settled observation re-emits the findings and the
 		// executor retries while auto_fix.ci allows.
@@ -156,6 +159,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	if repair.NoCodeChangeNeeded {
 		sctx.Log(fmt.Sprintf("CI fixer concluded no code change is needed: %s", repair.Summary))
 		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, repair.Summary), nil
+	}
+	if targets.LateFinding {
+		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, "late finding remains unresolved; repair produced no changes"), nil
 	}
 	sctx.Log("CI fix produced no changes, resuming monitoring...")
 	return nil, nil
@@ -279,6 +285,9 @@ CI logs:
 	if conclusionErr != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
 	}
+	if (targets.LateFinding || !mergeConflict) && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
+		return ciRepairResult{NoCodeChangeNeeded: true, Summary: conclusion.Summary}, nil
+	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
 	var refusal *pipeline.ProtectedPathError
 	if errors.As(err, &refusal) {
@@ -294,10 +303,6 @@ CI logs:
 	if repair.HeadAdvanced {
 		repair.Summary = conclusion.Summary
 		return repair, nil
-	}
-	if !mergeConflict && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
-		repair.NoCodeChangeNeeded = true
-		repair.Summary = conclusion.Summary
 	}
 	return repair, nil
 }
@@ -684,14 +689,14 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 
 // recordRepair binds a freshly produced CI repair commit to the run.
 //
-// One uniform rule decides how, and it applies to every CI-fix path - automatic
-// and manual alike, CI failure and merge conflict alike:
+// Ordinary CI repairs use the same rule on automatic and manual paths,
+// including CI failures and merge conflicts:
 //
 //	A repair is published without revalidating only when its continuity with the
 //	reviewed, published head can be PROVEN. When that continuity cannot be
 //	proven, the repair revalidates from Review.
 //
-// ci.revalidate_repairs governs intent identically on every path: true asks for
+// ci.revalidate_repairs governs ordinary repairs: true asks for
 // revalidation outright, false asks to publish when it is safe to do so. Merge
 // conflict repairs are not carved out - they simply always land in the
 // cannot-be-proven half, because a rebase makes the repaired head a
@@ -702,10 +707,39 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // this rule was authored by the CI repair agent itself. Who wrote the repair
 // says nothing about what it did to the reviewed commits.
 //
+// Late amendments instead compare trees against durable LastPushedSHA and
+// hold material repairs for Review regardless of the ordinary policy. A local
+// custody checkpoint cannot replace that published baseline.
+//
 // Once recording or publication succeeds, the run's recorded head advances;
 // the two paths differ in whether the repair is published now or held until
 // Review has approved it.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
+	targets, err := parseCIFixTargets(sctx.PreviousFindings)
+	if err != nil {
+		return ciRepairResult{}, err
+	}
+	if targets.LateFinding {
+		run, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			return ciRepairResult{}, err
+		}
+		if run == nil || run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) == "" {
+			return ciRepairResult{}, fmt.Errorf("late repair has no durable published head")
+		}
+		before, err := stepGitRun(sctx, "rev-parse", *run.LastPushedSHA+"^{tree}")
+		if err != nil {
+			return ciRepairResult{}, err
+		}
+		after, err := stepGitRun(sctx, "rev-parse", headSHA+"^{tree}")
+		if err != nil {
+			return ciRepairResult{}, err
+		}
+		if strings.TrimSpace(before) == strings.TrimSpace(after) {
+			return ciRepairResult{}, nil
+		}
+		return s.recordLocalRepair(sctx, headSHA)
+	}
 	if ciRevalidatesRepairs(sctx) {
 		return s.recordLocalRepair(sctx, headSHA)
 	}
@@ -825,23 +859,36 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // contract violation (which fails the step) from an unsettled write (which
 // parks).
 func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult) error {
+	lateAmendment, err := runHasLateCIAmendment(sctx)
+	if err != nil {
+		return fmt.Errorf("%w: read late amendment history: %w", errAttestationWriteFailed, err)
+	}
 	provider := resolvedProvider(sctx)
 	if !supportsPRTemplates(provider) {
+		if lateAmendment {
+			return fmt.Errorf("%w: cannot verify late amendment PR provider", errAttestationWriteFailed)
+		}
 		return nil
 	}
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
 	if branch == effectivePRBaseBranch(sctx) {
+		if lateAmendment {
+			return fmt.Errorf("%w: late amendment branch is the PR base", errAttestationWriteFailed)
+		}
 		return nil
 	}
 	host, reason := buildHost(sctx, provider)
 	if host == nil {
+		if lateAmendment {
+			return fmt.Errorf("%w: cannot verify owned PR: %s", errAttestationWriteFailed, reason)
+		}
 		if sctx.Log != nil && strings.TrimSpace(reason) != "" {
 			sctx.Log(fmt.Sprintf("skipping attestation write: %s", reason))
 		}
 		return nil
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
-		if pluginContractBroken(err) {
+		if pluginContractBroken(err) || lateAmendment {
 			return fmt.Errorf("%w: %w", errAttestationWriteFailed, err)
 		}
 		if sctx.Log != nil {

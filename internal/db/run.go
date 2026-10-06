@@ -795,7 +795,7 @@ func (d *DB) SetRunCIReadyWithReason(id string, ready, declaredNoCI bool) error 
 			declaredValue = 1
 		}
 	}
-	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ? AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0) OR (COALESCE(ci_ready_no_ci, 0) != ?))`, readyAt, declaredValue, now(), id, readyValue, readyValue, declaredValue)
+	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ? AND (? = 0 OR NOT EXISTS (SELECT 1 FROM step_results WHERE run_id = runs.id AND step_name = 'ci' AND status IN ('awaiting_approval', 'fix_review'))) AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0) OR (COALESCE(ci_ready_no_ci, 0) != ?))`, readyAt, declaredValue, now(), id, readyValue, readyValue, readyValue, declaredValue)
 	if err != nil {
 		return fmt.Errorf("set run CI ready: %w", err)
 	}

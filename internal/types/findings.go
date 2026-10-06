@@ -98,6 +98,7 @@ const (
 // review bot's check.
 const (
 	FindingCategoryCICheck         = "ci-check"
+	FindingCategoryCILateFinding   = "ci-late-finding"
 	FindingCategoryCIMergeConflict = "ci-merge-conflict"
 	FindingCategoryCITransient     = "ci-transient"
 	FindingCategoryCIReviewBot     = "ci-review-bot"

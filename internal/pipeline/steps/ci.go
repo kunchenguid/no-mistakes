@@ -102,6 +102,35 @@ func (s *CIStep) TransientRerunRecorded(name string) bool {
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
 
+func (s *CIStep) VerifyLateCIAdmission(sctx *pipeline.StepContext) error {
+	host, reason := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil {
+		return fmt.Errorf("cannot check PR state: %s", reason)
+	}
+	if err := host.Available(sctx.Ctx); err != nil {
+		return err
+	}
+	owned := runPRURL(sctx)
+	if owned == "" {
+		return fmt.Errorf("run has no PR URL")
+	}
+	state, err := host.GetPRState(sctx.Ctx, prFromOwnedURL(owned))
+	if err != nil {
+		return err
+	}
+	if state != scm.PRStateOpen {
+		return fmt.Errorf("owned PR is not open: %s", state)
+	}
+	published, err := publishedBranchHead(sctx)
+	if err != nil {
+		return fmt.Errorf("verify late CI published head: %w", err)
+	}
+	if published != sctx.Run.HeadSHA {
+		return fmt.Errorf("late CI finding head does not match the owned publication")
+	}
+	return nil
+}
+
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
 // approval gate. A PR can be merged or closed after a timeout/failure gate was
 // recorded; either terminal state supersedes the stale gate just as it does in
@@ -140,7 +169,7 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 	switch state {
 	case scm.PRStateMerged:
-		if err := verifyMergedProof(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, sctx.Run.HeadSHA); err != nil {
+		if err := verifyRunMergedProof(sctx, host, &scm.PR{Number: prNumber, URL: prURL}); err != nil {
 			return false, err
 		}
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
@@ -220,6 +249,29 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, err
 	return fmt.Sprintf("live checks for %s not all passed: %s", prURL, strings.Join(unresolvedCheckNames(checks), ", ")), nil
 }
 
+func verifyRunMergedProof(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) error {
+	if !host.Capabilities().MergedProof {
+		return nil
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	expected := sctx.Run.HeadSHA
+	if run != nil && run.LastPushedSHA != nil && strings.TrimSpace(*run.LastPushedSHA) != "" {
+		expected = *run.LastPushedSHA
+	} else {
+		late, err := runHasLateCIAmendment(sctx)
+		if err != nil {
+			return err
+		}
+		if late {
+			return fmt.Errorf("late amendment has no durable published head for merge proof")
+		}
+	}
+	return verifyMergedProof(sctx.Ctx, host, pr, expected)
+}
+
 func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedHead string) error {
 	if !host.Capabilities().MergedProof {
 		return nil
@@ -256,6 +308,24 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 	}
 	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(refusalFindings)
+	retained := ciTerminalRepairOutcome(&pipeline.StepOutcome{Findings: sctx.PreviousFindings}, Findings{}, refusalFindings)
+	retained = ciTerminalRepairOutcome(retained, Findings{}, sctx.DeferredFindings)
+	targets, _ := parseCIFixTargets(retained.Findings)
+	lateRepair := sctx.Fixing && targets.LateFinding
+	if lateRepair && retryRefusal {
+		sctx.PreviousFindings = retained.Findings
+	}
+	defer func() {
+		if lateRepair && (err != nil || outcome != nil && outcome.Skipped) {
+			summary := "Late CI repair remains unresolved"
+			if err != nil {
+				summary += ": " + safeurl.RedactText(err.Error())
+			} else {
+				summary += ": " + safeurl.RedactText(outcome.SkipReason)
+			}
+			outcome, err = ciRepairParkOutcome(targets.Findings, "", summary), nil
+		}
+	}()
 	// A fix round repairs the findings the executor selected for it, unless
 	// this re-entry is the retry of a retained repair a protected-path refusal
 	// interrupted: that repair is finished first and nothing new is requested.
@@ -275,10 +345,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return
 		}
 		if refusal := pipeline.ProtectedPathOutcome(err); refusal != nil {
-			outcome, err = refusal, nil
+			outcome, err = ciTerminalRepairOutcome(refusal, targets.Findings, ""), nil
 			return
 		}
-		findings, _ := types.ParseFindingsJSON(refusalFindings)
+		findings := targets.Findings
 		findings.Summary = "Retained CI repair could not finish; resolve the failure and retry with fix"
 		if err != nil {
 			findings.Summary += ": " + safeurl.RedactText(err.Error())
@@ -298,6 +368,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if lateRepair {
+		resolved, lifecycleErr := s.ReconcileApprovalGate(sctx)
+		if lifecycleErr != nil {
+			return ciRepairParkOutcome(targets.Findings, "", lifecycleErr.Error()), nil
+		}
+		if resolved {
+			retryRefusal = false
+			return &pipeline.StepOutcome{SkipRemaining: true}, nil
+		}
 	}
 	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
@@ -346,7 +426,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		retryRefusal = false
 		if repair.Revalidate {
-			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+			outcome := &pipeline.StepOutcome{RestartFrom: types.StepReview}
+			if lateRepair {
+				outcome.Findings = sctx.DeferredFindings
+			}
+			return outcome, nil
+		}
+		if lateRepair {
+			return ciRepairParkOutcome(targets.Findings, "", "late finding remains unresolved; retained repair produced no material changes"), nil
 		}
 	}
 	baseBranch := effectivePRBaseBranch(sctx)
@@ -499,7 +586,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 			prStateKnown = false
 		} else if state == scm.PRStateMerged {
-			if err := verifyMergedProof(ctx, host, pr, sctx.Run.HeadSHA); err != nil {
+			if err := verifyRunMergedProof(sctx, host, pr); err != nil {
 				return nil, err
 			}
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {

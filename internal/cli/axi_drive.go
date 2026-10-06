@@ -1230,6 +1230,19 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 	return nil
 }
 
+// sendLateCIRespond deliberately uses a separate method so an older daemon
+// cannot ignore the head binding and accept an ordinary approval response.
+func sendLateCIRespond(client *ipc.Client, params *ipc.RespondParams) error {
+	var result ipc.RespondResult
+	if err := client.Call(ipc.MethodRespondLateCI, params, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("daemon rejected the response")
+	}
+	return nil
+}
+
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
 // 0, a normal decision point), a checks-passed outcome (exit 0, CI readiness is
 // established by green checks or the trusted no_ci declaration and the PR is
@@ -1355,7 +1368,7 @@ func successReportHelp(fixes []fixRow) []string {
 }
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, instructions, addFinding, reason string
+	var action, step, findings, instructions, addFinding, reason, head string
 	var autoYes bool
 	var wait time.Duration
 
@@ -1378,6 +1391,7 @@ func newAxiRespondCmd() *cobra.Command {
 				"auto_yes": autoYes,
 			}, func() error {
 				return runAxiRespond(cmd, respondArgs{
+					head:         head,
 					action:       action,
 					step:         step,
 					findings:     findings,
@@ -1390,6 +1404,7 @@ func newAxiRespondCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().StringVar(&head, "head", "", "exact pipeline head required to add a finding while CI is monitoring")
 	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip (required)")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
@@ -1402,6 +1417,7 @@ func newAxiRespondCmd() *cobra.Command {
 }
 
 type respondArgs struct {
+	head         string
 	action       string
 	step         string
 	findings     string
@@ -1434,6 +1450,9 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			"Valid actions: approve, fix, skip")
 	}
 
+	if ra.head != "" && (ra.step != "ci" || act != types.ActionFix || ra.addFinding == "" || ra.findings != "" || ra.reason != "") {
+		return emitError(cmd, 2, "--head requires --step ci --action fix --add-finding without existing IDs or an approval reason")
+	}
 	env, err := openAxiDaemonEnv()
 	if err != nil {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
@@ -1505,11 +1524,26 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 				return emitError(cmd, 2, fmt.Sprintf("invalid --add-finding: %v", err),
 					`Expected a JSON object, e.g. {"description":"...","action":"auto-fix"}`)
 			}
+			if ra.head != "" {
+				if note := strings.TrimSpace(ra.instructions); note != "" {
+					f.UserInstructions = note
+				}
+			}
 			added = append(added, f)
 		}
 	}
 
-	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added, ra.reason); err != nil {
+	var respondErr error
+	if ra.head != "" {
+		respondErr = sendLateCIRespond(env.client, &ipc.RespondParams{
+			RunID: runID, Step: stepName, Action: act, FindingIDs: findingIDs,
+			Instructions: instructions, AddedFindings: added, ApprovalReason: ra.reason,
+			ExpectedHeadSHA: strings.TrimSpace(ra.head),
+		})
+	} else {
+		respondErr = sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added, ra.reason)
+	}
+	if err := respondErr; err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
 

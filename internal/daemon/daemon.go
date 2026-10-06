@@ -1471,7 +1471,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.PushReceivedResult{RunID: runID}, nil
 	})
 
-	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	respondHandler := func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err
 		}
@@ -1479,10 +1479,30 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason); err != nil {
+		if err := mgr.handleRespondAtHead(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason, p.ExpectedHeadSHA); err != nil {
 			return nil, err
 		}
 		return &ipc.RespondResult{OK: true}, nil
+	}
+	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.RespondParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		if p.ExpectedHeadSHA != "" {
+			return nil, fmt.Errorf("late CI findings require respond_late_ci")
+		}
+		return respondHandler(ctx, params)
+	})
+	srv.Handle(ipc.MethodRespondLateCI, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.RespondParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		if p.ExpectedHeadSHA == "" {
+			return nil, fmt.Errorf("late CI finding requires an exact head")
+		}
+		return respondHandler(ctx, params)
 	})
 
 	srv.Handle(ipc.MethodAnswerReview, func(ctx context.Context, params json.RawMessage) (interface{}, error) {

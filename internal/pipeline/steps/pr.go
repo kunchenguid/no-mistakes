@@ -293,10 +293,8 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 }
 
 // bindExistingPR prefers the run's persisted PR URL over a branch-only
-// FindPR hit after GetPRState proves that identity is still open. A closed
-// or merged persisted PR is stale: title/body update the discovered PR, and
-// a per-run --base-branch retarget is refused rather than moving either
-// object. First-attach (no persisted URL) keeps the discovered PR.
+// FindPR hit after GetPRState proves that identity is still open.
+
 func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.PR) (*scm.PR, error) {
 	owned := runPRURL(sctx)
 	if owned == "" {
@@ -318,10 +316,7 @@ func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.P
 		return nil, fmt.Errorf("read persisted pull request %s state: %w", owned, err)
 	}
 	if state != scm.PRStateOpen {
-		if runPRBaseBranch(sctx) != "" {
-			return nil, fmt.Errorf("persisted pull request %s is stale (%s); refusing to retarget another pull request", owned, strings.ToLower(string(state)))
-		}
-		return discovered, nil
+		return nil, fmt.Errorf("persisted pull request %s is not open (%s); refusing publication", owned, strings.ToLower(string(state)))
 	}
 	existing := discovered
 	if !samePRIdentity(owned, discovered) {

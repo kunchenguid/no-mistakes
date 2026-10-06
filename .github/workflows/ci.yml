@@ -117,7 +117,10 @@ jobs:
 
       - name: Test on Windows (pipeline/steps)
         if: runner.os == 'Windows' && matrix.shard == 'steps'
-        run: go test -v -timeout=15m ./internal/pipeline/steps/...
+        # The expanded steps suite exhausted 15m with short tests still queued,
+        # rather than a stuck test. Keep its package budget below the 40m job
+        # cap, leaving 15m for compilation and cleanup after a timeout dump.
+        run: go test -v -timeout=25m ./internal/pipeline/steps/...
 
       - name: Test on Windows (core)
         if: runner.os == 'Windows' && matrix.shard == 'core'
