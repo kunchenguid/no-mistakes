@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.89.0](https://github.com/kunchenguid/no-mistakes/compare/v1.88.0...v1.89.0) (2026-10-06)
+
+
+### Features
+
+* **config:** operator-owned review and document instructions ([#1296](https://github.com/kunchenguid/no-mistakes/issues/1296)) ([05d0ce8](https://github.com/kunchenguid/no-mistakes/commit/05d0ce8e8fb022d16230479d63e098261e985449))
+* **scm:** add provider plugins for external PR and CI hosts ([#1319](https://github.com/kunchenguid/no-mistakes/issues/1319)) ([f19aece](https://github.com/kunchenguid/no-mistakes/commit/f19aecea0d0b6341dcb91ffd8e9e98e3dfd2e9dc))
+
+
+### Bug Fixes
+
+* **agent:** enforce Pi structured output with a strict schema tool ([#1290](https://github.com/kunchenguid/no-mistakes/issues/1290)) ([130bcff](https://github.com/kunchenguid/no-mistakes/commit/130bcff59e5d6362989edf8f7768d2ef49beb85b))
+* **eval:** include cache tokens in replay cost reporting ([#1335](https://github.com/kunchenguid/no-mistakes/issues/1335)) ([2232578](https://github.com/kunchenguid/no-mistakes/commit/2232578802081c0b07d42c970866e7b1eac25514))
+
 ## [1.88.0](https://github.com/kunchenguid/no-mistakes/compare/v1.87.1...v1.88.0) (2026-10-05)
 
 
