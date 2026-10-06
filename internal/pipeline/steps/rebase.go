@@ -32,7 +32,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	defaultBranch := effectivePRBaseBranch(sctx)
 	remoteName := integrationRemoteName(ctx, sctx)
 	branchTarget := ""
-	pushRemote := resolvePushURL(sctx)
+	pushRemote, err := resolvePushURL(sctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve push URL: %w", err)
+	}
 	if branch != "" {
 		branchTarget = remoteName + "/" + branch
 		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
@@ -209,16 +212,15 @@ func forcePushRebaseTargets(branch, defaultBranch, remote string) []string {
 // pipeline steps. Per-run overrides win over repo config; the repository default
 // remains the fallback when neither selects a separate PR target branch.
 func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
-	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
-	if runBase := runPRBaseBranch(sctx); runBase != "" {
-		defaultBranch = runBase
-	} else if sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" {
-		defaultBranch = strings.TrimSpace(sctx.Config.PR.BaseBranch)
+	configured := ""
+	repoDefault := ""
+	if sctx != nil && sctx.Config != nil {
+		configured = sctx.Config.PR.BaseBranch
 	}
-	if defaultBranch == "" {
-		defaultBranch = "main"
+	if sctx != nil && sctx.Repo != nil {
+		repoDefault = sctx.Repo.DefaultBranch
 	}
-	return defaultBranch
+	return EffectiveIntegrationBase(runPRBaseBranch(sctx), configured, repoDefault)
 }
 
 // detectBundledLocalDefaultCommits returns a blocking finding when the gated

@@ -1066,6 +1066,32 @@ func integrationForgeUpstream(ctx context.Context, repo *db.Repo, run *db.Run) s
 	return safeurl.Redact(strings.TrimSpace(url))
 }
 
+// persistInferredIntegrationRemote records the remote a head already tracks
+// once the effective base branch is known. An explicit --base-remote, including
+// origin, is stored earlier and is left as stored. With no explicit remote and
+// nothing stored yet, tracking of that effective base is persisted so sync and
+// forge resolution use the same remote the steps push to.
+func (m *RunManager) persistInferredIntegrationRemote(ctx context.Context, repo *db.Repo, run *db.Run, branch, explicitRemote, effectiveBase string) error {
+	if run == nil || run.BaseRemote != nil || strings.TrimSpace(explicitRemote) != "" {
+		return nil
+	}
+	if repo == nil {
+		return nil
+	}
+	inferred, err := steps.StoredIntegrationRemote(ctx, repo.WorkingPath, branch, effectiveBase, "")
+	if err != nil {
+		return err
+	}
+	if inferred == "" {
+		return nil
+	}
+	if err := m.db.SetRunBaseRemote(run.ID, inferred); err != nil {
+		return err
+	}
+	run.BaseRemote = &inferred
+	return nil
+}
+
 func conflictingLaunchOmitIntent(launchNonce string) error {
 	return fmt.Errorf("conflicting launch_nonce %q is already bound to a run that publishes the Intent section", launchNonce)
 }
@@ -1220,7 +1246,37 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	// Closing references are structured run metadata and survive reruns: an
 	// explicit request is added to, never replaces, what the selected run carried.
 	closingIssues = append(append([]string(nil), selectedRun.ClosingIssueRefs...), closingIssues...)
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, storedBaseRemote, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, profiles...)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, storedBaseRemote, selectedRun.OmitIntent || omitIntent, prURLForRerun(selectedRun, baseRemote), planID, closingIssues, profiles...)
+}
+
+// prURLForRerun keeps an open pull request only when the rerun stays on the
+// same integration remote. An explicit --base-remote that names a different
+// project must not carry the previous project's URL: the PR step would address
+// that URL's number in the new project.
+func prURLForRerun(selected *db.Run, explicitRemote string) string {
+	url := inheritablePRURL(selected)
+	if url == "" || strings.TrimSpace(explicitRemote) == "" {
+		return url
+	}
+	previous := ""
+	if selected != nil && selected.BaseRemote != nil {
+		previous = *selected.BaseRemote
+	}
+	if sameIntegrationRemote(explicitRemote, previous) {
+		return url
+	}
+	return ""
+}
+
+func sameIntegrationRemote(a, b string) bool {
+	normalize := func(name string) string {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return "origin"
+		}
+		return name
+	}
+	return normalize(a) == normalize(b)
 }
 
 func inheritablePRURL(run *db.Run) string {
@@ -1670,6 +1726,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			trackStartFailure("eval_provenance")
 			return "", err
 		}
+	}
+	effectiveBase := steps.EffectiveIntegrationBase(storedPRBaseBranch, effectiveRepoCfg.PR.BaseBranch, repo.DefaultBranch)
+	if err := m.persistInferredIntegrationRemote(ctx, repo, run, branch, baseRemote, effectiveBase); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record base remote: %s", err))
+		trackStartFailure("record_base_remote")
+		return "", fmt.Errorf("record base remote: %w", err)
 	}
 	forgeUpstream := integrationForgeUpstream(ctx, repo, run)
 	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, forgeUpstream, repo.ForkURL)

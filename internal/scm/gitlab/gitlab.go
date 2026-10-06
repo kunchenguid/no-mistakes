@@ -325,15 +325,40 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	return pr, nil
 }
 
-func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
-	id := pr.Number
-	if id == "" && pr != nil {
+// mergeRequestID is the IID glab should address on this host. When the host
+// has a project and the pull request URL names one, that project must match.
+// The same IID in another project is a different merge request; passing the
+// number alone would update it while the run kept the other project's URL.
+func (h *Host) mergeRequestID(pr *scm.PR) (string, error) {
+	if pr == nil {
+		return "", errors.New("missing merge request")
+	}
+	if url := strings.TrimSpace(pr.URL); url != "" && h != nil && h.projectPath != "" {
+		number, err := parseMergeRequestURL(url, h.host, h.projectPath)
+		if err != nil {
+			return "", fmt.Errorf("merge request %s is not in project %s: %w", url, h.projectPath, err)
+		}
+		return strconv.Itoa(number), nil
+	}
+	id := strings.TrimSpace(pr.Number)
+	if id == "" {
 		if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
 			id = num
 		}
 	}
-	if id == "" && pr != nil {
-		id = pr.URL
+	if id == "" {
+		id = strings.TrimSpace(pr.URL)
+	}
+	if id == "" {
+		return "", errors.New("missing merge request identity")
+	}
+	return id, nil
+}
+
+func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return nil, err
 	}
 	// Unlike `glab mr create`, `glab mr update` (glab v1.5x) has no
 	// -y/--yes confirmation-skip flag at all; passing it fails the whole
@@ -373,20 +398,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 }
 
 func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
-	id := ""
-	if pr != nil {
-		id = pr.Number
-		if id == "" {
-			if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
-				id = num
-			}
-		}
-		if id == "" {
-			id = pr.URL
-		}
-	}
-	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("merge request identity is required to retarget")
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return err
 	}
 	cmd := h.glab(ctx, "mr", "update", id, "--target-branch", baseBranch)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -410,7 +424,11 @@ func validateMRTitle(title string) error {
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
-	mr, err := h.viewMR(ctx, pr.Number)
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return "", err
+	}
+	mr, err := h.viewMR(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -418,7 +436,11 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
-	mr, err := h.viewMR(ctx, pr.Number)
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return "", err
+	}
+	mr, err := h.viewMR(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -456,9 +478,13 @@ func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return nil, err
+	}
 	// glab ci status --mr <id> --output json lists jobs for the MR's latest pipeline.
 	// Not all glab versions support --mr; fall back to listing pipelines by branch via view.
-	cmd := h.glab(ctx, "ci", "status", "--mr", pr.Number, "--output", "json")
+	cmd := h.glab(ctx, "ci", "status", "--mr", id, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if !isUnsupportedMRFlagError(out) {
@@ -494,8 +520,12 @@ func isUnsupportedMRFlagError(out []byte) bool {
 }
 
 func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return nil, err
+	}
 	// Try fetching the MR's pipeline and listing its jobs.
-	cmd := h.glab(ctx, "mr", "view", pr.Number, "--output", "json")
+	cmd := h.glab(ctx, "mr", "view", id, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
@@ -539,8 +569,12 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if len(targets) == 0 {
 		return nil, nil
 	}
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return nil, err
+	}
 	// Get the MR's pipeline jobs and trace the selected failures.
-	viewCmd := h.glab(ctx, "mr", "view", pr.Number, "--output", "json")
+	viewCmd := h.glab(ctx, "mr", "view", id, "--output", "json")
 	viewOut, err := viewCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("resolve GitLab merge request for selected logs: %w", err)

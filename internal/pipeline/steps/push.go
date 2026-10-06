@@ -123,7 +123,10 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
 
-	pushURL := resolvePushURL(sctx)
+	pushURL, err := resolvePushURL(sctx)
+	if err != nil {
+		return fmt.Errorf("resolve push URL: %w", err)
+	}
 	pushTarget := "upstream"
 	usingFork := strings.TrimSpace(sctx.Repo.ForkURL) != ""
 	if usingFork {

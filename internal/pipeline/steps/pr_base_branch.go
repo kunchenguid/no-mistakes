@@ -10,6 +10,22 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
+// EffectiveIntegrationBase is the branch an integration remote is chosen for.
+// A per-run override wins, then repository config, then the repository default,
+// then main.
+func EffectiveIntegrationBase(runBase, configuredBase, repoDefault string) string {
+	if base := strings.TrimSpace(runBase); base != "" {
+		return base
+	}
+	if base := strings.TrimSpace(configuredBase); base != "" {
+		return base
+	}
+	if base := strings.TrimSpace(repoDefault); base != "" {
+		return base
+	}
+	return "main"
+}
+
 // ValidateRunPRBaseBranchName checks a per-run PR base branch name using the
 // same Git ref rules as pr.base_branch in repo config.
 func ValidateRunPRBaseBranchName(name string) (string, error) {

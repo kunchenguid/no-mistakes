@@ -598,7 +598,11 @@ func publishedBranchHead(sctx *pipeline.StepContext) (string, error) {
 	defer cancel()
 	bounded := *sctx
 	bounded.Ctx = ctx
-	out, err := stepGitRun(&bounded, "ls-remote", resolvePushURL(sctx), ref)
+	pushURL, err := resolvePushURL(&bounded)
+	if err != nil {
+		return "", err
+	}
+	out, err := stepGitRun(&bounded, "ls-remote", pushURL, ref)
 	if err != nil {
 		return "", err
 	}

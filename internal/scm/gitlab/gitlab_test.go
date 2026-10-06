@@ -973,6 +973,29 @@ func TestGitlabHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+func TestUpdatePRRefusesMergeRequestFromAnotherProject(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		called = true
+		return exec.CommandContext(ctx, "false")
+	}, nil, "gitlab.example.com", "group/new")
+	pr := &scm.PR{
+		Number: "7",
+		URL:    "https://gitlab.example.com/group/old/-/merge_requests/7",
+	}
+	if _, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "T", Body: "body"}); err == nil {
+		t.Fatal("UpdatePR updated a merge request whose URL names another project")
+	}
+	if _, err := host.GetPRState(context.Background(), pr); err == nil {
+		t.Fatal("GetPRState read a merge request whose URL names another project")
+	}
+	if called {
+		t.Fatal("glab was invoked for a merge request in another project")
+	}
+}
+
 func TestUpdatePRPreservesDraftTitle(t *testing.T) {
 	t.Parallel()
 

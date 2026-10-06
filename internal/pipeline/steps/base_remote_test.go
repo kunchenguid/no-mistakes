@@ -124,12 +124,14 @@ func TestIntegrationRemote_BranchOnlyOnAnotherRemote(t *testing.T) {
 	if _, err := exec.Command("git", "-C", gate, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+release).Output(); err == nil {
 		t.Fatal("fetch wrote refs/remotes/origin/" + release)
 	}
-	if push := resolvePushURL(sctx); push != customer {
-		t.Fatalf("resolvePushURL = %q, want custom remote %q", push, customer)
+	push, err := resolvePushURL(sctx)
+	if err != nil || push != customer {
+		t.Fatalf("resolvePushURL = %q err=%v, want custom remote %q", push, err, customer)
 	}
 	sctx.Repo.ForkURL = "https://github.com/example/fork.git"
-	if push := resolvePushURL(sctx); push != sctx.Repo.ForkURL {
-		t.Fatalf("resolvePushURL with fork = %q, want %q", push, sctx.Repo.ForkURL)
+	push, err = resolvePushURL(sctx)
+	if err != nil || push != sctx.Repo.ForkURL {
+		t.Fatalf("resolvePushURL with fork = %q err=%v, want %q", push, err, sctx.Repo.ForkURL)
 	}
 
 	// Step-time tracking, with nothing persisted, uses the same remote.
@@ -190,6 +192,40 @@ func TestIntegrationRemote_GitLabProjectComesFromTheRemoteURL(t *testing.T) {
 	gl = host.(*gitlab.Host)
 	if gl.Project() != "dt-insight-front/dt-insight-studio" {
 		t.Fatalf("origin project = %q, want the registered upstream", gl.Project())
+	}
+}
+
+func TestResolvePushURL_RefusesWhenIntegrationRemoteURLIsUnreadable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gitCmd(t, dir, "init", "-q")
+	origin := "https://example.com/product/repo.git"
+	gitCmd(t, dir, "remote", "add", "origin", origin)
+	custom := "custom"
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: dir,
+		Repo: &db.Repo{
+			UpstreamURL: origin,
+			WorkingPath: dir,
+		},
+		Run: &db.Run{BaseRemote: &custom},
+	}
+	push, err := resolvePushURL(sctx)
+	if err == nil {
+		t.Fatalf("resolvePushURL = %q, want a refusal", push)
+	}
+	if push != "" {
+		t.Fatalf("resolvePushURL returned %q with error %v", push, err)
+	}
+	if strings.Contains(err.Error(), origin) {
+		t.Fatalf("refusal fell back to origin: %v", err)
+	}
+
+	sctx.Repo.ForkURL = "https://github.com/example/fork.git"
+	push, err = resolvePushURL(sctx)
+	if err != nil || push != sctx.Repo.ForkURL {
+		t.Fatalf("fork push = %q err=%v, want %s", push, err, sctx.Repo.ForkURL)
 	}
 }
 

@@ -566,7 +566,7 @@ use rerun to bypass a gate.
 | ---- | ---- | ------- | ----------- |
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 | `--base-branch` | `string` | (none) | Integration branch for this rerun; overrides the base inherited from the selected prior run |
-| `--base-remote` | `string` | (none) | Git remote that holds the integration branch, the PR project, and the no-fork push; overrides the remote inherited from the selected prior run |
+| `--base-remote` | `string` | (none) | Git remote that holds the integration branch, the PR project, and the no-fork push; overrides the remote inherited from the selected prior run. A different remote does not inherit that run's pull request URL |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | GitHub issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |

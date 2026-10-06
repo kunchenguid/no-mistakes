@@ -213,7 +213,7 @@ Select the branch that newly created pull requests target.
 
 Use this when the repository's integration branch differs from its forge default branch, for example `develop` instead of `main`.
 The configured branch is used for PR creation and pipeline integration and change scoping; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) describe which steps use it and how the recorded per-run override takes precedence.
-That branch is read from the run's integration remote, which defaults to `origin`. [`--base-remote`](/no-mistakes/reference/cli/) names another remote, and when it is omitted a head that already tracks this branch on another remote uses that remote for the existence check, the fetch, the project the pull or merge request is opened against, and the push when no fork URL is configured.
+That branch is read from the run's integration remote, which defaults to `origin`. [`--base-remote`](/no-mistakes/reference/cli/) names another remote, and when it is omitted a head that already tracks this branch on another remote uses that remote for the existence check, the fetch, the project the pull or merge request is opened against, and the push when no fork URL is configured. The same tracking is stored on the run when `--base-branch` is omitted and this setting, or the repository default, supplies the branch.
 When unset and without a per-run override, no-mistakes targets the repository's forge default branch.
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.

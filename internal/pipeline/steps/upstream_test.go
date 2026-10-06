@@ -51,8 +51,9 @@ func TestResolveUpstreamURL_PreservesCredential(t *testing.T) {
 	if !strings.Contains(got, token) {
 		t.Errorf("resolveUpstreamURL stripped the credential: got %q", got)
 	}
-	if pushURL := resolvePushURL(sctx); pushURL != credURL {
-		t.Errorf("resolvePushURL = %q, want credential-preserving upstream route %q", pushURL, credURL)
+	pushURL, err := resolvePushURL(sctx)
+	if err != nil || pushURL != credURL {
+		t.Errorf("resolvePushURL = %q err=%v, want credential-preserving upstream route %q", pushURL, err, credURL)
 	}
 }
 
@@ -297,8 +298,9 @@ func TestResolvePushURL_ForkWinsOverCredential(t *testing.T) {
 	forkURL := "https://github.com/e-jung/no-mistakes.git"
 	sctx := minimalStepContext(t, dir, "https://redacted@github.com/o/r.git")
 	sctx.Repo.ForkURL = forkURL
-	if got := resolvePushURL(sctx); got != forkURL {
-		t.Errorf("resolvePushURL = %q, want fork URL %q", got, forkURL)
+	got, err := resolvePushURL(sctx)
+	if err != nil || got != forkURL {
+		t.Errorf("resolvePushURL = %q err=%v, want fork URL %q", got, err, forkURL)
 	}
 }
 

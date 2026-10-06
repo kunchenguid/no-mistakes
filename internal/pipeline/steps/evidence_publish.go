@@ -9,6 +9,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
 // evidenceLinks describes a published evidence commit well enough to turn a
@@ -62,9 +63,14 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		return nil
 	}
 
+	pushURL, err := resolvePushURL(sctx)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("test evidence not published: %s", safeurl.RedactText(err.Error())))
+		return nil
+	}
 	result, err := evidence.Publish(sctx.Ctx, evidence.Request{
 		RepoDir:   sctx.WorkDir,
-		PushURL:   resolvePushURL(sctx),
+		PushURL:   pushURL,
 		Branch:    sctx.Config.Test.Evidence.Branch,
 		Dir:       sctx.Config.Test.Evidence.Dir,
 		Segments:  segments,

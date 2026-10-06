@@ -11,15 +11,9 @@ import (
 // GetPRContent reads glab's single-MR JSON description, never rendered HTML.
 // A missing/null description is unproven, not an empty author narrative.
 func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, error) {
-	if pr == nil {
-		return scm.PRContent{}, fmt.Errorf("missing merge request identity")
-	}
-	id := pr.Number
-	if id == "" {
-		id, _ = scm.ExtractPRNumber(pr.URL)
-	}
-	if id == "" {
-		return scm.PRContent{}, fmt.Errorf("missing merge request number")
+	id, err := h.mergeRequestID(pr)
+	if err != nil {
+		return scm.PRContent{}, err
 	}
 	mr, err := h.viewMR(ctx, id)
 	if err != nil {

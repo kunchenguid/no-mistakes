@@ -310,14 +310,16 @@ func fetchRunUpstreamBranchInner(ctx context.Context, sctx *pipeline.StepContext
 // takes precedence without rewriting the worktree remote. Fork URLs carry no
 // embedded credentials today, so the fork path uses the repo record directly.
 // In both cases callers wrap the URL in safeurl.Redact before logging it.
-func resolvePushURL(sctx *pipeline.StepContext) string {
+//
+// A non-origin integration remote whose URL cannot be read refuses the push.
+// Falling through to the registered origin would publish the reviewed branch
+// to the product repository.
+func resolvePushURL(sctx *pipeline.StepContext) (string, error) {
 	if sctx.Repo != nil && strings.TrimSpace(sctx.Repo.ForkURL) != "" {
-		return sctx.Repo.ForkURL
+		return sctx.Repo.ForkURL, nil
 	}
 	if integrationRemoteName(sctx.Ctx, sctx) != "origin" {
-		if url, err := integrationProjectURL(sctx); err == nil && strings.TrimSpace(url) != "" {
-			return url
-		}
+		return integrationProjectURL(sctx)
 	}
-	return resolveUpstreamURL(sctx)
+	return resolveUpstreamURL(sctx), nil
 }
