@@ -143,3 +143,39 @@ func TestAxiRespond_WithoutRunFlagStillAnswersTheActiveRun(t *testing.T) {
 		t.Fatalf("active lookup = %v, responded to %q; want the current branch's run-timeout", lookedUpActive.Load(), gotParams.RunID)
 	}
 }
+
+func TestAxiRespond_RunFlagGateHelpCarriesTheRunID(t *testing.T) {
+	var responded atomic.Bool
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		respond: func(context.Context, json.RawMessage) (interface{}, error) {
+			responded.Store(true)
+			return &ipc.RespondResult{OK: true}, nil
+		},
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
+		if responded.Load() {
+			next := fx.awaiting()
+			next.Steps[0].RoundCount++
+			return next, nil
+		}
+		return fx.awaiting(), nil
+	})
+	chdir(t, t.TempDir())
+
+	out, err := executeCmd("axi", "respond", "--run", "run-timeout", "--action", "approve", "--wait", "3s")
+	if err != nil {
+		t.Fatalf("respond --run: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"`no-mistakes axi respond --run run-timeout --action approve`",
+		"`no-mistakes axi respond --run run-timeout --action skip`",
+		"axi logs --run run-timeout --step",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("gate help missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "axi respond --action") {
+		t.Fatalf("a --run call printed a follow-up respond command without the run id:\n%s", out)
+	}
+}

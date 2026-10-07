@@ -78,13 +78,24 @@ func isAxiWaitElapsed(parent, drive context.Context, err error) bool {
 // fields open the document, so a call that recorded something first (a respond
 // echoing its dispositions, an answer echoing its own) still reports it.
 func emitAxiWaitElapsed(cmd *cobra.Command, wait time.Duration, reattach string, lead ...toon.Field) error {
+	return emitAxiWaitElapsedForRun(cmd, wait, "", reattach, lead...)
+}
+
+// emitAxiWaitElapsedForRun is emitAxiWaitElapsed for a call that selected its
+// run by id: status carries --run, and a reattach command without a --run form
+// is named as one that must run in the clone of that run.
+func emitAxiWaitElapsedForRun(cmd *cobra.Command, wait time.Duration, runID, reattach string, lead ...toon.Field) error {
+	reattachLine := fmt.Sprintf("Re-run `%s` to reattach for another %s", reattach, wait)
+	if runID != "" && !strings.Contains(reattach, "--run") {
+		reattachLine = fmt.Sprintf("Re-run `%s` in the clone of run %s to reattach for another %s", reattach, runID, wait)
+	}
 	fields := append([]toon.Field{}, lead...)
 	fields = append(fields,
 		toon.Field{Key: "error", Value: fmt.Sprintf("wait of %s elapsed while driving the run", wait)},
 		toon.Field{Key: "help", Value: []string{
 			"This bounded hold ended; it is not a pipeline failure and does not mean the daemon is dead.",
-			"Run `no-mistakes axi status` to inspect progress",
-			fmt.Sprintf("Re-run `%s` to reattach for another %s", reattach, wait),
+			"Run `no-mistakes axi status" + runFlag(runID) + "` to inspect progress",
+			reattachLine,
 		}},
 	)
 	emitDoc(cmd, fields...)
@@ -1310,6 +1321,12 @@ func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 // fields, when given, open the document ahead of the run object, so a command
 // that did something before driving (axi answer) reports it in the same return.
 func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, lead ...toon.Field) error {
+	return renderDriveResultForRun(cmd, run, ciReady, "", lead...)
+}
+
+// renderDriveResultForRun is renderDriveResult for a call that selected its run
+// by id: the gate's follow-up commands carry that id.
+func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, runID string, lead ...toon.Field) error {
 	rv := runViewFromIPC(run)
 	fields := append(append([]toon.Field{}, lead...), runObjectField(rv))
 	hasBranchSync := false
@@ -1347,7 +1364,7 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, lead 
 	}
 
 	if gate, ok := rv.awaitingStep(); ok {
-		fields = append(fields, gateFields(gate)...)
+		fields = append(fields, gateFieldsForRun(gate, runID)...)
 		emitDoc(cmd, fields...)
 		return nil
 	}
@@ -1510,12 +1527,13 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 	defer cancel()
 
+	respondCmd := "no-mistakes axi respond" + runFlag(ra.runID)
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
 	switch act {
 	case types.ActionApprove, types.ActionFix, types.ActionSkip:
 	case "":
 		return emitError(cmd, 2, "--action is required",
-			"Run `no-mistakes axi respond --action approve|fix|skip`")
+			"Run `"+respondCmd+" --action approve|fix|skip`")
 	default:
 		return emitError(cmd, 2, fmt.Sprintf("unknown action %q", ra.action),
 			"Valid actions: approve, fix, skip")
@@ -1558,11 +1576,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	run, err := getRunInfo(driveCtx, env.p.Socket(), runID)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+			return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, respondCmd+" --action approve|fix|skip")
 		}
 		if ra.runID != "" && isExactRunNotFound(err, runID) {
 			return emitError(cmd, 1, fmt.Sprintf("no run with id %s", runID),
-				"Run `no-mistakes axi status` to see the runs of this repository")
+				"Check the run id; `no-mistakes axi status`, run in a clone of the repository, lists its runs")
 		}
 		return emitError(cmd, 1, fmt.Sprintf("load run: %v", err))
 	}
@@ -1585,7 +1603,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		gate, ok := rv.awaitingStep()
 		if !ok {
 			return emitError(cmd, 1, "no step is awaiting approval",
-				"Run `no-mistakes axi status` to see the run state")
+				"Run `no-mistakes axi status"+runFlag(ra.runID)+"` to see the run state")
 		}
 		stepName = types.StepName(gate.Name)
 	}
@@ -1602,7 +1620,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	if act == types.ActionFix {
 		if len(findingIDs) == 0 && ra.addFinding == "" && len(ignoreIDs) == 0 {
 			return emitError(cmd, 2, "--action fix requires --findings <id,...>, --ignore <id,...>, or --add-finding <json>",
-				"Run `no-mistakes axi status` to list finding IDs")
+				"Run `no-mistakes axi status"+runFlag(ra.runID)+"` to list finding IDs")
 		}
 		if note := strings.TrimSpace(ra.instructions); note != "" && len(findingIDs) > 0 {
 			instructions = make(map[string]string, len(findingIDs))
@@ -1640,7 +1658,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	// don't immediately observe the same gate we just answered.
 	if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateIdentityFor(rv, string(stepName))); err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run", lead...)
+			return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, "no-mistakes axi run", lead...)
 		}
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
@@ -1648,11 +1666,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	final, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run", lead...)
+			return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, "no-mistakes axi run", lead...)
 		}
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
-	return renderDriveResult(cmd, final, ciReady, lead...)
+	return renderDriveResultForRun(cmd, final, ciReady, ra.runID, lead...)
 }
 
 // gateIdentityFor returns the identity of step's current park in rv, defaulting

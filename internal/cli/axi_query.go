@@ -95,9 +95,9 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 		// The label above and the commands below deliberately use different
 		// evidence rules. Branch equality is enough to label the selected run,
 		// but not enough to attach a bare mutation command to it: another active
-		// run may exist (or appear) on the same branch, and `axi respond` has no
-		// run selector. Keep every explicit selection inspection-only so its run
-		// identity cannot be lost between this status read and the next command.
+		// run may exist (or appear) on the same branch, and a bare `axi respond`
+		// answers the branch's run. Keep status inspection-only; the response
+		// command for an explicit selection is `axi respond --run <id>`.
 		branchScopedCommandsSafe := runID == ""
 		if !branchScopedCommandsSafe {
 			fields = append(fields, inspectionOnlyGateFields(gate, run.ID)...)

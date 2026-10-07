@@ -545,9 +545,16 @@ func (rv runView) automaticSkips() []automaticSkipRow {
 // gateFields renders the active approval gate: the awaiting step, its findings
 // table, and the next-step commands an agent can run to clear it.
 func gateFields(gate stepView) []toon.Field {
+	return gateFieldsForRun(gate, "")
+}
+
+// gateFieldsForRun renders the gate with every follow-up command that accepts
+// --run carrying runID, so a caller that selected the run by id keeps naming it.
+func gateFieldsForRun(gate stepView, runID string) []toon.Field {
+	respond := "no-mistakes axi respond" + runFlag(runID)
 	help := []string{
-		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
-		"Run `no-mistakes axi respond --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response",
+		"Run `" + respond + " --action approve` to accept this step and continue",
+		"Run `" + respond + " --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response",
 	}
 	// A review parked in waiting-on-answers is not asking for a verdict: its
 	// reviewer asked questions and cannot finish without them. Approving or
@@ -557,28 +564,32 @@ func gateFields(gate stepView) []toon.Field {
 	// question is already a finding in the rows below, carrying its id and the
 	// options the reviewer stated.
 	if pipeline.HasUnansweredReviewQuestion(gate.FindingsJSON) {
+		answerScope := ""
+		if runID != "" {
+			answerScope = fmt.Sprintf(" (`axi answer` has no --run form: run it in the clone of run %s)", runID)
+		}
 		help = append([]string{
-			"This review is waiting on answers to the question(s) its reviewer asked; each is a `question-<id>` finding below. Answer each with `no-mistakes axi answer --question <id> --answer \"<one of its options>\"` and the same reviewer resumes and finishes its pass; the answer that closes the last one blocks like `axi respond` and returns the next gate or outcome",
+			"This review is waiting on answers to the question(s) its reviewer asked; each is a `question-<id>` finding below. Answer each with `no-mistakes axi answer --question <id> --answer \"<one of its options>\"`" + answerScope + " and the same reviewer resumes and finishes its pass; the answer that closes the last one blocks like `axi respond` and returns the next gate or outcome",
 			"Do not approve or fix to get past a review question: that throws away the paused review pass instead of answering it",
 		}, help...)
 	}
 	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
 		help = []string{
 			"Protected-path refusals require an explicit operator response; Approve is rejected.",
-			"Have the operator inspect and resolve the reported protected-path edit through the repository's authorized workflow, then run `no-mistakes axi respond --action fix` to retry the refused step, including its commit and publication.",
+			"Have the operator inspect and resolve the reported protected-path edit through the repository's authorized workflow, then run `" + respond + " --action fix` to retry the refused step, including its commit and publication.",
 		}
 	}
-	skip := "Run `no-mistakes axi respond --action skip` to skip this step"
+	skip := "Run `" + respond + " --action skip` to skip this step"
 	if pipeline.HasUnvalidatedWorkRefusal(gate.FindingsJSON) {
 		help = []string{
 			"Approve is rejected: the run worktree holds work a timed-out Test agent left that no Test turn validated, and approval would publish it. The findings name that work and how to inspect it.",
-			"Run `no-mistakes axi respond --action fix --findings <ids>` to validate that work (do not edit files yourself), or `no-mistakes axi abort` to stop the run",
+			"Run `" + respond + " --action fix --findings <ids>` to validate that work (do not edit files yourself), or `no-mistakes axi abort" + runFlag(runID) + "` to stop the run",
 		}
 		skip = "Do not skip this step: the steps after Test would commit and publish the unvalidated work, so skipping needs the operator's explicit decision"
 	}
 	return gateFieldsWithHelp(gate, append(help,
 		skip,
-		fmt.Sprintf("Run `%s` to read the complete step summary and log", axiLogsFullCommand(gate.Name, "")),
+		fmt.Sprintf("Run `%s` to read the complete step summary and log", axiLogsFullCommand(gate.Name, runID)),
 		"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.",
 		preserveGateFixCommitsGuidance,
 	))
@@ -586,7 +597,7 @@ func gateFields(gate stepView) []toon.Field {
 
 func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
 	return gateFieldsWithHelp(gate, []string{
-		fmt.Sprintf("The explicitly selected gate for run %s is inspection-only; no run-scoped response command exists", runID),
+		fmt.Sprintf("The explicitly selected gate for run %s is inspection-only here; respond with `no-mistakes axi respond --run %s --action approve|fix|skip`", runID, runID),
 		fmt.Sprintf("Run `%s` to read the complete step summary and log", axiLogsFullCommand(gate.Name, runID)),
 	})
 }
@@ -658,6 +669,13 @@ func recordedFindingsFields(findingsJSON string, full bool) ([]toon.Field, bool)
 		fields = append(fields, toon.Field{Key: "findings", Value: findingRows(parsed.Items)})
 	}
 	return fields, bounded
+}
+
+func runFlag(runID string) string {
+	if runID == "" {
+		return ""
+	}
+	return " --run " + runID
 }
 
 func axiLogsFullCommand(step, runID string) string {
