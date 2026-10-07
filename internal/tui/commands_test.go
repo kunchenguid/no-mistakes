@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -124,6 +126,8 @@ func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
 }
 
 func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
+	claudeProfile := filepath.VolumeName(os.TempDir()) + "/caller/.claude1"
+	t.Setenv(runenv.ClaudeConfigDirEnvVar, claudeProfile)
 	sock := testSocketPath(t)
 	srv := startTestIPCServer(t, sock)
 
@@ -137,7 +141,7 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 		if err := json.Unmarshal(raw, &params); err != nil {
 			return nil, err
 		}
-		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" {
+		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" || params.ClaudeConfigDir != claudeProfile {
 			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
 		}
 		return &ipc.RerunResult{RunID: newRun.ID}, nil
