@@ -207,11 +207,29 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, err
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
-	checks, err := host.GetChecks(ctx, &scm.PR{Number: prNumber, URL: prURL})
+	pr := &scm.PR{Number: prNumber, URL: prURL}
+	if reviewBotCommentsAlways(sctx) {
+		// Review-bot identity (scm.Check.App) comes from the head commit's
+		// rollup, which is read only when the head is named, exactly as the
+		// polling loop names it. Without it no check is a review bot and a
+		// green bot's comments would go unread.
+		pr.HeadSHA = sctx.Run.HeadSHA
+	}
+	checks, err := host.GetChecks(ctx, pr)
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
 	if allChecksPassed(checks) {
+		// A green head can still carry a green review bot's unresolved
+		// comments under ci.review_bot_comments: always; approving over
+		// them is an override, not a clean pass.
+		botFindings, err := s.greenReviewBotFindings(sctx, host, pr, checks)
+		if err != nil {
+			return fmt.Sprintf("could not verify review bot comments: %v", err), nil
+		}
+		if len(botFindings.Items) > 0 {
+			return fmt.Sprintf("live checks for %s passed but %s", prURL, botFindings.Summary), nil
+		}
 		return "", nil
 	}
 	if len(checks) == 0 {
@@ -416,6 +434,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	timeoutMergeConflict := false
 	lastMonitorLog := ""
 	consecutiveCheckErrs := 0
+	consecutiveBotCommentErrs := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		sctx.Log("CI timeout reached")
 		var outcome *pipeline.StepOutcome
@@ -717,6 +736,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						mergeConflict:       mergeConflict,
 						reruns:              s.transientReruns.used,
 						botComments:         reviewBotComments(sctx, host, pr, checks),
+						greenBots:           reviewBotCommentsAlways(sctx),
 					})
 					if hasAwaitingApprovalChecks(checks) {
 						sctx.Log(ciChecksAwaitingApprovalMsg)
@@ -755,6 +775,36 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
 					}
 				case allChecksPassed(checks):
+					// Under ci.review_bot_comments: always, a review bot that
+					// concluded its check green may still have left unresolved
+					// comments on this head. They are read before the head is
+					// reported ready, and become the same ask-user findings a
+					// red bot check produces, so checks-passed is never reported
+					// over a comment nobody has looked at.
+					botFindings, botErr := s.greenReviewBotFindings(sctx, host, pr, checks)
+					if botErr != nil && pluginPollFailsStep(botErr) {
+						clearCIMonitorReady(sctx)
+						return nil, botErr
+					}
+					if botErr != nil {
+						clearCIMonitorReady(sctx)
+						lastMonitorLog = ""
+						consecutiveBotCommentErrs++
+						sctx.Log(fmt.Sprintf("warning: could not read review bot comments: %v", botErr))
+						if consecutiveBotCommentErrs >= consecutiveCheckErrorLimit {
+							sctx.Log(fmt.Sprintf("review bot comments could not be read %d consecutive times, parking for a decision", consecutiveBotCommentErrs))
+							return ciTerminalRepairOutcome(reviewBotCommentsReadFailureOutcome(botErr), Findings{}, sctx.DeferredFindings), nil
+						}
+						break
+					}
+					consecutiveBotCommentErrs = 0
+					if len(botFindings.Items) > 0 {
+						clearCIMonitorReady(sctx)
+						sctx.DeferredFindings = ""
+						s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+						sctx.Log(fmt.Sprintf("issues detected: %s", botFindings.Summary))
+						return ciObservationOutcome(botFindings), nil
+					}
 					sctx.DeferredFindings = ""
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				default:

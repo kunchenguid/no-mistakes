@@ -85,6 +85,7 @@ auto_fix:
 ci:
   rerun_transient: 0
   revalidate_repairs: false
+  review_bot_comments: on_failure # or: always
 
 rebase:
   strategy: rebase # or: merge
@@ -913,6 +914,22 @@ ci:
 ```
 
 A value in the trusted repository config overrides this global value in both directions: an explicit repository `true` enables revalidation when this is `false`, and an explicit repository `false` disables opt-in revalidation when this is `true`. When the trusted repository config omits the key, this global value applies.
+
+### ci.review_bot_comments
+
+The operator-level fallback for [`ci.review_bot_comments`](/no-mistakes/reference/repo-config/#cireview_bot_comments), whose per-repository reference owns the semantics and the trust boundary.
+
+| | |
+|---|---|
+| Type | `string` (`on_failure` or `always`) |
+| Default | `on_failure` |
+
+```yaml
+ci:
+  review_bot_comments: always
+```
+
+A value in the trusted repository config overrides this global value. An unrecognized value fails the config rather than falling back to the default.
 
 ### rebase.strategy
 

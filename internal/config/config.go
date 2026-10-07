@@ -99,6 +99,18 @@ const (
 	// show that - every merge-conflict repair, since a rebase rewrites the
 	// head - revalidates from Review instead. See CI.RevalidateRepairs.
 	DefaultCIRevalidateRepairs = false
+	// CIReviewBotCommentsOnFailure reads a registered review bot's unresolved
+	// comments only when that bot's check failed.
+	CIReviewBotCommentsOnFailure = "on_failure"
+	// CIReviewBotCommentsAlways reads them whenever the bot's check completed
+	// for the current head, green included.
+	CIReviewBotCommentsAlways = "always"
+	// DefaultCIReviewBotComments is the policy the CI step uses when
+	// ci.review_bot_comments is unset. It is "on_failure" because reading a
+	// green check's comments makes an unresolved bot comment block
+	// checks-passed, which is a new default no installation asked for; a
+	// repository opts in with "always".
+	DefaultCIReviewBotComments = CIReviewBotCommentsOnFailure
 	// RebaseStrategyRebase replays the branch on top of the moved base. It is
 	// the historical behavior and the default.
 	RebaseStrategyRebase = "rebase"
@@ -665,6 +677,8 @@ type CIRaw struct {
 	// config can override a global `true`, which a plain bool could not
 	// express (it would be indistinguishable from "not set").
 	RevalidateRepairs *bool `yaml:"revalidate_repairs"`
+	// ReviewBotComments is "" when unset; see CI.ReviewBotComments.
+	ReviewBotComments string `yaml:"review_bot_comments"`
 }
 
 // CI holds the resolved CI-step settings.
@@ -702,6 +716,19 @@ type CI struct {
 	// materially more expensive in wall-clock time and tokens - which is why
 	// it is opt-in (see VISION.md).
 	RevalidateRepairs bool
+	// ReviewBotComments selects when the CI step reads a registered review
+	// bot's (scm.ReviewBots) unresolved review comments.
+	//
+	// "on_failure" (default): only when the bot's check failed, so a green
+	// bot check never blocks checks-passed.
+	//
+	// "always": also when the bot's check completed green on the current
+	// head. Its unresolved comments then become the same ask-user findings a
+	// red check produces, and the step parks for a decision instead of
+	// reporting checks-passed. A review bot can conclude its check success
+	// while leaving an unresolved comment, most often on the pipeline's own
+	// CI repair commit, which no human has reviewed yet.
+	ReviewBotComments string
 }
 
 // RebaseRaw is the YAML representation of rebase-step settings.
@@ -1479,6 +1506,13 @@ ci:
   # repository that sets ci.revalidate_repairs on its own default branch
   # overrides this value.
   revalidate_repairs: false
+  # When the CI step reads a registered review bot's (Greptile's) unresolved
+  # review comments. "on_failure" (default) reads them only when the bot's
+  # check failed. "always" also reads them when the bot's check completed green
+  # on the current head, so an unresolved bot comment parks the step for a
+  # decision instead of reporting checks-passed. A repository that sets
+  # ci.review_bot_comments on its own default branch overrides this value.
+  review_bot_comments: on_failure
 
 # Auto-fix commit subject template. Available variables: {{.Step}}, {{.Summary}}, and {{.Branch}}.
 # {{.Branch}} is the normalized branch name, or the only capture group from
@@ -2402,6 +2436,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateRebaseRaw(raw.Rebase); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateCIRaw(raw.CI); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 	warnRetiredJev(raw.Jev)
 
 	if len(raw.Agent) > 0 {
@@ -2737,6 +2774,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateRebaseRaw(cfg.Rebase); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if err := validateCIRaw(cfg.CI); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	cfg.PR.BaseBranch = strings.TrimSpace(cfg.PR.BaseBranch)
 	if err := validatePRRaw(cfg.PR); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
@@ -2951,6 +2991,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// sense: it decides whether a CI repair commit must re-pass Review
 		// before it is published, so a pushed branch must not be able to turn
 		// the maintainer's revalidation requirement off for its own repairs.
+		// ci.review_bot_comments decides whether a green review-bot check
+		// can still block checks-passed, so a pushed branch must not be able
+		// to silence the bot's unresolved comments on itself.
 		effective.CI = trusted.CI
 		// rebase.strategy is gate-control in the same sense no_ci is. It decides
 		// whether integrating a moved base leaves an auditable merge commit
@@ -3341,6 +3384,7 @@ func ciDefaults() CI {
 	return CI{
 		RerunTransient:    DefaultCIRerunTransient,
 		RevalidateRepairs: DefaultCIRevalidateRepairs,
+		ReviewBotComments: DefaultCIReviewBotComments,
 	}
 }
 
@@ -3385,6 +3429,21 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	if src.RevalidateRepairs != nil {
 		dst.RevalidateRepairs = *src.RevalidateRepairs
 	}
+	if v := strings.TrimSpace(src.ReviewBotComments); v != "" {
+		dst.ReviewBotComments = v
+	}
+}
+
+// validateCIRaw fails the config closed on an unrecognized
+// ci.review_bot_comments. Falling back to the default would let a typo
+// ("allways") quietly keep reporting green over comments a maintainer asked
+// to see.
+func validateCIRaw(c CIRaw) error {
+	switch strings.TrimSpace(c.ReviewBotComments) {
+	case "", CIReviewBotCommentsOnFailure, CIReviewBotCommentsAlways:
+		return nil
+	}
+	return fmt.Errorf("ci.review_bot_comments: %q is not a valid policy (want %q or %q)", c.ReviewBotComments, CIReviewBotCommentsOnFailure, CIReviewBotCommentsAlways)
 }
 
 // applyAutoFixOverrides applies non-nil raw values onto resolved defaults.

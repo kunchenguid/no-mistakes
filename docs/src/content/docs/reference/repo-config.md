@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -85,6 +85,7 @@ auto_fix:
 ci:
   rerun_transient: 0
   revalidate_repairs: false
+  review_bot_comments: on_failure # or: always
 
 # How a base branch that moved under your branch is integrated.
 # Read only from the trusted default branch.
@@ -753,6 +754,39 @@ A pushed branch cannot turn a maintainer's revalidation requirement off for its 
 
 A value set here always wins over the operator's own [`ci.revalidate_repairs`](/no-mistakes/reference/global-config/#cirevalidate_repairs), in both directions: `true` here enables revalidation even when the global value is `false`, and an explicit `false` here opts out even when the global value is `true`.
 With no trusted copy of this file, the operator's global value applies, then the built-in default of `false`.
+
+### ci.review_bot_comments
+
+When the CI step reads a supported review bot's (currently Greptile's) unresolved review comments.
+
+| | |
+|---|---|
+| Type | `string` (`on_failure` or `always`) |
+| Default | `on_failure` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  review_bot_comments: always
+```
+
+- **`on_failure` (default)** reads them only when the bot's own check failed. A green bot check is green, whatever comments it left. This is the behavior before the key existed.
+- **`always`** also reads them when the bot's check completed green on the current head. Each unresolved comment becomes the same `ask-user` finding a red bot check produces, anchored to the comment's file and line, so the step parks for a decision instead of reporting `checks-passed`. A green bot with nothing unresolved is still green.
+
+A review bot can conclude its check `success` while leaving an unresolved comment. The comment most likely to be missed that way is the one on the pipeline's own CI repair commit, which no human has reviewed yet.
+
+Under `always`:
+
+- Comments are read only after every check, the bot's included, has completed for the current head, so a review still being posted is not raced. Only unresolved threads count, and the same per-gate bound applies as for a red check.
+- The findings never spend an `auto_fix.ci` attempt. A human decides: approve, skip, or select comments for a fix round.
+- Approving over them records the CI step as passed with an override naming the comments, never as a clean pass.
+- A comment list that cannot be read is not treated as empty: `checks-passed` is withheld, and a read that keeps failing parks for a decision.
+- Each green poll costs one more provider read for the comments.
+
+Forges that cannot supply review comments are unaffected by either value.
+
+This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot silence a green bot's comments on itself, and cannot opt itself in either.
+A value set here wins over the operator's own [`ci.review_bot_comments`](/no-mistakes/reference/global-config/#cireview_bot_comments).
 
 ### rebase.strategy
 
