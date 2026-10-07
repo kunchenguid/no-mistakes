@@ -263,7 +263,7 @@ The nonce is scoped to the repository and branch.
 The first successful receipt claim returns `created`; subsequent matching claims return `reused` for that same run, including after the gate or pipeline head advances.
 A conflicting submitted head, validation generation, intent, or [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) is refused.
 A different nonce creates a distinct run rather than reattaching to a same-head run; both post-receive creation and the up-to-date-push fallback follow this contract.
-The up-to-date-push fallback preserves the latest same-head run's PR URL unless its recorded PR state is closed or merged, including when an explicit `--base-branch` retargets that PR.
+A rerun and the up-to-date-push fallback keep the selected run's pull request URL only when that PR is not already merged or closed and the finalized integration remote matches that run, including a remote inferred from tracking once the base branch is known. An empty prior remote counts as origin. When that remote matches, an explicit `--base-branch` still retargets the same open pull request.
 An explicit `--base-branch` is persisted on creation and must match the stored per-run base on replay; omitting it on replay preserves the stored base.
 A replay that adds `--no-publish-intent` against a run bound to publish the section is refused for the same reason; the stored omit decision folds in the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default at creation, so a replay without the flag still matches a run whose row omits publication.
 Explicit `--model`/`--effort` must match a stored pin the same way; omitting both preserves it.
@@ -566,7 +566,7 @@ use rerun to bypass a gate.
 | ---- | ---- | ------- | ----------- |
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 | `--base-branch` | `string` | (none) | Integration branch for this rerun; overrides the base inherited from the selected prior run |
-| `--base-remote` | `string` | (none) | Git remote that holds the integration branch, the PR project, and the no-fork push; overrides the remote inherited from the selected prior run. The previous pull request URL is kept only when the finalized remote matches that run, including a remote inferred from tracking; an empty prior remote counts as origin |
+| `--base-remote` | `string` | (none) | Git remote that holds the integration branch, the PR project, and the no-fork push; overrides the remote inherited from the selected prior run. The previous pull request URL is kept under the same match as [Strict launch receipts](#strict-launch-receipts) |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | GitHub issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
