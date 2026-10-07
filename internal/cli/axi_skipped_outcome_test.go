@@ -3,8 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	toon "github.com/toon-format/toon-go"
@@ -13,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -40,11 +45,25 @@ func TestAxiOutcomeProviderUnavailableSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	missingCLI := t.TempDir()
+	realGit, err := testgit.RealGit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hide the provider executable while keeping Git inspections available.
+	name, script := "git", "#!/bin/sh\nexec '"+strings.ReplaceAll(realGit, "'", "'\"'\"'")+"' \"$@\"\n"
+	if runtime.GOOS == "windows" {
+		name, script = "git.cmd", "@echo off\r\n\""+realGit+"\" %*\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(missingCLI, name), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
 	executor := pipeline.NewExecutor(database, p, nil, nil, []pipeline.Step{
 		unavailableProviderStep{&steps.PRStep{}, missingCLI},
 		unavailableProviderStep{&steps.CIStep{}, missingCLI},
 	}, nil)
-	if err := executor.Execute(context.Background(), r, repo, dir); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := executor.Execute(ctx, r, repo, dir); err != nil {
 		t.Fatal(err)
 	}
 	r, err = database.GetRun(r.ID)

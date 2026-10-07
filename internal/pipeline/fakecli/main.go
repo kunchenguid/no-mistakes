@@ -209,7 +209,7 @@ func fakeGHHandler(args []string) {
 
 func fakeGitStatusErrorHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
-	if len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain" {
+	if len(args) >= 2 && args[0] == "status" && (args[1] == "--porcelain" || args[1] == "--porcelain=v1") {
 		fmt.Fprintln(os.Stderr, "status failed")
 		os.Exit(1)
 	}

@@ -65,7 +65,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 			agentCalled = true
 			// Agent "fixes" CI by creating a file
 			os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -227,7 +227,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 			fixCount++
 			// Agent "fixes" but the check will keep failing (same checksJSON)
 			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -323,7 +323,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -397,7 +397,7 @@ func TestCIStep_CIAutoFixRetriesWhenGitHubClockLagsLocalClock(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -480,7 +480,7 @@ func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -566,7 +566,7 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -638,7 +638,7 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -717,7 +717,7 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("conflict-fix-%d.txt", fixCount)), []byte("resolved"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -782,7 +782,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			os.WriteFile(filepath.Join(opts.CWD, "manual-fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix failing CI"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix failing CI","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -1022,7 +1022,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			fixCount++
 			// Agent produces NO changes
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -1118,7 +1118,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
 			os.WriteFile(filepath.Join(opts.CWD, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -1197,7 +1197,7 @@ func TestCIStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1247,7 +1247,7 @@ func TestCIStep_FixPromptClosesTheInvariantAcrossSiblingSites(t *testing.T) {
 				name: "test",
 				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 					capturedPrompt = opts.Prompt
-					return &agent.Result{}, nil
+					return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 				},
 			}
 			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1279,7 +1279,7 @@ func TestCIStep_FixPromptDistinguishesCodeDefectFromExternalFailure(t *testing.T
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1602,7 +1602,7 @@ func TestCIStep_AutoFixUsesOnlySelectedFindings(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -1794,7 +1794,7 @@ func TestCIStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})

@@ -377,7 +377,7 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 		RunFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			agentCalled = true
 			os.WriteFile(filepath.Join(opts.CWD, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair completed failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 

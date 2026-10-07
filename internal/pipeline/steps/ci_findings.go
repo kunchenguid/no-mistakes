@@ -398,6 +398,20 @@ func (t ciFixTargets) description() string {
 	return desc
 }
 
+// ciIncompleteWorkOutcome adds an actionable refusal even without prior CI findings.
+func ciIncompleteWorkOutcome(findings Findings, deferredRaw, summary string) *pipeline.StepOutcome {
+	parked := types.FindingsMetadata(findings)
+	parked.Summary = summary
+	parked.Items = []Finding{{
+		ID:          pipeline.CIIncompleteWorkFindingID,
+		Severity:    types.FindingSeverityError,
+		Action:      types.ActionAskUser,
+		Description: "CI cannot complete while a Git operation is unfinished or unreadable. Inspect and resolve the operation in the run worktree, then use fix to retry CI; nothing was committed or published and the index and worktree are preserved.",
+	}}
+	encoded, _ := json.Marshal(parked)
+	return ciTerminalRepairOutcome(&pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}, findings, deferredRaw)
+}
+
 // ciRepairParkOutcome parks the step over the findings a repair round could
 // not clear, re-labelled ask-user: the fix agent has already concluded that
 // no code change is warranted, or the repair could not be settled, so

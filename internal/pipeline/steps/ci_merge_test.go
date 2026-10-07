@@ -99,7 +99,7 @@ func TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
 			os.WriteFile(filepath.Join(opts.CWD, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -172,7 +172,7 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 			agentCalled = true
 			capturedPrompt = opts.Prompt
 			os.WriteFile(filepath.Join(opts.CWD, "conflict-fix.txt"), []byte("resolved"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -275,7 +275,7 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(opts.CWD, "conflict-fix.txt"), []byte("resolved\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 
@@ -342,7 +342,7 @@ func TestCIStep_AutoFixUsesExistingPRBaseAfterConfigChanges(t *testing.T) {
 	var prompt string
 	sctx.Agent = &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		prompt = opts.Prompt
-		return &agent.Result{}, nil
+		return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 	}}
 	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "CONFLICTING")
 	host, skip := buildHost(sctx, scm.ProviderGitHub)

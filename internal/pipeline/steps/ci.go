@@ -9,6 +9,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -105,9 +106,16 @@ func (s *CIStep) Name() types.StepName { return types.StepCI }
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
 // approval gate. A PR can be merged or closed after a timeout/failure gate was
 // recorded; either terminal state supersedes the stale gate just as it does in
-// the normal CI polling loop. Open, unknown, and provider-error states remain
-// parked so reconciliation never guesses success.
+// the normal CI polling loop, unless unfinished or unreadable Git state blocks
+// reconciliation before continuity is checked. Open, unknown, and
+// provider-error states remain parked so reconciliation never guesses success.
 func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error) {
+	unfinished, err := git.UnfinishedOperation(sctx.WorkDir, func(args ...string) (string, error) {
+		return stepGitRun(sctx, args...)
+	})
+	if err != nil || unfinished {
+		return false, err
+	}
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
 	}
@@ -245,6 +253,9 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
+	if err := sctx.Ctx.Err(); err != nil {
+		return nil, err
+	}
 	refusalFindings := ""
 	if sctx.StepResultID != "" {
 		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
@@ -254,6 +265,25 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if stepResult != nil && stepResult.FindingsJSON != nil {
 			refusalFindings = *stepResult.FindingsJSON
 		}
+	}
+	unfinished := unfinishedRepairOperation(sctx)
+	if err := sctx.Ctx.Err(); err != nil {
+		return nil, err
+	}
+	if unfinished {
+		findingsJSON := sctx.PreviousFindings
+		if findingsJSON == "" {
+			findingsJSON = refusalFindings
+		}
+		var findings Findings
+		if findingsJSON != "" {
+			var err error
+			findings, err = types.ParseFindingsJSON(findingsJSON)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return ciIncompleteWorkOutcome(findings, sctx.DeferredFindings, "An unfinished or unreadable Git operation remains in the run worktree; nothing committed or published. "+s.retainRepairLeftover(sctx)), nil
 	}
 	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(refusalFindings)
 	// A fix round repairs the findings the executor selected for it, unless

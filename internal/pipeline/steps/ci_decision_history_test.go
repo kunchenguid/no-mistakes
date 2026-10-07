@@ -76,7 +76,7 @@ func newCIDecisionPromptFixture(t *testing.T) *ciDecisionPromptFixture {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			f.prompt = opts.Prompt
 			os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 		},
 	}
 

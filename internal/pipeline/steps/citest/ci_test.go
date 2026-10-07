@@ -86,13 +86,15 @@ func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Keep real Git on the step PATH before hiding provider CLIs from the
+	// ambient process. The Git shim uses a different mode from the gh mock.
+	env := stepstest.FakeCIGH(t, "MERGED", "[]")
 	hiddenPath := stepstest.FakeCLIBinDir(t)
 	stepstest.LinkFakeCLI(t, hiddenPath, "git")
 	t.Setenv("FAKE_CLI_MODE", "git-passthrough")
 	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
 	t.Setenv("PATH", hiddenPath)
 
-	env := stepstest.FakeCIGH(t, "MERGED", "[]")
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &stepstest.MockAgent{AgentName: "test"}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -166,9 +168,12 @@ func TestCIStep_ContextCancelled(t *testing.T) {
 	sctx.Ctx = ctx
 
 	step := (&steps.CIStep{})
-	_, err := step.Execute(sctx)
+	outcome, err := step.Execute(sctx)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+	if outcome != nil {
+		t.Fatalf("cancelled CI parked a gate: %#v", outcome)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
@@ -211,7 +216,7 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 	ag := &stepstest.MockAgent{
 		AgentName: "test",
 		RunFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{}, nil
+			return &agent.Result{Output: []byte(`{"summary":"accept existing repair","code_change_needed":true}`)}, nil
 		},
 	}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})

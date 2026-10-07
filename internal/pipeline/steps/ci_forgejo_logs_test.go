@@ -30,7 +30,7 @@ func TestCIFixSurfacesForgejoLogRetrievalFailures(t *testing.T) {
 				name: "test",
 				runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 					prompt = opts.Prompt
-					return &agent.Result{}, nil
+					return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 				},
 			}
 			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})

@@ -931,7 +931,7 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 		slog.Warn("preserving run worktree: cannot read run", "run_id", wt.runID, "error", err)
 		return false
 	}
-	if reason := protectedPathCleanupReason(d, run); reason != "" {
+	if reason := worktreeCleanupReason(d, run, wt.dir); reason != "" {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
@@ -965,18 +965,19 @@ func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) bool {
 // pruned) are eligible for removal. RunManager.startRun always inserts the
 // run row before creating the worktree directory, so on a single daemon a
 // "no matching run" directory is never one whose insert simply hasn't landed
-// yet - it is safe to remove immediately.
+// yet. Refusal and unfinished-operation retention are checked separately by
+// worktreeCleanupReason before removal, including for a directory with no row.
 //
 // A run marked RunCIMonitorInterrupted (the daemon restarted while monitoring
 // CI for an already-open PR, issue #361) is terminal and would otherwise leak
 // its checkout on every future restart. Such a worktree is reclaimed like any
 // other terminal-run leftover EXCEPT when it may hold unpushed work: a CI
 // auto-fix commits locally before pushing (see steps/ci_fix.go), so a crash in
-// that window leaves the only copy of the fix commit in this checkout. We
-// reclaim only when the worktree HEAD equals the head the run already pushed -
-// run.HeadSHA advances solely after a verified push, so a match proves nothing
-// local is unpushed - and fail safe to preservation on any mismatch or
-// unreadable HEAD so recoverable commits are never discarded.
+// that window leaves the only copy of the fix commit in this checkout.
+// This guard requires the worktree HEAD to equal the run's recorded head and
+// fails safe on a mismatch or unreadable HEAD. A match alone does not prove
+// publication: worktreeCleanupReason separately protects refused CI work by
+// comparing against the push binding, since custody can advance run.HeadSHA.
 func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (bool, string) {
 	run, err := d.GetRun(runID)
 	if err != nil {
@@ -1005,27 +1006,72 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 	return false, ""
 }
 
-// protectedPathCleanupReason protects only the index and working files. It must
-// not be used as a process-liveness or test-evidence retention predicate.
-func protectedPathCleanupReason(d *db.DB, run *db.Run) string {
+func worktreeCleanupReason(d *db.DB, run *db.Run, workDir string) string {
+	if _, err := os.Lstat(filepath.Join(workDir, ".git")); err == nil {
+		unfinished, err := git.UnfinishedOperation(workDir, func(args ...string) (string, error) {
+			return git.Run(context.Background(), workDir, args...)
+		})
+		if err != nil {
+			return fmt.Sprintf("cannot inspect unfinished Git operation; preserving worktree: %v", err)
+		}
+		if unfinished {
+			return "unfinished Git operation; preserving partial HEAD, index and worktree"
+		}
+	} else {
+		if !os.IsNotExist(err) {
+			return fmt.Sprintf("cannot inspect worktree Git metadata; preserving: %v", err)
+		}
+		// A missing pointer proves nothing about the remaining checkout.
+		// Only an empty or already absent directory has no work to lose.
+		entries, readErr := os.ReadDir(workDir)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return fmt.Sprintf("worktree Git metadata and contents are unreadable; preserving: %v", readErr)
+		}
+		if len(entries) != 0 {
+			return "worktree Git metadata is missing; preserving remaining contents"
+		}
+		return ""
+	}
 	if run == nil || (run.Status == types.RunCancelled && run.Error != nil && *run.Error == types.RunCancelReasonAbortedByUser) {
 		return ""
 	}
 	results, err := d.GetStepsByRun(run.ID)
 	if err != nil {
-		return fmt.Sprintf("cannot read protected-path refusals for run %s: %v", run.ID, err)
+		return fmt.Sprintf("cannot read worktree refusals for run %s: %v", run.ID, err)
 	}
 	for _, step := range results {
-		if step.FindingsJSON == nil || !pipeline.HasProtectedPathRefusal(*step.FindingsJSON) || step.Status == types.StepStatusCompleted {
+		if step.FindingsJSON == nil || (step.Error != nil && *step.Error == "aborted by user") {
 			continue
 		}
-		if step.Status == types.StepStatusSkipped && (step.Error == nil || *step.Error != types.RunCIMonitorInterruptedReason) {
+		if pipeline.HasProtectedPathRefusal(*step.FindingsJSON) && step.Status != types.StepStatusCompleted &&
+			(step.Status != types.StepStatusSkipped || (step.Error != nil && *step.Error == types.RunCIMonitorInterruptedReason)) {
+			return fmt.Sprintf("run %s has an unresolved protected-path refusal; preserving index and worktree", run.ID)
+		}
+		if step.StepName != types.StepCI {
 			continue
 		}
-		if step.Error != nil && *step.Error == "aborted by user" {
-			continue
+		findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+		if err != nil {
+			return fmt.Sprintf("cannot read CI refusals for run %s; preserving worktree: %v", run.ID, err)
 		}
-		return fmt.Sprintf("run %s has an unresolved protected-path refusal; preserving index and worktree", run.ID)
+		for _, finding := range findings.Items {
+			if finding.ActionOrDefault() != types.ActionAskUser {
+				continue
+			}
+			status, err := git.Run(context.Background(), workDir, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+			if err != nil || status != "" {
+				return fmt.Sprintf("run %s has uncommitted or unreadable CI work; preserving index and worktree", run.ID)
+			}
+			head, err := git.HeadSHA(context.Background(), workDir)
+			published := run.LastPushedSHA
+			if published == nil {
+				published = run.SubmittedHeadSHA
+			}
+			if err != nil || published == nil || head != *published {
+				return fmt.Sprintf("run %s has unpublished or unreadable CI work; preserving local commits", run.ID)
+			}
+			break
+		}
 	}
 	return ""
 }

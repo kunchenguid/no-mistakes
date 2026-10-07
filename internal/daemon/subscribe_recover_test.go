@@ -711,24 +711,24 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create orphaned worktree directories, backdated past the default
-	// worktree retention window so startup's retention-aware reap removes it
-	// deterministically rather than waiting out the window.
-	orphanDir := p.WorktreeDir("some-repo", "some-run")
-	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(filepath.Join(orphanDir, "test.txt"), []byte("orphan"), 0o644)
-	old := time.Now().Add(-2 * config.DefaultWorktreeRetention)
-	if err := os.Chtimes(orphanDir, old, old); err != nil {
-		t.Fatal(err)
-	}
-
 	d, err := db.Open(p.DB())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
+
+	// Create a clean Git worktree with no run record, backdated past the default
+	// worktree retention window so startup's retention-aware reap removes it
+	// deterministically rather than waiting out the window.
+	repo, head := setupTestGitRepo(t, p, d, "orphan-cleanup")
+	orphanDir := p.WorktreeDir(repo.ID, "some-run")
+	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), orphanDir, head); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * config.DefaultWorktreeRetention)
+	if err := os.Chtimes(orphanDir, old, old); err != nil {
+		t.Fatal(err)
+	}
 
 	runTestDaemon(t, p, d, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}

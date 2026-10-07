@@ -9,6 +9,10 @@ import (
 
 const protectedPathFindingID = "protected-path-refusal"
 
+// CIIncompleteWorkFindingID identifies unfinished or unreadable Git work that
+// CI cannot accept through an ordinary check override.
+const CIIncompleteWorkFindingID = "ci-incomplete-work"
+
 // ReviewQuestionsUnreadableFindingID is the single synthetic finding the review
 // step emits when the reviewer's question history could not be read in full.
 // It is one fixed finding rather than a class of them, so it is keyed by ID
@@ -21,6 +25,10 @@ const ReviewQuestionsUnreadableFindingID = "review-questions-unreadable"
 // HasProtectedPathRefusal identifies gates that require an explicit response.
 func HasProtectedPathRefusal(findingsJSON string) bool {
 	return hasFindingID(findingsJSON, protectedPathFindingID)
+}
+
+func HasCIIncompleteWorkRefusal(findingsJSON string) bool {
+	return hasFindingID(findingsJSON, CIIncompleteWorkFindingID)
 }
 
 // HasUnvalidatedWorkRefusal identifies a Test budget-cut gate whose worktree
@@ -95,6 +103,8 @@ func approvalRefusal(step types.StepName, findingsJSON string) string {
 		return fmt.Sprintf("cannot approve a protected-path refusal: resolve the reported edit, then use fix to retry %s; approval would skip unfinished work", step)
 	case HasUnvalidatedWorkRefusal(findingsJSON):
 		return fmt.Sprintf("cannot approve %s: the run worktree holds work no Test turn validated and approval would publish it; inspect it as the findings describe, then use fix to validate it, or abort", step)
+	case step == types.StepCI && HasCIIncompleteWorkRefusal(findingsJSON):
+		return "cannot approve incomplete CI work: resolve the unfinished or unreadable Git operation, then use fix to retry CI; index and worktree are preserved"
 	}
 	return ""
 }

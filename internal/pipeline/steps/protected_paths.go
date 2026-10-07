@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,9 +9,17 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
+// errUnfinishedOperation refuses catch-all staging over a merge or rebase the
+// pipeline did not finish: `git add -A` would mark unmerged paths resolved with
+// their conflict markers and the following commit would conclude the merge.
+var errUnfinishedOperation = errors.New("refusing to stage: an unfinished merge or rebase is in the run worktree; nothing was staged or committed")
+
 // stagePipelineChanges guards every pipeline-owned catch-all staging path,
 // including Push's leftover commit. Refusal preserves the index and worktree.
 func stagePipelineChanges(sctx *pipeline.StepContext) error {
+	if unfinishedRepairOperation(sctx) {
+		return errUnfinishedOperation
+	}
 	if len(sctx.Config.ProtectedPaths) > 0 {
 		// Disable renames so both source and destination are checked, and list
 		// individual untracked files so a protected path inside a new directory

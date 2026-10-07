@@ -436,7 +436,7 @@ func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
 	var prompt string
 	sctx.Agent = &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		prompt = opts.Prompt
-		return &agent.Result{}, nil
+		return &agent.Result{Output: []byte(`{"summary":"repair failing checks","code_change_needed":true}`)}, nil
 	}}
 	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "CONFLICTING")
 	host, skip := buildHost(sctx, scm.ProviderGitHub)
