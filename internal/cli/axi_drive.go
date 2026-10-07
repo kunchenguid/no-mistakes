@@ -1425,7 +1425,7 @@ func successReportHelp(fixes []fixRow) []string {
 }
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, ignore, instructions, addFinding, reason string
+	var action, step, findings, ignore, instructions, addFinding, reason, runID string
 	var autoYes bool
 	var wait time.Duration
 
@@ -1433,7 +1433,11 @@ func newAxiRespondCmd() *cobra.Command {
 		Use:   "respond",
 		Short: "Answer the current approval gate and continue the run",
 		Long: "Sends approve/fix/skip for the step currently awaiting approval, then\n" +
-			"blocks until the next gate, CI-ready decision point, or final outcome.\n\n" +
+			"blocks until the next gate, CI-ready decision point, or final outcome.\n" +
+			"With no flags it answers the active run on the current branch. Pass\n" +
+			"--run <id> to answer a specific run by its id from anywhere - including\n" +
+			"outside its worktree; it is refused when the id is unknown or the run is\n" +
+			"not parked at a gate, and never answers a different run.\n\n" +
 			"With --action fix, declines are explicit: every finding the gate shows must\n" +
 			"be listed in --findings or --ignore, or the response is refused and the gate\n" +
 			"stays parked. A finding an earlier round of the same step already decided may\n" +
@@ -1462,6 +1466,7 @@ func newAxiRespondCmd() *cobra.Command {
 					instructions: instructions,
 					addFinding:   addFinding,
 					reason:       reason,
+					runID:        strings.TrimSpace(runID),
 					autoYes:      autoYes,
 					wait:         wait,
 				})
@@ -1469,6 +1474,7 @@ func newAxiRespondCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip (required)")
+	cmd.Flags().StringVar(&runID, "run", "", "answer this run id directly, without resolving the current branch or worktree")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&ignore, "ignore", "", "comma-separated finding IDs to decline (with --action fix); every finding the gate shows must be in --findings or --ignore unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined")
@@ -1488,6 +1494,7 @@ type respondArgs struct {
 	instructions string
 	addFinding   string
 	reason       string
+	runID        string
 	autoYes      bool
 	wait         time.Duration
 }
@@ -1514,41 +1521,64 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			"Valid actions: approve, fix, skip")
 	}
 
-	env, err := openAxiDaemonEnv()
-	if err != nil {
-		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
-	}
-	defer env.close()
-	branch, err := git.CurrentBranch(ctx, ".")
-	if err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("get current branch: %v", err))
-	}
-
-	var active ipc.GetActiveRunResult
-	source := &ipcRunStateSource{socketPath: env.p.Socket()}
-	if err := source.callWithSlowReplyRetry(driveCtx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
-		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+	var env *axiEnv
+	runID := ra.runID
+	if runID != "" {
+		env, err = openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: true, deferGlobalConfigErrorForRunningDaemon: true, explicitRunID: runID})
+		if err != nil {
+			return emitError(cmd, 1, err.Error())
 		}
-		return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
+		defer env.close()
+	} else {
+		env, err = openAxiDaemonEnv()
+		if err != nil {
+			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		}
+		defer env.close()
+		branch, err := git.CurrentBranch(ctx, ".")
+		if err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("get current branch: %v", err))
+		}
+
+		var active ipc.GetActiveRunResult
+		source := &ipcRunStateSource{socketPath: env.p.Socket()}
+		if err := source.callWithSlowReplyRetry(driveCtx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+			if isAxiWaitElapsed(ctx, driveCtx, err) {
+				return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+			}
+			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
+		}
+		if active.Run == nil {
+			return emitError(cmd, 1, "no active run to respond to",
+				"Run `no-mistakes axi run --intent \"...\"` to start one")
+		}
+		runID = active.Run.ID
 	}
-	if active.Run == nil {
-		return emitError(cmd, 1, "no active run to respond to",
-			"Run `no-mistakes axi run --intent \"...\"` to start one")
-	}
-	runID := active.Run.ID
 
 	run, err := getRunInfo(driveCtx, env.p.Socket(), runID)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
 			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
 		}
+		if ra.runID != "" && isExactRunNotFound(err, runID) {
+			return emitError(cmd, 1, fmt.Sprintf("no run with id %s", runID),
+				"Run `no-mistakes axi status` to see the runs of this repository")
+		}
 		return emitError(cmd, 1, fmt.Sprintf("load run: %v", err))
 	}
 	if run == nil {
 		return emitError(cmd, 1, "load run: daemon returned no run")
 	}
+	if run.ID != runID {
+		return emitError(cmd, 1, fmt.Sprintf("load run: daemon returned run %s instead of the requested run %s", run.ID, runID))
+	}
 	rv := runViewFromIPC(run)
+	if ra.runID != "" {
+		if _, ok := rv.awaitingStep(); !ok {
+			return emitError(cmd, 1, fmt.Sprintf("run %s is not parked at a gate (status: %s)", runID, run.Status),
+				"Run `no-mistakes axi status --run "+runID+"` to see the run state")
+		}
+	}
 
 	stepName := types.StepName(strings.TrimSpace(ra.step))
 	if stepName == "" {

@@ -397,6 +397,7 @@ no-mistakes axi sync --adopt-published  # adopt an exactly published rebased hea
 no-mistakes axi logs --step <name> --full   # one step's recorded findings, complete summary, and full log
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
+no-mistakes axi respond --run <id> --action approve   # answer a specific run's parked gate by id (works outside its worktree)
 ```
 
 ## Reading the output

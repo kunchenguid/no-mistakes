@@ -173,6 +173,7 @@ no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --adopt-published
 no-mistakes axi respond --action approve
+no-mistakes axi respond --run <id> --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
