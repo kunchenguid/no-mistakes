@@ -179,3 +179,50 @@ func TestAxiRespond_RunFlagGateHelpCarriesTheRunID(t *testing.T) {
 		t.Fatalf("a --run call printed a follow-up respond command without the run id:\n%s", out)
 	}
 }
+
+func TestAxiRespond_RunFlagRefusesAnEmptyValueInsteadOfAnsweringTheBranchRun(t *testing.T) {
+	for _, value := range []string{"", "   "} {
+		var responded, lookedUpActive atomic.Bool
+		fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+			respond: func(context.Context, json.RawMessage) (interface{}, error) {
+				responded.Store(true)
+				return &ipc.RespondResult{OK: true}, nil
+			},
+		})
+		fx.setGetActive(func(context.Context) (*ipc.RunInfo, error) {
+			lookedUpActive.Store(true)
+			return fx.awaiting(), nil
+		})
+
+		out, err := executeCmd("axi", "respond", "--run", value, "--action", "approve", "--wait", "3s")
+		var ee *exitError
+		if !errors.As(err, &ee) || ee.code != 2 {
+			t.Fatalf("--run %q: error = %v, want exit 2\n%s", value, err, out)
+		}
+		if !strings.Contains(out, "--run requires a run id") {
+			t.Fatalf("--run %q: output missing the refusal:\n%s", value, out)
+		}
+		if responded.Load() || lookedUpActive.Load() {
+			t.Fatalf("--run %q must neither answer nor resolve the branch's run", value)
+		}
+	}
+}
+
+func TestAxiRespond_RunFlagRefusalHelpCarriesTheRunID(t *testing.T) {
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		respond: func(context.Context, json.RawMessage) (interface{}, error) {
+			return &ipc.RespondResult{OK: false, Refusal: "refused", Help: "inspect it with `no-mistakes axi status`, then retry"}, nil
+		},
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) { return fx.awaiting(), nil })
+	chdir(t, t.TempDir())
+
+	out, err := executeCmd("axi", "respond", "--run", "run-timeout", "--action", "fix", "--findings", "R1", "--wait", "3s")
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != 2 {
+		t.Fatalf("error = %v, want exit 2\n%s", err, out)
+	}
+	if !strings.Contains(out, "`no-mistakes axi status --run run-timeout`") {
+		t.Fatalf("refusal help dropped the run id:\n%s", out)
+	}
+}

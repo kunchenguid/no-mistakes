@@ -1060,12 +1060,23 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // pass driveRun returns with ciReady=true: the change is validated and the PR is
 // ready for a human to merge. The daemon keeps monitoring in the background.
 func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
+	return driveRunSelected(ctx, progress, client, socketPath, runID, autoApprove, false)
+}
+
+// driveRunSelected is driveRun for a caller that may have selected its run by
+// id, whose progress lines then name the run's clone for commands without a
+// --run form.
+func driveRunSelected(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove, explicitRun bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
 	defer reconciler.Close()
-	return driveRunWithReconciler(ctx, progress, client, reconciler, runID, autoApprove)
+	return driveRunScoped(ctx, progress, client, reconciler, runID, autoApprove, explicitRun)
 }
 
 func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
+	return driveRunScoped(ctx, progress, client, reconciler, runID, autoApprove, false)
+}
+
+func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove, explicitRun bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	pp := &progressPrinter{w: progress, seen: map[string]string{}}
 	fixedSteps := map[string]bool{}
 	pendingGate := ""
@@ -1103,7 +1114,11 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			// review conversation is off, because a review-question finding
 			// cannot exist then.
 			if pipeline.HasUnansweredReviewQuestion(gate.FindingsJSON) {
-				fmt.Fprintf(progress, "%s: an open review question needs an explicit answer (no-mistakes axi answer --question <id> --answer \"...\"); --yes leaves this gate awaiting one\n", gate.Name)
+				cloneNote := ""
+				if explicitRun {
+					cloneNote = fmt.Sprintf(" run in the clone of run %s, because `axi answer` has no --run form;", runID)
+				}
+				fmt.Fprintf(progress, "%s: an open review question needs an explicit answer (no-mistakes axi answer --question <id> --answer \"...\");%s --yes leaves this gate awaiting one\n", gate.Name, cloneNote)
 				return run, false, nil
 			}
 			// The reviewer's question history could not be read in full, so
@@ -1273,7 +1288,7 @@ func (e *respondRefusalError) Error() string { return e.refusal }
 // helpLines renders the refusal as the structured error's help entries: the
 // daemon's own next action plus the missing pending IDs the response has to
 // cover.
-func (e *respondRefusalError) helpLines() []string {
+func (e *respondRefusalError) helpLines(runID string) []string {
 	var help []string
 	if len(e.missing) > 0 {
 		help = append(help, fmt.Sprintf("Unaccounted finding IDs: %s - add them to --findings or --ignore", strings.Join(e.missing, ",")))
@@ -1283,6 +1298,11 @@ func (e *respondRefusalError) helpLines() []string {
 	}
 	if len(help) == 0 {
 		help = append(help, "Run `no-mistakes axi status` to list the gate's finding IDs")
+	}
+	if runID != "" {
+		for i := range help {
+			help[i] = strings.ReplaceAll(help[i], "`no-mistakes axi status`", "`no-mistakes axi status"+runFlag(runID)+"`")
+		}
 	}
 	return help
 }
@@ -1329,6 +1349,12 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, lead 
 func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, runID string, lead ...toon.Field) error {
 	rv := runViewFromIPC(run)
 	fields := append(append([]toon.Field{}, lead...), runObjectField(rv))
+	cloneScopedNote := func(help []string) []string {
+		if runID == "" {
+			return help
+		}
+		return append(help, fmt.Sprintf("The follow-up commands above (`no-mistakes rerun`, `axi run`, `axi sync`, and the bare `axi status`) have no --run form: run them in the clone of run %s", runID))
+	}
 	hasBranchSync := false
 	if syncField := cachedBranchSyncField(cmd, run.ID); syncField != nil {
 		fields = append(fields, *syncField)
@@ -1357,7 +1383,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		if hasBranchSync {
 			help = append(help, branchSyncAgentGuidance)
 		}
-		help = append(help, staleMonitorGuidance)
+		help = cloneScopedNote(append(help, staleMonitorGuidance))
 		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)
 		return nil
@@ -1392,7 +1418,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		}
 		help = append(help, successReportHelp(fixes)...)
 		if hasBranchSync {
-			help = append(help, branchSyncAgentGuidance)
+			help = cloneScopedNote(append(help, branchSyncAgentGuidance))
 		}
 		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)
@@ -1411,7 +1437,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 
 	help := []string{preserveGateFixCommitsGuidance}
 	if hasBranchSync {
-		help = append(help, branchSyncAgentGuidance)
+		help = cloneScopedNote(append(help, branchSyncAgentGuidance))
 	}
 	if rv.PRURL != "" {
 		help = append([]string{fmt.Sprintf("Open the PR: %s", rv.PRURL)}, help...)
@@ -1484,6 +1510,7 @@ func newAxiRespondCmd() *cobra.Command {
 					addFinding:   addFinding,
 					reason:       reason,
 					runID:        strings.TrimSpace(runID),
+					runFlagSet:   cmd.Flags().Changed("run"),
 					autoYes:      autoYes,
 					wait:         wait,
 				})
@@ -1512,11 +1539,16 @@ type respondArgs struct {
 	addFinding   string
 	reason       string
 	runID        string
+	runFlagSet   bool
 	autoYes      bool
 	wait         time.Duration
 }
 
 func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
+	if ra.runFlagSet && ra.runID == "" {
+		return emitError(cmd, 2, "--run requires a run id; an empty value would answer the current branch's run instead",
+			"Pass `--run <id>`, or omit --run to answer the active run of the current branch")
+	}
 	if err := validateAxiWait(ra.wait); err != nil {
 		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
 	}
@@ -1644,7 +1676,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	if err != nil {
 		var refusal *respondRefusalError
 		if errors.As(err, &refusal) {
-			return emitError(cmd, 2, refusal.refusal, refusal.helpLines()...)
+			return emitError(cmd, 2, refusal.refusal, refusal.helpLines(ra.runID)...)
 		}
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
@@ -1663,7 +1695,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	final, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
+	final, ciReady, err := driveRunSelected(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, ra.runID != "")
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
 			return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, "no-mistakes axi run", lead...)
