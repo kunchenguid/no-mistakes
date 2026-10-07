@@ -476,6 +476,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		botCommentReadFailed := false
 
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			return timeoutOutcome()
@@ -789,6 +790,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					if botErr != nil {
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
+						botCommentReadFailed = true
 						consecutiveBotCommentErrs++
 						sctx.Log(fmt.Sprintf("warning: could not read review bot comments: %v", botErr))
 						if consecutiveBotCommentErrs >= consecutiveCheckErrorLimit {
@@ -797,7 +799,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						}
 						break
 					}
-					consecutiveBotCommentErrs = 0
 					if len(botFindings.Items) > 0 {
 						clearCIMonitorReady(sctx)
 						sctx.DeferredFindings = ""
@@ -814,6 +815,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		}
 
+		if !botCommentReadFailed {
+			consecutiveBotCommentErrs = 0
+		}
 		if err := waitForPoll(); err != nil {
 			return nil, err
 		}

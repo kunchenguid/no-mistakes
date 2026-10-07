@@ -306,11 +306,15 @@ func reviewBotSummary(items []Finding) string {
 	parts := make([]string, 0, len(order))
 	for _, name := range order {
 		count := byCheck[name]
+		subject := fmt.Sprintf("review bot check %s needs", name)
+		if name == "" {
+			subject = "review bot comments need"
+		}
 		if count == 1 {
-			parts = append(parts, fmt.Sprintf("review bot check %s needs a decision (1 finding)", name))
+			parts = append(parts, fmt.Sprintf("%s a decision (1 finding)", subject))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("review bot check %s needs a decision (%d findings)", name, count))
+		parts = append(parts, fmt.Sprintf("%s a decision (%d findings)", subject, count))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -323,17 +327,27 @@ func reviewBotCommentsAlways(sctx *pipeline.StepContext) bool {
 }
 
 // greenReviewBotChecks returns the registered review-bot checks that
-// completed without failing. A pending or cancelled bot check is excluded: its
-// review may still be posting, and reading comments before the check
-// completes would race it.
+// completed without failing, plus a nameless entry for every registered bot
+// with no check on this head at all: a bot that has not registered its check
+// on a new head yet can still have unresolved comments from an earlier one. A
+// pending or cancelled bot check is excluded: its review may still be
+// posting, and reading comments before the check completes would race it.
 func greenReviewBotChecks(checks []scm.Check) []reviewBotCheck {
 	var green []reviewBotCheck
+	present := map[string]bool{}
 	for _, check := range checks {
-		if check.Bucket != scm.CheckBucketPass && check.Bucket != scm.CheckBucketSkip {
+		bot, ok := scm.ReviewBotForApp(check.App)
+		if !ok {
 			continue
 		}
-		if bot, ok := scm.ReviewBotForApp(check.App); ok {
+		present[bot.AppSlug] = true
+		if check.Bucket == scm.CheckBucketPass || check.Bucket == scm.CheckBucketSkip {
 			green = append(green, reviewBotCheck{check: check, bot: bot, green: true})
+		}
+	}
+	for _, bot := range scm.ReviewBots {
+		if !present[bot.AppSlug] {
+			green = append(green, reviewBotCheck{bot: bot, green: true})
 		}
 	}
 	return green
@@ -382,9 +396,9 @@ func reviewBotComments(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, ch
 
 // greenReviewBotFindings is the observation for an all-green head under
 // ci.review_bot_comments: always: the unresolved comments of every registered
-// review bot whose check completed green, through the same classifier a red
-// bot check uses. Empty when the policy is on_failure, no bot check is
-// present, or the bots left nothing unresolved. Unlike reviewBotComments it
+// review bot whose check completed green or has not registered on this head
+// yet, through the same classifier a red bot check uses. Empty when the policy
+// is on_failure or the bots left nothing unresolved. Unlike reviewBotComments it
 // returns the read error, because the caller would otherwise report
 // checks-passed over comments it never read.
 func (s *CIStep) greenReviewBotFindings(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, checks []scm.Check) (Findings, error) {

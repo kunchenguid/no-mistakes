@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // resolveReviewBotComments runs one global YAML document and one repository
@@ -84,7 +86,11 @@ func TestCIReviewBotComments_ShippedDefaultConfigKeepsTheDefault(t *testing.T) {
 	if got := Merge(cfg, repo).CI.ReviewBotComments; got != DefaultCIReviewBotComments {
 		t.Errorf("shipped default config resolves ci.review_bot_comments to %q, want %q", got, DefaultCIReviewBotComments)
 	}
-	if !strings.Contains(defaultConfigYAML, "review_bot_comments: "+DefaultCIReviewBotComments) {
-		t.Error("the shipped default config must document ci.review_bot_comments at its default")
+	var raw globalConfigRaw
+	if err := yaml.Unmarshal([]byte(defaultConfigYAML), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.CI.ReviewBotComments != DefaultCIReviewBotComments {
+		t.Errorf("the shipped default config sets ci.review_bot_comments to %q, want it documented at %q", raw.CI.ReviewBotComments, DefaultCIReviewBotComments)
 	}
 }
