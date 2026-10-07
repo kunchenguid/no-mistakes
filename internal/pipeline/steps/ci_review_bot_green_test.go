@@ -266,3 +266,53 @@ func TestCIStep_VerifyApprovalOverride_GreenReviewBotComments(t *testing.T) {
 		})
 	}
 }
+
+// A job failure observed next to a green review bot: under always the step's
+// settled observation reads the bot's comments and carries them as ask-user
+// findings beside the auto-fix job failure; under the default it carries only
+// the job failure.
+func TestCIStep_JobFailureWithGreenReviewBotFollowsThePolicy(t *testing.T) {
+	t.Parallel()
+	const checksJSON = `[{"name":"build","state":"FAILURE","bucket":"fail","app":"github-actions"},{"name":"Greptile Review","state":"SUCCESS","bucket":"pass","app":"greptile-apps","link":"https://greptile.com/"}]`
+	for _, tc := range []struct {
+		policy   string
+		wantBots int
+	}{
+		{policy: config.CIReviewBotCommentsAlways, wantBots: 1},
+		{policy: config.CIReviewBotCommentsOnFailure, wantBots: 0},
+	} {
+		t.Run(tc.policy, func(t *testing.T) {
+			t.Parallel()
+			env := append(fakeCIGH(t, "OPEN", checksJSON), greenGreptileCommentJSON)
+			sctx, ag, _, _, _ := newGreenReviewBotContext(t, tc.policy, env)
+			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}
+
+			outcome, err := step.Execute(sctx)
+			if err != nil {
+				t.Fatalf("observation error: %v", err)
+			}
+			if len(ag.calls) != 0 {
+				t.Fatalf("agent invocations = %d, want none on the observation", len(ag.calls))
+			}
+			if outcome == nil || !outcome.AutoFixable {
+				t.Fatalf("outcome = %#v, want the job failure auto-fixable", outcome)
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bots := 0
+			for _, item := range findings.Items {
+				if item.Category == types.FindingCategoryCIReviewBot {
+					bots++
+					if item.Action != types.ActionAskUser || item.File != "src/commands/api.test.ts" || item.Line != 88 {
+						t.Fatalf("bot finding = %+v, want an ask-user finding anchored to the comment", item)
+					}
+				}
+			}
+			if bots != tc.wantBots || len(findings.Items) != 1+tc.wantBots {
+				t.Fatalf("findings = %+v, want the job failure and %d review-bot finding(s)", findings.Items, tc.wantBots)
+			}
+		})
+	}
+}
