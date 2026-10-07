@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.90.0](https://github.com/kunchenguid/no-mistakes/compare/v1.89.0...v1.90.0) (2026-10-07)
+
+
+### Features
+
+* **daemon:** add macOS daemon uninstall ([#1355](https://github.com/kunchenguid/no-mistakes/issues/1355)) ([32e4de0](https://github.com/kunchenguid/no-mistakes/commit/32e4de0b3e07f794fe11707d01e4c67e236213f0))
+
+
+### Bug Fixes
+
+* **axi:** require explicit declines and preserve earlier fix decisions ([#1351](https://github.com/kunchenguid/no-mistakes/issues/1351)) ([fa8c12c](https://github.com/kunchenguid/no-mistakes/commit/fa8c12cf3f525b4715906e52d570d4c07df0ec53))
+* **ipc:** refuse an over-long daemon socket path with a clear message ([#1354](https://github.com/kunchenguid/no-mistakes/issues/1354)) ([ca7cee9](https://github.com/kunchenguid/no-mistakes/commit/ca7cee915b7744ac445fbaa7b819561a62f6f4fb))
+
 ## [1.89.0](https://github.com/kunchenguid/no-mistakes/compare/v1.88.0...v1.89.0) (2026-10-06)
 
 
