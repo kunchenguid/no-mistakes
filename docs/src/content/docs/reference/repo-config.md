@@ -777,7 +777,7 @@ A review bot can conclude its check `success` while leaving an unresolved commen
 
 Under `always`:
 
-- Comments are read only once every check on the current head has completed green, the bot's included when it has registered one, so a review still being posted is not raced. A bot that has not registered a check on the head yet has its comments read too, since its threads from an earlier head can still be unresolved. Only unresolved threads count, and the same per-gate bound applies as for a red check.
+- Comments are read only once every check on the current head has completed green, the bot's included when it has registered one, so a review still being posted is not raced. A bot that has not registered a check on the head yet has its comments read too, since its threads from an earlier head can still be unresolved. A head with no checks at all under trusted [`no_ci: true`](#no_ci) has them read the same way before it is reported ready. Only unresolved threads count, and the same per-gate bound applies as for a red check.
 - The findings never spend an `auto_fix.ci` attempt. A human decides: approve, skip, or select comments for a fix round.
 - Approving over them records the CI step as passed with an override naming the comments, never as a clean pass.
 - A comment list that cannot be read is not treated as empty: `checks-passed` is withheld, and a read that keeps failing parks for a decision.

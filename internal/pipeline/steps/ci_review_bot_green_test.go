@@ -150,6 +150,64 @@ func TestCIStep_UnregisteredReviewBotCommentsFollowThePolicy(t *testing.T) {
 	})
 }
 
+// A trusted no_ci head with no checks at all is ready only after the same
+// comment read: under always an unresolved review-bot comment withholds the
+// no-checks readiness and parks as an ask-user finding; under the default the
+// declared no-CI head is ready as before.
+func TestCIStep_NoCIZeroChecksReviewBotCommentsFollowThePolicy(t *testing.T) {
+	t.Parallel()
+	t.Run("always", func(t *testing.T) {
+		t.Parallel()
+		env := append(fakeCIGH(t, "OPEN", "[]"), greenGreptileCommentJSON)
+		sctx, ag, logs, everReady, _ := newGreenReviewBotContext(t, config.CIReviewBotCommentsAlways, env)
+		sctx.Config.NoCI = true
+		step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+			t.Fatal("an unresolved review-bot comment must park, not keep polling")
+			return nil
+		}}
+
+		outcome, err := driveCI(t, step, sctx)
+		if err != nil {
+			t.Fatalf("CI step returned error: %v", err)
+		}
+		if outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable {
+			t.Fatalf("outcome = %#v, want a blocking, non-auto-fixable park", outcome)
+		}
+		if len(ag.calls) != 0 {
+			t.Fatalf("agent invocations = %d, want none", len(ag.calls))
+		}
+		findings, err := types.ParseFindingsJSON(outcome.Findings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings.Items) != 1 {
+			t.Fatalf("findings = %+v, want one per unresolved Greptile comment", findings.Items)
+		}
+		item := findings.Items[0]
+		if item.Action != types.ActionAskUser || item.Category != types.FindingCategoryCIReviewBot || item.File != "src/commands/api.test.ts" || item.Line != 88 {
+			t.Fatalf("finding = %+v, want an ask-user ci-review-bot warning anchored to the comment", item)
+		}
+		if strings.Contains(strings.Join(*logs, "\n"), ciNoChecksPassedMsg) || *everReady {
+			t.Fatalf("logs = %v, no-checks readiness must not be reported over an unresolved bot comment", *logs)
+		}
+	})
+	t.Run("on_failure", func(t *testing.T) {
+		t.Parallel()
+		env := append(fakeCIGH(t, "OPEN", "[]"), greenGreptileCommentJSON)
+		sctx, _, logs, _, _ := newGreenReviewBotContext(t, config.CIReviewBotCommentsOnFailure, env)
+		sctx.Config.NoCI = true
+		step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return context.Canceled }}
+
+		outcome, err := step.Execute(sctx)
+		if err == nil || outcome != nil {
+			t.Fatalf("outcome = %#v, err = %v, want monitoring to continue until the poll is cancelled", outcome, err)
+		}
+		if !strings.Contains(strings.Join(*logs, "\n"), ciNoChecksPassedMsg) {
+			t.Fatalf("logs = %v, want the no-checks readiness reported", *logs)
+		}
+	})
+}
+
 // The default (on_failure, or the key unset) keeps today's behavior: a green
 // review-bot check is green, whatever comments it left.
 func TestCIStep_GreenReviewBotCommentsIgnoredByDefault(t *testing.T) {

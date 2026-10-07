@@ -761,27 +761,23 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// Applies even when no_ci is declared: registered checks are
 					// never waived.
 					lastMonitorLog = logCIMonitorStatus(sctx, ciWaitingMessage(checks), lastMonitorLog)
-				case len(checks) == 0:
+				case len(checks) == 0 && (sctx.Config == nil || !sctx.Config.NoCI):
 					// Empty forge results are ready ONLY with positive durable
 					// evidence from trusted default-branch config (no_ci: true).
 					// Without that declaration, keep waiting - delayed registration
 					// is common and must never look green. Elapsed time is not
 					// evidence; there is no grace-period promotion path.
-					if sctx.Config != nil && sctx.Config.NoCI {
-						sctx.DeferredFindings = ""
-						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
-					} else {
-						clearCIMonitorReady(sctx)
-						lastMonitorLog = ""
-						sctx.Log("no CI checks reported yet, waiting for checks to register...")
-					}
-				case allChecksPassed(checks):
+					clearCIMonitorReady(sctx)
+					lastMonitorLog = ""
+					sctx.Log("no CI checks reported yet, waiting for checks to register...")
+				case len(checks) == 0 || allChecksPassed(checks):
 					// Under ci.review_bot_comments: always, a review bot that
 					// concluded its check green, or has not registered one on
 					// this head yet, may still have left unresolved comments. They are read before the head is
 					// reported ready, and become the same ask-user findings a
 					// red bot check produces, so checks-passed is never reported
-					// over a comment nobody has looked at.
+					// over a comment nobody has looked at. A trusted no_ci head
+					// with no checks at all reads them the same way.
 					botFindings, botErr := s.greenReviewBotFindings(sctx, host, pr, checks)
 					if botErr != nil && pluginPollFailsStep(botErr) {
 						clearCIMonitorReady(sctx)
@@ -807,7 +803,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						return ciObservationOutcome(botFindings), nil
 					}
 					sctx.DeferredFindings = ""
-					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
+					passedMsg := ciChecksPassedMsg
+					if len(checks) == 0 {
+						passedMsg = ciNoChecksPassedMsg
+					}
+					lastMonitorLog = logCIMonitorStatus(sctx, passedMsg, lastMonitorLog)
 				default:
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
