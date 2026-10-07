@@ -1103,3 +1103,50 @@ func TestBuildTestingSummaryForPR_FallsBackForBinaryEvidence(t *testing.T) {
 		t.Fatalf("did not expect binary content to be embedded as text, got:\n%s", md)
 	}
 }
+
+func TestBuildPRTestingSummary_SeparatesDetailsFromAdjacentAttachments(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		artifacts string
+		want      string
+	}{
+		{
+			name:      "image after details",
+			artifacts: `{"kind":"log","label":"Inline","content":"output"},{"kind":"screenshot","label":"Shot","path":"shot.png"}`,
+			want:      "</details>\n\n![Shot](https://github.com/user-attachments/assets/shot)",
+		},
+		{
+			name:      "video after details",
+			artifacts: `{"kind":"log","label":"Inline","content":"output"},{"kind":"video","label":"Rec","path":"rec.mp4"}`,
+			want:      "</details>\n\nhttps://github.com/user-attachments/assets/rec",
+		},
+		{
+			name:      "image before details",
+			artifacts: `{"kind":"screenshot","label":"Shot","path":"shot.png"},{"kind":"log","label":"Inline","content":"output"}`,
+			want:      "![Shot](https://github.com/user-attachments/assets/shot)\n- Evidence: [Shot](https://github.com/example/widgets/blob/abc123/shot.png)\n\n<details>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[` + tt.artifacts + `]}`
+			steps := []*db.StepResult{
+				{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+			}
+			rounds := map[string][]*db.StepRound{
+				"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+			}
+			attachments := map[string]string{
+				"shot.png": "https://github.com/user-attachments/assets/shot",
+				"rec.mp4":  "https://github.com/user-attachments/assets/rec",
+			}
+
+			md := buildPRTestingSummary(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil, scm.ProviderUnknown, attachments)
+
+			if !strings.Contains(md, tt.want) {
+				t.Errorf("expected %q, got:\n%s", tt.want, md)
+			}
+		})
+	}
+}
