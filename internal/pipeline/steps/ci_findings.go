@@ -27,7 +27,8 @@ const (
 type reviewBotCheck struct {
 	check scm.Check
 	bot   scm.ReviewBot
-	// green marks a bot check that completed without failing. It is only
+	// green marks a bot check that completed without failing, or a
+	// registered bot with no check on the head yet. It is only
 	// observed under ci.review_bot_comments: always, and unlike a red check
 	// it produces nothing when the bot left no unresolved comment.
 	green bool
@@ -422,8 +423,8 @@ func (s *CIStep) greenReviewBotFindings(sctx *pipeline.StepContext, host scm.Hos
 }
 
 // reviewBotCommentsReadFailureOutcome parks the step when, under
-// ci.review_bot_comments: always, the unresolved comments of a green review
-// bot check could not be read on several consecutive polls. Reporting
+// ci.review_bot_comments: always, the unresolved comments of a green or
+// not-yet-registered review bot could not be read on several consecutive polls. Reporting
 // checks-passed without reading them is what the policy exists to prevent,
 // and waiting silently would spin until ci_timeout.
 func reviewBotCommentsReadFailureOutcome(err error) *pipeline.StepOutcome {

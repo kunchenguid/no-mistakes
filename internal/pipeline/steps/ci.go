@@ -777,8 +777,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					}
 				case allChecksPassed(checks):
 					// Under ci.review_bot_comments: always, a review bot that
-					// concluded its check green may still have left unresolved
-					// comments on this head. They are read before the head is
+					// concluded its check green, or has not registered one on
+					// this head yet, may still have left unresolved comments. They are read before the head is
 					// reported ready, and become the same ask-user findings a
 					// red bot check produces, so checks-passed is never reported
 					// over a comment nobody has looked at.

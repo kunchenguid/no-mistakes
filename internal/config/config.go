@@ -102,8 +102,9 @@ const (
 	// CIReviewBotCommentsOnFailure reads a registered review bot's unresolved
 	// comments only when that bot's check failed.
 	CIReviewBotCommentsOnFailure = "on_failure"
-	// CIReviewBotCommentsAlways reads them whenever the bot's check completed
-	// for the current head, green included.
+	// CIReviewBotCommentsAlways also reads them when the bot's check completed
+	// green on the current head, or has not registered on it yet once every
+	// other check is green.
 	CIReviewBotCommentsAlways = "always"
 	// DefaultCIReviewBotComments is the policy the CI step uses when
 	// ci.review_bot_comments is unset. It is "on_failure" because reading a
@@ -723,7 +724,8 @@ type CI struct {
 	// bot check never blocks checks-passed.
 	//
 	// "always": also when the bot's check completed green on the current
-	// head. Its unresolved comments then become the same ask-user findings a
+	// head, or has not registered on it yet once every other check is green.
+	// Its unresolved comments then become the same ask-user findings a
 	// red check produces, and the step parks for a decision instead of
 	// reporting checks-passed. A review bot can conclude its check success
 	// while leaving an unresolved comment, most often on the pipeline's own
@@ -1509,8 +1511,9 @@ ci:
   # When the CI step reads a registered review bot's (Greptile's) unresolved
   # review comments. "on_failure" (default) reads them only when the bot's
   # check failed. "always" also reads them when the bot's check completed green
-  # on the current head, so an unresolved bot comment parks the step for a
-  # decision instead of reporting checks-passed. A repository that sets
+  # on the current head, or has not registered on it yet once every other check
+  # is green, so an unresolved bot comment parks the step for a decision
+  # instead of reporting checks-passed. A repository that sets
   # ci.review_bot_comments on its own default branch overrides this value.
   review_bot_comments: on_failure
 
