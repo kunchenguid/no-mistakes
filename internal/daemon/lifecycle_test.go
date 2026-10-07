@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,37 +185,8 @@ func TestIsRunningFailsFastWhenSocketAcceptsButDoesNotRespond(t *testing.T) {
 		t.Skip("unix socket setup is platform-specific")
 	}
 
-	tmpDir, err := os.MkdirTemp("", "dtest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	p := paths.WithRoot(tmpDir)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-	ln, err := net.Listen("unix", p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		accepted <- conn
-	}()
-	t.Cleanup(func() {
-		select {
-		case conn := <-accepted:
-			_ = conn.Close()
-		default:
-		}
-	})
+	t.Setenv("NM_DAEMON_CONNECT_TIMEOUT", "200ms")
+	p := silentDaemonSocket(t)
 
 	type result struct {
 		alive bool
@@ -236,6 +208,120 @@ func TestIsRunningFailsFastWhenSocketAcceptsButDoesNotRespond(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("IsRunning hung on a silent daemon socket")
+	}
+}
+
+// silentDaemonSocket listens on the daemon socket and accepts a connection
+// that never answers, the way a wedged or heavily descheduled daemon looks to
+// a client.
+func silentDaemonSocket(t *testing.T) *paths.Paths {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	t.Cleanup(func() {
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+	})
+	return p
+}
+
+// A daemon on a heavily loaded host answers health late but answers. Issue
+// #1167: the health reply had a hardcoded 250ms deadline, so a live daemon
+// was reported as broken even though daemon_connect_timeout allowed seconds.
+func TestIsRunningWaitsForASlowHealthReplyWithinTheConnectTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+	t.Setenv("NM_DAEMON_CONNECT_TIMEOUT", "5s")
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
+		time.Sleep(600 * time.Millisecond)
+		return &ipc.HealthResult{Status: "ok"}, nil
+	})
+	if err := srv.Listen(p.Socket()); err != nil {
+		t.Fatal(err)
+	}
+	go srv.ServeReady()
+	t.Cleanup(srv.Close)
+
+	alive, err := IsRunning(p)
+	if err != nil {
+		t.Fatalf("IsRunning on a slow but healthy daemon: %v", err)
+	}
+	if !alive {
+		t.Fatal("slow but healthy daemon must be reported running")
+	}
+}
+
+// A daemon that accepted the connection is alive, so the pre-run probe must
+// not tell the caller to run `daemon start`: on a shared daemon that restart
+// stops every other in-flight run (#1167).
+func TestEnsureDaemonReportsASlowHealthReplyWithoutSuggestingARestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+	t.Setenv("NM_DAEMON_CONNECT_TIMEOUT", "100ms")
+	p := silentDaemonSocket(t)
+
+	originalStart := daemonStart
+	started := false
+	daemonStart = func(*paths.Paths) error {
+		started = true
+		return nil
+	}
+	t.Cleanup(func() { daemonStart = originalStart })
+
+	err := EnsureDaemon(p)
+	if err == nil {
+		t.Fatal("EnsureDaemon returned nil for a daemon that never answered health")
+	}
+	if started {
+		t.Fatal("EnsureDaemon started a second daemon beside one that accepted the connection")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "daemon start") {
+		t.Fatalf("EnsureDaemon error = %q, must not suggest restarting a live daemon", msg)
+	}
+	for _, want := range []string{"did not reply within 100ms", "daemon_connect_timeout", "NM_DAEMON_CONNECT_TIMEOUT"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("EnsureDaemon error = %q, want it to mention %q", msg, want)
+		}
 	}
 }
 

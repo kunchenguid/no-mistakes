@@ -548,7 +548,7 @@ func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 	defer client.Close()
 
 	var result ipc.HealthResult
-	if err := client.CallWithTimeout(ipc.MethodHealth, &ipc.HealthParams{}, &result, ipc.DefaultDialTimeout); err != nil {
+	if err := client.CallWithTimeout(ipc.MethodHealth, &ipc.HealthParams{}, &result, ipc.HealthTimeout(p.Socket())); err != nil {
 		return false, err
 	}
 	return result.Status == "ok", nil
@@ -895,6 +895,12 @@ func upsertEnv(env []string, key, value string) []string {
 func EnsureDaemon(p *paths.Paths) error {
 	alive, err := daemonHealthCheck(p)
 	if err != nil {
+		if ipc.IsCallTimeout(err) {
+			// The daemon accepted the connection, so it is alive and only slow
+			// to answer. Restarting the shared daemon would stop every
+			// in-flight run, so point at the wait instead (#1167).
+			return fmt.Errorf("%w; the daemon is running but slow to respond (the host may be overloaded) - retry, or raise daemon_connect_timeout in config.yaml or NM_DAEMON_CONNECT_TIMEOUT", err)
+		}
 		return fmt.Errorf("%w (run 'no-mistakes daemon start' to recover)", err)
 	}
 	if alive {
