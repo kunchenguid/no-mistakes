@@ -211,8 +211,8 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, err
 	if reviewBotCommentsAlways(sctx) {
 		// Review-bot identity (scm.Check.App) comes from the head commit's
 		// rollup, which is read only when the head is named, exactly as the
-		// polling loop names it. Without it no check is a review bot and a
-		// green bot's comments would go unread.
+		// polling loop names it. Without it no check is a review bot, so a
+		// green bot's comments would be attributed to no check.
 		pr.HeadSHA = sctx.Run.HeadSHA
 	}
 	checks, err := host.GetChecks(ctx, pr)

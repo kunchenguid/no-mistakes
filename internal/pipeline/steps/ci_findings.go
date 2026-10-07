@@ -51,10 +51,12 @@ type ciIssues struct {
 	reruns func(string) int
 	// botComments are the unresolved review-thread comments left by
 	// registered review bots, fetched only when such a bot's check is red,
-	// or, under ci.review_bot_comments: always, when it completed green.
+	// or, under ci.review_bot_comments: always, when it completed green or
+	// has not registered on the head yet.
 	botComments []scm.ReviewComment
-	// greenBots asks the classifier to also read the registered review-bot
-	// checks that completed green (ci.review_bot_comments: always).
+	// greenBots asks the classifier to also read the registered review bots
+	// whose check completed green or has not registered on the head yet
+	// (ci.review_bot_comments: always).
 	greenBots bool
 }
 
@@ -72,7 +74,8 @@ type ciIssues struct {
 //     becomes one ask-user warning per unresolved bot comment, anchored to
 //     the file and line the comment is about; under
 //     ci.review_bot_comments: always the same rule covers a bot check that
-//     completed green, whose unresolved comments are findings too;
+//     completed green or has not registered yet, whose unresolved comments
+//     are findings too;
 //   - a provider-attributed outcome no rerun will replace is an ask-user
 //     warning, exactly as before findings existed: nothing a fix agent does
 //     can clear it.
@@ -320,8 +323,8 @@ func reviewBotSummary(items []Finding) string {
 }
 
 // reviewBotCommentsAlways reports whether ci.review_bot_comments asks the
-// CI step to read a review bot's comments when its check completed green, not
-// only when it failed.
+// CI step to read a review bot's comments when its check completed green or has
+// not registered on the head yet, not only when it failed.
 func reviewBotCommentsAlways(sctx *pipeline.StepContext) bool {
 	return sctx.Config != nil && sctx.Config.CI.ReviewBotComments == config.CIReviewBotCommentsAlways
 }
@@ -372,9 +375,10 @@ func readReviewBotComments(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 
 // reviewBotComments fetches the unresolved review-bot comments when a
 // registered review bot's check is red, or under ci.review_bot_comments:
-// always when one completed green, and the host can supply them. It is best
-// effort: an unreadable comment list leaves the bot's check finding without
-// its comments rather than failing the observation.
+// always when one completed green or has not registered yet, and the host
+// can supply them. It is best effort: an unreadable comment list leaves the
+// bot's check finding without its comments rather than failing the
+// observation.
 func reviewBotComments(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, checks []scm.Check) []scm.ReviewComment {
 	wanted := reviewBotCommentsAlways(sctx) && len(greenReviewBotChecks(checks)) > 0
 	for _, check := range checks {
