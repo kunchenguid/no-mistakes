@@ -438,8 +438,11 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			previousArtifact = rendered
 		}
 		if outcome := buildTestingOutcomeLine(line, stepRounds); shouldRenderTestingOutcome(opts, wroteSummary, outcome) {
-			b.WriteString("- ")
-			b.WriteString(outcome)
+			outcomeLine := "- " + outcome
+			if needsArtifactBlockSeparator(previousArtifact, outcomeLine) {
+				b.WriteString("\n")
+			}
+			b.WriteString(outcomeLine)
 			b.WriteString("\n")
 		}
 

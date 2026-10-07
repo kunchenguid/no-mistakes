@@ -1109,8 +1109,15 @@ func TestBuildPRTestingSummary_SeparatesDetailsFromAdjacentAttachments(t *testin
 	tests := []struct {
 		name      string
 		artifacts string
+		status    types.StepStatus
 		want      string
 	}{
+		{
+			name:      "outcome after details",
+			artifacts: `{"kind":"log","label":"Inline","content":"output"}`,
+			status:    types.StepStatusFailed,
+			want:      "</details>\n\n- Outcome:",
+		},
 		{
 			name:      "image after details",
 			artifacts: `{"kind":"log","label":"Inline","content":"output"},{"kind":"screenshot","label":"Shot","path":"shot.png"}`,
@@ -1131,8 +1138,12 @@ func TestBuildPRTestingSummary_SeparatesDetailsFromAdjacentAttachments(t *testin
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[` + tt.artifacts + `]}`
+			status := tt.status
+			if status == "" {
+				status = types.StepStatusCompleted
+			}
 			steps := []*db.StepResult{
-				{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+				{ID: "s1", StepName: types.StepTest, Status: status, FindingsJSON: &findings},
 			}
 			rounds := map[string][]*db.StepRound{
 				"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
