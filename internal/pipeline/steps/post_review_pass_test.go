@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -25,7 +26,15 @@ func postReviewPushFixture(t *testing.T) (sctx *pipeline.StepContext, dir, upstr
 	sctx = newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	setupGateMirror(t, sctx)
+	// Keep this fixture's gate mirror local: setupGateMirror changes NM_HOME
+	// process-wide and prevents these independent git-backed cases from running
+	// in parallel on the process-spawn-bound Windows steps shard.
+	gateDir := paths.WithRoot(t.TempDir()).RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
 	recordReviewApproval(t, sctx, headSHA)
 	return sctx, dir, upstream, headSHA
 }
@@ -47,6 +56,7 @@ func commitAfterReview(t *testing.T, sctx *pipeline.StepContext, dir, file, cont
 }
 
 func TestPushStep_PostReviewPassStopsUnreviewedCommitsUntilReviewed(t *testing.T) {
+	t.Parallel()
 	sctx, dir, upstream, approvedHead := postReviewPushFixture(t)
 	sctx.Config.Review.PostReviewPass = true
 	documentHead := commitAfterReview(t, sctx, dir, "README.md", "# Feature\n")
@@ -79,6 +89,7 @@ func TestPushStep_PostReviewPassStopsUnreviewedCommitsUntilReviewed(t *testing.T
 // Push's own leftover commit is a commit after Review too, and it must be
 // recorded before the pass so the pass's range reaches it.
 func TestPushStep_PostReviewPassCoversPushsOwnLeftoverCommit(t *testing.T) {
+	t.Parallel()
 	sctx, dir, upstream, approvedHead := postReviewPushFixture(t)
 	sctx.Config.Review.PostReviewPass = true
 	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("left behind by an agent\n"), 0o644); err != nil {
@@ -112,6 +123,7 @@ func TestPushStep_PostReviewPassCoversPushsOwnLeftoverCommit(t *testing.T) {
 }
 
 func TestPushStep_PostReviewPassPublishesWhenNotRequired(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		setup func(t *testing.T, sctx *pipeline.StepContext)
@@ -130,6 +142,7 @@ func TestPushStep_PostReviewPassPublishesWhenNotRequired(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			sctx, dir, upstream, _ := postReviewPushFixture(t)
 			tc.setup(t, sctx)
 			documentHead := commitAfterReview(t, sctx, dir, "README.md", "# Feature\n")
@@ -152,6 +165,7 @@ func TestPushStep_PostReviewPassPublishesWhenNotRequired(t *testing.T) {
 // is that head, its coverage contract lists only the files those commits
 // changed, and the reviewer is told the commits are pipeline-authored.
 func TestReviewStep_PostReviewPassReviewsOnlyCommitsAfterTheApprovedHead(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, approvedHead := setupGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Feature\n"), 0o644); err != nil {
 		t.Fatal(err)
