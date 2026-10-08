@@ -392,6 +392,35 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 	return scm.PRContent{Title: *parsed.Title, Body: *parsed.Body}, nil
 }
 
+var _ scm.MarkdownRenderer = (*Host)(nil)
+
+// RenderMarkdown renders text to HTML with GitHub's own GFM renderer
+// (POST /markdown), in the context of the PR's repository so references
+// resolve as they do in the PR body. The request travels on stdin, so a body
+// of any size fits.
+func (h *Host) RenderMarkdown(ctx context.Context, text string) (string, error) {
+	request := map[string]string{"text": text, "mode": "gfm"}
+	if repo := h.repoSlug(); repo != "" {
+		request["context"] = repo
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return "", fmt.Errorf("encode gh api markdown request: %w", err)
+	}
+	args := []string{"api"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, "--method", "POST", "markdown", "--input", "-")
+	cmd := h.cmd(ctx, "gh", args...)
+	cmd.Stdin = bytes.NewReader(payload)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api markdown: %w", err)
+	}
+	return string(out), nil
+}
+
 func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
 	selector, err := prSelector(pr)
 	if err != nil {

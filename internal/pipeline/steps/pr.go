@@ -179,6 +179,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, err
 			}
 		} else {
+			// This update replaces the whole body. Carry the author's own
+			// closing lines over so it never silently unlinks an issue (#763).
+			if carriesClosingLines(provider) {
+				sctx.CarriedClosingLines, err = carriedClosingLines(ctx, sctx, host, live.Body)
+				if err != nil {
+					return nil, err
+				}
+			}
 			content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 			if err != nil {
 				return nil, err
@@ -187,6 +195,29 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, err
 			}
 			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+				return nil, err
+			}
+			if reader, ok := host.(scm.PRContentReader); ok && carriesClosingLines(provider) {
+				// Drafting takes a while; the author may have added or removed
+				// a closing line meanwhile. The latest body decides.
+				latest, err := reader.GetPRContent(ctx, existing)
+				if err != nil {
+					return nil, fmt.Errorf("re-read existing PR before publication: %w", err)
+				}
+				carried, err := carriedClosingLines(ctx, sctx, host, latest.Body)
+				if err != nil {
+					return nil, err
+				}
+				content.Body, err = refreshCarriedClosingLines(sctx, content.Body, carried, bodyLimit)
+				if err != nil {
+					return nil, err
+				}
+				if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
+					return nil, err
+				}
+			}
+			content.Body, err = sealClosingLedger(ctx, sctx, host, provider, content.Body)
+			if err != nil {
 				return nil, err
 			}
 			updated, err = host.UpdatePR(ctx, existing, scm.PRContent(content))
@@ -218,6 +249,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
 		return nil, err
+	}
+	if template == "" {
+		content.Body, err = sealClosingLedger(ctx, sctx, host, provider, content.Body)
+		if err != nil {
+			return nil, err
+		}
 	}
 	sctx.Log("creating pull request...")
 	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent(content))

@@ -803,6 +803,34 @@ func TestGetPRContentReadsTitleAndBody(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownPostsTheBodyInTheRepositoryContext(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --hostname ghe.example.com --method POST markdown --input -": {
+			wantStdin: `{"context":"test/repo","mode":"gfm","text":"Closes #4\n- x"}`,
+			stdout:    "<p>Closes #4</p>\n",
+		},
+	}), nil, "ghe.example.com", "ghe.example.com/test/repo")
+
+	got, err := host.RenderMarkdown(context.Background(), "Closes #4\n- x")
+	if err != nil {
+		t.Fatalf("RenderMarkdown() error = %v", err)
+	}
+	if got != "<p>Closes #4</p>\n" {
+		t.Fatalf("RenderMarkdown() = %q", got)
+	}
+}
+
+func TestRenderMarkdownFailsClosed(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method POST markdown --input -": {stderr: "HTTP 502", code: 1},
+	}), nil, "", "test/repo")
+	if _, err := host.RenderMarkdown(context.Background(), "Closes #4"); err == nil {
+		t.Fatal("RenderMarkdown() on a failed call: expected error, got nil")
+	}
+}
+
 func TestGetPRContentFailsClosedWithoutIdentity(t *testing.T) {
 	t.Parallel()
 	host := New(githubTestCmdFactory(nil), nil, "", "test/repo")

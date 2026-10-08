@@ -18,10 +18,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/fakegfm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
 )
 
@@ -71,6 +73,9 @@ func run(argv []string) int {
 // returns non-zero (so SCM detection treats GitHub as unauthenticated)
 // and any other subcommand prints a clear error.
 func runGhStub(args []string) int {
+	if os.Getenv("FAKEAGENT_GH_MODE") != "" && len(args) >= 2 && args[0] == "api" && slices.Contains(args, "markdown") {
+		return runGhMarkdownStub()
+	}
 	switch os.Getenv("FAKEAGENT_GH_MODE") {
 	case "fork-pr":
 		return runGhForkPRStub(args)
@@ -83,6 +88,29 @@ func runGhStub(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "fakeagent gh: subcommand not implemented in e2e stub: %v\n", args)
 	return 1
+}
+
+// runGhMarkdownStub answers `gh api markdown --input -` with the fake GFM
+// renderer (internal/fakegfm), standing in for GitHub's own. A
+// "<FAKEAGENT_GH_STATE>.render-fail" file makes it fail, so a journey can
+// break the renderer mid-run.
+func runGhMarkdownStub() int {
+	if state := os.Getenv("FAKEAGENT_GH_STATE"); state != "" {
+		if _, err := os.Stat(state + ".render-fail"); err == nil {
+			fmt.Fprintln(os.Stderr, "fakeagent gh markdown: renderer unavailable (e2e knob)")
+			return 1
+		}
+	}
+	var request struct {
+		Text    string `json:"text"`
+		Context string `json:"context"`
+	}
+	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent gh markdown: %v\n", err)
+		return 1
+	}
+	fmt.Print(fakegfm.Render(request.Text, request.Context))
+	return 0
 }
 
 type ghStubInvocation struct {

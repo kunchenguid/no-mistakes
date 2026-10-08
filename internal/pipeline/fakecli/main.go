@@ -13,10 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/kunchenguid/no-mistakes/internal/fakegfm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
 )
 
@@ -515,6 +517,9 @@ func fakeCIGHReconcileHandler(args []string) {
 }
 
 func fakeGHHandlePRContentCommands(args []string, joined string) {
+	if len(args) > 0 && args[0] == "api" && slices.Contains(args, "markdown") {
+		fakeGHRenderMarkdown()
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json title,body") {
 		if raw, ok := os.LookupEnv("FAKE_CLI_PR_CONTENT_JSON"); ok {
 			fmt.Println(raw)
@@ -549,6 +554,25 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 		fakeGHStorePRBody(args)
 		os.Exit(0)
 	}
+}
+
+// fakeGHRenderMarkdown answers `gh api markdown --input -` with the fake GFM
+// renderer (internal/fakegfm). FAKE_CLI_MARKDOWN_ERR fails the call.
+func fakeGHRenderMarkdown() {
+	if msg := os.Getenv("FAKE_CLI_MARKDOWN_ERR"); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(1)
+	}
+	var request struct {
+		Text    string `json:"text"`
+		Context string `json:"context"`
+	}
+	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Print(fakegfm.Render(request.Text, request.Context))
+	os.Exit(0)
 }
 
 func fakeGHStorePRBody(args []string) {
