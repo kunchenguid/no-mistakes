@@ -23,7 +23,7 @@ import (
 const logTailLines = 40
 
 func newAxiStatusCmd() *cobra.Command {
-	var runID string
+	var runID, branch string
 	cmd := &cobra.Command{
 		Use:           "status",
 		Short:         "Show a current-branch or explicitly selected run in detail",
@@ -31,10 +31,15 @@ func newAxiStatusCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("branch") {
+				return runAxiBranchStatus(cmd, branch)
+			}
 			return runAxiStatus(cmd, runID)
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "inspect a specific run ID (default: current branch's active or most recent)")
+	cmd.Flags().StringVar(&branch, "branch", "", "read the newest run's publication and complete inventory for this exact repository branch")
+	cmd.MarkFlagsMutuallyExclusive("run", "branch")
 	return cmd
 }
 
