@@ -460,11 +460,7 @@ review:
   post_review_pass: true
 ```
 
-Steps after Review can commit: Document edits, Lint and Test repairs, a repository gate's repair, and Push's own formatter commit. **Off (the default)**, Push publishes any descendant of the review-approved commit, so a run can report `passed` while the head it published carries commits Review never saw; [`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status) counts them as `post_review_commits`.
-
-**On**, Push stops before publishing whenever the head it would publish is past the review-approved commit, and the Review step runs a [post-review pass](/no-mistakes/reference/pipeline-steps/#post-review-pass) over exactly those commits, with its ordinary findings, gate, and `auto_fix.review` rounds. Push publishes once that pass completes and the approval has advanced to the head it reviewed. The rule is deterministic: any step's commit triggers it, whatever files it touched. Test, Document, and Lint are not re-run, and the core step order is unchanged.
-
-The trade-off is cost against coverage. Each pass is another review turn, plus fix rounds when it finds something, on every run whose later steps committed. Like the other review settings it is trusted-only: a pushed branch cannot switch off the review of its own pipeline-authored commits, nor opt itself in.
+This trusted opt-in controls the Push/Review handoff for later pipeline-authored commits. See [Post-review pass](/no-mistakes/reference/pipeline-steps/#post-review-pass) for its scope, recovery, skip behavior, and interactions with CI, status, and evaluation.
 
 ### review.path_instructions
 

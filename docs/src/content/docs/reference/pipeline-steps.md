@@ -154,7 +154,7 @@ Follow-up review passes use the history to avoid re-reporting user-ignored findi
 
 ### Post-review pass
 
-Steps after Review can commit: Document edits, Lint and Test repairs, a repository gate's repair, and Push's own formatter or leftover-change commit.
+Before Push, later steps can commit: Document edits, Lint and Test repairs, a repository gate's repair, and Push's own formatter or leftover-change commit.
 By default Push publishes any descendant of the review-approved commit, so those commits reach the pull request without review; [`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status) counts them as `post_review_commits`.
 
 With trusted [`review.post_review_pass: true`](/no-mistakes/reference/repo-config/#reviewpost_review_pass), Push stops before publishing whenever the head it would publish is past the review-approved commit, and the Review step runs again over exactly the commits after that approval:
