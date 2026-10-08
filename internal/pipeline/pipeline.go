@@ -89,6 +89,11 @@ type StepContext struct {
 	UncertifiedFromSHA     string
 	UncertifiedToSHA       string
 	UncertifiedSourceRunID string
+	// PostReviewPassFrom is the run's review-approved head while the review
+	// step runs a post-review pass (review.post_review_pass): the pass reviews
+	// exactly the commits after it, so it is the pass's base commit. Empty on
+	// every ordinary review and on every other step.
+	PostReviewPassFrom string
 	// UncertifiedPriorRounds are review rounds from the source run that left
 	// the uncertified range. Nil when none apply.
 	UncertifiedPriorRounds []*db.StepRound
@@ -169,6 +174,12 @@ type StepOutcome struct {
 	// CI repairs use it when policy requires revalidation or continuity cannot be
 	// proven, sending the new local head back through review before push.
 	RestartFrom types.StepName
+	// PostReviewPass asks the executor to review the commits after the run's
+	// review-approved head before this step runs again. Only Push sets it, under
+	// review.post_review_pass, when the head it is about to publish has moved
+	// past that approval. Unlike RestartFrom it re-runs Review alone: Test,
+	// Document, and Lint keep their results.
+	PostReviewPass bool
 	// FixSummary, when non-empty, records the result of a fix attempt.
 	FixSummary      string
 	RepairPublished bool

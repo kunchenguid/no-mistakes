@@ -74,6 +74,21 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
+	approvedHead, err := postReviewPassFrom(sctx, headBeingPushed)
+	if err != nil {
+		return nil, err
+	}
+	if approvedHead != "" {
+		// Record the commit made above first, or the pass would review a range
+		// that stops short of it.
+		if newHeadSHA != "" {
+			if err := recordAgentFixHead(sctx, s.Name(), newHeadSHA); err != nil {
+				return nil, err
+			}
+		}
+		sctx.Log(fmt.Sprintf("head %s has commits after review-approved head %s; reviewing them before publishing (review.post_review_pass)", shortObjectID(headBeingPushed), shortObjectID(approvedHead)))
+		return &pipeline.StepOutcome{PostReviewPass: true}, nil
+	}
 	// This run's own review/test/document have already completed by now (see
 	// AllSteps' fixed order), so these are honest statuses to attest for the
 	// head about to be pushed - see attestHeadBeforePush.
@@ -352,6 +367,41 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 		}
 	}
 	return nil
+}
+
+// postReviewPassFrom returns the review-approved head when review.post_review_pass
+// requires Review to cover the commits after it before headBeingPushed is
+// published, or "" when publication may proceed. The rule is deterministic: the
+// head moved past the durable approval, whichever step committed. A review step
+// that was skipped - by --skip, or by the operator at the pass's own gate - is a
+// person's explicit decision and asks for no pass; a missing approval is left
+// to assertReviewApprovedPushHead, which refuses the push.
+func postReviewPassFrom(sctx *pipeline.StepContext, headBeingPushed string) (string, error) {
+	if sctx.Config == nil || !sctx.Config.Review.PostReviewPass {
+		return "", nil
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return "", fmt.Errorf("load durable review approval before push: %w", err)
+	}
+	if run == nil || run.ReviewApprovedHeadSHA == nil {
+		return "", nil
+	}
+	approvedHead := strings.TrimSpace(*run.ReviewApprovedHeadSHA)
+	if approvedHead == "" || strings.EqualFold(approvedHead, headBeingPushed) {
+		return "", nil
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return "", fmt.Errorf("load step results before push: %w", err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepReview && step.Status == types.StepStatusSkipped {
+			sctx.Log("review was skipped; publishing without a post-review pass")
+			return "", nil
+		}
+	}
+	return approvedHead, nil
 }
 
 // assertReviewApprovedPushHead refuses to publish a head that is not the

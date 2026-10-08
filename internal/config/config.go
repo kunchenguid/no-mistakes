@@ -457,6 +457,20 @@ type ReviewRaw struct {
 	// A plain bool so a missing key or a YAML/JSON null is falsy and preserves
 	// today's behavior, exactly like no_ci and disable_project_settings.
 	Conversation bool `yaml:"conversation"`
+	// PostReviewPass makes Push refuse to publish commits Review never saw.
+	// When the head Push is about to publish has moved past the run's
+	// review-approved head - a Document edit, a Lint or Test repair, a gate
+	// repair, Push's own formatter commit - the review step reviews exactly
+	// those commits before Push runs again, with its normal findings, gate,
+	// and auto_fix.review handling, and the approval then advances to the new
+	// head. Test, Document, and Lint are not re-run, and the step order is
+	// unchanged. Off (the default), Push publishes any descendant of the
+	// review-approved head, as it always has.
+	//
+	// Trusted-only like the rest of this block: a pushed branch must not be
+	// able to switch off the review of its own pipeline-authored commits, nor
+	// to buy itself the extra pass a maintainer did not ask to pay for.
+	PostReviewPass bool `yaml:"post_review_pass"`
 	// PathInstructions scope extra review guidance to the paths a change
 	// actually touches. The review step appends the blocks whose glob matches
 	// at least one changed file; a run that touches nothing matching leaves
@@ -941,7 +955,11 @@ type Review struct {
 	// mid-pass. It gates the whole protocol: the prompt section, the
 	// conversation files, the question findings that park the gate, the
 	// reviewer session a finalize turn resumes, and `no-mistakes axi answer`.
-	Conversation     bool
+	Conversation bool
+	// PostReviewPass is true when Push must have Review cover every commit
+	// after the review-approved head before publishing. See
+	// ReviewRaw.PostReviewPass.
+	PostReviewPass   bool
 	PathInstructions []PathInstruction
 	// GlobalPathInstructions come from the global config's review block.
 	GlobalPathInstructions []PathInstruction
@@ -3656,6 +3674,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// replace or remove the repository's.
 		Review: Review{
 			Conversation:           repo.Review.Conversation,
+			PostReviewPass:         repo.Review.PostReviewPass,
 			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
 			GlobalPathInstructions: resolvePathInstructions(global.Review.PathInstructions),
 		},

@@ -4,7 +4,7 @@ title: Evaluation toolkit
 
 `no-mistakes eval` is a **local-only** toolkit for comparing review candidates against review passes your own pipeline has already recorded.
 
-The corpus collects itself: eligible finished runs' decided review passes become cases, so the sets are populated by the time you want to compare something. Replay and reporting stay explicit commands you run.
+The corpus collects itself: eligible finished runs' decided replayable Review passes become cases, so the sets are populated by the time you want to compare something. A post-review pass and any later rounds are excluded because replay starts from the run's base. Replay and reporting stay explicit commands you run.
 
 The `eval` commands do not start or use the shared daemon, alter a gate, emit remote telemetry, push a branch, open a PR, or run CI. Cases, source findings, decisions, candidate outputs, and metrics are stored only under `<NM_HOME>/eval/`; there is no export, sharing, synchronization, or remote case store.
 
@@ -14,7 +14,7 @@ When `eval sets`, `eval report`, or `eval run` resolves repository fingerprints 
 
 ## How cases are collected
 
-Cases arrive on their own. When an eligible run finishes, its decided Review passes are frozen into the local corpus - one case per pass. Collection happens after the pipeline has already reported its outcome, so it can never change or fail the run; a problem is logged and nothing else.
+Cases arrive on their own. When an eligible run finishes, its decided replayable Review passes are frozen into the local corpus - one case per pass. A post-review pass and any later rounds are excluded because replay starts from the run's base. Collection happens after the pipeline has already reported its outcome, so it can never change or fail the run; a problem is logged and nothing else.
 
 Two settings in `config.yaml` govern review-case collection, both on by default and both documented in [Global configuration](/no-mistakes/reference/global-config/#eval):
 
@@ -44,7 +44,7 @@ Automatic collection and `eval capture` do the same freeze, so a case is equally
 
 Automatic collection also runs the false-negative path for a defect CI surfaced. When a finished run's CI step reports a real code finding - a failing check the provider attributes to the job (`ci-check`) or a review bot's comment about the change (`ci-review-bot`) - that auto-fix or the user selected, the following fix round records a published repair, and post-repair checks pass, that finding is by definition a Review false negative: Review passed green and missed it. It is ingested as false-negative gold (`recorded-ci-false-negative`) onto the run's green review case, reading only the structured finding the CI step already persisted per round (its category, check identity, and any file/line the finding recorded). It never enriches from log text, never fabricates a location the finding did not carry, and makes no head/commit or cross-run judgement - a real defect that slipped a green Review is a valid case regardless of which commit introduced it. Excluded are `ci-transient` and other provider/infrastructure failures (no code change clears them), merge conflicts, repairs that produced or published no change, no-CI declarations, terminal PR completion before checks pass, and any finding the human dismissed at the gate rather than fixing. Re-ingesting the same run is a no-op. Like automatic review-case collection, this requires `eval.auto_capture` and `eval.capture_provenance`.
 
-A run is skipped when there is nothing honest to freeze: no Review step, no finished pass, a gate decision the human has not made yet, or rounds recorded before provenance was on. An incomplete later review round (no recorded findings) is skipped so a completed sibling of the same run can still be captured. Capturing a run with nothing capturable reports the reason instead of freezing an incomplete label; for a parked Review, retry after the decision is recorded.
+A run is skipped when there is nothing honest to freeze: no Review step, no finished pass, a gate decision the human has not made yet, or rounds recorded before provenance was on. An incomplete later review round (no recorded findings) is skipped so a completed sibling of the same run can still be captured. Once a post-review pass is reached, it and every later round are excluded because they cannot be replayed from the run's base. Capturing a run with nothing capturable reports the reason instead of freezing an incomplete label; for a parked Review, retry after the decision is recorded.
 
 A case includes:
 

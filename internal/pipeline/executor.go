@@ -467,6 +467,63 @@ func (e *Executor) prepareRestart(runID string, name types.StepName, currentInde
 	return index, nil
 }
 
+// runPostReviewPass re-enters the review step for a step that
+// review.post_review_pass stopped from publishing commits Review never saw.
+// The pass reviews exactly the commits after the run's durable review-approved
+// head, through the ordinary review loop: its findings, gate, and
+// auto_fix.review rounds, sharing the step's budget like a restart at Review
+// does. Completing it advances the approval to the head it reviewed, which is
+// what lets the requester publish. Test, Document, and Lint keep their results,
+// so the run never goes back through a step other than Review.
+//
+// The requester and every step after it return to pending first, so a park
+// inside the pass leaves the shape recoveredGate recognizes: Review parked,
+// the steps between it and the requester completed.
+func (e *Executor) runPostReviewPass(ctx context.Context, requester types.StepName, run *db.Run, repo *db.Repo, workDir, logDir string) error {
+	durable, err := e.db.GetRun(run.ID)
+	if err != nil {
+		return fmt.Errorf("load review approval for the post-review pass: %w", err)
+	}
+	approved := ""
+	if durable != nil && durable.ReviewApprovedHeadSHA != nil {
+		approved = strings.TrimSpace(*durable.ReviewApprovedHeadSHA)
+	}
+	if approved == "" {
+		return fmt.Errorf("step %s requested a post-review pass, but the run has no review-approved head", requester)
+	}
+	index, err := e.stepIndex(types.StepReview)
+	if err != nil {
+		return fmt.Errorf("step %s requested a post-review pass: %w", requester, err)
+	}
+	results, err := e.db.GetStepsByRun(run.ID)
+	if err != nil {
+		return fmt.Errorf("load steps for the post-review pass: %w", err)
+	}
+	if index >= len(results) || results[index].StepName != types.StepReview {
+		return fmt.Errorf("post-review pass: review step record not found")
+	}
+	if err := e.db.ResetStepsFrom(run.ID, requester.Order()); err != nil {
+		return fmt.Errorf("return step %s to pending for the post-review pass: %w", requester, err)
+	}
+	state, err := e.durableExecutionState(results[index].ID)
+	if err != nil {
+		return fmt.Errorf("restore review execution state: %w", err)
+	}
+	state.outstandingFindings = ""
+	state.selectedOutstandingIDs = nil
+	state.postReviewFrom = approved
+	// The step's duration covers the review it already ran plus this pass.
+	state.executionMS = recoveredStepDuration(results[index])
+	skipRemaining, restartFrom, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, state)
+	if err != nil {
+		return err
+	}
+	if skipRemaining || restartFrom != "" {
+		return fmt.Errorf("post-review pass may not skip or restart the pipeline")
+	}
+	return nil
+}
+
 func (e *Executor) initializeRunScopes(runID string) {
 	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
 	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
@@ -500,6 +557,9 @@ type stepExecutionState struct {
 	// the parked round's findings_json, so recovering a parked gate restores the
 	// exact outstanding set the operator is deciding on. Unused by other steps.
 	outstandingFindings string
+	// postReviewFrom is the review-approved head a post-review pass reviews
+	// from (see runPostReviewPass). Empty for every other execution.
+	postReviewFrom string
 }
 
 func (e *Executor) durableExecutionState(stepResultID string) (stepExecutionState, error) {
@@ -537,6 +597,13 @@ type recoveredGate struct {
 	lastRoundID            string
 	reviewedHeadSHA        string
 	selectedOutstandingIDs []string
+	// next is where the run continues once the gate resolves: the step after
+	// the gate, or for a post-review pass the step that requested it.
+	next int
+	// postReviewPass is true when the parked review is a post-review pass (see
+	// runPostReviewPass), so a fix or answer round keeps reviewing from the
+	// review-approved head.
+	postReviewPass bool
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -594,7 +661,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.next, false)
 	}
 	reconcileCtx := &StepContext{
 		Ctx:          ctx,
@@ -696,14 +763,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.next, false)
 	case types.ActionSkip:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.next, false)
 	case types.ActionAbort:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if dbErr := e.db.FailStep(gate.stepResult.ID, "aborted by user", duration); dbErr != nil {
@@ -721,6 +788,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			autoFixAttempts: gate.autoFixes,
 			executionMS:     duration,
 			currentRoundID:  gate.lastRoundID,
+		}
+		if gate.postReviewPass {
+			// The pass has not completed, so the durable approval is still the
+			// head it reviews from - the same value runPostReviewPass read.
+			if run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" {
+				return e.failRun(run, repo, fmt.Errorf("recovered post-review pass has no review-approved head"), ctx)
+			}
+			state.postReviewFrom = strings.TrimSpace(*run.ReviewApprovedHeadSHA)
 		}
 		if response.action == types.ActionAnswer {
 			state.answering = true
@@ -783,7 +858,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
-			return e.skipRecoveredRemainder(run, repo, gate.index+1)
+			return e.skipRecoveredRemainder(run, repo, gate.next)
 		}
 		if restartFrom != "" {
 			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
@@ -792,7 +867,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			}
 			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
 		}
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.next, false)
 	default:
 		return e.failRun(run, repo, fmt.Errorf("step %s: unsupported approval action %q", gate.step.Name(), response.action), ctx)
 	}
@@ -805,6 +880,21 @@ func (e *Executor) runContext(ctx context.Context) context.Context {
 	return git.WithEnvironment(ctx, e.forge.Environment)
 }
 
+// latestOpeningRoundIsPostReview identifies the durable opening turn for the
+// current review cycle. Fix and answer rounds can follow it without changing
+// which pass is being recovered.
+func latestOpeningRoundIsPostReview(rounds []*db.StepRound) bool {
+	for index := len(rounds) - 1; index >= 0; index-- {
+		switch rounds[index].Trigger {
+		case db.RoundTriggerPostReview:
+			return true
+		case "initial":
+			return false
+		}
+	}
+	return false
+}
+
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	results, err := e.db.GetStepsByRun(runID)
 	if err != nil {
@@ -815,6 +905,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	}
 
 	var gate *recoveredGate
+	sawPending := false
 	for index, result := range results {
 		if result.StepName != e.steps[index].Name() {
 			return nil, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, e.steps[index].Name())
@@ -844,6 +935,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			identity := selectedFindingIdentities(rounds)
 			gate = &recoveredGate{
 				index:                  index,
+				next:                   index + 1,
 				step:                   e.steps[index],
 				stepResult:             result,
 				findings:               *result.FindingsJSON,
@@ -851,6 +943,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				autoFixes:              autoFixes,
 				lastRoundID:            latest.ID,
 				selectedOutstandingIDs: retainFindingIDsByIdentity(*result.FindingsJSON, selectedOutstandingIDs, identity),
+				postReviewPass:         latestOpeningRoundIsPostReview(rounds),
 			}
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
@@ -863,12 +956,28 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			}
 			continue
 		}
-		if result.Status != types.StepStatusPending && result.Status != types.StepStatusSkipped {
+		if result.Status == types.StepStatusPending {
+			sawPending = true
+			if gate.postReviewPass && gate.next == gate.index+1 {
+				gate.next = index
+			}
+			continue
+		}
+		// A post-review pass parks Review while every step up to the step that
+		// requested the pass remains completed or skipped. Durable round history
+		// identifies the pass; row order only validates that shape.
+		if result.Status == types.StepStatusCompleted && gate.postReviewPass && !sawPending {
+			continue
+		}
+		if result.Status != types.StepStatusSkipped {
 			return nil, fmt.Errorf("recovered step %s is %s after approval gate", result.StepName, result.Status)
 		}
 	}
 	if gate == nil {
 		return nil, fmt.Errorf("recovered run has no approval gate")
+	}
+	if gate.postReviewPass && (gate.next == gate.index+1 || e.steps[gate.next].Name() != types.StepPush) {
+		return nil, fmt.Errorf("recovered post-review pass has no pending push step to return to")
 	}
 	return gate, nil
 }
@@ -1214,6 +1323,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		OnPRMerged:         e.onPRMerged,
 	}
 	if stepName == types.StepReview {
+		sctx.PostReviewPassFrom = state.postReviewFrom
 		BindUncertifiedPipelineRange(sctx)
 		// Must follow BindUncertifiedPipelineRange: it skips a run whose
 		// rounds that channel already carries.
@@ -1242,6 +1352,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		nextTrigger = "answer"
 	case sctx.Fixing:
 		nextTrigger = "auto_fix"
+	case state.postReviewFrom != "":
+		nextTrigger = db.RoundTriggerPostReview
 	}
 	skipRemaining := false
 	stepSkipped := false
@@ -1258,6 +1370,21 @@ rounds:
 		outcome, err := step.Execute(sctx)
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
+		}
+		if err == nil && outcome.PostReviewPass {
+			// The step published nothing and records no round: it stopped
+			// before publication so Review can cover the commits it was about
+			// to publish, and it runs again from the top once Review has.
+			executionMS += time.Since(phaseStart).Milliseconds()
+			if err := e.runPostReviewPass(ctx, stepName, run, repo, workDir, logDir); err != nil {
+				return false, "", err
+			}
+			if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+				return false, "", fmt.Errorf("restart step %s after the post-review pass: %w", stepName, err)
+			}
+			e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
+			phaseStart = time.Now()
+			continue rounds
 		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()

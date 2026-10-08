@@ -257,7 +257,7 @@ Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket.
 ### Database
 
 SQLite at `~/.no-mistakes/state.sqlite` tracks repos, runs, step results, step rounds, derived intent summaries, local agent invocation performance, and the minimum session metadata needed to resume review-loop roles.
-Step rounds record each execution attempt (initial, auto-fix) with its own findings and duration, plus selected finding IDs, whether the selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and the one-line fix summary for fix rounds.
+Step rounds record each execution attempt with its own findings and duration, plus selected finding IDs, whether the selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and the one-line fix summary for fix rounds. The [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/#step-rounds) reference owns the trigger types, including post-review passes.
 Step results also store the last active timestamp, last activity text, native agent PID while a subprocess is active, and the effective auto-fix limit used by AXI status.
 That merged payload can include per-finding user notes and user-authored findings from the TUI or AXI interface.
 Intent stores the summary, source, session ID, and match score on each run when transcript matching is used, plus cached summaries for matching transcript sessions.

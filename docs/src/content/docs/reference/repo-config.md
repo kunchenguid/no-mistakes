@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.post_review_pass`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -41,9 +41,11 @@ document:
 
 # Optional review settings, read only from the trusted default branch:
 # whether the reviewer may ask you questions while it works (off by default),
+# whether commits made after Review are reviewed before Push (off by default),
 # and extra guidance scoped to the paths a change touches.
 review:
   conversation: true
+  post_review_pass: true
   path_instructions:
     - path: "internal/scm/**"
       instructions: |
@@ -442,6 +444,23 @@ review:
 **Off (the default)**, the review step is the monologue it has always been: the reviewer is told nothing about a channel, no conversation files are written, no question findings are produced, and the PR body grows no conversation group. A repository that never opted in cannot have a conversation on disk, so for it every review turn also runs session-free and `no-mistakes axi answer` refuses and names this setting. A question asked while the setting was on stays answerable if you turn it off mid-run - see [Turning the setting off does not strand a question already asked](/no-mistakes/concepts/review-conversation/). Upgrading no-mistakes never starts a conversation under a repository that did not ask for one.
 
 The trade-off is latency against precision. A question costs the run a park - tens of minutes to hours of wall clock, waiting on you - and buys a review that decided the point instead of handing you a finding to rule on. Repositories whose changes rarely turn on product intent will not get much for that wait; repositories where the reviewer regularly cannot tell deliberate from accidental will.
+
+### review.post_review_pass
+
+Whether commits made after Review are reviewed before Push publishes them.
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+review:
+  post_review_pass: true
+```
+
+This trusted opt-in controls the Push/Review handoff for later pipeline-authored commits. See [Post-review pass](/no-mistakes/reference/pipeline-steps/#post-review-pass) for its scope, recovery, skip behavior, and interactions with CI, status, and evaluation.
 
 ### review.path_instructions
 
