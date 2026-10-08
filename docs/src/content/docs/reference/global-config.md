@@ -314,15 +314,16 @@ responsibility; no-mistakes does not inspect subscriptions or query quotas.
 
 A pin applies to **every pipeline duty**, including reviewer and fixer roles.
 The effective agent selection must be Pi-only (no `auto`, non-Pi fallbacks, or
-non-Pi `review_agents`). A nonempty `agent` in the freshly fetched, trusted
-default-branch `.no-mistakes.yaml` replaces the global scalar or fallback list
-for this check, just as it does for an ordinary run. This lets one project opt
-into Pi profiles with trusted `agent: pi` while other projects keep a global
-`agent: auto` or another global selection. When the trusted project config does
-not select an agent, the global selection must itself be Pi-only. An `agent: pi`
-that exists only on the submitted feature branch cannot authorize the profile;
-the existing trusted `allow_repo_commands: true` opt-in is the only exception
-that makes a pushed branch's agent selection effective. Unreadable or malformed
+non-Pi `review_agents`). Under the default trust policy, a nonempty `agent` in
+the freshly fetched, trusted default-branch `.no-mistakes.yaml` replaces the
+global scalar or fallback list for this check, just as it does for an ordinary
+run. This lets one project opt into Pi profiles with trusted `agent: pi` while
+other projects keep a global `agent: auto` or another global selection. When the
+trusted project config does not select an agent, the global selection must itself
+be Pi-only. If the trusted default branch enables `allow_repo_commands: true`,
+the submitted branch instead becomes the source of any repository `agent`
+override. Without that opt-in, an `agent: pi` that exists only on the submitted
+feature branch cannot authorize the profile. Unreadable or malformed
 submitted/trusted config refuses the profile. These checks run before any active
 validation is cancelled. Pi role-specific model/effort values are superseded by
 the run pin. Native `--model`, `--provider`, `--models`,
