@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.91.0](https://github.com/kunchenguid/no-mistakes/compare/v1.90.0...v1.91.0) (2026-10-08)
+
+
+### Features
+
+* **cli:** accept --run on axi respond ([#1359](https://github.com/kunchenguid/no-mistakes/issues/1359)) ([80535af](https://github.com/kunchenguid/no-mistakes/commit/80535af11994195ebbe679a7661d684f60700b84))
+* **pipeline:** opt-in ci.review_bot_comments to read green review-bot comments ([#1356](https://github.com/kunchenguid/no-mistakes/issues/1356)) ([a888b78](https://github.com/kunchenguid/no-mistakes/commit/a888b78f0420fbf008ef299fd219f41dc13c422f))
+
+
+### Bug Fixes
+
+* **daemon:** treat a refused socket with a gone daemon as not running ([#1369](https://github.com/kunchenguid/no-mistakes/issues/1369)) ([baa5dff](https://github.com/kunchenguid/no-mistakes/commit/baa5dff3a869ce76d1ceabb698581a9ebe1b6358))
+* **pipeline:** separate details blocks from adjacent PR summary lines ([#1362](https://github.com/kunchenguid/no-mistakes/issues/1362)) ([1756949](https://github.com/kunchenguid/no-mistakes/commit/1756949eda07be706898da512725c65c080d5616))
+
 ## [1.90.0](https://github.com/kunchenguid/no-mistakes/compare/v1.89.0...v1.90.0) (2026-10-07)
 
 
