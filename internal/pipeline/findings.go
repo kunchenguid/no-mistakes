@@ -509,26 +509,63 @@ func normalizeCoveredPath(value string) string {
 	return cleaned
 }
 
+// verifiedFindingLineWindow is how close (in lines) a same-file finding in
+// the verification round must be to a pending finding to read as the same
+// defect shifted or restated. Anything farther away is a distinct defect in
+// the same file and no longer vetoes verification of the fixed one. A report
+// with no usable line - a same-file entry without one, or a pending finding
+// without one - carries no position and reads as nearby, keeping the
+// conservative fail-closed direction for unpositioned reports.
+const verifiedFindingLineWindow = 10
+
+// nearSameFileFinding reports whether the verification round named file with
+// a line close enough to line to be the same defect shifted or restated,
+// rather than a distinct defect elsewhere in the file.
+func nearSameFileFinding(reportedLines map[string][]int, lineUnknown map[string]bool, file string, line int) bool {
+	if lineUnknown[file] {
+		return true
+	}
+	candidates, ok := reportedLines[file]
+	if !ok || len(candidates) == 0 {
+		return false
+	}
+	if line <= 0 {
+		return true
+	}
+	for _, candidate := range candidates {
+		diff := candidate - line
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= verifiedFindingLineWindow {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveVerifiedFindingsJSON returns outstandingRaw minus every finding whose
 // ID is in pendingIDs and for which this round is a POSITIVE verification
 // record: for a file-anchored finding, the round listed the finding's file in
 // its ReviewedPaths coverage, that path is in the trusted reviewable set, and
 // the round's own output (thisRoundRaw) neither re-reports the defect nor
-// reports anything else at all in that same file. The file-less exception
-// below requires coverage of the entire trusted reviewable set.
+// reports anything else nearby in that same file (within
+// verifiedFindingLineWindow lines; a same-file report with no usable line
+// position reads as nearby). The file-less exception below requires coverage
+// of the entire trusted reviewable set.
 //
 // This is the only way a selected-and-fixed finding leaves the outstanding set
 // besides an explicit operator action (approve/skip/abort). A file the round
 // did not list, a missing coverage record, a round that re-reports the defect,
-// or a round that reports ANY OTHER finding in the same file all leave the
-// item in place. Any file-less finding in the current round also blocks
+// or a round that reports the defect shifted nearby in the same file all leave
+// the item in place. Any file-less finding in the current round also blocks
 // verification of every selected item in that round: silence, or
-// a round that did not look, is never resolution, and neither is an ambiguous
-// report that might be the same defect shifted to another line or reworded.
-// Without this last check, a fix that moves a defect within the same file and
-// a rereview that describes it differently would both fail the exact-match and
-// content-match checks, so the defect would silently clear as "not reported"
-// even though it is still present, just relocated or restated. That is the P1
+// a round that did not look, is never resolution, and neither is a nearby
+// report that might be the same defect shifted by its fix or reworded.
+// Without this last check, a fix that moves a defect a few lines within the
+// same file and a rereview that describes it differently would both fail the
+// exact-match and content-match checks, so the defect would silently clear as
+// "not reported" even though it is still present, just relocated or restated. That is the P1
 // this closes - the predecessor dropped a selected finding the moment its fix
 // was requested, so a no-op fix could let the run complete with the defect
 // unresolved.
@@ -540,6 +577,13 @@ func normalizeCoveredPath(value string) string {
 // the recorded-decision review machinery was removed can carry such items (a
 // synthesized decision finding whose source finding had no file), and without
 // this rule a fix selection could never clear them.
+//
+// The nearby-report window is measured from the pending finding's RECORDED
+// line, which is the coordinate of the round that reported it and is never
+// remapped through a later fix's edits. A restatement the fix shifted farther
+// than the window therefore clears here, but it is still present in that
+// round's own findings and is appended to the outstanding set as a new item by
+// mergeOutstandingFindingsJSON, so the defect is never silently lost.
 func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string) string {
 	if outstandingRaw == "" || len(pendingIDs) == 0 || len(reviewedPaths) == 0 {
 		return outstandingRaw
@@ -580,12 +624,17 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	fullyCovered := len(covered) == len(reviewable)
 	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
 	reported := make(map[types.Finding]bool, len(thisRound.Items))
-	reportedFiles := make(map[string]bool, len(thisRound.Items))
+	reportedLines := make(map[string][]int, len(thisRound.Items))
+	reportedLineUnknown := make(map[string]bool, len(thisRound.Items))
 	hasUnanchoredFinding := false
 	for _, item := range thisRound.Items {
 		reported[findingKey(item)] = true
 		if normalized := normalizeCoveredPath(item.File); normalized != "" {
-			reportedFiles[normalized] = true
+			if item.Line <= 0 {
+				reportedLineUnknown[normalized] = true
+			} else {
+				reportedLines[normalized] = append(reportedLines[normalized], item.Line)
+			}
 		} else {
 			hasUnanchoredFinding = true
 		}
@@ -595,7 +644,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	result := types.FindingsMetadata(outstanding)
 	for _, item := range outstanding.Items {
 		file := normalizeCoveredPath(item.File)
-		if pending[item.ID] && !hasUnanchoredFinding && (covered[file] || file == "" && fullyCovered) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
+		if pending[item.ID] && !hasUnanchoredFinding && (covered[file] || file == "" && fullyCovered) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !nearSameFileFinding(reportedLines, reportedLineUnknown, file, item.Line) {
 			continue
 		}
 		result.Items = append(result.Items, item)
