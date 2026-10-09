@@ -10,6 +10,61 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestCICheckReadFailureOutcome_SHABranchHint(t *testing.T) {
+	t.Parallel()
+	sha := "abc123def4567890abc123def4567890abc12345"
+	outcome := ciCheckReadFailureOutcome(errors.New("gh pr view: no pull requests found for branch " + sha))
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	desc := findings.Items[0].Description
+	if !strings.Contains(desc, "commit SHA was used as the PR selector") {
+		t.Fatalf("SHA branch error finding %q must mention SHA selector misuse", desc)
+	}
+	if !strings.Contains(desc, "gh pr list --search") || !strings.Contains(desc, "commits/<sha>/pulls") {
+		t.Fatalf("SHA hint missing gh pr list/api suggestion: %q", desc)
+	}
+	if strings.Contains(desc, "gh >= 2.50") {
+		t.Fatalf("SHA case must not include the generic gh version hint: %q", desc)
+	}
+	if !strings.Contains(desc, sha) {
+		t.Fatalf("finding %q must include the underlying SHA error", desc)
+	}
+}
+
+func TestCICheckReadFailureOutcome_NumericPRNotTreatedAsSHA(t *testing.T) {
+	t.Parallel()
+	outcome := ciCheckReadFailureOutcome(errors.New("gh pr view: no pull requests found for branch 1000000"))
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	desc := findings.Items[0].Description
+	if strings.Contains(desc, "commit SHA was used") {
+		t.Fatalf("numeric PR number 1000000 must not trigger SHA hint: %q", desc)
+	}
+	if !strings.Contains(desc, "gh >= 2.50") {
+		t.Fatalf("numeric branch-not-found without SHA must keep generic diagnostic: %q", desc)
+	}
+}
+
+func TestCICheckReadFailureOutcome_NonSHABranchKeepsGenericHint(t *testing.T) {
+	t.Parallel()
+	outcome := ciCheckReadFailureOutcome(errors.New("gh pr view: no pull requests found for branch feature/foo"))
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	desc := findings.Items[0].Description
+	if strings.Contains(desc, "commit SHA was used") {
+		t.Fatalf("non-SHA branch error must not trigger SHA hint: %q", desc)
+	}
+	if !strings.Contains(desc, "gh >= 2.50") {
+		t.Fatalf("non-SHA error must keep gh version hint: %q", desc)
+	}
+}
+
 // TestCICheckReadFailureOutcome_ProviderNeutral guards the parked finding text:
 // it must give provider-agnostic remediation for every supported SCM, not an
 // unconditional instruction to install or upgrade `gh`, which is GitHub-only.
