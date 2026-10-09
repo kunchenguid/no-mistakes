@@ -61,15 +61,17 @@ func TestProtectedPathRefusalRequiresDecisionAcrossRecovery(t *testing.T) {
 			exec.SetGateReconcileTimings(time.Millisecond, time.Second)
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
+			workDir := t.TempDir()
+			// Join the executor before removing its work directory. Terminal head
+			// verification has a five-second budget, so allow shutdown margin.
 			t.Cleanup(func() {
 				cancel()
 				select {
 				case <-done:
-				case <-time.After(5 * time.Second):
+				case <-time.After(10 * time.Second):
 					t.Error("executor did not stop")
 				}
 			})
-			workDir := t.TempDir()
 			go func() {
 				if recovered {
 					done <- exec.Resume(ctx, run, repo, workDir)

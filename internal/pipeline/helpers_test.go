@@ -62,6 +62,61 @@ func newFailStep(name types.StepName, err error) *mockStep {
 
 // --- test helpers ---
 
+// respondFixPartial sends a fix response that selects the given findings and
+// explicitly declines every other finding the parked gate shows, which is what
+// unchecking them means now that an omission is neither a decline nor silently
+// permitted. The decline set is computed from the gate the executor actually
+// parked on (not the test's idea of it), so the response is exactly accounted
+// for and the recorded decision matches the caller's intent.
+//
+// Tests that answer a gate before it parks (retry loops) must call this inside
+// the loop so the gate is re-read on every attempt.
+func respondFixPartial(t *testing.T, exec *Executor, step types.StepName, selected ...string) error {
+	t.Helper()
+	return respondFixPartialWithOverrides(t, exec, step, selected, nil, nil)
+}
+
+// respondFixPartialWithOverrides is respondFixPartial plus the per-finding
+// instructions and user-authored findings a response may carry.
+func respondFixPartialWithOverrides(t *testing.T, exec *Executor, step types.StepName, selected []string, instructions map[string]string, added []types.Finding) error {
+	t.Helper()
+	exec.mu.Lock()
+	gate := exec.waitingFindings
+	stepResultID := exec.waitingStepResultID
+	exec.mu.Unlock()
+
+	selectedSet := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		selectedSet[id] = true
+	}
+	// A finding an earlier round of this step already chose to fix is omitted,
+	// not declined: a gate response cannot reverse an applied fix, and omitting
+	// it keeps the earlier decision.
+	alreadyFixed := earlierChosenToFix(exec, stepResultID, gate)
+	var ignored []string
+	for _, id := range findingIDsInPayloadOrder(gate) {
+		if selectedSet[id] || alreadyFixed[id] {
+			continue
+		}
+		ignored = append(ignored, id)
+	}
+	_, err := exec.RespondWithOverrides(step, types.ActionFix, selected, ignored, instructions, added, "")
+	return err
+}
+
+// earlierChosenToFix reads the parked step's rounds for the findings a human
+// already chose to fix, which is what makes a correct client omit them.
+func earlierChosenToFix(exec *Executor, stepResultID, gate string) map[string]bool {
+	if exec == nil || exec.db == nil || stepResultID == "" {
+		return nil
+	}
+	rounds, err := exec.db.GetRoundsByStep(stepResultID)
+	if err != nil {
+		return nil
+	}
+	return earlierChosenToFixIDs(rounds, gate)
+}
+
 func setupTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.Repo) {
 	t.Helper()
 	dir := t.TempDir()

@@ -502,6 +502,7 @@ func (h *completionSnapshotHost) GetChecks(_ context.Context, pr *scm.PR) ([]scm
 }
 
 func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	markErr := errors.New("persist running status")
 	f.sctx.MarkRunning = func() error { return markErr }
@@ -513,6 +514,7 @@ func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
 }
 
 func TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	marked := 0
 	f.sctx.MarkRunning = func() error { marked++; return nil }

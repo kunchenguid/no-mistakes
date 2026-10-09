@@ -32,8 +32,12 @@ func TestAxiWaitFlagDefaultIsEightMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runWait != 8*time.Minute || respondWait != 8*time.Minute {
-		t.Fatalf("run=%s respond=%s, want 8m on both", runWait, respondWait)
+	answerWait, err := newAxiAnswerCmd().Flags().GetDuration("wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runWait != 8*time.Minute || respondWait != 8*time.Minute || answerWait != 8*time.Minute {
+		t.Fatalf("run=%s respond=%s answer=%s, want 8m on all", runWait, respondWait, answerWait)
 	}
 }
 
@@ -84,7 +88,10 @@ func TestDriveRun_SlowGetRunRetriesAfterHealthProbe(t *testing.T) {
 }
 
 func TestDriveRun_GetRunRPCErrorIsNotRetried(t *testing.T) {
-	setDriveGetRunTimeout(t, 60*time.Millisecond)
+	// The deadline is generous so the immediate RPC error always wins the race
+	// on a loaded runner; a short one let the attempt time out first and take
+	// the slow-reply health probe this test asserts never happens.
+	setDriveGetRunTimeout(t, 10*time.Second)
 
 	var healthCalls atomic.Int32
 	socketPath := filepath.Join(makeSocketSafeTempDir(t), "rpc-fail.sock")
@@ -343,6 +350,11 @@ func TestNoMistakesBinary_WaitAndSlowDaemon(t *testing.T) {
 type axiTimeoutOpts struct {
 	responded *atomic.Bool
 	subscribe ipc.StreamHandlerFunc
+	// answer, when set, serves the daemon's answer-review-question call.
+	answer func() *ipc.AnswerReviewQuestionResult
+	// respond, when set, replaces the default respond handler so a test can
+	// return the refusals and recorded dispositions the CLI has to render.
+	respond func(context.Context, json.RawMessage) (interface{}, error)
 }
 
 type axiTimeoutFixture struct {
@@ -468,10 +480,17 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 		}
 		return &ipc.GetActiveRunResult{Run: run}, nil
 	})
-	if opts.responded != nil {
+	if opts.respond != nil {
+		srv.Handle(ipc.MethodRespond, opts.respond)
+	} else if opts.responded != nil {
 		srv.Handle(ipc.MethodRespond, func(context.Context, json.RawMessage) (interface{}, error) {
 			opts.responded.Store(true)
 			return &ipc.RespondResult{OK: true}, nil
+		})
+	}
+	if opts.answer != nil {
+		srv.Handle(ipc.MethodAnswerReview, func(context.Context, json.RawMessage) (interface{}, error) {
+			return opts.answer(), nil
 		})
 	}
 	var getRunCalls atomic.Int32

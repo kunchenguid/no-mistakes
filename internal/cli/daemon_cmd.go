@@ -20,10 +20,13 @@ import (
 )
 
 var (
-	daemonRun         = daemon.Run
-	daemonStartFn     = daemon.Start
-	daemonStopFn      = daemon.Stop
-	daemonIsRunningFn = daemon.IsRunning
+	daemonRun                  = daemon.Run
+	daemonStartFn              = daemon.Start
+	daemonStopFn               = daemon.Stop
+	daemonUninstallFn          = daemon.Uninstall
+	daemonUninstallSupportedFn = daemon.UninstallSupported
+	daemonLaunchAgentPathFn    = daemon.InstalledLaunchAgentPath
+	daemonIsRunningFn          = daemon.IsRunning
 )
 
 func newDaemonCmd() *cobra.Command {
@@ -34,6 +37,7 @@ func newDaemonCmd() *cobra.Command {
 
 	cmd.AddCommand(newDaemonStartCmd())
 	cmd.AddCommand(newDaemonStopCmd())
+	cmd.AddCommand(newDaemonUninstallCmd())
 	cmd.AddCommand(newDaemonRestartCmd())
 	cmd.AddCommand(newDaemonStatusCmd())
 	cmd.AddCommand(newDaemonRunCmd())
@@ -55,7 +59,9 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := paths.New()
+			// Resolve the daemon root from the gate itself, not NM_HOME: this
+			// runs as a git hook helper, and git sets no NM_HOME for a hook.
+			p, err := paths.ForGate(gatePath)
 			if err != nil {
 				return err
 			}
@@ -131,7 +137,15 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			verificationPlanID, err := parseVerificationPlanPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			reconciledPreviousHead, err := parseReconciledPreviousHeadPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
+			closingIssues, err := parseClosingIssueRefsPushOptions(pushOptions)
 			if err != nil {
 				return err
 			}
@@ -140,7 +154,9 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				return err
 			}
 
-			p, err := paths.New()
+			// Same as admit-push: the owning root is a property of the gate,
+			// not of whatever the pushing shell exported.
+			p, err := paths.ForGate(gatePath)
 			if err != nil {
 				return err
 			}
@@ -164,7 +180,9 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				PRBaseBranch:           prBaseBranch,
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
+				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
+				ClosingIssueRefs:       closingIssues,
 			}, &result)
 		},
 	}
@@ -443,6 +461,35 @@ func isHexCommitSHA(value string) bool {
 	return true
 }
 
+// closingIssuePushOptionPrefix carries one closing issue reference through a git push.
+// Repeating the option preserves the repeatable --closes CLI contract.
+const closingIssuePushOptionPrefix = "no-mistakes.closes="
+
+func formatClosingIssueRefsPushOptions(refs []string) []string {
+	options := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		options = append(options, closingIssuePushOptionPrefix+ref)
+	}
+	return options
+}
+
+// parseClosingIssueRefsPushOptions extracts all closing issue push options and
+// applies the same validation, deduplication, and ordering as the public CLI.
+func parseClosingIssueRefsPushOptions(options []string) ([]string, error) {
+	var values []string
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, closingIssuePushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("invalid closing issue push option: value is required")
+		}
+		values = append(values, value)
+	}
+	return normalizeClosingIssueRefs(values)
+}
+
 func formatSkipPushOptions(steps []types.StepName) []string {
 	if len(steps) == 0 {
 		return nil
@@ -495,6 +542,9 @@ func newDaemonStartCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if err := ipc.CheckEndpointPath(p.Socket()); err != nil {
+					return err
+				}
 				if err := p.EnsureDirs(); err != nil {
 					return err
 				}
@@ -527,11 +577,51 @@ func newDaemonStopCmd() *cobra.Command {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon stopped\n", sGreen.Render("✓"))
+				if path := daemonLaunchAgentPathFn(p); path != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Service starts again at the next login; LaunchAgent remains at %s. Remove it with `no-mistakes daemon uninstall`.\n", path)
+				}
 				return nil
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "stop the daemon even when pipeline runs are active")
+	return cmd
+}
+
+func newDaemonUninstallCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Stop and remove this instance's managed daemon service",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logLifecycleInvocation("daemon.uninstall", force)
+			return trackCommand("daemon.uninstall", func() error {
+				if !daemonUninstallSupportedFn() {
+					fmt.Fprintln(cmd.OutOrStdout(), "  No service removal is available on this platform; daemon uninstall changed nothing.")
+					return nil
+				}
+				p, err := paths.New()
+				if err != nil {
+					return err
+				}
+				if err := guardDestructiveDaemonLifecycle(p, cmd.ErrOrStderr(), "daemon uninstall", force); err != nil {
+					return err
+				}
+				definition, err := daemonUninstallFn(p)
+				if err != nil {
+					return err
+				}
+				if definition == "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  No managed daemon service is installed for NM_HOME %s.\n", p.Root())
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s removed managed daemon service: %s\n", sGreen.Render("✓"), definition)
+				}
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "uninstall the daemon service even when pipeline runs are active")
 	return cmd
 }
 
@@ -545,6 +635,9 @@ func newDaemonRestartCmd() *cobra.Command {
 			return trackCommand("daemon.restart", func() error {
 				p, err := paths.New()
 				if err != nil {
+					return err
+				}
+				if err := ipc.CheckEndpointPath(p.Socket()); err != nil {
 					return err
 				}
 				if err := p.EnsureDirs(); err != nil {
@@ -592,6 +685,9 @@ func newDaemonStatusCmd() *cobra.Command {
 			return trackCommand("daemon.status", func() error {
 				p, err := paths.New()
 				if err != nil {
+					return err
+				}
+				if err := ipc.CheckEndpointPath(p.Socket()); err != nil {
 					return err
 				}
 				alive, err := daemonIsRunningFn(p)

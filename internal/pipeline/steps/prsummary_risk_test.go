@@ -38,6 +38,7 @@ func TestBuildPipelineSummary_ReviewWithRisk(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_EscapesFindingDescriptionsInDetails(t *testing.T) {
+	t.Parallel()
 	findings := `{"findings":[{"id":"review-1","severity":"warning","file":"cmd/main.go","line":10,"description":"break </details><summary>oops</summary> after"}],"summary":"1 warning","risk_level":"low","risk_rationale":"safe"}`
 	steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
 	rounds := map[string][]*db.StepRound{

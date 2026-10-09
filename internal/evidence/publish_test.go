@@ -13,7 +13,22 @@ import (
 // git call these tests make, so drop it for the package.
 func TestMain(m *testing.M) {
 	os.Unsetenv("GIT_CONFIG_COUNT")
-	os.Exit(m.Run())
+	// Fixtures must not depend on the machine's system git config: some
+	// distributions ship safe.bareRepository=explicit there, which refuses
+	// the in-directory use of the bare fixture repositories these tests
+	// create. Mirrors internal/git's TestMain.
+	os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// Fixtures must not inherit the developer's global git config: a
+	// commit.gpgsign=true there makes every fixture commit ask gpg to sign.
+	globalConfigDir, err := os.MkdirTemp("", "no-mistakes-evidence-tests-")
+	if err != nil {
+		panic(err)
+	}
+	globalConfig := filepath.Join(globalConfigDir, "gitconfig")
+	os.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	code := m.Run()
+	os.RemoveAll(globalConfigDir)
+	os.Exit(code)
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
@@ -366,5 +381,69 @@ func TestPublish_ReportsPublishedFilesRelativeToTheSourceDirectory(t *testing.T)
 	}
 	if result.Dir != ".no-mistakes/evidence/fm/add-login" {
 		t.Errorf("dir = %q", result.Dir)
+	}
+}
+
+// TestPublish_ExcludedDirectoryIsNeverCollected covers the boundary the review
+// conversation depends on. Its files live in the run's evidence directory - the
+// PR step's `ExcludeDirs` names them - but they are NOT test evidence: publishing
+// them would put the operator's questions and answers on the orphan branch
+// verbatim and permanently, with none of the bounding or home-path redaction the
+// deliberate PR-body rendering applies.
+//
+// The exclusion has to skip the directory WHOLE, not filter its files out at the
+// end, because an excluded file must not count against the publication budgets
+// either. So this also writes an oversized excluded file: it would fail the
+// whole publish if the walk still looked at it, taking the real evidence down
+// with it.
+func TestPublish_ExcludedDirectoryIsNeverCollected(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	source := writeEvidence(t, t.TempDir(), map[string]string{
+		"checkout.png":            "\x89PNG binary bytes\x00\x01",
+		"review/questions.ndjson": `{"id":"q1","question":"is this intended?"}`,
+		"review/answers.ndjson":   `{"id":"q1","answer":"no","answered_by":"captain"}`,
+	})
+	big := filepath.Join(source, "review", "huge.ndjson")
+	if err := os.WriteFile(big, make([]byte, maxFileBytes+1), 0o644); err != nil {
+		t.Fatalf("write oversized excluded file: %v", err)
+	}
+
+	req := baseRequest(remote, work, source)
+	req.ExcludeDirs = []string{"review"}
+	result, err := Publish(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got, want := strings.Join(result.Files, ","), "checkout.png"; got != want {
+		t.Fatalf("files = %q, want only %q", got, want)
+	}
+	// Nothing from the excluded directory reached the branch, under any name.
+	tree := runGit(t, remote, "ls-tree", "-r", "--name-only", "refs/heads/"+result.Branch)
+	for _, unwanted := range []string{"review/", "questions.ndjson", "answers.ndjson", "huge.ndjson"} {
+		if strings.Contains(tree, unwanted) {
+			t.Fatalf("published tree contains %q:\n%s", unwanted, tree)
+		}
+	}
+}
+
+// With the conversation the only content there is nothing to publish, and that
+// must be "no publication" rather than an empty commit on the branch.
+func TestPublish_ExcludedDirectoryAlonePublishesNothing(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	source := writeEvidence(t, t.TempDir(), map[string]string{
+		"review/questions.ndjson": `{"id":"q1","question":"is this intended?"}`,
+	})
+
+	req := baseRequest(remote, work, source)
+	req.ExcludeDirs = []string{"review"}
+	result, err := Publish(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("an excluded-only source produced a publication: %+v", result)
+	}
+	if refs := runGit(t, remote, "for-each-ref", "--format=%(refname)"); refs != "refs/heads/main" {
+		t.Fatalf("remote refs changed: %q", refs)
 	}
 }

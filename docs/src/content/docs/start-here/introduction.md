@@ -23,7 +23,7 @@ ready.
 branch reaches the configured push target:
 
 - **Before** the code is public, it rebases, runs a structured AI code review, runs baseline tests, gathers user-facing test evidence when intent is available, checks that docs are in sync, runs lint, and only then pushes to the configured target and opens the PR.
-- **After** the push, it watches CI and auto-fixes failures. On GitHub, GitLab, Forgejo, and Azure DevOps it also watches PR mergeability and fixes merge conflicts on the branch.
+- **After** the push, it watches CI and auto-fixes failures. On GitHub, GitLab, Forgejo, Azure DevOps, and provider plugins that declare mergeability, it also watches PR mergeability and fixes merge conflicts on the branch.
 - **Throughout**, every step can pause for your approval. You see the findings, pick what to fix, and decide when to ship.
 
 The whole thing runs in a disposable worktree. Your working directory is never
@@ -72,7 +72,7 @@ When a branch passes the gate, it means:
 ## What you get
 
 - A fixed, opinionated core pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`. Repositories can add [command gates](/no-mistakes/reference/repo-config/#gates) after selected core steps, but cannot remove or reorder those steps.
-- Choice of agent: `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, or `cursor` / `acp:<target>` via `acpx`, with per-repo override and ordered fallbacks; every gate requires a runnable configured pipeline agent.
+- Choice of agent: `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, or `cursor` / `devin` / `acp:<target>` via `acpx`, with per-repo override and ordered fallbacks; every gate requires a runnable configured pipeline agent.
 - A TUI to watch, approve, fix, skip, or abort any step.
 - A `/no-mistakes` agent skill so a coding agent can do a task and gate it, or gate existing committed work, backed by a non-interactive `no-mistakes axi` interface.
 - A setup wizard when you run bare `no-mistakes` with no active run on the current branch - it walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.

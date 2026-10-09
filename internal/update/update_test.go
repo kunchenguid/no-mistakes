@@ -204,7 +204,7 @@ func TestUpdaterRunResetsDaemonAfterUpdate(t *testing.T) {
 		httpClient:     server.Client(),
 		executablePath: execPath,
 		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
-		resetDaemon: func() error {
+		resetDaemon: func(bool) error {
 			resetCalled = true
 			return nil
 		},
@@ -294,7 +294,7 @@ func TestUpdaterRunRefusesWithActiveRunsAndListsThem(t *testing.T) {
 		stderr:         stderr,
 		stdin:          strings.NewReader("y\n"),
 		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
-		resetDaemon: func() error {
+		resetDaemon: func(bool) error {
 			resetCalled = true
 			return nil
 		},
@@ -420,7 +420,7 @@ func TestUpdaterRunFailsWhenDaemonResetFails(t *testing.T) {
 		stdout:         stdout,
 		stderr:         stderr,
 		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
-		resetDaemon: func() error {
+		resetDaemon: func(bool) error {
 			return fmt.Errorf("boom")
 		},
 	}
@@ -492,7 +492,7 @@ func TestUpdaterRunFailsWhenDaemonResetLeavesDaemonOffline(t *testing.T) {
 		executablePath: execPath,
 		stdout:         stdout,
 		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
-		resetDaemon: func() error {
+		resetDaemon: func(bool) error {
 			return &daemonResetError{err: errors.New("start daemon: boom"), daemonOffline: true}
 		},
 	}
@@ -581,7 +581,7 @@ func TestUpdaterRunFailsWhenDaemonUsesDifferentExecutable(t *testing.T) {
 		httpClient:     server.Client(),
 		executablePath: execPath,
 		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
-		resetDaemon: func() error {
+		resetDaemon: func(bool) error {
 			resetCalled = true
 			return nil
 		},
@@ -690,7 +690,7 @@ func TestUpdaterRunReplacesDaemonWhenDifferentExecutableConfirmed(t *testing.T) 
 				stderr:         stderr,
 				stdin:          strings.NewReader(tt.stdin),
 				now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
-				resetDaemon: func() error {
+				resetDaemon: func(bool) error {
 					resetCalled = true
 					return nil
 				},
@@ -786,7 +786,7 @@ func TestUpdaterRunFailsWhenDaemonExecutableCannotBeResolved(t *testing.T) {
 		httpClient:     server.Client(),
 		executablePath: execPath,
 		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
-		resetDaemon: func() error {
+		resetDaemon: func(bool) error {
 			resetCalled = true
 			return nil
 		},
@@ -996,5 +996,123 @@ func TestUpdaterCachedLatestVersion(t *testing.T) {
 	u.currentVersion = "v1.2.3"
 	if got := u.cachedLatestVersion(); got != "" {
 		t.Fatalf("cachedLatestVersion() = %q, want empty when already current", got)
+	}
+}
+
+func fakeNixStoreBinary(t *testing.T) (storeBinary, profileLink string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(root, "nix", "store")
+	storeBinary = filepath.Join(store, "abc123-no-mistakes-1.2.2", "bin", "no-mistakes")
+	if err := os.MkdirAll(filepath.Dir(storeBinary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storeBinary, []byte("store-binary"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	profileLink = filepath.Join(root, "profile", "bin", "no-mistakes")
+	if err := os.MkdirAll(filepath.Dir(profileLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(storeBinary, profileLink); err != nil {
+		t.Fatal(err)
+	}
+	previous := nixStoreDir
+	nixStoreDir = store
+	t.Cleanup(func() { nixStoreDir = previous })
+	return storeBinary, profileLink
+}
+
+func TestInNixStore(t *testing.T) {
+	storeBinary, profileLink := fakeNixStoreBinary(t)
+	if !inNixStore(storeBinary) {
+		t.Fatalf("inNixStore(%q) = false", storeBinary)
+	}
+	if !inNixStore(profileLink) {
+		t.Fatalf("inNixStore(%q) = false for a profile symlink into the store", profileLink)
+	}
+	if inNixStore(nixStoreDir) {
+		t.Fatal("the store directory itself is not an installed binary")
+	}
+	userOwned := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := os.WriteFile(userOwned, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if inNixStore(userOwned) {
+		t.Fatalf("inNixStore(%q) = true for a user-owned binary", userOwned)
+	}
+}
+
+func TestUpdaterRunRefusesNixStoreInstall(t *testing.T) {
+	storeBinary, profileLink := fakeNixStoreBinary(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("a Nix install must not query releases, got %q", r.URL.Path)
+	}))
+	defer server.Close()
+
+	stdout := new(bytes.Buffer)
+	u := &updater{
+		appName:         "no-mistakes",
+		currentVersion:  "v1.2.2",
+		platform:        platformSpec{GOOS: "linux", GOARCH: "amd64"},
+		manifestURL:     server.URL + "/releases/download/channels/channels.json",
+		httpClient:      server.Client(),
+		executablePath:  profileLink,
+		nixStoreInstall: inNixStore(profileLink),
+		stdout:          stdout,
+		now:             func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+	}
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	content, err := os.ReadFile(storeBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "store-binary" {
+		t.Fatalf("store binary was modified: %q", string(content))
+	}
+	if !strings.Contains(stdout.String(), "self-update unavailable for Nix installs") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestUpdaterNixStoreInstallNeverAdvertisesUpdate(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "update-check.json")
+	if err := writeCache(cachePath, &checkCache{
+		CheckedAt:     time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC),
+		LatestVersion: "v1.2.3",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := new(bytes.Buffer)
+	spawned := false
+	u := &updater{
+		appName:         "no-mistakes",
+		currentVersion:  "v1.2.2",
+		cachePath:       cachePath,
+		nixStoreInstall: true,
+		stderr:          stderr,
+		now:             func() time.Time { return time.Date(2026, 4, 9, 13, 0, 0, 0, time.UTC) },
+		spawnBackground: func(string) error {
+			spawned = true
+			return nil
+		},
+	}
+
+	u.maybeNotifyAndCheck([]string{"status"})
+	if stderr.Len() != 0 {
+		t.Fatalf("a Nix install must not advertise self-update, got %q", stderr.String())
+	}
+	if spawned {
+		t.Fatal("a Nix install must not spawn a background refresh")
+	}
+	if got := u.cachedLatestVersion(); got != "" {
+		t.Fatalf("cachedLatestVersion() = %q, want empty for a Nix install", got)
 	}
 }

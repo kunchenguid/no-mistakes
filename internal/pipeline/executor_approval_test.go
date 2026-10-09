@@ -381,7 +381,7 @@ func TestExecutor_CustomGateTelemetryRedactsLabel(t *testing.T) {
 
 	waitForStepStatus(t, database, run.ID, stepName, types.StepStatusAwaitingApproval)
 
-	if err := exec.Respond(stepName, types.ActionFix, nil); err != nil {
+	if err := respondFixPartial(t, exec, stepName); err != nil {
 		t.Fatalf("respond error: %v", err)
 	}
 

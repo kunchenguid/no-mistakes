@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -811,7 +812,7 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
-func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
+func TestRerunInheritsIntentAndClosingIssuesFromSelectedRun(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{step}
@@ -837,6 +838,9 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	waitForRunTerminalState(t, d, first.RunID)
 	selectedIntent := "  selected exact requirements\n"
 	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunClosingIssueRefs(first.RunID, []string{"owner/repo#9", "42"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -867,6 +871,9 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != db.RunIntentSourceRerun {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, db.RunIntentSourceRerun)
+	}
+	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,owner/repo#9" {
+		t.Fatalf("closing issue references = %q, want inherited set", refs)
 	}
 }
 
@@ -1535,7 +1542,14 @@ func TestProofLaunchFallbackInheritsOnlyLivePRIdentity(t *testing.T) {
 				}
 				return waitForRunTerminalState(t, d, result.Receipt.RunID)
 			}
-			prior := launch("prior-nonce", "")
+			// Seed history without racing a prior run's worktree removal against the new launch.
+			prior, err := d.InsertRun(repo.ID, "main", head, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateRunStatus(prior.ID, types.RunCompleted); err != nil {
+				t.Fatal(err)
+			}
 			const prURL = "https://github.com/test/repo/pull/42"
 			if err := d.UpdateRunPRURL(prior.ID, prURL); err != nil {
 				t.Fatal(err)
@@ -1572,4 +1586,135 @@ func logLaunchEvidence(t *testing.T, label string, value any) {
 		t.Fatal(err)
 	}
 	t.Logf("launch-evidence %s: %s", label, encoded)
+}
+
+// TestPushReceivedRejectsGateFromAnotherHome is defense in depth behind
+// paths.ForGate's gate-derived root. A gate path names the root that owns it,
+// but the daemon keeps only the repo id from it, so a notify carrying a gate
+// under a different root - from a hand-run CLI or a direct IPC client - used to
+// re-resolve that id under this daemon's own root and validate a foreign
+// repository's push against local worktree paths. The misroute must surface as
+// an explicit refusal instead.
+func TestPushReceivedRejectsGateFromAnotherHome(t *testing.T) {
+	// The owned-gate half launches a real run, so the daemon must resolve an
+	// agent; startTestDaemon would depend on one being installed on the host.
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+
+	const repoID = "cross-home-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+
+	// Same repo id, a different NM_HOME: exactly what the default root's daemon
+	// received when a second root's hook shelled out without NM_HOME set.
+	foreignHome := t.TempDir()
+	foreignGate := filepath.Join(foreignHome, "repos", repoID+".git")
+	if err := os.MkdirAll(foreignGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: foreignGate,
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil {
+		t.Fatalf("daemon started run %q for a gate under another home; it must refuse", result.RunID)
+	}
+	if !strings.Contains(err.Error(), "does not belong to this daemon's home") {
+		t.Fatalf("refusal must name the cause, got: %v", err)
+	}
+
+	// The guard must not cost the ordinary case: this root's own gate still runs.
+	var ok ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repoID),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &ok); err != nil {
+		t.Fatalf("push to this daemon's own gate must still be accepted: %v", err)
+	}
+	if ok.RunID == "" {
+		t.Fatal("expected a run for the owned gate")
+	}
+}
+
+// TestAdmitPushRejectsGateFromAnotherHome guards the same ownership invariant on
+// the admit leg, which is the ref-mutation boundary: an admit call that reached
+// the wrong daemon would otherwise be classified against that daemon's own PID
+// chain and active steps, so a push made inside another root's validation step
+// reads as unnested and is admitted.
+func TestAdmitPushRejectsGateFromAnotherHome(t *testing.T) {
+	p, d := startTestDaemon(t)
+
+	const repoID = "cross-home-admit-repo"
+	setupTestGitRepo(t, p, d, repoID)
+
+	foreignHome := t.TempDir()
+	foreignGate := filepath.Join(foreignHome, "repos", repoID+".git")
+	if err := os.MkdirAll(foreignGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: foreignGate}, &result); err == nil {
+		t.Fatal("daemon classified a push to a gate under another home; it must refuse")
+	} else if !strings.Contains(err.Error(), "does not belong to this daemon's home") {
+		t.Fatalf("refusal must name the cause, got: %v", err)
+	}
+
+	var ok ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: p.RepoDir(repoID)}, &ok); err != nil {
+		t.Fatalf("admit for this daemon's own gate must still be classified: %v", err)
+	}
+}
+
+// TestOwnedGateAcceptsARelativeRootSpelling pins the guard against the root
+// spelling: NM_HOME may be relative, while the gate path always arrives
+// absolute from git rev-parse, so a textual compare would refuse every push to
+// the daemon's own gate.
+func TestOwnedGateAcceptsARelativeRootSpelling(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	const repoID = "relative-root-repo"
+	p := paths.WithRoot("nm")
+	if err := os.MkdirAll(p.RepoDir(repoID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	absGate, err := filepath.Abs(p.RepoDir(repoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absGate); err == nil {
+		absGate = resolved
+	}
+
+	got, err := ownedGateRepoID(p, absGate)
+	if err != nil {
+		t.Fatalf("the daemon's own gate under a relative root must be owned: %v", err)
+	}
+	if got != repoID {
+		t.Fatalf("repo id = %q, want %q", got, repoID)
+	}
+
+	foreign := filepath.Join(t.TempDir(), "repos", repoID+".git")
+	if _, err := ownedGateRepoID(p, foreign); err == nil {
+		t.Fatal("a gate under another root must still be refused")
+	}
 }

@@ -105,6 +105,9 @@ func classifyOpencodeTransient(err error) (string, bool) {
 		// as far as running a tool fails closed and the operator decides.
 		// The failure this retry exists for - a provider blip that kills the
 		// turn before the model acts - is untouched by the gate.
+		// Resuming the failed session instead is not a fix: opencode's
+		// message endpoint only appends another user message, so whether the
+		// model re-runs the tool stays its judgement rather than a guarantee.
 		if failure.retryable && !failure.terminal && !failure.toolActivity {
 			return failure.label(), true
 		}

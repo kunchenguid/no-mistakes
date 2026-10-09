@@ -204,7 +204,7 @@ func (a *ompAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	pid := started.pid()
 	emitAgentStarted(opts, "omp", pid)
 
-	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema)
+	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema, false)
 	stdinErrCh := writeNativeAgentStdin(stdin, prompt)
 
 	var stderrBuf []byte

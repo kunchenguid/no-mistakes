@@ -152,6 +152,8 @@ func TestNewWithOptions_RefusesUnmappableKnob(t *testing.T) {
 		{types.AgentRovoDev, agentcfg.Profile{Model: "x"}},
 		{types.AgentAntigravity, agentcfg.Profile{Effort: agentcfg.EffortHigh}},
 		{types.AgentCursor, agentcfg.Profile{Effort: agentcfg.EffortHigh}},
+		{types.AgentDevin, agentcfg.Profile{Effort: agentcfg.EffortHigh}},
+		{types.AgentDevin, agentcfg.Profile{Model: "gpt-6-luna-medium", Effort: agentcfg.EffortLow}},
 		{types.AgentOpenCode, agentcfg.Profile{Model: "gpt-5"}},
 	}
 	for _, tt := range tests {
@@ -167,7 +169,7 @@ func TestNewWithOptions_RefusesUnmappableKnob(t *testing.T) {
 // the model reaches acpx's own flag, positioned among acpx options rather than
 // after the target or the exec subcommand.
 func TestACPModelIsPinnedOnTheAcpxCommand(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCursor, "acp:custom"} {
+	for _, name := range []types.AgentName{types.AgentCursor, types.AgentDevin, "acp:custom"} {
 		ag, err := NewWithOptions(name, "acpx", nil, Options{
 			Profile: agentcfg.Profile{Model: "gpt-5"},
 		})

@@ -98,7 +98,7 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 	}
 
 	result, err := d.agent.Run(ctx, agent.RunOpts{
-		Prompt:     agent.ExecutionContextPromptSection(d.cwd) + buildDisambiguationPrompt(diffFiles, candidates, packetPaths),
+		Prompt:     agent.ExecutionContextPromptSection(d.cwd) + buildDisambiguationPrompt(diffFiles, candidates, packetPaths) + agent.MemoryFilesRule,
 		CWD:        d.cwd,
 		JSONSchema: disambiguatorSchema,
 	})

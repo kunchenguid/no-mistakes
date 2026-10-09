@@ -6,14 +6,14 @@ description: All fields for .no-mistakes.yaml.
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
 :::caution[Security: gate-control fields are read from the default branch]
-`commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
+`commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -39,9 +39,11 @@ document:
   instructions: |
     docs/ owns detailed product guidance; README.md owns the introduction.
 
-# Optional extra review guidance, scoped to the paths a change touches.
-# Read only from the trusted default branch.
+# Optional review settings, read only from the trusted default branch:
+# whether the reviewer may ask you questions while it works (off by default),
+# and extra guidance scoped to the paths a change touches.
 review:
+  conversation: true
   path_instructions:
     - path: "internal/scm/**"
       instructions: |
@@ -60,9 +62,14 @@ disable_project_settings: true
 
 # Optional PR settings.
 # base_branch is read from the trusted default branch.
+# template, publish_intent, and appendix are trusted publication policy.
+# appendix defaults to full. collapsed and minimal shorten the generated tail.
 # title_format is a repository convention and is read from this branch.
 pr:
   base_branch: develop
+  # template: .github/pull_request_template.md
+  # publish_intent: false
+  # appendix: collapsed # full | collapsed | minimal
   # title_format: "{{.Branch}}: {{.Title}}"
 
 auto_fix:
@@ -78,6 +85,7 @@ auto_fix:
 ci:
   rerun_transient: 0
   revalidate_repairs: false
+  review_bot_comments: on_failure # or: always
 
 # How a base branch that moved under your branch is integrated.
 # Read only from the trusted default branch.
@@ -89,6 +97,8 @@ commit:
   # branch_pattern: '([A-Z]+-[0-9]+)'
   # To use the captured identifier in the subject:
   # fix_message: "{{.Branch}}: {{.Summary}}"
+  # trailers:
+  #   - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
 
 intent:
   enabled: true
@@ -126,16 +136,10 @@ Override the default agent for this repo and its setup-wizard suggestions.
 | | |
 | --- | --- |
 | Type | `string` or `string[]` |
-| Values | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Values | Same as [global `agent`](/no-mistakes/reference/global-config/#agent) |
 | Default | Inherits from global config |
 
-`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `omp`, `copilot`, `antigravity`, then `cursor`.
-`cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
-Its availability uses the global `acpx_path` and `acp_registry_overrides.cursor` settings when present.
-`acp:<target>` uses the user-installed `acpx` binary configured in global config; `acp:cursor` uses the same default command as `cursor`.
-Arbitrary `acp:<target>` agents are opt-in and are not considered by `agent: auto`.
-The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
-If the selected explicit agent or `auto` is unavailable, the gate fails before its first pipeline step rather than reporting partial validation as passed.
+The global [`agent` reference](/no-mistakes/reference/global-config/#agent) owns agent names, ACP alias defaults, `auto` resolution, availability, and fallback behavior.
 
 You can also set an ordered fallback list:
 
@@ -143,11 +147,6 @@ You can also set an ordered fallback list:
 agent: [codex, grok]
 ```
 
-The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
-After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` provide one fallback and preserve whichever spelling appears first.
-If no entry is available, the gate fails before its first pipeline step.
-If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
-Structured findings and schema/output validation problems do not trigger fallback.
 This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
 
 ### allow_repo_commands
@@ -159,7 +158,7 @@ Opt in to honoring the code-executing selection fields (`commands.{prepare,test,
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. The PR-target exception is documented under [`pr.base_branch`](#prbase_branch); `pr.template`, `pr.publish_intent`, and the other trusted-only fields listed above do not follow this opt-in. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. The PR-target exception is documented under [`pr.base_branch`](#prbase_branch); `pr.template`, `pr.publish_intent`, `pr.appendix`, and the other trusted-only fields listed above do not follow this opt-in. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### disable_project_settings
 
@@ -172,7 +171,9 @@ Suppress project-level agent settings and instructions for every gate-agent star
 
 This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
 When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
-Codex, Claude, and Pi are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, and Pi runs with `--no-context-files` (preserving a pinned `--no-context-files` or `-nc` spelling).
+Codex, Claude, Pi, and the `acp:omp` target (Oh My Pi over ACP) are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, and Pi runs with `--no-context-files` (preserving a pinned `--no-context-files` or `-nc` spelling).
+`acp:omp` is launched as `omp acp` with a generated `--config` overlay that disables every omp context-file discovery provider (`native`, `claude`, `codex`, `gemini`, `opencode`, `github`, `agents`, `agents-md`, `claude-md`) and mnemopi memory, plus `--no-rules`, `--no-skills`, and `--no-extensions`. omp has no CLI flag to disable context files, and a CLI `--config` overlay is the highest settings layer, so the target repository's own `.omp/config.yml` cannot re-enable a provider the overlay disabled. Memory is disabled because a gate turn that reads the repo's `AGENTS.md` while reviewing could otherwise retain it and a later turn recall it around the provider suppression. Only the default `acp:omp` launch qualifies: an `acp_registry_overrides` entry for `omp` is an opaque custom command and fails closed. Other ACP targets (`acp:<target>`), including the `cursor` and `devin` aliases, remain unverified and are refused; Devin CLI loads the target repository's `AGENTS.md`, `CLAUDE.md`, and editor rule files with no verified off-switch.
+
 Omp is no longer a verified agent for this boundary, but it is still the pipeline agent's own argv that carries the suppression: when this option is enabled for a repo whose pipeline agent is Omp, the daemon refuses the launch before it starts, exactly as it does for Grok. See the Omp note below for why.
 Since an Omp `--config` overlay would *replace* no-mistakes' own rather than merge with it, `--config` stays reserved in `agent_args_override`; an operator-supplied one is refused at config load so a programmatic caller that runs Omp without the gate cannot silently lose the overlay or the memory isolation it carries.
 Grok 1.0.5 still discovers native project instructions and `.grok` project surfaces, so it is not a verified agent for this boundary. A configuration that resolves Grok while this option is enabled therefore fails closed before launch.
@@ -216,12 +217,11 @@ Select the branch that newly created pull requests target.
 | Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
 
 Use this when the repository's integration branch differs from its forge default branch, for example `develop` instead of `main`.
-The configured branch is used for PR creation, as the integration base for the rebase step, and as the merge-base Review diffs against.
-A per-run `--base-branch` takes that same review merge-base even when this field is unset, so `axi run --base-branch dev` is not reviewed as `merge-base(origin/main, HEAD)`.
-When unset, no-mistakes preserves the existing behavior and targets `Repo.DefaultBranch`.
+The configured branch is used for PR creation and pipeline integration and change scoping; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) describe which steps use it and how the recorded per-run override takes precedence.
+When unset and without a per-run override, no-mistakes targets the repository's forge default branch.
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
-A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, and Gitea) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
+A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, Gitea, and [provider plugins](/no-mistakes/reference/provider-plugin-protocol/) that advertise `set_pr_base_branch`) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
 Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
@@ -231,7 +231,7 @@ An empty value is valid and means "fall back to the forge default branch"; a non
 
 ### pr.template
 
-Use a repository Markdown template for the public narrative, followed by no-mistakes' protected evidence appendix. Supported on **GitHub, GitLab, Gitea, Forgejo, Azure DevOps, and Bitbucket Cloud**, using each backend's authenticated raw-description transport. Forgejo requires `forgejo-axi` with the raw `api` command (contract verified against 1.3.0); an older CLI without it fails rather than using a preview. Self-hosted instances use the existing provider routing.
+Use a repository Markdown template for the public narrative, followed by no-mistakes' protected evidence appendix. Supported on **GitHub, GitLab, Gitea, Forgejo, Azure DevOps, Bitbucket Cloud, and [provider plugins](/no-mistakes/reference/provider-plugin-protocol/)**, using each backend's authenticated raw-description transport (for a plugin, the raw body its `pr view` subcommand returns). Forgejo requires `forgejo-axi` with the raw `api` command (contract verified against 1.3.0); an older CLI without it fails rather than using a preview. Self-hosted instances use the existing provider routing.
 
 | | |
 | --- | --- |
@@ -243,6 +243,7 @@ Use a repository Markdown template for the public narrative, followed by no-mist
 pr:
   template: .github/pull_request_template.md
   publish_intent: false # Optional; otherwise original Intent is still published.
+  appendix: collapsed # Optional; full (the default), collapsed, or minimal.
 ```
 
 For example, commit this template and the configuration to the default branch:
@@ -259,7 +260,7 @@ For example, commit this template and the configuration to the default branch:
 - [ ] Maintainer approves rollout
 ```
 
-On a new or empty PR, the agent makes a best effort to follow template instructions and fill applicable sections from the final branch delta. Only top-level ATX `#` headings outside fenced examples are structurally required, with their trimmed text and order retained. Lower-level headings (`##`–`######`) and task lines are editable: the model may remove inapplicable sections/options, select supported choices, and fill checkbox rationale placeholders. It is instructed not to invent behavior/tests or falsely claim human signoff; human approval boxes must not be marked complete. Subordinate completion and factual correctness are best effort, not mechanically guaranteed. No fixed `What Changed` heading is imposed. This is ordinary Markdown, not a variable/loop/plugin language, and there is no implicit template discovery. Template headings such as `Testing` remain author narrative; recorded Risk, Testing and Pipeline content is still appended by code in its existing order. Extra evidence headings are intentional: this does **not** satisfy a policy requiring only the template's headings or bytes.
+On a new or empty PR, the agent makes a best effort to follow template instructions and fill applicable sections from the final branch delta. Only top-level ATX `#` headings outside fenced examples are structurally required, with their trimmed text and order retained. Lower-level headings (`##`–`######`) and task lines are editable: the model may remove inapplicable sections/options, select supported choices, and fill checkbox rationale placeholders. It is instructed not to invent behavior/tests or falsely claim human signoff; human approval boxes must not be marked complete. Subordinate completion and factual correctness are best effort, not mechanically guaranteed. No fixed `What Changed` heading is imposed. This is ordinary Markdown, not a variable/loop/plugin language, and there is no implicit template discovery. Template headings such as `Testing` remain author narrative; the generated appendix follows that narrative. [`pr.appendix`](#prappendix) chooses whether its recorded evidence is expanded, folded, or reduced to a risk line and the attestation. Extra evidence headings are intentional in the default `full` mode: this does **not** satisfy a policy requiring only the template's headings or bytes. `collapsed` and `minimal` keep the template as the visible body.
 
 The path is read as a literal Git tree entry, never through the pushed worktree filesystem. Absolute/Windows paths, traversal, ref expressions, symlinks, submodules, missing/unreadable files, empty/non-UTF-8/NUL-containing content, and files over 16 KiB fail rather than silently replacing the template with a generic summary. Raw no-mistakes ownership/attestation markers are reserved. Invalid agent output, missing/changed/reordered required H1 headings, and agent failure also fail template drafting rather than using the ordinary fallback. Templates without H1 headings have no structural heading requirements; they are not malformed for that reason. Matching retains the existing ordered-subsequence contract: extra headings are allowed. The structural guard is not a full Markdown parser, a visibility/uniqueness proof, or a template policy engine; it does not enforce subordinate sections, checkbox states, or placeholder completion.
 
@@ -271,11 +272,11 @@ Ownership is never inferred from a heading's name. An existing author-only body 
 
 Updates read the live raw body before deciding which publication path applies. Missing/null/malformed content is not treated as an empty description. Without `pr.title_format`, body-only updates omit title and draft flags rather than reading and resending a possibly stale author title. Template updates re-read immediately before writing and verify the body afterward; observed pre-write edits are retried from the latest body up to three times. Write/readback errors and body divergence fail visibly, without replaying a possibly applied write. This is **not atomic compare-and-swap**: an edit in the provider's final read/write gap can still be lost. New template creations are read back too; a created PR identity may be recorded even if verification then fails, so it remains discoverable for recovery.
 
-If the complete author text, closing references and rendered evidence cannot fit the publication budget, the step fails instead of truncating them. Evidence rendering retains its existing artifact presentation limits; this adds no body-level eviction to make a template fit. Pre-push and CI-repair restamping update the appendix's integrity guard together with its head-bound attestation, without changing author text.
+If the complete author text, closing references, and evidence selected by [`pr.appendix`](#prappendix) cannot fit the publication budget, the step fails instead of truncating them. Evidence rendering retains its existing artifact presentation limits; this adds no body-level eviction to make a template fit. Pre-push and CI-repair restamping update the appendix's integrity guard together with its head-bound attestation, without changing author text.
 
 Unconfigured, unowned descriptions retain ordinary narrative/fallback/size behavior; existing owned bodies retain author-safe updates even after the setting is removed. Providers without a raw content contract reject configured templates.
 
-**Provider caveats:** Azure DevOps' 4,000-character budget is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary Azure truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled Azure description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
+**Provider caveats:** Azure DevOps' 4,000-character budget (and any non-zero `max_pr_body_chars` declared by a provider plugin) is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
 
 Provider contract tests use fake CLI/API responses and local HTTP fixtures, not live server acceptance. Exact server byte roundtrips, rendering, consistency and instance-specific limits remain unverified; a differing body readback fails visibly rather than being normalized into success.
 
@@ -295,6 +296,30 @@ A contributor can keep the section off for their own runs without touching this 
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
 
+### pr.appendix
+
+Choose how much of the generated Risk, Testing, and Pipeline tail is visible after the narrative. Intent publication stays under [`pr.publish_intent`](#prpublish_intent).
+
+| | |
+| --- | --- |
+| Type | `string` |
+| Values | `full`, `collapsed`, `minimal` |
+| Default | `full` (missing or empty also preserves the default) |
+| Trust | Trusted default branch only, regardless of `allow_repo_commands` |
+
+`full` is today's body: `## Risk Assessment`, `## Testing`, and `## Pipeline` follow the narrative, in that order.
+
+`collapsed` folds those three sections into one closed `Validation` details block. The narrative, and the Intent section when it is published, stay outside the block. Within the body limit, opening the block shows the same recorded evidence `full` would have published. If an ordinary body exceeds the limit, Testing is dropped before pipeline history is shortened; the attestation is retained. Bitbucket Cloud escapes raw HTML, so `collapsed` stays on the `full` appendix there instead of printing the details tags as text.
+
+`minimal` keeps a single risk line (the recorded level and rationale, on one line) and the pipeline attestation. Testing logs, pipeline round history, and the Risk and Pipeline headings are omitted. The attestation marker stays in its host-specific form: an HTML comment on GitHub, GitLab, Gitea, Forgejo, Azure, and provider plugins, and a visible text fence on an owned Bitbucket description. Ordinary unowned Bitbucket descriptions still omit the comment.
+
+An unrecognized value fails config parsing closed. Body size limits and truncation still apply in every mode. A templated body that cannot fit still fails instead of dropping author text. The marker remains the one `require-no-mistakes` binds to the PR head.
+
+```yaml
+pr:
+  appendix: minimal
+```
+
 ### pr.title_format
 
 Configure the title shape no-mistakes applies to newly created and updated pull requests.
@@ -306,7 +331,7 @@ Configure the title shape no-mistakes applies to newly created and updated pull 
 | Trust | Pushed branch, like other non-executing repository conventions |
 
 The template supports literal text and `{{.Branch}}` and `{{.Title}}` placeholders.
-`{{.Branch}}` is the normalized branch identifier resolved by [`commit.branch_pattern`](#commitbranch_pattern) when configured; an inherited [global `commit.branch_replacement`](/no-mistakes/reference/global-config/#commitbranch_replacement) can transform its capture before use.
+`{{.Branch}}` is the normalized branch identifier resolved by [`commit.branch_pattern`](#commitbranch_pattern) or a matching machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) entry; its capture can be transformed by `commit.branch_replacement` from global config or that entry.
 `{{.Title}}` is the bare concise title text returned by the PR agent, or `update pull request` when ordinary drafting uses its deterministic fallback.
 For example, `title_format: "{{.Branch}}: {{.Title}}"` can render `PROJ-123: add widget` from a matching branch.
 The format is applied deterministically after drafting; its literal text is not sent to the agent as an instruction.
@@ -318,6 +343,7 @@ Providers can impose lower publication limits. GitLab titles are checked at its 
 If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR publication fails safely instead of publishing a malformed title.
 
 When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
+For a machine-local title convention that does not require repository configuration, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides).
 
 ### commands.prepare
 
@@ -328,9 +354,14 @@ Optional dependency-preparation command for isolated run worktrees. Run via the 
 | Type | `string` |
 | Default | Empty (no preparation command) |
 
-When set, no-mistakes runs this command before the first configured `commands.test`, `commands.lint`, or `commands.format` command that the pipeline reaches. It is a lazy command hook, not an additional pipeline step: `commands.prepare` alone does nothing when no configured command needs it. A successful result is shared by all later configured commands in that isolated worktree, including after daemon recovery. The dependent step log records the preparation command, output, and elapsed preparation time. A non-zero exit or launch failure fails that step before its command runs.
+When set, no-mistakes runs this command before the first configured Test, Lint, or Format command that the pipeline reaches, including machine-local additional Test or Lint checks.
+By default, it is a lazy command hook rather than an additional pipeline step: when no configured command needs it and [`test.prepare`](#testprepare) is false, `commands.prepare` alone does nothing.
+Trusted `test.prepare: true` instead triggers it eagerly before agent-only Test while leaving `commands.test` unset.
+A successful result is shared by all later configured commands in that isolated worktree, including after daemon recovery.
+The dependent step log records the preparation command, output, and elapsed preparation time.
+A non-zero exit or launch failure fails that step before its command runs.
 
-Use this for deterministic dependency materialization such as `npm ci --prefer-offline`. The run worktree starts with tracked files only, so ignored dependency directories such as `node_modules` are otherwise absent. no-mistakes keeps ignored files produced by preparation, while removing its tracked, ordinary untracked, and nested-repository mutations before continuing. Earlier pending tracked and ordinary untracked pipeline changes are restored exactly, so preparation can run before a later configured command without admitting setup artifacts into a fix commit.
+Use this for deterministic dependency materialization such as `npm ci --prefer-offline`. The run worktree starts with tracked files only, so ignored dependency directories such as `node_modules` are otherwise absent. no-mistakes keeps ignored files produced by preparation, and keeps any submodule it checks out at the commit the superproject records, while removing its tracked, ordinary untracked, and nested-repository mutations before continuing; a submodule commit the command moved to is reset to the recorded commit. Earlier pending tracked and ordinary untracked pipeline changes are restored exactly, so preparation can run before a later configured command without admitting setup artifacts into a fix commit.
 
 Like every `commands.*` value, `commands.prepare` comes from the trusted default-branch configuration unless that trusted copy explicitly enables `allow_repo_commands: true`. no-mistakes never auto-detects an install command from the pushed branch.
 
@@ -348,6 +379,7 @@ Broad regression belongs in remote CI and remains mandatory before a PR is ready
 no-mistakes does not guess whether an arbitrary shell string is "too broad" - the contract is documented and dogfooded, not enforced with language- or filename-specific heuristics.
 
 When set, the test step runs this exact command first as the baseline and checks the exit code.
+Machine-local [`repository_overrides.commands`](/no-mistakes/reference/global-config/#machine-local-commands) can add checks and lower its scheduling priority without replacing this command.
 Whether the baseline passes, fails, or is absent, the agent then derives targeted end-user scenarios and drives the product itself under the same targeted-validation contract.
 A non-zero exit parks the Test step. Approving that gate records an explicit override on the step and on the PR attestation; the [`require-no-mistakes`](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation) check treats that as non-compliant unless [`test.allow_approve_over_failure`](#testallow_approve_over_failure) is set.
 
@@ -384,11 +416,36 @@ Repository-specific documentation ownership policy for the document step.
 | Type | `string` (multiline) |
 | Default | Empty (built-in placement policy only) |
 
-The document step always applies a built-in placement policy: every fact has exactly one authoritative owner document, stale duplicates are removed or reduced to pointers instead of synchronized, no new documentation surfaces are created merely to close perceived gaps, and incident lessons live as invariants near their owner (with a pointer to the regression test), never as AGENTS.md postmortems.
+The document step always applies a built-in placement policy: every fact has exactly one authoritative owner document, stale duplicates are removed or reduced to pointers instead of synchronized, no new documentation surfaces are created merely to close perceived gaps, and incident lessons live as invariants near their owner (with a pointer to the regression test), never as AGENTS.md postmortems. Its agent prompt treats `AGENTS.md` and `CLAUDE.md` as memory files: it may correct or remove factually wrong content, but must not add content because something is missing, create absent files, or restructure or expand them. This is prompt guidance, not a file guard.
 `document.instructions` states this repository's ownership map or extra placement rules (for example, which file owns which class of facts).
-It augments or clarifies the built-in policy; it cannot disable documentation integrity.
+It augments or clarifies the built-in policy; it cannot disable documentation integrity, and it cannot turn the memory files into an automated documentation surface - instructions that encourage additions to `AGENTS.md` or `CLAUDE.md` do not take effect over the built-in correction-only rule.
 
 Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
+
+An operator can add their own policy for this repository through a machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-and-documentation-guidance) entry; it is rendered as a separate, labeled section and never replaces this field.
+
+### review.conversation
+
+Whether the reviewer may ask you questions while it reviews, instead of turning every undecidable point into a finding you answer with a verdict. The [Review conversation](/no-mistakes/concepts/review-conversation/) concept page owns the protocol, the state machine, and what is persisted.
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+review:
+  conversation: true
+```
+
+**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out, in either direction. A contributor must not be able to make their own review park for a human answer, and once you have asked for the conversation a pushed branch must not be able to decline it.
+
+**On**, the review step gains a question channel. The reviewer emits each larger question the moment it has one, keeps reviewing while it is open, and re-reads answers at its own checkpoints. A pass that ends with an unanswered question parks with one `ask-user` warning per question; you answer each with [`no-mistakes axi answer`](/no-mistakes/reference/cli/#no-mistakes-axi-answer), and once none are open the reviewer finishes its pass with your answers - resuming that same session when [`session_reuse`](/no-mistakes/reference/global-config/#session_reuse) is on, cold otherwise. Answers are recorded per branch, reach every later cold reviewer as settled, and are published in the PR body.
+
+**Off (the default)**, the review step is the monologue it has always been: the reviewer is told nothing about a channel, no conversation files are written, no question findings are produced, and the PR body grows no conversation group. A repository that never opted in cannot have a conversation on disk, so for it every review turn also runs session-free and `no-mistakes axi answer` refuses and names this setting. A question asked while the setting was on stays answerable if you turn it off mid-run - see [Turning the setting off does not strand a question already asked](/no-mistakes/concepts/review-conversation/). Upgrading no-mistakes never starts a conversation under a repository that did not ask for one.
+
+The trade-off is latency against precision. A question costs the run a park - tens of minutes to hours of wall clock, waiting on you - and buys a review that decided the point instead of handing you a finding to rule on. Repositories whose changes rarely turn on product intent will not get much for that wait; repositories where the reviewer regularly cannot tell deliberate from accidental will.
 
 ### review.path_instructions
 
@@ -437,8 +494,8 @@ The step log names the rules it applied and the rules that matched nothing, so a
 
 `instructions` is prompt text, so merge-conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) are removed from it and runs of whitespace are collapsed, exactly as for [`document.instructions`](#documentinstructions). Write rules without those tokens; a value that would be left empty once they are removed is rejected rather than silently dropped.
 
-At most 32 entries are allowed, and the assembled prompt section may not exceed 16,384 bytes, because the injected text shares the review prompt's budget and an oversized prompt fails the agent invocation outright.
-The size is measured on what is actually injected: the heading, and for every entry its labels, its `path`, its `instructions`, and a 192-byte allowance for its matched-file list. A block whose matched-file list would exceed that allowance is truncated with a `+N more` suffix, so the measured limit holds for any diff.
+At most 32 entries are allowed, and the assembled prompt sections may not exceed 16,384 bytes, because the injected text shares the review prompt's budget and an oversized prompt fails the agent invocation outright.
+The size is measured on what is actually injected: each section's heading, and for every entry its labels, its `path`, its `instructions`, and a 192-byte allowance for its matched-file list. A block whose matched-file list would exceed that allowance is truncated with a `+N more` suffix, so the measured limit holds for any diff.
 
 A missing `path` or `instructions` value, an `instructions` value that renders empty, a `path` that is not a valid glob, or a config over either limit fails when the config is parsed, so the run aborts before an agent starts instead of silently dropping guidance.
 These checks run on whichever copy of the file is parsed, including the pushed branch's. A pushed branch's blocks are ignored when the review prompt is built (see [Trust](#trust) below), but an invalid block on that branch still fails its own run, so a broken rule surfaces before it merges and becomes the trusted copy.
@@ -446,6 +503,11 @@ These checks run on whichever copy of the file is parsed, including the pushed b
 #### Trust
 
 Like `document.instructions`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands): a value present only on a pushed branch is ignored, so a contributor cannot inject instructions into the review that gates them.
+
+#### Machine-local rules
+
+The operator gating a repository can add rules from their own global config, globally with [`review.path_instructions`](/no-mistakes/reference/global-config/#reviewpath_instructions) or for this repository with a [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-and-documentation-guidance) entry.
+Those rules render in their own labeled sections before this field's, never replace it, and count toward the limits above together with it.
 
 ### gates
 
@@ -479,7 +541,7 @@ A run resolves this list once when it starts. Adding or removing a gate on the d
 
 #### Failure
 
-A failing gate parks the run for a decision instead of auto-fixing: a gate states a repository rule, so deciding that the change should be altered to satisfy it is the author's call, never the pipeline's.
+A failing gate parks by default. Trusted [`auto_fix.gates.<name>`](#auto_fix) can authorize bounded repairs of auto-fix-eligible findings. Any `ask-user` finding still parks the whole gate. The current exit-code-only failure is `ask-user`, so the budget has no effect until the [structured findings follow-up](https://github.com/kunchenguid/no-mistakes/issues/1027) supplies auto-fix-eligible findings.
 
 Answering that decision with `fix` is that authorization: the gate then runs a fix turn against the reported findings and the command that must exit `0`, then re-runs its check. The next verdict describes the repaired worktree. Answering `approve` accepts the change as it stands.
 
@@ -561,7 +623,7 @@ This is a staging guard, not an agent filesystem sandbox or a check on semantic 
 
 ### auto_fix
 
-Override auto-fix attempt limits for specific steps. Fields not set here inherit from global config.
+Override auto-fix attempt limits for specific steps. Core-step fields not set here inherit from global config. Gate budgets are repository-only and default to `0`.
 
 | | |
 |---|---|
@@ -575,6 +637,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | `auto_fix.document` | `int` | Inherits from global (default `3`) |
 | `auto_fix.lint` | `int` | Inherits from global (default `3`) |
 | `auto_fix.ci` | `int` | Inherits from global (default `3`) |
+| `auto_fix.gates.<name>` | Non-negative `int` | `0`, trusted default branch only |
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
@@ -582,6 +645,18 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 The CI step reports each settled failure as an `auto-fix` finding and the shared auto-fix loop drives its fix rounds, exactly as for review; `ask-user` findings (a supported review bot's red check, a provider-attributed check no rerun will replace) never consume an attempt.
+
+For an extra gate, use its declared `name`, not its full step name:
+
+```yaml
+auto_fix:
+  gates:
+    mutation-budget: 2
+```
+
+This budget is honored only from the trusted default-branch config, even with `allow_repo_commands: true`. Global `auto_fix.gates` entries are rejected, including empty maps. Unknown gate names, negative budgets, and non-integer values are rejected.
+
+With a positive budget, a gate with at least one `auto-fix` finding and no `ask-user` findings uses the shared fix loop. The fixer receives the findings and decision history, commits repairs like Test, and re-runs the gate. It parks when the budget is exhausted or a repair returns as many or more findings than the round it answered. Changing finding IDs without reducing the count is not progress. Manual fix, approve, and skip responses remain unchanged. This budget does not require non-waivable command success under unattended AXI.
 
 Legacy alias: `auto_fix.babysit`.
 
@@ -614,6 +689,10 @@ With a positive budget, a rerun is requested when the provider attributes the ou
 The remaining outcomes are the job's own verdict on the commit and are never re-run:
 
 - `failure`, `error`, `action_required`, and `startup_failure` (after any repository step ran) are the job's verdict, so they escalate on the first failure with no added latency.
+  One GitHub outcome is not a verdict at all: a workflow run that concluded `action_required` without running a single job is the forge holding a first-time contributor's workflows until a maintainer approves them.
+  Nothing ran, so there is nothing to escalate and no rerun that could clear it; that run is reported as pending, and the monitor names the hold and keeps waiting for the maintainer instead of spending auto-fix rounds on work that never executed. A held run never defers another check's genuine failure: that failure escalates as it would without the hold, and the hold itself still produces no finding.
+  The distinction is read from the run's own job list, so a run that concluded `action_required` after executing jobs keeps escalating as before.
+  Only a job list the provider actually returned, and returned empty, is evidence of the hold: a read that fails, and a response carrying no job list at all, are unreadable job data and fail closed to the same unchanged behavior.
 - `timed_out` means the job exceeded its own `timeout-minutes`, which is usually the branch's own code hanging. Re-running it burns another full timeout window reproducing the same failure, so it is treated as a genuine failure and is not opt-in.
 - `stale` is already treated as skipped rather than failed, so it never reaches this decision.
 - An outcome no-mistakes recognizes as none of the above never earns a rerun either.
@@ -636,7 +715,7 @@ Answering that gate with `fix` is still honored: the fix round you asked for rep
 
 Reruns are skipped when:
 
-- The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, and Gitea reach the approval gate without a rerun).
+- The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, Gitea, and provider plugins reach the approval gate without a rerun).
 - The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a cancelled check naming only the workflow run re-runs the whole workflow, while other run-only links re-run failed jobs; an unrecognized link is widened into neither.
 - The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
 
@@ -693,6 +772,39 @@ A pushed branch cannot turn a maintainer's revalidation requirement off for its 
 A value set here always wins over the operator's own [`ci.revalidate_repairs`](/no-mistakes/reference/global-config/#cirevalidate_repairs), in both directions: `true` here enables revalidation even when the global value is `false`, and an explicit `false` here opts out even when the global value is `true`.
 With no trusted copy of this file, the operator's global value applies, then the built-in default of `false`.
 
+### ci.review_bot_comments
+
+When the CI step reads a supported review bot's (currently Greptile's) unresolved review comments.
+
+| | |
+|---|---|
+| Type | `string` (`on_failure` or `always`) |
+| Default | `on_failure` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  review_bot_comments: always
+```
+
+- **`on_failure` (default)** reads them only when the bot's own check failed. A green bot check is green, whatever comments it left. This is the behavior before the key existed.
+- **`always`** also reads them when the bot's check completed green on the current head, or has not registered on it yet once every other check is green, since the bot's threads from an earlier head can still be unresolved. Each unresolved comment becomes the same `ask-user` finding a red bot check produces, anchored to the comment's file and line, so the step parks for a decision instead of reporting `checks-passed`. A green bot with nothing unresolved is still green.
+
+A review bot can conclude its check `success` while leaving an unresolved comment. The comment most likely to be missed that way is the one on the pipeline's own CI repair commit, which no human has reviewed yet.
+
+Under `always`:
+
+- Comments are read only once every check on the current head has completed green, the bot's included when it has registered one, so a review still being posted is not raced. A bot that has not registered a check on the head yet has its comments read too, since its threads from an earlier head can still be unresolved. A head with no checks at all under trusted [`no_ci: true`](#no_ci) has them read the same way before it is reported ready. Only unresolved threads count, and the same per-gate bound applies as for a red check.
+- The findings never spend an `auto_fix.ci` attempt. A human decides: approve, skip, or select comments for a fix round.
+- Approving over them records the CI step as passed with an override naming the comments, never as a clean pass.
+- A comment list that cannot be read is not treated as empty: `checks-passed` is withheld, and a read that keeps failing parks for a decision.
+- Each green poll costs one more provider read for the comments.
+
+Forges that cannot supply review comments are unaffected by either value.
+
+This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot silence a green bot's comments on itself, and cannot opt itself in either.
+A value set here wins over the operator's own [`ci.review_bot_comments`](/no-mistakes/reference/global-config/#cireview_bot_comments).
+
 ### rebase.strategy
 
 How the [Rebase step](/no-mistakes/reference/pipeline-steps/#rebase) integrates a base branch that moved under the gated branch.
@@ -748,6 +860,7 @@ That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte su
 The setting applies to the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs. It does not apply to commits created by the Rebase or Push steps.
 
 This non-executing field is read from the pushed branch, so a branch can adopt its own commit-subject convention without enabling `allow_repo_commands`.
+To apply a machine-local convention without adding it to the repository, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides).
 
 ### commit.branch_pattern
 
@@ -765,6 +878,20 @@ When either template uses `{{.Branch}}` and the pattern does not find a non-empt
 
 This non-executing field is read from the pushed branch without enabling `allow_repo_commands`.
 
+### commit.trailers
+
+Override the trailers appended to agent-produced commits for this repository.
+
+| | |
+| --- | --- |
+| Type | `list` of `string` templates |
+| Default | Inherits from global config, where it is unset |
+
+The entries follow the [global `commit.trailers` placeholders and validation rules](/no-mistakes/reference/global-config/#committrailers).
+A list here replaces the inherited one rather than extending it, and `trailers: []` turns inherited trailers off for this repository.
+
+This non-executing field is read from the pushed branch without enabling `allow_repo_commands`, like `commit.fix_message`: it shapes only the messages of commits the pipeline makes on that branch.
+
 ### intent
 
 Override transcript-based user-intent extraction settings for this repo.
@@ -778,6 +905,45 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+
+### test.prepare
+
+**Type:** boolean. **Default:** `false`. Repository-only, trusted-default-branch-only, even with `allow_repo_commands: true`.
+
+```yaml
+commands:
+  prepare: "npm ci --prefer-offline"
+test:
+  prepare: true
+# commands.test remains unset: Test is agent-driven.
+```
+
+Opts agent-only Test into running `commands.prepare` before its first agent turn (including a repair turn). Uses the same successful-worktree receipt, cleanup/restoration, failure reporting, and recovery behavior as configured Test/Lint/Format; later configured commands do not install again. A new worktree prepares separately. Existing dependencies or an agent's claim that installation succeeded do not count as managed preparation. An empty `commands.prepare` remains a no-op, and configured `commands.test` retains its existing preparation behavior.
+
+This is **eager**, not on-demand: opted-in repositories pay setup cost even when the evidence agent subsequently reports `no-surface`. Leave it off to retain lazy command-only preparation. Preparation does not replace fresh Test evidence or change verdict/approval policy. Failures stop Test before the agent launches and never record successful preparation.
+
+The trigger always comes from the trusted default branch; pushed-branch text cannot enable it. The executable `commands.prepare` value separately follows the existing `allow_repo_commands` policy.
+
+### test.base_attribution
+
+**Type:** boolean. **Default:** `false`. Repository-only, trusted-default-branch-only, even with `allow_repo_commands: true`.
+
+```yaml
+commands:
+  test: "go test ./internal/... -count=1"
+test:
+  base_attribution: true
+```
+
+When a configured [`commands.test`](#commandstest) exits non-zero, re-runs the same command on the run's base commit (the merge base with the effective PR base branch) and diffs the two results, so failures that already exist on the base are not blamed on the change. The base run uses a disposable clone of that commit outside the run worktree, runs [`commands.prepare`](#commandsprepare) there first when one is configured (its output is logged as `Prepare (base)`, and its tracked and ordinary untracked changes are reset before the base suite runs, exactly as on the head, so only ignored materialization survives), and logs its output to the Test step log as `Test (base)`. Base preparation and the base command share one deadline, the Test budget [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) (default 30 minutes); a base run that outlives it is stopped and reported as unavailable while the head's failure still parks. Both base commands keep the machine-local [`nice`](/no-mistakes/reference/global-config/#machine-local-commands) settings for `prepare` and `test`. Only the repository command's own output is attributed: machine-local `additional` test checks are never re-run on the base, and a failure in one of them alone triggers no base run.
+
+The attribution leads the Test findings summary (the failure output the PR and repair turns see) and is passed to the evidence agent:
+
+- the command passes on the base: every failure is introduced by the change;
+- the command also fails on the base: recognized per-test failure lines are split into *introduced by this change* and *pre-existing on the base commit*. Per-test lines are recognized for common runners (`go test`, pytest, jest/vitest, TAP, cargo); package- or file-level summary lines are ignored, except that a `go test` failure is keyed by the package its block reports, and a pytest failure is keyed by its `path::test` id without the failure reason. Only those two carry a package or file identity; any other line that also fails on the base (jest/vitest, TAP, cargo, or `go test` output without a package line) may be a different test sharing the name, so it is listed as *ambiguous, could not attribute* instead of pre-existing. A `go test` package that fails with no per-test line (a build failure, or a `TestMain` or `init` panic) and did not fail that way on the base is listed under *failures without a per-test line (could not be attributed)*. When no per-test lines are recognized in the base output, or none are left to list from the change's output, the summary says the two could not be separated;
+- the base checkout, preparation, or run cannot complete (including a base command that exits 126 or 127, meaning it could not be executed or found, such as an ignored dependency the fresh clone lacks, or a base run past its deadline): the summary says attribution is unavailable and every failure stays attributed to the change.
+
+Attribution informs; it never changes the gate. The failing command still parks the Test step with the same `error` finding, an approval over it is still recorded as a configured-command override (see [`test.allow_approve_over_failure`](#testallow_approve_over_failure)), and a passing command never triggers a base run. Each failing Test execution, including after an auto-fix round, pays one extra run of the command, which is why this is off by default.
 
 ### test.instructions
 

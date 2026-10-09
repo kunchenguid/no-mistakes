@@ -143,6 +143,7 @@ func TestEverySupportedAdapterCarriesTheRunOverlayAndGateMarker(t *testing.T) {
 		types.AgentOmp,
 		types.AgentCopilot,
 		types.AgentCursor,
+		types.AgentDevin,
 		types.AgentAntigravity,
 		types.AgentName("acp:some-target"),
 	} {

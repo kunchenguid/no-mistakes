@@ -376,6 +376,7 @@ func TestRestampPRAttestation_MissingReaderIsSkipped(t *testing.T) {
 }
 
 func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	original := compliantPipelineBody(t, f.headSHA)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
@@ -394,7 +395,7 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 	f.sctx.Ctx = context.Background()
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err != nil {
 		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
 	}
@@ -419,6 +420,7 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 }
 
 func TestCIStep_UnsettledRepairPushParksImmediately(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
@@ -451,6 +453,7 @@ func TestCIStep_UnsettledRepairPushParksImmediately(t *testing.T) {
 }
 
 func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
@@ -466,7 +469,7 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 	f.sctx.Ctx = context.Background()
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err == nil || !strings.Contains(err.Error(), "failed after 3 attempts") {
 		t.Fatalf("commitRepair error = %v, want unsettled attestation failure", err)
 	}
@@ -490,13 +493,14 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 // interaction. GitLab with an available host supports raw reads and restamping;
 // provider identity alone no longer causes the skip.
 func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
 	f.sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	f.sctx.Run.PRURL = &gitlabPR
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err != nil {
 		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
 	}
@@ -509,6 +513,7 @@ func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) 
 }
 
 func TestCIStep_PublishRepairDoesNotMintAttestation(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	const foreign = "a regular pull request with no pipeline section"
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
@@ -527,7 +532,7 @@ func TestCIStep_PublishRepairDoesNotMintAttestation(t *testing.T) {
 	f.sctx.Ctx = context.Background()
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err != nil {
 		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
 	}

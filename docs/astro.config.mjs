@@ -30,6 +30,10 @@ export default defineConfig({
             { label: "The Gate Model", slug: "concepts/gate-model" },
             { label: "Pipeline", slug: "concepts/pipeline" },
             { label: "Auto-Fix Loop", slug: "concepts/auto-fix" },
+            {
+              label: "The Review Conversation",
+              slug: "concepts/review-conversation",
+            },
             { label: "Daemon & Worktrees", slug: "concepts/daemon" },
           ],
         },
@@ -42,6 +46,7 @@ export default defineConfig({
             { label: "Setup Wizard", slug: "guides/setup-wizard" },
             { label: "Using the TUI", slug: "guides/tui" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
+            { label: "Fork CI", slug: "guides/fork-ci" },
           ],
         },
         {
@@ -52,6 +57,7 @@ export default defineConfig({
             { label: "Pipeline Steps", slug: "reference/pipeline-steps" },
             { label: "Global Config", slug: "reference/global-config" },
             { label: "Repo Config", slug: "reference/repo-config" },
+            { label: "Provider Plugin Protocol", slug: "reference/provider-plugin-protocol" },
             { label: "Environment Variables", slug: "reference/environment" },
           ],
         },

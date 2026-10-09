@@ -1,6 +1,8 @@
 # Build output
 bin/
 tmp/
+/result
+/result-*
 .tmp/
 
 # Go

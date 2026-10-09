@@ -47,11 +47,23 @@ exit $status
 
 // trustedRepoConfigWithGates is what the maintainer commits to the default
 // branch: one command gate after test.
-// allow_repo_commands is deliberately false, because gates are honored from the
-// trusted copy regardless of that opt-in.
+// allow_repo_commands is deliberately true: gates and their auto-fix budgets
+// remain trusted-only even when the maintainer permits pushed command settings.
 const trustedRepoConfigWithGates = `ignore_patterns:
   - 'vendor/**'
-allow_repo_commands: false
+allow_repo_commands: true
+gates:
+  - name: package-registry
+    after: test
+    command: sh scripts/package-registry.sh
+auto_fix:
+  gates:
+    package-registry: 2
+`
+
+const trustedRepoConfigWithDefaultGateBudget = `ignore_patterns:
+  - 'vendor/**'
+allow_repo_commands: true
 gates:
   - name: package-registry
     after: test
@@ -59,14 +71,17 @@ gates:
 `
 
 // pushedRepoConfigAttemptingToAuthorItsOwnGates is what a contributor ships on
-// their own branch: it drops the maintainer's gate and declares its own shell
-// gate.
+// their own branch: it retargets the maintainer's gate and raises its fix
+// budget. Neither value may replace the trusted copy.
 const pushedRepoConfigAttemptingToAuthorItsOwnGates = `ignore_patterns:
   - 'vendor/**'
 gates:
-  - name: contributor-shell
-    after: review
+  - name: package-registry
+    after: test
     command: touch contributor-gate-ran.txt
+auto_fix:
+  gates:
+    package-registry: 99
 `
 
 // customGatesScenario answers the package-registry gate's authorized fix turn.
@@ -137,7 +152,7 @@ func TestCustomGatesJourney(t *testing.T) {
 		const branch = "feature/custom-gates"
 		h.CommitChange(branch, "internal/pricing/pricing.go", "package pricing\n\nfunc Quote() int { return 1 }\n", "add pricing package")
 		h.CommitChange(branch, ".no-mistakes.yaml", pushedRepoConfigAttemptingToAuthorItsOwnGates,
-			"contributor: replace the maintainer's gates with my own")
+			"contributor: retarget the maintainer's gate")
 		h.PushToGate(branch)
 
 		fw := h.AddWorktree(branch)
@@ -149,6 +164,18 @@ func TestCustomGatesJourney(t *testing.T) {
 		if !ok || testStep.Status != types.StepStatusCompleted {
 			t.Errorf("%s parked before test completed (test status=%v)", gateRegistryStep, testStep.Status)
 		}
+		registryStep, ok := findStep(atRegistry.Steps, gateRegistryStep)
+		if !ok {
+			t.Fatalf("parked run has no %s step", gateRegistryStep)
+		}
+		if registryStep.AutoFixLimit != 2 {
+			t.Errorf("%s auto_fix_limit = %d, want trusted budget 2", gateRegistryStep, registryStep.AutoFixLimit)
+		}
+		if registryStep.FixRoundCount != 0 {
+			t.Errorf("%s spent %d fix rounds before parking on an ask-user finding", gateRegistryStep, registryStep.FixRoundCount)
+		}
+		t.Logf("EVIDENCE parked gate: status=%s auto_fix_limit=%d fix_round_count=%d",
+			registryStep.Status, registryStep.AutoFixLimit, registryStep.FixRoundCount)
 
 		// The gate's own failure output is readable through the step log the
 		// truncation marker points operators at.
@@ -196,16 +223,9 @@ func TestCustomGatesJourney(t *testing.T) {
 				t.Errorf("%s status = %s, want completed", name, step.Status)
 			}
 		}
-		registryStep, _ := findStep(final.Steps, gateRegistryStep)
+		registryStep, _ = findStep(final.Steps, gateRegistryStep)
 		if registryStep.FixRoundCount != 1 {
 			t.Errorf("%s fix_round_count = %d, want 1", gateRegistryStep, registryStep.FixRoundCount)
-		}
-
-		// The contributor's own gates never became steps.
-		for _, step := range final.Steps {
-			if strings.Contains(string(step.StepName), "contributor") {
-				t.Errorf("SECURITY REGRESSION: a gate declared by the pushed branch ran as step %s", step.StepName)
-			}
 		}
 
 		// The published branch carries the gate's repair, and the registry now
@@ -231,6 +251,47 @@ func TestCustomGatesJourney(t *testing.T) {
 		}
 		if len(pinned) != 1 || pinned[0].Name != "package-registry" {
 			t.Errorf("pinned gates = %+v, want the trusted package-registry gate", pinned)
+		}
+	})
+
+	t.Run("pushed_budget_cannot_enable_a_default_off_gate", func(t *testing.T) {
+		h := NewHarness(t, SetupOpts{Agent: "claude"})
+		h.CommitChange("main", "ARCHITECTURE.md", architectureRegistry, "maintainer: add the package registry")
+		h.CommitChange("main", "scripts/package-registry.sh", packageRegistryCheck, "maintainer: add the package registry fitness check")
+		pushMainRepoConfig(t, h, trustedRepoConfigWithDefaultGateBudget)
+
+		if out, err := h.Run("init"); err != nil {
+			t.Fatalf("nm init: %v\n%s", err, out)
+		}
+
+		const branch = "feature/default-gate-budget"
+		h.CommitChange(branch, "internal/pricing/pricing.go", "package pricing\n\nfunc Quote() int { return 1 }\n", "add pricing package")
+		h.CommitChange(branch, ".no-mistakes.yaml", pushedRepoConfigAttemptingToAuthorItsOwnGates,
+			"contributor: enable gate auto-fix")
+		h.PushToGate(branch)
+
+		fw := h.AddWorktree(branch)
+		parked := waitForStepStatus(t, h, branch, gateRegistryStep, types.StepStatusAwaitingApproval, 180*time.Second)
+		gateStep, ok := findStep(parked.Steps, gateRegistryStep)
+		if !ok {
+			t.Fatalf("parked run has no %s step", gateRegistryStep)
+		}
+		if gateStep.AutoFixLimit != 0 {
+			t.Errorf("%s auto_fix_limit = %d, want default 0", gateRegistryStep, gateStep.AutoFixLimit)
+		}
+		if gateStep.FixRoundCount != 0 {
+			t.Errorf("%s spent %d fix rounds with its trusted budget unset", gateRegistryStep, gateStep.FixRoundCount)
+		}
+		t.Logf("EVIDENCE default-off gate: status=%s auto_fix_limit=%d fix_round_count=%d",
+			gateStep.Status, gateStep.AutoFixLimit, gateStep.FixRoundCount)
+
+		approveOut, err := h.RunInDir(fw, "axi", "respond", "--action", "approve")
+		if err != nil {
+			t.Fatalf("axi respond --action approve: %v\n%s", err, approveOut)
+		}
+		final := h.WaitForRun(branch, 180*time.Second)
+		if final.Status != types.RunCompleted {
+			t.Fatalf("run status = %s, want completed (error=%q)", final.Status, deref(final.Error))
 		}
 	})
 

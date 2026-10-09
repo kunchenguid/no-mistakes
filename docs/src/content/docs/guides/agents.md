@@ -5,7 +5,7 @@ description: Supported AI agents, how to pick one, and how they integrate.
 
 `no-mistakes` is pipeline-agent-agnostic by design: the gate should mean the same thing regardless of which supported agent backend you prefer.
 It is not runner-free.
-Every validation run requires a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`.
+Every validation run requires a supported native agent binary, the `agent: cursor` or `agent: devin` ACP alias, or an explicit `acp:<target>` through `acpx`.
 The default `agent: auto` setting picks the first supported native agent or ACP alias available on your system.
 
 The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
@@ -22,7 +22,7 @@ Pipeline agent prompts also include a workspace-boundary preamble and an executi
 It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, use that exact path prefix when tools require absolute paths without guessing or re-resolving paths, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
 The only intentional out-of-worktree write it allows is test evidence under the run's managed evidence directory when a testing prompt asks for it.
 Incidental temp or cache writes from normal development tools are still allowed.
-The same preamble bounds the read side: agents may read outside the worktree and run read-only commands, but must not run filesystem-wide searches such as `find /` or `mdfind /`, and must not hunt the host filesystem for an installed tool. When a needed tool is not on `PATH` and no repository-local path is supplied, they report the missing tool and the work it blocked in their normal result rather than searching the machine; the Test step reports the affected scenario untested with that reason.
+The same preamble bounds the read side: agents may read outside the worktree and run read-only commands, but must not run filesystem-wide searches such as `find /` or `mdfind /`, and must not hunt the host filesystem for an installed tool. When a needed tool is not on `PATH` and no repository-local path is supplied, agents report the missing tool and blocked work in their normal result rather than searching the machine; the [Test step](/no-mistakes/reference/pipeline-steps/#test) has its own live-scenario guidance.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
 
 ## How to choose quickly
@@ -50,6 +50,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | Omp | `omp` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
+| Devin | `devin` + `acpx` | `devin acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Runner requirements
@@ -76,7 +77,7 @@ Running the gate from Antigravity or another Gemini-based coding environment doe
 Choose one of these supported setups:
 
 1. Install any supported native agent CLI and leave `agent: auto`, or select it explicitly in `~/.no-mistakes/config.yaml`.
-2. Install both `cursor-agent` and `acpx`, then leave `agent: auto` or select `agent: cursor`.
+2. Install both `cursor-agent` and `acpx`, then leave `agent: auto` or select `agent: cursor`; likewise `devin` and `acpx` for `agent: devin`.
 3. Install `acpx`, confirm that the Gemini ACP target works locally, and configure `agent: acp:gemini`.
 
 ```yaml
@@ -119,7 +120,7 @@ agent: [codex, grok]
 ### Optional ACP target
 
 If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix, for example `agent: acp:gemini`.
-`agent: auto` probes native agents and first-class ACP aliases (such as `cursor`), and never auto-selects arbitrary `acp:<target>` entries.
+`agent: auto` probes native agents and first-class ACP aliases (`cursor` and `devin`), and never auto-selects arbitrary `acp:<target>` entries.
 
 `acp:omp` (Oh My Pi over ACP) is additionally a verified gate agent under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings): its default launch neutralizes the target repository's context files, rules, skills, and extensions. See that reference entry for the exact mechanism and the override that fails closed.
 
@@ -173,6 +174,7 @@ no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --adopt-published
 no-mistakes axi respond --action approve
+no-mistakes axi respond --run <id> --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
@@ -181,6 +183,7 @@ no-mistakes axi abort --run <id>
 Before any post-pipeline local commit or fresh run, read `branch_sync` and follow its exact `next_action.command`.
 A `sync` action runs `no-mistakes axi sync` first.
 A `recover_custody` action is ordinary `no-mistakes axi sync --recover` to take a still-available preserved head, or `no-mistakes axi sync --recover --keep-local` when that head is unavailable and you are discarding the missing commits, or when a bound archive preserves divergent later work while custody returns at the reported required head; never substitute one action for the other. See [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the alternative validation path and its refusal conditions.
+A `recover_remote_rewritten` action is exact `no-mistakes axi sync --recover` after a terminal run whose push target was force-rewritten outside the pipeline: it anchors the superseded pipeline head and rebinds only the recorded push binding to the re-verified live head, and refuses `--keep-local`, a target or live head that changes during recovery, an unanchorable head, and a merged or closed PR. See [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync).
 An `adopt_published` action is `no-mistakes axi sync --adopt-published`: it verifies the configured push target already has the exact rebased local head, then updates only the stale gate lane. A target mismatch or target change refuses without replacing that lane.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
@@ -245,7 +248,7 @@ A schema violation names the values it rejected. The review step quotes the vali
 
 ## Intent extraction
 
-When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim as authoritative acceptance criteria and skips transcript-based inference, even if `intent.enabled` is false.
+For explicit intent supplied to `axi run`, see the CLI reference's [intent input transports and whitespace handling](/no-mistakes/reference/cli/#intent-input) and the [Intent step's acceptance-criteria semantics](/no-mistakes/reference/pipeline-steps/#intent).
 Review checks the diff against those criteria, and a change that removes required behavior or adds forbidden behavior becomes an `ask-user` finding instead of being resolved automatically.
 Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, and the GitHub Copilot CLI during the `intent` pipeline step.
 It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, and includes that summary as an untrusted, low-confidence hint in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts. Publication of the generated Intent section is controlled by the repository's trusted [`pr.publish_intent`](/no-mistakes/reference/repo-config/#prpublish_intent), tightened further for individual runs by `axi run --no-publish-intent` or globally by `intent.publish_intent: false` in global config. Every one of these controls is tighten-only, and no caller-side setting can publish intent on a repository whose trusted config disabled it. The full intent always reaches the rebase, review, test, lint, documentation, and CI prompts listed above; under the caller-side omission the PR-drafting prompts receive no intent text at all, so the public PR can carry neither the section nor a paraphrase of it.
@@ -294,14 +297,24 @@ Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses i
 
 ## OpenCode
 
-Starts a persistent HTTP server (`opencode serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags; `opencode serve` exits with usage on an unknown flag, so a model flag does not belong there. Model and reasoning effort come from [`agent_config.opencode`](/no-mistakes/reference/global-config/#agent_config) and travel in the session message as `model` (from the `provider/model` form) and `variant`. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports structured output by sending the `json_schema` descriptor at `info.format`, as required by OpenCode 1.17 and later. See `AGENTS.md` and the OpenCode adapter implementation for the authoritative tool-choice retry conditions, transient failure boundaries, and prompt-only fallback semantics. When native structured output is genuinely absent, it falls back to the common text fallback described above while allowing `null` for optional fields.
+Starts a persistent HTTP server (`opencode serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags; `opencode serve` exits with usage on an unknown flag, so a model flag does not belong there. Model and reasoning effort come from [`agent_config.opencode`](/no-mistakes/reference/global-config/#agent_config) and travel in the session message as `model` (from the `provider/model` form) and `variant`. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports structured output by sending the `json_schema` descriptor at `info.format`, as required by OpenCode 1.17 and later. See the OpenCode adapter implementation (`internal/agent/opencode*.go`) for the authoritative tool-choice retry conditions, transient failure boundaries, and prompt-only fallback semantics. When native structured output is genuinely absent, it falls back to the common text fallback described above while allowing `null` for optional fields.
 
 ## Pi
 
 Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns instead create and resume one Pi session per run via `--session <UUID>`.
 Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config) unless the run has an opt-in [per-run Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles). Native mapping is `--model` and `--thinking`.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
-When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
+When structured output is requested, no-mistakes loads a temporary extension with a terminating `no_mistakes_output` tool whose parameters carry the schema and require provider-side strict JSON-schema generation.
+The tool declaration carries only the schema keywords the Review schema uses (`type`, `properties`, `items`, `required`, `enum`, `description`), because a provider can refuse a strict tool over any other keyword; a keyword left out, such as the commit summary's `maxLength`, is still enforced on the returned output.
+This uses Pi's [constrained tool sampling](https://github.com/earendil-works/pi/tree/main/packages/ai#constrained-sampling-for-tools) and [terminating structured-output tool](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/structured-output.ts), not the JSON event mode as a model-output constraint.
+This strict path needs Pi 0.82.0 or later (read from `pi --version`; a prerelease such as `0.82.0-beta` sorts before `0.82.0`), a provider/model supporting strict JSON-schema tools, and Pi arguments that leave the tool selection open.
+Pi applies `--no-tools` (`-nt`) and a `--tools` (`-t`) allowlist to extension tools too, so with either flag in `agent_args_override.pi` the model cannot see `no_mistakes_output`.
+Otherwise the invocation uses the prompt-inlined schema: the schema goes into the prompt and the final text response is validated with the common text fallback described above. A provider/model that refuses strict tools is retried once on that path and then stays on it for the agent's lifetime.
+The step log names which path each structured invocation ran.
+On the strict path, a run that ends without calling `no_mistakes_output` as its only final tool call is a structured-output rejection, so Review's bounded schema rerun applies.
+Either way the adapter validates the result against the same schema, keeping required fields and the existing nullable-optional-field contract unchanged.
+The extension is invocation-scoped and works with `--no-extensions`.
+Invocations without a schema retain the ordinary final-text path.
 
 ## Omp
 
@@ -324,8 +337,7 @@ The Copilot CLI has no output-schema flag, so when structured output is requeste
 ## ACP aliases
 
 ACP aliases are first-class agent names that resolve to ACP targets.
-`agent: cursor` is the first alias: it is shorthand for the `cursor` ACP target with the default raw command `cursor-agent acp`, not a separate native backend.
-`agent: acp:cursor` uses that same default command, so either spelling works without an `acp_registry_overrides.cursor` entry.
+`agent: cursor` and `agent: devin` are shorthands for `acp:cursor` and `acp:devin`, not separate native backends. Their default commands and override rules are documented under [global `agent`](/no-mistakes/reference/global-config/#agent).
 
 Because aliases still run through acpx, they use `acpx_path` for the bridge binary and share the same ACP prompt and structured-output behavior as `agent: acp:<target>`.
 Unlike arbitrary `acp:<target>` entries, aliases may participate in `agent: auto` when their availability checks pass.
@@ -341,6 +353,12 @@ Configure custom target commands in the [Global Config Reference](/no-mistakes/r
 no-mistakes invokes acpx with JSON output, approve-all permissions, denied non-interactive permission prompts, and the repo worktree as `--cwd`.
 Structured output is handled by appending the requested JSON schema to the prompt and validating the final assistant text with the common text fallback described above.
 A `model` set under [`agent_config`](/no-mistakes/reference/global-config/#agent_config) for an alias or `acp:<target>` is passed as acpx's own `--model`, so ACP targets can be pinned to an explicit model. acpx exposes no reasoning-effort surface, so `effort` is refused for ACP names rather than silently ignored.
+
+## Devin CLI
+
+`agent: devin` runs Devin CLI through acpx and uses the stored `devin` login; no-mistakes never signs in or changes Devin configuration. For model ids and effort, see [`agent_config`](/no-mistakes/reference/global-config/#agent_config); for project-instruction suppression, see [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings).
+
+Devin starts each session in its `accept-edits` mode. Read-only commands run without a prompt, and a shell command that writes files raises an ACP permission request, which acpx grants under no-mistakes' approve-all posture. Devin reports usage over ACP, but its figures cover only the turn's latest model request, not the sum across every request in that turn. Recorded token counts for multi-step Devin turns therefore undercount what the turn consumed.
 
 ## Checking agent availability
 
@@ -364,11 +382,12 @@ $ no-mistakes doctor
   – antigravity (not found)
   – acpx (not found)
   – cursor (not found (cursor-agent, acpx))
+  – devin (not found (devin, acpx))
   ✓ gate validation claude is runnable
 ```
 
 `✓` = available, `–` = not found (optional), `✗` = problem detected.
-The standalone `acpx` and `cursor` rows inspect the default binary names.
+The standalone `acpx`, `cursor`, and `devin` rows inspect the default binary names.
 The `gate validation` line is the decisive result: when the configured global runner is unavailable, doctor fails because a complete gate cannot validate without it.
 See the [Global Config Reference](/no-mistakes/reference/global-config/) for ACP availability and probing behavior.
 Every new validation run resolves its effective agent again after applying any trusted repository-level override.

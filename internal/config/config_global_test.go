@@ -205,6 +205,39 @@ func TestLoadGlobal_ReviewAgentTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadGlobal_WorkingTimeoutUnsetAndRejectsAShorterCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("agent_timeout: 30m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.AgentWorkingTimeout != 0 || cfg.ReviewAgentWorkingTimeout != 0 || cfg.TestAgentWorkingTimeout != 0 {
+		t.Fatalf("working caps = %s %s %s, want unset", cfg.AgentWorkingTimeout, cfg.ReviewAgentWorkingTimeout, cfg.TestAgentWorkingTimeout)
+	}
+
+	if err := os.WriteFile(path, []byte("agent_timeout: 30m\nagent_working_timeout: 10m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadGlobal(path); err == nil || !strings.Contains(err.Error(), "agent_working_timeout") {
+		t.Fatalf("short cap error = %v, want agent_working_timeout rejected", err)
+	}
+
+	if err := os.WriteFile(path, []byte("agent_timeout: 30m\nagent_working_timeout: 45m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.AgentWorkingTimeout != 45*time.Minute {
+		t.Fatalf("agent_working_timeout = %s, want 45m", cfg.AgentWorkingTimeout)
+	}
+}
+
 func TestLoadGlobal_TestAgentTimeout(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

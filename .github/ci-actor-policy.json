@@ -1,0 +1,17 @@
+{
+  "name": "Protect local CI runner from external workflow execution",
+  "enforcement": "active",
+  "rules": [
+    {
+      "type": "restrict_actions_actors",
+      "parameters": {
+        "allowed_actors": [
+          { "id": 11652147, "type": "User" },
+          { "id": 41898282, "type": "Bot" },
+          { "id": 49699333, "type": "Bot" },
+          { "id": 55107282, "type": "Bot" }
+        ]
+      }
+    }
+  ]
+}

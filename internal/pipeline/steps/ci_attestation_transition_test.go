@@ -43,6 +43,7 @@ func TestPipeline_CIRepairRefreshesPublishedAttestationBeforeReadiness(t *testin
 			fork := t.TempDir()
 			gitCmd(t, fork, "init", "--bare", ".")
 			gitCmd(t, dir, "remote", "add", "origin", fork)
+			gitCmd(t, dir, "push", "origin", "main")
 
 			ag := &mockAgent{
 				name: "test",
@@ -187,7 +188,7 @@ func (s *attestationTransitionCI) Execute(sctx *pipeline.StepContext) (*pipeline
 	if err := os.WriteFile(filepath.Join(sctx.WorkDir, "ci-repair.txt"), []byte("repaired\n"), 0o644); err != nil {
 		return nil, err
 	}
-	repair, err := (&CIStep{}).commitRepair(sctx, "repair required check")
+	repair, err := (&CIStep{}).commitRepair(sctx, "repair required check", nil)
 	if err != nil {
 		return nil, err
 	}

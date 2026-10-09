@@ -438,8 +438,11 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			previousArtifact = rendered
 		}
 		if outcome := buildTestingOutcomeLine(line, stepRounds); shouldRenderTestingOutcome(opts, wroteSummary, outcome) {
-			b.WriteString("- ")
-			b.WriteString(outcome)
+			outcomeLine := "- " + outcome
+			if needsArtifactBlockSeparator(previousArtifact, outcomeLine) {
+				b.WriteString("\n")
+			}
+			b.WriteString(outcomeLine)
 			b.WriteString("\n")
 		}
 
@@ -450,13 +453,9 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 }
 
 func needsArtifactBlockSeparator(previous, current string) bool {
-	previous = strings.TrimSpace(previous)
-	current = strings.TrimSpace(current)
-	previousIsDetails := strings.HasPrefix(previous, "<details>")
-	currentIsDetails := strings.HasPrefix(current, "<details>")
-	previousIsBullet := strings.HasPrefix(previous, "- Evidence:")
-	currentIsBullet := strings.HasPrefix(current, "- Evidence:")
-	return previousIsDetails && currentIsBullet || previousIsBullet && currentIsDetails
+	previousEndsDetails := strings.HasSuffix(strings.TrimSpace(previous), "</details>")
+	currentStartsDetails := strings.HasPrefix(strings.TrimSpace(current), "<details>")
+	return previousEndsDetails != currentStartsDetails
 }
 
 func shouldRenderTestingOutcome(opts testingSummaryOptions, wroteSummary bool, outcome string) bool {
@@ -1413,7 +1412,10 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // mentally replaying rounds.
 func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
 	var inner strings.Builder
-	if len(rounds) == 0 {
+	// A skipped step whose rounds recorded no findings never checked
+	// anything, so "No issues found" under a "skipped" summary would
+	// claim a pass.
+	if len(rounds) == 0 || (sr.Status == types.StepStatusSkipped && !roundsHaveFindings(rounds)) {
 		writeStepStatusDetail(&inner, sr, flavor)
 		return foldPRBlock(summaryLine, inner.String(), flavor)
 	}
@@ -1631,9 +1633,13 @@ func escapePipelineFoldMarkers(s string) string {
 // neutralizeAttestationMarkers breaks every attestation comment prefix in
 // agent-authored PR-body prose so only the pipeline-authored marker in the
 // Pipeline section stays parseable by the compliance check, which binds the
-// first marker in the body to the PR head.
+// first marker in the body to the PR head. It also breaks copied PR-appendix
+// ownership markers (e.g. Testing evidence quoting a templated body): a raw
+// pair in an ordinary body makes every later restamp refuse it as ambiguous.
+// And it neutralizes closing references (neutralizeClosingReferences), since
+// every PR-body site that generates text passes through here.
 func neutralizeAttestationMarkers(s string) string {
-	return strings.ReplaceAll(s, pipelineAttestationCommentPrefix, escapedPipelineAttestationCommentPrefix)
+	return neutralizeClosingReferences(escapePRAppendixMarkers(strings.ReplaceAll(s, pipelineAttestationCommentPrefix, escapedPipelineAttestationCommentPrefix)))
 }
 
 func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult, flavor prBodyFlavor) {
@@ -1728,6 +1734,8 @@ func severityEmoji(severity string) string {
 
 func stepDisplayName(name types.StepName) string {
 	switch name {
+	case types.StepIntent:
+		return "Intent"
 	case types.StepRebase:
 		return "Rebase"
 	case types.StepReview:

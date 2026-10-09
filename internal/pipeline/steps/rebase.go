@@ -48,7 +48,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 	sctx.Log("fetching latest upstream state...")
 	if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
-		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
+		return nil, fmt.Errorf("fetch base branch %q before rebase: %w", defaultBranch, err)
 	}
 	// Sync the push branch's remote-tracking ref only when we are about to rebase
 	// onto it (a normal push). On a force push we deliberately skip both the fetch
@@ -199,10 +199,9 @@ func forcePushRebaseTargets(branch, defaultBranch string) []string {
 	return []string{"origin/" + defaultBranch}
 }
 
-// effectivePRBaseBranch resolves the branch used as the integration base for
-// rebases and as the merge-base Review diffs against. Per-run overrides win
-// over repo config; the repository default remains the fallback when neither
-// selects a separate PR target branch.
+// effectivePRBaseBranch resolves the integration and change-scoping base for
+// pipeline steps. Per-run overrides win over repo config; the repository default
+// remains the fallback when neither selects a separate PR target branch.
 func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
 	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
 	if runBase := runPRBaseBranch(sctx); runBase != "" {
@@ -463,6 +462,7 @@ Instructions:
 		targetRef,
 		strings.Join(conflictFiles, "\n- "),
 	)
+	prompt += "\n" + agent.MemoryFilesConflictRule
 	if sctx.PreviousFindings != "" {
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
 	}
@@ -605,6 +605,7 @@ Instructions:
 		targetRef,
 		strings.Join(conflictFiles, "\n- "),
 	)
+	prompt += "\n" + agent.MemoryFilesConflictRule
 	if sctx.PreviousFindings != "" {
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
 	}
@@ -820,8 +821,14 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 
 	// Check if the branch has any diff against the default branch.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
+	// Execute already fetched the base branch (fail-closed) before integrating,
+	// so reuse that ref instead of fetching again after HEAD was rewritten and
+	// persisted: a failure here could not undo either.
 	defaultBranch := effectivePRBaseBranch(sctx)
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
+	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	if baseSHA == "" {
+		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
+	}
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
 		sctx.Log("empty diff after rebase, skipping remaining steps")

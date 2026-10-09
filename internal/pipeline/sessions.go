@@ -10,19 +10,22 @@ import (
 )
 
 // SessionRole identifies which durable review-loop session an invocation
-// belongs to. The fixer role spans every review-fix turn of a run and is the
-// only role that resumes a session. Review turns deliberately run session-free:
-// a rereview certifies fixes implementing the previous review turn's findings,
-// so resuming any review session would seat the prescriber of those fixes as
-// their certifier and degrade the rereview into checking that its own
-// prescription was implemented.
+// belongs to. The fixer role spans every review-fix turn of a run. The
+// reviewer role spans one review PASS - its initial turn plus the finalize
+// turn that answers its own open questions - and nothing more: a rereview
+// certifies fixes implementing the previous review turn's findings, so
+// resuming a review session across a code change would seat the prescriber of
+// those fixes as their certifier and degrade the rereview into checking that
+// its own prescription was implemented.
 type SessionRole string
 
 const (
-	// SessionRoleReviewer is legacy: review turns no longer create or resume
-	// sessions. The constant remains so crash recovery keeps accepting
-	// persisted rows written by earlier versions (see
-	// validateRecoveredSessionProviders); such rows are never resumed.
+	// SessionRoleReviewer spans ONE review pass: the initial turn, and the
+	// finalize turn that resumes it once the operator has answered every
+	// question that turn left open. It never spans a code change - the review
+	// step Forgets it before any fix round, and a new run gets a new manager -
+	// so a reviewer is never seated as the certifier of its own prescription.
+	// See docs/src/content/docs/concepts/review-conversation.md.
 	SessionRoleReviewer SessionRole = "reviewer"
 	SessionRoleFixer    SessionRole = "review-fixer"
 )
@@ -153,6 +156,21 @@ func sessionProvider(a agent.Agent, result *agent.Result) string {
 		return ""
 	}
 	return a.Name()
+}
+
+// Forget drops a role's session identity, in memory and in the durable store,
+// so the role's next turn starts cold.
+//
+// The review loop needs it for the independence guarantee: a reviewer session
+// may span the questions and answers of ONE pass, but never a code change. The
+// review step calls this before any fix round, so the turn that judges a fix
+// can never be the session that prescribed it. A nil manager is a no-op, which
+// is already cold.
+func (rs *RunSessions) Forget(role SessionRole) {
+	if rs == nil {
+		return
+	}
+	rs.forget(role)
 }
 
 func (rs *RunSessions) forget(role SessionRole) {

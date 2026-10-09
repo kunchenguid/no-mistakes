@@ -19,9 +19,10 @@ type StaleBranchReconciliation struct {
 }
 
 // StaleBranchPlan is the verdict of a non-mutating stale-branch inspection.
-// Planning checks containment or the exact submitted-head policy exception
-// without touching any ref, so a caller can decide before it publishes anything;
-// applying the plan is the only step that archives and removes the branch.
+// Planning checks containment, recovery-anchor preservation, or the exact
+// run-owned-head policy exception without touching any ref, so a caller can
+// decide before it publishes anything; applying the plan is the only step that
+// archives and removes the branch.
 type StaleBranchPlan struct {
 	PreserveDescendantOf string
 	Reconcile            bool
@@ -29,6 +30,11 @@ type StaleBranchPlan struct {
 	BranchRef            string
 	PreviousHead         string
 	ArchiveTag           string
+	// PreservedByRecovery names the recovery anchor that keeps each
+	// private-only commit reachable for commits this plan excluded from the
+	// at-risk set on that basis. Keyed by full commit ID. Empty when no commit
+	// needed the recovery-anchor credit.
+	PreservedByRecovery map[string]string
 }
 
 // SupersessionEvidence is durable, run-recorded proof that a private mirror head
@@ -68,19 +74,24 @@ type StaleBranchRefusal struct {
 	// verified final head carries commits made after its reviewed head. It is
 	// diagnosis only - it never authorizes the replacement, and every containment
 	// check still ran against this head.
+	Satisfiers   []string
 	Continuation *SupersessionContinuation
 }
 
 func (r *StaleBranchRefusal) Error() string {
+	details := strings.Join(r.AtRisk, "; ")
+	if len(r.Satisfiers) > 0 {
+		details += ". Clears on any of: " + joinSatisfiers(r.Satisfiers)
+	}
 	if condition := r.Condition(); condition != "" {
 		return fmt.Sprintf(
 			"refusing to reconcile private mirror ref %s: %s; %d private commit(s) contain content absent from live head %s: %s",
-			r.BranchRef, condition, len(r.AtRisk), r.LiveHead, strings.Join(r.AtRisk, "; "),
+			r.BranchRef, condition, len(r.AtRisk), r.LiveHead, details,
 		)
 	}
 	return fmt.Sprintf(
 		"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s",
-		r.BranchRef, len(r.AtRisk), r.LiveHead, strings.Join(r.AtRisk, "; "),
+		r.BranchRef, len(r.AtRisk), r.LiveHead, details,
 	)
 }
 
@@ -123,7 +134,8 @@ func (r *StaleBranchRefusal) Action() string {
 
 // ReconcileStaleBranch plans and immediately applies stale private gate branch
 // reconciliation. It removes the branch only after Git proves the live head
-// contains all of its content, or under the exact submitted-head exception
+// contains all of its content or a recovery anchor preserves each private-only
+// commit that proof misses, or under the exact run-owned-head exception
 // described in docs/src/content/docs/concepts/gate-model.md.
 func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchReconciliation, error) {
 	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead)
@@ -135,20 +147,31 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 
 // PlanStaleBranchReconciliation inspects a private gate branch and reports
 // whether it must be archived and removed before the live head can enter
-// through an ordinary push. It mutates no ref: outside the submitted-head
-// exception, an unproven private head is refused before publication.
+// through an ordinary push. It mutates no ref: outside the run-owned-head
+// exception, a private head carrying a private-only commit that is neither
+// proven to survive nor preserved by a recovery anchor is refused before
+// publication.
 //
 // Rewritten histories require both stable per-file patch identities and final
 // tree survival. runOwnedHead is a policy exception, not containment evidence:
-// publication callers must supply only Run.SubmittedHeadSHA, and fresh
-// submissions must leave it empty. The contract and rationale are owned by
-// docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
+// fresh submissions must leave it empty, and pipeline publication goes through
+// PlanMirrorPublicationReconciliation instead. The contract and rationale are
+// owned by docs/src/content/docs/concepts/gate-model.md (Private mirror
+// reconciliation).
 func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, SupersessionSource{}, false)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, SupersessionSource{}, false, runOwnedHead)
 }
 
-func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, SupersessionSource{}, true)
+// PlanMirrorPublicationReconciliation is the pipeline-publication variant of
+// PlanStaleBranchReconciliation: it also leaves a newer descendant of the live
+// head in place. runOwnedHeads are the exact heads the publishing run itself
+// placed on the private mirror - Run.SubmittedHeadSHA and, once the run has
+// published, its durable Run.LastPushedSHA - and nothing else. Neither an
+// agent-created head nor any other recorded head is eligible; every other
+// mirror head still needs the full preservation proof or the recovery-anchor
+// preservation credit.
+func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, runOwnedHeads ...string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, SupersessionSource{}, true, runOwnedHeads...)
 }
 
 // PlanSupersededSubmissionReconciliation inspects a private gate branch that a
@@ -157,7 +180,7 @@ func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, 
 // supersession from the repository's own run records instead of a caller
 // asserting ownership. source supplies that proof; its zero value supplies none.
 func PlanSupersededSubmissionReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, source SupersessionSource) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, "", source, false)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, source, false)
 }
 
 // ReconcileSupersededSubmission plans and immediately applies the reconciliation
@@ -190,11 +213,10 @@ func (e *SupersessionEvidence) authorizes(privateHead string) bool {
 	return submitted != "" && accepted != "" && submitted == privateHead
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, source SupersessionSource, preserveDescendants bool) (StaleBranchPlan, error) {
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, source SupersessionSource, preserveDescendants bool, runOwnedHeads ...string) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
-	runOwnedHead = strings.TrimSpace(runOwnedHead)
 	if branch == "" || liveHead == "" {
 		return plan, fmt.Errorf("reconcile stale gate branch: branch and live head are required")
 	}
@@ -252,21 +274,42 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 	// Evidence is resolved only after the live head is staged, because proving
 	// the accepted result survives requires it to be readable in this gate.
 	evidence, continuation := source.evidenceFor(ctx, gateDir, gateHead, liveHead)
-	if gateHead != runOwnedHead && evidence.authorizes(gateHead) {
+	if !isRunOwnedHead(gateHead, runOwnedHeads) && evidence.authorizes(gateHead) {
 		// Replacing a private mirror ref is a rewrite of a branch other tooling
 		// may read, so record which run's accepted result justified it.
 		slog.Info("reconciling private mirror ref on recorded supersession",
 			"ref", branchRef, "previous_head", gateHead, "live_head", liveHead,
 			"run_id", evidence.RunID, "accepted_head", evidence.AcceptedHead)
 	}
-	if gateHead != runOwnedHead && !evidence.authorizes(gateHead) {
+	if !isRunOwnedHead(gateHead, runOwnedHeads) && !evidence.authorizes(gateHead) {
 		atRiskCommits, err := privateCommitsAbsentFromLive(ctx, gateDir, liveHead, gateHead)
 		if err != nil {
 			return plan, fmt.Errorf("compare private mirror content for %s: %w", branchRef, err)
 		}
-		if len(atRiskCommits) > 0 {
-			atRisk := make([]string, 0, len(atRiskCommits))
-			for _, commit := range atRiskCommits {
+		// Recovery anchors are the tool's own sanctioned preservation record:
+		// terminalization pins every verified unpublished head at
+		// refs/no-mistakes/recover/<run>, and PreserveRecoveryAnchor never
+		// replaces evidence (a conflicting anchor fails closed). A commit that
+		// one of those anchors keeps reachable is not at risk of being lost, so
+		// it is re-derived out of the at-risk set instead of deadlocking the
+		// recover -> rerun -> push loop that wrote the anchor in the first
+		// place. This is a preservation credit, not containment evidence: the
+		// surviving content still has to be proven by the checks above for any
+		// commit no anchor holds.
+		satisfiers := reconcileSatisfiers(runOwnedHeads)
+		preserved, err := preservedByRecoveryAnchors(ctx, gateDir, liveHead, atRiskCommits)
+		if err != nil {
+			return plan, fmt.Errorf("inspect recovery anchors for %s: %w", branchRef, err)
+		}
+		remaining := make([]string, 0, len(atRiskCommits))
+		for _, commit := range atRiskCommits {
+			if _, ok := preserved[commit]; !ok {
+				remaining = append(remaining, commit)
+			}
+		}
+		if len(remaining) > 0 {
+			atRisk := make([]string, 0, len(remaining))
+			for _, commit := range remaining {
 				description, describeErr := git.Run(ctx, gateDir, "show", "-s", "--format=%H %s", commit)
 				if describeErr != nil {
 					return plan, fmt.Errorf("describe at-risk private mirror commit %s: %w", commit, describeErr)
@@ -279,8 +322,10 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				PreviousHead: gateHead,
 				AtRisk:       atRisk,
 				Continuation: continuation,
+				Satisfiers:   satisfiers,
 			}
 		}
+		plan.PreservedByRecovery = preserved
 	}
 
 	return StaleBranchPlan{
@@ -290,7 +335,30 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 		BranchRef:            branchRef,
 		PreviousHead:         gateHead,
 		ArchiveTag:           archiveTag,
+		PreservedByRecovery:  plan.PreservedByRecovery,
 	}, nil
+}
+
+// isRunOwnedHead reports whether the private mirror head is exactly one of the
+// run-owned heads. Matching is on the full object ID only: an abbreviated or
+// empty entry never matches, so an unknown owner cannot widen the exception.
+func isRunOwnedHead(gateHead string, runOwnedHeads []string) bool {
+	for _, owned := range runOwnedHeads {
+		if owned = strings.TrimSpace(owned); owned != "" && owned == gateHead {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRunOwnedHead reports whether the caller supplied any run-owned head.
+func hasRunOwnedHead(runOwnedHeads []string) bool {
+	for _, owned := range runOwnedHeads {
+		if strings.TrimSpace(owned) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ApplyStaleBranchReconciliation archives the planned head and then removes the
@@ -385,6 +453,139 @@ func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) boo
 	}
 	objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", head)
 	return err == nil && objectType == "commit"
+}
+
+// recoveryAnchorPrefix is the ref namespace terminalization pins a run's
+// unpublished pipeline head to (custody.RecoveryRef). An anchor is created only
+// by the guarded custody path and never replaced: PreserveRecoveryAnchor
+// creates it with an expected-old-value of the zero ID and fails closed on any
+// conflicting existing ref, so a commit reachable from one is held by
+// deliberate, immutable preservation evidence rather than by accident.
+const recoveryAnchorPrefix = "refs/no-mistakes/recover/"
+
+type recoveryAnchor struct {
+	ref  string
+	head string
+}
+
+// listRecoveryAnchors returns the direct commit targets under
+// refs/no-mistakes/recover/. for-each-ref reports a direct commit ref as
+// exactly three fields and a symbolic ref with a fourth %(symref) field, so a
+// symbolic, zero, or non-commit target is skipped rather than dereferenced:
+// it contributes no preservation evidence, and skipping is the conservative
+// direction (nothing gets credited).
+func listRecoveryAnchors(ctx context.Context, gateDir string) ([]recoveryAnchor, error) {
+	out, err := git.Run(ctx, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(objecttype) %(symref)", recoveryAnchorPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var anchors []recoveryAnchor
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[2] != "commit" {
+			continue
+		}
+		ref, head := fields[0], fields[1]
+		if git.IsZeroSHA(head) {
+			continue
+		}
+		anchors = append(anchors, recoveryAnchor{ref: ref, head: head})
+	}
+	return anchors, nil
+}
+
+// reconcileSatisfiers names the proofs that can clear a reconciliation refusal
+// in this call shape, so the refusal is actionable instead of a dead end. The
+// recovery-anchor credit is always last.
+func reconcileSatisfiers(runOwnedHeads []string) []string {
+	satisfiers := []string{
+		"the live head descending from the private head (ancestry)",
+		"per-file patch-ID plus tree-survival proof (the content already landing in the live tree)",
+	}
+	if hasRunOwnedHead(runOwnedHeads) {
+		satisfiers = append(satisfiers, "the private head being exactly the publishing run's Run.SubmittedHeadSHA or Run.LastPushedSHA (Decision 41-A)")
+	}
+	return append(satisfiers, "a refs/no-mistakes/recover/<run> recovery anchor reaching the commit")
+}
+
+func joinSatisfiers(satisfiers []string) string {
+	if len(satisfiers) == 1 {
+		return satisfiers[0]
+	}
+	return strings.Join(satisfiers[:len(satisfiers)-1], "; ") + "; or " + satisfiers[len(satisfiers)-1]
+}
+
+// maxRecoveryCandidates bounds how many candidate commits one recovery-anchor
+// membership scan passes to git, keeping each rev-list argument list bounded.
+// Larger candidate sets are scanned in successive batches, never truncated or
+// refused: dropping any candidate would silently drop its preservation credit
+// and reintroduce the deadlock this credit exists to prevent.
+const maxRecoveryCandidates = 512
+
+// preservedByRecoveryAnchors reports, for each candidate commit only, a
+// recovery anchor that keeps it reachable in the gate repository. Reachable
+// means reachable: the anchor's history contains the commit, so the object and
+// its history survive whatever happens to the private branch ref.
+//
+// The membership scan excludes liveHead as well as the anchors. The candidates
+// are private-only commits, so that walk is bounded by the private-only range
+// rather than by the history the anchors or the live branch can see; anchors
+// accumulate for the life of the gate. Attribution then probes anchors only for
+// the credited commits, stopping at the first anchor that covers each.
+//
+// This is a PRESERVATION credit only. It says nothing about whether the content
+// lands in the published tree, which the ancestry, patch-ID and tree-survival
+// checks are responsible for proving. It exists so that the sanctioned
+// recover -> rerun -> push loop cannot deadlock against the very anchor that
+// loop wrote to declare the work preserved.
+func preservedByRecoveryAnchors(ctx context.Context, gateDir, liveHead string, commits []string) (map[string]string, error) {
+	preserved := make(map[string]string)
+	if len(commits) == 0 {
+		return preserved, nil
+	}
+	anchors, err := listRecoveryAnchors(ctx, gateDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(anchors) == 0 {
+		return preserved, nil
+	}
+	anchorHeads := make([]string, 0, len(anchors))
+	for _, anchor := range anchors {
+		anchorHeads = append(anchorHeads, anchor.head)
+	}
+
+	// One scan per batch: the candidates NO anchor reaches. Its complement is
+	// preserved.
+	unreachedSet := make(map[string]bool)
+	for start := 0; start < len(commits); start += maxRecoveryCandidates {
+		batch := commits[start:min(start+maxRecoveryCandidates, len(commits))]
+		args := make([]string, 0, len(batch)+len(anchorHeads)+2)
+		args = append(args, batch...)
+		args = append(args, "--not", liveHead)
+		args = append(args, anchorHeads...)
+		unreached, err := commitList(ctx, gateDir, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, commit := range unreached {
+			unreachedSet[commit] = true
+		}
+	}
+	for _, commit := range commits {
+		if unreachedSet[commit] {
+			continue
+		}
+		// Attribution only, for the credited commits, stopping at the first
+		// anchor that covers each one.
+		for _, anchor := range anchors {
+			if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", commit, anchor.head); err == nil {
+				preserved[commit] = anchor.ref
+				break
+			}
+		}
+	}
+	return preserved, nil
 }
 
 // privateCommitsAbsentFromLive names private-only commits lacking matching

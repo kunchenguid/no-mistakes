@@ -21,10 +21,12 @@ var (
 )
 
 // ensurePrepared runs the trusted preparation command before the first
-// configured Test, Lint, or Format command. Successful preparation is shared
-// for the executor lifetime. Only ignored materialization (for example
-// node_modules) survives preparation; its tracked and ordinary untracked
-// mutations are removed so setup cannot ride into a later pipeline fix commit.
+// configured Test, Lint, or Format command, or an opted-in agent-only Test.
+// Successful preparation is shared for the executor lifetime. Only ignored
+// materialization (for example node_modules) and submodules checked out at
+// their recorded commits survive preparation; its tracked and ordinary
+// untracked mutations are removed so setup cannot ride into a later pipeline
+// fix commit.
 func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 	prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare)
 	if prepareCmd == "" {
@@ -59,7 +61,7 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 
 		sctx.Log(fmt.Sprintf("preparing dependencies once for this worktree: %s", prepareCmd))
 		started := time.Now()
-		output, exitCode, commandErr := runStepShellCommand(sctx, prepareCmd)
+		output, exitCode, commandErr := runRepositoryCommand(sctx, "prepare", prepareCmd)
 		if output != "" {
 			logCommandOutput(sctx, output, "Prepare", logStep)
 		}
@@ -118,7 +120,7 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 	if _, err := git.Run(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", "git clean -ffd"); err != nil {
 		return err
 	}
-	if err := deinitializePreparationSubmodules(ctx, submodules); err != nil {
+	if err := resetPreparedSubmodules(ctx, workDir); err != nil {
 		return err
 	}
 	if _, err := git.Run(ctx, workDir, "clean", "-ffd"); err != nil {
@@ -256,24 +258,24 @@ func initializePreparationSubmodules(ctx context.Context, submodules []preparati
 		if !submodule.initialized {
 			continue
 		}
-		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--force", "--", submodule.path); err != nil {
+		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "update", "--init", "--no-fetch", "--checkout", "--force", "--", submodule.path); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func deinitializePreparationSubmodules(ctx context.Context, submodules []preparationSubmodule) error {
-	for i := len(submodules) - 1; i >= 0; i-- {
-		submodule := submodules[i]
-		if submodule.initialized || !submoduleWorktreeInitialized(submodule.parentWorkDir, submodule.path) {
-			continue
-		}
-		if _, err := git.Run(ctx, submodule.parentWorkDir, "submodule", "deinit", "--force", "--", submodule.path); err != nil {
-			return err
-		}
+// resetPreparedSubmodules returns every submodule checkout preparation left
+// behind, including one the command initialized itself, to its recorded
+// commit. A submodule checked out at its gitlink is the tracked tree the
+// configured commands build against, not a setup mutation, so it is kept
+// rather than deinitialized; a moved submodule HEAD is still undone here.
+func resetPreparedSubmodules(ctx context.Context, workDir string) error {
+	current, err := preparationSubmodules(ctx, workDir)
+	if err != nil {
+		return err
 	}
-	return nil
+	return initializePreparationSubmodules(ctx, current)
 }
 
 func registeredSubmodulePaths(ctx context.Context, workDir string) ([]string, error) {
@@ -284,13 +286,17 @@ func registeredSubmodulePaths(ctx context.Context, workDir string) ([]string, er
 		}
 		return nil, fmt.Errorf("list registered submodules: %w", err)
 	}
+	return parseRegisteredSubmodulePaths(out)
+}
+
+func parseRegisteredSubmodulePaths(out []byte) ([]string, error) {
 	var paths []string
 	for _, entry := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
 		_, path, ok := strings.Cut(entry, "\n")
 		if !ok {
 			return nil, fmt.Errorf("invalid registered submodule entry %q", entry)
 		}
-		path, err = preparationRelativePath(path)
+		path, err := preparationRelativePath(path)
 		if err != nil {
 			return nil, fmt.Errorf("invalid submodule path: %w", err)
 		}
@@ -305,6 +311,16 @@ func preparationRelativePath(path string) (string, error) {
 		return "", fmt.Errorf("%q", path)
 	}
 	return path, nil
+}
+
+// preparationPatchDiffArgs pin every diff option that user git config can
+// otherwise turn into output `git apply` rejects when the snapshot is
+// restored: diff.submodule=log renders a dirty submodule as prose instead of
+// a Subproject line, diff.noprefix drops the a/ and b/ prefixes apply strips,
+// color.ui=always embeds escape codes, and a textconv driver rewrites content.
+var preparationPatchDiffArgs = []string{
+	"--no-ext-diff", "--no-textconv", "--no-color", "--binary",
+	"--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
 }
 
 func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, name string) error {
@@ -334,8 +350,8 @@ func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, na
 		path string
 		args []string
 	}{
-		{stagedPatch, []string{"diff", "--no-ext-diff", "--binary", "--cached"}},
-		{unstagedPatch, []string{"diff", "--no-ext-diff", "--binary"}},
+		{stagedPatch, append(append([]string{"diff"}, preparationPatchDiffArgs...), "--cached")},
+		{unstagedPatch, append([]string{"diff"}, preparationPatchDiffArgs...)},
 	} {
 		contents, err := git.RunRaw(ctx, workDir, patch.args...)
 		if err != nil {
@@ -505,9 +521,6 @@ func (s preparationSnapshot) restore(ctx context.Context) error {
 				return fmt.Errorf("restore untracked directory %s: %w", directory.path, err)
 			}
 		}
-	}
-	if err := deinitializePreparationSubmodules(ctx, s.submodules); err != nil {
-		return err
 	}
 	return nil
 }

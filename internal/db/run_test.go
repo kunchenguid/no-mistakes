@@ -1,7 +1,10 @@
 package db
 
 import (
+	"errors"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -61,6 +64,304 @@ func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 	}
 }
 
+func TestUpdateRunClosingIssueRefsNormalizesAndPersists(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{" 42 ", "owner/repo#7", "42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,owner/repo#7" {
+		t.Fatalf("closing issue references = %q, want canonical deduplicated refs", refs)
+	}
+}
+
+func TestMergeRunClosingIssueRefsPreservesEarlierValues(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42", "owner/repo#7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MergeRunClosingIssueRefs(run.ID, []string{"99", "OWNER/REPO#7"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,99,owner/repo#7" {
+		t.Fatalf("merged closing issue references = %q", refs)
+	}
+}
+
+// `axi run --closes` re-sends the same references after a fresh run already
+// recorded them from its push options. Once claimed, a reference that is
+// already recorded is accepted (it is in the composed body); only a NEW one
+// is refused.
+func TestMergeRunClosingIssueRefsAfterClaimAcceptsOnlyRecordedRefs(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42", "owner/repo#7"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ClaimClosingIssueRefsForPRBody(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MergeRunClosingIssueRefs(run.ID, []string{"OWNER/REPO#7", "42"}); err != nil {
+		t.Fatalf("recorded refs after claim = %v, want accepted", err)
+	}
+	if err := d.MergeRunClosingIssueRefs(run.ID, []string{"42", "99"}); !errors.Is(err, ErrClosingIssueRefsLocked) {
+		t.Fatalf("new ref after claim = %v, want ErrClosingIssueRefsLocked", err)
+	}
+}
+
+// The reattach race: an `axi run --closes` update that lands after the PR step
+// has already sampled the closing issue references can no longer reach the composed body,
+// so it must fail closed instead of reporting a write the PR will never show.
+func TestUpdateRunClosingIssueRefsFailsClosedAfterPRBodyClaim(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	// The PR step composes the body, claiming whatever was set at that moment.
+	claimed, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("claim closing issue references: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("claimed = %q, want empty", claimed)
+	}
+
+	// The reattach update arrives too late.
+	err = d.UpdateRunClosingIssueRefs(run.ID, []string{"42"})
+	if !errors.Is(err, ErrClosingIssueRefsLocked) {
+		t.Fatalf("update after claim = %v, want ErrClosingIssueRefsLocked", err)
+	}
+	if err := d.MergeRunClosingIssueRefs(run.ID, []string{"42"}); !errors.Is(err, ErrClosingIssueRefsLocked) {
+		t.Fatalf("merge after claim = %v, want ErrClosingIssueRefsLocked", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if len(got.ClosingIssueRefs) != 0 {
+		t.Fatalf("closing issue references = %#v, want empty: a refused update must not persist", got.ClosingIssueRefs)
+	}
+}
+
+// A database created before the claim column gains it on reopen, and its
+// pre-existing runs read back as unclaimed so a run that was already in flight
+// during an upgrade can still receive its closing issue references.
+func TestOpenMigratesClosingIssueRefsLockedAtColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	// Simulate a pre-claim database.
+	if _, err := d.sql.Exec(`ALTER TABLE runs DROP COLUMN closing_issue_refs_locked_at`); err != nil {
+		t.Fatalf("drop column: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	d, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d.Close()
+
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get after migration: %v", err)
+	}
+	if got.ClosingIssueRefsLockedAt != nil {
+		t.Fatalf("migrated run = %#v, want unclaimed", got.ClosingIssueRefsLockedAt)
+	}
+	// An in-flight run from before the upgrade still accepts its closing issue references.
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
+		t.Fatalf("update after migration: %v", err)
+	}
+	claimed, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("claim after migration: %v", err)
+	}
+	if strings.Join(claimed, ",") != "42" {
+		t.Fatalf("claimed = %q, want 42", claimed)
+	}
+}
+
+// An update that wins the race must still apply, and the claim must observe it.
+func TestClaimClosingIssueRefsForPRBodyObservesEarlierUpdate(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
+	}
+	claimed, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("claim closing issue references: %v", err)
+	}
+	if strings.Join(claimed, ",") != "42" {
+		t.Fatalf("claimed = %q, want 42", claimed)
+	}
+}
+
+// The claim is idempotent: a PR step that runs again (resume, or updating an
+// existing PR) recomposes from the value it already claimed.
+func TestClaimClosingIssueRefsForPRBodyIsIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
+	}
+
+	first, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	second, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if strings.Join(first, ",") != "42" || strings.Join(second, ",") != "42" {
+		t.Fatalf("claims = %q/%q, want 42/42", first, second)
+	}
+}
+
+// Exactly one of N concurrent reattach updates racing a claim may report
+// success, and the composed body must carry whatever the claim returned.
+func TestUpdateRunClosingIssueRefsConcurrentWithClaimNeverReportsAPhantomWrite(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	accepted := 0
+	var claimed []string
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		got, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
+		if err != nil {
+			t.Errorf("claim closing issue references: %v", err)
+			return
+		}
+		mu.Lock()
+		claimed = got
+		mu.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		switch err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); {
+		case err == nil:
+			mu.Lock()
+			accepted++
+			mu.Unlock()
+		case errors.Is(err, ErrClosingIssueRefsLocked):
+			// Correctly refused: it lost the race to the claim.
+		default:
+			t.Errorf("update closing issue references: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// The invariant: a reported success must be visible to the PR body.
+	if accepted == 1 && strings.Join(claimed, ",") != "42" {
+		t.Fatalf("update reported success but claim saw %q: the PR body would omit the reference", claimed)
+	}
+	if accepted == 0 && len(claimed) != 0 {
+		t.Fatalf("update was refused but claim saw %q", claimed)
+	}
+}
+
+func TestUpdateRunClosingIssueRefsClearsBlankValue(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
+		t.Fatalf("set closing issue references: %v", err)
+	}
+
+	if err := d.UpdateRunClosingIssueRefs(run.ID, nil); err != nil {
+		t.Fatalf("clear closing issue references: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if len(got.ClosingIssueRefs) != 0 {
+		t.Fatalf("closing issue references = %#v, want empty", got.ClosingIssueRefs)
+	}
+}
+
+func TestUpdateRunClosingIssueRefsRejectsNonDecimalInput(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42 Fixes #99"}); err == nil {
+		t.Fatal("expected malformed closing issue references to fail")
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if len(got.ClosingIssueRefs) != 0 {
+		t.Fatalf("invalid closing issue references were persisted: %#v", got.ClosingIssueRefs)
+	}
+}
+
 func TestInsertRunWithIntent(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
@@ -105,14 +406,14 @@ func TestLaunchNonceBindingClaimsOnceAndPreservesLegacyRows(t *testing.T) {
 	const generation = "generation-001"
 	const intentDigest = "intent-digest"
 	intent := RunIntent{Summary: "exact persisted intent\n", Source: RunIntentSourceAgent, Score: 1}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", false)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if run.LaunchNonce == nil || *run.LaunchNonce != "nonce-1" || run.LaunchValidationGeneration == nil || *run.LaunchValidationGeneration != generation || run.LaunchIntentDigest == nil || *run.LaunchIntentDigest != intentDigest {
 		t.Fatalf("launch binding = %#v", run)
 	}
-	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", false); err == nil {
+	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", false, nil); err == nil {
 		t.Fatal("duplicate nonce insert succeeded")
 	}
 
@@ -147,7 +448,7 @@ func TestClaimLaunchReceiptRejectsMismatchedPRBaseBranch(t *testing.T) {
 	const generation = "generation-base-001"
 	const intentDigest = "base-intent-digest"
 	const prBaseBranch = "release/v1"
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-base", generation, intentDigest, prBaseBranch, false)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-base", generation, intentDigest, prBaseBranch, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +491,7 @@ func TestOmitIntentRoundTripAndClaimMatching(t *testing.T) {
 	// The omit decision is stamped on the row at creation and read back
 	// through every path (GetRun and receipt claims) so recovery and reruns
 	// inherit it instead of re-reading a since-changed config.
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-omit", generation, intentDigest, "", true)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-omit", generation, intentDigest, "", true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +505,7 @@ func TestOmitIntentRoundTripAndClaimMatching(t *testing.T) {
 
 	// A claim requesting omission against a run that publishes is a genuine
 	// conflict and must not consume the created disposition.
-	publishing, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-publish", generation, intentDigest, "", false)
+	publishing, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-publish", generation, intentDigest, "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +545,7 @@ func TestClaimLaunchReceiptAtomicallyReturnsCreatedOnce(t *testing.T) {
 	intent := RunIntent{Summary: "exact persisted intent", Source: RunIntentSourceAgent, Score: 1}
 	const generation = "generation-race-001"
 	const intentDigest = "race-intent-digest"
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-race", generation, intentDigest, "", false)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-race", generation, intentDigest, "", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1401,5 +1702,73 @@ func TestGetRunGatesForUnknownRun(t *testing.T) {
 	}
 	if pinned != "" {
 		t.Errorf("gates for unknown run = %q, want empty", pinned)
+	}
+}
+
+func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-rebind", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPublication(run.ID, PushBinding{HeadSHA: "pushed", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	prState := "none"
+	openPRState := "open"
+	verified := PushRebind{
+		Status: types.RunCompleted, ExpectedPushed: "pushed", ExpectedGeneration: 1, ExpectedHead: "pushed",
+		PRState: &prState, UpstreamURL: "https://example.com/repo.git", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature", Head: "live",
+	}
+
+	for name, mutate := range map[string]func(*PushRebind){
+		"stale pushed head": func(r *PushRebind) { r.ExpectedPushed = "other" },
+		"stale generation":  func(r *PushRebind) { r.ExpectedGeneration = 2 },
+		"changed status":    func(r *PushRebind) { r.Status = types.RunFailed },
+		"changed target":    func(r *PushRebind) { r.TargetFingerprint = "other-digest" },
+		"changed kind":      func(r *PushRebind) { r.TargetKind = "fork" },
+		"changed repo url":  func(r *PushRebind) { r.ForkURL = "https://example.com/fork.git" },
+		"changed run head":  func(r *PushRebind) { r.ExpectedHead = "submitted" },
+		"custody mismatch":  func(r *PushRebind) { r.CustodyReturned = true },
+		"changed PR state":  func(r *PushRebind) { r.PRState = &openPRState },
+	} {
+		attempt := verified
+		mutate(&attempt)
+		applied, err := d.RebindRunPushedHead(run.ID, attempt)
+		if err != nil || applied {
+			t.Fatalf("%s: applied = %v, err = %v", name, applied, err)
+		}
+	}
+	for _, prState := range []string{"merged", "closed"} {
+		if _, err := d.sql.Exec(`UPDATE runs SET pr_state = ? WHERE id = ?`, prState, run.ID); err != nil {
+			t.Fatal(err)
+		}
+		if applied, err := d.RebindRunPushedHead(run.ID, verified); err != nil || applied {
+			t.Fatalf("retired %s PR: applied = %v, err = %v", prState, applied, err)
+		}
+	}
+	if _, err := d.sql.Exec(`UPDATE runs SET pr_state = 'open' WHERE id = ?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := d.RebindRunPushedHead(run.ID, verified); err != nil || applied {
+		t.Fatalf("PR changed from none to open: applied = %v, err = %v", applied, err)
+	}
+	verified.PRState = &openPRState
+	got, _ := d.GetRun(run.ID)
+	if got.HeadSHA != "pushed" || *got.LastPushedSHA != "pushed" || *got.PushGeneration != 1 {
+		t.Fatalf("refused rebind changed run: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
+	}
+
+	applied, err := d.RebindRunPushedHead(run.ID, verified)
+	if err != nil || !applied {
+		t.Fatalf("verified rebind: applied = %v, err = %v", applied, err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.HeadSHA != "live" || *got.LastPushedSHA != "live" || *got.PushGeneration != 2 {
+		t.Fatalf("rebind result: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
 	}
 }

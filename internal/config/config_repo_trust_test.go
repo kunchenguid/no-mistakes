@@ -632,3 +632,65 @@ func TestMerge_CarriesDisableProjectSettings(t *testing.T) {
 		t.Error("Merge must leave DisableProjectSettings false by default")
 	}
 }
+
+// TestEffectiveRepoConfig_ReviewConversationTrustedOnly proves the opt-in is
+// the maintainer's in both directions. An open question PARKS the review gate
+// for a human, so a pushed branch must not be able to make its own review wait
+// on an answer; and once a maintainer has asked for the conversation, a pushed
+// branch must not be able to decline it and get a monologue review instead.
+// allow_repo_commands is scoped to the code-executing selection fields and
+// changes neither direction.
+func TestEffectiveRepoConfig_ReviewConversationTrustedOnly(t *testing.T) {
+	on := &RepoConfig{Review: ReviewRaw{Conversation: true}}
+	off := &RepoConfig{}
+
+	for _, tc := range []struct {
+		name              string
+		pushed, trusted   *RepoConfig
+		allowRepoCommands bool
+		want              bool
+	}{
+		{name: "pushed-only on is ignored", pushed: on, trusted: off, want: false},
+		{name: "pushed-only on with no trusted copy is ignored", pushed: on, trusted: nil, want: false},
+		{name: "the commands opt-in does not let a pushed on through", pushed: on, trusted: off, allowRepoCommands: true, want: false},
+		{name: "a trusted on survives a pushed branch with no review block", pushed: off, trusted: on, want: true},
+		{name: "a trusted on survives the commands opt-in", pushed: off, trusted: on, allowRepoCommands: true, want: true},
+		{name: "a pushed branch cannot decline a trusted on", pushed: off, trusted: on, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EffectiveRepoConfig(tc.pushed, tc.trusted, tc.allowRepoCommands)
+			if got.Review.Conversation != tc.want {
+				t.Fatalf("review.conversation = %v, want %v", got.Review.Conversation, tc.want)
+			}
+		})
+	}
+}
+
+// TestMerge_ReviewConversationDefaultsOffAndComesFromTheRepo pins the default
+// and the resolution path. Global config carries no review block - the
+// conversation is a repository's policy about its own reviews, like
+// document.instructions - so the resolved value is the (already trusted) repo
+// value and nothing else, and an absent key is off.
+func TestMerge_ReviewConversationDefaultsOffAndComesFromTheRepo(t *testing.T) {
+	if got := Merge(&GlobalConfig{}, &RepoConfig{}).Review.Conversation; got {
+		t.Fatal("review.conversation defaults on; every repository that never asked would get the conversation")
+	}
+	if got := Merge(&GlobalConfig{}, &RepoConfig{Review: ReviewRaw{Conversation: true}}).Review.Conversation; !got {
+		t.Fatal("a trusted review.conversation: true did not reach the resolved config")
+	}
+}
+
+// An unparseable review.conversation fails the config closed rather than
+// silently reading as off, the same way an unrecognized rebase.strategy does.
+func TestLoadRepoConfig_ReviewConversationRejectsANonBoolean(t *testing.T) {
+	if cfg, err := LoadRepoFromBytes([]byte("review:\n  conversation: sometimes\n")); err == nil {
+		t.Fatalf("a non-boolean review.conversation parsed as %v; it must fail the config closed", cfg.Review.Conversation)
+	}
+	cfg, err := LoadRepoFromBytes([]byte("review:\n  conversation: true\n"))
+	if err != nil {
+		t.Fatalf("review.conversation: true must parse: %v", err)
+	}
+	if !cfg.Review.Conversation {
+		t.Fatal("review.conversation: true did not parse as on")
+	}
+}

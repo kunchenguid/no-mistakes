@@ -33,6 +33,38 @@ go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest
 
 `go install` builds the CLI without an embedded telemetry website ID, so telemetry stays off by default unless you later set `NO_MISTAKES_UMAMI_WEBSITE_ID` at runtime.
 
+## Nix
+
+```sh
+nix run github:kunchenguid/no-mistakes -- --version
+nix profile install github:kunchenguid/no-mistakes
+no-mistakes daemon restart
+```
+
+The flake builds for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`.
+Intel macOS is not covered because nixpkgs dropped `x86_64-darwin`; use the install script or `go install` there.
+
+To add it to a [devenv](https://devenv.sh) shell, declare the flake as an input in `devenv.yaml` and add its package:
+
+```yaml
+inputs:
+  no-mistakes:
+    url: github:kunchenguid/no-mistakes
+```
+
+```nix
+{ pkgs, inputs, ... }:
+{
+  packages = [ inputs.no-mistakes.packages.${pkgs.stdenv.system}.default ];
+}
+```
+
+Without flakes, `default.nix` exposes the same packages through flake-compat, for example `nix-build -A packages.x86_64-linux.default`.
+
+The flake embeds the same default telemetry host and website ID as official release binaries. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
+
+`no-mistakes update` refuses to run on a binary in the Nix store, and the background update notice stays off. Upgrade through Nix (for example `nix profile upgrade no-mistakes` or a flake input update), then run `no-mistakes daemon restart`. The restart points the managed service at the new store path; until then the daemon keeps running the old one, which garbage collection can delete.
+
 ## From source
 
 ```sh
@@ -47,15 +79,17 @@ make install
 ## Prerequisites
 
 - **git** - required
-- **One supported agent runner** - `claude`, `codex`, `grok`, `acli` (Rovo Dev), `opencode`, `pi`, `omp`, `copilot`, or `agy` (Antigravity), or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
+- **One supported agent runner** - `claude`, `codex`, `grok`, `acli` (Rovo Dev), `opencode`, `pi`, `omp`, `copilot`, or `agy` (Antigravity), or a configured Cursor, Devin, or other ACP runner such as `agent: cursor` or `agent: devin`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
 - **Optional, for PRs and CI:**
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)
+  - `forgejo-axi` (Forgejo)
   - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
   - `az` CLI with the `azure-devops` extension (Azure DevOps)
   - `tea` CLI (Gitea)
+  - or a configured [provider plugin](/no-mistakes/reference/global-config/#provider_plugins) for custom hosts
 
-Run `no-mistakes doctor` to check native agents, ACP aliases such as `cursor`, provider tools, and whether the configured global runner can start a validation gate.
+Run `no-mistakes doctor` to check native agents, ACP aliases such as `cursor` and `devin`, provider tools, configured provider plugins, and whether the configured global runner can start a validation gate.
 Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR and CI setup per host.
@@ -83,6 +117,7 @@ If the daemon executable path cannot be determined, the update aborts before rep
 If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
 Background update checks run automatically on each CLI invocation (except `update` itself and version queries `--version` / `-v`, which stay side-effect-free). Suppress with `NO_MISTAKES_NO_UPDATE_CHECK=1`.
+A [Nix install](#nix) upgrades through Nix instead.
 
 ## Remove from a repo
 
@@ -98,6 +133,7 @@ It does not remove repo-local agent skill files created by `no-mistakes init`.
 Stop the daemon, delete the binary, and clear state:
 
 ```sh
+no-mistakes daemon uninstall # macOS: removes the LaunchAgent
 no-mistakes daemon stop
 rm -f ~/.local/bin/no-mistakes /usr/local/bin/no-mistakes
 rm -rf ~/.no-mistakes
@@ -105,4 +141,4 @@ rm -rf ~/.no-mistakes
 
 If you configured [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots), also delete the run worktree directories it placed outside `~/.no-mistakes`.
 
-On macOS, also remove `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`. On Linux, also remove `~/.config/systemd/user/no-mistakes-daemon-*.service`. On Windows, remove the `no-mistakes-daemon-*` Task Scheduler task.
+On macOS, `daemon uninstall` removes only the LaunchAgent for the current `NM_HOME`. Repeat it with each instance's `NM_HOME` if you installed multiple services. On Linux, also remove `~/.config/systemd/user/no-mistakes-daemon-*.service`. On Windows, remove the `no-mistakes-daemon-*` Task Scheduler task.

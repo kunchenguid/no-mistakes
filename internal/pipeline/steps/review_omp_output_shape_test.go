@@ -13,8 +13,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-// These two tests drive the REVIEW STEP through a real adapter (a fake pi
-// executable, whose JSON stream is protocol-identical to omp's) rather than a
+// These two tests drive the REVIEW STEP through the native Omp adapter (a fake
+// executable that emits Omp's JSON stream) rather than a
 // hand-rolled mockAgent. That is the layer the two measured production
 // failures lived at: the adapter's output shape decided whether the step saw a
 // usable review, a rejected one, or nothing at all. A mockAgent returning a
@@ -37,7 +37,7 @@ func reviewStepScriptFixtures(t *testing.T, responses []string) string {
 		}
 	}
 	last := strconv.Itoa(len(responses) - 1)
-	bin := filepath.Join(dir, "pi")
+	bin := filepath.Join(dir, "omp")
 	script := `#!/bin/sh
 cat > /dev/null
 n=0
@@ -68,9 +68,9 @@ func TestReviewStep_EmptyTurnIsAbsorbedByTheAdapterNotSpentAsAnAttempt(t *testin
 		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash"}]}}`,
 		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":` + jsonString(cleanReviewJSON) + `}]}}`,
 	})
-	ag, err := agent.New("pi", bin, nil)
+	ag, err := agent.New("omp", bin, nil)
 	if err != nil {
-		t.Fatalf("new pi agent: %v", err)
+		t.Fatalf("new omp agent: %v", err)
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	var logs []string
@@ -111,9 +111,9 @@ func TestReviewStep_EnumRejectionSteersTheRerunWithTheAllowedValues(t *testing.T
 		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":` + jsonString(enumViolating) + `}]}}`,
 		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":` + jsonString(cleanReviewJSON) + `}]}}`,
 	})
-	ag, err := agent.New("pi", bin, nil)
+	ag, err := agent.New("omp", bin, nil)
 	if err != nil {
-		t.Fatalf("new pi agent: %v", err)
+		t.Fatalf("new omp agent: %v", err)
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	var prompts []string

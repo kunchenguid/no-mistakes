@@ -151,6 +151,89 @@ func TestPRTemplateCreateThroughFakeGitHubAndReadback(t *testing.T) {
 	}
 }
 
+func TestPRAppendixModes_TemplatePublication(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			sctx, _, _ := templateTestContext(t)
+			sctx.Config.PR.Appendix = mode
+			sctx.UserIntent = "Keep the template as the visible body."
+			steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range steps {
+				if step.StepName != types.StepReview {
+					continue
+				}
+				if err := sctx.DB.SetStepFindings(step.ID, findingsJSON(t, types.Findings{
+					RiskLevel:     "medium",
+					RiskRationale: "touches publication",
+				})); err != nil {
+					t.Fatal(err)
+				}
+			}
+			insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{
+				TestingSummary: "inlined evidence log",
+				Artifacts: []types.TestArtifact{{
+					Kind:    "log",
+					Label:   "renderer log",
+					Content: strings.Repeat("evidence log line\n", 8),
+				}},
+			}), "")
+
+			content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("%s body:\n%s", mode, content.Body)
+			parts, err := parsePROwnedBody(content.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(parts.before, filledPRTemplate) {
+				t.Fatalf("template narrative was rewritten:\n%s", parts.before)
+			}
+			if strings.Count(parts.appendix, pipelineAttestationCommentPrefix) != 1 || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
+				t.Fatalf("attestation count:\n%s", content.Body)
+			}
+			if !strings.Contains(parts.appendix, "## Intent") || !strings.Contains(parts.appendix, "Keep the template as the visible body.") {
+				t.Fatalf("intent left the appendix:\n%s", parts.appendix)
+			}
+			if !strings.Contains(parts.appendix, "⚠️ Medium: touches publication") {
+				t.Fatalf("risk line missing:\n%s", parts.appendix)
+			}
+			switch mode {
+			case config.PRAppendixFull:
+				for _, want := range []string{"## Risk Assessment", "## Testing", "evidence log line", "## Pipeline"} {
+					if !strings.Contains(parts.appendix, want) {
+						t.Fatalf("full appendix missing %q:\n%s", want, parts.appendix)
+					}
+				}
+				if strings.Contains(parts.appendix, "<summary>Validation</summary>") {
+					t.Fatalf("full appendix was folded:\n%s", parts.appendix)
+				}
+			case config.PRAppendixCollapsed:
+				open := strings.Index(parts.appendix, "<details>\n<summary>Validation</summary>")
+				if open < 0 || strings.Contains(parts.appendix, "<details open") {
+					t.Fatalf("collapsed appendix is not a closed Validation block:\n%s", parts.appendix)
+				}
+				if strings.Index(parts.appendix, "## Intent") > open || strings.Index(parts.appendix, "evidence log line") < open {
+					t.Fatalf("collapsed appendix hid intent or left the log outside the fold:\n%s", parts.appendix)
+				}
+			case config.PRAppendixMinimal:
+				for _, banned := range []string{"## Testing", "## Pipeline", "## Risk Assessment", "evidence log line", "<summary>Validation</summary>"} {
+					if strings.Contains(parts.appendix, banned) {
+						t.Fatalf("minimal appendix kept %q:\n%s", banned, parts.appendix)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestPRTemplateCreateAppliesConfiguredTitleFormat(t *testing.T) {
 	t.Parallel()
 	sctx, ag, _ := templateTestContext(t)

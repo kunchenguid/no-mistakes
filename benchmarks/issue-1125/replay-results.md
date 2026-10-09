@@ -1,5 +1,16 @@
 # Results: offline replay of candidate relevance (excerpts)
 
+> **Retired.** The Jev review pre-brief (`jev.review_assist`) and its
+> `jev.candidate_excerpt_bytes` excerpt option were removed on 2026-09-22
+> based on the evidence collected here and in the later candidate-excerpt
+> trial: the candidate generator excludes changed files by construction while
+> nearly all recorded review-finding locations are changed files, so the
+> listing could not reach what it ranks for, and excerpts measured less
+> precise than path-only at more billed input tokens. This document is kept
+> as a historical record of what was measured; it does not describe current
+> behaviour, and the `jevbench` harness it references is no longer in the
+> tree.
+
 Method in `replay-method.md`. Labels in `candidates.jsonl` (8 relevant, 32
 not). Recorded excerpts-off response in `recorded-excerpts-off.json`.
 Replay summary in `replay-jev-prebrief.json`.

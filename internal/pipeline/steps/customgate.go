@@ -45,7 +45,11 @@ func (s *CustomGateStep) runFixTurn(sctx *pipeline.StepContext) (string, error) 
 	if !sctx.Fixing {
 		return "", nil
 	}
-	baseSHA := resolveBranchBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := effectivePRBaseBranch(sctx)
+	baseSHA, err := resolveBranchBaseSHA(sctx.Ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	if err != nil {
+		return "", err
+	}
 
 	requirement := fmt.Sprintf("This gate passes only when the following command exits 0:\n%s", strings.TrimSpace(s.Gate.Command))
 
@@ -94,6 +98,7 @@ func (s *CustomGateStep) executeCommand(sctx *pipeline.StepContext, fixSummary s
 	sctx.Log(fmt.Sprintf("running gate %q: %s", s.Gate.Name, command))
 	output, exitCode, err := runStepShellCommand(sctx, command)
 	if err != nil {
+		logConfiguredCommandOutput(sctx, output, s.Name())
 		return nil, fmt.Errorf("run gate %q command: %w", s.Gate.Name, err)
 	}
 	if exitCode == 0 {
