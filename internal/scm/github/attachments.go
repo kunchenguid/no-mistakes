@@ -319,6 +319,13 @@ func userAttachmentHostOK(got, expected string) bool {
 	return got == expected || got == "github.com"
 }
 
+// ValidateUserAsset applies gh's client-side attach rules (see the package
+// function of the same name) without uploading anything.
+func (h *Host) ValidateUserAsset(path string) error {
+	_, err := ValidateUserAsset(path)
+	return err
+}
+
 // UploadUserAsset validates path and uploads it as a GitHub user-attachment
 // against this Host's repository. Callers must treat any error as fail-closed:
 // keep today's PR rendering rather than inventing a URL.

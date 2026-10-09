@@ -14,16 +14,41 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/github"
+	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-const testAttachmentURL = "https://github.com/user-attachments/assets/c919a728-162d-435e-83a4-a8636a76a8aa"
+const (
+	testAttachmentURL       = "https://github.com/user-attachments/assets/c919a728-162d-435e-83a4-a8636a76a8aa"
+	testGitLabAttachmentURL = "/uploads/66dbcd21ec5d24ed6ea225176098d52b/checkout.png"
+	testGitLabVideoURL      = "/uploads/66dbcd21ec5d24ed6ea225176098d52b/checkout.webm"
+)
+
+// Both forge hosts must keep satisfying the uploader interface: the media gate
+// is "the host implements it", so a host that silently stopped would turn the
+// feature off for that forge without a failing test.
+var (
+	_ userAssetUploader = (*github.Host)(nil)
+	_ userAssetUploader = (*gitlab.Host)(nil)
+)
 
 type stubMediaUploader struct {
 	t     *testing.T
 	urls  map[string]string
 	err   error
 	calls []string
+	// validate replaces the forge's client-side rules; nil applies GitHub's,
+	// which is what the GitHub-provider tests rely on.
+	validate func(path string) error
+}
+
+func (s *stubMediaUploader) ValidateUserAsset(path string) error {
+	if s.validate != nil {
+		return s.validate(path)
+	}
+	_, err := github.ValidateUserAsset(path)
+	return err
 }
 
 func (s *stubMediaUploader) UploadUserAsset(_ context.Context, path string) (string, error) {
@@ -232,24 +257,121 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	}
 }
 
-func TestPRStep_NonGitHubForgeLeavesScreenshotUnchanged(t *testing.T) {
+func TestPRStep_GitLabEmbedsScreenshotUpload(t *testing.T) {
 	t.Parallel()
-	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+	gitlabRules := gitlab.New(nil, nil, "", "example/widgets")
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testGitLabAttachmentURL}, validate: gitlabRules.ValidateUserAsset}
 	body, logs := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 		ctx.provider = scm.ProviderGitLab
 		ctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
 	})
-	if strings.Contains(body, "user-attachments") {
-		t.Fatalf("GitLab PR must not embed GitHub attachments, got:\n%s", body)
+	if !strings.Contains(body, "![Checkout screenshot]("+testGitLabAttachmentURL+")") {
+		t.Fatalf("expected GitLab upload image, got:\n%s", body)
 	}
+	if strings.Contains(body, "local file:") {
+		t.Fatalf("uploaded screenshot must not cite a local path, got:\n%s", body)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(uploader.calls))
+	}
+	if strings.Contains(logs, "GitHub") {
+		t.Fatalf("GitLab attachment logs must not name GitHub, got %q", logs)
+	}
+}
+
+// TestPRStep_GitLabVideoAttachmentUsesImageSyntax pins the GitLab half of the
+// video convention: GitLab renders an image-syntax link to a video as an
+// inline player and leaves a bare URL as plain text.
+func TestPRStep_GitLabVideoAttachmentUsesImageSyntax(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	sctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+	video := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.webm", []byte("webm"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"video","label":"Checkout recording","path":%q}]}`, video)
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+	gitlabRules := gitlab.New(nil, nil, "", "example/widgets")
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.webm": testGitLabVideoURL}, validate: gitlabRules.ValidateUserAsset}
+	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitLab, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content.Body, "![Checkout recording]("+testGitLabVideoURL+")") {
+		t.Fatalf("expected image-syntax video link, got:\n%s", content.Body)
+	}
+	if strings.Contains(content.Body, "\n"+testGitLabVideoURL+"\n") {
+		t.Fatalf("GitLab video must not render as a bare URL, got:\n%s", content.Body)
+	}
+}
+
+// TestPRStep_GitLabAppliesItsOwnUploadLimits proves validation is the
+// uploader's, not GitHub's: an 11 MiB screenshot is over GitHub's image limit
+// but within GitLab's 100 MiB one, so on GitLab it is uploaded.
+func TestPRStep_GitLabAppliesItsOwnUploadLimits(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	sctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", make([]byte, 10*1024*1024+1))
+	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
+	gitlabRules := gitlab.New(nil, nil, "", "example/widgets")
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testGitLabAttachmentURL}, validate: gitlabRules.ValidateUserAsset}
+	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitLab, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(uploader.calls))
+	}
+	if !strings.Contains(content.Body, "![Checkout screenshot]("+testGitLabAttachmentURL+")") {
+		t.Fatalf("expected GitLab upload image, got:\n%s", content.Body)
+	}
+}
+
+func TestPRStep_ForgeWithoutUploaderLeavesScreenshotUnchanged(t *testing.T) {
+	t.Parallel()
+	body, logs := renderPRWithScreenshot(t, nil, func(ctx *testPRAttachCtx) {
+		ctx.provider = scm.ProviderAzureDevOps
+		ctx.Repo.UpstreamURL = "https://dev.azure.com/example/widgets/_git/widgets"
+	})
 	if !strings.Contains(body, "local file:") {
-		t.Fatalf("GitLab screenshot should keep local rendering, got:\n%s", body)
+		t.Fatalf("Azure DevOps screenshot should keep local rendering, got:\n%s", body)
 	}
-	if len(uploader.calls) != 0 {
-		t.Fatalf("GitLab must not upload, calls=%v", uploader.calls)
+	if !strings.Contains(logs, "media attachments are not supported on azuredevops") {
+		t.Fatalf("expected unsupported-forge skip reason, got %q", logs)
 	}
-	if !strings.Contains(logs, "GitHub-only") {
-		t.Fatalf("expected GitHub-only skip reason, got %q", logs)
+}
+
+// TestResolveMediaUploader_GateIsTheHostImplementingIt covers the gate on the
+// real hosts buildHost constructs: GitLab's host is its own uploader, a host
+// without upload support is refused with a reason, and GitLab's fork refusal
+// surfaces as the reason rather than a nil-host panic.
+func TestResolveMediaUploader_GateIsTheHostImplementingIt(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	gitlabCtx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	gitlabCtx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+	uploader, reason := (&PRStep{}).resolveMediaUploader(gitlabCtx, scm.ProviderGitLab)
+	if _, ok := uploader.(*gitlab.Host); !ok || reason != "" {
+		t.Fatalf("GitLab uploader = %T, %q; want the GitLab host", uploader, reason)
+	}
+
+	azureCtx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	azureCtx.Repo.UpstreamURL = "https://dev.azure.com/example/widgets/_git/widgets"
+	uploader, reason = (&PRStep{}).resolveMediaUploader(azureCtx, scm.ProviderAzureDevOps)
+	if uploader != nil || !strings.Contains(reason, "not supported") {
+		t.Fatalf("Azure DevOps uploader = %T, %q; want none with a reason", uploader, reason)
+	}
+
+	forkCtx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	forkCtx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+	forkCtx.Repo.ForkURL = "https://gitlab.com/someone/widgets.git"
+	uploader, reason = (&PRStep{}).resolveMediaUploader(forkCtx, scm.ProviderGitLab)
+	if uploader != nil || !strings.Contains(reason, "fork") {
+		t.Fatalf("GitLab fork uploader = %T, %q; want none with the fork reason", uploader, reason)
 	}
 }
 

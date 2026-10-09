@@ -21,8 +21,9 @@ import (
 // PRStep creates or updates a pull request via the provider CLI or API.
 type PRStep struct {
 	// mediaUploader uploads image/video evidence at PR render time. Nil uses
-	// the GitHub host's user-attachments client. Tests inject a stub so they
-	// never talk to live GitHub.
+	// the forge host's own uploader when it has one (GitHub user-attachments,
+	// GitLab project uploads). Tests inject a stub so they never talk to a
+	// live forge.
 	mediaUploader userAssetUploader
 }
 
