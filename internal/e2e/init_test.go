@@ -65,6 +65,70 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestInitSkillOptOut proves fresh and refreshed gates work without creating
+// or replacing user skills, and that installation can be enabled afterwards.
+func TestInitSkillOptOut(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	ctx := context.Background()
+	skillPaths := []string{
+		filepath.Join(h.HomeDir, ".claude", "skills", "no-mistakes", "SKILL.md"),
+		filepath.Join(h.HomeDir, ".agents", "skills", "no-mistakes", "SKILL.md"),
+	}
+
+	first, err := h.Run("init", "--install-skill=false")
+	if err != nil {
+		t.Fatalf("disabled fresh init: %v\n%s", err, first)
+	}
+	if !strings.Contains(first, "Gate initialized") || !strings.Contains(first, "disabled (--install-skill=false)") {
+		t.Fatalf("disabled fresh init must enroll the gate and report the opt-out:\n%s", first)
+	}
+	for _, path := range skillPaths {
+		if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+			t.Fatalf("disabled init created a skill directory or could not inspect it: %s: %v", path, err)
+		}
+	}
+	gateOut, err := h.runGit(ctx, h.WorkDir, "remote", "get-url", "no-mistakes")
+	if err != nil {
+		t.Fatalf("disabled init must wire the gate: %v\n%s", err, gateOut)
+	}
+	gateURL := strings.TrimSpace(string(gateOut))
+	const staleSkill = "---\nname: no-mistakes\n---\nstale user skill\n"
+	for _, path := range skillPaths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(staleSkill), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	second, err := h.Run("init", "--install-skill=false")
+	if err != nil {
+		t.Fatalf("disabled refresh: %v\n%s", err, second)
+	}
+	if !strings.Contains(second, "Gate already initialized (refreshed)") || !strings.Contains(second, "disabled (--install-skill=false)") {
+		t.Fatalf("disabled refresh must report refreshed gate and disabled skills:\n%s", second)
+	}
+	for _, path := range skillPaths {
+		content, err := os.ReadFile(path)
+		if err != nil || string(content) != staleSkill {
+			t.Fatalf("disabled refresh changed an existing user skill: %s: %q, %v", path, content, err)
+		}
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "remote", "get-url", "no-mistakes"); err != nil || strings.TrimSpace(string(out)) != gateURL {
+		t.Fatalf("disabled refresh must preserve the gate identity: %q, %v", out, err)
+	}
+
+	enabled, err := h.Run("init", "--install-skill=true")
+	if err != nil {
+		t.Fatalf("explicitly enabled refresh: %v\n%s", err, enabled)
+	}
+	if !strings.Contains(enabled, "installed for agents at user level") {
+		t.Fatalf("enabled refresh must report skill installation:\n%s", enabled)
+	}
+	assertSkillInstalled(t, h)
+}
+
 // TestInitLegacyNotice proves init in a repo that still carries a vendored
 // skill copy from an older no-mistakes version points it out without touching
 // it: the copy is the user's to remove, possibly via their VCS.

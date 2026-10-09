@@ -27,6 +27,7 @@ const banner = `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 func newInitCmd() *cobra.Command {
 	var forkURL string
 	var worktreeRoot string
+	var installSkill bool
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize no-mistakes gate for the current repository",
@@ -74,7 +75,10 @@ func newInitCmd() *cobra.Command {
 				// Install the agent skill at user level so agents can drive
 				// no-mistakes via `/no-mistakes` in any repo. Best-effort: a
 				// skill write failure must not undo a successful gate setup.
-				_, skillErr := skill.InstallUser()
+				var skillErr error
+				if installSkill {
+					_, skillErr = skill.InstallUser()
+				}
 
 				w := cmd.OutOrStdout()
 				fmt.Fprintln(w, sCyan.Render(banner))
@@ -95,7 +99,9 @@ func newInitCmd() *cobra.Command {
 				if repo.ForkURL != "" {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork"), safeurl.Redact(repo.ForkURL))
 				}
-				if skillErr != nil {
+				if !installSkill {
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sDim.Render("disabled (--install-skill=false)"))
+				} else if skillErr != nil {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
 				} else {
 					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents at user level"))
@@ -115,6 +121,7 @@ func newInitCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
 	cmd.Flags().StringVar(&worktreeRoot, "worktree-root", "", "Directory to create this repository's run worktrees in, so directory-scoped toolchain config (mise, direnv) reaches them; prints the worktree_roots entry to add to the global config")
+	cmd.Flags().BoolVar(&installSkill, "install-skill", true, "Install or refresh the agent skill at user level")
 	return cmd
 }
 
