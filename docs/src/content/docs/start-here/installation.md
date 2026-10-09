@@ -84,7 +84,7 @@ make install
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)
   - `forgejo-axi` (Forgejo)
-  - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
+  - `twg` CLI, authenticated (Bitbucket Cloud)
   - `az` CLI with the `azure-devops` extension (Azure DevOps)
   - `tea` CLI (Gitea)
   - or a configured [provider plugin](/no-mistakes/reference/global-config/#provider_plugins) for custom hosts
