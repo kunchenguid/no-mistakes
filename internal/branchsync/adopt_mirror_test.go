@@ -483,3 +483,170 @@ func TestAdoptTerminalHeadStatusOffersNothingForAMovedMirrorLane(t *testing.T) {
 		t.Fatalf("fixture status = %s", f.run.Status)
 	}
 }
+
+// TestAdoptTerminalHeadNeverTreatsAnUnreadableLaneAsAbsent covers a lane that
+// becomes symbolic while adoption is settling it. Its read errors, and an
+// errored read must refuse rather than pass as an absent lane that needs no
+// move and lets custody be stamped.
+func TestAdoptTerminalHeadNeverTreatsAnUnreadableLaneAsAbsent(t *testing.T) {
+	t.Parallel()
+
+	makeLaneSymbolic := func(t *testing.T, f *recoverFixture, from string) {
+		t.Helper()
+		mustRun(t, f.gate, "update-ref", "refs/heads/elsewhere", from)
+		mustRun(t, f.gate, "update-ref", "-d", "refs/heads/"+f.run.Branch, from)
+		mustRun(t, f.gate, "symbolic-ref", "refs/heads/"+f.run.Branch, "refs/heads/elsewhere")
+	}
+	restoreLane := func(t *testing.T, f *recoverFixture, to string) {
+		t.Helper()
+		mustRun(t, f.gate, "symbolic-ref", "--delete", "refs/heads/"+f.run.Branch)
+		mustRun(t, f.gate, "update-ref", "refs/heads/"+f.run.Branch, to, "")
+	}
+
+	tests := []struct {
+		name       string
+		wantSafety string
+		arm        func(*testing.T, *recoverFixture)
+		restoreTo  func(*recoverFixture) string
+	}{
+		{name: "symbolic before settlement", wantSafety: "blocked_adopt_terminal_mirror_mismatch",
+			arm: func(t *testing.T, f *recoverFixture) {
+				f.service.afterRecoverBranchMove = func() { makeLaneSymbolic(t, f, f.submitted) }
+			},
+			restoreTo: func(f *recoverFixture) string { return f.submitted }},
+		{name: "symbolic after the lane move", wantSafety: "blocked_adopt_terminal_mirror_race",
+			arm: func(t *testing.T, f *recoverFixture) {
+				f.service.afterTerminalAdoptionMirrorMove = func() { makeLaneSymbolic(t, f, f.preserved) }
+			},
+			restoreTo: func(f *recoverFixture) string { return f.preserved }},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newStaleMirrorAdoptionFixture(t)
+			tc.arm(t, f)
+			state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+			if state.Recovered || state.Safety != tc.wantSafety {
+				t.Fatalf("unreadable lane at settlement = %#v, want %s", state, tc.wantSafety)
+			}
+			if f.custodyReturned() {
+				t.Fatal("an unreadable lane stamped custody")
+			}
+			if target := mustRun(t, f.gate, "symbolic-ref", "refs/heads/"+f.run.Branch); target != "refs/heads/elsewhere" {
+				t.Fatalf("refusal rewrote the symbolic lane to %s", target)
+			}
+
+			f.service.afterRecoverBranchMove = nil
+			f.service.afterTerminalAdoptionMirrorMove = nil
+			restoreLane(t, f, tc.restoreTo(f))
+			if retried := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f)); !retried.Recovered {
+				t.Fatalf("retry after restoring the direct lane = %#v", retried)
+			}
+			assertRecoveredRewriteFixture(t, f)
+			assertNextRunMirrorReady(t, f)
+		})
+	}
+}
+
+// TestAdoptTerminalHeadReverifiesTheCallerAfterMirrorSettlement changes the
+// caller or a history anchor after the lane has moved but before custody is
+// stamped. The stamp checks only run fields, so the caller verification must
+// run again at that boundary: every change refuses without stamping custody or
+// touching operator content, and the same bound action succeeds once the exact
+// state is restored.
+func TestAdoptTerminalHeadReverifiesTheCallerAfterMirrorSettlement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		change  func(*testing.T, *recoverFixture)
+		verify  func(*testing.T, *recoverFixture)
+		restore func(*testing.T, *recoverFixture)
+	}{
+		{name: "dirty caller edit",
+			change: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "feature.txt"), "operator edit during settlement\n")
+			},
+			verify: func(t *testing.T, f *recoverFixture) {
+				if got := mustRun(t, f.local, "status", "--porcelain=v1"); !strings.Contains(got, "feature.txt") {
+					t.Fatalf("refusal lost the operator edit: %q", got)
+				}
+			},
+			restore: func(t *testing.T, f *recoverFixture) { mustRun(t, f.local, "checkout", "--", "feature.txt") }},
+		{name: "caller branch switch",
+			change: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "checkout", "-b", "operator-side", f.preserved)
+			},
+			verify: func(t *testing.T, f *recoverFixture) {
+				if got := mustRun(t, f.local, "symbolic-ref", "--short", "HEAD"); got != "operator-side" {
+					t.Fatalf("refusal switched the operator's branch back to %s", got)
+				}
+			},
+			restore: func(t *testing.T, f *recoverFixture) { mustRun(t, f.local, "checkout", f.run.Branch) }},
+		{name: "second worktree attaches the branch",
+			change: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "worktree", "add", "--force", filepath.Join(t.TempDir(), "second"), f.run.Branch)
+			},
+			restore: func(t *testing.T, f *recoverFixture) {
+				for _, line := range strings.Split(mustRun(t, f.local, "worktree", "list", "--porcelain"), "\n") {
+					if path, ok := strings.CutPrefix(line, "worktree "); ok && strings.HasSuffix(path, "second") {
+						mustRun(t, f.local, "worktree", "remove", "--force", path)
+					}
+				}
+			}},
+		{name: "gate preserved anchor moves",
+			change: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", f.anchorRef(), f.base, f.preserved)
+			},
+			restore: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved, f.base)
+			}},
+		{name: "worktree preserved anchor moves",
+			change: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "update-ref", f.anchorRef(), f.base, f.preserved)
+			},
+			restore: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "update-ref", f.anchorRef(), f.preserved, f.base)
+			}},
+		{name: "worktree caller anchor moves",
+			change: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "update-ref", f.localAnchorRef(), f.base, f.submitted)
+			},
+			restore: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "update-ref", f.localAnchorRef(), f.submitted, f.base)
+			}},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newStaleMirrorAdoptionFixture(t)
+			f.service.afterTerminalAdoptionMirrorMove = func() { tc.change(t, f) }
+			state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+			if state.Recovered || state.Safety != "blocked_adopt_terminal_incomplete" {
+				t.Fatalf("change during settlement = %#v", state)
+			}
+			if strings.Contains(state.Error, "custody was returned") || !strings.Contains(state.Error, "custody was not returned") {
+				t.Fatalf("refusal misreports custody: %q", state.Error)
+			}
+			if f.custodyReturned() {
+				t.Fatal("a change during settlement stamped custody")
+			}
+			if got := mustRun(t, f.gate, "rev-parse", f.localAnchorRef()); got != f.submitted {
+				t.Fatalf("gate caller anchor = %s, want submitted %s", got, f.submitted)
+			}
+			if tc.verify != nil {
+				tc.verify(t, f)
+			}
+
+			f.service.afterTerminalAdoptionMirrorMove = nil
+			tc.restore(t, f)
+			if retried := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f)); !retried.Recovered {
+				t.Fatalf("retry after restoring the exact state = %#v", retried)
+			}
+			assertRecoveredRewriteFixture(t, f)
+			assertNextRunMirrorReady(t, f)
+		})
+	}
+}
