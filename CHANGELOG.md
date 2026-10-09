@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.92.0](https://github.com/kunchenguid/no-mistakes/compare/v1.91.0...v1.92.0) (2026-10-09)
+
+
+### Features
+
+* **pipeline:** add bounded auto-fix rounds for command gates ([#1379](https://github.com/kunchenguid/no-mistakes/issues/1379)) ([fd2179f](https://github.com/kunchenguid/no-mistakes/commit/fd2179fd0b0058ac75b6546bcde998d6f6d114c8))
+* **pipeline:** support GitLab review-bot findings and issue closure ([#1386](https://github.com/kunchenguid/no-mistakes/issues/1386)) ([eaae260](https://github.com/kunchenguid/no-mistakes/commit/eaae260b45392a0df9457b40af7ed07b4c0aad68))
+* **pipeline:** support structured command gate findings ([#1381](https://github.com/kunchenguid/no-mistakes/issues/1381)) ([ebbfdd0](https://github.com/kunchenguid/no-mistakes/commit/ebbfdd027dacd71257beb782b383d3a41e12a7e1))
+* **scm:** accept a Forgejo SSH domain that differs from the web host ([#1140](https://github.com/kunchenguid/no-mistakes/issues/1140)) ([aaac026](https://github.com/kunchenguid/no-mistakes/commit/aaac02668c215204c2907d674e41f07275e2bbeb))
+
+
+### Bug Fixes
+
+* **agent:** retry claude runs that end on a transient API error ([#1376](https://github.com/kunchenguid/no-mistakes/issues/1376)) ([afd12eb](https://github.com/kunchenguid/no-mistakes/commit/afd12eb086673480ff383c2c77f7bcff178bf56c))
+* **branchsync:** name a safe checkout as the blocked_diverged next action ([#1396](https://github.com/kunchenguid/no-mistakes/issues/1396)) ([2e00ba8](https://github.com/kunchenguid/no-mistakes/commit/2e00ba80c2b81af34fc9b73243ee1102f6ca08a4))
+* **daemon:** honor trusted project agent for Pi run profiles ([#1389](https://github.com/kunchenguid/no-mistakes/issues/1389)) ([6c00cd8](https://github.com/kunchenguid/no-mistakes/commit/6c00cd82a3e9aa5822ef7d201f073176c09e29ad))
+* **pipeline:** use latest review round's risk assessment on carry-forward ([#1377](https://github.com/kunchenguid/no-mistakes/issues/1377)) ([05f69ab](https://github.com/kunchenguid/no-mistakes/commit/05f69ab061d5b971ac4a143c7eee3a350a885a9f))
+* **scm:** read gh pr list, create and checks from stdout only ([#1375](https://github.com/kunchenguid/no-mistakes/issues/1375)) ([e1c3809](https://github.com/kunchenguid/no-mistakes/commit/e1c38098122d417dd675b1b062113be25a9a2088))
+
 ## [1.91.0](https://github.com/kunchenguid/no-mistakes/compare/v1.90.0...v1.91.0) (2026-10-08)
 
 
