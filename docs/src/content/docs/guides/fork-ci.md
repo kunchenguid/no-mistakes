@@ -17,6 +17,13 @@ avoids the race-enabled subprocess issue documented for Go 1.26.0–1.26.4.
 Runtime tests run on Linux. Cross-compilation does not prove macOS or Windows
 runtime behavior.
 
+The runner needs Git, Make, a C compiler with libc development headers (for
+the race detector), and the `sqlite3` CLI used by the Pi-profile journeys.
+Administrators install these dependencies; the runner account does not gain
+sudo access. The 104-journey end-to-end package has a 25-minute deadline inside
+the 30-minute job bound. Each run retains the temporary-daemon inventory and
+cleanup trap.
+
 ## Required execution policy
 
 This public fork must enforce `.github/ci-actor-policy.json` as an **active,
