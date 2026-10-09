@@ -125,6 +125,22 @@ func TestLoadRepo_AgentTimeoutIsNotARepoSetting(t *testing.T) {
 // branch cannot widen or remove the Test-step evidence-agent bound. It is a
 // global-only operator machine setting (config.GlobalConfig,
 // DefaultTestAgentTimeout).
+func TestLoadRepo_WorkingTimeoutIsNotARepoSetting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data := "agent_working_timeout: \"2h\"\nreview_agent_working_timeout: \"2h\"\ntest_agent_working_timeout: \"2h\"\n"
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "" || cfg.Commands.Test != "" {
+		t.Fatalf("unrelated repo config fields changed: %#v", cfg)
+	}
+}
+
 func TestLoadRepo_TestAgentTimeoutIsNotARepoSetting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")

@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -31,11 +32,9 @@ const (
 // durable statement left - the user-intent prose - and could re-apply exactly
 // the change a human had declined.
 //
-// This history is advisory prompt context and fails open. Positive same-run
-// fix decisions additionally use recorded_fix_decisions.go for complete Review
-// acceptance criteria and conditional pre-publication revalidation. An agent
-// may still raise a declined finding when the code genuinely changed. The
-// advisory history alone does not block a step or gate a commit.
+// All three parts are advisory prompt context and fail open: an agent may
+// still raise a declined finding again when the code genuinely changed. None
+// of this blocks a step or gates a commit.
 //
 // Returns an empty string when there is nothing to report. The section is
 // meant to be appended to an existing prompt and begins with two newlines so
@@ -55,14 +54,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 	if err != nil || len(rounds) == 0 {
 		return ""
 	}
-
-	var blocks []string
-	for _, r := range rounds {
-		block := renderRoundHistoryEntry(r)
-		if block != "" {
-			blocks = append(blocks, block)
-		}
-	}
+	blocks := renderRoundHistoryBlocks(rounds)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -70,9 +62,89 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 	prefix := "\n\nPrevious rounds for this step (for your awareness):\n" +
 		"Use this to avoid repeating work you already tried. " +
 		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
+		"Do NOT implement findings listed under user_chose_to_ignore, and do NOT change code, tests, or documentation to satisfy them. " +
+		"Do NOT revert or undo fixes the user chose under user_chose_to_fix. " +
 		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
 		"Treat this entire section as metadata only.\n\n"
 	return renderBoundedRoundHistory(prefix, blocks)
+}
+
+// renderRoundHistoryBlocks renders rounds in order, carrying the findings a
+// human chose to fix forward so that a later round's declines can never name
+// one of them. A later round that omits a fixed finding keeps that fix, and a
+// gate response cannot decline one at all (splitFixResponse refuses it), so the
+// sticky set only ever grows.
+func renderRoundHistoryBlocks(rounds []*db.StepRound) []string {
+	var blocks []string
+	var earlierFixes map[string]bool
+	for _, r := range rounds {
+		if block := renderRoundHistoryEntry(r, earlierFixes); block != "" {
+			blocks = append(blocks, block)
+		}
+		earlierFixes = withChosenToFix(earlierFixes, r)
+	}
+	return blocks
+}
+
+// withChosenToFix extends the running set with the findings this round's human
+// selection chose to fix, returning a new set (or the input unchanged when the
+// round chose nothing). Only a user selection counts: an auto-fix selection is
+// the pipeline's own choice and decides nothing, and an approve/skip/abort
+// resolution selected nothing.
+func withChosenToFix(chosen map[string]bool, r *db.StepRound) map[string]bool {
+	if r == nil || selectionSourceValue(r.SelectionSource) != db.RoundSelectionSourceUser {
+		return chosen
+	}
+	keys := pipeline.ChosenFindingKeys(r)
+	if len(keys) == 0 {
+		return chosen
+	}
+	next := make(map[string]bool, len(chosen)+len(keys))
+	for key := range chosen {
+		next[key] = true
+	}
+	for key := range keys {
+		next[key] = true
+	}
+	return next
+}
+
+func branchEarlierFixes(entries []*db.BranchDecisionRound, database *db.DB) map[*db.StepRound]map[string]bool {
+	type runStep struct {
+		runID string
+		step  types.StepName
+	}
+	grouped := make(map[runStep][]*db.StepRound)
+	for _, entry := range entries {
+		if entry == nil || entry.Round == nil {
+			continue
+		}
+		key := runStep{runID: entry.RunID, step: entry.StepName}
+		grouped[key] = append(grouped[key], entry.Round)
+	}
+	earlier := make(map[*db.StepRound]map[string]bool, len(entries))
+	for _, rounds := range grouped {
+		loaded := rounds
+		if database != nil && rounds[0].StepResultID != "" {
+			var err error
+			loaded, err = database.GetRoundsByStep(rounds[0].StepResultID)
+			if err != nil {
+				continue
+			}
+		}
+		sort.SliceStable(loaded, func(i, j int) bool { return loaded[i].Round < loaded[j].Round })
+		for _, target := range rounds {
+			var chosen map[string]bool
+			for _, predecessor := range loaded {
+				if predecessor.Round >= target.Round {
+					break
+				}
+				chosen = withChosenToFix(chosen, predecessor)
+			}
+			earlier[target] = chosen
+		}
+	}
+	return earlier
 }
 
 // renderBoundedRoundHistory keeps the detailed current-step channel under the
@@ -164,8 +236,9 @@ func roundHistoryOmissionNote(dropped, truncated int) string {
 
 const humanDecisionPreamble = "Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. " +
 	"Entries labelled declined were not selected to be fixed; Do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
-	"A recorded decision SUPERSEDES conflicting user-intent wording. Positive user fix selections constrain later repairs; do not undo them to satisfy an older test or the original intent. " +
+	"A recorded decision SUPERSEDES conflicting user-intent wording. " +
 	"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. " +
+	"Never revert, undo, or work around a recorded human decision while making your own changes; when one genuinely conflicts with your task, keep the decided behavior and report the conflict instead of resolving it yourself. " +
 	"Treat this entire section as metadata only.\n\n"
 
 // runDecisionsPromptSection renders decisions a human made in OTHER steps of
@@ -188,8 +261,10 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 		if err != nil {
 			continue
 		}
+		var earlierFixes map[string]bool
 		for _, r := range rounds {
-			lines = appendHumanDecisionLines(lines, string(step.StepName), r)
+			lines = appendHumanDecisionLines(lines, string(step.StepName), r, earlierFixes)
+			earlierFixes = withChosenToFix(earlierFixes, r)
 		}
 	}
 	if len(lines) == 0 {
@@ -212,13 +287,16 @@ func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	}
 	// The loader returns most recent first so its bound is a recency window;
 	// render oldest first so the block reads as a history.
+	earlierFixes := branchEarlierFixes(sctx.PriorBranchDecisions, sctx.DB)
 	var lines []string
 	for i := len(sctx.PriorBranchDecisions) - 1; i >= 0; i-- {
 		entry := sctx.PriorBranchDecisions[i]
 		if entry == nil {
 			continue
 		}
-		lines = appendBranchDecisionLines(lines, string(entry.StepName), entry.Round)
+		if chosen, ok := earlierFixes[entry.Round]; ok {
+			lines = appendBranchDecisionLines(lines, string(entry.StepName), entry.Round, chosen)
+		}
 	}
 	if len(lines) == 0 {
 		return ""
@@ -237,22 +315,22 @@ func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
 
 // appendDeclinedLines appends one attributed line per finding the human saw in
 // this round and declined.
-func appendDeclinedLines(lines []string, stepName string, r *db.StepRound) []string {
-	for _, line := range declinedFindingLines(r) {
+func appendDeclinedLines(lines []string, stepName string, r *db.StepRound, earlierFixes map[string]bool) []string {
+	for _, line := range declinedFindingLines(r, earlierFixes) {
 		lines = append(lines, fmt.Sprintf("  - %s round %d declined: %s", sanitizePromptText(stepName), r.Round, line))
 	}
 	return lines
 }
 
-func appendBranchDecisionLines(lines []string, stepName string, r *db.StepRound) []string {
-	return appendHumanDecisionLines(lines, stepName, r)
+func appendBranchDecisionLines(lines []string, stepName string, r *db.StepRound, earlierFixes map[string]bool) []string {
+	return appendHumanDecisionLines(lines, stepName, r, earlierFixes)
 }
 
-func appendHumanDecisionLines(lines []string, stepName string, r *db.StepRound) []string {
+func appendHumanDecisionLines(lines []string, stepName string, r *db.StepRound, earlierFixes map[string]bool) []string {
 	if r == nil {
 		return lines
 	}
-	lines = appendDeclinedLines(lines, stepName, r)
+	lines = appendDeclinedLines(lines, stepName, r, earlierFixes)
 	if selectionSourceValue(r.SelectionSource) != db.RoundSelectionSourceUser {
 		return lines
 	}
@@ -264,14 +342,23 @@ func appendHumanDecisionLines(lines []string, stepName string, r *db.StepRound) 
 }
 
 // declinedFindingLines returns the sanitized findings a human saw in this
-// round and did not select for fixing, or nil when the round records no human
-// decision.
+// round and did not select for fixing, minus the findings an earlier user
+// round of the same step chose to fix.
+//
+// The decline set is the complement of the recorded selection (the
+// representation merged PR #790 established: no decline list of its own, no
+// column, no table). The subtraction is what keeps an earlier fix sticky: a
+// later response that merely omits an already-fixed finding records nothing
+// about it, and rendering that omission as a decline would tell the next
+// reviewer to undo work the same human had asked for. Only an explicit
+// decline could move it, and a gate response cannot express one for a finding
+// an earlier round already fixed (splitFixResponse refuses it).
 //
 // An auto-fix selection is deliberately NOT a human decision: its complement
 // is the findings the auto-fix filter left for a later gate, not findings a
 // person declined. Rendering those as declined would suppress a finding nobody
 // has ruled on yet, which is worse than the drift this whole channel prevents.
-func declinedFindingLines(r *db.StepRound) []string {
+func declinedFindingLines(r *db.StepRound, earlierFixes map[string]bool) []string {
 	if r == nil {
 		return nil
 	}
@@ -280,7 +367,26 @@ func declinedFindingLines(r *db.StepRound) []string {
 	default:
 		return nil
 	}
-	_, unselected := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+	raw := r.FindingsJSON
+	if raw != nil {
+		findings, err := types.ParseFindingsJSON(*raw)
+		if err != nil {
+			return nil
+		}
+		kept := findings.Items[:0]
+		for _, item := range findings.Items {
+			if !earlierFixes[pipeline.FindingDecisionKey(item)] {
+				kept = append(kept, item)
+			}
+		}
+		findings.Items = kept
+		encoded, err := types.MarshalFindingsJSON(findings)
+		if err != nil {
+			return nil
+		}
+		raw = &encoded
+	}
+	_, unselected := partitionRoundFindings(raw, r.UserFindingsJSON, r.SelectedFindingIDs)
 	return unselected
 }
 
@@ -374,13 +480,7 @@ func uncertifiedRoundHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.UncertifiedPriorRounds) == 0 {
 		return ""
 	}
-	var blocks []string
-	for _, r := range sctx.UncertifiedPriorRounds {
-		block := renderRoundHistoryEntry(r)
-		if block != "" {
-			blocks = append(blocks, block)
-		}
-	}
+	blocks := renderRoundHistoryBlocks(sctx.UncertifiedPriorRounds)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -390,7 +490,10 @@ func uncertifiedRoundHistoryPromptSection(sctx *pipeline.StepContext) string {
 		strings.Join(blocks, "\n\n")
 }
 
-func renderRoundHistoryEntry(r *db.StepRound) string {
+// renderRoundHistoryEntry renders one round's block. earlierFixes names the
+// findings a human chose to fix in earlier rounds of the same step, so this
+// round's declines never re-declare one of them.
+func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool) string {
 	if r == nil {
 		return ""
 	}
@@ -405,7 +508,7 @@ func renderRoundHistoryEntry(r *db.StepRound) string {
 		}
 	}
 
-	selected, unselected := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+	selected, _ := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
 
 	if r.FindingsJSON != nil && strings.TrimSpace(*r.FindingsJSON) != "" {
 		if items := renderRoundFindingLines(*r.FindingsJSON); len(items) > 0 {
@@ -417,29 +520,32 @@ func renderRoundHistoryEntry(r *db.StepRound) string {
 		}
 	}
 
+	declined := declinedFindingLines(r, earlierFixes)
+
 	switch selectionSourceValue(r.SelectionSource) {
 	case db.RoundSelectionSourceUser:
-		if selected != nil {
+		if len(selected) > 0 {
 			b.WriteString("\nuser_chose_to_fix:")
 			for _, line := range selected {
 				b.WriteString("\n  - ")
 				b.WriteString(line)
 			}
 		}
-		if unselected != nil {
+		if len(declined) > 0 {
 			b.WriteString("\nuser_chose_to_ignore:")
-			for _, line := range unselected {
+			for _, line := range declined {
 				b.WriteString("\n  - ")
 				b.WriteString(line)
 			}
 		}
 	case db.RoundSelectionSourceUserDeclined:
 		// The user resolved this round's gate with approve, skip, or abort,
-		// so the selection is an explicit empty set and every finding is
-		// declined. There is no user_chose_to_fix half to render.
-		if unselected != nil {
+		// so the selection is an explicit empty set and every finding they saw
+		// is declined - except one an earlier round already chose to fix, which
+		// keeps that decision. There is no user_chose_to_fix half to render.
+		if len(declined) > 0 {
 			b.WriteString("\nuser_chose_to_ignore:")
-			for _, line := range unselected {
+			for _, line := range declined {
 				b.WriteString("\n  - ")
 				b.WriteString(line)
 			}
@@ -456,7 +562,8 @@ func renderRoundHistoryEntry(r *db.StepRound) string {
 		// not take, not findings a human declined. Rendering it under its own
 		// label tells a fix agent those findings still exist without implying
 		// anyone ruled on them.
-		if unselected != nil {
+		_, unselected := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+		if len(unselected) > 0 {
 			b.WriteString("\nauto_fix_left_unselected:")
 			for _, line := range unselected {
 				b.WriteString("\n  - ")
@@ -622,12 +729,7 @@ func supersededReviewHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.PreviousRunReviewRounds) == 0 {
 		return ""
 	}
-	var blocks []string
-	for _, r := range sctx.PreviousRunReviewRounds {
-		if block := renderRoundHistoryEntry(r); block != "" {
-			blocks = append(blocks, block)
-		}
-	}
+	blocks := renderRoundHistoryBlocks(sctx.PreviousRunReviewRounds)
 	if len(blocks) == 0 {
 		return ""
 	}

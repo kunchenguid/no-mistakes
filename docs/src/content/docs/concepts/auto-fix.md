@@ -48,7 +48,7 @@ That deterministic rerun sits strictly before the agent rounds described above:
 1. Every check finishes and at least one has failed.
 2. If all of those failures are provider-attributed checks, the pull request has no merge conflict, and the configured budget authorizes it, each one is re-run and the monitor keeps polling. No `auto_fix.ci` attempt is consumed.
 3. When such a detected provider-attributed outcome is the only remaining issue, a check with no authorized or outstanding rerun pauses for a decision without consuming an `auto_fix.ci` attempt.
-4. Every other failure becomes an `auto-fix` finding on its first observation and enters the `auto_fix.ci` loop through the same executor loop described above. A red check from a supported review bot (currently Greptile) becomes `ask-user` findings instead, one per unresolved review comment, so the bot's opinion parks for a decision rather than spending a fix round.
+4. Every other failure becomes an `auto-fix` finding on its first observation and enters the `auto_fix.ci` loop through the same executor loop described above. A red check from a supported review bot (currently Greptile) becomes `ask-user` findings instead, one per unresolved review comment, so the bot's opinion parks for a decision rather than spending a fix round. On GitLab no check can be attributed to a review bot, so the bot's unresolved discussions are read only under [`ci.review_bot_comments: always`](/no-mistakes/reference/repo-config/#cireview_bot_comments), through that same `ask-user` path.
 
 [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns the budget, the exact classification, and every case that skips the rerun.
 
@@ -56,9 +56,9 @@ Nothing that survives a rerun falls into the agent loop either. A check the prov
 
 ## Configuration
 
-Per-step attempt limits come from the `auto_fix` config object; the [`auto_fix` field reference](/no-mistakes/reference/global-config/#auto_fix) owns the defaults, per-step meanings, and the legacy alias.
+Core-step attempt limits come from the `auto_fix` config object; the [`auto_fix` global field reference](/no-mistakes/reference/global-config/#auto_fix) owns their defaults, meanings, and legacy alias.
 Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues; `auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
-Repo config overlays global config field by field - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
+Repo config overlays global core-step limits field by field - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global. The [`auto_fix` repo field reference](/no-mistakes/reference/repo-config/#auto_fix) owns the separate, repository-only gate budgets.
 
 ## Finding actions
 
@@ -76,7 +76,7 @@ Classification also follows the remedy, not only the topic: when the smallest ho
 See [AXI `--yes`](/no-mistakes/reference/cli/#no-mistakes-axi-run) and [TUI yolo mode](/no-mistakes/guides/tui/#action-bar) for automatic gate handling and its exceptions.
 
 The `review`, `test`, `ci`, and configured-command `lint` steps use this shared model directly; the CI step derives its findings from the pull request's settled checks rather than from an agent, as the [pipeline-step reference](/no-mistakes/reference/pipeline-steps/#ci) describes. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
-A failed repository gate returns an `ask-user` finding through the same decision model but has no automatic fix budget. The [`gates` reference](/no-mistakes/reference/repo-config/#gates) owns its operator-authorized repair behavior.
+The [`gates` reference](/no-mistakes/reference/repo-config/#gates) owns repository-gate findings, automatic fix budgets, and operator-authorized repair behavior.
 When `commands.lint` is empty, the combined housekeeping pass routes documentation and lint findings to their owning gates. Its unresolved lint findings describe issues left after safe fixes, so blocking findings pause for approval instead of remaining eligible for another automatic fix loop.
 
 Documentation findings use the same approval UI, but the `document` step treats any finding as an unresolved documentation gap or judgment call that should pause for approval.
@@ -99,7 +99,8 @@ After a user-triggered fix, the step re-runs. It completes if the check passes a
 
 When the Review, Test, Document, Lint, CI, or a repository gate repair commits agent changes, its subject comes from `commit.fix_message`.
 The [global config reference](/no-mistakes/reference/global-config/#commitfix_message) owns the template syntax, default, validation rules, size limits, and supported placeholders; the [repo config reference](/no-mistakes/reference/repo-config/#commitfix_message) owns the repository override and trust behavior.
-The pipeline validates the template, agent summary, predicted output size, and final rendered subject before `git add -A`, so a rejected value does not leave changes staged.
+Any [`commit.trailers`](/no-mistakes/reference/global-config/#committrailers) follow the subject, rendered for the agent and model that produced that commit's changes.
+The pipeline validates the template, agent summary, predicted output size, final rendered subject, and trailers before `git add -A`, so a rejected value does not leave changes staged.
 The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document value for `{{.Step}}`; configured-command lint fixes use the Lint value.
 
 Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
@@ -116,7 +117,7 @@ A round stores its findings, duration, any selected finding IDs and whether that
 That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
 AXI status uses the same round history and the persisted auto-fix limit to show the active fix attempt, for example `auto-fix 1/3` or `fix 2`.
 The step log records a marker when each automatic or user-triggered fix round starts.
-The generated PR surfaces this recorded evidence in deterministic Risk Assessment, Testing, and Pipeline sections. The [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the PR body composition and size-limit contract.
+The generated PR can surface this recorded evidence; the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the PR body composition and size-limit contract.
 The full round history remains available in the run log.
 
 Round trigger types:

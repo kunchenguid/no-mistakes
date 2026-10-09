@@ -192,7 +192,7 @@ func TestExecutor_FixingEventIncludesFindingStats(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"r1"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	fixingEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixing))
@@ -296,7 +296,9 @@ func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	exec.Respond(types.StepReview, types.ActionFix, nil)
+	if err := respondFixPartial(t, exec, types.StepReview); err != nil {
+		t.Fatal(err)
+	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatal(err)
@@ -412,7 +414,7 @@ func TestExecutor_FixAppliesUserInstructionsAndAddedFindings(t *testing.T) {
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 	instructions := map[string]string{"review-1": "only touch parser.go, skip helpers"}
 	added := []types.Finding{{Severity: "warning", File: "logger.go", Description: "also audit logger init", Action: types.ActionAutoFix}}
-	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, instructions, added, ""); err != nil {
+	if err := respondFixPartialWithOverrides(t, exec, types.StepReview, []string{"review-1"}, instructions, added); err != nil {
 		t.Fatal(err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
@@ -509,7 +511,7 @@ func TestExecutor_FixUsesSelectedFindingIDsOnly(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "review-2"); err != nil {
 		t.Fatal(err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
@@ -614,7 +616,7 @@ func TestExecutor_FixPersistsFollowUpRoundAsAutoFix(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview); err != nil {
 		t.Fatal(err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
@@ -683,7 +685,7 @@ func TestExecutor_FixSelectedFindingsRewritesSummary(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "review-2"); err != nil {
 		t.Fatal(err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
@@ -742,7 +744,7 @@ func TestExecutor_UserFixRecordsSelectedFindingIDsAndFixSummary(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "review-2"); err != nil {
 		t.Fatal(err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)

@@ -81,7 +81,22 @@ func TestMain(m *testing.M) {
 	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
 	// t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
-	os.Exit(m.Run())
+	// Fixtures must not depend on the machine's system git config: some
+	// distributions ship safe.bareRepository=explicit there, which refuses
+	// the in-directory use of the bare fixture repositories these tests
+	// create. Mirrors internal/git's TestMain.
+	os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// Fixtures must not inherit the developer's global git config: a
+	// commit.gpgsign=true there makes every fixture commit ask gpg to sign.
+	globalConfigDir, err := os.MkdirTemp("", "no-mistakes-daemon-tests-")
+	if err != nil {
+		panic(err)
+	}
+	globalConfig := filepath.Join(globalConfigDir, "gitconfig")
+	os.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	code := m.Run()
+	os.RemoveAll(globalConfigDir)
+	os.Exit(code)
 }
 
 // startTestDaemon starts a daemon with a temp root and registers shutdown cleanup.

@@ -17,6 +17,9 @@ func normalizeRepositoryOverrides(raw RepositoryOverrides) (RepositoryOverrides,
 		if _, exists := overrides[key]; exists {
 			return nil, fmt.Errorf("invalid repository_overrides: duplicate remote after normalization")
 		}
+		if err := validateCommandOverrides(override.Commands); err != nil {
+			return nil, fmt.Errorf("invalid repository_overrides.%s.commands: %w", key, err)
+		}
 		if err := validateGlobalCommitRaw(override.Commit); err != nil {
 			return nil, fmt.Errorf("invalid repository_overrides.%s.commit: %w", key, err)
 		}

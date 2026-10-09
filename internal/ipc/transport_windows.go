@@ -234,3 +234,6 @@ func processAlive(pid int) bool {
 	syscall.CloseHandle(h)
 	return true
 }
+
+// CheckEndpointPath always succeeds: the Windows endpoint is a regular file.
+func CheckEndpointPath(endpoint string) error { return nil }

@@ -38,11 +38,11 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 	return git.EmptyTreeSHA
 }
 
-// resolveBranchBaseSHA returns the branch base commit relative to the default
-// branch when possible. This keeps pipeline steps scoped to the full branch,
-// not just the last pushed delta. It fetches the default branch's current
-// remote tip first (same pattern as resolveRunDefaultBranchTip) so the
-// merge-base is computed against the live base, not whatever origin/<base>
+// resolveBranchBaseSHA returns the branch base commit relative to the supplied
+// effective PR base branch when possible. This keeps pipeline steps scoped to
+// the full branch, not just the last pushed delta. Outside eval replay, it fetches
+// that branch's current remote tip first (as resolveRunDefaultBranchTip does).
+// The merge-base is computed against the live base, not whatever origin/<base>
 // happened to be sitting at in the worktree - a stale local ref otherwise
 // drafts PR content (and other consumers) against an outdated base and pulls
 // in unrelated commits that already landed there.
@@ -53,7 +53,9 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 // layer down. Callers return the error, which fails the step instead of
 // validating or drafting content against unverified base state.
 func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, error) {
-	if strings.TrimSpace(defaultBranch) != "" {
+	// Eval replay has no upstream to fetch: it pins origin/<base> to the
+	// captured commit in its isolated worktree, which is the base to use.
+	if strings.TrimSpace(defaultBranch) != "" && !sctx.EvalReplay {
 		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
 			return "", fmt.Errorf("fetch default branch %q to resolve branch base: %w", defaultBranch, err)
 		}

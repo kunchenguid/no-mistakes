@@ -369,4 +369,12 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN approval_reason TEXT`,
+	// Explicit axi run --closes references for the PR body Issues section (nullable;
+	// NULL means none).
+	`ALTER TABLE runs ADD COLUMN closing_issue_refs TEXT`,
+	// Set once, atomically with the read that resolves the closing issue references into
+	// the PR body. NULL means no PR body has sampled the closing issue references yet, so
+	// a late --closes can still reach the Issues section; non-NULL closes that window
+	// (see UpdateRunClosingIssueRefs / ClaimClosingIssueRefsForPRBody).
+	`ALTER TABLE runs ADD COLUMN closing_issue_refs_locked_at INTEGER`,
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -35,6 +36,111 @@ func assertParkedRunIntact(t *testing.T, h *Harness, runID, branch string) {
 			t.Fatalf("refused dispatch created/superseded with run %s", other.ID)
 		}
 	}
+}
+
+func writeGlobalAutoPiPath(t *testing.T, h *Harness) {
+	t.Helper()
+	cfg := "agent: auto\n" +
+		"log_level: debug\n" +
+		"agent_path_override:\n  pi: " + filepath.Join(h.BinDir, executableName("pi")) + "\n" +
+		"auto_fix:\n  rebase: 0\n  lint: 0\n  test: 0\n  review: 0\n  document: 0\n  ci: 0\n"
+	if err := os.WriteFile(filepath.Join(h.NMHome, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write global auto config: %v", err)
+	}
+}
+
+// TestLivePiProfileTrustedPiOverridesGlobalAuto drives the real CLI through a
+// complete launch decision. The project opts into Pi on its trusted default
+// branch while the operator keeps global auto selection; the run must launch
+// with and persist the requested model and effort.
+func TestLivePiProfileTrustedPiOverridesGlobalAuto(t *testing.T) {
+	const (
+		branch = "feature/trusted-pi-over-auto"
+		model  = "openai-codex/gpt-5.6-sol"
+	)
+	noRepoCommands := false
+	h := NewHarness(t, SetupOpts{
+		Agent:             "pi",
+		Scenario:          writeReviewAgentsRoutingScenario(t),
+		AllowRepoCommands: &noRepoCommands,
+	})
+	writeGlobalAutoPiPath(t, h)
+
+	trusted := "agent: pi\nignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: false\n"
+	if err := os.WriteFile(filepath.Join(h.WorkDir, ".no-mistakes.yaml"), []byte(trusted), 0o644); err != nil {
+		t.Fatalf("write trusted config: %v", err)
+	}
+	for _, args := range [][]string{{"add", ".no-mistakes.yaml"}, {"commit", "-m", "trust Pi for this project"}, {"push", "origin", "main"}} {
+		if out, err := h.runGit(context.Background(), h.WorkDir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	h.CommitChange(branch, "feature.txt", "seed for review-agents routing\n", "add trusted Pi profile probe")
+
+	out, err := h.Run("axi", "run", "--intent", "use this project's trusted Pi profile", "--model", model, "--effort", "xhigh")
+	if err != nil {
+		t.Fatalf("pinned launch under trusted project override: %v\n%s", err, out)
+	}
+	parked := waitForStepStatus(t, h, branch, types.StepReview, types.StepStatusAwaitingApproval, 90*time.Second)
+	if parked.PiProfile == nil || parked.PiProfile.Model != model || parked.PiProfile.Effort != "xhigh" {
+		t.Fatalf("persisted profile = %+v, want %s/xhigh", parked.PiProfile, model)
+	}
+	invs := invocationsForRun(t, h, parked.ID)
+	if len(invs) == 0 {
+		t.Fatal("trusted Pi launch recorded no agent invocation")
+	}
+	for _, want := range []string{"--model " + model, "--thinking xhigh", "--provider openai-codex"} {
+		if !strings.Contains(strings.Join(invs[0].Args, " "), want) {
+			t.Fatalf("launched Pi argv missing %q: %v", want, invs[0].Args)
+		}
+	}
+	t.Logf("trusted project launched run %s with model=%s effort=xhigh under global agent:auto", parked.ID, model)
+}
+
+// TestLivePiProfileFeatureBranchPiCannotOverrideGlobalAuto proves the trust
+// boundary through the real CLI: a feature branch cannot opt itself into Pi
+// when neither the global config nor trusted default branch selects Pi.
+func TestLivePiProfileFeatureBranchPiCannotOverrideGlobalAuto(t *testing.T) {
+	const branch = "feature/untrusted-pi-over-auto"
+	noRepoCommands := false
+	h := NewHarness(t, SetupOpts{
+		Agent:             "pi",
+		Scenario:          writeReviewAgentsRoutingScenario(t),
+		AllowRepoCommands: &noRepoCommands,
+	})
+	writeGlobalAutoPiPath(t, h)
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	h.CommitChange(branch, "feature.txt", "seed for review-agents routing\n", "add untrusted Pi profile probe")
+	h.PushToGate(branch)
+	parked := waitForStepStatus(t, h, branch, types.StepReview, types.StepStatusAwaitingApproval, 90*time.Second)
+	beforeInvocations := len(h.AgentInvocations())
+
+	if err := os.WriteFile(filepath.Join(h.WorkDir, ".no-mistakes.yaml"), []byte("agent: pi\nallow_repo_commands: false\n"), 0o644); err != nil {
+		t.Fatalf("write feature config: %v", err)
+	}
+	for _, args := range [][]string{{"add", ".no-mistakes.yaml"}, {"commit", "-m", "request Pi from feature branch"}} {
+		if out, err := h.runGit(context.Background(), h.WorkDir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	out, err := h.Run("axi", "run", "--intent", "feature branch must not select the validator", "--model", "openai-codex/gpt-5.6-sol", "--effort", "xhigh")
+	if err == nil {
+		t.Fatalf("feature-branch-only Pi selection was accepted:\n%s", out)
+	}
+	if !strings.Contains(out, "Pi run profile requires agent: pi") {
+		t.Fatalf("unexpected trust-boundary refusal: %v\n%s", err, out)
+	}
+	assertParkedRunIntact(t, h, parked.ID, branch)
+	if invs := h.AgentInvocations(); len(invs) != beforeInvocations {
+		t.Fatalf("refused feature-branch override launched agent turns: before=%d after=%d", beforeInvocations, len(invs))
+	}
+	t.Logf("feature-branch-only Pi selection refused before replacing run %s: %s", parked.ID, firstErrorLine(out))
 }
 
 // TestLivePiProfileInvalidSelectionRefusedAtCli drives the real binary's flag

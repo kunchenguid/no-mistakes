@@ -206,7 +206,10 @@ func TestReviewConversationJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("axi answer: %v\n%s", err, answerOut)
 	}
-	for _, want := range []string{"answered: true", "open_questions: 0", "reviewer_resumed: true"} {
+	// The answer that closed the last question set the run moving, so, like
+	// axi respond, it follows the run to its outcome rather than returning a
+	// pointer to axi status that nobody is attached to read.
+	for _, want := range []string{"answered: true", "open_questions: 0", "reviewer_resumed: true", "outcome: passed"} {
 		if !strings.Contains(answerOut, want) {
 			t.Errorf("axi answer output missing %q:\n%s", want, answerOut)
 		}

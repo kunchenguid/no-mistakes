@@ -2,11 +2,10 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"os"
+	gitexec "os/exec"
 	"path/filepath"
-	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -125,7 +124,7 @@ func TestExecutor_ReviewCarryForward_RecoveryPersistsRemappedSelection(t *testin
 	deadline := time.Now().Add(5 * time.Second)
 	var respondErr error
 	for time.Now().Before(deadline) {
-		if respondErr = exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, nil, added, ""); respondErr == nil {
+		if respondErr = respondFixPartialWithOverrides(t, exec, types.StepReview, []string{"review-1"}, nil, added); respondErr == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -149,8 +148,8 @@ func TestExecutor_ReviewCarryForward_RecoveryPersistsRemappedSelection(t *testin
 		t.Fatal("recovered review did not reach its rereview gate")
 	}
 	selected := findingIDsFromSelectionJSON(derefString(rounds[0].SelectedFindingIDs))
-	if !containsString(selected, "review-2") || containsString(selected, "user-1") {
-		t.Fatalf("recovered selection IDs = %v, want remapped review-2 without stale user-1", selected)
+	if !containsString(selected, "user-2") || containsString(selected, "user-1") {
+		t.Fatalf("recovered selection IDs = %v, want remapped user-2 without stale user-1", selected)
 	}
 	if rounds[0].UserFindingsJSON == nil {
 		t.Fatal("expected remapped user findings to be persisted")
@@ -159,8 +158,8 @@ func TestExecutor_ReviewCarryForward_RecoveryPersistsRemappedSelection(t *testin
 	if err != nil {
 		t.Fatalf("parse persisted user findings: %v", err)
 	}
-	if !containsFindingID(persistedUserFindings.Items, "review-2") || containsFindingID(persistedUserFindings.Items, "user-1") {
-		t.Fatalf("persisted user finding IDs = %v, want remapped review-2 without user-1", findingIDs(persistedUserFindings.Items))
+	if !containsFindingID(persistedUserFindings.Items, "user-2") || containsFindingID(persistedUserFindings.Items, "user-1") {
+		t.Fatalf("persisted user finding IDs = %v, want remapped user-2 without user-1", findingIDs(persistedUserFindings.Items))
 	}
 	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatal(err)
@@ -235,10 +234,15 @@ func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 			}
 			// The fixer writes a commit that does not fix the selected defect.
 			if err := os.WriteFile(filepath.Join(workDir, "unrelated.txt"), []byte("tidy\n"), 0o644); err != nil {
-				t.Fatal(err)
+				return nil, err
 			}
-			execGit(t, workDir, "add", "unrelated.txt")
-			execGit(t, workDir, "commit", "-m", "tidy unrelated code")
+			for _, args := range [][]string{{"add", "unrelated.txt"}, {"commit", "-m", "tidy unrelated code"}} {
+				cmd := gitexec.Command("git", args...)
+				cmd.Dir = workDir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					return nil, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+				}
+			}
 			// The rereview reports nothing new and offers no coverage record for
 			// service.go: it did not look there, so nothing about the finding is
 			// proven. Silence may never read as resolution.
@@ -250,7 +254,7 @@ func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "review-1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -343,7 +347,7 @@ func TestExecutor_ReviewCarryForward_UserAddedFindingStaysOutstanding(t *testing
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 	added := []types.Finding{{Severity: types.FindingSeverityWarning, File: "logger.go", Description: "audit logger setup", Action: types.ActionAskUser}}
-	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, nil, added, ""); err != nil {
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, nil, nil, added, ""); err != nil {
 		t.Fatalf("fix with added finding: %v", err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
@@ -408,7 +412,7 @@ func TestExecutor_ReviewCarryForward_RemintsUserAddedCollisionForPendingVerifica
 		Description: "new user note",
 		Action:      types.ActionNoOp,
 	}}
-	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, nil, added, ""); err != nil {
+	if err := respondFixPartialWithOverrides(t, exec, types.StepReview, []string{"review-1"}, nil, added); err != nil {
 		t.Fatalf("fix with colliding user finding: %v", err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
@@ -490,11 +494,11 @@ func TestExecutor_ReviewCarryForward_PendingSelectionsSurviveLaterRounds(t *test
 		}
 		t.Fatalf("review did not reach round %d", want)
 	}
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "review-1"); err != nil {
 		t.Fatal(err)
 	}
 	waitForRounds(2)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "review-2"); err != nil {
 		t.Fatal(err)
 	}
 	waitForRounds(3)
@@ -903,242 +907,57 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 	}
 }
 
-// TestResolveVerifiedFindingsJSON_FilelessFindingIsNeverVerifiedAway pins the
-// other half of the same rule for findings the reviewer could not anchor to a
-// file: no coverage record can ever match them, so only an operator action
-// clears them.
-func TestResolveVerifiedFindingsJSON_FilelessFindingIsNeverVerifiedAway(t *testing.T) {
+// TestResolveVerifiedFindingsJSON_FilelessPendingFinding pins the upgrade
+// compat carve-out for findings the reviewer could not anchor to a file: no
+// coverage record can ever match them, so a SELECTED file-less item clears on
+// a positive verification round that covers every reviewable path and no
+// longer reports it - and stays on partial coverage, an unanchored rereport,
+// or a round that is not a positive verification. Runs parked before the recorded-decision review machinery was
+// removed carry such items, and a fix selection could otherwise never clear
+// them.
+func TestResolveVerifiedFindingsJSON_FilelessPendingFinding(t *testing.T) {
 	outstanding := `{"findings":[{"id":"review-1","severity":"warning","description":"finding with no file anchor","action":"ask-user"}],"summary":"1 finding"}`
-	got := resolveVerifiedFindingsJSON(outstanding, []string{"review-1"}, []string{"service.go", "cache.go"}, []string{"service.go", "cache.go"}, "")
-	if !strings.Contains(got, "review-1") {
-		t.Fatalf("file-less finding was verified away by an unrelated coverage record: %s", got)
-	}
-}
+	reported := `{"findings":[{"id":"review-9","severity":"warning","description":"finding with no file anchor","action":"ask-user"}],"summary":"1 finding"}`
+	unrelatedUnanchored := `{"findings":[{"id":"review-9","severity":"info","description":"unanchored observation","action":"no-op"}],"summary":"1 finding"}`
+	unrelatedAnchored := `{"findings":[{"id":"review-9","severity":"info","file":"service.go","line":5,"description":"unrelated anchored observation","action":"no-op"}],"summary":"1 finding"}`
 
-func TestExecutor_ReviewCarryForward_DecisionAssessmentClearsSelectedDecisionFinding(t *testing.T) {
-	for _, tc := range []struct {
-		name           string
-		file           string
-		reviewedPaths  []string
-		reviewablePath []string
+	cases := []struct {
+		name        string
+		thisRound   string
+		reviewed    []string
+		pending     []string
+		wantCleared bool
 	}{
-		{name: "ignored file", file: "ignored.go", reviewedPaths: []string{"current.go"}, reviewablePath: []string{"current.go"}},
-		{name: "file absent from current diff", file: "removed-from-diff.go", reviewedPaths: []string{"current.go"}, reviewablePath: []string{"current.go"}},
-		{name: "no file"},
-	} {
+		{name: "not selected stays outstanding", thisRound: "", reviewed: []string{"service.go", "cache.go"}, pending: nil},
+		{name: "no coverage record stays outstanding", thisRound: "", reviewed: nil, pending: []string{"review-1"}},
+		{name: "out-of-scope coverage stays outstanding", thisRound: "", reviewed: []string{"unrelated.go"}, pending: []string{"review-1"}},
+		{name: "partial coverage not reporting it stays outstanding", thisRound: "", reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "full coverage not reporting it clears", thisRound: "", reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "unrelated anchored finding still clears", thisRound: unrelatedAnchored, reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "re-reported under a new id stays outstanding", thisRound: reported, reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}},
+		{name: "unrelated unanchored finding stays outstanding", thisRound: unrelatedUnanchored, reviewed: []string{"service.go", "cache.go"}, pending: []string{"review-1"}},
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			database, p, run, repo := setupTest(t)
-			decisionID := "review/round-1/decision"
-			calls := 0
-			step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
-				calls++
-				if calls == 1 {
-					findings := types.Findings{Items: []types.Finding{{
-						DecisionID: decisionID, Severity: "warning", File: tc.file, Description: "recorded decision is contradicted",
-						Action: types.ActionAskUser,
-					}}, Summary: "recorded decision is contradicted"}
-					raw, err := json.Marshal(findings)
-					if err != nil {
-						t.Fatal(err)
+			got := resolveVerifiedFindingsJSON(outstanding, tc.pending, tc.reviewed, []string{"service.go", "cache.go"}, tc.thisRound)
+			if tc.wantCleared {
+				if got != "" {
+					parsed, err := types.ParseFindingsJSON(got)
+					if err == nil {
+						for _, item := range parsed.Items {
+							if item.ID == "review-1" {
+								t.Fatalf("selected file-less finding survived a positive verification that did not report it: %s", got)
+							}
+						}
 					}
-					return &StepOutcome{NeedsApproval: true, Findings: string(raw)}, nil
 				}
-				verified, err := json.Marshal(types.Findings{
-					DecisionReviews: []types.DecisionReview{{DecisionID: decisionID, Result: "satisfied", Evidence: "current tree preserves the selected behavior"}},
-					Items:           []types.Finding{}, Summary: "no findings",
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				return &StepOutcome{Findings: string(verified), ReviewedPaths: tc.reviewedPaths, ReviewablePaths: tc.reviewablePath}, nil
-			}}
-
-			exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-			done, _ := startExecutor(t, exec, run, repo, t.TempDir())
-			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-			steps, err := database.GetStepsByRun(run.ID)
-			if err != nil || len(steps) != 1 || steps[0].FindingsJSON == nil {
-				t.Fatalf("load parked decision finding: steps=%d err=%v", len(steps), err)
+				return
 			}
-			parked, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
-			if err != nil || len(parked.Items) != 1 {
-				t.Fatalf("parse parked decision finding: %+v, %v", parked, err)
-			}
-			if parked.Items[0].DecisionID != decisionID {
-				t.Fatalf("parked decision identity = %q, want %q", parked.Items[0].DecisionID, decisionID)
-			}
-			if err := exec.Respond(types.StepReview, types.ActionFix, []string{parked.Items[0].ID}); err != nil {
-				t.Fatal(err)
-			}
-			waitExecutorDone(t, done)
-			if calls != 2 {
-				t.Fatalf("review calls = %d, want 2", calls)
-			}
-		})
-	}
-}
-
-func TestResolveVerifiedFindingsJSON_DecisionAssessmentsFailClosed(t *testing.T) {
-	outstanding := `{"findings":[{"id":"review-1","decision_id":"decision-1","severity":"warning","description":"recorded decision contradicted","action":"ask-user"}],"summary":"blocked"}`
-	valid := types.DecisionReview{DecisionID: "decision-1", Result: "satisfied", Evidence: "source-backed evidence"}
-	for _, tc := range []struct {
-		name    string
-		reviews []types.DecisionReview
-	}{
-		{name: "missing"},
-		{name: "duplicate", reviews: []types.DecisionReview{valid, valid}},
-		{name: "blank identity", reviews: []types.DecisionReview{{DecisionID: "", Result: "satisfied", Evidence: "evidence"}}},
-		{name: "blank evidence", reviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "satisfied", Evidence: " "}}},
-		{name: "malformed result", reviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "approved", Evidence: "evidence"}}},
-		{name: "adverse", reviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "contradicted", Evidence: "contrary source"}}},
-		{name: "unrelated", reviews: []types.DecisionReview{{DecisionID: "decision-2", Result: "satisfied", Evidence: "other decision"}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			raw, err := json.Marshal(types.Findings{DecisionReviews: tc.reviews, Items: []types.Finding{}, Summary: "round"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := resolveVerifiedFindingsJSON(outstanding, []string{"review-1"}, nil, nil, string(raw))
 			if !strings.Contains(got, "review-1") {
-				t.Fatalf("invalid assessment cleared the decision finding: %s", got)
+				t.Fatalf("file-less finding was verified away: %s", got)
 			}
 		})
-	}
-}
-
-func TestResolveVerifiedFindingsJSON_DecisionIdentityCollisionFailsClosed(t *testing.T) {
-	outstanding := `{"findings":[{"id":"review-1","decision_id":"decision-1","severity":"warning","description":"first decision finding","action":"ask-user"},{"id":"review-2","decision_id":"decision-1","severity":"warning","description":"colliding decision finding","action":"ask-user"}],"summary":"blocked"}`
-	raw, err := json.Marshal(types.Findings{
-		DecisionReviews: []types.DecisionReview{{DecisionID: "decision-1", Result: "satisfied", Evidence: "source-backed evidence"}},
-		Items:           []types.Finding{}, Summary: "round",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := resolveVerifiedFindingsJSON(outstanding, []string{"review-1"}, nil, nil, string(raw))
-	if !strings.Contains(got, "review-1") {
-		t.Fatalf("colliding decision identity cleared a selected finding: %s", got)
-	}
-}
-
-func TestExecutor_ReviewCarryForward_PersistsCurrentDecisionReviews(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	decisionID := "review/round-1/decision"
-	newDecisionID := "test/round-2/decision"
-	calls := 0
-	step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
-		calls++
-		if calls == 1 {
-			return &StepOutcome{NeedsApproval: true, Findings: `{"decision_reviews":[{"decision_id":"` + decisionID + `","result":"contradicted","evidence":"old evidence"}],"findings":[{"id":"review-1","decision_id":"` + decisionID + `","severity":"warning","description":"old decision finding","action":"ask-user"},{"id":"review-2","severity":"warning","file":"other.go","description":"ordinary outstanding finding","action":"ask-user"}],"summary":"blocked"}`}, nil
-		}
-		return &StepOutcome{NeedsApproval: true, Findings: `{"decision_reviews":[{"decision_id":"` + decisionID + `","result":"satisfied","evidence":"fresh evidence"},{"decision_id":"` + newDecisionID + `","result":"contradicted","evidence":"new decision evidence"}],"findings":[{"id":"review-1","decision_id":"` + newDecisionID + `","severity":"warning","description":"new decision finding","action":"ask-user"}],"summary":"still blocked"}`}, nil
-	}}
-
-	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	steps, err := database.GetStepsByRun(run.ID)
-	if err != nil || len(steps) != 1 || steps[0].FindingsJSON == nil {
-		t.Fatalf("load first round: steps=%d err=%v", len(steps), err)
-	}
-	first, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
-	if err != nil || len(first.Items) < 1 {
-		t.Fatalf("parse first round: %+v, %v", first, err)
-	}
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-	steps, err = database.GetStepsByRun(run.ID)
-	if err != nil || steps[0].FindingsJSON == nil {
-		t.Fatalf("load second round: %v", err)
-	}
-	current, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []types.DecisionReview{{DecisionID: decisionID, Result: "satisfied", Evidence: "fresh evidence"}, {DecisionID: newDecisionID, Result: "contradicted", Evidence: "new decision evidence"}}
-	if !reflect.DeepEqual(current.DecisionReviews, want) {
-		t.Fatalf("decision reviews = %+v, want current round %+v", current.DecisionReviews, want)
-	}
-	if !slices.ContainsFunc(current.Items, func(item types.Finding) bool { return item.Description == "ordinary outstanding finding" }) {
-		t.Fatalf("ordinary outstanding finding was lost: %+v", current.Items)
-	}
-	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
-		t.Fatal(err)
-	}
-	waitExecutorDone(t, done)
-}
-
-func TestExecutor_ReviewCarryForward_RewordedAdverseDecisionCanLaterClear(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	decisionID := "review/round-1/decision"
-	calls := 0
-	step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
-		calls++
-		result := "contradicted"
-		evidence := "first adverse explanation"
-		description := "first wording"
-		if calls == 2 {
-			evidence = "different adverse explanation"
-			description = "reworded finding"
-		}
-		if calls == 3 {
-			result = "satisfied"
-			evidence = "fresh source-backed evidence"
-		}
-		findings := types.Findings{
-			DecisionReviews: []types.DecisionReview{{DecisionID: decisionID, Result: result, Evidence: evidence}},
-			Items:           []types.Finding{}, Summary: result,
-		}
-		if result != "satisfied" {
-			findings.Items = append(findings.Items, types.Finding{DecisionID: decisionID, Severity: "warning", Description: description, Action: types.ActionAskUser})
-		}
-		raw, err := json.Marshal(findings)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &StepOutcome{NeedsApproval: result != "satisfied", Findings: string(raw)}, nil
-	}}
-
-	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
-		t.Fatal(err)
-	}
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-	steps, err := database.GetStepsByRun(run.ID)
-	if err != nil || steps[0].FindingsJSON == nil {
-		t.Fatalf("load repeated adverse round: %v", err)
-	}
-	adverse, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(adverse.Items) != 1 || adverse.Items[0].DecisionID != decisionID {
-		t.Fatalf("reworded adverse round accumulated identities: %+v", adverse.Items)
-	}
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{adverse.Items[0].ID}); err != nil {
-		t.Fatal(err)
-	}
-	waitExecutorDone(t, done)
-	if calls != 3 {
-		t.Fatalf("review calls = %d, want 3", calls)
-	}
-}
-
-func TestMergeOutstandingFindingsJSON_EmptyCurrentRoundClearsStaleDecisionReviews(t *testing.T) {
-	prior := `{"decision_reviews":[{"decision_id":"decision-1","result":"satisfied","evidence":"stale"}],"findings":[{"id":"review-1","severity":"warning","file":"other.go","description":"ordinary outstanding finding","action":"ask-user"}],"summary":"blocked"}`
-	for _, current := range []string{"", `{"findings":[],"summary":"clean"}`, `{"decision_reviews":[],"findings":[],"summary":"clean"}`} {
-		merged := mergeOutstandingFindingsJSON(prior, current, nil)
-		parsed, err := types.ParseFindingsJSON(merged)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(parsed.DecisionReviews) != 0 {
-			t.Fatalf("current %q retained stale reviews: %+v", current, parsed.DecisionReviews)
-		}
 	}
 }
 
@@ -1326,10 +1145,15 @@ func TestExecutor_ReviewCarryForward_AFixRoundCannotWithdraw(t *testing.T) {
 				}, nil
 			}
 			if err := os.WriteFile(filepath.Join(workDir, "unrelated.txt"), []byte("tidy\n"), 0o644); err != nil {
-				t.Fatal(err)
+				return nil, err
 			}
-			execGit(t, workDir, "add", "unrelated.txt")
-			execGit(t, workDir, "commit", "-m", "tidy unrelated code")
+			for _, args := range [][]string{{"add", "unrelated.txt"}, {"commit", "-m", "tidy unrelated code"}} {
+				cmd := gitexec.Command("git", args...)
+				cmd.Dir = workDir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					return nil, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+				}
+			}
 			// The rereview never looked at service.go, so it has no coverage
 			// record to clear the selected finding with - and tries to retract
 			// it by name instead.
@@ -1344,7 +1168,7 @@ func TestExecutor_ReviewCarryForward_AFixRoundCannotWithdraw(t *testing.T) {
 	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+	if err := respondFixPartial(t, exec, types.StepReview, "review-1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1501,13 +1325,13 @@ func TestExecutor_ReviewCarryForward_AnAnswerRoundCannotWithdrawTheOperatorsOwnF
 	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, nil, []types.Finding{{
+	if err := respondFixPartialWithOverrides(t, exec, types.StepReview, nil, nil, []types.Finding{{
 		Severity:    types.FindingSeverityError,
 		File:        "service.go",
 		Line:        10,
 		Description: "the operator's own instruction: keep the /v1 shim",
 		Action:      types.ActionAskUser,
-	}}, ""); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
@@ -1846,4 +1670,67 @@ func TestExecutor_ReviewCarryForward_ARecoveredRoundInheritsNoRetractionRecord(t
 		t.Fatal(err)
 	}
 	waitExecutorDone(t, done)
+}
+
+func TestExecutor_ReviewCarryForward_LatestRiskAssessmentReplacesTheEarlierOne(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+
+	round := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			round++
+			if round == 1 {
+				return &StepOutcome{
+					NeedsApproval:   true,
+					Findings:        strings.Replace(reviewCarryTwoFindings, `"summary":"2 findings"`, `"summary":"2 findings","risk_level":"medium","risk_rationale":"nil deref and cache growth should be addressed"`, 1),
+					ReviewedPaths:   []string{"service.go", "cache.go"},
+					ReviewablePaths: []string{"service.go", "cache.go"},
+				}, nil
+			}
+			if err := os.WriteFile(filepath.Join(workDir, "unrelated.txt"), []byte("tidy\n"), 0o644); err != nil {
+				return nil, err
+			}
+			for _, args := range [][]string{{"add", "unrelated.txt"}, {"commit", "-m", "tidy unrelated code"}} {
+				cmd := gitexec.Command("git", args...)
+				cmd.Dir = workDir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					return nil, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+				}
+			}
+			return &StepOutcome{
+				FixSummary: "tidy unrelated code",
+				Findings:   `{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"the nil deref and cache growth are fixed"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	startExecutor(t, exec, run, repo, workDir)
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := respondFixPartial(t, exec, types.StepReview, "review-1"); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].FindingsJSON == nil {
+		t.Fatal("expected the unverified finding to stay outstanding")
+	}
+	parsed, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse outstanding findings: %v", err)
+	}
+	if len(parsed.Items) == 0 {
+		t.Fatal("expected carried findings alongside the new assessment")
+	}
+	if parsed.RiskLevel != "low" || parsed.RiskRationale != "the nil deref and cache growth are fixed" {
+		t.Errorf("risk = %q / %q, want the assessment of the round that ran after the fix", parsed.RiskLevel, parsed.RiskRationale)
+	}
 }

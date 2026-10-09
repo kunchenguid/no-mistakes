@@ -173,6 +173,7 @@ no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --adopt-published
 no-mistakes axi respond --action approve
+no-mistakes axi respond --run <id> --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
@@ -181,6 +182,7 @@ no-mistakes axi abort --run <id>
 Before any post-pipeline local commit or fresh run, read `branch_sync` and follow its exact `next_action.command`.
 A `sync` action runs `no-mistakes axi sync` first.
 A `recover_custody` action is ordinary `no-mistakes axi sync --recover` to take a still-available preserved head, or `no-mistakes axi sync --recover --keep-local` when that head is unavailable and you are discarding the missing commits, or when a bound archive preserves divergent later work while custody returns at the reported required head; never substitute one action for the other. See [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the alternative validation path and its refusal conditions.
+A `recover_remote_rewritten` action is exact `no-mistakes axi sync --recover` after a terminal run whose push target was force-rewritten outside the pipeline: it anchors the superseded pipeline head and rebinds only the recorded push binding to the re-verified live head, and refuses `--keep-local`, a target or live head that changes during recovery, an unanchorable head, and a merged or closed PR. See [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync).
 An `adopt_published` action is `no-mistakes axi sync --adopt-published`: it verifies the configured push target already has the exact rebased local head, then updates only the stale gate lane. A target mismatch or target change refuses without replacing that lane.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
@@ -243,7 +245,7 @@ Transient API and network failures, stochastic prose turn endings, transient too
 
 ## Intent extraction
 
-When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim as authoritative acceptance criteria and skips transcript-based inference, even if `intent.enabled` is false.
+For explicit intent supplied to `axi run`, see the CLI reference's [intent input transports and whitespace handling](/no-mistakes/reference/cli/#intent-input) and the [Intent step's acceptance-criteria semantics](/no-mistakes/reference/pipeline-steps/#intent).
 Review checks the diff against those criteria, and a change that removes required behavior or adds forbidden behavior becomes an `ask-user` finding instead of being resolved automatically.
 Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, and the GitHub Copilot CLI during the `intent` pipeline step.
 It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, and includes that summary as an untrusted, low-confidence hint in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts. Publication of the generated Intent section is controlled by the repository's trusted [`pr.publish_intent`](/no-mistakes/reference/repo-config/#prpublish_intent), tightened further for individual runs by `axi run --no-publish-intent` or globally by `intent.publish_intent: false` in global config. Every one of these controls is tighten-only, and no caller-side setting can publish intent on a repository whose trusted config disabled it. The full intent always reaches the rebase, review, test, lint, documentation, and CI prompts listed above; under the caller-side omission the PR-drafting prompts receive no intent text at all, so the public PR can carry neither the section nor a paraphrase of it.
@@ -299,7 +301,17 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns create and resume one Pi session per run via `--session <UUID>` when the configured fixer roles support resume. A non-resumable later-round fixer makes those turns cold; see the [later-round role overrides](/no-mistakes/reference/global-config/#later-round-role-overrides) reference.
 Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config) unless the run has an opt-in [per-run Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles). Native mapping is `--model` and `--thinking`.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
-When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
+When structured output is requested, no-mistakes loads a temporary extension with a terminating `no_mistakes_output` tool whose parameters carry the schema and require provider-side strict JSON-schema generation.
+The tool declaration carries only the schema keywords the Review schema uses (`type`, `properties`, `items`, `required`, `enum`, `description`), because a provider can refuse a strict tool over any other keyword; a keyword left out, such as the commit summary's `maxLength`, is still enforced on the returned output.
+This uses Pi's [constrained tool sampling](https://github.com/earendil-works/pi/tree/main/packages/ai#constrained-sampling-for-tools) and [terminating structured-output tool](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/structured-output.ts), not the JSON event mode as a model-output constraint.
+This strict path needs Pi 0.82.0 or later (read from `pi --version`; a prerelease such as `0.82.0-beta` sorts before `0.82.0`), a provider/model supporting strict JSON-schema tools, and Pi arguments that leave the tool selection open.
+Pi applies `--no-tools` (`-nt`) and a `--tools` (`-t`) allowlist to extension tools too, so with either flag in `agent_args_override.pi` the model cannot see `no_mistakes_output`.
+Otherwise the invocation uses the prompt-inlined schema: the schema goes into the prompt and the final text response is validated with the common text fallback described above. A provider/model that refuses strict tools is retried once on that path and then stays on it for the agent's lifetime.
+The step log names which path each structured invocation ran.
+On the strict path, a run that ends without calling `no_mistakes_output` as its only final tool call is a structured-output rejection, so Review's bounded schema rerun applies.
+Either way the adapter validates the result against the same schema, keeping required fields and the existing nullable-optional-field contract unchanged.
+The extension is invocation-scoped and works with `--no-extensions`.
+Invocations without a schema retain the ordinary final-text path.
 
 ## Copilot CLI
 

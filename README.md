@@ -73,7 +73,7 @@ Set [`ci.revalidate_repairs: true`](https://kunchenguid.github.io/no-mistakes/re
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
-Windows, Go install, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
+Windows, Go install, Nix, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
 
 ## Quick Start
 

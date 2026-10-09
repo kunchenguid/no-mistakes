@@ -26,10 +26,9 @@ type fixExecutionOptions struct {
 	ErrorPrefix             string
 	FallbackSummary         string
 	AfterAgentRun           func(*agent.Result) error
-	AgentContext            context.Context
 	// RunAgent overrides the agent-call seam while leaving preparation and
-	// post-agent commit work on the step context. Review uses it to create a
-	// fresh review_agent_timeout context at the instant each fixer starts.
+	// post-agent commit work on the step context. Review uses it to apply a
+	// fresh review_agent_timeout stall budget at the instant each fixer starts.
 	RunAgent func(agent.RunOpts) (*agent.Result, error)
 	// SessionRole, when set, runs the fix turn in that durable review-loop
 	// session (the review step's fixer role). Steps outside the review loop
@@ -115,6 +114,69 @@ func reviewedPathsCoverReviewable(reviewedPaths, reviewablePaths []string) bool 
 	return true
 }
 
+// uncoveredReviewablePaths returns the reviewable paths that no reviewed_paths
+// entry covers, in reviewable order. Out-of-scope entries cannot cover
+// anything, so they are ignored here; the strict
+// reviewedPathsCoverReviewable check still fails the round for them.
+func uncoveredReviewablePaths(reviewedPaths, reviewablePaths []string) []string {
+	covered := make(map[string]bool, len(reviewedPaths))
+	for _, reviewed := range reviewedPaths {
+		covered[normalizeReviewedPath(reviewed)] = true
+	}
+	var missing []string
+	for _, candidate := range reviewablePaths {
+		if !covered[normalizeReviewedPath(candidate)] {
+			missing = append(missing, candidate)
+		}
+	}
+	return missing
+}
+
+// hasInvalidReviewedPath reports whether a coverage record contains an entry
+// that does not normalize to a path at all (empty, whitespace, or "."). Such
+// an entry is invalid coverage evidence: reviewedPathsCoverReviewable fails on
+// it, so the round can only park, and no further review can cure it.
+func hasInvalidReviewedPath(reviewedPaths []string) bool {
+	for _, reviewed := range reviewedPaths {
+		if normalizeReviewedPath(reviewed) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeReviewedPaths unions two coverage records, keeping each path's first
+// spelling and order. It is the deterministic merge behind the focused
+// coverage pass: the round's record is what its turns actually examined
+// together, and the strict coverage check re-runs on the union.
+//
+// An entry that does not normalize to a path is kept, not folded away: it is
+// invalid coverage evidence, and dropping it would let the completion turn
+// launder the invalidity out of the union and certify a record that never had
+// positive coverage. Keeping one such entry makes reviewedPathsCoverReviewable
+// keep failing on the union, so the round parks with it named.
+func mergeReviewedPaths(first, second []string) []string {
+	seen := make(map[string]bool, len(first)+len(second))
+	var merged []string
+	invalidKept := false
+	for _, path := range append(append([]string(nil), first...), second...) {
+		key := normalizeReviewedPath(path)
+		if key == "" {
+			if invalidKept {
+				continue
+			}
+			invalidKept = true
+		} else {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		merged = append(merged, path)
+	}
+	return merged
+}
+
 // uncoveredReviewMessage names why a clean review round is parked instead of
 // certifying the head: the reviewable files its reviewed_paths did not cover
 // (or the whole set when the field was omitted), and any path it claimed that
@@ -131,7 +193,11 @@ func uncoveredReviewMessage(reviewedPaths, reviewablePaths []string) string {
 	var outOfScope []string
 	for _, reviewed := range reviewedPaths {
 		normalized := normalizeReviewedPath(reviewed)
-		if normalized == "" || !allowed[normalized] {
+		if normalized == "" {
+			outOfScope = append(outOfScope, `""`)
+			continue
+		}
+		if !allowed[normalized] {
 			outOfScope = append(outOfScope, reviewed)
 			continue
 		}
@@ -290,6 +356,25 @@ func commitPipelineCorrectionWithCleanup(
 	return commitErr
 }
 
+// withCommitTrailers appends commit.trailers rendered for producer. Changes not
+// attributable to a single invocation get none rather than a guessed agent.
+func withCommitTrailers(sctx *pipeline.StepContext, message string, producer *agent.Result) (string, error) {
+	if producer == nil || len(sctx.Config.Commit.Trailers) == 0 {
+		return message, nil
+	}
+	// A fallback chain reports the agent that actually ran in Provider; a bare
+	// adapter leaves it empty, and then the step agent is the one that ran.
+	agentName := producer.Provider
+	if agentName == "" && sctx.Agent != nil {
+		agentName = sctx.Agent.Name()
+	}
+	trailers, err := sctx.Config.Commit.RenderTrailers(config.TrailerData{Agent: agentName, Model: producer.Model})
+	if err != nil {
+		return "", err
+	}
+	return message + "\n\n" + strings.Join(trailers, "\n"), nil
+}
+
 // stagedChangesPresent is the handoff between catch-all staging and commit.
 // Worktree status can become stale when an agent completes a rebase itself, or
 // can report dirt that `git add -A` cannot put in the superproject index. Only
@@ -303,11 +388,13 @@ func stagedChangesPresent(gitRun gitRunner) (bool, error) {
 }
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
-	_, err := commitAgentFixesWithResult(sctx, stepName, summary, fallbackSummary)
+	_, err := commitAgentFixesWithResult(sctx, stepName, summary, fallbackSummary, nil)
 	return err
 }
 
-func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) (bool, error) {
+// commitAgentFixesWithResult commits the worktree changes left by producer, the
+// agent invocation that made them. A nil producer commits without trailers.
+func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, producer *agent.Result) (bool, error) {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return false, err
@@ -333,6 +420,10 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	commitMessage, err := sctx.Config.Commit.RenderFixMessageForBranch(stepName, summary, sctx.Run.Branch)
 	if err != nil {
 		return false, fmt.Errorf("render %s fix commit message: %w", stepName, err)
+	}
+	commitMessage, err = withCommitTrailers(sctx, commitMessage, producer)
+	if err != nil {
+		return false, fmt.Errorf("render %s fix commit trailers: %w", stepName, err)
 	}
 	if err := stagePipelineChanges(sctx); err != nil {
 		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
@@ -438,11 +529,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.RunAgent != nil {
 		result, err = opts.RunAgent(runOpts)
 	} else {
-		agentCtx := sctx.Ctx
-		if opts.AgentContext != nil {
-			agentCtx = opts.AgentContext
-		}
-		result, err = sctx.RunAgentSessionContext(agentCtx, opts.SessionRole, runOpts)
+		result, err = sctx.RunAgentSessionContext(sctx.Ctx, opts.SessionRole, runOpts)
 	}
 	if err != nil {
 		if opts.ErrorPrefix == "" {
@@ -462,7 +549,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		}
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
-	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary)
+	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary, result)
 	if err != nil {
 		return "", err
 	}

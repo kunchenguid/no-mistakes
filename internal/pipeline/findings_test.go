@@ -146,3 +146,45 @@ func TestFilterFindingsJSON_EmptySelectionReturnsEmptyFindings(t *testing.T) {
 		t.Fatalf("summary = %q, want %q", filtered.Summary, "0 selected findings")
 	}
 }
+
+func TestMergeFindingsJSON_LatestRiskAssessmentWinsWhenFindingsCarryForward(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"first"}],"summary":"1 finding","risk_level":"medium","risk_rationale":"first and second should be addressed","risk_scope":"scope-a"}`
+	additionalRaw := `{"findings":[{"id":"review-9","severity":"info","description":"other"}],"summary":"1 finding","risk_level":"low","risk_rationale":"first and second are fixed","risk_scope":"scope-b"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(existingRaw, additionalRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if len(merged.Items) != 2 {
+		t.Fatalf("expected carried finding plus new finding, got %#v", merged.Items)
+	}
+	if merged.RiskLevel != "low" || merged.RiskRationale != "first and second are fixed" || merged.RiskScope != "scope-b" {
+		t.Fatalf("expected latest assessment, got %q / %q / %q", merged.RiskLevel, merged.RiskRationale, merged.RiskScope)
+	}
+}
+
+func TestMergeFindingsJSON_KeepsExistingRiskAssessmentWhenRoundHasNone(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"first"}],"summary":"1 finding","risk_level":"medium","risk_rationale":"first should be addressed","risk_scope":"scope-a"}`
+	additionalRaw := `{"findings":[{"id":"review-9","severity":"info","description":"other"}],"summary":"1 finding"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(existingRaw, additionalRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if merged.RiskLevel != "medium" || merged.RiskRationale != "first should be addressed" || merged.RiskScope != "scope-a" {
+		t.Fatalf("expected existing assessment kept, got %q / %q / %q", merged.RiskLevel, merged.RiskRationale, merged.RiskScope)
+	}
+}
+
+func TestMergeOutstandingFindingsJSON_LatestRiskAssessmentWins(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"first","file":"a.go"}],"summary":"1 finding","risk_level":"medium","risk_rationale":"first should be addressed"}`
+	roundRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"first","file":"a.go"}],"summary":"1 finding","risk_level":"low","risk_rationale":"only first remains"}`
+
+	merged, err := types.ParseFindingsJSON(mergeOutstandingFindingsJSON(existingRaw, roundRaw, []string{"a.go"}))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if merged.RiskLevel != "low" || merged.RiskRationale != "only first remains" {
+		t.Fatalf("expected latest assessment, got %q / %q", merged.RiskLevel, merged.RiskRationale)
+	}
+}

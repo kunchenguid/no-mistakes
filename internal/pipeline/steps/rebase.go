@@ -199,8 +199,8 @@ func forcePushRebaseTargets(branch, defaultBranch string) []string {
 	return []string{"origin/" + defaultBranch}
 }
 
-// effectivePRBaseBranch resolves the branch used as the integration base for
-// rebases. Per-run overrides win over repo config; the repository default
+// effectivePRBaseBranch resolves the integration and change-scoping base for
+// pipeline steps. Per-run overrides win over repo config; the repository default
 // remains the fallback when neither selects a separate PR target branch.
 func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
 	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)

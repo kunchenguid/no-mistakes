@@ -90,6 +90,7 @@ func TestMain(m *testing.M) {
 	}
 	_ = os.Setenv("NM_HOME", root)
 	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig"))
 	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
 	_ = os.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
 

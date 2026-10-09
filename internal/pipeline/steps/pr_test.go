@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -426,6 +427,198 @@ func TestPRStep_CreatesConfiguredDraftPR(t *testing.T) {
 	}
 }
 
+// Once the PR step has composed the body, a reattach `--closes` update can no
+// longer appear in it, so the DB must refuse the write instead of accepting one
+// the PR will never show. Regression for the reattach-vs-snapshot race.
+func TestPRStep_ComposedBodyLocksOutLateClosingIssueRefsUpdate(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	// The closing issue references was forwarded before the PR step sampled it, so it wins.
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
+	}
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "Closes #42") {
+		t.Fatalf("expected composed PR body to carry the closing reference, got:\n%s", string(logData))
+	}
+
+	// A second `axi run --closes` now arrives too late for this body.
+	err = sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"99"})
+	if !errors.Is(err, db.ErrClosingIssueRefsLocked) {
+		t.Fatalf("late update = %v, want db.ErrClosingIssueRefsLocked", err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(run.ClosingIssueRefs, ",") != "42" {
+		t.Fatalf("closing issue references = %#v, want 42 unchanged", run.ClosingIssueRefs)
+	}
+}
+
+func TestPRStep_ClosesFailsWhenCreateReturnsNoVerifiableIdentity(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "")
+	env = append(env, "FAKE_CLI_PR_CREATE_EMPTY=1")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "created pull request identity is unavailable") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
+// An ordinary update regenerates the whole body; the requested references
+// render in the Issues section exactly once each.
+func TestPRStep_OrdinaryUpdateRendersRequestedIssuesOnce(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "https://github.com/test/repo/pull/99")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	original := "## Notes\n\nKeep this context.\n\nCloses owner/repo#7\nFixes #42\n"
+	if err := os.WriteFile(bodyFile, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"99", "42", "owner/repo#7"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(updated)
+	for _, line := range []string{"Closes owner/repo#7", "Closes #42", "Closes #99"} {
+		if strings.Count(body, line) != 1 {
+			t.Fatalf("updated body should contain %q exactly once:\n%s", line, body)
+		}
+	}
+	if strings.Contains(body, "Fixes #42") || !strings.Contains(body, "## Issues") {
+		t.Fatalf("updated body must be regenerated with a stable Issues section:\n%s", body)
+	}
+}
+
+func TestExtractClosingKeywordLinesIgnoresCodeExamples(t *testing.T) {
+	t.Parallel()
+	body := "Closes #1\n\n```md\nCloses #2\n```\n\n    Fixes #3\n\n- Resolves owner/repo#4\n"
+	got := extractClosingKeywordLines(body, githubClosingGrammar)
+	if joined := strings.Join(got, ","); joined != "Closes #1,- Resolves owner/repo#4" {
+		t.Fatalf("extractClosingKeywordLines() = %q", joined)
+	}
+}
+
+func TestIssuesSectionRendersDeterministicQualifiedReferences(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"2", "10", "owner/repo#3"}}
+	got := issuesSection(sctx, "")
+	want := "## Issues\n\nCloses #2\nCloses #10\nCloses owner/repo#3"
+	if got != want {
+		t.Fatalf("issuesSection() =\n%s\nwant:\n%s", got, want)
+	}
+	if err := verifyClosingIssuesInBody(got, sctx); err != nil {
+		t.Fatalf("rendered section does not verify: %v", err)
+	}
+}
+
+// Author text kept verbatim around an owned appendix already closes #2, so
+// the appendix must not repeat it.
+func TestIssuesSectionSkipsReferencesTheAuthorTextAlreadyCloses(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"2", "3"}}
+	got := issuesSection(sctx, "## Overview\n\nFixes #2\n")
+	if got != "## Issues\n\nCloses #3" {
+		t.Fatalf("issuesSection() = %q", got)
+	}
+	if got := issuesSection(&pipeline.StepContext{ClosingIssueRefs: []string{"2"}}, "Fixes #2"); got != "" {
+		t.Fatalf("fully covered references rendered %q, want nothing", got)
+	}
+}
+
+// Without --closes nothing is added or inferred, even when the intent names
+// an issue.
+func TestIssuesSectionNeverInfersClosure(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{UserIntent: "Implement issue #95"}
+	if got := issuesSection(sctx, "Implement issue #95"); got != "" {
+		t.Fatalf("issuesSection() = %q, want empty without --closes", got)
+	}
+}
+
+func TestVerifyClosingIssuesFailsWhenLiveBodyDroppedARequestedReference(t *testing.T) {
+	t.Parallel()
+	host := &closingBodyReader{body: "## Issues\n\nCloses #2"}
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"2", "owner/repo#3"}}
+	err := verifyClosingIssues(context.Background(), host, &scm.PR{Number: "1"}, sctx)
+	if err == nil || !strings.Contains(err.Error(), "owner/repo#3") {
+		t.Fatalf("verifyClosingIssues() error = %v", err)
+	}
+}
+
+func TestVerifyClosingIssuesDoesNotAcceptReferencePrefix(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"1"}}
+	err := verifyClosingIssuesInBody("## Issues\n\nCloses #10", sctx)
+	if err == nil || !strings.Contains(err.Error(), "#1") {
+		t.Fatalf("verifyClosingIssuesInBody() error = %v, want missing #1", err)
+	}
+}
+
+// A bare mention is not a closing reference: verification requires a
+// closing keyword line for the requested target.
+func TestVerifyClosingIssuesRejectsBareMention(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"95"}}
+	err := verifyClosingIssuesInBody("## Intent\n\nImplement issue #95\n\nRefs #95", sctx)
+	if err == nil || !strings.Contains(err.Error(), "Closes #95") {
+		t.Fatalf("verifyClosingIssuesInBody() error = %v, want missing Closes #95", err)
+	}
+}
+
+type closingBodyReader struct {
+	scm.Host
+	body string
+}
+
+func (h *closingBodyReader) GetPRContent(context.Context, *scm.PR) (scm.PRContent, error) {
+	return scm.PRContent{Body: h.body}, nil
+}
+
+func envEntry(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
 func TestPRStep_UsesConfiguredBaseBranch(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -588,6 +781,29 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 }
 
+// A provider that does not close issues from the pull request body still fails
+// closed: publishing the reference would leave the requested issue open after
+// merge with nothing in the body to notice it.
+func TestPRStep_ClosesRefusedWhenTheProviderCannotCloseIssues(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "does not support closing references") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if api.createCalls != 0 || api.updateCalls != 0 {
+		t.Fatalf("PR mutation calls = create %d, update %d; want none", api.createCalls, api.updateCalls)
+	}
+}
+
 func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -715,7 +931,7 @@ func TestPRStep_BitbucketMissingEnvSkipsBeforeBuildingContent(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 
 	step := &PRStep{}
@@ -989,6 +1205,7 @@ func TestUnwrapNestedPRBody(t *testing.T) {
 }
 
 func TestAppendGeneratedSections_StripsAgentGeneratedSections(t *testing.T) {
+	t.Parallel()
 	body := "## Summary\n\n- improve PR descriptions\n\n## Testing\n\n- model-added testing\n\n## Risk Assessment\n\nold risk\n\n## Pipeline\n\nold pipeline"
 
 	got := appendGeneratedSections(
@@ -996,6 +1213,7 @@ func TestAppendGeneratedSections_StripsAgentGeneratedSections(t *testing.T) {
 		"real risk",
 		"## Testing\n\n- deterministic testing",
 		"## Pipeline\n\n- deterministic pipeline",
+		scm.ProviderGitHub,
 	)
 
 	if strings.Count(got, "## Testing") != 1 {
@@ -1017,7 +1235,7 @@ func TestAssemblePRBody_NoLimitKeepsEverything(t *testing.T) {
 	sctx := &pipeline.StepContext{UserIntent: "wanted a Bar() helper"}
 	testing := "## Testing\n\n```text\n" + strings.Repeat("log ", 2000) + "\n```"
 
-	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", testing, "## Pipeline\n\n- ok", 0)
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", testing, "## Pipeline\n\n- ok", 0, scm.ProviderGitHub)
 
 	for _, want := range []string{"## Intent", "## What Changed", "## Risk Assessment", "## Testing", "## Pipeline"} {
 		if !strings.Contains(got, want) {
@@ -1040,6 +1258,7 @@ func TestAssemblePRBody_DropsTestingEmbedsToFitAzureCap(t *testing.T) {
 		testing,
 		"## Pipeline\n\n- review: pass\n- tests: pass",
 		limit,
+		scm.ProviderAzureDevOps,
 	)
 
 	if scm.PRBodyLen(got) > limit {
@@ -1067,10 +1286,44 @@ func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("x", 6000)}
 	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
 
-	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit)
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("clamped body = %d units, want <= %d", scm.PRBodyLen(got), limit)
+	}
+}
+
+// The Issues section's room is reserved before the rest of the body is
+// fitted, so truncation sheds evidence rather than a closing reference.
+func TestAssembleDraftPRBody_ReservesRoomForIssuesUnderALimit(t *testing.T) {
+	t.Parallel()
+	limit := 400
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
+
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n"+strings.Repeat("- change\n", 200), "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
+
+	if scm.PRBodyLen(got) > limit {
+		t.Fatalf("assembled body = %d units, want <= %d:\n%s", scm.PRBodyLen(got), limit, got)
+	}
+	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
+		t.Fatalf("Issues section missing or not last:\n%s", got)
+	}
+}
+
+// A section that cannot fit at all is omitted (never an unlimited budget),
+// and the pre-publication check then refuses the body.
+func TestAssembleDraftPRBody_OmitsIssuesThatCannotFit(t *testing.T) {
+	t.Parallel()
+	limit := 10
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"42"}}
+
+	got := assembleDraftPRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit, scm.ProviderAzureDevOps)
+
+	if strings.Contains(got, "## Issues") {
+		t.Fatalf("a section that cannot fit must be omitted, got:\n%s", got)
+	}
+	if err := verifyClosingIssuesInBody(got, sctx); err == nil {
+		t.Fatalf("a body without the reference must fail verification:\n%s", got)
 	}
 }
 
@@ -1086,7 +1339,7 @@ func TestAssemblePRBody_RetainsAttestationWhenCoreExceedsAzureCap(t *testing.T) 
 	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review detail 😀 ", 1000))
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
-	got := assemblePRBody(sctx, "## What Changed\n\n"+strings.Repeat("change 😀 ", 1000), strings.Repeat("risk 😀 ", 1000), "", pipelineMD, limit)
+	got := assemblePRBody(sctx, "## What Changed\n\n"+strings.Repeat("change 😀 ", 1000), strings.Repeat("risk 😀 ", 1000), "", pipelineMD, limit, scm.ProviderAzureDevOps)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("assembled body = %d units, want <= %d", scm.PRBodyLen(got), limit)
@@ -1116,6 +1369,7 @@ func TestPRBodyBudgetPromptSection(t *testing.T) {
 }
 
 func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
+	t.Parallel()
 	body := "## Summary\n\n- improve PR descriptions\n\n## tests:\n\n- model-added testing\n\n## risk assessment\n\nold risk\n\n## Pipeline:\n\nold pipeline"
 
 	got := appendGeneratedSections(
@@ -1123,6 +1377,7 @@ func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
 		"real risk",
 		"## Testing\n\n- deterministic testing",
 		"## Pipeline\n\n- deterministic pipeline",
+		scm.ProviderGitHub,
 	)
 
 	if strings.Contains(got, "model-added testing") || strings.Contains(got, "old risk") || strings.Contains(got, "old pipeline") {
@@ -1140,12 +1395,13 @@ func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
 }
 
 func TestAppendGeneratedSections_LeavesUnderLimitBodyByteIdentical(t *testing.T) {
+	t.Parallel()
 	body := "## What Changed\n\n- improve PR descriptions"
 	riskLine := "✅ Low: deterministic PR body assembly only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
 	pipelineMD := pipelineMarkdownForTest("review round 001 stayed small", "review round 002 stayed small")
 
-	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD, scm.ProviderGitHub)
 	want := body + "\n\n## Risk Assessment\n\n" + riskLine + "\n\n" + testingMD + "\n\n" + pipelineMD
 
 	if got != want {
@@ -1154,6 +1410,7 @@ func TestAppendGeneratedSections_LeavesUnderLimitBodyByteIdentical(t *testing.T)
 }
 
 func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *testing.T) {
+	t.Parallel()
 	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("essential details stay intact\n", 350)
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
@@ -1163,7 +1420,7 @@ func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *te
 	}
 	pipelineMD := pipelineMarkdownForTest(rounds...)
 
-	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.Contains(got, "essential summary survives") || !strings.Contains(got, riskLine) || !strings.Contains(got, testingMD) {
@@ -1185,6 +1442,7 @@ func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *te
 }
 
 func TestAppendGeneratedSections_TruncatesBitbucketHeadingGroups(t *testing.T) {
+	t.Parallel()
 	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("essential details stay intact\n", 350)
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\nEvidence was collected."
@@ -1194,7 +1452,7 @@ func TestAppendGeneratedSections_TruncatesBitbucketHeadingGroups(t *testing.T) {
 	}
 	pipelineMD := bitbucketPipelineMarkdownForTest(rounds...)
 
-	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if strings.Contains(got, "<details>") || strings.Contains(got, pipelineAttestationCommentPrefix) {
@@ -1212,6 +1470,7 @@ func TestAppendGeneratedSections_TruncatesBitbucketHeadingGroups(t *testing.T) {
 }
 
 func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *testing.T) {
+	t.Parallel()
 	steps := []*db.StepResult{
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusSkipped},
@@ -1220,7 +1479,7 @@ func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *test
 	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review round - "+strings.Repeat("x", 1000), 100))
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
-	got := appendGeneratedSections("## What Changed\n\n- summary", "", "", pipelineMD)
+	got := appendGeneratedSections("## What Changed\n\n- summary", "", "", pipelineMD, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.Contains(got, attestation) {
@@ -1229,6 +1488,7 @@ func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *test
 }
 
 func TestAppendGeneratedSections_RetainsAttestationWhenEssentialSectionsOverflow(t *testing.T) {
+	t.Parallel()
 	steps := []*db.StepResult{
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusFailed},
@@ -1242,6 +1502,7 @@ func TestAppendGeneratedSections_RetainsAttestationWhenEssentialSectionsOverflow
 		strings.Repeat("risk detail ", 5000),
 		"## Testing\n\n"+strings.Repeat("test detail\n", 5000),
 		pipelineMD,
+		scm.ProviderGitHub,
 	)
 
 	assertGitHubBodyLimitForTest(t, got)
@@ -1253,13 +1514,14 @@ func TestAppendGeneratedSections_RetainsAttestationWhenEssentialSectionsOverflow
 }
 
 func TestAppendGeneratedSections_ExtremePipelineOverflowStillFitsLimit(t *testing.T) {
+	t.Parallel()
 	body := "## What Changed\n\n- essential summary survives"
 	rounds := make([]string, 0, 1000)
 	for i := 1; i <= 1000; i++ {
 		rounds = append(rounds, fmt.Sprintf("review round %04d - %s", i, strings.Repeat("x", 2000)))
 	}
 
-	got := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(rounds...))
+	got := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(rounds...), scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.Contains(got, "essential summary survives") {
@@ -1272,6 +1534,7 @@ func TestAppendGeneratedSections_ExtremePipelineOverflowStillFitsLimit(t *testin
 }
 
 func TestAppendGeneratedSections_TruncatesOversizedLatestPipelineUpdate(t *testing.T) {
+	t.Parallel()
 	body := "## What Changed\n\n- essential summary survives"
 	latest := "review round 003 - newest oversized update\n" + strings.Repeat("latest detail line stays whole\n", 3000)
 
@@ -1284,6 +1547,7 @@ func TestAppendGeneratedSections_TruncatesOversizedLatestPipelineUpdate(t *testi
 			"review round 002 - older update",
 			latest,
 		),
+		scm.ProviderGitHub,
 	)
 
 	assertGitHubBodyLimitForTest(t, got)
@@ -1311,7 +1575,7 @@ func TestAppendGeneratedSections_TruncatesOversizedLatestPipelineUpdate(t *testi
 		}
 	}
 
-	single := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(latest))
+	single := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(latest), scm.ProviderGitHub)
 	assertGitHubBodyLimitForTest(t, single)
 	if strings.Contains(single, "earlier update") {
 		t.Fatalf("expected single latest update not to be labeled as omitted earlier history, got:\n%s", single)
@@ -1325,10 +1589,11 @@ func TestAppendGeneratedSections_TruncatesOversizedLatestPipelineUpdate(t *testi
 }
 
 func TestAppendGeneratedSections_TruncatesSingleLineLatestPipelineUpdate(t *testing.T) {
+	t.Parallel()
 	body := "## What Changed\n\n- essential summary survives"
 	latest := "review round 001 - newest single-line oversized update " + strings.Repeat("x", maxPullRequestBodyBytes)
 
-	got := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(latest))
+	got := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(latest), scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if strings.Contains(got, "earlier update") {
@@ -1343,6 +1608,7 @@ func TestAppendGeneratedSections_TruncatesSingleLineLatestPipelineUpdate(t *test
 }
 
 func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testing.T) {
+	t.Parallel()
 	baseBody := "## What Changed\n\n- essential summary survives\n\n"
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
@@ -1358,7 +1624,7 @@ func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testin
 		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
 	}
 
-	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMarkdownForTest(rounds...))
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMarkdownForTest(rounds...), scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	for _, want := range []string{
@@ -1378,6 +1644,7 @@ func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testin
 }
 
 func TestAppendGeneratedSections_TrimsBodyToKeepLatestPipelineUpdate(t *testing.T) {
+	t.Parallel()
 	baseBody := "## What Changed\n\n- essential summary survives\n\n"
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
@@ -1401,6 +1668,7 @@ func TestAppendGeneratedSections_TrimsBodyToKeepLatestPipelineUpdate(t *testing.
 			"review round 001 - older update",
 			"review round 002 - newest update "+strings.Repeat("x", 2000),
 		),
+		scm.ProviderGitHub,
 	)
 
 	assertGitHubBodyLimitForTest(t, got)
@@ -1430,6 +1698,7 @@ func TestAppendGeneratedSections_TrimsBodyToKeepLatestPipelineUpdate(t *testing.
 }
 
 func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t *testing.T) {
+	t.Parallel()
 	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
 	sctx.UserIntent = "Keep the release notes readable."
 	body := strings.Join([]string{
@@ -1444,7 +1713,7 @@ func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t 
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
 
-	got := buildPRBody(body, riskLine, testingMD, "", sctx)
+	got := buildPRBody(body, riskLine, testingMD, "", sctx, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	for _, want := range []string{
@@ -1465,7 +1734,22 @@ func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t 
 	}
 }
 
+func TestAssembleDraftPRBody_GitHubKeepsIssuesWithinTheByteBudget(t *testing.T) {
+	t.Parallel()
+	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
+	sctx.ClosingIssueRefs = []string{"42"}
+	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("x", maxPullRequestBodyBytes)
+
+	got := assembleDraftPRBody(sctx, body, "low risk", "", "", 0, scm.ProviderGitHub)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !strings.HasSuffix(got, "## Issues\n\nCloses #42") {
+		t.Fatalf("Issues section missing or not last (len %d)", len(got))
+	}
+}
+
 func TestAppendGeneratedSections_TruncatesUTF8OnValidBoundary(t *testing.T) {
+	t.Parallel()
 	marker := essentialPRBodyTruncationMarker()
 	got := truncateTextAtLineBoundary(strings.Repeat("界", 10), len("\n\n")+len(marker)+1, marker)
 	if !utf8.ValidString(got) {
@@ -1480,7 +1764,7 @@ func TestAppendGeneratedSections_TruncatesUTF8OnValidBoundary(t *testing.T) {
 
 	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("界", maxPullRequestBodyBytes)
 
-	got = appendGeneratedSections(body, "", "", "")
+	got = appendGeneratedSections(body, "", "", "", scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !utf8.ValidString(got) {
@@ -1488,7 +1772,7 @@ func TestAppendGeneratedSections_TruncatesUTF8OnValidBoundary(t *testing.T) {
 	}
 
 	latest := "review round 001 - newest update " + strings.Repeat("界", maxPullRequestBodyBytes)
-	got = appendGeneratedSections("## What Changed\n\n- essential summary survives", "", "", pipelineMarkdownForTest(latest))
+	got = appendGeneratedSections("## What Changed\n\n- essential summary survives", "", "", pipelineMarkdownForTest(latest), scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	if !utf8.ValidString(got) {
@@ -1500,13 +1784,14 @@ func TestAppendGeneratedSections_TruncatesUTF8OnValidBoundary(t *testing.T) {
 }
 
 func TestBuildPRBody_TruncatesOversizedIntentBeforeGeneratedSections(t *testing.T) {
+	t.Parallel()
 	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
 	sctx.UserIntent = "Keep generated sections visible.\n" + strings.Repeat("oversized intent context line\n", 2500)
 	body := "## What Changed\n\n- essential summary survives"
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
 
-	got := buildPRBody(body, riskLine, testingMD, pipelineMarkdownForTest("review round 001"), sctx)
+	got := buildPRBody(body, riskLine, testingMD, pipelineMarkdownForTest("review round 001"), sctx, scm.ProviderGitHub)
 
 	assertGitHubBodyLimitForTest(t, got)
 	for _, want := range []string{
@@ -1729,6 +2014,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		"## Testing\n\n- go test ./internal/pipeline/steps",
 		pipelineMarkdownForTest(rounds...),
 		0,
+		scm.ProviderGitHub,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -2467,6 +2753,48 @@ func TestPRStep_EmbeddedAttestationDoesNotShadowTheRealOne(t *testing.T) {
 	}
 }
 
+// TestPRStep_EvidenceQuotingAnOwnedBodyStaysRestampable: Testing evidence that
+// quotes a templated PR body carries that body's appendix ownership markers.
+// Copied raw into an ordinary body, they made every later restamp refuse the
+// body as ambiguously owned, so the run could never publish again.
+func TestPRStep_EvidenceQuotingAnOwnedBodyStaysRestampable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"feat(pr): keep closing references","body":"## What Changed\n\n- carry closing lines"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	quoted := "Author text\n\n" + wrapPRAppendix("## Issues\n\nCloses #95\n\n"+
+		pipelineAttestationCommentPrefix+`{"head_sha":"`+strings.Repeat("f", 40)+`","steps":[]}`+pipelineAttestationCommentClosingToken)
+	artifact, err := json.Marshal(map[string]string{"kind": "command-output", "label": "templated PR body", "content": quoted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[],"summary":"clean","testing_summary":"Captured the templated PR body.","artifacts":[` + string(artifact) + `]}`
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content.Body, "Closes #95") {
+		t.Fatalf("quoted evidence was dropped instead of neutralized:\n%s", content.Body)
+	}
+
+	newHead := strings.Repeat("ab", 20)
+	rebound, ok, err := rebindOwnedPRAttestation(content.Body, newHead, nil, pipelineAttestationPolicy{})
+	if err != nil || !ok {
+		t.Fatalf("restamp of an ordinary body quoting an owned body = ok %v, err %v:\n%s", ok, err, content.Body)
+	}
+	assertFirstAttestationBindsHead(t, rebound, newHead)
+}
+
 // assertFirstAttestationBindsHead mirrors verify.py's parse: the FIRST
 // attestation comment in the body must be the pipeline-authored one carrying
 // the run head, and it must be the only parseable marker in the body.
@@ -2544,7 +2872,7 @@ func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 		pipelineAttestationCommentClosingToken
 
 	pipelineMD, riskLine, testingMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
-	content, err := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0)
+	content, err := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0, scm.ProviderGitHub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2626,5 +2954,158 @@ func TestPRStep_ForeignAttestationsInEveryComponentDoNotShadowTheRealOne(t *test
 		if !strings.Contains(content.Body, strings.Repeat(sha, 40)) {
 			t.Errorf("planted payload %q... was dropped instead of neutralized:\n%s", strings.Repeat(sha, 8), content.Body)
 		}
+	}
+}
+
+func TestPRAppendixModes_RenderBodies(t *testing.T) {
+	t.Parallel()
+	const (
+		intent    = "Keep the repository template as the visible PR body."
+		narrative = "## What Changed\n\n- fold the generated PR appendix"
+		risk      = "⚠️ Medium: touches PR publication"
+	)
+	testingMD := "## Testing\n\nValidated the appendix renderer.\n\n```text\n" + strings.Repeat("evidence log line\n", 12) + "```"
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted},
+		{StepName: types.StepDocument, Status: types.StepStatusCompleted},
+	}
+	attestation := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
+	pipelineMD := strings.Replace(pipelineMarkdownForTest("review round kept"), noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
+	foreign := pipelineAttestationCommentPrefix + `{"head_sha":"` + strings.Repeat("a", 40) + `","steps":[]}` + pipelineAttestationCommentClosingToken
+
+	render := func(t *testing.T, mode string, publishIntent bool, provider scm.Provider, riskLine, testingMD string) string {
+		t.Helper()
+		sctx := &pipeline.StepContext{UserIntent: intent, Config: &config.Config{}}
+		if mode != "" {
+			sctx.Config.PR.Appendix = mode
+		}
+		if !publishIntent {
+			no := false
+			sctx.Config.PR.PublishIntent = &no
+		}
+		return assemblePRBody(sctx, narrative, riskLine, testingMD, pipelineMD, 0, provider)
+	}
+
+	full := render(t, config.PRAppendixFull, true, scm.ProviderGitHub, risk, testingMD)
+	collapsed := render(t, config.PRAppendixCollapsed, true, scm.ProviderGitHub, risk, testingMD)
+	minimal := render(t, config.PRAppendixMinimal, true, scm.ProviderGitHub, risk, testingMD)
+	t.Logf("full body:\n%s", full)
+	t.Logf("collapsed body:\n%s", collapsed)
+	t.Logf("minimal body:\n%s", minimal)
+
+	if got := render(t, "", true, scm.ProviderGitHub, risk, testingMD); got != full {
+		t.Fatalf("unset pr.appendix changed the body:\n%s", got)
+	}
+	if got := render(t, config.PRAppendixFull, true, scm.ProviderGitHub, risk, testingMD); got != full {
+		t.Fatalf("explicit full changed the body:\n%s", got)
+	}
+
+	for _, body := range []string{full, collapsed, minimal} {
+		if strings.Count(body, pipelineAttestationCommentPrefix) != 1 || !strings.Contains(body, attestation) {
+			t.Fatalf("attestation missing or duplicated:\n%s", body)
+		}
+		if !strings.Contains(body, "## Intent") || !strings.Contains(body, intent) || !strings.Contains(body, narrative) {
+			t.Fatalf("narrative or intent missing:\n%s", body)
+		}
+	}
+	for _, heading := range []string{"## Risk Assessment", "## Testing", "## Pipeline", "evidence log line", "review round kept"} {
+		if !strings.Contains(full, heading) {
+			t.Fatalf("full body missing %q:\n%s", heading, full)
+		}
+	}
+	if strings.Contains(full, "<summary>Validation</summary>") {
+		t.Fatalf("full body folded the appendix:\n%s", full)
+	}
+
+	open := strings.Index(collapsed, "<details>\n<summary>Validation</summary>")
+	if open < 0 || strings.Contains(collapsed, "<details open") {
+		t.Fatalf("collapsed body is not one closed Validation block:\n%s", collapsed)
+	}
+	if strings.Index(collapsed, "## What Changed") > open || strings.Index(collapsed, "evidence log line") < open {
+		t.Fatalf("collapsed body hid the narrative or left the log outside the fold:\n%s", collapsed)
+	}
+	if strings.Count(collapsed, "<summary>Validation</summary>") != 1 || strings.Count(collapsed, "</details>") < 2 {
+		t.Fatalf("collapsed body should wrap the existing pipeline fold:\n%s", collapsed)
+	}
+
+	if strings.Contains(minimal, "## Testing") || strings.Contains(minimal, "## Pipeline") || strings.Contains(minimal, "## Risk Assessment") || strings.Contains(minimal, "evidence log line") || strings.Contains(minimal, "review round kept") {
+		t.Fatalf("minimal body kept appendix prose:\n%s", minimal)
+	}
+	if !strings.Contains(minimal, risk) {
+		t.Fatalf("minimal body missing the one-line risk:\n%s", minimal)
+	}
+	if strings.Index(minimal, risk) > strings.Index(minimal, attestation) {
+		t.Fatalf("minimal body placed the attestation before the risk line:\n%s", minimal)
+	}
+
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		body := render(t, mode, false, scm.ProviderGitHub, risk, testingMD)
+		if strings.Contains(body, "## Intent") || strings.Contains(body, intent) {
+			t.Fatalf("%s published intent while pr.publish_intent is false:\n%s", mode, body)
+		}
+		if strings.Count(body, pipelineAttestationCommentPrefix) != 1 {
+			t.Fatalf("%s attestation count changed with intent off:\n%s", mode, body)
+		}
+	}
+
+	plantedTesting := testingMD + "\n\n" + foreign
+	for _, mode := range []string{config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		body := render(t, mode, true, scm.ProviderGitHub, risk+"\n"+foreign, plantedTesting)
+		if strings.Count(body, pipelineAttestationCommentPrefix) != 1 || !strings.Contains(body, attestation) {
+			t.Fatalf("%s let a foreign attestation shadow the real one:\n%s", mode, body)
+		}
+	}
+	collapsedPlanted := render(t, config.PRAppendixCollapsed, true, scm.ProviderGitHub, risk, plantedTesting)
+	if !strings.Contains(collapsedPlanted, escapedPipelineAttestationCommentPrefix) {
+		t.Fatalf("collapsed body dropped the foreign attestation instead of neutralizing it:\n%s", collapsedPlanted)
+	}
+
+	bitbucket := render(t, config.PRAppendixCollapsed, true, scm.ProviderBitbucket, risk, testingMD)
+	if bitbucket != render(t, config.PRAppendixFull, true, scm.ProviderBitbucket, risk, testingMD) || strings.Contains(bitbucket, "<summary>Validation</summary>") {
+		t.Fatalf("Bitbucket collapsed body used an HTML fold:\n%s", bitbucket)
+	}
+	fenced := "```text\n" + attestation + "\n```"
+	// Owned Bitbucket bodies carry the marker in a fence; keep that fence.
+	owned := strings.Replace(pipelineMD, attestation, "", 1)
+	owned = strings.TrimRight(owned, "\n") + "\n\n" + fenced
+	sctx := &pipeline.StepContext{UserIntent: intent, Config: &config.Config{PR: config.PR{Appendix: config.PRAppendixMinimal}}}
+	ownedMinimal := assemblePRBody(sctx, narrative, risk, testingMD, owned, 0, scm.ProviderBitbucket)
+	if strings.Count(ownedMinimal, pipelineAttestationCommentPrefix) != 1 || !strings.Contains(ownedMinimal, fenced) || strings.Contains(ownedMinimal, "evidence log line") {
+		t.Fatalf("owned Bitbucket minimal body:\n%s", ownedMinimal)
+	}
+
+	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
+	hugeTesting := "## Testing\n\n```text\n" + strings.Repeat("verbose test log line\n", 600) + "```"
+	for _, mode := range []string{config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		sctx := &pipeline.StepContext{UserIntent: intent, Config: &config.Config{PR: config.PR{Appendix: mode}}}
+		got := assemblePRBody(sctx, narrative, risk, hugeTesting, pipelineMD, limit, scm.ProviderAzureDevOps)
+		if scm.PRBodyLen(got) > limit {
+			t.Fatalf("%s azure body = %d, limit %d", mode, scm.PRBodyLen(got), limit)
+		}
+		if strings.Count(got, pipelineAttestationCommentPrefix) != 1 || !strings.Contains(got, attestation) {
+			t.Fatalf("%s azure body lost its attestation:\n%s", mode, got)
+		}
+		if strings.Contains(got, "verbose test log line") {
+			t.Fatalf("%s azure body kept inlined logs:\n%s", mode, got)
+		}
+	}
+
+	sctx = &pipeline.StepContext{
+		UserIntent: strings.Repeat("intent 😀 ", 2000),
+		Config:     &config.Config{PR: config.PR{Appendix: config.PRAppendixMinimal}},
+	}
+	capped := buildPRBody(narrative+"\n\n"+strings.Repeat("change ", 4000), risk, hugeTesting, pipelineMD, sctx, scm.ProviderGitHub)
+	if len(capped) > maxPullRequestBodyBytes {
+		t.Fatalf("minimal github body = %d bytes, limit %d", len(capped), maxPullRequestBodyBytes)
+	}
+	if strings.Count(capped, pipelineAttestationCommentPrefix) != 1 || !strings.Contains(capped, attestation) || strings.Contains(capped, "verbose test log line") {
+		t.Fatalf("minimal github body lost the attestation or kept logs:\n%s", capped)
+	}
+
+	sctx.Config.PR.Appendix = config.PRAppendixCollapsed
+	collapsedCap := buildPRBody(narrative, risk, hugeTesting, pipelineMD, sctx, scm.ProviderGitHub)
+	if len(collapsedCap) > maxPullRequestBodyBytes || strings.Count(collapsedCap, pipelineAttestationCommentPrefix) != 1 || !strings.Contains(collapsedCap, "<summary>Validation</summary>") {
+		t.Fatalf("collapsed github body broke the cap or the fold:\nlen=%d\n%s", len(collapsedCap), collapsedCap)
 	}
 }

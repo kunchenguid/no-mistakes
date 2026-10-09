@@ -33,7 +33,7 @@ func TestDialConnectTimeoutFailsFastAndNamesSocket(t *testing.T) {
 		dialNetworkWithTimeout = originalDial
 	})
 
-	socketPath := filepath.Join(t.TempDir(), "no-mistakes-dead.sock")
+	socketPath := filepath.Join(shortTempDir(t), "dead.sock")
 	if runtime.GOOS == "windows" {
 		endpoint := fmt.Sprintf("127.0.0.1:1\ntoken\n%d", os.Getpid())
 		if err := os.WriteFile(socketPath, []byte(endpoint), 0o600); err != nil {
@@ -77,7 +77,7 @@ func TestDialUsesTheConnectTimeoutOfTheRootItDials(t *testing.T) {
 		return filepath.Join(root, "socket")
 	}
 
-	base := t.TempDir()
+	base := shortTempDir(t)
 	ambient := filepath.Join(base, "ambient")
 	writeRoot(ambient, "1s")
 	t.Setenv("NM_HOME", ambient)
@@ -105,4 +105,14 @@ func TestDialUsesTheConnectTimeoutOfTheRootItDials(t *testing.T) {
 	if got != want {
 		t.Fatalf("dial timeout = %v, want %v (the owning root's, not the ambient root's)", got, want)
 	}
+}
+
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }

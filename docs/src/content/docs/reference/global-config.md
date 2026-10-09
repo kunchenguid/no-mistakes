@@ -69,6 +69,11 @@ forge_profiles:
   gitlab-work:
     glab_config_dir: ~/.config/glab-work
 
+provider_plugins:
+  ssm:
+    command: ~/bin/nm-ssm-plugin
+    hosts: ["*.sourcemanager.dev"]
+
 auto_fix:
   rebase: 3
   review: 0
@@ -80,9 +85,13 @@ auto_fix:
 ci:
   rerun_transient: 0
   revalidate_repairs: false
+  review_bot_comments: on_failure # or: always
 
 rebase:
   strategy: rebase # or: merge
+
+review:
+  path_instructions: []
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
@@ -90,6 +99,8 @@ commit:
   # branch_replacement: 'PROJ-${1}'
   # To use the captured identifier in the subject:
   # fix_message: "{{.Branch}}: {{.Summary}}"
+  # trailers:
+  #   - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
 
 intent:
   enabled: true
@@ -302,11 +313,20 @@ Availability, authentication, and model-specific reasoning support remain Pi's
 responsibility; no-mistakes does not inspect subscriptions or query quotas.
 
 A pin applies to **every pipeline duty**, including reviewer and fixer roles.
-The effective trusted agent selection must be Pi-only (no `auto`, non-Pi
-fallbacks, or non-Pi `review_agents`), including `agent` / fallbacks from the
-trusted default-branch `.no-mistakes.yaml`. That check runs before any active
-validation is cancelled. Pi role-specific model/effort values are
-superseded by the run pin. Native `--model`, `--provider`, `--models`,
+The effective agent selection must be Pi-only (no `auto`, non-Pi fallbacks, or
+non-Pi `review_agents`). Under the default trust policy, a nonempty `agent` in
+the freshly fetched, trusted default-branch `.no-mistakes.yaml` replaces the
+global scalar or fallback list for this check, just as it does for an ordinary
+run. This lets one project opt into Pi profiles with trusted `agent: pi` while
+other projects keep a global `agent: auto` or another global selection. When the
+trusted project config does not select an agent, the global selection must itself
+be Pi-only. If the trusted default branch enables `allow_repo_commands: true`,
+the submitted branch instead becomes the source of any repository `agent`
+override. Without that opt-in, an `agent: pi` that exists only on the submitted
+feature branch cannot authorize the profile. Unreadable or malformed
+submitted/trusted config refuses the profile. These checks run before any active
+validation is cancelled. Pi role-specific model/effort values are superseded by
+the run pin. Native `--model`, `--provider`, `--models`,
 `--thinking` (including `--flag=value`), or `--` in
 `agent_args_override.pi` conflict at launch: move defaults to `agent_config.pi`
 rather than combining two selection mechanisms.
@@ -508,9 +528,39 @@ Deliberate scope boundaries, so profiles never duplicate what other layers own:
 - **Executable selection stays with the machine.** Which `gh`, `glab`, or `git` runs is owned by `PATH` and the existing command resolution, not by profile configuration.
 - **Credential-helper context stays with Git configuration.** Profiles point at provider CLI config directories and never model or store credential material; credentials remain in the CLI's own store.
 
+### provider_plugins
+
+Optional machine-local PR and CI support for hosts no-mistakes does not ship a provider for, such as a company-internal forge or Google Cloud Secure Source Manager. Each entry names an AXI-shaped CLI that implements the [provider plugin protocol](/no-mistakes/reference/provider-plugin-protocol/) and the hosts it serves:
+
+```yaml
+provider_plugins:
+  ssm:
+    command: ~/bin/nm-ssm-plugin
+    args: ["--location", "us-central1"]
+    hosts: ["*.sourcemanager.dev"]
+    timeout: 2m
+    draft_pull_requests: false
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `command` | yes | Executable to run. A bare name is resolved from the run's `PATH`; a path must be absolute or begin with `~/`. Relative paths are refused because plugins run with the run worktree as their working directory. |
+| `args` | no | Arguments passed verbatim on every invocation, before the subcommand words (`<command> <args...> pr view 7 ... --json`). PR bodies travel in a private `--body-file`, never in argv, so they never appear in a process listing. |
+| `hosts` | yes | Host patterns the plugin claims: an exact host name or SSH alias as it appears in the remote, or `*.<domain>` for any subdomain (not the apex). No scheme, port, path, or user. |
+| `timeout` | no | Bound for one plugin invocation (Go duration). Defaults to `2m`. |
+| `draft_pull_requests` | no | Passes `--draft` to `pr create`. Defaults to `false`. |
+
+Names are 1-63 lowercase letters, digits, `-`, or `_` and must not reuse a built-in provider name. A run's provider shows up as `plugin:<name>`.
+
+Selection happens per run, before built-in detection and forge profiles: the remote's literal host token is matched first, then its SSH `HostName` resolution. An exact pattern beats a wildcard, and a longer wildcard beats a shorter one. Two plugins (or one plugin twice) may not list the same pattern, and a host that a [`forge_profiles`](#forge_profiles) entry claims may not also be claimed by a plugin; both are configuration errors. Because a forge profile matches the remote's literal host while a plugin also matches its SSH `HostName`, an overlap that only appears after alias resolution (a profile keyed by an SSH alias whose `HostName` a plugin claims) is refused when the run starts, with an error naming both.
+
+`provider_plugins` is global-only. A plugin runs with your credentials for every repository on its hosts, so a repository `.no-mistakes.yaml` can never add, change, or redirect one; a `provider_plugins` block there is ignored.
+
+Plugins run through the same environment as built-in provider CLIs (the daemon's login-shell environment plus any forge-profile overlay) with the run worktree as the working directory. A plugin whose `status` exits non-zero (for example, not authenticated) makes the PR and CI steps skip with its message, reported under `run.automatic_skips`; a plugin that breaks the protocol (unreadable output, wrong protocol version, timeout) fails the step instead, in its `status` handshake or in any later call (a timeout during the CI step's repeated polls or log retrieval is handled like any failed read instead). `no-mistakes doctor` lists configured plugins and checks that each command resolves; it does not run the plugin, because the handshake is per repository.
+
 ### ci_timeout
 
-How long the CI step monitors an open PR, including provider CI status and on GitHub, GitLab, Forgejo, or Azure DevOps PR mergeability, before giving up.
+How long the CI step monitors an open PR, including provider CI status and PR mergeability (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), before giving up.
 
 |         |                                                 |
 | ------- | ----------------------------------------------- |
@@ -521,7 +571,7 @@ Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open.
-If it later develops an actual GitHub, GitLab, Forgejo, or Azure DevOps merge conflict, the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
+If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
@@ -549,21 +599,39 @@ For older active runs that do not yet have activity rows, AXI falls back to the 
 
 ### agent_timeout
 
-Maximum wall-clock time for one pipeline agent invocation that does not already have a more specific deadline.
+Stall budget for one pipeline agent invocation that does not already have a more specific deadline.
 This is the default-by-construction budget: Document, Lint, Rebase conflict repair, PR drafting, CI auto-fix, and any future agent-spawning step are bounded even if they forget to install their own timer.
 Review still uses [`review_agent_timeout`](#review_agent_timeout) for each review or fix invocation, Test still uses [`test_agent_timeout`](#test_agent_timeout) per invocation, and Intent keeps its five-minute extraction cap; any existing deadline is honored rather than capped.
-When this deadline expires, the agent is cancelled and the invocation returns a timeout diagnostic instead of remaining active indefinitely. Most agent-driven mutation steps fail the run, CI auto-fix parks for a user decision, and PR drafting follows its existing agent-error fallback and continues with deterministic content. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the approval behavior.
-A late successful return after the deadline is rejected, so post-agent commits and PR content cannot use work from a timed-out turn.
+A silent invocation is cancelled when this budget expires.
+An invocation that is still producing output at expiry, or whose agent subprocess is still running a child process it started after its last output, such as a test suite a tool call launched, continues only when [`agent_working_timeout`](#agent_working_timeout) is set.
+It may then continue until it goes quiet with no live child process for 10 minutes (the shipped [`step_quiet_warning`](#step_quiet_warning) default, fixed regardless of that setting; this budget itself when it is shorter) or until that cap, whichever comes first.
+With the cap unset, the turn stops at this budget.
+There is no hidden multiple of this budget.
+When the invocation is cancelled, it returns a timeout diagnostic instead of remaining active indefinitely.
+Most agent-driven mutation steps fail the run, CI auto-fix parks for a user decision, and PR drafting follows its existing agent-error fallback and continues with deterministic content.
+The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the approval behavior.
+A late successful return after cancellation is rejected, so post-agent commits and PR content cannot use work from a timed-out turn.
 
-The diagnostic identifies expiration as an **absolute wall-clock limit** and separately reports what activity was actually measured. Activity does not reset or extend the hard limit. Evidence resets whenever a retry or fallback starts a replacement attempt, including provider fallback, failed session resume, and OpenCode's prompt-only structured-output fallback, so the diagnostic describes only the attempt that reached the deadline:
+The diagnostic names which bound cut the invocation and how long it ran, and separately reports what activity was actually measured.
+With no still-working cap set it reads `after 30m0s (silent budget; no still-working cap is set; ran 30m0s)`, which claims nothing about output or child processes because nothing checked them.
+With a cap set it reads `after 30m0s (stall budget, then no recent output or live child process; ran 42m0s)` for a turn that went idle, or `at its 1h0m0s still-working cap (silent budget 30m0s; ran 1h0m0s)` for a turn that reached the cap.
+Evidence resets whenever a retry or fallback starts a replacement attempt, including provider fallback, failed session resume, and OpenCode's prompt-only structured-output fallback, so the diagnostic describes only the attempt that reached the deadline:
 
 - `agent produced no output at all in 30m0s after its subprocess started (pid=1234)` - the current attempt launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.
-- `agent last produced output 4s ago (312 observed)` - the current attempt was working right up to the deadline. The turn needs a larger budget, or the request is too large for one turn.
+- `agent last produced output 4s ago (312 observed)` - the current attempt was working right up to cancellation. Set the still-working cap, raise it if it is already set, or split a request that is too large for one turn.
 - `agent produced no output at all in 30m0s and never reported a subprocess start` - the current attempt never reached a running agent process.
 
-Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr. Subprocess bytes matter because an agent spends most of a long turn running tools rather than writing prose, so prose alone cannot tell a working agent from a wedged one.
-There is no activity-reset idle watchdog: [`step_quiet_warning`](#step_quiet_warning) is a separate status-only signal and does not cancel work. The absolute limit is the bounded safety policy for both active and no-output invocations.
-Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; credential-bearing URLs are redacted and the report is length-bounded before it can reach logs or findings. A bare context cancellation is omitted because it adds no evidence.
+Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr.
+Subprocess bytes matter because an agent spends most of a long turn running tools rather than writing prose, so prose alone cannot tell a working agent from a wedged one.
+A live child process of the agent subprocess extends the budget too, because a long tool call writes nothing until it returns, but it is liveness rather than output and is never reported as the agent having produced anything.
+The agent's child processes are sampled about once a second, and each output freezes a sample taken before it as the baseline; only a child missing from that baseline counts.
+A tool the agent launches right after announcing it, even in its very first output, therefore still extends the budget.
+Helpers it keeps alive for the whole turn, such as the ACP agent under `acpx` or stdio MCP servers, are in the baseline once a sample taken after they started precedes an output, so they cannot keep a hung turn alive past the stall budget.
+A helper started less than about a second before the agent's first output, with no output after it, cannot be told apart from a tool that output announced, so it counts as work and can hold a hung turn open until the still-working cap.
+Agents that report no subprocess, and hosts where the process table cannot be read, get no such extension.
+[`step_quiet_warning`](#step_quiet_warning) remains a separate status-only signal; configuring it does not change the 10-minute quiet window that cancels a previously-working turn after the stall budget.
+Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; credential-bearing URLs are redacted and the report is length-bounded before it can reach logs or findings.
+A bare context cancellation is omitted because it adds no evidence.
 
 |         |                        |
 | ------- | ---------------------- |
@@ -572,14 +640,36 @@ Any substantive report from the agent adapter - for a native agent, its exit sta
 
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
-Raise it for repositories whose document, lint, rebase, PR, or CI-fix agent turns legitimately run long.
+Raise it when those turns routinely stay quiet longer than this budget.
+With [`agent_working_timeout`](#agent_working_timeout) unset, this budget also stops a turn that is still working, so set that cap when busy turns are cut here.
 It is global-only: repository config and environment variables cannot override it.
+
+### agent_working_timeout
+
+Optional cap for one invocation that is still producing output, or waiting on a live child, after [`agent_timeout`](#agent_timeout) expires.
+Unset means no extension: the turn stops at `agent_timeout`, including when it is still working.
+Set, it is the absolute deadline for that still-working turn, not a multiple of the silent budget.
+The 10-minute quiet stop still cancels a turn that goes idle before the cap.
+The value must be at least `agent_timeout`.
+[`review_agent_working_timeout`](#review_agent_working_timeout) and [`test_agent_working_timeout`](#test_agent_working_timeout) are the same cap for Review and Test.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | unset                  |
+
+Accepts any positive Go `time.ParseDuration` string.
+Non-positive values are rejected when loading the global config.
+It is global-only.
 
 ### review_agent_timeout
 
-Maximum wall-clock time for **one** Review-step agent invocation.
-The optional fixer gets the full configured limit, and its fresh, session-free independent rereviewer gets a new full limit of its own. Every later fixer and rereviewer does the same; no invocation inherits time spent by an earlier turn.
-When an invocation reaches this absolute deadline, the review agent is cancelled and the run fails with a diagnostic naming the wall-clock limit instead of remaining active indefinitely.
+Stall budget for **one** Review-step agent invocation.
+The optional fixer gets the full configured budget, and its fresh, session-free independent rereviewer gets a new full budget of its own.
+Every later fixer and rereviewer does the same; no invocation inherits time spent by an earlier turn.
+A silent invocation is cancelled when this budget expires.
+A still-working invocation continues only when [`review_agent_working_timeout`](#review_agent_working_timeout) is set, under the same idle rule as [`agent_working_timeout`](#agent_working_timeout).
+When the invocation is cancelled, the review agent fails the run with a diagnostic naming the bound that cut it instead of remaining active indefinitely.
 That diagnostic carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
 
 |         |                        |
@@ -589,13 +679,31 @@ That diagnostic carries the same measured evidence and adapter report described 
 
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
-Raise it for repositories whose reviews legitimately run long; it bounds only the Review step, and no other step or environment variable overrides it.
+Raise it when reviews routinely stay quiet longer than this budget.
+With [`review_agent_working_timeout`](#review_agent_working_timeout) unset, this budget also stops a review that is still working, so set that cap when busy reviews are cut here.
+It bounds only the Review step, and no other step or environment variable overrides it.
+
+### review_agent_working_timeout
+
+Optional still-working cap for one Review invocation.
+Unset means the turn stops at [`review_agent_timeout`](#review_agent_timeout).
+Set, it is that turn's absolute deadline, and it must be at least `review_agent_timeout`.
+The 10-minute quiet stop still applies.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | unset                  |
+
+It is global-only.
 
 ### test_agent_timeout
 
-Maximum wall-clock time for one Test-step agent invocation.
+Stall budget for one Test-step agent invocation.
 The budget covers the post-test evidence-gathering turn, and a Test-repair turn gets its own budget of the same length.
-When the deadline expires, the test agent is cancelled and the Test step parks for a decision with an ask-user finding rather than failing the run as a code defect.
+A silent invocation is cancelled when this budget expires.
+A still-working invocation continues only when [`test_agent_working_timeout`](#test_agent_working_timeout) is set, so a targeted run that already needs most of this budget is not failed solely because the provider was slow.
+When the invocation is cancelled, the test agent parks for a decision with an ask-user finding rather than failing the run as a code defect.
 That finding carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
 A late structured result from the expired turn is still not used as a successful Test pass.
 The park keeps the configured `commands.test` result from the same execution, so approving over a failing command is still recorded as a configured-command override.
@@ -614,9 +722,24 @@ You can also abort, raise this value, and retry.
 
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
-Raise it for repositories whose targeted tests or evidence gathering legitimately run long; a suite that itself takes close to 30 minutes leaves almost no slack against provider slowness under the default.
-The shipped default stays a stall bound and is not raised automatically.
+Raise it when targeted tests or evidence gathering routinely stay quiet longer than this budget.
+With [`test_agent_working_timeout`](#test_agent_working_timeout) unset, this budget also stops a Test turn that is still working, so set that cap when busy turns are cut here.
+The shipped default stays a silent bound and is not raised automatically.
 It bounds only the Test step, and no other step or environment variable overrides it.
+
+### test_agent_working_timeout
+
+Optional still-working cap for one Test invocation.
+Unset means the turn stops at [`test_agent_timeout`](#test_agent_timeout).
+Set, it is that turn's absolute deadline, and it must be at least `test_agent_timeout`.
+The 10-minute quiet stop still applies.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | unset                  |
+
+It is global-only.
 
 ### daemon_connect_timeout
 
@@ -644,7 +767,7 @@ Raise this if your environment's Git credential helper (for example `gh auth git
 
 ### gate_reconcile_interval
 
-How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and clears the gate when the PR was merged or closed.
+How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and clears the gate when the PR was merged or closed, and to a [review gate parked on its reviewer's own questions](/no-mistakes/concepts/review-conversation/), which resumes the reviewer once none are open.
 
 |         |                        |
 | ------- | ---------------------- |
@@ -722,6 +845,25 @@ The key is matched against the checkout path recorded at `init`. After moving a 
 
 `no-mistakes init --worktree-root <dir>` prints the exact entry to add for the checkout you are initializing. The global config is hand-maintained, so init never rewrites it for you.
 
+### worktree
+
+Retention for leftover run-worktree directories under the default `<NM_HOME>/worktrees/<repo id>/<run id>` tree.
+
+|      |          |
+| ---- | -------- |
+| Type | `object` |
+
+| Field                | Type     | Default          | Description                                                                    |
+| -------------------- | -------- | ---------------- | ------------------------------------------------------------------------------ |
+| `worktree.retention` | `string` | `24h`            | How long a leftover run worktree survives; `unlimited`/`none`/`off`/`never` or a non-positive duration disables the bound |
+| `worktree.max_runs`  | `int`    | `20`             | How many leftover worktree directories survive regardless of age; `0` disables the bound |
+
+A run's own worktree is already removed the instant its pipeline finishes, so this budget is a safety net rather than the normal path: it only ever governs the directory left behind by a `git worktree remove` failure (for example a vendored `.git` nested somewhere under a large `node_modules` tree) or a [protected-path](/no-mistakes/reference/repo-config/#protected_paths) refusal that later became removable. Without it, a leftover like that survived indefinitely on a long-running daemon that never restarts, since the crash-recovery sweep that also reclaims it (see the daemon's [worktree cleanup](/no-mistakes/concepts/daemon/#what-it-does)) runs only at startup.
+
+This reap runs after every finished run and again at daemon startup, the same cadence `test.evidence.retention` uses. Only the default `<NM_HOME>/worktrees` tree is bounded; a checkout you placed with [`worktree_roots`](#worktree_roots) is your own directory, and only the directories no-mistakes' own run records name there are ever touched, per that section's rules.
+
+Global-only, for the same reason `test.evidence`'s local storage fields are: it governs this machine's local disk, so a repository does not get to set the retention budget for a directory every repository on the machine shares.
+
 ### auto_fix
 
 Maximum follow-up auto-fix attempts per step. Set a step to `0` to disable the follow-up auto-fix loop, so findings require manual approval.
@@ -739,7 +881,7 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |
-| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus GitHub, GitLab, Forgejo, and Azure DevOps merge conflicts |
+| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus merge conflicts on GitHub, GitLab, Forgejo, Azure DevOps, and provider plugins declaring `mergeable_state` |
 
 Legacy alias: `auto_fix.babysit`.
 
@@ -782,6 +924,22 @@ ci:
 
 A value in the trusted repository config overrides this global value in both directions: an explicit repository `true` enables revalidation when this is `false`, and an explicit repository `false` disables opt-in revalidation when this is `true`. When the trusted repository config omits the key, this global value applies.
 
+### ci.review_bot_comments
+
+The operator-level fallback for [`ci.review_bot_comments`](/no-mistakes/reference/repo-config/#cireview_bot_comments), whose per-repository reference owns the semantics and the trust boundary.
+
+| | |
+|---|---|
+| Type | `string` (`on_failure` or `always`) |
+| Default | `on_failure` |
+
+```yaml
+ci:
+  review_bot_comments: always
+```
+
+A value in the trusted repository config overrides this global value. An unrecognized value fails the config rather than falling back to the default.
+
 ### rebase.strategy
 
 The operator-level default for [`rebase.strategy`](/no-mistakes/reference/repo-config/#rebasestrategy), whose per-repository reference owns the semantics, the trade-off, and the trust boundary.
@@ -797,6 +955,39 @@ rebase:
 ```
 
 A value in the trusted repository config overrides this global value in both directions. When the trusted repository config omits the key, this global value applies. An unrecognized value fails the config closed rather than falling back to the default, so a typo cannot quietly keep rewriting history a maintainer asked to stop rewriting.
+
+### review.path_instructions
+
+Machine-local review guidance that applies to every repository this machine gates.
+Use it for house rules you hold in every repository, including ones you do not control and so cannot commit a [`review.path_instructions`](/no-mistakes/reference/repo-config/#reviewpath_instructions) to.
+For a rule that holds in one repository only, use a matching [`repository_overrides`](#repository_overrides) entry instead.
+
+| | |
+|---|---|
+| Type | `object[]` with `path` (`string`) and `instructions` (`string`, multiline) |
+| Default | Empty |
+
+```yaml
+review:
+  path_instructions:
+    - path: "**/*.vue"
+      instructions: |
+        Repeated instances of a component are driven from a computed, not stacked v-ifs.
+```
+
+Entries match, render, and validate exactly like the repository field, whose reference owns those rules.
+They only add guidance: the repository's own trusted rules always apply alongside them, and nothing here can remove or replace one.
+The reviewer receives each source as its own section, in this order: this global list, then the matching `repository_overrides` entry's list, then the repository's trusted list.
+The two machine-local headings say the rules come from the operator's global config and not from the repository, so a machine-local rule never reads as the repository's own.
+The step log names the source of every rule it applied or skipped.
+
+The entry and byte limits apply to the combined set from all three sources, because they share one review prompt.
+This global list together with each `repository_overrides` list is checked when the config loads.
+The repository's trusted list changes independently, so the combined set is checked again when each run starts and when a run is recovered after a daemon restart: a run whose combined rules exceed a limit fails before any step runs or resumes, with an error naming each source's entry count, rather than silently dropping a rule.
+Shorten or remove your machine-local entries to fix it.
+
+Only `path_instructions` is accepted under this block. `review.conversation` stays a repository decision, because an open question parks the gate.
+Changes apply to the next run, and to a run recovered after a daemon restart, which re-reads this file.
 
 ### commit.fix_message
 
@@ -865,10 +1056,46 @@ Malformed replacement syntax fails configuration loading with an actionable erro
 The expanded identifier is subject to the existing UTF-8, control-character, unsafe-Unicode, and rendered-subject validation.
 A `commit.branch_pattern` in `.no-mistakes.yaml` takes precedence and clears any inherited machine-wide replacement, including one from a matching repository override, so a replacement cannot be applied to a different pattern.
 
+### commit.trailers
+
+Git trailers appended to each commit made from a single agent invocation's changes, naming the agent and model that produced them.
+
+| | |
+| --- | --- |
+| Type | `list` of `string` templates |
+| Default | Unset, so commits carry no trailers |
+
+Each entry renders to one trailer line. It supports literal text and two Go-style placeholders:
+
+| Variable | Value |
+| --- | --- |
+| `{{.Agent}}` | The agent that actually ran the invocation; with an `agent` fallback list, the one that answered, not the first configured |
+| `{{.Model}}` | The model the agent reported serving the invocation, or `unknown` when it reports none |
+
+For example, this renders `Assisted-by: no-mistakes:codex:gpt-5.5` on a fix made by Codex after a fallback from Claude:
+
+```yaml
+commit:
+  trailers:
+    - "Co-Authored-By: no-mistakes {{.Agent}} <noreply@example.com>"
+    - "Assisted-by: no-mistakes:{{.Agent}}:{{.Model}}"
+```
+
+`{{.Agent}}` and `{{.Model}}` come from agent output, so each is cut to its first whitespace-separated token, reduced to letters, digits, and `-_.:/`, and limited to 64 bytes; a value with nothing left renders as `unknown`.
+Claude, Codex, Grok, and Pi report the model they served; other agents render `unknown`.
+Every entry must render to a `Key: value` line that git recognizes as a trailer.
+The key must be literal: an entry starts with its full `Key: ` prefix as plain text, and placeholders are allowed only in the value after it, so `{{.Agent}}-assisted: yes` is rejected.
+Entries are limited to 1,024 bytes and 16 placeholders, the list to 16 entries, and the same template restrictions and unsafe-character rules as `commit.fix_message` apply.
+The 1,024-byte limit also applies to the rendered line, checked when configuration loads with every placeholder at its 64-byte maximum, so an entry that loads cannot overflow at commit time.
+An invalid entry fails configuration loading, and a render failure at commit time leaves the changes unstaged.
+
+Trailers are added to Review, Test, Document, and Lint fix commits, operator-authorized repository gate repairs, and CI repair commits. Commits that no single invocation produced get none rather than a guessed agent: the Push step's catch-all commit, a CI repair retried after a protected-path refusal, and rebase or merge commits that an agent writes itself.
+A per-repo [`commit.trailers`](/no-mistakes/reference/repo-config/#committrailers) list or a matching [`repository_overrides`](#repository_overrides) entry replaces this list rather than extending it; an empty list clears it.
+
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine apply ticket conventions to a single repository without adding settings to that repository.
+This lets one machine add checks, lower command scheduling priority, add review and documentation guidance, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -888,11 +1115,87 @@ repository_overrides:
       title_format: '{{.Branch}}: {{.Title}}'
 ```
 
-Supported fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
+Formatting fields are `commit.branch_pattern`, `commit.branch_replacement`, `commit.fix_message`, `commit.trailers`, and `pr.title_format`; each retains the same fail-closed validation as its global or repository-config equivalent.
 A `commit.branch_replacement` must be paired with `commit.branch_pattern` in the same override.
-Precedence is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
+Precedence for these formatting fields is explicit: `.no-mistakes.yaml` wins for every field it sets, then a matching machine-local override, then the plain global value, then the built-in default.
 As with the global replacement, a repository `commit.branch_pattern` replaces the matching machine-local pattern and clears its replacement.
 Repositories matching no block keep existing global and built-in behavior.
+
+#### Machine-local review and documentation guidance
+
+A matching entry can add review rules and documentation policy for that one repository, without committing anything to it:
+
+```yaml
+repository_overrides:
+  https://gitlab.example.com/group/app-one.git:
+    review:
+      path_instructions:
+        - path: "**/*.cs"
+          instructions: |
+            Sync wording is always "sync from <upstream>": it is a one-way overwrite, never a merge.
+    document:
+      instructions: |
+        Configuration keys are owned by docs/reference/config.md.
+```
+
+`review.path_instructions` behaves like the [global list](#reviewpath_instructions): its rules render in their own labeled section after the global rules and before the repository's trusted rules, and they count toward the same combined limits.
+`document.instructions` is added to the document step's prompt in a labeled section before the repository's trusted [`document.instructions`](/no-mistakes/reference/repo-config/#documentinstructions), and like that field it augments the built-in placement policy and cannot weaken it.
+Both are additive only: the repository's trusted values still apply in full.
+Under `review` only `path_instructions` is accepted, and under `document` only `instructions`; settings that could weaken a gate, such as `no_ci`, `allow_repo_commands`, or `pr.base_branch`, are not accepted here.
+
+Eval replay cases store no remote URL, so a replay does not apply a matching entry's review or documentation guidance.
+
+#### Machine-local commands
+
+A matching `commands` block supplements the repository's trusted commands; it never changes their strings or removes them.
+Repository command selection still comes from the trusted default branch, or the pushed branch only with trusted `allow_repo_commands: true`.
+Only the operator's global config can supply these local settings, never a repository's `.no-mistakes.yaml`.
+With no matching command override, execution remains unchanged.
+
+```yaml
+repository_overrides:
+  https://github.com/acme/widget.git:
+    commands:
+      test:
+        additional:
+          - /opt/local-checks/widget-smoke
+        nice: 10
+      lint:
+        additional:
+          - /opt/local-checks/widget-policy
+      prepare:
+        nice: 10
+```
+
+| Field | Supported commands | Meaning |
+| --- | --- | --- |
+| `additional` | `test`, `lint` | Ordered list of separate shell checks added after the repository check; every check must succeed |
+| `nice` | `prepare`, `test`, `lint`, `format` | POSIX niceness adjustment from `0` to `19`; `0` leaves scheduling unchanged |
+
+Test runs the committed command first, then each added command in a separate shell, retaining a failure from either source even when another check succeeds.
+Test still performs its unconditional agent-driven end-user scenarios afterwards.
+Lint runs additional checks after the existing lint duty, including agent-driven lint when `commands.lint` is empty.
+An added check's failure parks the step rather than silently passing; existing explicit approval rules still apply.
+Its finding names that machine-local check and its exit code, and never attributes the failure to the committed command, including when the committed command is empty.
+`additional` is refused for preparation and formatting, because those commands are not independent check gates.
+Replacement command strings, `command`, `replace`, `skip`, per-command `env`, unknown command names, empty additional checks, and niceness outside `0` through `19` are configuration errors.
+
+Overrides are always declared, never silent: whenever a command runs under any of these settings, its step log states `machine-local overrides applied to commands.<name>:` followed by the niceness and the added checks, once per step rather than per check, and Test passes the same declaration to its agent for the testing summary.
+These settings are scoped to configured shell commands and their local checks, not agents, built-in Git operations, forge commands, or repository-declared extra gates.
+
+There is no per-command environment override.
+Toolchain paths (such as `PATH`) and parallelism settings (such as `GOMAXPROCS`) come from the operator's own environment, which the daemon captures at startup and passes to every configured command; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns where to set them.
+
+`nice: 10` invokes the POSIX `nice -n 10` utility around the command shell, adding ten to its inherited niceness, not setting an absolute priority.
+Positive niceness is refused on Windows; set resource limits in the operator's own environment there.
+A missing `nice` utility fails the command rather than silently ignoring the request.
+
+Before executing an opted-in run, no-mistakes records the full resolved configuration in `<NM_HOME>/logs/<run-id>/command-config.ndjson`, including the unchanged team command strings, added checks, niceness, trusted-config SHA, and tool build.
+It also records the values configured commands inherit from the daemon's environment for `PATH`, `GOMAXPROCS`, `MAKEFLAGS`, `CARGO_BUILD_JOBS`, and `CMAKE_BUILD_PARALLEL_LEVEL`, omitting any that are unset; these values appear only in this file, never in step logs, agent prompts, findings, or the PR.
+This record is independent of optional eval capture.
+Recovery appends a new snapshot of the configuration it resolves, including removal of a previously active local override.
+A snapshot write failure stops execution before checks run.
+The file is private local evidence, restricted to owner-only permissions on POSIX on every write (including a file left from an earlier snapshot) and excluded from PR and test-evidence publication.
 
 ### intent
 
@@ -971,6 +1274,8 @@ Reaping runs after each finished run and again at daemon startup. An upgraded da
 `local_root` must be an absolute path outside `<NM_HOME>/worktrees`; a relative or managed-worktree path fails daemon startup and prevents new or recovered runs from starting. Because `retention` bounds how long a PR body's local artifact links keep resolving, raise it rather than lowering it if your reviews run long.
 
 The publication fields are global defaults. Repo config can override `store_in_repo`, `attach_media`, and `dir`; it can override `branch` only through the trusted default-branch copy. `local_root`, `retention`, and `max_runs` are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, or set the retention budget for a directory every repository on the machine shares.
+
+`test.evidence.retention` and `test.evidence.max_runs` also bound `<NM_HOME>/logs/<run-id>` (per-run step logs), reaped on the same cadence rather than through a second config surface for the same kind of per-run diagnostic artifact.
 
 ### eval
 

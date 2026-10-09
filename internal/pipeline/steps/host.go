@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,18 +11,28 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/scm/forgejo"
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitea"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin"
 )
 
 // resolvedProvider returns the run-scoped provider selected by forge profile
 // routing. Runs without a selected profile retain the legacy URL-based
-// detection, including the PR URL fallback used during recovery.
+// detection, including the PR URL fallback used during recovery. A provider
+// plugin claiming the remote's host decides first: it is the operator's
+// explicit machine-local choice, and a run whose forge profile also claims
+// the repository never starts (config load refuses a shared literal host,
+// forgecontext.RefuseProviderPluginOverlap one shared only after SSH alias
+// resolution).
 func resolvedProvider(sctx *pipeline.StepContext) scm.Provider {
+	if name, ok := providerPluginForStep(sctx); ok {
+		return scm.PluginProvider(name)
+	}
 	if sctx.ForgeContext != nil {
 		return sctx.ForgeContext.Provider
 	}
@@ -30,6 +41,68 @@ func resolvedProvider(sctx *pipeline.StepContext) scm.Provider {
 		provider = detectProviderForStep(sctx, *sctx.Run.PRURL)
 	}
 	return provider
+}
+
+// resolvedProviderForBody is resolvedProvider for the PR-body composition
+// helpers. They are also reachable from embeddings that assemble a body without
+// a repository or run record, where resolvedProvider would dereference a nil
+// field. A body with no repository has no detected provider and keeps GitHub's
+// closing grammar, which is what every body rendered under before GitLab's
+// grammar existed.
+func resolvedProviderForBody(sctx *pipeline.StepContext) scm.Provider {
+	if sctx == nil || sctx.Repo == nil || sctx.Run == nil {
+		return scm.ProviderUnknown
+	}
+	return resolvedProvider(sctx)
+}
+
+// providerPluginForStep returns the configured provider plugin that claims
+// the run's upstream remote, falling back to the recorded PR URL like
+// built-in detection does during recovery.
+func providerPluginForStep(sctx *pipeline.StepContext) (string, bool) {
+	if sctx.Config == nil || len(sctx.Config.ProviderPlugins) == 0 {
+		return "", false
+	}
+	remote := providerPluginRemote(sctx)
+	if remote == "" {
+		return "", false
+	}
+	return sctx.Config.ProviderPlugins.Select(scm.ExtractHost(remote), func() string {
+		return scm.ResolveHost(sctx.Ctx, remote)
+	})
+}
+
+func providerPluginRemote(sctx *pipeline.StepContext) string {
+	if remote := strings.TrimSpace(sctx.Repo.UpstreamURL); remote != "" {
+		return remote
+	}
+	if sctx.Run.PRURL != nil {
+		return strings.TrimSpace(*sctx.Run.PRURL)
+	}
+	return ""
+}
+
+// pluginContractBroken reports whether a provider error must fail the step
+// rather than skip it or be retried like a transient read. A provider that
+// says it cannot serve the repository (CLI missing, not authenticated) skips
+// with that reason, which axi surfaces under run.automatic_skips and as
+// passed-with-skips, and an ordinary failed read is polled again. A provider
+// plugin that broke its contract (unreadable output, a protocol version this
+// build does not speak, a mismatched PR identity, a timeout), in its status
+// handshake or in any later call, is a broken operator-installed component:
+// skipping would let a run read as passed-with-skips off an answer nothing
+// validated, and polling it again only defers the failure to a timeout.
+func pluginContractBroken(err error) bool {
+	return errors.Is(err, plugin.ErrProtocol)
+}
+
+// pluginPollFailsStep is pluginContractBroken for the CI monitor's repeated
+// polls and failed-log retrieval, minus a timeout (see plugin.ErrTimeout):
+// the monitor already retries a failed poll and a repair already reports
+// missing logs, and neither passes on one, so only a deterministic violation
+// fails the step there. One-shot reads use pluginContractBroken.
+func pluginPollFailsStep(err error) bool {
+	return pluginContractBroken(err) && !errors.Is(err, plugin.ErrTimeout)
 }
 
 func resolvedHost(sctx *pipeline.StepContext, remote string) string {
@@ -46,6 +119,9 @@ func resolvedHost(sctx *pipeline.StepContext, remote string) string {
 func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, string) {
 	cmdFactory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		return stepCmdContext(sctx, ctx, name, args...)
+	}
+	if name, ok := provider.PluginName(); ok {
+		return buildPluginHost(sctx, name, cmdFactory)
 	}
 	switch provider {
 	case scm.ProviderGitHub:
@@ -175,6 +251,51 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 // BuildHostForTest exposes buildHost to tests in other packages.
 func BuildHostForTest(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, string) {
 	return buildHost(sctx, provider)
+}
+
+// buildPluginHost wires an operator-configured provider plugin. The plugin
+// runs through the same step command factory as built-in provider CLIs, so it
+// inherits the run's environment (and any forge-profile overlay) and the
+// worktree as its working directory.
+func buildPluginHost(sctx *pipeline.StepContext, name string, cmdFactory plugin.CmdFactory) (scm.Host, string) {
+	if sctx.Config == nil {
+		return nil, fmt.Sprintf("provider plugin %q is not configured", name)
+	}
+	cfg, ok := sctx.Config.ProviderPlugins[name]
+	if !ok {
+		return nil, fmt.Sprintf("provider plugin %q is not configured", name)
+	}
+	if sctx.Repo.ForkURL != "" {
+		// Fork PR routing is intentionally not half-wired, mirroring every
+		// non-GitHub provider: a plugin gets one repository identity and
+		// would otherwise open a self PR.
+		return nil, fmt.Sprintf("fork PR routing for provider plugin %q is not implemented", name)
+	}
+	remote := providerPluginRemote(sctx)
+	if remote == "" {
+		return nil, fmt.Sprintf("provider plugin %q: no upstream remote or PR URL to identify the repository", name)
+	}
+	repoPath := scm.RepoPath(remote)
+	if repoPath == "" {
+		// Every returned PR URL is checked against this path, so a remote
+		// without one could never yield a valid answer.
+		return nil, fmt.Sprintf("provider plugin %q: could not resolve the repository path from the remote URL", name)
+	}
+	return plugin.New(plugin.Options{
+		Name:       name,
+		Executable: cfg.Command,
+		Args:       cfg.Args,
+		Repository: plugin.Repository{
+			RemoteURL: safeurl.Redact(remote),
+			Host:      scm.ResolveHost(sctx.Ctx, remote),
+			RawHost:   scm.ExtractHost(remote),
+			Path:      repoPath,
+		},
+		Timeout:             cfg.Timeout,
+		DraftPullRequests:   cfg.DraftPullRequests,
+		CommandFactory:      cmdFactory,
+		ExecutableAvailable: func(executable string) bool { return stepExecutableAvailable(sctx, executable) },
+	}), ""
 }
 
 func detectProviderForStep(sctx *pipeline.StepContext, remoteURL string) scm.Provider {

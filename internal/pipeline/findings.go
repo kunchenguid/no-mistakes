@@ -148,6 +148,11 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	existingCounts := countFindingFingerprints(existing.Items)
 	additionalCounts := countFindingFingerprints(additional.Items)
 	merged := types.FindingsMetadata(existing)
+	if additional.RiskLevel != "" {
+		merged.RiskLevel = additional.RiskLevel
+		merged.RiskRationale = additional.RiskRationale
+		merged.RiskScope = additional.RiskScope
+	}
 	for _, item := range existing.Items {
 		merged.Items = append(merged.Items, item)
 		seen[findingKey(item)] = true
@@ -260,6 +265,32 @@ func autoFixableFindingsJSON(raw string) string {
 		return raw
 	}
 	return fixableRaw
+}
+
+// gateAutoFixEligible keeps command-gate automation action-driven. An ask-user
+// finding parks the whole gate, and another repair requires fewer findings than
+// the round it answered, including the findings deferred from that repair.
+func gateAutoFixEligible(current, previous, deferred string, fixing bool) bool {
+	findings, err := types.ParseFindingsJSON(current)
+	if err != nil || types.HasAskUserFindings(findings) || len(types.AutoFixableFindings(findings).Items) == 0 {
+		return false
+	}
+	if !fixing {
+		return true
+	}
+	prior, err := types.ParseFindingsJSON(previous)
+	if err != nil {
+		return false
+	}
+	priorCount := len(prior.Items)
+	if deferred != "" {
+		unselected, err := types.ParseFindingsJSON(deferred)
+		if err != nil {
+			return false
+		}
+		priorCount += len(unselected.Items)
+	}
+	return len(findings.Items) < priorCount
 }
 
 func hasAskUserFindingsJSON(raw string) bool {
@@ -511,29 +542,37 @@ func normalizeCoveredPath(value string) string {
 
 // resolveVerifiedFindingsJSON returns outstandingRaw minus every finding whose
 // ID is in pendingIDs and for which this round is a POSITIVE verification
-// record. An ordinary finding still requires trusted ReviewedPaths coverage
-// of its file and no current finding in that file. A synthesized recorded-
-// decision finding instead requires exactly one current satisfied assessment
-// for its durable decision identity, with nonblank evidence; file coverage
-// cannot express verification for ignored, absent, or file-less decisions.
+// record: for a file-anchored finding, the round listed the finding's file in
+// its ReviewedPaths coverage, that path is in the trusted reviewable set, and
+// the round's own output (thisRoundRaw) neither re-reports the defect nor
+// reports anything else at all in that same file. The file-less exception
+// below requires coverage of the entire trusted reviewable set.
 //
 // This is the only way a selected-and-fixed finding leaves the outstanding set
 // besides an explicit operator action (approve/skip/abort). A file the round
-// did not list, a missing coverage record, a finding with no file, a round
-// that re-reports the defect, or a round that reports ANY OTHER finding in the
-// same file all leave the item in place. Any file-less finding in the current
-// round also blocks verification of every selected file-anchored item in that
-// round: silence, or a round that did not look, is never resolution, and
-// neither is an ambiguous report that might be the same defect shifted to
-// another line or reworded. Without this last check, a fix that moves a defect
-// within the same file and a rereview that describes it differently would both
-// fail the exact-match and content-match checks, so the defect would silently
-// clear as "not reported" even though it is still present, just relocated or
-// restated. That is the P1 this closes - the predecessor dropped a selected
-// finding the moment its fix was requested, so a no-op fix could let the run
-// complete with the defect unresolved.
+// did not list, a missing coverage record, a round that re-reports the defect,
+// or a round that reports ANY OTHER finding in the same file all leave the
+// item in place. Any file-less finding in the current round also blocks
+// verification of every selected item in that round: silence, or
+// a round that did not look, is never resolution, and neither is an ambiguous
+// report that might be the same defect shifted to another line or reworded.
+// Without this last check, a fix that moves a defect within the same file and
+// a rereview that describes it differently would both fail the exact-match and
+// content-match checks, so the defect would silently clear as "not reported"
+// even though it is still present, just relocated or restated. That is the P1
+// this closes - the predecessor dropped a selected finding the moment its fix
+// was requested, so a no-op fix could let the run complete with the defect
+// unresolved.
+//
+// One compat carve-out: a SELECTED finding with no file anchor can never match
+// a coverage record, so it clears on a positive verification round that no
+// longer reports it - the round's coverage record must list every reviewable
+// path, and the round must report no unanchored finding. Runs parked before
+// the recorded-decision review machinery was removed can carry such items (a
+// synthesized decision finding whose source finding had no file), and without
+// this rule a fix selection could never clear them.
 func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string) string {
-	if outstandingRaw == "" || len(pendingIDs) == 0 {
+	if outstandingRaw == "" || len(pendingIDs) == 0 || len(reviewedPaths) == 0 {
 		return outstandingRaw
 	}
 	outstanding, err := types.ParseFindingsJSON(outstandingRaw)
@@ -555,33 +594,27 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 			reviewable[normalized] = true
 		}
 	}
-	coverageValid := len(reviewable) > 0 && len(reviewedPaths) > 0
+	if len(reviewable) == 0 {
+		return outstandingRaw
+	}
 	covered := make(map[string]bool, len(reviewedPaths))
 	for _, reviewed := range reviewedPaths {
 		normalized := normalizeCoveredPath(reviewed)
 		if normalized == "" || !reviewable[normalized] {
-			coverageValid = false
-			continue
+			return outstandingRaw
 		}
 		covered[normalized] = true
 	}
 	if len(covered) == 0 {
-		coverageValid = false
+		return outstandingRaw
 	}
+	fullyCovered := len(covered) == len(reviewable)
 	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
-	decisionReviews := make(map[string][]types.DecisionReview, len(thisRound.DecisionReviews))
-	for _, review := range thisRound.DecisionReviews {
-		decisionReviews[review.DecisionID] = append(decisionReviews[review.DecisionID], review)
-	}
 	reported := make(map[types.Finding]bool, len(thisRound.Items))
 	reportedFiles := make(map[string]bool, len(thisRound.Items))
-	reportedDecisionIDs := make(map[string]bool, len(thisRound.Items))
 	hasUnanchoredFinding := false
 	for _, item := range thisRound.Items {
 		reported[findingKey(item)] = true
-		if item.DecisionID != "" {
-			reportedDecisionIDs[item.DecisionID] = true
-		}
 		if normalized := normalizeCoveredPath(item.File); normalized != "" {
 			reportedFiles[normalized] = true
 		} else {
@@ -590,24 +623,10 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	}
 	outstandingCounts := countFindingFingerprints(outstanding.Items)
 	thisRoundCounts := countFindingFingerprints(thisRound.Items)
-	decisionFindingCounts := make(map[string]int)
-	for _, item := range outstanding.Items {
-		if item.DecisionID != "" {
-			decisionFindingCounts[item.DecisionID]++
-		}
-	}
 	result := types.FindingsMetadata(outstanding)
 	for _, item := range outstanding.Items {
-		if pending[item.ID] && item.DecisionID != "" {
-			reviews := decisionReviews[item.DecisionID]
-			if decisionFindingCounts[item.DecisionID] == 1 && len(reviews) == 1 && reviews[0].Result == "satisfied" && strings.TrimSpace(reviews[0].Evidence) != "" && !reportedDecisionIDs[item.DecisionID] {
-				continue
-			}
-			result.Items = append(result.Items, item)
-			continue
-		}
 		file := normalizeCoveredPath(item.File)
-		if pending[item.ID] && coverageValid && !hasUnanchoredFinding && covered[file] && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
+		if pending[item.ID] && !hasUnanchoredFinding && (covered[file] || file == "" && fullyCovered) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
 			continue
 		}
 		result.Items = append(result.Items, item)
@@ -633,8 +652,7 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 // outstanding item already holds, and the outstanding item's ID is what
 // `axi respond --findings <id>` selects, so the colliding NEW item is
 // re-minted instead), and the merged payload carries this round's coverage
-// and decision-assessment records rather than the outstanding set's stale
-// copies.
+// record rather than the outstanding set's stale copy.
 //
 // Identity is still content-derived: a reworded restatement of an existing
 // finding does not match its original and is appended as a second item. That
@@ -642,10 +660,6 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 // anything, and stable finding identity is a separate design pass (Parts 2+3
 // of the scout report).
 func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPaths []string) string {
-	var currentDecisionReviews []types.DecisionReview
-	if current, err := types.ParseFindingsJSON(additionalRaw); err == nil {
-		currentDecisionReviews = append([]types.DecisionReview(nil), current.DecisionReviews...)
-	}
 	if additionalRaw == "" {
 		if existingRaw == "" {
 			return ""
@@ -655,7 +669,6 @@ func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPat
 			return existingRaw
 		}
 		findings.ReviewedPaths = append([]string(nil), reviewedPaths...)
-		findings.DecisionReviews = currentDecisionReviews
 		findings.WithdrawnFindings = nil
 		encoded, err := types.MarshalFindingsJSON(findings)
 		if err != nil {
@@ -672,20 +685,7 @@ func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPat
 		return mergedRaw
 	}
 	merged.ReviewedPaths = append([]string(nil), reviewedPaths...)
-	merged.DecisionReviews = currentDecisionReviews
 	merged.WithdrawnFindings = nil
-	seenDecisionIDs := make(map[string]bool)
-	items := merged.Items[:0]
-	for _, item := range merged.Items {
-		if item.DecisionID != "" {
-			if seenDecisionIDs[item.DecisionID] {
-				continue
-			}
-			seenDecisionIDs[item.DecisionID] = true
-		}
-		items = append(items, item)
-	}
-	merged.Items = items
 	seen := make(map[string]bool, len(merged.Items))
 	for i := range merged.Items {
 		id := merged.Items[i].ID
@@ -741,9 +741,16 @@ func combineSelectedFindingIDs(selected []string, mergedFindings string) []strin
 	return result
 }
 
-// mergeUserOverridesJSON takes a findings JSON payload and applies
-// per-finding user instructions and user-authored findings. When no
-// overrides are present the input is returned unchanged.
+func resolveAddedFindingIDs(added []types.Finding, reserved ...string) []types.Finding {
+	gate := types.Findings{}
+	for _, raw := range reserved {
+		findings, _ := types.ParseFindingsJSON(raw)
+		gate.Items = append(gate.Items, findings.Items...)
+	}
+	merged := types.MergeUserOverrides(gate, nil, added)
+	return merged.Items[len(gate.Items):]
+}
+
 func mergeUserOverridesJSON(raw string, instructions map[string]string, added []types.Finding) string {
 	if len(instructions) == 0 && len(added) == 0 {
 		return raw

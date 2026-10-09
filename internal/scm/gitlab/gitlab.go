@@ -105,28 +105,45 @@ func isWindowsDrivePath(raw string) bool {
 // needs a current branch.
 func (h *Host) pipelineJobsArgs(pipelineID int) []string {
 	if h.projectPath != "" {
-		// GitLab's REST API wants the project as a single URL-encoded
-		// "group%2Fproject" path parameter. Escape each segment defensively and
-		// rejoin with %2F so any reserved character in a segment is encoded too,
-		// not just the separating slashes.
-		segments := strings.Split(h.projectPath, "/")
-		for i, seg := range segments {
-			segments[i] = url.PathEscape(seg)
-		}
-		enc := strings.Join(segments, "%2F")
 		// --paginate walks every page; a pipeline with more jobs than fit on one
 		// page (GitLab defaults to 20 per page) would otherwise silently drop the
 		// jobs on later pages and the CI verdict could miss a failed job. glab
 		// writes one JSON array per page, so the parser handles concatenated docs.
-		return []string{"api", "--paginate", fmt.Sprintf("projects/%s/pipelines/%d/jobs", enc, pipelineID)}
+		return []string{"api", "--paginate", fmt.Sprintf("projects/%s/pipelines/%d/jobs", encodeProjectPath(h.projectPath), pipelineID)}
 	}
 	return []string{"ci", "get", "--pipeline-id", fmt.Sprintf("%d", pipelineID), "--output", "json", "--with-job-details"}
 }
 
+// encodeProjectPath renders a "group/subgroup/project" path as the single
+// URL-encoded "group%2Fsubgroup%2Fproject" path parameter GitLab's REST API
+// expects. Each segment is escaped defensively and rejoined with %2F so a
+// reserved character inside a segment is encoded too, not just the separators.
+func encodeProjectPath(projectPath string) string {
+	segments := strings.Split(projectPath, "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segments, "%2F")
+}
+
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitLab }
 
+// Capabilities declares review comments as well: the discussions API exposes
+// the unresolved notes a review bot leaves, and GetReviewComments reads them.
+// The check-identity half of the review-bot integration stays GitHub-only -
+// GitLab job objects name no publishing application - so a bot is identified
+// here by the login it comments as, never by a check.
+//
+// ClosingReferences is true because GitLab closes the issues named by a
+// closing keyword in the merge request description when it merges into the
+// default branch, which is what an explicit --closes reference relies on.
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true}
+	return scm.Capabilities{
+		MergeableState:    true,
+		FailedCheckLogs:   true,
+		ReviewComments:    true,
+		ClosingReferences: true,
+	}
 }
 
 func (h *Host) Available(ctx context.Context) error {
@@ -161,11 +178,13 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 	if expectedHost != "" && !strings.EqualFold(parsed.Hostname(), expectedHost) {
 		return 0, fmt.Errorf("URL host %q does not match GitLab host %q", parsed.Hostname(), expectedHost)
 	}
-	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) < 5 || segments[len(segments)-3] != "-" || segments[len(segments)-2] != "merge_requests" {
+	projectSegments, number, ok := mergeRequestURLPath(parsed)
+	if !ok {
 		return 0, errors.New("expected GitLab /group/project/-/merge_requests/number URL")
 	}
-	projectSegments := segments[:len(segments)-3]
+	// The project half is checked here rather than inside the shape reader:
+	// callers that only want the project path accept the same shape with less
+	// validation, while a merge request identity must be unambiguous.
 	for _, segment := range projectSegments {
 		if segment == "" || segment == "." || segment == ".." {
 			return 0, errors.New("expected unambiguous GitLab project path")
@@ -176,18 +195,30 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 	if expectedProject != "" && !strings.EqualFold(actualProject, expectedProject) {
 		return 0, fmt.Errorf("URL project %q does not match GitLab project %q", actualProject, expectedProject)
 	}
-	number, err := strconv.Atoi(segments[len(segments)-1])
-	if err != nil || number <= 0 {
-		return 0, errors.New("expected positive GitLab merge request number")
-	}
 	escapedSegments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
-	if len(escapedSegments) != len(segments) || escapedSegments[len(escapedSegments)-1] != strconv.Itoa(number) {
+	if len(escapedSegments) != len(projectSegments)+3 || escapedSegments[len(escapedSegments)-1] != strconv.Itoa(number) {
 		return 0, errors.New("expected canonical GitLab merge request number path")
 	}
 	if parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(trimmed, "#") {
 		return 0, errors.New("expected GitLab merge request URL without query or fragment")
 	}
 	return number, nil
+}
+
+// mergeRequestURLPath splits a parsed GitLab merge request URL into its project
+// path segments and IID. It owns the "<project>/-/merge_requests/<number>"
+// shape so the validated merge request read and the project-path extraction
+// cannot drift apart.
+func mergeRequestURLPath(parsed *url.URL) ([]string, int, bool) {
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 5 || segments[len(segments)-3] != "-" || segments[len(segments)-2] != "merge_requests" {
+		return nil, 0, false
+	}
+	number, err := strconv.Atoi(segments[len(segments)-1])
+	if err != nil || number <= 0 {
+		return nil, 0, false
+	}
+	return segments[:len(segments)-3], number, true
 }
 
 type mrPayload struct {

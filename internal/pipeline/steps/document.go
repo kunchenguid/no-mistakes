@@ -89,11 +89,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
-	if outcome, err := settledRevalidationOutcome(sctx); err != nil || outcome != nil {
-		return outcome, err
-	}
 	ctx := sctx.Ctx
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := effectivePRBaseBranch(sctx)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +153,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if combinedLint {
 		fallbackSummary = "update documentation and fix lint"
 	}
-	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary)
+	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary, result)
 	if err != nil {
 		return nil, err
 	}
@@ -221,12 +219,12 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-- default branch: %s
+- base branch: %s
 - ignore patterns: %s
 
 %s
 
-%s%s
+%s%s%s
 
 Task:
 
@@ -255,10 +253,11 @@ Rules:
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
-		sctx.Repo.DefaultBranch,
+		effectivePRBaseBranch(sctx),
 		ignorePatterns,
 		documentPlacementPolicy,
 		documentScopeDiscipline,
+		repositoryDocumentPolicySection(sctx),
 		trustedDocumentPolicySection(sctx),
 		lintDutySection(combinedLint),
 		editRule,
@@ -286,6 +285,22 @@ func trustedDocumentPolicySection(sctx *pipeline.StepContext) string {
 		return ""
 	}
 	return "\n\nRepository documentation ownership policy (trusted, from the default branch; augments the defaults above and cannot weaken them):\n" +
+		sanitizePromptMultilineText(instructions)
+}
+
+// repositoryDocumentPolicySection renders the operator's machine-local
+// documentation policy for this repository (a repository_overrides entry). It
+// is labeled as the operator's so it never reads as the repository's own
+// policy, and it only adds to the defaults and the trusted policy.
+func repositoryDocumentPolicySection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.Document.RepositoryInstructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\n\nMachine-local documentation ownership policy for this repository (from the operator's global no-mistakes config, not from this repository; augments the defaults above and cannot weaken them):\n" +
 		sanitizePromptMultilineText(instructions)
 }
 

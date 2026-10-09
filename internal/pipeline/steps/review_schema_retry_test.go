@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -146,6 +147,91 @@ func TestReviewStep_InvalidReviewExhaustsTheRetryBound(t *testing.T) {
 	}
 }
 
+type rejectedSchemaViolation struct{ error }
+
+func (e rejectedSchemaViolation) Unwrap() error                { return e.error }
+func (rejectedSchemaViolation) StructuredOutputRejected() bool { return true }
+
+func schemaViolationAttempt(field, message string) error {
+	return rejectedSchemaViolation{fmt.Errorf("pi output parse: JSON output %w", &agent.SchemaViolation{Field: field, Message: message})}
+}
+
+func TestReviewStep_DistinctSchemaFailuresAreAttributed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		attempts []error
+		want     string
+	}{
+		{
+			name: "distinct fields",
+			attempts: []error{
+				schemaViolationAttempt("risk_scope", "risk_scope must match one of the allowed values"),
+				schemaViolationAttempt("findings.review_scope", `findings[2] missing required field "review_scope"`),
+				schemaViolationAttempt("findings.tested", "findings[0].tested must be array or null"),
+			},
+			want: "across distinct fields (risk_scope, findings.review_scope, findings.tested)",
+		},
+		{
+			name: "non-field failures are not fields",
+			attempts: []error{
+				schemaViolationAttempt("", "must be object"),
+				rejectedStructuredOutputError{message: "pi output parse: unexpected end of JSON input"},
+				schemaViolationAttempt("notes", `contains unknown field "notes"`),
+			},
+		},
+		{
+			name: "one field failing on different findings",
+			attempts: []error{
+				schemaViolationAttempt("findings.review_scope", "findings[0].review_scope must match one of the allowed values"),
+				schemaViolationAttempt("findings.review_scope", `findings[3] missing required field "review_scope"`),
+				schemaViolationAttempt("findings.review_scope", "findings[1].review_scope must match one of the allowed values"),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			calls := 0
+			ag := &mockAgent{
+				name: "pi",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					attempt := tc.attempts[calls]
+					calls++
+					return nil, attempt
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if err == nil || outcome != nil {
+				t.Fatalf("Execute() = %+v, %v; want the exhausted schema failure", outcome, err)
+			}
+			if calls != reviewAnalyzerMaxAttempts {
+				t.Fatalf("agent calls = %d, want %d", calls, reviewAnalyzerMaxAttempts)
+			}
+			if !agent.IsStructuredOutputRejected(err) {
+				t.Errorf("error = %v, want it to keep wrapping the last rejection", err)
+			}
+			last := tc.attempts[len(tc.attempts)-1].Error()
+			if got := strings.Count(err.Error(), last); got != 1 {
+				t.Errorf("error = %q names the last attempt's failure %d times, want once", err, got)
+			}
+			if tc.want == "" {
+				if strings.Contains(err.Error(), "distinct fields") {
+					t.Errorf("error = %q, want no distinct-fields attribution", err)
+				}
+				return
+			}
+			for _, want := range []string{tc.want, "attempt 1: agent review: " + tc.attempts[0].Error(), "attempt 2: agent review: " + tc.attempts[1].Error(), "attempt 3: agent review: " + last} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestReviewStep_NonSchemaFailuresAreNotRetried(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -166,7 +252,7 @@ func TestReviewStep_NonSchemaFailuresAreNotRetried(t *testing.T) {
 				<-ctx.Done()
 				return rejectedStructuredOutputError{message: `pi output parse: JSON output missing required field "risk_level"`}
 			},
-			wantError: "reached its absolute wall-clock limit after 20ms",
+			wantError: "reached its invocation budget after 20ms",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -20,6 +20,7 @@ When set, everything else moves under this root:
 - Logs: `$NM_HOME/logs/`
 - Database: `$NM_HOME/state.sqlite`
 - Socket / PID / singleton lock: `$NM_HOME/socket`, `$NM_HOME/daemon.pid`, and `$NM_HOME/daemon.lock`
+- The socket path must fit the platform's Unix socket limit: 103 bytes on macOS, 107 on Linux. `daemon start`, `daemon restart`, `daemon status`, `init`, `attach`, `rerun`, `axi run`, and the push hook fail with a message that names the path, its length, and the limit when it is too long. Use a shorter `NM_HOME`. The physical path counts: a symbolic link to a long directory does not help, because the push hook dials the resolved path.
 - Managed agent server PID records: `$NM_HOME/servers/`
 - Local evaluation cases and registry: `$NM_HOME/eval/` (created by automatic collection or an explicit `no-mistakes eval` command)
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
@@ -91,6 +92,14 @@ Path to a replacement CA trust bundle used by forgejo-axi for HTTPS requests.
 | Default | (none)   |
 
 This replaces rather than appends to the platform trust store. See [Provider Integration](/no-mistakes/guides/provider-integration/#forgejo) for provider setup.
+
+## `NO_MISTAKES_FINDINGS_FILE`
+
+Absolute path to the empty JSON report file supplied to each repository [gate command](/no-mistakes/reference/repo-config/#structured-findings).
+
+This is a command-child variable, not a daemon setting. no-mistakes creates a fresh file outside the worktree before every gate command and removes it after reading the result. Commands can write `{"findings":[...]}` using the existing finding shape to report stable finding IDs and locations. Commands that leave it empty retain their exit-code-only behavior.
+
+See the [gate contract](/no-mistakes/reference/repo-config/#structured-findings) for the report schema, limits, verdicts, and approval behavior.
 
 ## `NO_MISTAKES_BITBUCKET_EMAIL`
 
@@ -168,7 +177,7 @@ Disable background update checks.
 | Type    | `1` to disable, anything else to leave enabled |
 | Default | unset (checks enabled)                         |
 
-Update checks run on every CLI invocation except `update` itself and version queries (`--version` / `-v`, which stay side-effect-free), fetch the GitHub release-asset channel manifest, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) suppress the check automatically.
+Update checks run on every CLI invocation except `update` itself and version queries (`--version` / `-v`, which stay side-effect-free), fetch the GitHub release-asset channel manifest, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) and binaries that resolve into `/nix/store` suppress the check automatically.
 
 ## `XDG_DATA_HOME`
 
@@ -243,16 +252,16 @@ When set, telemetry sends events to this host's `/api/send` endpoint. If it is u
 
 Override or enable the telemetry website ID.
 
-|         |                                                                         |
-| ------- | ----------------------------------------------------------------------- |
-| Type    | `string`                                                                |
-| Default | embedded in Makefile and release builds; unset in unembedded dev builds |
+|         |                                                                                     |
+| ------- | ----------------------------------------------------------------------------------- |
+| Type    | `string`                                                                            |
+| Default | embedded in Makefile, Nix flake, and release builds; unset in unembedded dev builds |
 
 When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
 
 When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events, completed step events with `awaiting_approval`, `fix_review`, or `failed` status, and pageviews for the human surfaces `/wizard` and `/tui` and the state-changing agent surfaces `/axi/run`, `/axi/respond`, and `/axi/abort` to Umami.
 Mutation pageviews are sent alongside command events, so command status and duration remain available.
-They include only flag-derived context: `/axi/run` records whether `--yes`, `--intent`, or `--skip` was present, and `/axi/respond` records the sanitized action and whether `--yes` was present.
+They include only flag-derived context: `/axi/run` records booleans such as whether `--yes` or `--skip` was supplied and whether explicit intent was supplied through any [intent input transport](/no-mistakes/reference/cli/#intent-input); `/axi/respond` records the sanitized action and whether `--yes` was present. The intent boolean does not distinguish text, file, and stdin input, and intent input rejected by the CLI resolver emits no `axi-run` command event or pageview.
 
 Read-only surfaces (`axi` home, `axi status`, `axi logs`, `status`, `runs`) emit no telemetry at all, so agent status polling cannot flood remote analytics. Mutation surfaces (`axi run`, `axi respond`, `axi abort`, run lifecycle, approvals, and fixes) stay full-fidelity.
 Each explicit human CLI, AXI, or TUI branch-sync check/apply attempt emits one command event and no additional pageview.
@@ -272,7 +281,7 @@ It never stores prompts, model outputs, diffs, raw command arguments, secret val
 Token counts and the additive session-fidelity fields are nullable and read back as unknown (rendered `-`) rather than a fabricated zero when the adapter did not report them, so a failed or cancelled invocation, a row written before a field existed, and an adapter that does not surface a datum stay honest.
 A recorded `0` means the adapter reported zero; it is distinct from unknown.
 
-- Token detail: `input_tokens`/`output_tokens`/`cache_read_tokens` (raw, cumulative across a resumed session for codex; per-invocation for pi; unknown when the adapter did not report usage), `fresh_input_tokens` (input minus cache reads), `cache_creation_tokens` (unknown when the provider does not surface it), `reasoning_tokens`, and `delta_input_tokens`/`delta_output_tokens`/`delta_cache_read_tokens` (the correct per-round amounts, so a resumed session's cumulative counter is never mistaken for one round's usage).
+- Token detail: `input_tokens`/`output_tokens`/`cache_read_tokens` (adapter counters, cumulative across a resumed session for codex; per-invocation for pi; unknown when the adapter did not report usage). Claude, Pi, and OpenCode normalize their disjoint provider input buckets into total input, including cache reads and reported cache creation. Pipeline `fresh_input_tokens` remains input minus cache reads, including reported cache creation; [eval token accounting](/no-mistakes/reference/eval/#report-results) separates cache writes as well. Other fields are `cache_creation_tokens` (unknown when the provider does not surface it), `reasoning_tokens`, and `delta_input_tokens`/`delta_output_tokens`/`delta_cache_read_tokens` (the correct per-round amounts, so a resumed session's cumulative counter is never mistaken for one round's usage).
 - Activity: `model_roundtrips` (a proxy for productive model turns), `tool_calls`, and a bounded tool-category histogram (`tool_wait_calls`, `tool_test_lint_calls`, `tool_edit_calls`, `tool_read_calls`, `tool_git_calls`, `tool_other_calls`); a compound command counts once per sub-command, so the histogram can sum higher than `tool_calls`.
 - Timing split: `subprocess_wait_ms` is the wall-clock spent inside tool subprocesses; model/reasoning time is the invocation duration minus it, clamped at zero.
 - Context: `workload_files`/`workload_lines` (bounded change size), `finding_count` (findings in the structured output), and `fallback_reason` (why a failed resume forced a fresh session, one of transient/parse/exit/spawn/unsupported/other).

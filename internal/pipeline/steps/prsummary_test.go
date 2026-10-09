@@ -234,6 +234,7 @@ func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_IncludesAllPipelineSteps(t *testing.T) {
+	t.Parallel()
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepRebase, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepReview, Status: types.StepStatusCompleted},
@@ -356,6 +357,7 @@ func TestBuildPipelineSummary_RebaseWithConflicts(t *testing.T) {
 }
 
 func TestBuildTestingSummary_DoesNotClaimPassedWithoutRounds(t *testing.T) {
+	t.Parallel()
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted},
 	}
@@ -892,6 +894,7 @@ func writeTempEvidenceFile(t *testing.T, evidenceRoot, name string, content []by
 }
 
 func TestBuildTestingSummaryForPR_EmbedsLocalTextEvidenceContent(t *testing.T) {
+	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
 	fileBody := "RENDERED WIZARD SCREEN\n  > Claude\n  > Codex\nGitHub source selected"
 	localPath := writeTempEvidenceFile(t, evidenceRoot, "init-wizard-rendered-screens.txt", []byte(fileBody))
@@ -923,6 +926,7 @@ func TestBuildTestingSummaryForPR_EmbedsLocalTextEvidenceContent(t *testing.T) {
 }
 
 func TestBuildTestingSummaryForPR_PreservesPublicURLForEmbeddedTextEvidence(t *testing.T) {
+	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
 	fileBody := "rendered wizard evidence"
 	localPath := writeTempEvidenceFile(t, evidenceRoot, "wizard.txt", []byte(fileBody))
@@ -999,6 +1003,7 @@ func TestBuildTestingSummaryForPR_DoesNotEmbedRepoRelativeSecrets(t *testing.T) 
 }
 
 func TestBuildTestingSummaryForPR_RendersFileCaptionAsText(t *testing.T) {
+	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
 	fileBody := "safe evidence body"
 	localPath := writeTempEvidenceFile(t, evidenceRoot, "caption.txt", []byte(fileBody))
@@ -1025,6 +1030,7 @@ func TestBuildTestingSummaryForPR_RendersFileCaptionAsText(t *testing.T) {
 }
 
 func TestBuildTestingSummaryForPR_TruncatesLargeTextEvidenceFromMiddle(t *testing.T) {
+	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
 	head := strings.Repeat("HEAD-LINE\n", 50)
 	tail := strings.Repeat("TAIL-LINE\n", 50)
@@ -1055,6 +1061,7 @@ func TestBuildTestingSummaryForPR_TruncatesLargeTextEvidenceFromMiddle(t *testin
 }
 
 func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) {
+	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
 	firstBody := strings.Repeat("first evidence line\n", 700)
 	secondBody := strings.Repeat("second evidence line\n", 700)
@@ -1084,6 +1091,7 @@ func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) 
 }
 
 func TestBuildTestingSummaryForPR_FallsBackForBinaryEvidence(t *testing.T) {
+	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
 	localPath := writeTempEvidenceFile(t, evidenceRoot, "capture.dat", []byte{0x00, 0x01, 0x02, 0xff, 0x00})
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"Binary capture","path":%q}]}`, localPath)
@@ -1101,5 +1109,63 @@ func TestBuildTestingSummaryForPR_FallsBackForBinaryEvidence(t *testing.T) {
 	}
 	if strings.Contains(md, "```text") {
 		t.Fatalf("did not expect binary content to be embedded as text, got:\n%s", md)
+	}
+}
+
+func TestBuildPRTestingSummary_SeparatesDetailsFromAdjacentAttachments(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		artifacts string
+		status    types.StepStatus
+		want      string
+	}{
+		{
+			name:      "outcome after details",
+			artifacts: `{"kind":"log","label":"Inline","content":"output"}`,
+			status:    types.StepStatusFailed,
+			want:      "</details>\n\n- Outcome:",
+		},
+		{
+			name:      "image after details",
+			artifacts: `{"kind":"log","label":"Inline","content":"output"},{"kind":"screenshot","label":"Shot","path":"shot.png"}`,
+			want:      "</details>\n\n![Shot](https://github.com/user-attachments/assets/shot)",
+		},
+		{
+			name:      "video after details",
+			artifacts: `{"kind":"log","label":"Inline","content":"output"},{"kind":"video","label":"Rec","path":"rec.mp4"}`,
+			want:      "</details>\n\nhttps://github.com/user-attachments/assets/rec",
+		},
+		{
+			name:      "image before details",
+			artifacts: `{"kind":"screenshot","label":"Shot","path":"shot.png"},{"kind":"log","label":"Inline","content":"output"}`,
+			want:      "![Shot](https://github.com/user-attachments/assets/shot)\n- Evidence: [Shot](https://github.com/example/widgets/blob/abc123/shot.png)\n\n<details>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[` + tt.artifacts + `]}`
+			status := tt.status
+			if status == "" {
+				status = types.StepStatusCompleted
+			}
+			steps := []*db.StepResult{
+				{ID: "s1", StepName: types.StepTest, Status: status, FindingsJSON: &findings},
+			}
+			rounds := map[string][]*db.StepRound{
+				"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+			}
+			attachments := map[string]string{
+				"shot.png": "https://github.com/user-attachments/assets/shot",
+				"rec.mp4":  "https://github.com/user-attachments/assets/rec",
+			}
+
+			md := buildPRTestingSummary(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil, scm.ProviderUnknown, attachments)
+
+			if !strings.Contains(md, tt.want) {
+				t.Errorf("expected %q, got:\n%s", tt.want, md)
+			}
+		})
 	}
 }

@@ -183,7 +183,7 @@ func TestModel_Yolo_AutoApprovesAwaitingStep(t *testing.T) {
 		mu.Lock()
 		calls = append(calls, params)
 		mu.Unlock()
-		return &ipc.RespondResult{}, nil
+		return &ipc.RespondResult{OK: true}, nil
 	})
 
 	client, err := ipc.Dial(sock)
@@ -235,7 +235,7 @@ func captureRespond(t *testing.T) (string, *ipc.Client, func() []ipc.RespondPara
 		mu.Lock()
 		calls = append(calls, params)
 		mu.Unlock()
-		return &ipc.RespondResult{}, nil
+		return &ipc.RespondResult{OK: true}, nil
 	})
 
 	client, err := ipc.Dial(sock)

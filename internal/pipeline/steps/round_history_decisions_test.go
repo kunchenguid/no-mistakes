@@ -1,11 +1,15 @@
 package steps
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -81,6 +85,7 @@ func (f *decisionFixture) testStepContext() *pipeline.StepContext {
 // it. Before this channel existed the test step's prompt carried no trace of
 // the decision at all.
 func TestDeclinedFindingReachesALaterStepInTheSameRun(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 
@@ -110,6 +115,7 @@ func TestDeclinedFindingReachesALaterStepInTheSameRun(t *testing.T) {
 // uncertified-range channel could not do this because completing a review
 // deletes it; a decision has no such expiry.
 func TestDeclinedFindingReachesALaterRunOnTheSameBranch(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 
@@ -142,6 +148,7 @@ func TestDeclinedFindingReachesALaterRunOnTheSameBranch(t *testing.T) {
 }
 
 func TestSameRunChoiceToFixSupersedesEarlierStepDecline(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 
@@ -207,6 +214,7 @@ func TestSameRunChoiceToFixSupersedesEarlierStepDecline(t *testing.T) {
 }
 
 func TestLaterChoiceToFixSupersedesEarlierDeclineWithoutHidingIt(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 
@@ -257,6 +265,7 @@ func TestLaterChoiceToFixSupersedesEarlierDeclineWithoutHidingIt(t *testing.T) {
 // a recorded decision: approving the gate IS the decision, so an approval that
 // erased it would be self-defeating.
 func TestCompletedReviewDoesNotClearBranchDecisions(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 
@@ -283,6 +292,7 @@ func TestCompletedReviewDoesNotClearBranchDecisions(t *testing.T) {
 // A partial selection is also a decision: the findings the user did not pick
 // are declined, and that half must travel too.
 func TestPartiallySelectedRoundCarriesItsDeclinedHalfAcrossSteps(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	findings := `{"findings":[` +
 		`{"id":"fix-me","severity":"warning","description":"typo","action":"auto-fix"},` +
@@ -315,6 +325,7 @@ func TestPartiallySelectedRoundCarriesItsDeclinedHalfAcrossSteps(t *testing.T) {
 // findings still awaiting a decision, so presenting them as declined would
 // suppress a finding nobody has ruled on.
 func TestAutoFixComplementIsNeverPresentedAsAUserDecision(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	findings := `{"findings":[` +
 		`{"id":"auto-me","severity":"warning","description":"typo","action":"auto-fix"},` +
@@ -352,6 +363,7 @@ func TestAutoFixComplementIsNeverPresentedAsAUserDecision(t *testing.T) {
 // A declined round renders only the declined half: the selection is an
 // explicit empty set, so there is no "chose to fix" list to show.
 func TestDeclinedRoundRendersOnlyTheIgnoredHalfInItsOwnStep(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 
@@ -368,6 +380,7 @@ func TestDeclinedRoundRendersOnlyTheIgnoredHalfInItsOwnStep(t *testing.T) {
 // A round with no recorded decision must produce no decision section, so an
 // unresolved finding is never presented as settled.
 func TestUnresolvedRoundProducesNoDecisionSection(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	findings := declinedDedupFindings
 	if _, err := f.db.InsertStepRound(f.reviewSR.ID, 1, "initial", &findings, nil, 10); err != nil {
@@ -383,6 +396,7 @@ func TestUnresolvedRoundProducesNoDecisionSection(t *testing.T) {
 // The sections must degrade to nothing when the context carries no run or
 // repo, so a step context built without them keeps working.
 func TestDecisionSectionsAreAbsentWithoutRunOrRepo(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 
@@ -401,6 +415,7 @@ func TestDecisionSectionsAreAbsentWithoutRunOrRepo(t *testing.T) {
 // Prompt budget: a long decision history renders its most recent entries and
 // says what it dropped, so a truncated history never reads as a complete one.
 func TestDecisionSectionBoundsALongHistory(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	var items []string
 	for i := 0; i < maxDecisionLinesPerSection+5; i++ {
@@ -419,6 +434,7 @@ func TestDecisionSectionBoundsALongHistory(t *testing.T) {
 }
 
 func TestBranchDecisionLoaderTruncationIsVisible(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	for i := 0; i < db.MaxBranchDecisionRounds+1; i++ {
 		run, err := f.db.InsertRun(f.repo.ID, "feature", fmt.Sprintf("prior-head-%d", i), "base")
@@ -463,6 +479,7 @@ func TestBranchDecisionLoaderTruncationIsVisible(t *testing.T) {
 }
 
 func TestDecisionSectionBoundsOneOversizedFinding(t *testing.T) {
+	t.Parallel()
 	f := newDecisionFixture(t)
 	findings := `{"findings":[{"id":"huge","severity":"error","description":"` +
 		strings.Repeat("x", maxDecisionSectionBytes*4) + `","action":"ask-user"}]}`
@@ -477,5 +494,299 @@ func TestDecisionSectionBoundsOneOversizedFinding(t *testing.T) {
 	}
 	if !strings.Contains(got, "huge") {
 		t.Fatalf("truncation removed the finding identity:\n%s", got)
+	}
+}
+
+// The decision channel exists so the steps that run after a human rules on
+// review findings cannot silently undo or re-apply what was decided. These
+// tests exercise the real rendered step prompts - not just the section helper
+// - and pin both halves of the contract: the recorded decisions (which
+// findings the human chose to fix or declined, with their instructions) and
+// the explicit instruction to respect them and never revert or undo them.
+const stepDecisionsFindings = `{"findings":[` +
+	`{"id":"chosen-fix","severity":"error","file":"a.go","line":3,` +
+	`"description":"rename the journal field to entry","action":"ask-user",` +
+	`"user_instructions":"rename it to entry, not record"},` +
+	`{"id":"declined-redesign","severity":"warning","file":"b.go","line":9,` +
+	`"description":"redesign the dedup loop entirely","action":"ask-user",` +
+	`"user_instructions":"too risky for this change"}]}`
+
+// recordHumanReviewDecision seeds a review round on the context's run that the
+// human resolved by selecting chosen-fix, leaving declined-redesign as the
+// declined half.
+func recordHumanReviewDecision(t *testing.T, sctx *pipeline.StepContext) {
+	t.Helper()
+	reviewSR, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := stepDecisionsFindings
+	round, err := sctx.DB.InsertStepRound(reviewSR.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["chosen-fix"]`
+	if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// bindStepResult registers the step under test as its own step result so the
+// cross-step decision channel treats the seeded review decision as another
+// step's, exactly as the executor wires it.
+func bindStepResult(t *testing.T, sctx *pipeline.StepContext, stepName types.StepName) {
+	t.Helper()
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, stepName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.StepResultID = sr.ID
+}
+
+// requireRecordedDecisionsInPrompt asserts the rendered agent prompt carries
+// the seeded review decisions with their instructions and the
+// respect-and-never-revert instruction.
+func requireRecordedDecisionsInPrompt(t *testing.T, prompt string) {
+	t.Helper()
+	for _, want := range []string{
+		`review round 1 user chose to fix: {"id":"chosen-fix"`,
+		`"user_instructions":"rename it to entry, not record"`,
+		`review round 1 declined: {"id":"declined-redesign"`,
+		`"user_instructions":"too risky for this change"`,
+		"Do NOT implement them",
+		"A recorded decision SUPERSEDES conflicting user-intent wording",
+		"Never revert, undo, or work around a recorded human decision",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing recorded-decision content %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestDocumentPromptCarriesRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepDocument)
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected one document agent call, got %d", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+}
+
+func TestLintAgentPassPromptCarriesRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepLint)
+
+	if _, err := (&LintStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected one lint agent call, got %d", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+}
+
+func TestLintFixPromptCarriesRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"summary":"fixed lint"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepLint)
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"gofmt drift","action":"auto-fix"}]}`
+
+	if _, err := (&LintStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected one lint fix agent call, got %d", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+}
+
+// Both Test agent turns - the repair turn and the evidence turn - must carry
+// the recorded decisions, since each can change the tree.
+func TestTestPromptsCarryRecordedHumanDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	call := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		call++
+		if call == 1 {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fixed tests"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"ok","scenarios":[{"name":"s","result":"pass","live":true,"evidence":"e","reason":"drove it"}],"verdict":"go","tested":["x"],"artifacts":[],"testing_summary":"ok"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	recordHumanReviewDecision(t, sctx)
+	bindStepResult(t, sctx, types.StepTest)
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"error","description":"failing case","action":"auto-fix"}]}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 2 {
+		t.Fatalf("expected a repair turn and an evidence turn, got %d calls", len(ag.calls))
+	}
+	requireRecordedDecisionsInPrompt(t, ag.calls[0].Prompt)
+	requireRecordedDecisionsInPrompt(t, ag.calls[1].Prompt)
+}
+
+// A step's own earlier gate decisions bind its later rounds just as another
+// step's do: a fix turn must not undo a fix the human chose at this step's
+// earlier gate.
+func TestOwnStepHistoryPromptCarriesNeverRevertClause(t *testing.T) {
+	t.Parallel()
+	f := newDecisionFixture(t)
+	findings := `{"findings":[` +
+		`{"id":"kept-fix","severity":"error","description":"keep the rename","action":"auto-fix"},` +
+		`{"id":"skipped-nit","severity":"warning","description":"style nit","action":"ask-user"}]}`
+	round, err := f.db.InsertStepRound(f.testSR.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["kept-fix"]`
+	if err := f.db.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stepRoundHistorySection(f.testStepContext())
+	if !strings.Contains(got, "user_chose_to_fix:") || !strings.Contains(got, "kept-fix") {
+		t.Fatalf("own-step chose-to-fix entry missing:\n%s", got)
+	}
+	if !strings.Contains(got, "user_chose_to_ignore:") || !strings.Contains(got, "skipped-nit") {
+		t.Fatalf("own-step declined entry missing:\n%s", got)
+	}
+	if !strings.Contains(got, "Do NOT revert or undo fixes the user chose under user_chose_to_fix") {
+		t.Fatalf("missing the never-revert clause for the step's own decisions:\n%s", got)
+	}
+}
+
+// threeFindingsRound is a gate that shows three findings, so a round can fix
+// one, decline one, and leave one for a later decision.
+const threeFindingsRound = `{"findings":[` +
+	`{"id":"R1","severity":"error","description":"the fix the human asked for","action":"ask-user"},` +
+	`{"id":"R2","severity":"warning","description":"the finding the human declined","action":"auto-fix"},` +
+	`{"id":"R3","severity":"warning","description":"the finding nobody ruled on","action":"auto-fix"}]}`
+
+// The decline set is the complement of the selection (PR #790 decision B: no
+// decline list, no column), so a round that fixes R1 renders R2 and R3 as
+// declined - and a later round that fixes R1 again renders the same set.
+func TestRoundHistory_DeclinesRenderAsTheSelectionComplement(t *testing.T) {
+	t.Parallel()
+	f := newDecisionFixture(t)
+	findings := threeFindingsRound
+	round, err := f.db.InsertStepRound(f.testSR.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["R1"]`
+	if err := f.db.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stepRoundHistorySection(f.testStepContext())
+	if !strings.Contains(got, "user_chose_to_fix:") || !strings.Contains(got, "the fix the human asked for") {
+		t.Fatalf("chosen fix missing from the round:\n%s", got)
+	}
+	ignoredBlock := got[strings.Index(got, "user_chose_to_ignore:"):]
+	for _, want := range []string{"the finding the human declined", "the finding nobody ruled on"} {
+		if !strings.Contains(ignoredBlock, want) {
+			t.Fatalf("complement decline %q missing from user_chose_to_ignore:\n%s", want, got)
+		}
+	}
+	if strings.Contains(ignoredBlock, "the fix the human asked for") {
+		t.Fatalf("the chosen fix was rendered as declined:\n%s", got)
+	}
+}
+
+// Approving, skipping, or aborting a later gate declines everything that gate
+// showed - except a finding an earlier round of the same step chose to fix,
+// which keeps that decision. A gate response cannot reverse an applied fix
+// (splitFixResponse refuses --ignore for it), so this is the only rendering
+// that later rounds and later runs can ever see.
+func TestRoundHistory_ApproveAfterAnEarlierFixDoesNotDeclineThatFix(t *testing.T) {
+	t.Parallel()
+	f := newDecisionFixture(t)
+	findings := threeFindingsRound
+	first, err := f.db.InsertStepRound(f.testSR.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chosen := `["R1"]`
+	if err := f.db.SetStepRoundUserDecision(first.ID, &chosen, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.db.InsertStepRound(f.testSR.ID, 2, "auto_fix", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.SetStepRoundDeclined(second.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stepRoundHistorySection(f.testStepContext())
+	secondBlock := got[strings.Index(got, "Round 2 (auto_fix)"):]
+	ignoredBlock := secondBlock[strings.Index(secondBlock, "user_chose_to_ignore:"):]
+	if strings.Contains(ignoredBlock, "the fix the human asked for") {
+		t.Fatalf("an approve re-declined a finding an earlier round chose to fix:\n%s", got)
+	}
+	if !strings.Contains(ignoredBlock, "the finding nobody ruled on") {
+		t.Fatalf("the approve did not decline the findings it actually saw:\n%s", got)
+	}
+}
+
+// A later fix selection that omits an earlier fix keeps it: the omission
+// records nothing, and rendering it as a decline would tell the reviewer to
+// undo work the same human asked for. This is the incident reproduction at
+// render level, with both rounds driven by a human selection.
+func TestRoundHistory_ALaterSelectionNeverRediscardsAnEarlierFix(t *testing.T) {
+	t.Parallel()
+	f := newDecisionFixture(t)
+	findings := threeFindingsRound
+	first, err := f.db.InsertStepRound(f.testSR.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chosen := `["R1"]`
+	if err := f.db.SetStepRoundUserDecision(first.ID, &chosen, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.db.InsertStepRound(f.testSR.ID, 2, "auto_fix", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := `["R2"]`
+	if err := f.db.SetStepRoundUserDecision(second.ID, &later, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stepRoundHistorySection(f.testStepContext())
+	secondBlock := got[strings.Index(got, "Round 2 (auto_fix)"):]
+	ignoredBlock := secondBlock[strings.Index(secondBlock, "user_chose_to_ignore:"):]
+	if strings.Contains(ignoredBlock, "the fix the human asked for") {
+		t.Fatalf("a later omission re-declined an earlier fix:\n%s", got)
+	}
+	if !strings.Contains(ignoredBlock, "the finding nobody ruled on") {
+		t.Fatalf("the later round's complement declines are missing:\n%s", got)
 	}
 }

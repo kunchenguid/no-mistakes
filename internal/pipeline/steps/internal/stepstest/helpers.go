@@ -831,6 +831,22 @@ func FakeCIGlabConflict(t *testing.T, state, checksJSON string, conflict bool) [
 	})
 }
 
+// FakeCIGlabWithReviewComments is FakeCIGlab with the merge request's
+// discussion notes served to the review-comment read. discussionsJSON is the
+// raw JSON the GitLab discussions endpoint returns (an array of discussions,
+// each with its notes).
+func FakeCIGlabWithReviewComments(t *testing.T, state, checksJSON, discussionsJSON string) []string {
+	t.Helper()
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
+	return FakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":               "ci-glab",
+		"FAKE_CLI_STATE":              state,
+		"FAKE_CLI_CHECKS":             checksJSON,
+		"FAKE_CLI_REVIEW_DISCUSSIONS": discussionsJSON,
+	})
+}
+
 func FakeCIGlabWithTrace(t *testing.T, state, checksJSON, trace string) []string {
 	t.Helper()
 	binDir := FakeCLIBinDir(t)

@@ -215,14 +215,15 @@ type ReviewBot struct {
 	// AppSlug is the provider app slug the bot publishes its check under.
 	AppSlug string
 	// Logins are the account logins the bot posts review comments as.
-	Logins []string
+	Logins       []string
+	GitLabLogins []string
 }
 
 // ReviewBots is the registry of supported review bots. Both halves of the
 // integration - check identity and comment authorship - read it, so adding a
 // bot is one entry here.
 var ReviewBots = []ReviewBot{
-	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}},
+	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}, GitLabLogins: []string{"greptileai"}},
 }
 
 // ReviewBotForApp returns the registered review bot that publishes checks
@@ -243,13 +244,20 @@ func ReviewBotForApp(slug string) (ReviewBot, bool) {
 
 // ReviewBotForLogin returns the registered review bot that posts review
 // comments as login.
-func ReviewBotForLogin(login string) (ReviewBot, bool) {
+func ReviewBotForLogin(provider Provider, login string) (ReviewBot, bool) {
 	login = strings.ToLower(strings.TrimSpace(login))
 	if login == "" {
 		return ReviewBot{}, false
 	}
 	for _, bot := range ReviewBots {
-		for _, known := range bot.Logins {
+		var logins []string
+		switch provider {
+		case ProviderGitHub:
+			logins = bot.Logins
+		case ProviderGitLab:
+			logins = bot.GitLabLogins
+		}
+		for _, known := range logins {
 			if strings.EqualFold(known, login) {
 				return bot, true
 			}
@@ -259,8 +267,8 @@ func ReviewBotForLogin(login string) (ReviewBot, bool) {
 }
 
 // IsReviewBotLogin reports whether login belongs to a registered review bot.
-func IsReviewBotLogin(login string) bool {
-	_, ok := ReviewBotForLogin(login)
+func IsReviewBotLogin(provider Provider, login string) bool {
+	_, ok := ReviewBotForLogin(provider, login)
 	return ok
 }
 
@@ -274,6 +282,12 @@ type Capabilities struct {
 	FailedCheckLogs bool
 	MergedProof     bool
 	ReviewComments  bool
+	// ClosingReferences declares that the provider closes issues from a
+	// closing keyword in the pull request body ("Closes #42"), which is what
+	// makes an explicitly requested --closes reference render and verify. False
+	// keeps the step failing closed rather than publishing a reference the
+	// forge would ignore, leaving the issue silently open.
+	ClosingReferences bool
 }
 
 var (

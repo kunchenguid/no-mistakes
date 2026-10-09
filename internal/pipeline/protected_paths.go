@@ -18,6 +18,16 @@ const protectedPathFindingID = "protected-path-refusal"
 // unreadable.
 const ReviewQuestionsUnreadableFindingID = "review-questions-unreadable"
 
+// IsReservedFindingID reports whether an ID carries pipeline-owned semantics.
+func IsReservedFindingID(id string) bool {
+	switch id {
+	case protectedPathFindingID, types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork, ReviewQuestionsUnreadableFindingID:
+		return true
+	default:
+		return false
+	}
+}
+
 // HasProtectedPathRefusal identifies gates that require an explicit response.
 func HasProtectedPathRefusal(findingsJSON string) bool {
 	return hasFindingID(findingsJSON, protectedPathFindingID)

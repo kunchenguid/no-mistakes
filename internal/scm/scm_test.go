@@ -129,6 +129,59 @@ func TestResolveHost_SSHConfigLookup(t *testing.T) {
 	})
 }
 
+func TestResolveHost_CanonicalSSHEndpoints(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote string
+		lookup string
+		want   string
+	}{
+		{"github ssh-over-https", "git@github.com:owner/repo.git", "ssh.github.com", "github.com"},
+		{"github ssh-over-https mixed case", "git@github.com:owner/repo.git", "SSH.GitHub.COM", "github.com"},
+		{"github ssh-over-https with port", "git@github.com:owner/repo.git", "ssh.github.com:443", "github.com"},
+		{"alias to github ssh-over-https", "git@work:owner/repo.git", "ssh.github.com", "github.com"},
+		{"gitlab alt ssh", "git@gitlab.com:group/repo.git", "altssh.gitlab.com", "gitlab.com"},
+		{"ghe alias", "git@ghe:org/repo.git", "ghe.example.com", "ghe.example.com"},
+		{"self-hosted gitlab alias", "git@gitlab-self:group/repo.git", "gitlab.example.com", "gitlab.example.com"},
+		{"unrecognized lookup", "git@mirror:owner/repo.git", "git.example.com", "git.example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveHost(context.Background(), tt.remote, func(context.Context, string) (string, error) {
+				return tt.lookup, nil
+			})
+			if got != tt.want {
+				t.Fatalf("resolveHost() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectProvider_CanonicalSSHEndpoints(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("FORGEJO_BASE_URL", "")
+
+	t.Run("ssh.github.com", func(t *testing.T) {
+		got := detectProvider(context.Background(), "git@github.com:owner/repo.git", func(context.Context, string) (string, error) {
+			return "ssh.github.com", nil
+		})
+		if got != ProviderGitHub {
+			t.Fatalf("detectProvider() = %q, want %q", got, ProviderGitHub)
+		}
+	})
+
+	t.Run("ghe alias", func(t *testing.T) {
+		got := detectProvider(context.Background(), "git@ghe:org/repo.git", func(context.Context, string) (string, error) {
+			return "ghe.example.com", nil
+		})
+		if got != ProviderUnknown {
+			t.Fatalf("detectProvider() = %q, want %q", got, ProviderUnknown)
+		}
+	})
+}
+
 func TestDetectProvider_ConfiguredForgejoBaseResolvesSSHHostAlias(t *testing.T) {
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())

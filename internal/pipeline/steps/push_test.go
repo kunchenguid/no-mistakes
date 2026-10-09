@@ -94,6 +94,7 @@ func TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit(t *testing.
 }
 
 func TestAssertReviewApprovedPushHead(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		approval  string
@@ -177,6 +178,7 @@ func TestAssertReviewApprovedPushHead(t *testing.T) {
 }
 
 func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	err := assertReviewApprovedPushHead(sctx, headSHA)
@@ -186,6 +188,7 @@ func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
 }
 
 func TestAssertReviewApprovedPushHead_UsesStepScopedGit(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, approvedHead := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, approvedHead, config.Commands{})
 	recordReviewApproval(t, sctx, approvedHead)
@@ -1268,6 +1271,7 @@ func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 }
 
 func TestPushStep_MirrorMovesAfterPlanning(t *testing.T) {
+	t.Parallel()
 	for _, descendant := range []bool{true, false} {
 		t.Run(fmt.Sprintf("descendant=%t", descendant), func(t *testing.T) {
 			dir, baseSHA, submittedHead := setupGitRepo(t)

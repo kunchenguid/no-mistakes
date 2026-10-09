@@ -144,7 +144,7 @@ func repoOwner(slug string) string {
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
 
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ReviewComments: true}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ReviewComments: true, ClosingReferences: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {
@@ -236,6 +236,24 @@ func parsePullRequestURL(raw, expectedHost, expectedRepo string) (int, error) {
 	return number, nil
 }
 
+// stdoutOnly runs cmd and returns its stdout alone, so notices a gh wrapper
+// writes to stderr never become part of the data. On failure, detail carries
+// the trimmed stderr, or stdout when stderr is empty.
+func stdoutOnly(cmd *exec.Cmd) (out []byte, detail string, err error) {
+	out, err = cmd.Output()
+	if err == nil {
+		return out, "", nil
+	}
+	detail = strings.TrimSpace(string(out))
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+			detail = stderr
+		}
+	}
+	return out, detail, err
+}
+
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
 	args := []string{"pr", "list", "--head", branch}
 	if strings.TrimSpace(base) != "" {
@@ -248,9 +266,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	args = append(args, "--state", "open", "--json", jsonFields)
 	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.CombinedOutput()
+	out, detail, err := stdoutOnly(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("gh pr list: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh pr list: %s: %w", detail, err)
 	}
 	var prs []struct {
 		Number              int    `json:"number"`
@@ -336,9 +354,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	args = append(args, "--title", content.Title, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
-	out, err := cmd.CombinedOutput()
+	out, detail, err := stdoutOnly(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh pr create: %s: %w", detail, err)
 	}
 	url := strings.TrimSpace(string(out))
 	pr := &scm.PR{URL: url}
@@ -479,12 +497,12 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.CombinedOutput()
+	out, detail, err := stdoutOnly(cmd)
 	if err != nil {
-		if strings.Contains(string(out), "no checks reported") {
+		if strings.Contains(detail, "no checks reported") {
 			out = []byte("[]")
 		} else {
-			return nil, fmt.Errorf("gh pr checks: %s: %w", strings.TrimSpace(string(out)), err)
+			return nil, fmt.Errorf("gh pr checks: %s: %w", detail, err)
 		}
 	}
 	var raw []struct {
@@ -1508,7 +1526,7 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 				continue
 			}
 			for _, raw := range thread.Comments.Nodes {
-				if raw.Author == nil || !scm.IsReviewBotLogin(raw.Author.Login) {
+				if raw.Author == nil || !scm.IsReviewBotLogin(scm.ProviderGitHub, raw.Author.Login) {
 					continue
 				}
 				line := 0

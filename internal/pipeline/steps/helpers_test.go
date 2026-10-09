@@ -261,12 +261,18 @@ func linkTestBinary(t *testing.T, binDir, name string) {
 func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
-	logFile = filepath.Join(t.TempDir(), "gh.log")
+	tmp := t.TempDir()
+	logFile = filepath.Join(tmp, "gh.log")
+	bodyFile := filepath.Join(tmp, "pr-body.md")
+	if err := os.WriteFile(bodyFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	linkTestBinary(t, binDir, "gh")
 	env = fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":   "gh",
-		"FAKE_CLI_LOG":    logFile,
-		"FAKE_CLI_PR_URL": prViewURL,
+		"FAKE_CLI_MODE":         "gh",
+		"FAKE_CLI_LOG":          logFile,
+		"FAKE_CLI_PR_URL":       prViewURL,
+		"FAKE_CLI_PR_BODY_FILE": bodyFile,
 	})
 	return env, logFile
 }
@@ -277,13 +283,19 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 func fakeGHWithBase(t *testing.T, prViewURL, prBase string) (env []string, logFile string) {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
-	logFile = filepath.Join(t.TempDir(), "gh.log")
+	tmp := t.TempDir()
+	logFile = filepath.Join(tmp, "gh.log")
+	bodyFile := filepath.Join(tmp, "pr-body.md")
+	if err := os.WriteFile(bodyFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	linkTestBinary(t, binDir, "gh")
 	env = fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":    "gh",
-		"FAKE_CLI_LOG":     logFile,
-		"FAKE_CLI_PR_URL":  prViewURL,
-		"FAKE_CLI_PR_BASE": prBase,
+		"FAKE_CLI_MODE":         "gh",
+		"FAKE_CLI_LOG":          logFile,
+		"FAKE_CLI_PR_URL":       prViewURL,
+		"FAKE_CLI_PR_BASE":      prBase,
+		"FAKE_CLI_PR_BODY_FILE": bodyFile,
 	})
 	return env, logFile
 }
@@ -448,6 +460,24 @@ func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 		"FAKE_CLI_MR_VIEW_JSON": mrViewJSON,
 	})
 	return env, logFile
+}
+
+// fakeGlabWithMRState is fakeGlab with a stateful merge request: `mr create`
+// and `mr update` record the title and description they were given, and a later
+// `mr view` reads them back, which is what the PR step verifies a published
+// body against. It returns the env, the argv log, and the state file path.
+func fakeGlabWithMRState(t *testing.T) (env []string, logFile, stateFile string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	logFile = filepath.Join(t.TempDir(), "glab.log")
+	stateFile = filepath.Join(t.TempDir(), "mr-state.json")
+	linkTestBinary(t, binDir, "glab")
+	env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":          "glab",
+		"FAKE_CLI_LOG":           logFile,
+		"FAKE_CLI_MR_STATE_FILE": stateFile,
+	})
+	return env, logFile, stateFile
 }
 
 // newTestContextWithDBRecords is like newTestContext but also inserts

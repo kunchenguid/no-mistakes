@@ -87,8 +87,8 @@ func TestAnswerReviewQuestionRecordsBeforeItDecidesToRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answer q1: %v", err)
 	}
-	if !result.OK || result.Open != 1 || result.Resumed {
-		t.Fatalf("q1 result = %+v, want ok with 1 open and not resumed", result)
+	if !result.OK || result.Open != 1 || result.Resumed || result.ClosedLast {
+		t.Fatalf("q1 result = %+v, want ok with 1 open, not resumed and not closing the last", result)
 	}
 	if len(result.OpenIDs) != 1 || result.OpenIDs[0] != "q2" {
 		t.Fatalf("open ids = %v, want [q2]", result.OpenIDs)
@@ -107,6 +107,12 @@ func TestAnswerReviewQuestionRecordsBeforeItDecidesToRelease(t *testing.T) {
 	}
 	if result.Resumed {
 		t.Fatalf("q2 result = %+v, want not resumed: there is no parked gate here", result)
+	}
+	// It closed the last open question all the same, which is what tells axi
+	// answer the run is moving: the gate's resumer releases the park when it
+	// registers.
+	if !result.ClosedLast {
+		t.Fatalf("q2 result = %+v, want closed_last: it closed the last open question", result)
 	}
 	if !strings.Contains(result.Note, "not released") {
 		t.Fatalf("note = %q, want it to say the gate was not released", result.Note)
@@ -360,8 +366,8 @@ func TestAnswerReviewQuestionOrphanAnswerLeavesAParkedGateAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an orphan answer must still be recorded: %v", err)
 	}
-	if result.Resumed {
-		t.Fatal("an answer that closed no open question resumed the reviewer")
+	if result.Resumed || result.ClosedLast {
+		t.Fatalf("an answer that closed no open question resumed the reviewer or claimed to close the last one: %+v", result)
 	}
 	if result.Open != 0 {
 		t.Fatalf("open = %d, want 0", result.Open)
@@ -407,8 +413,8 @@ func TestAnswerReviewQuestionDuplicateAnswerLeavesAParkedGateAlone(t *testing.T)
 	if err != nil {
 		t.Fatalf("a corrected answer must still be recorded: %v", err)
 	}
-	if result.Resumed {
-		t.Fatal("a duplicate answer resumed the reviewer")
+	if result.Resumed || result.ClosedLast {
+		t.Fatalf("a duplicate answer resumed the reviewer or claimed to close the last one: %+v", result)
 	}
 	answers, readErr := os.ReadFile(filepath.Join(dir, reviewqa.AnswersFile))
 	if readErr != nil || !strings.Contains(string(answers), "behind a flag") {
@@ -416,6 +422,36 @@ func TestAnswerReviewQuestionDuplicateAnswerLeavesAParkedGateAlone(t *testing.T)
 	}
 	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatalf("the duplicate answer stole the operator's verdict: %v", err)
+	}
+}
+
+// TestAnswerReviewQuestionClosingAnswerOnAParkedGateResumesAndClosesLast is the
+// ordinary release: the last open question answered while the review is parked
+// resumes it and reports closed_last, so axi answer follows the run.
+func TestAnswerReviewQuestionClosingAnswerOnAParkedGateResumesAndClosesLast(t *testing.T) {
+	m, p, runID, exec := liveParkedGateFixture(t)
+	appendAgentQuestionLine(t, conversationDir(p, runID), `{"id":"q1","question":"keep the legacy route?","options":["keep","remove"]}`)
+
+	result, err := m.HandleAnswerReviewQuestion(runID, "q1", "keep", "captain")
+	if err != nil {
+		t.Fatalf("answer q1: %v", err)
+	}
+	if !result.Resumed || !result.ClosedLast || result.Open != 0 {
+		t.Fatalf("result = %+v, want resumed and closed_last with nothing open", result)
+	}
+
+	// The resumed step re-executes and parks again; approve that park so the
+	// executor finishes.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := exec.Respond(types.StepReview, types.ActionApprove, nil)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resumed review never parked again: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

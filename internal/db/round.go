@@ -10,7 +10,8 @@ const (
 	RoundSelectionSourceAutoFix = "auto_fix"
 	// RoundSelectionSourceUserDeclined records that a human resolved the
 	// round's approval gate without selecting any finding to fix: approve,
-	// skip, or abort. Before this existed, those three resolutions wrote no
+	// skip, or abort, or a fix response that declined every finding the gate
+	// showed (--ignore with no --findings). Before this existed, those three resolutions wrote no
 	// finding-level state at all, so "the human declined every finding" and
 	// "there were no findings" were the same row and no later step or run
 	// could tell them apart. The decline itself is still stored the way a
@@ -159,15 +160,11 @@ func hasSelectedFinding(raw *string) bool {
 // InsertStepRound creates a new round record for a step result. fixSummary may
 // be nil for non-fix rounds or when the agent produced no summary.
 func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, durationMS int64) (*StepRound, error) {
-	return d.InsertStepRoundWithRepair(stepResultID, round, trigger, findingsJSON, fixSummary, false, "", durationMS)
+	return d.InsertStepRoundWithRepair(stepResultID, round, trigger, findingsJSON, fixSummary, false, durationMS)
 }
 
-func (d *DB) InsertStepRoundWithRepair(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, repairPublished bool, startingHeadSHA string, durationMS int64) (*StepRound, error) {
-	var starting *string
-	if startingHeadSHA != "" {
-		starting = &startingHeadSHA
-	}
-	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, starting, nil, nil, nil, repairPublished, durationMS)
+func (d *DB) InsertStepRoundWithRepair(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, repairPublished bool, durationMS int64) (*StepRound, error) {
+	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, nil, nil, nil, nil, repairPublished, durationMS)
 }
 
 // InsertReviewStepRound persists a review round's examined commit as a
@@ -244,7 +241,9 @@ func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source
 // findings were selected for fix, how the selection was made, and the merged
 // finding list dispatched to the fix agent. The same empty-string versus
 // DeclinedSelectionJSON distinction described on SetStepRoundSelection
-// applies here.
+// applies here. The decline set is derived on read as the complement of the
+// selection (minus any finding an earlier user round of the same step chose to
+// fix), never stored, so there is no decline column to keep in step with it.
 func (d *DB) SetStepRoundUserDecision(id string, selectedFindingIDs *string, source string, userFindingsJSON *string) error {
 	var selectionSource *string
 	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {

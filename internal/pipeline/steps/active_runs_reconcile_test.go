@@ -31,6 +31,7 @@ func (s reconcileEnvStep) ReconcileApprovalGate(ctx *pipeline.StepContext) (bool
 }
 
 func TestCIGateReconciliationClearsActiveRunAfterPRBecomesTerminal(t *testing.T) {
+	t.Parallel()
 	for _, terminalState := range []string{"MERGED", "CLOSED"} {
 		t.Run(terminalState, func(t *testing.T) {
 			database, p, run, repo, dir, statePath, env := setupCIGateReconcileTest(t)
@@ -71,6 +72,7 @@ func TestCIGateReconciliationClearsActiveRunAfterPRBecomesTerminal(t *testing.T)
 }
 
 func TestCIGateReconciliationPreservesOpenErrorAndUnknownStates(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"OPEN", "ERROR", "UNKNOWN"} {
 		t.Run(state, func(t *testing.T) {
 			database, p, run, repo, dir, statePath, env := setupCIGateReconcileTest(t)

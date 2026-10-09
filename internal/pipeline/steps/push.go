@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,7 +39,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			return nil, fmt.Errorf("prepare formatter dependencies: %w", err)
 		}
 		sctx.Log(fmt.Sprintf("running formatter: %s", fmtCmd))
-		output, exitCode, err := runStepShellCommand(sctx, fmtCmd)
+		output, exitCode, err := runRepositoryCommand(sctx, "format", fmtCmd)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: format command failed: %v: %s", err, output))
 		} else if exitCode != 0 {
@@ -74,18 +73,6 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	headBeingPushed, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
-	}
-	needsReview, err := recordedDecisionsNeedReview(sctx, headBeingPushed)
-	if err != nil {
-		return nil, err
-	}
-	if needsReview {
-		if err := recordAgentFixHead(sctx, s.Name(), headBeingPushed); err != nil {
-			return nil, err
-		}
-		sctx.Log("later changes or decisions require independent Review of recorded fix decisions before publication")
-		findings, _ := json.Marshal(Findings{Summary: recordedDecisionReviewRequest})
-		return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: string(findings)}, nil
 	}
 	// This run's own review/test/document have already completed by now (see
 	// AllSteps' fixed order), so these are honest statuses to attest for the
@@ -150,8 +137,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return err
 	}
 	// Prove the private mirror is safe to reconcile BEFORE anything is
-	// published: outside the exact run-owned-head exception, unproven private
-	// content must refuse while the branch is intact. Applying the plan is deferred
+	// published: outside the exact run-owned-head exception and the
+	// recovery-anchor preservation credit, unproven private content must
+	// refuse while the branch is intact. Applying the plan is deferred
 	// until the upstream push is verified, because a refused or failed push is
 	// a designed outcome and a gate left with no branch ref would strand
 	// `rerun` and branch-sync recovery on a branch that never published.

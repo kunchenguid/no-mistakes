@@ -31,6 +31,7 @@ import (
 // anchor integrity requirement - sctx.Run.HeadSHA at the commit point is the
 // reviewed head and is NOT corrupted by the out-of-band reset.
 func TestCommitAgentFixes_RefusesToCommitOnOutOfBandResetHead(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -99,6 +100,7 @@ func TestCommitAgentFixes_RefusesToCommitOnOutOfBandResetHead(t *testing.T) {
 // The recorded head is a descendant of the live HEAD, not an ancestor, so the
 // guard must still refuse - a backward reset would also silently drop the fix.
 func TestCommitAgentFixes_RefusesOnBackwardReset(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -174,6 +176,7 @@ func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
 // commits its own fixes: the recorded head stays an ancestor, so committing is
 // allowed.
 func TestCommitAgentFixes_AllowsForwardAgentCommit(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -201,6 +204,7 @@ func TestCommitAgentFixes_AllowsForwardAgentCommit(t *testing.T) {
 }
 
 func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
+	t.Parallel()
 	postReviewSteps := []pipeline.Step{
 		&TestStep{},
 		&DocumentStep{},
@@ -273,6 +277,7 @@ func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
 }
 
 func TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry(t *testing.T) {
+	t.Parallel()
 	postReviewSteps := []pipeline.Step{
 		&TestStep{},
 		&DocumentStep{},
@@ -307,6 +312,7 @@ func TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry(t *testing.T) {
 }
 
 func TestCIGateReconciliationRefusesHeadClobberAtEntry(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, reviewedHead := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "codex"}, dir, baseSHA, reviewedHead, config.Commands{})
 	gitCmd(t, dir, "reset", "--hard", baseSHA)
@@ -327,6 +333,7 @@ func TestCIGateReconciliationRefusesHeadClobberAtEntry(t *testing.T) {
 }
 
 func TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, recordedHead := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "codex"}, dir, baseSHA, recordedHead, config.Commands{})
 	postReviewSteps := []types.StepName{
@@ -363,6 +370,7 @@ func TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads(t *testing.T) 
 // reviewed head (sctx.Run.HeadSHA), NOT on the mutable worktree, and an
 // out-of-band reset leaves that anchor intact so the guard still fires.
 func TestAssertPipelineHeadContinuity_AnchorIsRecordedReviewedHead(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 

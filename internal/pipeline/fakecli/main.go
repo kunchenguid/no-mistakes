@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
 )
 
 // Logging and stateful PR readback consume the same command stdin, not two
@@ -23,11 +25,25 @@ import (
 var readFakeBody = sync.OnceValues(func() ([]byte, error) { return io.ReadAll(os.Stdin) })
 
 func main() {
+	// The fake provider plugin is selected by executable name, not by
+	// FAKE_CLI_MODE: that variable is shared by every fake gh/git in the same
+	// step environment.
+	if isFakeProviderPlugin(os.Args[0]) {
+		os.Exit(fakeplugin.Main(os.Args[1:], os.Stdin, os.Stdout, os.Getenv(fakeplugin.EnvState), os.Getenv(fakeplugin.EnvLog)))
+	}
 	mode := os.Getenv("FAKE_CLI_MODE")
 	if mode == "" {
 		os.Exit(1)
 	}
 	handleFakeCLI(mode)
+}
+
+// isFakeProviderPlugin ignores the extension and its case: Windows resolves
+// a PATH lookup through PATHEXT, which yields an upper-case ".EXE".
+func isFakeProviderPlugin(arg0 string) bool {
+	base := filepath.Base(arg0)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	return strings.EqualFold(base, fakeplugin.ExecutableName)
 }
 
 func handleFakeCLI(mode string) {
@@ -181,6 +197,9 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		if os.Getenv("FAKE_CLI_PR_CREATE_EMPTY") == "1" {
+			os.Exit(0)
+		}
 		fakeGHStorePRBody(args)
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
@@ -410,16 +429,71 @@ func fakeGlabHandler(args []string) {
 			fmt.Println(mrViewJSON)
 			os.Exit(0)
 		}
+		if state, ok := fakeGlabMRState(); ok {
+			fmt.Println(state)
+			os.Exit(0)
+		}
 		os.Exit(1)
 	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "update" {
+		fakeGlabRecordMR(args, 0)
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "create" {
+		fakeGlabRecordMR(args, 99)
 		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+// fakeGlabRecordMR keeps a created or updated merge request's title and
+// description in FAKE_CLI_MR_STATE_FILE, so a later `glab mr view` - which the
+// PR step uses to verify the body it published - reads back what was published.
+// A flag the update omits keeps the recorded value, mirroring GitLab's
+// partial-update semantics. State is only kept when the variable is set;
+// without it the handler answers statically from FAKE_CLI_MR_VIEW_JSON.
+func fakeGlabRecordMR(args []string, iid int) {
+	path := os.Getenv("FAKE_CLI_MR_STATE_FILE")
+	if path == "" {
+		return
+	}
+	record := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &record)
+	}
+	if value, ok := fakeCLIFlagValue(args, "--title"); ok {
+		record["title"] = value
+	}
+	if value, ok := fakeCLIFlagValue(args, "--description"); ok {
+		record["description"] = value
+	}
+	if iid != 0 {
+		record["iid"] = iid
+	}
+	record["web_url"] = fmt.Sprintf("https://gitlab.com/test/repo/-/merge_requests/%v", record["iid"])
+	data, err := json.Marshal(record)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// fakeGlabMRState renders the recorded merge request as `glab mr view` would.
+func fakeGlabMRState() (string, bool) {
+	path := os.Getenv("FAKE_CLI_MR_STATE_FILE")
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "", false
+	}
+	return string(data), true
 }
 
 func fakeCLIFlagValue(args []string, flag string) (string, bool) {
@@ -797,6 +871,17 @@ func fakeCIGlabHandler(args []string) {
 	}
 	if strings.Contains(joined, "ci trace") {
 		fmt.Println(traceOutput)
+		os.Exit(0)
+	}
+	// The review-comment read asks for the merge request's discussion notes.
+	// FAKE_CLI_REVIEW_DISCUSSIONS is the raw array the discussions endpoint
+	// returns; an unset value answers an MR with no discussions.
+	if strings.Contains(joined, "/discussions") {
+		discussions := os.Getenv("FAKE_CLI_REVIEW_DISCUSSIONS")
+		if discussions == "" {
+			discussions = "[]"
+		}
+		fmt.Println(discussions)
 		os.Exit(0)
 	}
 	os.Exit(1)
