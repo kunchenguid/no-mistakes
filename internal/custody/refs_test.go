@@ -56,6 +56,23 @@ func TestPreserveRecoveryHeadRejectsNonCommitAnchorWithoutOverwriting(t *testing
 	}
 }
 
+func TestPreserveRecoveryHeadRejectsAnnotatedTagAnchorWithoutOverwriting(t *testing.T) {
+	repo, head := recoveryTestRepo(t)
+	gitRun(t, repo, "tag", "-a", "recovery-tag", "-m", "annotated evidence", head)
+	tagObject := gitOutput(t, repo, "rev-parse", "refs/tags/recovery-tag")
+	gitRun(t, repo, "update-ref", RecoveryRef("run-1"), tagObject)
+
+	if err := PreserveRecoveryHead(context.Background(), repo, "run-1", head); err == nil {
+		t.Fatal("annotated-tag recovery anchor was accepted as direct commit evidence")
+	}
+	if got := gitOutput(t, repo, "rev-parse", RecoveryRef("run-1")); got != tagObject {
+		t.Fatalf("annotated-tag anchor overwritten: got %s, want raw tag %s", got, tagObject)
+	}
+	if got := gitOutput(t, repo, "rev-parse", RecoveryRef("run-1")+"^{commit}"); got != head {
+		t.Fatalf("test tag no longer peels to expected commit: got %s, want %s", got, head)
+	}
+}
+
 func TestPreserveRecoveryAnchorRejectsDanglingSymbolicRefWithoutCreatingTarget(t *testing.T) {
 	repo, head := recoveryTestRepo(t)
 	ref := RecoveryLocalRef("run-1")

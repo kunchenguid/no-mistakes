@@ -1648,6 +1648,43 @@ func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
 	}
 }
 
+func TestTerminalHeadAdoptionAuthorizationIsExactAndCompletionIsConditional(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/terminal-adoption", "git@github.com:user/terminal-adoption.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "caller", "base")
+	if err := d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, "preserved"); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = d.GetRun(run.ID)
+	auth := TerminalHeadAdoptionAuthorization{
+		RepositoryID: repo.ID, Branch: run.Branch, RunID: run.ID,
+		CallerHeadSHA: "caller", PreservedHeadSHA: "preserved",
+		Status: run.Status, TerminalHeadVerifiedAt: *run.TerminalHeadVerifiedAt,
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if authorized, err := d.AuthorizeTerminalHeadAdoption(auth); err != nil || !authorized {
+			t.Fatalf("authorize attempt %d = %t, %v", attempt+1, authorized, err)
+		}
+	}
+	conflict := auth
+	conflict.PreservedHeadSHA = "different"
+	if authorized, err := d.AuthorizeTerminalHeadAdoption(conflict); err != nil || authorized {
+		t.Fatalf("conflicting authorization = %t, %v", authorized, err)
+	}
+	if completed, err := d.CompleteTerminalHeadAdoption(conflict); err != nil || completed {
+		t.Fatalf("conflicting completion = %t, %v", completed, err)
+	}
+	if completed, err := d.CompleteTerminalHeadAdoption(auth); err != nil || !completed {
+		t.Fatalf("exact completion = %t, %v", completed, err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil || got.CustodyReturnedAt == nil || got.TerminalAdoptionAuthorizedAt == nil ||
+		got.TerminalAdoptionCallerHeadSHA == nil || *got.TerminalAdoptionCallerHeadSHA != auth.CallerHeadSHA ||
+		got.TerminalAdoptionPreservedHeadSHA == nil || *got.TerminalAdoptionPreservedHeadSHA != auth.PreservedHeadSHA {
+		t.Fatalf("terminal adoption row = %#v, err %v", got, err)
+	}
+}
+
 // TestRunGatesArePinnedAndDefaultToNone covers the durable half of a run's
 // pinned gate list: an untouched run reports no pin (the bare core pipeline,
 // which is the only sequence a row written before this column existed can have
