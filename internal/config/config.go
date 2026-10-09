@@ -682,6 +682,10 @@ type CIRaw struct {
 	RevalidateRepairs *bool `yaml:"revalidate_repairs"`
 	// ReviewBotComments is "" when unset; see CI.ReviewBotComments.
 	ReviewBotComments string `yaml:"review_bot_comments"`
+	// Instructions are repository-specific rules for the CI-fix agent, such
+	// as a check that only fails on one platform or a command that must not
+	// be run. Repository-only like test.instructions: see CI.Instructions.
+	Instructions string `yaml:"instructions"`
 }
 
 // CI holds the resolved CI-step settings.
@@ -733,6 +737,13 @@ type CI struct {
 	// while leaving an unresolved comment, most often on the pipeline's own
 	// CI repair commit, which no human has reviewed yet.
 	ReviewBotComments string
+	// Instructions is the repository's guidance for the CI-fix agent, injected
+	// into the CI repair prompt only. It comes from the trusted default-branch
+	// copy (the whole ci block is trusted-only) and from the repository alone,
+	// never global config: like test.instructions it describes one
+	// repository's checks, which a machine-wide value has no repository to
+	// describe.
+	Instructions string
 }
 
 // RebaseRaw is the YAML representation of rebase-step settings.
@@ -3551,6 +3562,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	// word on how many workflow runs their project is billed for.
 	applyCIOverrides(&ci, &global.CI)
 	applyCIOverrides(&ci, &repo.CI)
+	ci.Instructions = strings.TrimSpace(repo.CI.Instructions)
 
 	// The repo value is trusted-only (EffectiveRepoConfig sourced it from the
 	// default branch), so a maintainer's chosen integration shape survives a

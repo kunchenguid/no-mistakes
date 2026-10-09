@@ -98,6 +98,12 @@ type PR struct {
 	// authoritative once a PR exists and protects resumed CI repair from a
 	// later configuration change.
 	BaseBranch string
+	// PollHeadSHA is the head commit the current CI poll already read from the
+	// provider (see PRPollSnapshotter). When set, GetChecks scopes check
+	// discovery to it instead of re-reading the head, so one poll costs one PR
+	// read. The CI monitor resets it at the start of every poll; a caller that
+	// is not mid-poll leaves it empty.
+	PollHeadSHA string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -379,6 +385,23 @@ type MergedProof struct {
 // merged, because merge and monitor polling can race.
 type MergedProofHost interface {
 	GetMergedProof(ctx context.Context, pr *PR, expectedHead string) (MergedProof, error)
+}
+
+// PRPollSnapshot is what one CI poll needs to know about the PR itself.
+type PRPollSnapshot struct {
+	State     PRState
+	Mergeable MergeableState
+	// HeadSHA is the PR's current head commit; empty when the provider did
+	// not report one.
+	HeadSHA string
+}
+
+// PRPollSnapshotter is implemented by hosts that can answer the CI poll's PR
+// state, mergeability, and head reads with a single request. The CI monitor
+// prefers it over GetPRState plus GetMergeableState plus a head read per
+// GetChecks, which GitHub turned into four requests per poll.
+type PRPollSnapshotter interface {
+	GetPRPollSnapshot(ctx context.Context, pr *PR) (PRPollSnapshot, error)
 }
 
 // Host is the provider-agnostic interface to a PR-hosting service.
