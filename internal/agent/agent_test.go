@@ -1423,7 +1423,7 @@ func TestValidateStructuredOutput_ReportsTheFailingSchemaField(t *testing.T) {
 		{"unknown field is named by its key", `{"findings": [], "risk_rationale": "r", "notes": 1}`, "notes", `JSON output contains unknown field "notes"`},
 		{"missing top-level field", `{"findings": []}`, "risk_rationale", `JSON output missing required field "risk_rationale"`},
 		{"missing nested field drops the index", `{"findings": [{"review_scope": "source"}, {}], "risk_rationale": "r"}`, "findings.review_scope", `JSON output findings[1] missing required field "review_scope"`},
-		{"invalid nested field drops the index", `{"findings": [{"review_scope": "other"}], "risk_rationale": "r"}`, "findings.review_scope", "JSON output findings[0].review_scope must match one of the allowed values"},
+		{"invalid nested field drops the index", `{"findings": [{"review_scope": "other"}], "risk_rationale": "r"}`, "findings.review_scope", `JSON output findings[0].review_scope must match one of the allowed values "source", "tests"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateStructuredOutput(json.RawMessage(tc.output), schema)

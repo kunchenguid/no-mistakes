@@ -570,7 +570,7 @@ func TestOmpAgent_ParsesRealStreamShape(t *testing.T) {
 	if pp.model != "deepseek-v4.1-flash" || pp.provider != "vibeproxy" {
 		t.Errorf("model/provider = %q/%q", pp.model, pp.provider)
 	}
-	if pp.usage.InputTokens != 11 || pp.usage.CacheReadTokens != 7 {
+	if pp.usage.InputTokens != 18 || pp.usage.CacheReadTokens != 7 {
 		t.Errorf("usage = %+v", pp.usage)
 	}
 	if len(chunks) != 1 || chunks[0] != "hel" {

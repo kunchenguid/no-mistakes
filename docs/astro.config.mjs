@@ -46,6 +46,7 @@ export default defineConfig({
             { label: "Setup Wizard", slug: "guides/setup-wizard" },
             { label: "Using the TUI", slug: "guides/tui" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
+            { label: "Fork CI", slug: "guides/fork-ci" },
           ],
         },
         {

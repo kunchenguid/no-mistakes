@@ -1012,8 +1012,11 @@ func resolveReviewBaseSHA(ctx context.Context, sctx *pipeline.StepContext) (stri
 	if strings.TrimSpace(baseBranch) == "" {
 		return "", fmt.Errorf("review base branch is unset")
 	}
-	if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
-		return "", fmt.Errorf("fetch review base origin/%s: %w", baseBranch, err)
+	// Eval replay pins origin/<base> in an isolated worktree with no remote.
+	if !sctx.EvalReplay {
+		if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
+			return "", fmt.Errorf("fetch review base origin/%s: %w", baseBranch, err)
+		}
 	}
 	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, baseBranch)
 	if baseSHA == "" {

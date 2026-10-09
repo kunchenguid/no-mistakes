@@ -79,15 +79,19 @@ type StaleBranchRefusal struct {
 }
 
 func (r *StaleBranchRefusal) Error() string {
+	details := strings.Join(r.AtRisk, "; ")
+	if len(r.Satisfiers) > 0 {
+		details += ". Clears on any of: " + joinSatisfiers(r.Satisfiers)
+	}
 	if condition := r.Condition(); condition != "" {
 		return fmt.Sprintf(
 			"refusing to reconcile private mirror ref %s: %s; %d private commit(s) contain content absent from live head %s: %s",
-			r.BranchRef, condition, len(r.AtRisk), r.LiveHead, strings.Join(r.AtRisk, "; ")+". Clears on any of: "+joinSatisfiers(r.Satisfiers),
+			r.BranchRef, condition, len(r.AtRisk), r.LiveHead, details,
 		)
 	}
 	return fmt.Sprintf(
 		"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s",
-		r.BranchRef, len(r.AtRisk), r.LiveHead, strings.Join(r.AtRisk, "; ")+". Clears on any of: "+joinSatisfiers(r.Satisfiers),
+		r.BranchRef, len(r.AtRisk), r.LiveHead, details,
 	)
 }
 

@@ -1,0 +1,80 @@
+name: CI
+
+# Before registering a runner, enforce the repository-wide Actions actor
+# policy documented in docs/src/content/docs/guides/fork-ci.md. The job guard
+# alone cannot stop a fork from modifying another workflow's runs-on labels.
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - .release-please-manifest.json
+      - CHANGELOG.md
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOMAXPROCS: '4'
+
+jobs:
+  check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, king-server, no-mistakes]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Check generated skill and vet
+        run: make lint
+
+  test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, king-server, no-mistakes]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+      - name: Full Linux race suite
+        run: go test -race ./... -p 2 -timeout 25m
+      - name: Build Linux CLI
+        run: go build -o bin/no-mistakes ./cmd/no-mistakes
+      - name: Cross-compile desktop CLI targets
+        run: |
+          set -eu
+          for target in darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 linux/arm64; do
+            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build -o "$RUNNER_TEMP/no-mistakes-${target%/*}-${target#*/}" ./cmd/no-mistakes
+          done
+
+  e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, king-server, no-mistakes]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+      - name: End-to-end journeys with temporary daemon cleanup
+        run: make e2e
