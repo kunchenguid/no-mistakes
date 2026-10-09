@@ -45,18 +45,19 @@ var retryAfterPattern = regexp.MustCompile(`(?i)retry[- ]after:?\s*(\d+)`)
 
 // secondaryRateLimitWait reports whether output is a secondary-rate-limit
 // refusal, and how long GitHub asked to wait (zero when it did not say).
-// A Retry-After alone also qualifies, since only a limit sends one.
+// A Retry-After is read only once a marker has matched.
 func secondaryRateLimitWait(output string) (wait time.Duration, ok bool) {
 	lower := strings.ToLower(output)
-	if m := retryAfterPattern.FindStringSubmatch(output); m != nil {
-		if secs, err := strconv.Atoi(m[1]); err == nil && secs >= 0 {
-			return time.Duration(secs) * time.Second, true
-		}
-	}
 	for _, marker := range rateLimitMarkers {
-		if strings.Contains(lower, marker) {
-			return 0, true
+		if !strings.Contains(lower, marker) {
+			continue
 		}
+		if m := retryAfterPattern.FindStringSubmatch(output); m != nil {
+			if secs, err := strconv.Atoi(m[1]); err == nil && secs >= 0 {
+				return time.Duration(secs) * time.Second, true
+			}
+		}
+		return 0, true
 	}
 	return 0, false
 }

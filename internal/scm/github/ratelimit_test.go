@@ -26,7 +26,9 @@ func TestSecondaryRateLimitWait(t *testing.T) {
 		{"rest secondary limit", secondaryLimitStderr, true, 0},
 		{"graphql already exceeded", "GraphQL: API rate limit already exceeded for user ID 229287877.", true, 0},
 		{"abuse detection", "You have triggered an abuse detection mechanism", true, 0},
-		{"retry-after header", "HTTP 403\nRetry-After: 17", true, 17 * time.Second},
+		{"retry-after header", "HTTP 403: You have exceeded a secondary rate limit\nRetry-After: 17", true, 17 * time.Second},
+		{"retry-after without a marker is not a limit", "HTTP 503\nRetry-After: 17", false, 0},
+		{"retry after sentence without a marker", "service unavailable, retry after 30 seconds", false, 0},
 		{"retry after sentence", "secondary rate limit, retry after 9 seconds", true, 9 * time.Second},
 		{"permission 403 is not a limit", "gh: Resource not accessible by integration (HTTP 403)", false, 0},
 		{"plain 429 without a marker", "HTTP 429", false, 0},
@@ -135,7 +137,7 @@ func TestRunReadHonoursRetryAfter(t *testing.T) {
 	t.Parallel()
 
 	f := &sequenceFactory{seq: []githubTestResponse{
-		{stderr: "HTTP 429\nRetry-After: 7", code: 1},
+		{stderr: secondaryLimitStderr + "\nRetry-After: 7", code: 1},
 		{stdout: "ok"},
 	}}
 	var waits []time.Duration
@@ -154,7 +156,7 @@ func TestRunReadDoesNotRetryAboveTheWaitCap(t *testing.T) {
 	t.Parallel()
 
 	f := &sequenceFactory{seq: []githubTestResponse{
-		{stderr: "HTTP 403\nRetry-After: 3600", code: 1},
+		{stderr: secondaryLimitStderr + "\nRetry-After: 3600", code: 1},
 		{stdout: "ok"},
 	}}
 	var waits []time.Duration
