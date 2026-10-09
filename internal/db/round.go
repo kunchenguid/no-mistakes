@@ -365,7 +365,7 @@ func (d *DB) RecordBoundResponseDecision(decision BoundResponseDecision) (bool, 
 				WHERE current.id = step_rounds.step_result_id AND current.id = ?
 					AND current.step_name = ? AND current.status IN (?, ?)
 					AND run.id = ? AND run.repo_id = ? AND run.branch = ? AND run.head_sha = ?
-					AND run.status = ? AND run.awaiting_agent_since IS NOT NULL
+					AND run.status = ?
 					AND run.pr_url IS NOT NULL AND run.last_pushed_sha = run.head_sha
 					AND NOT EXISTS (
 						SELECT 1 FROM step_results required

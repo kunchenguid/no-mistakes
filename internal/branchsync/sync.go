@@ -1635,11 +1635,15 @@ func reviewedHeadProvesEquivalentTarget(ctx context.Context, dir, local, reviewe
 //     back without resetting the caller's index; an edit to a path the move
 //     does not touch is simply carried across.
 //
-// A crash between the two leaves the branch at the preserved head with the
-// working tree still holding the pre-recovery content, which reads as ordinary
-// uncommitted changes and loses nothing: containment was proven before the move
-// and the pre-recovery head stays anchored. Custody is stamped only after the
-// whole move is verified.
+// A crash after the compare-and-swap leaves the branch at the preserved head in
+// one of two shapes. Before the first checkout, HEAD is still attached and the
+// working tree holds the pre-recovery content, which reads as ordinary
+// uncommitted changes. Between the two checkouts, HEAD is detached at the
+// pre-recovery head; ordinary --recover refuses detached HEAD, so the operator
+// re-attaches with `git checkout <branch>`. Terminal-head adoption resumes both
+// shapes itself (resumeInterruptedTerminalHeadAdoption). Neither loses anything:
+// containment was proven before the move and the pre-recovery head stays
+// anchored. Custody is stamped only after the whole move is verified.
 func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, containmentProven bool, finish func(context.Context, *db.Run, bool) State) State {
 	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-recovery-hooks-")
 	if err != nil {

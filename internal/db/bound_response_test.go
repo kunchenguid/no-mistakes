@@ -123,7 +123,7 @@ func TestRecordBoundResponseDecisionRefusesStaleOrIneligibleEvidenceWithoutMutat
 			}
 		}},
 		{name: "not parked", mutate: func(t *testing.T, f *boundResponseFixture) {
-			if err := f.database.ClearRunAwaitingAgent(f.run.ID); err != nil {
+			if err := f.database.UpdateStepStatus(f.ci.ID, types.StepStatusRunning); err != nil {
 				t.Fatal(err)
 			}
 		}},
