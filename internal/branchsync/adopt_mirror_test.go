@@ -144,6 +144,34 @@ func TestAdoptTerminalHeadReplaySettlesMirrorLeftByEarlierAdoption(t *testing.T)
 	assertNextRunMirrorReady(t, f)
 }
 
+// TestAdoptTerminalHeadReplayRefusesAMovedLaneWithoutDenyingCustody keeps the
+// replay of a completed adoption fail-closed against a lane someone else moved
+// while reporting accurately that custody was already returned.
+func TestAdoptTerminalHeadReplayRefusesAMovedLaneWithoutDenyingCustody(t *testing.T) {
+	t.Parallel()
+
+	f := newStaleMirrorAdoptionFixture(t)
+	request := terminalHeadAdoptionRequest(f)
+	if state := f.service.AdoptTerminalHead(f.ctx, request); !state.Recovered {
+		t.Fatalf("adoption = %#v", state)
+	}
+	mustRun(t, f.gate, "update-ref", "refs/heads/"+f.run.Branch, f.base, f.preserved)
+
+	replay := f.service.AdoptTerminalHead(f.ctx, request)
+	if replay.Recovered || replay.Changed || replay.Safety != "blocked_adopt_terminal_mirror_mismatch" {
+		t.Fatalf("replay against a moved lane = %#v", replay)
+	}
+	if got := f.mirrorLane(); got != f.base {
+		t.Fatalf("replay moved the independently moved lane to %s", got)
+	}
+	if strings.Contains(replay.Error, "custody was not returned") || !strings.Contains(replay.Error, "custody was already recorded") {
+		t.Fatalf("replay refusal misreports custody: %q", replay.Error)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("replay refusal cleared the recorded custody return")
+	}
+}
+
 func TestAdoptTerminalHeadMirrorLaneShapes(t *testing.T) {
 	t.Parallel()
 
