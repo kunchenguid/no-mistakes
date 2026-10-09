@@ -742,6 +742,132 @@ func TestReconcileStaleBranchRebasedAcrossContextDrift(t *testing.T) {
 	}
 }
 
+// TestReconcileStaleBranchContextDriftThenLaterEdit covers the field case from
+// PR #1238: a rebase gave the private commits' copies different stable patch
+// IDs because the new base edited nearby context, and a later live commit then
+// edited the copied lines, so the direct merge conflicts and no live patch
+// matches. The rebased copy on first-parent history still passes the direct
+// proof, so every private commit survives and none is at risk. A later live
+// commit that instead drops the copied lines while a second private commit's
+// content never reached live still refuses, naming the whole private-only range.
+func TestReconcileStaleBranchContextDriftThenLaterEdit(t *testing.T) {
+	for _, later := range []string{"edited", "dropped"} {
+		t.Run(later, func(t *testing.T) {
+			work := initReconcileRepo(t)
+			commit := func(name, content, message string) string {
+				t.Helper()
+				writeReconcileFile(t, work, name, content)
+				reconcileGit(t, work, "add", "-A")
+				reconcileGit(t, work, "commit", "-m", message)
+				return reconcileGit(t, work, "rev-parse", "HEAD")
+			}
+			base := commit("widget.txt", "a\nb\nc\nd\ne\nf\ng\n", "widget")
+			firstPrivate := commit("widget.txt", "a\nb\nc\nd\ne\nNEW\nf\ng\n", "feat: widget line")
+			privateHead := commit("widget.txt", "a\nb\nc\nd\ne\nNEW\nf\ng\nMORE\n", "feat: widget tail")
+			reconcileGit(t, work, "checkout", "--detach", base)
+			commit("widget.txt", "a\nb\nC\nd\ne\nf\ng\n", "main edits nearby")
+			rebased := commit("widget.txt", "a\nb\nC\nd\ne\nNEW\nf\ng\n", "feat: widget line, rebased")
+			commit("widget.txt", "a\nb\nC\nd\ne\nNEW\nf\ng\nMORE\n", "feat: widget tail, rebased")
+			liveHead := commit("widget.txt", "a\nb\nC\nd\ne\nNEWER\nf\ng\nMORE\n", "fix: widget line")
+			if later == "dropped" {
+				reconcileGit(t, work, "checkout", "--detach", rebased)
+				liveHead = commit("widget.txt", "a\nb\nC\nd\ne\nNEWER\nf\ng\n", "fix: widget line, tail never landed")
+			}
+
+			patchID := func(commit string) string {
+				t.Helper()
+				cmd := exec.Command("sh", "-c", "git -C \"$1\" diff-tree -p \"$2\" | git patch-id --stable", "sh", work, commit)
+				out, err := cmd.Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return strings.Fields(strings.TrimSpace(string(out)))[0]
+			}
+			if patchID(firstPrivate) == patchID(rebased) {
+				t.Fatal("fixture must give the rebased copy different context")
+			}
+			if _, err := reconcileGitAllowFail(work, "merge-tree", "--write-tree", liveHead, privateHead); err == nil {
+				t.Fatal("fixture must make the direct merge conflict")
+			}
+
+			gateDir := filepath.Join(t.TempDir(), "gate.git")
+			reconcileGit(t, "", "init", "--bare", gateDir)
+			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			if later == "dropped" {
+				if err == nil || result.Reconciled || !strings.Contains(err.Error(), firstPrivate) || !strings.Contains(err.Error(), privateHead) {
+					t.Fatalf("dropped content was reconciled or the whole range was not named: result=%+v err=%v", result, err)
+				}
+				if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
+					t.Fatalf("refusal moved private ref: %s", got)
+				}
+				return
+			}
+			if err != nil || !result.Reconciled {
+				t.Fatalf("surviving rebased copies across context drift and a later edit were refused: result=%+v err=%v", result, err)
+			}
+			if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag); got != privateHead {
+				t.Fatalf("archive = %s, want %s", got, privateHead)
+			}
+		})
+	}
+}
+
+// TestReconcileStaleBranchSurvivalPointPastTheBoundFailsClosed places the only
+// first-parent survival point for a drifted, later-edited private commit
+// exactly at and just past maxSurvivalCandidates. Inside the bound it
+// reconciles; past it the proof fails closed and the whole private-only range
+// is refused with the private ref untouched.
+func TestReconcileStaleBranchSurvivalPointPastTheBoundFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		later     int
+		reconcile bool
+	}{
+		{name: "inside", later: maxSurvivalCandidates - 2, reconcile: true},
+		{name: "past", later: maxSurvivalCandidates - 1, reconcile: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := initReconcileRepo(t)
+			commit := func(content, message string) string {
+				t.Helper()
+				writeReconcileFile(t, work, "widget.txt", content)
+				reconcileGit(t, work, "add", "-A")
+				reconcileGit(t, work, "commit", "-q", "-m", message)
+				return reconcileGit(t, work, "rev-parse", "HEAD")
+			}
+			base := commit("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n", "widget")
+			privateHead := commit("a\nb\nc\nd\ne\nf\ng\nNEW\nh\ni\nj\n", "feat: widget line")
+			reconcileGit(t, work, "checkout", "--detach", base)
+			commit("a\nb\nc\nd\nE\nf\ng\nh\ni\nj\n", "main edits nearby")
+			commit("a\nb\nc\nd\nE\nf\ng\nNEW\nh\ni\nj\n", "feat: widget line, rebased")
+			liveHead := commit("a\nb\nc\nd\nE\nf\ng\nNEWER\nh\ni\nj\n", "fix: widget line")
+			// Each later live commit touches the private path on first-parent
+			// history but carries the edited line, so none is a survival point.
+			for i := 0; i < tc.later; i++ {
+				liveHead = commit(fmt.Sprintf("a%d\nb\nc\nd\nE\nf\ng\nNEWER\nh\ni\nj\n", i), fmt.Sprintf("chore: widget header %d", i))
+			}
+
+			gateDir := filepath.Join(t.TempDir(), "gate.git")
+			reconcileGit(t, "", "init", "--bare", gateDir)
+			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			if tc.reconcile {
+				if err != nil || !result.Reconciled {
+					t.Fatalf("survival point inside the bound was refused: result=%+v err=%v", result, err)
+				}
+				return
+			}
+			if err == nil || result.Reconciled || !strings.Contains(err.Error(), privateHead) {
+				t.Fatalf("survival point past the bound was reconciled or not named: result=%+v err=%v", result, err)
+			}
+			if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
+				t.Fatalf("refusal moved private ref: %s", got)
+			}
+		})
+	}
+}
+
 // setupAnchoredPrivateBranch builds the recover -> rerun -> push shape from
 // issue #1233: a private branch holding two private-only commits, a live head
 // carrying unrelated work so neither commit is contained, and a bare gate whose
@@ -828,7 +954,7 @@ func TestPlanStaleBranchReconciliationStillRefusesUnanchoredCommitsAndNamesTheSa
 		privateHead, // the unanchored at-risk commit is still named
 		"second private-only change",
 		"refs/no-mistakes/recover/<run>", // the new satisfier is named
-		"patch-ID",
+		"tree-survival",
 		"ancestry",
 	} {
 		if !strings.Contains(message, want) {

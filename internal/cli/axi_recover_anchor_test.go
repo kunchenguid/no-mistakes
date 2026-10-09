@@ -156,7 +156,7 @@ func TestTriggerRunReconcilesPrivateMirrorPreservedByRecoveryAnchor(t *testing.T
 	for _, want := range []string{
 		"refs/no-mistakes/recover/<run>",
 		"ancestry",
-		"patch-ID",
+		"tree-survival",
 	} {
 		if !strings.Contains(firstErr.Error(), want) {
 			t.Fatalf("refusal did not name satisfier %q: %v", want, firstErr)
