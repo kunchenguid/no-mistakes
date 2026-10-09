@@ -98,6 +98,29 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 	}, nil
 }
 
+// RefuseProviderPluginOverlap fails a run whose selected forge profile and a
+// provider plugin both claim its repository. Load-time validation compares
+// only literal host tokens, so it cannot see a profile keyed by an SSH alias
+// while a plugin claims the alias's resolved HostName (or the reverse); here
+// the run's remote is known, and the plugin is selected exactly as the PR and
+// CI steps select it. Letting either side win would split one repository
+// between two provider implementations.
+func RefuseProviderPluginOverlap(ctx context.Context, forge *Context, plugins config.ProviderPlugins, upstreamURL string) error {
+	upstreamURL = strings.TrimSpace(upstreamURL)
+	return refuseProviderPluginOverlap(forge, plugins, scm.ExtractHost(upstreamURL), func() string { return scm.ResolveHost(ctx, upstreamURL) })
+}
+
+func refuseProviderPluginOverlap(forge *Context, plugins config.ProviderPlugins, rawHost string, resolvedHost func() string) error {
+	if forge == nil || len(plugins) == 0 || rawHost == "" {
+		return nil
+	}
+	name, ok := plugins.Select(rawHost, resolvedHost)
+	if !ok {
+		return nil
+	}
+	return fmt.Errorf("forge profile %q and provider_plugins.%s both claim the repository's host; remove one so a single provider serves it", forge.ProfileHost, name)
+}
+
 func configuredProviderForHost(profiles config.ForgeProfiles, targetHost string) (scm.Provider, error) {
 	if targetHost == "" {
 		return scm.ProviderUnknown, nil

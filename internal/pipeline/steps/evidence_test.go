@@ -16,6 +16,7 @@ import (
 // on Linux is the shared /tmp - RAM-backed on current Ubuntu, and reaped by
 // nobody in this program.
 func TestTestEvidenceDir_ReadsTheExecutorResolvedDirectory(t *testing.T) {
+	t.Parallel()
 	want := filepath.Join(t.TempDir(), "evidence", "run-123")
 	got := testEvidenceDir(&pipeline.StepContext{EvidenceDir: want})
 	if got != want {
@@ -47,6 +48,7 @@ func TestTestEvidenceDir_DefaultResolutionStaysUnderTheAppRoot(t *testing.T) {
 }
 
 func TestEvidenceBranchSlug_KeepsBranchStructureAndDropsUnsafeSegments(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"feature/add-login":  "feature/add-login",
 		"../../etc/pa ss~wd": "etc/pa-ss-wd",

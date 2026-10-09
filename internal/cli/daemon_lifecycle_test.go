@@ -12,7 +12,7 @@ import (
 )
 
 func TestDaemonStopRefusesWithActiveRunsAndListsThem(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	createLifecycleGuardRuns(t, paths.WithRoot(nmHome))
 
@@ -47,7 +47,7 @@ func TestDaemonStopRefusesWithActiveRunsAndListsThem(t *testing.T) {
 }
 
 func TestDaemonStopForceOverridesActiveRunGuard(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	createLifecycleGuardRuns(t, paths.WithRoot(nmHome))
 
@@ -72,7 +72,7 @@ func TestDaemonStopForceOverridesActiveRunGuard(t *testing.T) {
 }
 
 func TestDaemonRestartRefusesWithActiveRuns(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	createLifecycleGuardRuns(t, paths.WithRoot(nmHome))
 
@@ -106,16 +106,22 @@ func TestDaemonRestartRefusesWithActiveRuns(t *testing.T) {
 }
 
 func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 
 	prevStop := daemonStopFn
 	prevStart := daemonStartFn
+	prevUninstall := daemonUninstallFn
 	daemonStopFn = func(*paths.Paths) error { return nil }
 	daemonStartFn = func(*paths.Paths) error { return nil }
+	daemonUninstallFn = func(*paths.Paths) (string, error) { return "", nil }
+	prevSupported := daemonUninstallSupportedFn
+	daemonUninstallSupportedFn = func() bool { return true }
 	t.Cleanup(func() {
+		daemonUninstallSupportedFn = prevSupported
 		daemonStopFn = prevStop
 		daemonStartFn = prevStart
+		daemonUninstallFn = prevUninstall
 	})
 
 	out, err := executeCmd("daemon", "stop", "--force")
@@ -130,6 +136,10 @@ func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update --force failed: %v\n%s", err, out)
 	}
+	out, err = executeCmd("daemon", "uninstall", "--force")
+	if err != nil {
+		t.Fatalf("daemon uninstall --force failed: %v\n%s", err, out)
+	}
 
 	data, err := os.ReadFile(filepath.Join(nmHome, "logs", "cli.log"))
 	if err != nil {
@@ -139,6 +149,7 @@ func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
 	for _, want := range []string{
 		"lifecycle FORCE command=daemon.stop",
 		"lifecycle FORCE command=daemon.restart",
+		"lifecycle FORCE command=daemon.uninstall",
 		"lifecycle FORCE command=update",
 		"force=true",
 		"pid=",

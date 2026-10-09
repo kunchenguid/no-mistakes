@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -107,6 +108,25 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) || pipeline.HasUnvalidatedWorkRefusal(m.stepFindings[step.StepName]) {
 		return nil
 	}
+	// Only an answer settles an open review question, so yolo has no standing
+	// consent to give - exactly as --yes does not. Without this, the question
+	// is an ask-user finding on the ordinary channel, so
+	// stepHasActionableFindings counts it, resetFindingSelection selects it,
+	// and the FIXER is handed the question text as work; the rereview re-emits
+	// the still-open question and the fix_review gate is then approved as
+	// already-fixed. A human's own approve or fix keypress stays allowed, which
+	// is why the guard is here and not in respondCmd.
+	if pipeline.HasUnansweredReviewQuestion(m.stepFindings[step.StepName]) {
+		return nil
+	}
+	// Same standing-consent rule for the gate that parks because the question
+	// history could not be read in full: answers are refused there, so nothing
+	// yolo can send settles it and the fixer would only be handed "decide this
+	// gate yourself". Keyed on the finding ID, which is the one predicate every
+	// automatic path reads.
+	if pipeline.HasUnreadableReviewQuestionHistory(m.stepFindings[step.StepName]) {
+		return nil
+	}
 	if !m.approvalReady(step) {
 		return nil
 	}
@@ -156,14 +176,44 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 					}
 				}
 			}
+			// Unchecked findings are explicit declines: an omission is never
+			// a decline, so every gate finding the operator did not select has
+			// to travel as one, or the daemon refuses the response.
+			params.IgnoreFindingIDs = m.unselectedFindingIDs(step.StepName)
 			if added := m.selectedUserAddedFindings(step.StepName); len(added) > 0 {
 				params.AddedFindings = append([]types.Finding(nil), added...)
 			}
 		}
 		var result ipc.RespondResult
-		err := m.client.Call(ipc.MethodRespond, params, &result)
-		if err != nil {
+		send := func() error {
+			result = ipc.RespondResult{}
+			return m.client.Call(ipc.MethodRespond, params, &result)
+		}
+		if err := send(); err != nil {
 			return errMsg{err}
+		}
+		if !result.OK && len(result.DeclinedEarlierFix) > 0 {
+			// The operator left unchecked a finding an earlier round of this
+			// step already chose to fix. Reverting an applied fix is out of
+			// scope for a gate response, so retry once with those findings
+			// omitted: unchecked here means "leave it alone", and the earlier
+			// fix is what leaving it alone keeps.
+			params.IgnoreFindingIDs = withoutIDs(params.IgnoreFindingIDs, result.DeclinedEarlierFix)
+			if err := send(); err != nil {
+				return errMsg{err}
+			}
+		}
+		if !result.OK {
+			// The daemon refused the response (the gate stays parked): show
+			// what it named rather than silently dropping the keypress.
+			message := result.Refusal
+			if message == "" {
+				message = "the daemon refused the response"
+			}
+			if result.Help != "" {
+				message = message + " - " + result.Help
+			}
+			return errMsg{errors.New(message)}
 		}
 		return nil
 	}

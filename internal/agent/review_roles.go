@@ -128,7 +128,10 @@ func (a *reviewAgents) NeutralizesGateInstructions() bool {
 func (a *reviewAgents) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	selected := a.primary
 	switch opts.Purpose {
-	case "review":
+	case "review", "review-coverage":
+		// "review-coverage" is the review step's focused coverage completion
+		// turn: it is a review turn (same schema, same pass, no code change in
+		// between) and must route through the same reviewer chain.
 		selected = a.reviewer.pick(opts.Round, a.primary)
 		opts.Session = nil
 	case "review-fix":

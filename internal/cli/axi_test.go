@@ -681,6 +681,20 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 	}
 }
 
+func TestAxiRunClosesFlagIsRepeatable(t *testing.T) {
+	cmd := newAxiRunCmd()
+	if err := cmd.ParseFlags([]string{"--closes", "10", "--closes", "owner/repo#2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cmd.Flags().GetStringArray("closes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got, ","); refs != "10,owner/repo#2" {
+		t.Fatalf("--closes values = %q", refs)
+	}
+}
+
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop")
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
@@ -692,6 +706,134 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	if params.PRBaseBranch != "develop" {
 		t.Fatalf("PRBaseBranch = %q, want develop", params.PRBaseBranch)
 	}
+}
+
+func TestAxiRunClosesFlagIsValidatedAndCanonicalized(t *testing.T) {
+	cmd := newAxiRunCmd()
+	if err := cmd.ParseFlags([]string{"--closes", "10", "--closes", "Owner/Repo#2", "--closes", "10"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := closingIssueRefsFromFlags(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got, ","); refs != "10,owner/repo#2" {
+		t.Fatalf("--closes = %q, want deduplicated canonical refs", refs)
+	}
+
+	bad := newAxiRunCmd()
+	if err := bad.ParseFlags([]string{"--closes", "#42"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := closingIssueRefsFromFlags(bad); err == nil || !strings.Contains(err.Error(), "invalid --closes") {
+		t.Fatalf("malformed --closes error = %v", err)
+	}
+}
+
+// An older daemon would drop closing_issue_refs from the push silently, so a
+// run with --closes probes for the capability before anything is pushed.
+func TestRequireDaemonHonorsClosingIssueRefs(t *testing.T) {
+	if err := requireDaemonHonorsClosingIssueRefs(&scriptedClosingIssueRefsUpdateClient{err: errors.New("method not found")}, nil); err != nil {
+		t.Fatalf("no --closes must not probe: %v", err)
+	}
+	old := &scriptedClosingIssueRefsUpdateClient{err: errors.New("method not found")}
+	err := requireDaemonHonorsClosingIssueRefs(old, []string{"42"})
+	if err == nil || !strings.Contains(err.Error(), "too old to honor --closes") {
+		t.Fatalf("old daemon error = %v", err)
+	}
+	current := &scriptedClosingIssueRefsUpdateClient{}
+	if err := requireDaemonHonorsClosingIssueRefs(current, []string{"42"}); err != nil {
+		t.Fatalf("current daemon refused: %v", err)
+	}
+	if params, ok := current.params.(*ipc.UpdateRunClosingIssueRefsParams); !ok || params.RunID != "" || len(params.ClosingIssueRefs) != 0 {
+		t.Fatalf("probe params = %#v, want an empty no-op update", current.params)
+	}
+}
+
+func TestForwardClosingIssueRefsToActiveRunRequiresUpdateSuccess(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{err: errors.New("database unavailable")}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42", "owner/repo#9"})
+	if err == nil || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("forward error = %v, want daemon update failure", err)
+	}
+	if client.method != ipc.MethodUpdateRunClosingIssueRefs {
+		t.Fatalf("method = %q, want %q", client.method, ipc.MethodUpdateRunClosingIssueRefs)
+	}
+	params, ok := client.params.(*ipc.UpdateRunClosingIssueRefsParams)
+	if !ok {
+		t.Fatalf("params type = %T, want *ipc.UpdateRunClosingIssueRefsParams", client.params)
+	}
+	if params.RunID != "run-1" || strings.Join(params.ClosingIssueRefs, ",") != "42,owner/repo#9" {
+		t.Fatalf("params = %#v, want run-1 with both references", params)
+	}
+}
+
+func TestForwardClosingIssueRefsToActiveRunSkipsEmptyIssue(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{}
+
+	if err := forwardClosingIssueRefsToActiveRun(client, "run-1", nil); err != nil {
+		t.Fatalf("empty issue should not update: %v", err)
+	}
+	if client.method != "" {
+		t.Fatalf("empty issue made IPC call %q", client.method)
+	}
+}
+
+// A rejection because the PR body was already composed is distinguishable from
+// a transport failure, so the caller can say "not applied, edit the PR" instead
+// of advising a retry that can never succeed.
+func TestForwardClosingIssueRefsToActiveRunReportsPRBodyAlreadyComposed(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{
+		reject: ipc.ClosingIssueRefsRejectedPRBodyComposed,
+	}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
+	if !errors.Is(err, errClosingIssueRefsPRBodyComposed) {
+		t.Fatalf("forward error = %v, want errClosingIssueRefsPRBodyComposed", err)
+	}
+	if !strings.Contains(err.Error(), "could not be applied") {
+		t.Fatalf("error %q should state the link was not applied", err.Error())
+	}
+}
+
+// A rejection with no recognized reason must stay an error rather than passing
+// as success, so an unknown refusal never reports a link that was not added.
+func TestForwardClosingIssueRefsToActiveRunRejectsUnknownReason(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{reject: "some_future_reason"}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
+	if err == nil {
+		t.Fatal("unknown rejection reason reported success")
+	}
+	if errors.Is(err, errClosingIssueRefsPRBodyComposed) {
+		t.Fatalf("unknown reason misreported as the composed-body case: %v", err)
+	}
+}
+
+type scriptedClosingIssueRefsUpdateClient struct {
+	method string
+	params interface{}
+	err    error
+	// reject, when set, makes the daemon refuse the update with this reason.
+	reject string
+}
+
+func (s *scriptedClosingIssueRefsUpdateClient) Call(method string, params interface{}, result interface{}) error {
+	s.method = method
+	s.params = params
+	if s.err != nil {
+		return s.err
+	}
+	if out, ok := result.(*ipc.UpdateRunClosingIssueRefsResult); ok {
+		if s.reject != "" {
+			out.OK = false
+			out.Reason = s.reject
+			return nil
+		}
+		out.OK = true
+	}
+	return nil
 }
 
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
@@ -1208,5 +1350,117 @@ func TestSkillExitCodeGuidanceDistinguishesDecisionGates(t *testing.T) {
 	}
 	if !strings.Contains(md, "decision gates") {
 		t.Fatal("skill should explicitly identify decision gates as normal exit 0 stops")
+	}
+}
+
+// TestAxiHomeLeadsWithAnsweringWhenTheGateHasAnOpenQuestion pins the home
+// view's answering branch, which was unpinned before the rendering it used to
+// read was deleted.
+//
+// The condition now comes from pipeline.HasUnansweredReviewQuestion - the same
+// predicate the two auto-resolve carve-outs read - rather than from
+// string-splitting the finding's prose, so it is keyed on the review-question
+// CATEGORY. A gate parked on ordinary findings must still be told to respond,
+// not to answer.
+func TestAxiHomeLeadsWithAnsweringWhenTheGateHasAnOpenQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		finding   types.Finding
+		wantsHome bool
+	}{
+		{
+			name: "open question",
+			finding: types.Finding{
+				ID: "question-q1", Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+				Category:    types.FindingCategoryReviewQuestion,
+				Description: "Review question awaiting an answer: keep the legacy route?",
+			},
+			wantsHome: true,
+		},
+		{
+			// Same ID shape, no category: an ordinary gate, so the home view
+			// tells the operator to clear the gate rather than to answer it.
+			name: "question-shaped id without the category",
+			finding: types.Finding{
+				ID: "question-q1", Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+				Description: "not actually a review question",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir := t.TempDir()
+			nmHome := t.TempDir()
+			t.Setenv("NM_HOME", nmHome)
+			run(t, repoDir, "git", "init")
+			run(t, repoDir, "git", "config", "user.email", "test@test.com")
+			run(t, repoDir, "git", "config", "user.name", "Test")
+			run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+			run(t, repoDir, "git", "checkout", "-b", "feature/current")
+			rawRoot, err := filepath.EvalSymlinks(repoDir)
+			if err != nil {
+				rawRoot = repoDir
+			}
+			chdir(t, rawRoot)
+
+			p := paths.WithRoot(nmHome)
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatalf("ensure dirs: %v", err)
+			}
+			database, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			defer database.Close()
+			repo, err := database.InsertRepoWithID("repo-1", rawRoot, "origin", "main")
+			if err != nil {
+				t.Fatalf("insert repo: %v", err)
+			}
+			active, err := database.InsertRun(repo.ID, "feature/current", "head-1", "base")
+			if err != nil {
+				t.Fatalf("insert run: %v", err)
+			}
+			if err := database.UpdateRunStatus(active.ID, types.RunRunning); err != nil {
+				t.Fatalf("mark run running: %v", err)
+			}
+			step, err := database.InsertStepResult(active.ID, types.StepReview)
+			if err != nil {
+				t.Fatalf("insert step: %v", err)
+			}
+			if err := database.UpdateStepStatus(step.ID, types.StepStatusAwaitingApproval); err != nil {
+				t.Fatalf("mark step awaiting: %v", err)
+			}
+			if err := database.SetStepFindings(step.ID, findingsJSON(t, []types.Finding{tc.finding}, "1 issue")); err != nil {
+				t.Fatalf("set findings: %v", err)
+			}
+
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			cmd.SetOut(&out)
+			if err := runAxiHome(cmd); err != nil {
+				t.Fatalf("runAxiHome: %v", err)
+			}
+			// The HOME-level help line, not the gate block's - the gate still
+			// offers approve/fix either way, because a human may knowingly
+			// approve over an open question.
+			const homeAnswerHelp = "for each question in the gate; the reviewer resumes when none are open"
+			const homeGateHelp = "to clear the current gate"
+			got := out.String()
+			if tc.wantsHome {
+				if !strings.Contains(got, homeAnswerHelp) {
+					t.Fatalf("home help does not lead with answering:\n%s", got)
+				}
+				if strings.Contains(got, homeGateHelp) {
+					t.Fatalf("home help offered a verdict for an open question:\n%s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, homeGateHelp) {
+				t.Fatalf("ordinary gate lost its home-level verdict help:\n%s", got)
+			}
+			if strings.Contains(got, homeAnswerHelp) {
+				t.Fatalf("a question-shaped ID summoned the answering help:\n%s", got)
+			}
+		})
 	}
 }

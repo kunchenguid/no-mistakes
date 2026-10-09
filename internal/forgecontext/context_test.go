@@ -390,3 +390,30 @@ func TestResolveExpectedLoginRequiresDeclaredActiveUser(t *testing.T) {
 		t.Fatal("expected missing active user under a pinned login to fail closed")
 	}
 }
+
+// TestRefuseProviderPluginOverlap covers the overlap config load cannot see:
+// forge profiles match the remote's literal host while plugins also match
+// its SSH HostName, so a profile keyed by an alias and a plugin claiming the
+// alias's target only collide once the run's remote is known.
+func TestRefuseProviderPluginOverlap(t *testing.T) {
+	plugins := config.ProviderPlugins{"ssm": {Command: "nm-ssm", Hosts: []string{"*.sourcemanager.dev"}}}
+	profile := &Context{Provider: scm.ProviderGitLab, ProfileHost: "work-alias"}
+	resolvesTo := func(host string) func() string { return func() string { return host } }
+
+	err := refuseProviderPluginOverlap(profile, plugins, "work-alias", resolvesTo("i-1-git.us-central1.sourcemanager.dev"))
+	if err == nil || !strings.Contains(err.Error(), `forge profile "work-alias" and provider_plugins.ssm`) {
+		t.Fatalf("alias profile plus plugin on its HostName error = %v", err)
+	}
+	if err := refuseProviderPluginOverlap(profile, plugins, "work-alias", resolvesTo("gitlab.example.com")); err != nil {
+		t.Fatalf("alias resolving outside every plugin host: %v", err)
+	}
+	if err := refuseProviderPluginOverlap(nil, plugins, "i-1-git.us-central1.sourcemanager.dev", resolvesTo("")); err != nil {
+		t.Fatalf("plugin without a selected profile: %v", err)
+	}
+	if err := refuseProviderPluginOverlap(profile, nil, "work-alias", resolvesTo("i-1-git.us-central1.sourcemanager.dev")); err != nil {
+		t.Fatalf("profile without plugins: %v", err)
+	}
+	if err := RefuseProviderPluginOverlap(context.Background(), profile, plugins, " "); err != nil {
+		t.Fatalf("no upstream remote: %v", err)
+	}
+}

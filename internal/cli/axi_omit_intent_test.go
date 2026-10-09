@@ -72,7 +72,7 @@ func TestConflictingActiveRunOmitIntent(t *testing.T) {
 // capability: it answers health and run lookups but does not know the probe
 // method, and it records any launch RPC it receives so a test can prove
 // nothing was started.
-func olderDaemonFixture(t *testing.T, probe func() (interface{}, error)) (launched *[]string) {
+func olderDaemonFixture(t *testing.T, probe func() (interface{}, error), configure ...func(*ipc.Server)) (launched *[]string) {
 	t.Helper()
 	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
@@ -129,6 +129,9 @@ func olderDaemonFixture(t *testing.T, probe func() (interface{}, error)) (launch
 			*launched = append(*launched, method)
 			return &ipc.RerunResult{RunID: "run-published"}, nil
 		})
+	}
+	for _, setup := range configure {
+		setup(srv)
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(p.Socket()) }()

@@ -3,6 +3,7 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,5 +128,71 @@ func TestEnsureDirs(t *testing.T) {
 		if !info.IsDir() {
 			t.Errorf("expected %q to be a directory", d)
 		}
+	}
+}
+
+// TestForGate covers the routing contract the managed receive hooks depend on:
+// the daemon root that owns a gate is derivable from the gate's own path, so a
+// hook helper never has to trust an NM_HOME that git did not set.
+func TestForGate(t *testing.T) {
+	tests := []struct {
+		name string
+		gate string
+		want string
+	}{
+		{name: "ordinary root", gate: filepath.Join("/srv", "nm", "repos", "abc123.git"), want: filepath.Join("/srv", "nm")},
+		{name: "default-shaped root", gate: filepath.Join("/home", "u", ".no-mistakes", "repos", "abc123.git"), want: filepath.Join("/home", "u", ".no-mistakes")},
+		// A gate directly under the filesystem root still has an owning root
+		// ("/"), which a suffix-trimming derivation would flatten to empty and
+		// then reject, refusing every push to that home.
+		{name: "filesystem root as home", gate: filepath.FromSlash("/repos/abc123.git"), want: string(filepath.Separator)},
+		{name: "trailing separator", gate: filepath.Join("/srv", "nm", "repos", "abc123.git") + string(filepath.Separator), want: filepath.Join("/srv", "nm")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := ForGate(tt.gate)
+			if err != nil {
+				t.Fatalf("ForGate(%q) error = %v", tt.gate, err)
+			}
+			if p.Root() != tt.want {
+				t.Fatalf("ForGate(%q).Root() = %q, want %q", tt.gate, p.Root(), tt.want)
+			}
+			if got := p.RepoDir("abc123"); filepath.Clean(got) != filepath.Clean(filepath.Join(tt.want, "repos", "abc123.git")) {
+				t.Fatalf("round trip RepoDir = %q", got)
+			}
+		})
+	}
+}
+
+// TestForGateRefusesPathsThatAreNotManagedGates: the helper must fail rather
+// than fall back to the default root, so a caller holding an unexpected path
+// refuses the push instead of routing it to a daemon that does not own it.
+func TestForGateRefusesPathsThatAreNotManagedGates(t *testing.T) {
+	for _, gate := range []string{
+		filepath.Join("/srv", "nm", "repos", "abc123"),
+		filepath.Join("/srv", "nm", "worktrees", "abc123.git"),
+		filepath.Join("/srv", "abc123.git"),
+		"",
+	} {
+		if p, err := ForGate(gate); err == nil {
+			t.Fatalf("ForGate(%q) = %q, want an error", gate, p.Root())
+		} else if !strings.Contains(err.Error(), "cannot derive the gate home") {
+			t.Fatalf("ForGate(%q) error = %v, want it to name the cause", gate, err)
+		}
+	}
+}
+
+// TestForGateIgnoresAmbientNMHome is the regression proper: the hook helpers
+// resolve their root from the gate, so an NM_HOME naming a different root - the
+// state a push from an ordinary shell used to produce - cannot retarget them.
+func TestForGateIgnoresAmbientNMHome(t *testing.T) {
+	t.Setenv("NM_HOME", filepath.Join("/some", "other", "root"))
+	gate := filepath.Join("/srv", "nm", "repos", "abc123.git")
+	p, err := ForGate(gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join("/srv", "nm"); p.Root() != want {
+		t.Fatalf("ForGate root = %q, want %q - an exported NM_HOME must not choose the owning daemon", p.Root(), want)
 	}
 }

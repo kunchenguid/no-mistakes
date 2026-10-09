@@ -47,6 +47,7 @@ func TestCICheckReadFailureOutcome_ProviderNeutral(t *testing.T) {
 }
 
 func TestCIMonitorReadinessChangeNotifiesConsumers(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	var changes [][2]bool

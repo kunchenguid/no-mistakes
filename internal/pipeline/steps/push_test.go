@@ -94,6 +94,7 @@ func TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit(t *testing.
 }
 
 func TestAssertReviewApprovedPushHead(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		approval  string
@@ -177,6 +178,7 @@ func TestAssertReviewApprovedPushHead(t *testing.T) {
 }
 
 func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	err := assertReviewApprovedPushHead(sctx, headSHA)
@@ -186,6 +188,7 @@ func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
 }
 
 func TestAssertReviewApprovedPushHead_UsesStepScopedGit(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, approvedHead := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, approvedHead, config.Commands{})
 	recordReviewApproval(t, sctx, approvedHead)
@@ -714,6 +717,28 @@ func TestPushStep_AllowsForcePushOnRerunOverPriorRunPushedGeneration(t *testing.
 	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if remoteHead != rebasedHead {
 		t.Fatalf("expected remote head = %s, got %s", rebasedHead, remoteHead)
+	}
+}
+
+func TestLastKnownBranchTip_PrefersCurrentDurablePublication(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+
+	stale := "1111111111111111111111111111111111111111"
+	durable := "2222222222222222222222222222222222222222"
+	sctx.Run.LastPushedSHA = &stale
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{
+		HeadSHA:           durable,
+		TargetKind:        "upstream",
+		TargetFingerprint: "fingerprint",
+		Ref:               "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := lastKnownBranchTip(sctx.Ctx, sctx, "feature", false); got != durable {
+		t.Fatalf("lastKnownBranchTip = %q, want current durable publication %q instead of stale in-memory %q", got, durable, stale)
 	}
 }
 
@@ -1246,6 +1271,7 @@ func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 }
 
 func TestPushStep_MirrorMovesAfterPlanning(t *testing.T) {
+	t.Parallel()
 	for _, descendant := range []bool{true, false} {
 		t.Run(fmt.Sprintf("descendant=%t", descendant), func(t *testing.T) {
 			dir, baseSHA, submittedHead := setupGitRepo(t)

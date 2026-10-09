@@ -38,7 +38,7 @@
 Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs an AI-driven validation pipeline, forwards the branch to the configured push target only after every check passes, and opens a clean PR automatically.
 
 - **Non-blocking** - the pipeline runs in an isolated worktree without disrupting your work.
-- **Agent-agnostic** - `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, or `cursor` / `acp:<target>` via `acpx`, with ordered fallbacks; every gate requires a runnable configured pipeline agent.
+- **Agent-agnostic** - `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, or `cursor` / `devin` / `acp:<target>` via `acpx`, with ordered fallbacks; every gate requires a runnable configured pipeline agent.
 - **Agent-native** - `/no-mistakes` lets your coding agent do a task and gate it, or gate existing committed work: it runs the pipeline, has the pipeline apply safe fixes, and escalates the rest to you.
 - **Human stays in charge** - auto-fix or review findings, your call.
 - **Clean PRs by default** - push, open PR, watch CI, and auto-fix failures in one shot.
@@ -73,7 +73,7 @@ Set [`ci.revalidate_repairs: true`](https://kunchenguid.github.io/no-mistakes/re
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
-Windows, Go install, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
+Windows, Go install, Nix, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
 
 ## Quick Start
 

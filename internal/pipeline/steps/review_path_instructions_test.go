@@ -28,7 +28,7 @@ func wantSection(blocks ...string) string {
 }
 
 func sectionFor(changed []string, rules []config.PathInstruction) string {
-	return reviewPathInstructionsSection(matchPathInstructions(changed, rules))
+	return reviewPathInstructionsSection(config.ReviewPathInstructionsHeading, matchPathInstructions(changed, rules))
 }
 
 func TestMatchPathInstructions(t *testing.T) {
@@ -252,6 +252,7 @@ func TestChangedPathList(t *testing.T) {
 // carries the case; the escaping contract for a control-character name is pinned
 // on every platform by TestMatchedFilesSummary_EscapesNonGraphicPaths.
 func TestChangedPathList_RenameAndUnusualNames(t *testing.T) {
+	t.Parallel()
 	dir, _, _ := setupGitRepo(t)
 
 	// Every filesystem call is checked: an unwritable name must fail here by
@@ -458,7 +459,7 @@ func TestReviewPathInstructionsSectionStaysWithinAccountedBytes(t *testing.T) {
 	if len(matches.Blocks) != len(entries) {
 		t.Fatalf("blocks = %d, want every entry to match", len(matches.Blocks))
 	}
-	section := reviewPathInstructionsSection(matches)
+	section := reviewPathInstructionsSection(config.ReviewPathInstructionsHeading, matches)
 	accounted := config.ReviewPathInstructionsBytes(entries)
 	if len(section) > accounted {
 		t.Fatalf("section is %d bytes but the config accounting allowed %d; the cap no longer bounds the prompt", len(section), accounted)
@@ -467,10 +468,59 @@ func TestReviewPathInstructionsSectionStaysWithinAccountedBytes(t *testing.T) {
 	// A single entry with a single short file is the tight case: the accounting
 	// may only exceed the real section by the unused matched-file allowance.
 	one := []config.PathInstruction{{Path: "a/**", Instructions: "check it"}}
-	oneSection := reviewPathInstructionsSection(matchPathInstructions([]string{"a/b.go"}, one))
+	oneSection := reviewPathInstructionsSection(config.ReviewPathInstructionsHeading, matchPathInstructions([]string{"a/b.go"}, one))
 	slack := config.ReviewPathInstructionsBytes(one) - len(oneSection)
 	if slack < 0 || slack > config.ReviewPathInstructionsMaxFilesBytes {
 		t.Fatalf("accounting slack = %d, want between 0 and the %d file allowance", slack, config.ReviewPathInstructionsMaxFilesBytes)
+	}
+}
+
+// The combined budget check measures every source under its own heading, so the
+// sections the review step renders for all sources together must stay within
+// config.Review.PathInstructionsPromptBytes.
+func TestReviewPathInstructionSourcesStayWithinAccountedBytes(t *testing.T) {
+	t.Parallel()
+
+	rules := func(prefix string, n int) []config.PathInstruction {
+		var out []config.PathInstruction
+		for i := 0; i < n; i++ {
+			out = append(out, config.PathInstruction{
+				Path:         fmt.Sprintf("internal/%s_%02d/**", prefix, i),
+				Instructions: fmt.Sprintf("Rule %02d: %s", i, strings.Repeat("guidance ", 12)),
+			})
+		}
+		return out
+	}
+	review := config.Review{
+		GlobalPathInstructions:     rules("global", 10),
+		RepositoryPathInstructions: rules("repository", 10),
+		PathInstructions:           rules("trusted", 10),
+	}
+	var changed []string
+	for _, source := range review.PathInstructionSources() {
+		for _, rule := range source.Entries {
+			dir := strings.TrimSuffix(rule.Path, "/**")
+			for f := 0; f < 40; f++ {
+				changed = append(changed, fmt.Sprintf("%s/some/deeply/nested/file_%02d.go", dir, f))
+			}
+		}
+	}
+
+	rendered := ""
+	unusedFileAllowance := 0
+	for _, source := range review.PathInstructionSources() {
+		matches := matchPathInstructions(changed, source.Entries)
+		rendered += reviewPathInstructionsSection(source.Heading, matches)
+		for _, block := range matches.Blocks {
+			unusedFileAllowance += config.ReviewPathInstructionsMaxFilesBytes - len(matchedFilesSummary(block.Files))
+		}
+	}
+	accounted := review.PathInstructionsPromptBytes()
+	if len(rendered) > accounted {
+		t.Fatalf("sections are %d bytes but the config accounting allowed %d; the combined cap no longer bounds the prompt", len(rendered), accounted)
+	}
+	if slack := accounted - len(rendered); slack != unusedFileAllowance {
+		t.Fatalf("accounting slack = %d, want exactly the %d bytes of unused matched-file allowance", slack, unusedFileAllowance)
 	}
 }
 
@@ -538,7 +588,7 @@ func TestLogPathInstructions(t *testing.T) {
 		DuplicateIDs: []string{"internal/scm/**"},
 		UnusableIDs:  []string{"(no path)"},
 	}
-	logPathInstructions(func(s string) { logged = append(logged, s) }, matches)
+	logPathInstructions(func(s string) { logged = append(logged, s) }, "trusted", matches)
 
 	for _, want := range []string{
 		"applied 1 trusted review instruction block(s) for changed paths: internal/scm/** (2 file(s))",
@@ -560,7 +610,7 @@ func TestLogPathInstructions(t *testing.T) {
 
 	// Nothing configured logs nothing, so a quiet step log means no rules.
 	var quiet []string
-	logPathInstructions(func(s string) { quiet = append(quiet, s) }, pathInstructionMatches{})
+	logPathInstructions(func(s string) { quiet = append(quiet, s) }, "trusted", pathInstructionMatches{})
 	if len(quiet) != 0 {
 		t.Errorf("expected no log lines with no rules, got %q", quiet)
 	}
@@ -570,6 +620,7 @@ func TestLogPathInstructions(t *testing.T) {
 // prompt section for a mixed diff: one glob matches, a second matches a
 // different file, and a third matches nothing. Every block names its own scope.
 func TestEvidence_ReviewPathInstructionsMatchedPrompt(t *testing.T) {
+	t.Parallel()
 	rules := []config.PathInstruction{
 		{Path: "internal/scm/**", Instructions: "Any URL or error string that can carry credentials must go through internal/safeurl."},
 		{Path: "docs/**", Instructions: "Prose changes only. Do not request test coverage."},
@@ -578,13 +629,13 @@ func TestEvidence_ReviewPathInstructionsMatchedPrompt(t *testing.T) {
 	changed := changedPathList("internal/scm/github/github.go\x00internal/scm/github/github_test.go\x00docs/notes.md\x00")
 
 	matches := matchPathInstructions(changed, rules)
-	section := reviewPathInstructionsSection(matches)
+	section := reviewPathInstructionsSection(config.ReviewPathInstructionsHeading, matches)
 
 	t.Logf("configured globs: %q, %q, %q", rules[0].Path, rules[1].Path, rules[2].Path)
 	t.Logf("changed paths: %q", changed)
 	t.Logf("rules that matched nothing: %q", matches.UnmatchedIDs)
 	t.Logf("appended review prompt section:%s", section)
-	t.Logf("section with no configured rules: %q", reviewPathInstructionsSection(matchPathInstructions(changed, nil)))
+	t.Logf("section with no configured rules: %q", reviewPathInstructionsSection(config.ReviewPathInstructionsHeading, matchPathInstructions(changed, nil)))
 
 	want := wantSection(
 		wantBlock("internal/scm/**", "internal/scm/github/github.go, internal/scm/github/github_test.go", rules[0].Instructions),
@@ -594,7 +645,7 @@ func TestEvidence_ReviewPathInstructionsMatchedPrompt(t *testing.T) {
 		t.Fatalf("section =\n%q\nwant\n%q", section, want)
 	}
 	assertIDs(t, "unmatched", matches.UnmatchedIDs, []string{"cmd/**"})
-	if reviewPathInstructionsSection(matchPathInstructions(changed, nil)) != "" {
+	if reviewPathInstructionsSection(config.ReviewPathInstructionsHeading, matchPathInstructions(changed, nil)) != "" {
 		t.Fatal("an unconfigured repository must get no section at all")
 	}
 }

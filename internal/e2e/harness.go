@@ -127,8 +127,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// origin) hits the fakeagent stub instead of a real, authenticated
 	// system CLI. antigravity gets a second link under its probed binary
 	// name "agy" (internal/cli/doctor.go searches that name, not the agent
-	// name).
-	for _, name := range []string{"claude", "codex", "grok", "opencode", "pi", "antigravity", "agy", "gh", "tea"} {
+	// name). nm-fake-provider-plugin is the reference provider plugin; it is
+	// inert unless a test configures it under provider_plugins.
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "pi", "antigravity", "agy", "gh", "tea", "nm-fake-provider-plugin"} {
 		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)
@@ -140,6 +141,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// daemon re-execs itself, also inheriting them.
 	t.Setenv("PATH", h.BinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("HOME", h.HomeDir)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(h.HomeDir, "gitconfig-isolated"))
 	t.Setenv("NM_HOME", h.NMHome)
 	t.Setenv("FAKEAGENT_LOG", h.AgentLog)
 	if h.Scenario != "" {
@@ -554,14 +556,85 @@ func (h *Harness) respondError(runID string, step types.StepName, action types.A
 		return fmt.Errorf("dial daemon: %w", err)
 	}
 	defer client.Close()
+	// A fix response must account for every finding the gate shows, because an
+	// omission is never a decline. The harness declines the findings the test
+	// did not select, exactly as the TUI sends the boxes an operator left
+	// unchecked.
+	var ignoreIDs []string
+	if action == types.ActionFix {
+		ignoreIDs = h.unselectedFindingIDs(runID, step, findingIDs)
+	}
 	var result ipc.RespondResult
-	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action, FindingIDs: findingIDs}, &result); err != nil {
+	call := func() error {
+		result = ipc.RespondResult{}
+		return client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action, FindingIDs: findingIDs, IgnoreFindingIDs: ignoreIDs}, &result)
+	}
+	if err := call(); err != nil {
 		return err
 	}
+	if !result.OK && len(result.DeclinedEarlierFix) > 0 {
+		// A finding an earlier round of this step already chose to fix cannot
+		// be declined by a gate response. The harness declines the finding it
+		// did not select only when that is allowed; here it keeps the earlier
+		// decision instead, exactly as an operator who means "leave it fixed"
+		// would.
+		ignoreIDs = withoutIDs(ignoreIDs, result.DeclinedEarlierFix)
+		if err := call(); err != nil {
+			return err
+		}
+	}
 	if !result.OK {
-		return fmt.Errorf("respond returned not OK")
+		return fmt.Errorf("respond returned not OK: %s (%s)", result.Refusal, strings.Join(result.Missing, ","))
 	}
 	return nil
+}
+
+// withoutIDs returns the given IDs with every ID in exclude removed.
+func withoutIDs(ids, exclude []string) []string {
+	if len(ids) == 0 || len(exclude) == 0 {
+		return ids
+	}
+	excluded := make(map[string]bool, len(exclude))
+	for _, id := range exclude {
+		excluded[id] = true
+	}
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !excluded[id] {
+			kept = append(kept, id)
+		}
+	}
+	return kept
+}
+
+// unselectedFindingIDs returns the parked gate's finding IDs that the response
+// does not select, so they ride it as explicit declines.
+func (h *Harness) unselectedFindingIDs(runID string, step types.StepName, selected []string) []string {
+	h.t.Helper()
+	run := h.RunInfo(runID)
+	if run == nil {
+		h.t.Fatalf("run %s not found while computing declines", runID)
+	}
+	selectedSet := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		selectedSet[id] = true
+	}
+	var ids []string
+	for _, sr := range run.Steps {
+		if sr.StepName != step || sr.FindingsJSON == nil {
+			continue
+		}
+		parsed, err := types.ParseFindingsJSON(*sr.FindingsJSON)
+		if err != nil {
+			h.t.Fatalf("parse %s gate findings: %v", step, err)
+		}
+		for _, item := range parsed.Items {
+			if item.ID != "" && !selectedSet[item.ID] {
+				ids = append(ids, item.ID)
+			}
+		}
+	}
+	return ids
 }
 
 func (h *Harness) CancelRun(runID string) {

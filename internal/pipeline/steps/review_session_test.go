@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -83,10 +82,12 @@ func (a *sessionFallbackTimeoutAgent) Run(ctx context.Context, opts agent.RunOpt
 
 // reviewSessionHarness wires a real executor around real steps with a
 // session-capable mock agent and real git worktree.
-func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline.Step) (*pipeline.Executor, *db.DB, *db.Run, *db.Repo, string) {
+// tweaks adjust the run's effective config before the executor is built, for
+// the tests of a setting the harness must not turn on by default.
+func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline.Step, tweaks ...func(*config.Config)) (*pipeline.Executor, *db.DB, *db.Run, *db.Repo, string) {
 	t.Helper()
 	workDir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, workDir, "remote", "add", "origin", workDir)
+	ensureHermeticOrigin(t, workDir)
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {
@@ -107,6 +108,9 @@ func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline
 		Agent:        types.AgentClaude,
 		AutoFix:      config.AutoFix{Review: 3},
 		SessionReuse: true,
+	}
+	for _, tweak := range tweaks {
+		tweak(cfg)
 	}
 	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), cfg, mock, steps, nil)
 	return exec, database, run, repo, workDir
@@ -145,6 +149,7 @@ func fixCalls(calls []agent.RunOpts) []agent.RunOpts {
 // context a rereview legitimately needs travels in the explicit sanitized
 // round-history prompt section instead.
 func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
+	t.Parallel()
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -233,6 +238,7 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 // implemented, letting a defect the pipeline itself introduced pass with zero
 // findings.
 func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *testing.T) {
+	t.Parallel()
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -272,6 +278,7 @@ func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *test
 // turn uses the durable fixer session while the follow-up full rereview stays
 // session-free.
 func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
+	t.Parallel()
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -288,11 +295,7 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 			// lets the carried finding leave the outstanding set. A rereview that
 			// reports nothing new without covering the file would leave it
 			// outstanding and park the run again.
-			findings := cleanReviewFindings()
-			findings.ReviewedPaths = []string{"feature.txt"}
-			findings.DecisionReviews = satisfiedDecisionReviews(t, opts.Prompt)
-			output, _ := json.Marshal(findings)
-			return &agent.Result{Output: output}
+			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`)}
 		default:
 			return &agent.Result{Output: []byte(`{"summary":"apply decision"}`)}
 		}
@@ -336,6 +339,7 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 }
 
 func TestReviewFixerSession_FreshFallbackTimeoutExcludesResumeActivity(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &sessionFallbackTimeoutAgent{}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -370,6 +374,7 @@ func TestReviewFixerSession_FreshFallbackTimeoutExcludesResumeActivity(t *testin
 // sessions are never lent to other pipeline steps: agent-driven document and
 // lint work runs with no session at all.
 func TestReviewLoop_OtherStepsStaySessionIsolated(t *testing.T) {
+	t.Parallel()
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
 		switch opts.Purpose {

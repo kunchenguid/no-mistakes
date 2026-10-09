@@ -95,9 +95,9 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 		// The label above and the commands below deliberately use different
 		// evidence rules. Branch equality is enough to label the selected run,
 		// but not enough to attach a bare mutation command to it: another active
-		// run may exist (or appear) on the same branch, and `axi respond` has no
-		// run selector. Keep every explicit selection inspection-only so its run
-		// identity cannot be lost between this status read and the next command.
+		// run may exist (or appear) on the same branch, and a bare `axi respond`
+		// answers the branch's run. Keep status inspection-only; the response
+		// command for an explicit selection is `axi respond --run <id>`.
 		branchScopedCommandsSafe := runID == ""
 		if !branchScopedCommandsSafe {
 			fields = append(fields, inspectionOnlyGateFields(gate, run.ID)...)
@@ -196,7 +196,7 @@ func newAxiLogsCmd() *cobra.Command {
 	var full bool
 	cmd := &cobra.Command{
 		Use:           "logs",
-		Short:         "Show the log output of one pipeline step",
+		Short:         "Show one pipeline step's recorded findings and log output",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -206,7 +206,7 @@ func newAxiLogsCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&step, "step", "", "step name: intent, rebase, review, test, document, lint, push, pr, ci, or a repository gate step name (required)")
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default: current branch's active or most recent)")
-	cmd.Flags().BoolVar(&full, "full", false, "show the entire log instead of the tail")
+	cmd.Flags().BoolVar(&full, "full", false, "show the complete summary and the entire log instead of the bounded summary and tail")
 	return cmd
 }
 
@@ -255,45 +255,58 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 		return emitError(cmd, 1, "no run found for this branch to read logs from",
 			help...)
 	}
-	if _, err := env.d.GetStepsByRun(run.ID); err != nil {
+	steps, err := env.d.GetStepsByRun(run.ID)
+	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
 	}
 
-	path := filepath.Join(env.p.RunLogDir(run.ID), step+".log")
-	data, err := os.ReadFile(path)
 	fields := []toon.Field{
 		{Key: "step", Value: step},
 		{Key: "run", Value: run.ID},
 	}
-	if err != nil {
-		if os.IsNotExist(err) {
-			fields = append(fields, toon.Field{Key: "log", Value: fmt.Sprintf("no log recorded for step %q in this run", step)})
-			emitDoc(cmd, fields...)
-			return nil
+	var bounded bool
+	for _, s := range steps {
+		if string(s.StepName) == step && s.FindingsJSON != nil {
+			var recorded []toon.Field
+			recorded, bounded = recordedFindingsFields(*s.FindingsJSON, full)
+			fields = append(fields, recorded...)
+			break
 		}
-		return emitError(cmd, 1, fmt.Sprintf("read log: %v", err))
+	}
+	selectedRunID := ""
+	if runID != "" {
+		selectedRunID = run.ID
+	}
+	fullHelp := fmt.Sprintf("Run `%s` to see the complete summary and entire log", axiLogsFullCommand(step, selectedRunID))
+
+	data, err := os.ReadFile(filepath.Join(env.p.RunLogDir(run.ID), step+".log"))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return emitError(cmd, 1, fmt.Sprintf("read log: %v", err))
+		}
+		fields = append(fields, toon.Field{Key: "log", Value: fmt.Sprintf("no log recorded for step %q in this run", step)})
+		if bounded {
+			fields = append(fields, toon.Field{Key: "help", Value: []string{fullHelp}})
+		}
+		emitDoc(cmd, fields...)
+		return nil
 	}
 
 	lines := splitLogLines(string(data))
 	shown := lines
+	lineCount := fmt.Sprintf("%d total", len(lines))
 	if !full && len(lines) > logTailLines {
 		shown = lines[len(lines)-logTailLines:]
-		selectedRunID := ""
-		if runID != "" {
-			selectedRunID = run.ID
-		}
-		fields = append(fields,
-			toon.Field{Key: "lines", Value: fmt.Sprintf("%d of %d total (tail)", len(shown), len(lines))},
-			toon.Field{Key: "log", Value: logRows(shown)},
-			toon.Field{Key: "help", Value: []string{fmt.Sprintf("Run `%s` to see the entire log", axiLogsFullCommand(step, selectedRunID))}},
-		)
-		emitDoc(cmd, fields...)
-		return nil
+		lineCount = fmt.Sprintf("%d of %d total (tail)", len(shown), len(lines))
+		bounded = true
 	}
 	fields = append(fields,
-		toon.Field{Key: "lines", Value: fmt.Sprintf("%d total", len(lines))},
+		toon.Field{Key: "lines", Value: lineCount},
 		toon.Field{Key: "log", Value: logRows(shown)},
 	)
+	if bounded {
+		fields = append(fields, toon.Field{Key: "help", Value: []string{fullHelp}})
+	}
 	emitDoc(cmd, fields...)
 	return nil
 }

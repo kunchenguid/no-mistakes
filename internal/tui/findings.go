@@ -143,6 +143,40 @@ func (m *Model) selectedUserAddedFindings(step types.StepName) []finding {
 	return result
 }
 
+// unselectedFindingIDs returns the agent-produced finding IDs that are NOT
+// selected: the findings this fix response explicitly declines. The daemon
+// requires every finding the gate shows to be either fixed or declined, so the
+// checkbox selection maps onto the protocol as both lists; user-added findings
+// are not gate findings and never belong here.
+func (m *Model) unselectedFindingIDs(step types.StepName) []string {
+	selected := m.findingSelections[step]
+	var ids []string
+	for _, item := range m.agentFindingItems(step) {
+		if item.ID != "" && !selected[item.ID] {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+// withoutIDs returns the given IDs with every ID in exclude removed.
+func withoutIDs(ids, exclude []string) []string {
+	if len(ids) == 0 || len(exclude) == 0 {
+		return ids
+	}
+	excluded := make(map[string]bool, len(exclude))
+	for _, id := range exclude {
+		excluded[id] = true
+	}
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !excluded[id] {
+			kept = append(kept, id)
+		}
+	}
+	return kept
+}
+
 // diffOffsetForCurrentFinding returns the diff scroll offset that corresponds
 // to the current finding's file:line. Returns 0 if no match.
 func (m Model) diffOffsetForCurrentFinding(step types.StepName) int {

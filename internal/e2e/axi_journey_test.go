@@ -1360,14 +1360,14 @@ func TestAxiRunPreflightGuards(t *testing.T) {
 		t.Fatalf("nm init: %v\n%s", err, out)
 	}
 
-	// Missing --intent on a feature branch.
+	// Missing explicit intent on a feature branch.
 	h.CommitChange("feature/needs-intent", "a.txt", "a\n", "add a")
 	niw := h.AddWorktree("feature/needs-intent")
 	out, err := h.RunInDir(niw, "axi", "run")
 	if err == nil {
-		t.Errorf("axi run without --intent should fail; output:\n%s", out)
+		t.Errorf("axi run without explicit intent should fail; output:\n%s", out)
 	}
-	if !strings.Contains(out, "--intent is required") {
+	if !strings.Contains(out, "--intent or --intent-file is required") {
 		t.Errorf("missing-intent error not surfaced; output:\n%s", out)
 	}
 

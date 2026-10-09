@@ -516,3 +516,19 @@ func TestFinding_Action_Values(t *testing.T) {
 		}
 	}
 }
+
+// A finding's ID is trimmed when it arrives: surrounding whitespace is not part
+// of the identity the gate shows and a response names.
+func TestNormalizeFindingsTrimsFindingIDs(t *testing.T) {
+	got := NormalizeFindings(Findings{Items: []Finding{
+		{ID: " R1 ", Description: "padded"},
+		{ID: "   ", Description: "blank"},
+		{ID: "R2", Description: "clean"},
+	}}, "findings")
+	want := []string{"R1", "findings-2", "R2"}
+	for i, id := range want {
+		if got.Items[i].ID != id {
+			t.Fatalf("id[%d] = %q, want %q", i, got.Items[i].ID, id)
+		}
+	}
+}

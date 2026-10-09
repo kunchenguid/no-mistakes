@@ -103,6 +103,14 @@ const (
 	FindingCategoryCIReviewBot     = "ci-review-bot"
 )
 
+// FindingCategoryReviewQuestion marks the synthetic finding the review step
+// emits for each question its reviewer asked and nobody has answered yet. It
+// is always an ask-user warning, which is what parks the step in
+// waiting-on-answers; the ID is derived from the question id so the same
+// question keeps the same finding across rounds. See
+// docs/src/content/docs/concepts/review-conversation.md.
+const FindingCategoryReviewQuestion = "review-question"
+
 // FindingCategoryTestCommand marks the deterministic finding produced when a
 // configured commands.test exits non-zero. The Test step's
 // ApprovalOverrideVerifier keys on it so an approval over that failure is
@@ -181,7 +189,6 @@ func KnownTestVerdicts() []string { return slices.Clone(knownTestVerdicts) }
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
 	ID               string `json:"id,omitempty"`
-	DecisionID       string `json:"decision_id,omitempty"`
 	Severity         string `json:"severity"`
 	File             string `json:"file,omitempty"`
 	Line             int    `json:"line,omitempty"`
@@ -259,7 +266,6 @@ type TestArtifact struct {
 
 type findingWire struct {
 	ID                  string `json:"id,omitempty"`
-	DecisionID          string `json:"decision_id,omitempty"`
 	Severity            string `json:"severity"`
 	File                string `json:"file,omitempty"`
 	Line                int    `json:"line,omitempty"`
@@ -274,12 +280,11 @@ type findingWire struct {
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
-// DecisionReview records the existing independent review's assessment of one
-// positive human fix decision from the same run.
-type DecisionReview struct {
-	DecisionID string `json:"decision_id"`
-	Result     string `json:"result"`
-	Evidence   string `json:"evidence"`
+// WithdrawnFinding is one carried finding an answer round retracted, naming
+// the finding by the id it was carried under and why the answer disproved it.
+type WithdrawnFinding struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
@@ -289,22 +294,27 @@ type DecisionReview struct {
 // written before the contract existed, so an older recorded run still parses
 // and simply renders no scenario table.
 type Findings struct {
-	DecisionReviews []DecisionReview `json:"decision_reviews,omitempty"`
-	Items           []Finding        `json:"findings"`
-	Summary         string           `json:"summary"`
+	Items   []Finding `json:"findings"`
+	Summary string    `json:"summary"`
 	// ReviewedPaths is the review step's coverage record: the changed files the
 	// review turn actually examined and judged. It is the positive-verification
 	// signal that lets a finding the operator selected for a fix leave the
 	// outstanding set (see pipeline.resolveVerifiedFindingsJSON). A review turn
 	// that does not list a path has not proven anything about it, so silence is
 	// never read as resolution. Empty on every non-review payload.
-	ReviewedPaths  []string       `json:"reviewed_paths,omitempty"`
-	Tested         []string       `json:"tested,omitempty"`
-	TestingSummary string         `json:"testing_summary,omitempty"`
-	Artifacts      []TestArtifact `json:"artifacts,omitempty"`
-	Scenarios      []TestScenario `json:"scenarios,omitempty"`
-	Verdict        string         `json:"verdict,omitempty"`
-	TestedHeadSHA  string         `json:"tested_head_sha,omitempty"`
+	ReviewedPaths []string `json:"reviewed_paths,omitempty"`
+	// WithdrawnFindings is an answer round's explicit re-adjudication: the
+	// carried findings the reviewer now says no longer hold, each with its
+	// reason. On an answer round a carried finding leaves the outstanding set
+	// ONLY by appearing here. Silence keeps it, so covering a file can no
+	// longer clear an unrelated finding in it. Empty on every other payload.
+	WithdrawnFindings []WithdrawnFinding `json:"withdrawn_findings,omitempty"`
+	Tested            []string           `json:"tested,omitempty"`
+	TestingSummary    string             `json:"testing_summary,omitempty"`
+	Artifacts         []TestArtifact     `json:"artifacts,omitempty"`
+	Scenarios         []TestScenario     `json:"scenarios,omitempty"`
+	Verdict           string             `json:"verdict,omitempty"`
+	TestedHeadSHA     string             `json:"tested_head_sha,omitempty"`
 	// UnvalidatedSinceSHA is set only on a Test budget-cut park: the head its
 	// unvalidated-work check measured from, carried so a repeated cut before any
 	// evidence turn completes re-measures from that same head.
@@ -315,21 +325,21 @@ type Findings struct {
 }
 
 type findingsWire struct {
-	DecisionReviews     []DecisionReview `json:"decision_reviews"`
-	Items               []Finding        `json:"findings"`
-	Legacy              []Finding        `json:"items"`
-	Summary             string           `json:"summary"`
-	ReviewedPaths       []string         `json:"reviewed_paths"`
-	Tested              []string         `json:"tested"`
-	TestingSummary      string           `json:"testing_summary"`
-	Artifacts           []TestArtifact   `json:"artifacts"`
-	Scenarios           []TestScenario   `json:"scenarios"`
-	Verdict             string           `json:"verdict"`
-	TestedHeadSHA       string           `json:"tested_head_sha"`
-	UnvalidatedSinceSHA string           `json:"unvalidated_since_sha"`
-	RiskLevel           string           `json:"risk_level"`
-	RiskRationale       string           `json:"risk_rationale"`
-	RiskScope           string           `json:"risk_scope"`
+	Items               []Finding          `json:"findings"`
+	Legacy              []Finding          `json:"items"`
+	Summary             string             `json:"summary"`
+	ReviewedPaths       []string           `json:"reviewed_paths"`
+	WithdrawnFindings   []WithdrawnFinding `json:"withdrawn_findings"`
+	Tested              []string           `json:"tested"`
+	TestingSummary      string             `json:"testing_summary"`
+	Artifacts           []TestArtifact     `json:"artifacts"`
+	Scenarios           []TestScenario     `json:"scenarios"`
+	Verdict             string             `json:"verdict"`
+	TestedHeadSHA       string             `json:"tested_head_sha"`
+	UnvalidatedSinceSHA string             `json:"unvalidated_since_sha"`
+	RiskLevel           string             `json:"risk_level"`
+	RiskRationale       string             `json:"risk_rationale"`
+	RiskScope           string             `json:"risk_scope"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -347,7 +357,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		Items:               items,
 		Summary:             wire.Summary,
 		ReviewedPaths:       wire.ReviewedPaths,
-		DecisionReviews:     wire.DecisionReviews,
+		WithdrawnFindings:   wire.WithdrawnFindings,
 		Tested:              wire.Tested,
 		TestingSummary:      wire.TestingSummary,
 		Artifacts:           wire.Artifacts,
@@ -376,9 +386,14 @@ func FindingsMetadata(findings Findings) Findings {
 	return findings
 }
 
-// NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
+// NormalizeFindings assigns deterministic IDs to findings that do not have one
+// yet, and trims the ones they arrive with. Surrounding whitespace is never
+// part of a finding's identity: the gate shows the ID and a response names it,
+// and the response side trims what it is given, so a padded gate ID used to
+// have no spelling that could select or decline it.
 func NormalizeFindings(findings Findings, prefix string) Findings {
 	for i := range findings.Items {
+		findings.Items[i].ID = strings.TrimSpace(findings.Items[i].ID)
 		if findings.Items[i].ID != "" {
 			continue
 		}
@@ -463,13 +478,14 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	counter := 0
 	appended := false
 	for _, item := range added {
-		// DecisionID is reserved for findings synthesized by the pipeline after
-		// independent Review. User-authored findings cannot claim that identity.
-		item.DecisionID = ""
 		item.Source = FindingSourceUser
 		if item.Action == "" {
 			item.Action = ActionAutoFix
 		}
+		// The added ID is trimmed for the same reason the producer's is: the
+		// identity a later round attributes by must not carry whitespace, and a
+		// padded collision must still be seen as a collision.
+		item.ID = strings.TrimSpace(item.ID)
 		if item.ID == "" || used[item.ID] {
 			item.ID, counter = nextUserFindingID(used, counter)
 		} else {
@@ -507,6 +523,26 @@ func HasAskUserFindings(findings Findings) bool {
 func HasActionableFindings(findings Findings) bool {
 	for _, item := range findings.Items {
 		if item.ActionOrDefault() != ActionNoOp {
+			return true
+		}
+	}
+	return false
+}
+
+// HasReviewQuestion reports whether a gate is parked on a question its
+// reviewer asked and nobody has answered.
+//
+// It qualifies HasActionableFindings above, which counts an open question as
+// actionable because its action is ask-user. That is right for every other
+// ask-user finding and wrong for this one: a question is resolved by an
+// ANSWER, not by a verdict and not by a fix, so yolo / auto-resolve has to
+// recognize it and stand aside rather than treating it as standing consent.
+// Keyed on the category, never on the finding ID's "question-" prefix, so an
+// agent-authored finding that happens to be named that way is never mistaken
+// for one.
+func HasReviewQuestion(findings Findings) bool {
+	for _, item := range findings.Items {
+		if item.Category == FindingCategoryReviewQuestion {
 			return true
 		}
 	}
@@ -584,7 +620,6 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	f.ID = wire.ID
-	f.DecisionID = wire.DecisionID
 	f.Severity = wire.Severity
 	f.File = wire.File
 	f.Line = wire.Line

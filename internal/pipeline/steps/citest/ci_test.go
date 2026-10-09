@@ -2657,3 +2657,169 @@ func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 		t.Fatal("new conclusive link did not retire the rerun record")
 	}
 }
+
+// A pull request whose workflows GitHub is holding for maintainer approval
+// reports its runs as action_required with no jobs and carries no check runs at
+// all. That hold is a wait on a human, so the monitor must keep waiting and name
+// it - not report failing checks and start an auto-fix round against work that
+// never executed (issue #1182).
+func TestCIStep_WorkflowHeldForMaintainerApprovalWaitsInsteadOfRepairing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// No check runs on the head: exactly what GitHub reports while the hold is
+	// in place.
+	env := stepstest.FakeCIGH(t, "OPEN", `[]`)
+	env = append(env, `FAKE_CLI_WORKFLOW_RUNS=[{
+		"id":101,
+		"name":"CI",
+		"status":"completed",
+		"conclusion":"action_required",
+		"updated_at":"2026-09-24T12:34:56Z"
+	}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.AutoFix.CI = 3
+	sctx.Config.CITimeout = config.CITimeoutUnlimited
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	pollCount := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		pollCount++
+		if pollCount == 1 {
+			return nil
+		}
+		cancel()
+		return ctx.Err()
+	})
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, outcome = %+v; want the monitor still waiting on the hold; logs: %v", err, outcome, logs)
+	}
+	if len(ag.Calls) != 0 {
+		t.Fatalf("held workflow started a CI fix agent round: %+v", ag.Calls)
+	}
+
+	joined := strings.Join(logs, "\n")
+	if strings.Contains(joined, "issues detected") {
+		t.Errorf("held workflow was reported as a CI issue; logs: %v", logs)
+	}
+	if strings.Contains(joined, cimonitor.ChecksPassedMsg) {
+		t.Errorf("held workflow was reported as checks-passed; logs: %v", logs)
+	}
+	if !strings.Contains(joined, cimonitor.ChecksAwaitingApprovalMsg) {
+		t.Errorf("monitor did not name the maintainer-approval hold; logs: %v", logs)
+	}
+	if strings.Contains(joined, cimonitor.ChecksRunningMsg) {
+		t.Errorf("held workflow was reported as running checks; logs: %v", logs)
+	}
+}
+
+// The hold is told from a verdict by the run's job list, so a workflow run that
+// concluded action_required after actually executing jobs still escalates as a
+// failing check.
+func TestCIStep_ActionRequiredWorkflowRunWithJobsStillEscalates(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	env := stepstest.FakeCIGH(t, "OPEN", `[]`)
+	env = append(env, `FAKE_CLI_WORKFLOW_RUNS=[{
+		"id":101,
+		"name":"CI",
+		"status":"completed",
+		"conclusion":"action_required",
+		"updated_at":"2026-09-24T12:34:56Z"
+	}]`)
+	env = append(env, `FAKE_CLI_RUN_JOBS=[{"databaseId":9001,"name":"CI","status":"completed","conclusion":"action_required"}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.AutoFix.CI = 0
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		return errors.New("unexpected monitor poll after an action_required run that executed jobs")
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v; logs: %v", err, logs)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("Execute() outcome = %+v, want a CI gate; logs: %v", outcome, logs)
+	}
+	if !strings.Contains(outcome.Findings, "CI") {
+		t.Fatalf("findings = %s, want the action_required run reported", outcome.Findings)
+	}
+	if strings.Contains(strings.Join(logs, "\n"), cimonitor.ChecksAwaitingApprovalMsg) {
+		t.Fatalf("a run that executed jobs was reported as a maintainer hold; logs: %v", logs)
+	}
+}
+
+// A held workflow will not finish without a maintainer, so it must not defer a
+// genuine failure elsewhere on the head: the real failure escalates on its own,
+// the hold produces no finding, and the monitor still names the hold.
+func TestCIStep_HeldWorkflowDoesNotDeferAGenuineFailureBesideIt(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	env := stepstest.FakeCIGH(t, "OPEN", `[{"name":"external-ci","state":"FAILURE","bucket":"fail"}]`)
+	env = append(env, `FAKE_CLI_WORKFLOW_RUNS=[{
+		"id":101,
+		"name":"CI",
+		"status":"completed",
+		"conclusion":"action_required",
+		"updated_at":"2026-09-24T12:34:56Z"
+	}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.AutoFix.CI = 0
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		return errors.New("unexpected monitor poll: the held workflow deferred a genuine failure")
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v; logs: %v", err, logs)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("Execute() outcome = %+v, want a CI gate; logs: %v", outcome, logs)
+	}
+	var findings types.Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("parse findings %q: %v", outcome.Findings, err)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].Check != "external-ci" {
+		t.Fatalf("findings = %+v, want only the external-ci failure", findings.Items)
+	}
+
+	joined := strings.Join(logs, "\n")
+	if strings.Contains(joined, "checks still pending") {
+		t.Errorf("held workflow deferred escalation as a pending check; logs: %v", logs)
+	}
+	if !strings.Contains(joined, "issues detected") {
+		t.Errorf("genuine failure was not escalated; logs: %v", logs)
+	}
+	if !strings.Contains(joined, cimonitor.ChecksAwaitingApprovalMsg) {
+		t.Errorf("escalation did not name the maintainer-approval hold; logs: %v", logs)
+	}
+}

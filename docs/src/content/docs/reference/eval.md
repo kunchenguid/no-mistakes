@@ -123,7 +123,7 @@ When a harness reports the model it served, replay verifies the model name again
 
 Effort is part of the candidate identity, so `codex,model=gpt-5.4,effort=low` and `codex,model=gpt-5.4,effort=high` are reported as two candidates rather than collapsing into one.
 
-The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
+The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Branch-base resolution uses the captured default-branch commit restored as a local remote-tracking ref, without fetching an upstream remote. A case pool therefore needs no configured remote to replay. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
 
 Replay scores each candidate finding against that gold:
 
@@ -136,7 +136,7 @@ Matching is a documented cascade of strengths: the same finding ID, the same fil
 
 The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 
-`--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent whose model no-mistakes can actually pin. ACP targets such as `cursor` and `acp:<target>` are pinned through `acpx --model`, but they cannot take `effort`; `rovodev` and `antigravity` expose no mechanism at all and are rejected outright. `opencode` needs the `provider/model` form. The per-harness mapping table lives in [`agent_config`](/no-mistakes/reference/global-config/#agent_config).
+`--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent whose model no-mistakes can actually pin. ACP targets such as `cursor`, `devin`, and `acp:<target>` are pinned through `acpx --model`, but they cannot take `effort`; `rovodev` and `antigravity` expose no mechanism at all and are rejected outright. `opencode` needs the `provider/model` form. The per-harness mapping table lives in [`agent_config`](/no-mistakes/reference/global-config/#agent_config).
 
 The replay never inherits this machine's own harness pins: capture strips `agent`, `agent_args_override`, `agent_config`, and `review_agents` from the configuration it freezes, so the candidate is the only thing that decides what the harness runs as.
 
@@ -157,12 +157,16 @@ The report groups local replays by candidate and cohort. A cohort pins the selec
 - precision bounds, and F1 only when false-positive gold exists
 - queued unmatched candidate findings, which are not scored as false positives
 - failed candidate invocations
-- reported fresh-input plus output token cost, summed over every review attempt in a replay, including Review's reruns after a rejected output, and reported as missing when any attempt reports no usage
+- average token cost per replay: fresh input plus output, cache reads, and reported cache writes, summed over every review attempt in each replay, including Review's reruns after a rejected output, and reported as missing when any attempt reports no usage
 - average wall time
 - a finite-sample case-level recall range, with repeats averaged inside each case
 - whether a candidate lies on the observed recall-versus-token-cost frontier
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. It is a pure read: repeated reports over unchanged recorded evaluations produce identical text output.
+Eval records cache-read and cache-write counts in each evaluation payload and in the local registry. Input totals include reported cache reads and writes; eval subtracts both to calculate fresh input, then adds each bucket once to the report total. The cost line shows positive cache-read and cache-write segments separately. Unreported cache writes, including those absent from older payloads, contribute no separate segment. The frontier compares these token totals without provider pricing weights.
+
+Opening an older registry automatically backfills available cache counts from saved evaluation payloads and corrects its legacy input and fresh-input counters for the provider's accounting. Missing, unreadable, or malformed historical payloads are skipped with a warning on stderr naming each evaluation and its path; the registry still opens, and skipped rows retain unset cache counts (unknown, not zero). Reports use those corrected registry counters; captured labels, manifests, and historical payloads stay unchanged. Cache writes that were never recorded cannot be recovered.
+
+The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations produce identical text output.
 
 ## Current boundary
 

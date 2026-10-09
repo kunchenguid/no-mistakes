@@ -185,7 +185,11 @@ func TestReviewStep_ReviewPromptReportsTheClassOnce(t *testing.T) {
 					os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
 					return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
 				}
-				j, _ := json.Marshal(cleanReviewFindings())
+				// The fixer added review-fix.txt, so the rereview's coverage
+				// record spans both changed files and completes in one turn.
+				findings := cleanReviewFindings()
+				findings.ReviewedPaths = []string{"feature.txt", "review-fix.txt"}
+				j, _ := json.Marshal(findings)
 				return &agent.Result{Output: j}, nil
 			},
 		}
@@ -235,7 +239,11 @@ func TestReviewStep_RereviewNamesFollowOnsOfPriorFixRounds(t *testing.T) {
 					os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
 					return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
 				}
-				j, _ := json.Marshal(cleanReviewFindings())
+				// The fixer added review-fix.txt, so the rereview's coverage
+				// record spans both changed files and completes in one turn.
+				findings := cleanReviewFindings()
+				findings.ReviewedPaths = []string{"feature.txt", "review-fix.txt"}
+				j, _ := json.Marshal(findings)
 				return &agent.Result{Output: j}, nil
 			},
 		}

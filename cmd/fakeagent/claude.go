@@ -20,6 +20,14 @@ func runClaude(args []string, promptReader io.Reader, scenario *Scenario) int {
 	if err := applyAction(action); err != nil {
 		return 1
 	}
+	if err := askQuestions(prompt, action.AskQuestions); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+		return 1
+	}
+	if err := writeEvidence(prompt, action.WriteEvidence); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+		return 1
+	}
 
 	// Fixture mode: replay the real claude wire envelope captured by
 	// recordfixture, but splice in scenario-driven content for the

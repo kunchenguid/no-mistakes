@@ -367,6 +367,65 @@ func TestParseClaudeEvents_CacheTokens(t *testing.T) {
 	}
 }
 
+func TestParseClaudeEvents_MultipleContentBlocksUsage(t *testing.T) {
+	// Claude emits text and StructuredOutput as separate events for one message,
+	// repeating the same cumulative usage on each content block.
+	events := strings.Join([]string{
+		`{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[{"type":"text","text":"review complete"}]}}`,
+		`{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[{"type":"tool_use","name":"StructuredOutput","input":{"findings":[]}}]}}`,
+		`{"type":"result","subtype":"success","structured_output":{"findings":[]},"usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000}}`,
+		"",
+	}, "\n")
+	var usage TokenUsage
+	var result *claudeResult
+	var text strings.Builder
+	if err := parseClaudeEvents(context.Background(), strings.NewReader(events), func(chunk string) {
+		text.WriteString(chunk)
+	}, &usage, &result); err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 31_000 || usage.OutputTokens != 500 ||
+		usage.CacheReadTokens != 20_000 || usage.CacheCreationTokens != 1_000 ||
+		usage.Total() != 31_500 || !usage.Reported || !usage.CacheCreationReported {
+		t.Fatalf("usage = %+v, total %d; want one message totaling 31500 tokens", usage, usage.Total())
+	}
+	if text.String() != "review complete" || result == nil || string(result.StructuredOutput) != `{"findings":[]}` {
+		t.Fatalf("text = %q, result = %+v; want both text and structured output", text.String(), result)
+	}
+}
+
+func TestParseClaudeEvents_CumulativeUsage(t *testing.T) {
+	first := `{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":8,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[]}}`
+	updated := `{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[]}}`
+	other := `{"type":"assistant","message":{"id":"msg-2","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[]}}`
+	final := `{"type":"result","subtype":"success","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000}}`
+	for _, tc := range []struct {
+		name     string
+		events   []string
+		messages int
+	}{
+		{"repeated blocks without a final result", []string{updated, updated}, 1},
+		{"latest cumulative snapshot without a final result", []string{first, updated}, 1},
+		{"distinct messages with identical usage", []string{first, other, updated}, 2},
+		{"result without usage keeps message totals", []string{first, other, updated, `{"type":"result","subtype":"error","is_error":true}`}, 2},
+		{"final total supersedes incomplete message usage", []string{first, final}, 1},
+		{"final total without assistant events", []string{final}, 1},
+		{"failed invocation reports its final total", []string{first, `{"type":"result","subtype":"error","is_error":true,"usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000}}`}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var usage TokenUsage
+			if err := parseClaudeEvents(context.Background(), strings.NewReader(strings.Join(tc.events, "\n")), nil, &usage, nil); err != nil {
+				t.Fatal(err)
+			}
+			if usage.InputTokens != 31_000*tc.messages || usage.OutputTokens != 500*tc.messages ||
+				usage.CacheReadTokens != 20_000*tc.messages || usage.CacheCreationTokens != 1_000*tc.messages ||
+				usage.Total() != 31_500*tc.messages || !usage.Reported || !usage.CacheCreationReported {
+				t.Fatalf("usage = %+v, total %d; want %d messages totaling %d tokens", usage, usage.Total(), tc.messages, 31_500*tc.messages)
+			}
+		})
+	}
+}
+
 func TestParseClaudeEvents_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -664,6 +723,91 @@ func TestClaudeAgent_CancellationWithBlockedStdinAndInheritedPipesIsBounded(t *t
 	}
 }
 
+// The testdata/claude_*.jsonl streams are recorded from Claude Code 2.1.289
+// against a local stand-in for the API, without the init event.
+func TestClaudeAgent_RetriesOnlyATerminalTransientAPIError(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	for _, tc := range []struct {
+		name         string
+		fixture      string
+		wantAttempts int
+		wantErr      string
+	}{
+		{
+			name:         "terminal 529",
+			fixture:      "claude_terminal_529.jsonl",
+			wantAttempts: claudeMaxRetries + 1,
+			wantErr:      "claude exited: exit status 1: API error status 529: API Error: Repeated 529 Overloaded errors. The API is at capacity \u2014 this is usually temporary. Try again in a moment. If it persists, check your inference gateway (127.0.0.1:48529).",
+		},
+		{
+			name:         "terminal 429",
+			fixture:      "claude_terminal_429.jsonl",
+			wantAttempts: claudeMaxRetries + 1,
+			wantErr:      "claude exited: exit status 1: API error status 429: API Error: Request rejected (429) \u00b7 Number of request tokens has exceeded your per-minute rate limit",
+		},
+		{
+			name:         "recovered 529 then max turns",
+			fixture:      "claude_recovered_529_max_turns.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: ",
+		},
+		{
+			name:         "prose quoting 429 then max turns",
+			fixture:      "claude_prose_429_max_turns.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: ",
+		},
+		{
+			name:         "usage limit",
+			fixture:      "claude_usage_limit.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: API error status 429: You've hit your session limit \u00b7 resets 10:53pm (UTC)",
+		},
+		{
+			name:         "permanent 400",
+			fixture:      "claude_terminal_400.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: API error status 400: Prompt is too long \u00b7 the request is ~250000 tokens (limit 200000) but this conversation is only ~2372 tokens \u2014 the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be compacted; reduce attached files/tools or start with less context.",
+		},
+		{
+			name:         "empty stdout and stderr",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: ",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := ""
+			if tc.fixture != "" {
+				abs, err := filepath.Abs(filepath.Join("testdata", tc.fixture))
+				if err != nil {
+					t.Fatalf("resolve fixture: %v", err)
+				}
+				fixture = abs
+			}
+			t.Setenv("NM_CLAUDE_STDIN_HELPER", "replay-then-fail")
+			t.Setenv("NM_CLAUDE_STDIN_FIXTURE", fixture)
+			a := newClaudeStdinHelperAgent(t)
+
+			attempts := 0
+			_, err := a.Run(context.Background(), RunOpts{
+				Prompt:    "review",
+				CWD:       t.TempDir(),
+				OnAttempt: func(Attempt) { attempts++ },
+			})
+			if err == nil {
+				t.Fatal("Run succeeded, want the exit error")
+			}
+			if attempts != tc.wantAttempts {
+				t.Errorf("attempts = %d, want %d", attempts, tc.wantAttempts)
+			}
+			if err.Error() != tc.wantErr {
+				t.Errorf("error = %q, want %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
 func newClaudeStdinHelperAgent(t *testing.T) *claudeAgent {
 	t.Helper()
 	exe, err := os.Executable()
@@ -707,6 +851,15 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "replay-then-fail":
+		if fixture := os.Getenv("NM_CLAUDE_STDIN_FIXTURE"); fixture != "" {
+			stream, err := os.ReadFile(fixture)
+			if err != nil {
+				os.Exit(6)
+			}
+			_, _ = os.Stdout.Write(stream)
+		}
+		os.Exit(1)
 	case "read":
 		prompt, err := io.ReadAll(os.Stdin)
 		if err != nil {

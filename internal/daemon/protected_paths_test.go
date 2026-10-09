@@ -238,6 +238,36 @@ func TestProtectedPathRefusalSurvivesFailedTrustedRecovery(t *testing.T) {
 	}
 }
 
+// parkedGateFindingIDs returns every finding ID the run's parked gate shows, so
+// a fix response can account for all of them: an omitted finding is refused and
+// leaves the gate parked.
+func parkedGateFindingIDs(t *testing.T, database *db.DB, runID string) []string {
+	t.Helper()
+	steps, err := database.GetStepsByRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, sr := range steps {
+		if sr.Status != types.StepStatusAwaitingApproval && sr.Status != types.StepStatusFixReview {
+			continue
+		}
+		if sr.FindingsJSON == nil {
+			continue
+		}
+		parsed, err := types.ParseFindingsJSON(*sr.FindingsJSON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range parsed.Items {
+			if item.ID != "" {
+				ids = append(ids, item.ID)
+			}
+		}
+	}
+	return ids
+}
+
 func assertProtectedWorktreePreserved(t *testing.T, workDir, head string) {
 	t.Helper()
 	if _, err := os.Stat(workDir); err != nil {
@@ -364,6 +394,7 @@ func TestProtectedPathPushApprovalCannotSkipPublicationOrDiscardEdits(t *testing
 	gitCmd(t, workDir, "restore", "--source=HEAD", "--staged", "--worktree", "--", "test.txt")
 	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{
 		RunID: result.RunID, Step: types.StepPush, Action: types.ActionFix,
+		FindingIDs: parkedGateFindingIDs(t, database, result.RunID),
 	}, nil); err != nil {
 		t.Fatal(err)
 	}

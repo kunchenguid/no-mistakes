@@ -9,6 +9,7 @@ import (
 )
 
 func TestAllChecksPassedFailsClosed(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		check scm.Check

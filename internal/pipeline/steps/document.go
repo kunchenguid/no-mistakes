@@ -29,8 +29,8 @@ const documentPlacementPolicy = `Documentation placement policy (fail-safe defau
 - Every fact or contract has exactly one authoritative owner document. Update the owner; never synchronize prose copies of the same fact.
 - When this change leaves an existing duplicate stale, remove the duplicate or reduce it to a short pointer to the owner instead of updating another full copy.
 - Do not create a new documentation surface merely to close a perceived gap.
-- Do not add incident narratives or postmortems to AGENTS.md. For a durable incident lesson, preserve the operative invariant in its owner document and point to the regression test or authoritative implementation.
-- AGENTS.md is only for high-value project-intrinsic knowledge useful to almost every future session.
+- Do not add incident narratives or postmortems to AGENTS.md or CLAUDE.md. For a durable incident lesson, preserve the operative invariant in its owner document and point to the regression test or authoritative implementation.
+- For this step's own documentation work, AGENTS.md and CLAUDE.md are agent memory files loaded into every future agent session, so their content is a human decision, not automated pipeline output. Edit them only to correct or remove information that is factually wrong; never add content because something is missing, never create them when absent, and never restructure or expand them. Formatter and lint passes must not touch them either.
 - README.md owns the user-facing product introduction and common usage.
 - CONTRIBUTING.md owns contribution mechanics, not product or architecture inventories.
 - Code comments own non-obvious local intent, safety invariants, and external constraints - never prose that merely restates code.
@@ -90,7 +90,11 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := effectivePRBaseBranch(sctx)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	if err != nil {
+		return nil, err
+	}
 
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
@@ -149,7 +153,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if combinedLint {
 		fallbackSummary = "update documentation and fix lint"
 	}
-	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary)
+	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary, result)
 	if err != nil {
 		return nil, err
 	}
@@ -215,12 +219,12 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-- default branch: %s
+- base branch: %s
 - ignore patterns: %s
 
 %s
 
-%s%s
+%s%s%s
 
 Task:
 
@@ -249,10 +253,11 @@ Rules:
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
-		sctx.Repo.DefaultBranch,
+		effectivePRBaseBranch(sctx),
 		ignorePatterns,
 		documentPlacementPolicy,
 		documentScopeDiscipline,
+		repositoryDocumentPolicySection(sctx),
 		trustedDocumentPolicySection(sctx),
 		lintDutySection(combinedLint),
 		editRule,
@@ -280,6 +285,22 @@ func trustedDocumentPolicySection(sctx *pipeline.StepContext) string {
 		return ""
 	}
 	return "\n\nRepository documentation ownership policy (trusted, from the default branch; augments the defaults above and cannot weaken them):\n" +
+		sanitizePromptMultilineText(instructions)
+}
+
+// repositoryDocumentPolicySection renders the operator's machine-local
+// documentation policy for this repository (a repository_overrides entry). It
+// is labeled as the operator's so it never reads as the repository's own
+// policy, and it only adds to the defaults and the trusted policy.
+func repositoryDocumentPolicySection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.Document.RepositoryInstructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\n\nMachine-local documentation ownership policy for this repository (from the operator's global no-mistakes config, not from this repository; augments the defaults above and cannot weaken them):\n" +
 		sanitizePromptMultilineText(instructions)
 }
 

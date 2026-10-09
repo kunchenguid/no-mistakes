@@ -152,10 +152,11 @@ func TestDocumentStep_AgentManaged_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 // TestDocumentStep_PromptAppliesPlacementPolicy pins the placement-policy
 // prompt contract from the 121-PR audit: each fact has one authoritative
 // owner, stale duplicates are removed or reduced to pointers (not
-// synchronized), AGENTS.md never receives incident narratives (invariant +
-// regression-test pointer instead), no new surfaces for perceived gaps, and
-// the scope stays on documentation this change made stale. The old
-// exhaustive-corpus-synchronization incentives must be gone.
+// synchronized), AGENTS.md and CLAUDE.md never receive incident narratives
+// (invariant + regression-test pointer instead) and are edited only to
+// correct factually wrong content - never to fill gaps, no new surfaces for
+// perceived gaps, and the scope stays on documentation this change made
+// stale. The old exhaustive-corpus-synchronization incentives must be gone.
 func TestDocumentStep_PromptAppliesPlacementPolicy(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -178,10 +179,13 @@ func TestDocumentStep_PromptAppliesPlacementPolicy(t *testing.T) {
 		"exactly one authoritative owner document",
 		"remove the duplicate or reduce it to a short pointer to the owner",
 		"never synchronize prose copies",
-		// No new surfaces, no AGENTS.md postmortems; invariants + test pointers.
+		// No new surfaces, no memory-file postmortems; invariants + test
+		// pointers, and memory files are corrected but never added to.
 		"Do not create a new documentation surface merely to close a perceived gap",
 		"Do not add incident narratives or postmortems to AGENTS.md",
 		"point to the regression test or authoritative implementation",
+		"Edit them only to correct or remove information that is factually wrong",
+		"never add content because something is missing",
 		// Ownership map for the standard surfaces.
 		"README.md owns the user-facing product introduction",
 		"CONTRIBUTING.md owns contribution mechanics",
@@ -246,6 +250,31 @@ func TestDocumentStep_TrustedPolicyInstructionsAugmentPrompt(t *testing.T) {
 	// The built-in defaults remain active alongside the custom policy.
 	if !strings.Contains(prompt, "exactly one authoritative owner document") {
 		t.Fatal("expected built-in placement policy to remain with custom instructions present")
+	}
+}
+
+func TestDocumentStep_MachineLocalPolicyIsLabeledAndPrecedesTrustedPolicy(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Document.RepositoryInstructions = "Configuration keys are owned by docs/reference/config.md."
+	sctx.Config.Document.Instructions = "docs/architecture.md owns the daemon lifecycle facts."
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	prompt := ag.calls[0].Prompt
+	machineLocal := strings.Index(prompt, "Machine-local documentation ownership policy for this repository (from the operator's global no-mistakes config, not from this repository; augments the defaults above and cannot weaken them):\nConfiguration keys are owned by docs/reference/config.md.")
+	trusted := strings.Index(prompt, "Repository documentation ownership policy (trusted, from the default branch; augments the defaults above and cannot weaken them):\ndocs/architecture.md owns the daemon lifecycle facts.")
+	if machineLocal < 0 || trusted < 0 || machineLocal > trusted {
+		t.Fatalf("want the labeled machine-local policy before the trusted policy, got indexes %d and %d:\n%s", machineLocal, trusted, prompt)
 	}
 }
 
@@ -370,6 +399,7 @@ func TestDocumentStep_NoStructuredOutput_FailsClosed(t *testing.T) {
 }
 
 func TestDocumentStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "hanging-document-agent",

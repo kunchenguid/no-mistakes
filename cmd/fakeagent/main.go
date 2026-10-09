@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
 )
 
 func main() {
@@ -54,6 +56,10 @@ func run(argv []string) int {
 		return runGhStub(args)
 	case "tea":
 		return runTeaStub(args)
+	case fakeplugin.ExecutableName:
+		// The reference provider plugin, configured through the global
+		// provider_plugins block by internal/e2e/provider_plugin_test.go.
+		return fakeplugin.Main(args, os.Stdin, os.Stdout, os.Getenv(fakeplugin.EnvState), os.Getenv(fakeplugin.EnvLog))
 	default:
 		fmt.Fprintf(os.Stderr, "fakeagent: invoked under unknown name %q (argv[0]=%q)\n", name, argv[0])
 		return 2
@@ -65,8 +71,11 @@ func run(argv []string) int {
 // returns non-zero (so SCM detection treats GitHub as unauthenticated)
 // and any other subcommand prints a clear error.
 func runGhStub(args []string) int {
-	if os.Getenv("FAKEAGENT_GH_MODE") == "fork-pr" {
+	switch os.Getenv("FAKEAGENT_GH_MODE") {
+	case "fork-pr":
 		return runGhForkPRStub(args)
+	case "stateful-pr":
+		return runGhStatefulPRStub(args)
 	}
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		fmt.Fprintln(os.Stderr, "fakeagent gh: not authenticated (e2e stub)")

@@ -359,7 +359,7 @@ func TestTriggerRunSettlesStrandedMirrorOnRecordedEvidence(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := triggerRun(ctx, e.env, "main", nil, "", "", false); err != nil {
+	if _, err := triggerRun(ctx, e.env, "main", nil, "", "", false, "", nil); err != nil {
 		var refusal *staleMirrorError
 		if errors.As(err, &refusal) {
 			t.Fatalf("submission was refused despite recorded evidence: %v", err)

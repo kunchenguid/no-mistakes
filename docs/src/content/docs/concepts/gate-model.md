@@ -104,14 +104,51 @@ discarded by a merge or revert from being counted as surviving content. If that
 survival check cannot prove preservation, the private-only range is reported
 as at risk.
 
+**Recovery-anchor preservation credit (issue #1233):** a private-only commit
+that a `refs/no-mistakes/recover/<run>` anchor reaches is *preserved*, so it is
+re-derived out of the at-risk set. Those anchors are the tool's own sanctioned
+preservation record - terminalization pins every verified unpublished head at
+that ref before the managed worktree can be removed, and
+`custody.PreserveRecoveryAnchor` never replaces evidence (a conflicting or
+symbolic anchor fails closed and is never dereferenced). The credit exists so
+the sanctioned `sync --recover` -> rerun -> push loop cannot deadlock against
+the very anchor that loop wrote to declare the work preserved.
+
+This is a **preservation credit, not containment evidence**. It says nothing
+about whether the content lands in the published tree; ancestry, patch
+identity and final-tree survival remain the only proofs of that, and Decision
+41-A below remains the only head exception. The archive-before-delete contract
+is unchanged, so a credited reconciliation still archives the exact private
+head before removing the branch ref. A commit no anchor reaches is still
+refused, and the refusal names every proof that would clear it.
+
+The credit scan never walks what the anchors can see. Recovery anchors
+accumulate for the life of the gate, so each membership scan is a `git
+rev-list` of candidates that excludes the live head as well as every
+anchor; because the candidates are private-only, that walk is bounded by the
+private-only range. Only credited commits are then attributed to the first
+anchor that reaches them. When no recovery anchor exists no credit is possible
+and the ordinary at-risk refusal is returned. Otherwise the candidates are
+scanned in successive batches of `maxRecoveryCandidates` (in
+`internal/gate/reconcile.go`), so a long, fully anchored history still earns
+its credit; the scan is never truncated or refused by size, because dropping
+candidates would drop their preservation credit and silently reintroduce the
+deadlock the credit exists to end.
+
 **Accepted Decision 41-A (issue #983):** pipeline publication may replace a
-private mirror head that is **exactly equal to `Run.SubmittedHeadSHA`** without
-patch-ID or tree-survival proof. This narrow policy exception permits reviewed
-rebases and conflict resolutions to change the submitted patch. Ownership is
-not containment evidence. The exception does not extend to another recorded
-head, an abbreviated SHA, or an external, newer, or divergent private head.
-Fresh AXI submissions do not receive this Decision 41-A exception; recorded
-supersession below is the only exception they can receive.
+private mirror head that is **exactly equal to a head the publishing run itself
+placed on the mirror** without patch-ID or tree-survival proof: its
+`Run.SubmittedHeadSHA`, or, once it has published, its durable
+`Run.LastPushedSHA`. The last pushed head is recorded only after a verified push to the configured
+push target and mirror settlement, so it is never an external or newer head.
+This narrow policy exception permits reviewed rebases and conflict resolutions
+to change the submitted patch, including a CI merge-conflict repair that is
+revalidated from Review after the run has already published. The replacement
+head must still be review-approved, and the force push to the configured target
+stays leased on the same last pushed head. Ownership is not containment evidence. The
+exception does not extend to another recorded head, an agent-created head, an
+abbreviated SHA, or an external, newer, or divergent private head. Fresh AXI
+submissions do not receive this exception.
 
 **Recorded supersession:** a fresh submission can also reach a settled state for
 a mirror left stranded by a terminal run. After a rebase, such a run can leave the
@@ -132,7 +169,7 @@ all still refuse, leave the branch untouched, and name every at-risk commit. The
 refusal is reported as a terminal condition with the operator action attached,
 rather than as a bare Git error. The guard resolves this evidence on the AXI
 submission paths only, which supply the repository's own run records; publication
-reconciliation supplies none, so Decision 41-A stays its only exception.
+reconciliation supplies none; its run-owned-head and recovery-anchor rules remain in force.
 
 The exception deliberately does not extend to a verified final head that carries
 commits made after review (document/lint and CI-repair rounds commit after
@@ -152,11 +189,11 @@ including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
 head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A
-and recorded supersession, unproven private content refuses before upstream
-publication, leaves the private branch untouched, and names every at-risk
-commit. An ancestor already supports an ordinary fast-forward. A gate head that
-is a newer descendant of the published head stays untouched, including through
-the detached worktree's shared branch refs.
+and the recovery-anchor credit above and recorded supersession, unproven private content refuses before
+upstream publication, leaves the private branch untouched, and names every
+at-risk commit. An ancestor already supports an ordinary fast-forward. A gate
+head that is a newer descendant of the published head stays untouched,
+including through the detached worktree's shared branch refs.
 
 Correction and CI-repair recording persist the agent-created worktree head in
 the run and database without moving a branch ref shared with the gate. Repairs

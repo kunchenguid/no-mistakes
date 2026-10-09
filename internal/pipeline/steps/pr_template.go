@@ -29,6 +29,12 @@ var templatePRContentSchema = json.RawMessage(`{
 }`)
 
 func supportsPRTemplates(provider scm.Provider) bool {
+	// Provider plugins implement raw content reads through the required
+	// "pr view" subcommand, which is the whole contract templates and
+	// pre-push attestation need.
+	if provider.IsPlugin() {
+		return true
+	}
 	switch provider {
 	case scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderForgejo, scm.ProviderAzureDevOps, scm.ProviderBitbucket:
 		return true
@@ -123,6 +129,7 @@ Trusted repository template (JSON string):
 
 Final diff paths and statuses:
 %s%s%s`, branch, baseBranch, baseSHA, sctx.Run.HeadSHA, titleRules, scopeRules, quoted, paths, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+	prompt += agent.MemoryFilesRule
 	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: templatePRContentSchema, OnChunk: sctx.LogChunk})
 	if err != nil {
 		return prContent{}, fmt.Errorf("draft pr.template narrative (template will not be replaced by a generic fallback): %w", err)
@@ -195,12 +202,8 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 	if intent := publicPRIntent(sctx); intent != "" {
 		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(intent))
 	}
-	if risk != "" {
-		parts = append(parts, "## Risk Assessment\n\n"+neutralizeAttestationMarkers(risk))
+	if evidence := appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD); evidence != "" {
+		parts = append(parts, evidence)
 	}
-	if testing != "" {
-		parts = append(parts, neutralizeAttestationMarkers(testing))
-	}
-	parts = append(parts, pipelineMD)
 	return strings.Join(parts, "\n\n"), nil
 }
