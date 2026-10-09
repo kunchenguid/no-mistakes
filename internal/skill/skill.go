@@ -216,6 +216,24 @@ Run the pipeline and decide on its findings as they come up:
    successful ` + "`fix`" + ` response echoes what it recorded in a ` + "`recorded:`" + ` object
    (` + "`fixed`" + `, ` + "`ignored`" + `, ` + "`kept`" + `), so read it to confirm the decision
    you actually made.
+   An operator who explicitly requires one already-published CI source repair
+   to re-pass Review, Test, Document, and Lint can use the exact-bound
+   ` + "`axi respond --require-review-revalidation`" + ` form documented by
+   ` + "`no-mistakes axi respond --help`" + `. Copy the full repository, branch,
+   head, step-result, and durable round values from a fresh status response,
+   choose one immutable operation id, and preserve the whole command for an
+   identical retry after an uncertain reply. This operation cannot use
+   ` + "`--yes`" + ` and refuses before mutation when the running daemon lacks the
+   matching capability, any bound fact changed, or the managed worktree is no
+   longer detached, clean, and exactly at the bound head. The same exact-head
+   and cleanliness check repeats immediately before the original fixer starts.
+   If that fixer parks on a protected-path refusal, leave the allowed retained
+   changes in place, restore the protected path, and respond with fix again;
+   that retry still requires the exact detached head and re-runs the protected-
+   path guard before it can commit the allowed remainder. Once it
+   accepts the operation, do not downgrade or force-restart that ` + "`NM_HOME`" + `
+   with an older daemon while the run remains active; let the run finish or
+   cancel it first.
    While a run is active, never fix findings by editing the code yourself -
    the pipeline owns both the findings and the fixes. Your job at a gate is to
    decide and respond; ` + "`--action fix`" + ` has the pipeline apply the fix and
@@ -292,6 +310,7 @@ If it reports ` + "`next_action.code`" + ` is ` + "`continue_active_run`" + `, t
 When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, run its exact ` + "`next_action.command`" + ` rather than reconstructing one. That is ` + "`no-mistakes axi sync --recover`" + ` to take a still-available preserved pipeline head, or ` + "`no-mistakes axi sync --recover --keep-local`" + ` in two keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits, or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain ` + "`--recover`" + ` or ` + "`rerun`" + ` for a reported keep-local action. ` + "`no-mistakes rerun`" + ` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
 Ordinary recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under ` + "`refs/no-mistakes/recover-local/<run>`" + `.
 The ordinary containment proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
+When that exact terminal unpublished case reports ` + "`next_action.code`" + ` as ` + "`adopt_terminal_head`" + `, run only its complete ` + "`next_action.command`" + `. The explicit action binds the repository, branch, terminal run, observed caller head, and preserved final head; records that exact authorization; preserves both histories; moves the private gate branch off the superseded caller head so the next ` + "`axi run`" + ` submits normally; and stamps custody only after the guarded branch and worktree move succeeds. If an earlier adoption left the next run refused because the gate branch still named the submitted head, replaying the same offered command settles it. It refuses active or published runs, unique or dirty local work, changed bindings or recovery evidence, and concurrent branch/index/worktree changes. Never shorten or reconstruct the command, and never use it when ordinary ` + "`--recover`" + ` is offered.
 When ` + "`next_action.code`" + ` is ` + "`recover_remote_rewritten`" + `, the configured push target was force-rewritten outside the pipeline after a terminal run: run exact ` + "`no-mistakes axi sync --recover`" + `. It re-verifies the live target, anchors the superseded pipeline head under ` + "`refs/no-mistakes/recover-rewritten/<run>/<generation>`" + `, and rebinds only the recorded push binding to the verified live head; it never moves your branch, the gate, or the remote. It refuses ` + "`--keep-local`" + `, a live head or target that changes during recovery, a head it cannot anchor, and a merged or closed PR. Afterwards follow the ordinary ` + "`next_action`" + ` it reports.
 When ` + "`next_action.code`" + ` is ` + "`adopt_published`" + `, a custody-returned branch was rebased after its gate lane stopped moving: run ` + "`no-mistakes axi sync --adopt-published`" + `. It verifies the configured push target already has the exact rebased local head, preserves the old lane head, and updates only that stale gate lane. If the target differs or changes during verification, it refuses without replacing the lane.
 A ` + "`branch_sync.state`" + ` of ` + "`user_owned`" + ` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated ` + "`--recover`" + ` there is a harmless no-op.

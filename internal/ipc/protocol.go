@@ -17,6 +17,7 @@ const (
 	MethodPushReceived              = "push_received"
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
+	MethodProbeBoundRevalidation    = "probe_bound_revalidation"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
 	MethodCaptureVerificationPlan   = "capture_verification_plan"
 	MethodStartFreshRun             = "start_fresh_run"
@@ -155,6 +156,16 @@ type ProbeOmitIntentResult struct {
 	OK bool `json:"ok"`
 }
 
+// ProbeBoundRevalidationParams is the empty request for the active-CI
+// response capability. A distinct method makes a new client fail closed
+// against an older daemon before it submits a response whose new fields that
+// daemon would silently ignore.
+type ProbeBoundRevalidationParams struct{}
+
+type ProbeBoundRevalidationResult struct {
+	OK bool `json:"ok"`
+}
+
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
@@ -269,6 +280,16 @@ type RespondParams struct {
 	Instructions     map[string]string    `json:"instructions,omitempty"`
 	AddedFindings    []types.Finding      `json:"added_findings,omitempty"`
 	ApprovalReason   string               `json:"approval_reason,omitempty"` // Test approval only
+	// RequireReviewRevalidation is the narrow active-CI source-correction
+	// action. All binding fields and OperationID are mandatory with it; the
+	// daemon persists them on the exact round before dispatching the fixer.
+	RequireReviewRevalidation bool   `json:"require_review_revalidation,omitempty"`
+	OperationID               string `json:"operation_id,omitempty"`
+	ExpectedRepoID            string `json:"expected_repo_id,omitempty"`
+	ExpectedBranch            string `json:"expected_branch,omitempty"`
+	ExpectedHeadSHA           string `json:"expected_head_sha,omitempty"`
+	ExpectedStepResultID      string `json:"expected_step_result_id,omitempty"`
+	ExpectedRoundID           string `json:"expected_round_id,omitempty"`
 }
 
 // CancelRunParams cancels an active pipeline run.
@@ -391,8 +412,23 @@ type RespondResult struct {
 	// applied fix is out of scope for a gate response, so the response was
 	// refused; a machine caller corrects it by omitting those findings to keep
 	// the earlier decision.
-	DeclinedEarlierFix []string `json:"declined_earlier_fix,omitempty"`
-	Help               string   `json:"help,omitempty"`
+	DeclinedEarlierFix []string                  `json:"declined_earlier_fix,omitempty"`
+	Help               string                    `json:"help,omitempty"`
+	Operation          *ResponseOperationReceipt `json:"operation,omitempty"`
+	Replayed           bool                      `json:"replayed,omitempty"`
+}
+
+// ResponseOperationReceipt is the durable acceptance receipt for one exact
+// response-scoped CI revalidation demand. It contains no finding bodies.
+type ResponseOperationReceipt struct {
+	ID           string `json:"id"`
+	RunID        string `json:"run_id"`
+	RepoID       string `json:"repo_id"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"head_sha"`
+	StepResultID string `json:"step_result_id"`
+	RoundID      string `json:"round_id"`
+	AcceptedAt   int64  `json:"accepted_at"`
 }
 
 // AnswerReviewQuestionParams records one operator answer to a question the
@@ -535,6 +571,7 @@ type StepResultInfo struct {
 	// round recorded none. Agent surfaces use it to report applied fixes.
 	FixSummaries     []string `json:"fix_summaries,omitempty"`
 	RoundCount       int      `json:"round_count,omitempty"`
+	CurrentRoundID   string   `json:"current_round_id,omitempty"`
 	FixRoundCount    int      `json:"fix_round_count,omitempty"`
 	AutoFixLimit     int      `json:"auto_fix_limit,omitempty"`
 	PendingFixSource string   `json:"pending_fix_source,omitempty"`

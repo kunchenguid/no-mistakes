@@ -272,15 +272,20 @@ func persistCIRefusal(t *testing.T, f *ciRepairFixture, outcome *pipeline.StepOu
 
 func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testing.T) {
 	t.Parallel()
-	for _, revalidate := range []bool{false, true} {
-		name := "publish"
-		if revalidate {
-			name = "revalidate"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configured bool
+		response   bool
+	}{
+		{name: "publish"},
+		{name: "configured_revalidation", configured: true},
+		{name: "response_revalidation", response: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			calls := 0
-			f := newCIRepairFixture(t, revalidate, func(dir string) {
+			f := newCIRepairFixture(t, tc.configured, func(dir string) {
 				calls++
 				for file, content := range map[string]string{"package.lock": "refused\n", "fix.go": "retained repair\n"} {
 					if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
@@ -288,6 +293,7 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 					}
 				}
 			})
+			f.sctx.RequireReviewRevalidation = tc.response
 			f.sctx.Config.ProtectedPaths = []string{"*.lock"}
 			outcome, err := f.run(t)
 			if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) {
@@ -320,7 +326,7 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 			if got := gitCmd(t, f.dir, "show", "HEAD:fix.go"); got != "retained repair" {
 				t.Fatalf("commit lost retained repair: %q", got)
 			}
-			if revalidate {
+			if tc.configured || tc.response {
 				if outcome == nil || outcome.RestartFrom != types.StepReview || f.remoteHead(t) != f.headSHA {
 					t.Fatalf("retry skipped required pipeline revalidation: %+v remote=%s", outcome, f.remoteHead(t))
 				}

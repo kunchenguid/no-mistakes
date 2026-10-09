@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,6 +49,26 @@ type approvalResponse struct {
 	// recorded as a decision: without the list the executor cannot tell an
 	// explicit all-ignored response from a gate with nothing to decide.
 	ignoreFindingIDs []string
+	// requireReviewRevalidation is the durable, response-scoped tighten-only
+	// demand accepted on one exact CI gate round.
+	requireReviewRevalidation bool
+	// boundExpectedHeadSHA is the exact live worktree head the same bound
+	// response authorized. It is checked once when the response is admitted and
+	// again at the fixer invocation boundary.
+	boundExpectedHeadSHA string
+}
+
+// ResponseRevalidationBinding names every immutable fact an operator confirms
+// for one active published CI source-correction response.
+type ResponseRevalidationBinding struct {
+	OperationID  string
+	Fingerprint  string
+	RunID        string
+	RepoID       string
+	Branch       string
+	HeadSHA      string
+	StepResultID string
+	RoundID      string
 }
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
@@ -85,6 +106,19 @@ type Executor struct {
 	// records the decision against it before the caller is told what was
 	// recorded, so an echo never claims a decision that is not durable.
 	waitingRoundID string
+	// beforeBoundResponseLock is a narrow test seam for synchronizing callers
+	// immediately before the receipt-and-gate mutation boundary. Production
+	// executors leave it nil.
+	beforeBoundResponseLock func()
+	// beforeBoundFixExecution is the corresponding test seam immediately before
+	// the bound fixer's final exact-head/clean-worktree check.
+	beforeBoundFixExecution func()
+	// recoveryReady closes once a recovered executor has either installed its
+	// durable approval gate or conclusively left it. An exact receipt retry
+	// waits on this boundary instead of falsely reporting a replay while Resume
+	// is still reconciling the gate.
+	recoveryReady     chan struct{}
+	recoveryReadyOnce sync.Once
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
@@ -98,6 +132,25 @@ func (e *Executor) SetOnPRMerged(fn func(context.Context, string)) {
 		return
 	}
 	e.onPRMerged = fn
+}
+
+// PrepareRecoveredRun arms the readiness boundary before a recovered executor
+// becomes visible to request handlers.
+func (e *Executor) PrepareRecoveredRun() {
+	e.mu.Lock()
+	if e.recoveryReady == nil {
+		e.recoveryReady = make(chan struct{})
+	}
+	e.mu.Unlock()
+}
+
+func (e *Executor) signalRecoveredRunReady() {
+	e.mu.Lock()
+	ready := e.recoveryReady
+	e.mu.Unlock()
+	if ready != nil {
+		e.recoveryReadyOnce.Do(func() { close(ready) })
+	}
 }
 
 // SetForgeContext configures the immutable provider context used by every
@@ -191,8 +244,91 @@ func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, fin
 // It returns the dispositions the response recorded, which the daemon echoes
 // to the caller.
 func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string) (RespondDispositions, error) {
+	dispositions, _, _, err := e.respondWithOverrides(step, action, findingIDs, ignoreFindingIDs, instructions, addedFindings, approvalReason, nil)
+	return dispositions, err
+}
+
+// RespondWithBoundRevalidation is the explicitly bound variant used only for
+// active published CI source correction. It records the exact operation and
+// forces any changed repair back through Review before publication. Replayed
+// is true when the same accepted operation was queried after its gate left.
+func (e *Executor) RespondWithBoundRevalidation(step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string, binding ResponseRevalidationBinding) (RespondDispositions, *db.BoundResponseOperation, bool, error) {
+	return e.respondWithOverrides(step, action, findingIDs, ignoreFindingIDs, instructions, addedFindings, approvalReason, &binding)
+}
+
+// BoundResponseMatches reports whether op is the exact immutable operation
+// named by binding. The executor and daemon replay path share this owner so a
+// receipt cannot be accepted under different identity rules after its executor
+// has exited.
+func BoundResponseMatches(op *db.BoundResponseOperation, binding *ResponseRevalidationBinding) bool {
+	return op != nil && binding != nil && op.OperationID == binding.OperationID && op.Fingerprint == binding.Fingerprint &&
+		op.RunID == binding.RunID && op.RepoID == binding.RepoID && op.Branch == binding.Branch && op.HeadSHA == binding.HeadSHA &&
+		op.StepResultID == binding.StepResultID && op.RoundID == binding.RoundID
+}
+
+// DispositionsFromBoundOperation decodes the response echo stored with an
+// accepted operation. Empty or corrupt receipts fail closed identically on
+// active-executor and receipt-only replay paths.
+func DispositionsFromBoundOperation(op *db.BoundResponseOperation) (RespondDispositions, error) {
+	var dispositions RespondDispositions
+	if op == nil || op.DispositionsJSON == "" {
+		return dispositions, fmt.Errorf("the bound response operation has no durable dispositions")
+	}
+	if err := json.Unmarshal([]byte(op.DispositionsJSON), &dispositions); err != nil {
+		return RespondDispositions{}, fmt.Errorf("decode bound response dispositions: %w", err)
+	}
+	return dispositions, nil
+}
+
+func validateExactBoundWorktree(workDir, expectedHead string) error {
+	return validateBoundWorktree(workDir, expectedHead, true)
+}
+
+func validateBoundWorktree(workDir, expectedHead string, requireClean bool) error {
+	if strings.TrimSpace(workDir) == "" || strings.TrimSpace(expectedHead) == "" {
+		return fmt.Errorf("full revalidation requires an available worktree at the exact bound head")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	observed, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("verify the full-revalidation worktree head: %w", err)
+	}
+	if observed != expectedHead {
+		return fmt.Errorf("the live worktree head %s no longer matches the bound head %s; the response was not recorded or dispatched", observed, expectedHead)
+	}
+	detached, err := git.IsDetachedHEAD(ctx, workDir)
+	if err != nil || !detached {
+		return fmt.Errorf("the full-revalidation worktree is no longer detached at its bound head; the response was not recorded or dispatched")
+	}
+	if requireClean {
+		dirty, err := git.HasUncommittedChanges(ctx, workDir)
+		if err != nil {
+			return fmt.Errorf("verify the full-revalidation worktree cleanliness: %w", err)
+		}
+		if dirty {
+			return fmt.Errorf("the full-revalidation worktree has uncommitted changes at the bound head; the response was not recorded or dispatched")
+		}
+	}
+	return nil
+}
+
+func (e *Executor) retainedProtectedPathRepair(stepResultID string) (bool, error) {
+	stepResult, err := e.db.GetStepResult(stepResultID)
+	if err != nil {
+		return false, fmt.Errorf("inspect retained protected-path repair: %w", err)
+	}
+	return stepResult != nil && stepResult.FindingsJSON != nil && HasProtectedPathRefusal(*stepResult.FindingsJSON), nil
+}
+
+func (e *Executor) respondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string, binding *ResponseRevalidationBinding) (RespondDispositions, *db.BoundResponseOperation, bool, error) {
 	if approvalReason != "" && (step != types.StepTest || action != types.ActionApprove) {
-		return RespondDispositions{}, fmt.Errorf("an approval reason applies only to Test approval")
+		return RespondDispositions{}, nil, false, fmt.Errorf("an approval reason applies only to Test approval")
+	}
+	if binding != nil {
+		if step != types.StepCI || action != types.ActionFix || binding.OperationID == "" || binding.Fingerprint == "" || binding.RunID == "" || binding.RepoID == "" || binding.Branch == "" || binding.HeadSHA == "" || binding.StepResultID == "" || binding.RoundID == "" {
+			return RespondDispositions{}, nil, false, fmt.Errorf("full revalidation requires an exact CI fix binding")
+		}
 	}
 	// The gate loop dispatches on the action, so an unknown one is refused
 	// here while the gate stays parked for a valid response, rather than
@@ -215,28 +351,87 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	switch action {
 	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionAnswer:
 	default:
-		return RespondDispositions{}, fmt.Errorf("unrecognized approval action %q (valid: approve, fix, skip, abort, answer)", action)
+		return RespondDispositions{}, nil, false, fmt.Errorf("unrecognized approval action %q (valid: approve, fix, skip, abort, answer)", action)
+	}
+	if binding != nil && e.beforeBoundResponseLock != nil {
+		e.beforeBoundResponseLock()
 	}
 	e.mu.Lock()
+	var existing *db.BoundResponseOperation
+	if binding != nil {
+		var err error
+		existing, err = e.db.GetBoundResponseOperation(binding.OperationID)
+		if err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, nil, false, err
+		}
+		if existing != nil && !BoundResponseMatches(existing, binding) {
+			e.mu.Unlock()
+			return RespondDispositions{}, nil, false, fmt.Errorf("operation %s is already bound to a different response", binding.OperationID)
+		}
+	}
+	if existing != nil && (!e.waiting || e.waitingStep != step || e.waitingStepResultID != binding.StepResultID || e.waitingRoundID != binding.RoundID) {
+		if !e.waiting && e.recoveryReady != nil {
+			ready := e.recoveryReady
+			select {
+			case <-ready:
+				// Recovery conclusively installed or left the gate. Continue to
+				// the ordinary replay decision below.
+			default:
+				e.mu.Unlock()
+				<-ready
+				return e.respondWithOverrides(step, action, findingIDs, ignoreFindingIDs, instructions, addedFindings, approvalReason, binding)
+			}
+		}
+		e.mu.Unlock()
+		dispositions, err := DispositionsFromBoundOperation(existing)
+		return dispositions, existing, true, err
+	}
 	if !e.waiting {
 		e.mu.Unlock()
-		return RespondDispositions{}, fmt.Errorf("no step awaiting approval")
+		return RespondDispositions{}, nil, false, fmt.Errorf("no step awaiting approval")
 	}
 	if step != e.waitingStep {
 		e.mu.Unlock()
-		return RespondDispositions{}, fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
+		return RespondDispositions{}, nil, false, fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
+	}
+	if binding != nil && (e.waitingStepResultID != binding.StepResultID || e.waitingRoundID != binding.RoundID) {
+		e.mu.Unlock()
+		return RespondDispositions{}, nil, false, fmt.Errorf("the CI gate result or round no longer matches the bound response")
+	}
+	if binding != nil {
+		if err := validateExactBoundWorktree(e.workDir, binding.HeadSHA); err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, nil, false, err
+		}
+	}
+	if binding == nil && action != types.ActionFix {
+		operationID, err := e.db.GetBoundResponseOperationIDForRound(e.waitingRoundID)
+		if err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, nil, false, err
+		}
+		if operationID != "" {
+			e.mu.Unlock()
+			return RespondDispositions{}, nil, false, fmt.Errorf("this CI gate round already accepted bound operation %s; retry that identical --require-review-revalidation response", operationID)
+		}
 	}
 	if action == types.ActionApprove && e.waitingApprovalRefusal != "" {
 		refusal := e.waitingApprovalRefusal
 		e.mu.Unlock()
-		return RespondDispositions{}, errors.New(refusal)
+		return RespondDispositions{}, nil, false, errors.New(refusal)
 	}
 	response := approvalResponse{
-		action:         action,
-		findingIDs:     findingIDs,
-		instructions:   instructions,
-		addedFindings:  addedFindings,
-		approvalReason: approvalReason,
+		action:                    action,
+		findingIDs:                findingIDs,
+		instructions:              instructions,
+		addedFindings:             addedFindings,
+		approvalReason:            approvalReason,
+		requireReviewRevalidation: binding != nil,
+		boundExpectedHeadSHA:      "",
+	}
+	if binding != nil {
+		response.boundExpectedHeadSHA = binding.HeadSHA
 	}
 	dispositions := RespondDispositions{}
 	if action == types.ActionFix {
@@ -253,12 +448,23 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		rounds, refusal := e.roundsForFixValidation()
 		if refusal != nil {
 			e.mu.Unlock()
-			return RespondDispositions{}, refusal
+			return RespondDispositions{}, nil, false, refusal
+		}
+		if binding == nil {
+			operationID, err := e.db.GetBoundResponseOperationIDForRound(e.waitingRoundID)
+			if err != nil {
+				e.mu.Unlock()
+				return RespondDispositions{}, nil, false, err
+			}
+			if operationID != "" {
+				e.mu.Unlock()
+				return RespondDispositions{}, nil, false, fmt.Errorf("this CI gate round already accepted bound operation %s; retry that identical --require-review-revalidation response", operationID)
+			}
 		}
 		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
 		if err != nil {
 			e.mu.Unlock()
-			return RespondDispositions{}, err
+			return RespondDispositions{}, nil, false, err
 		}
 		dispositions = split
 		// Dispatch and persistence must use the same ids the validation
@@ -293,15 +499,24 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		// under fixed and not also under kept.
 		var restoredGateIDs []string
 		response, restoredGateIDs = restorePendingDecision(response, previous, e.waitingFindings)
-		if err := e.persistResponseDecision(step, response, previous); err != nil {
-			e.mu.Unlock()
-			return RespondDispositions{}, err
-		}
 		_, _, _, normalized := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
 		// Fixed keeps gate order: a restored finding takes its place in the
 		// gate's own order rather than ahead of the ones the response named.
 		dispositions.Fixed = combineSelectedFindingIDs(idsInPayloadOrder(response.findingIDs, findingIDsInPayloadOrder(e.waitingFindings)), normalized)
 		dispositions.Kept = excludeFindingIDs(split.Kept, restoredGateIDs)
+		if binding == nil {
+			if err := e.persistResponseDecision(step, response, previous); err != nil {
+				e.mu.Unlock()
+				return RespondDispositions{}, nil, false, err
+			}
+		} else {
+			persisted, err := e.persistBoundResponseDecision(response, previous, dispositions, *binding)
+			if err != nil {
+				e.mu.Unlock()
+				return RespondDispositions{}, nil, false, err
+			}
+			existing = persisted
+		}
 	}
 	e.waiting = false
 	e.waitingFindings = ""
@@ -309,7 +524,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	e.mu.Unlock()
 
 	e.approvalCh <- response
-	return dispositions, nil
+	return dispositions, existing, false, nil
 }
 
 // roundsForFixValidation loads this step's earlier rounds for a fix response's
@@ -487,14 +702,16 @@ type stepExecutionState struct {
 	// gate parked as fix_review and the answer round has to keep that context or
 	// the two answer paths disagree about the step's durable status. That is
 	// what skipFixExecution above is for.
-	answering              bool
-	previousFindings       string
-	deferredFindings       string
-	roundNum               int
-	autoFixAttempts        int
-	executionMS            int64
-	currentRoundID         string
-	selectedOutstandingIDs []string
+	answering                 bool
+	previousFindings          string
+	deferredFindings          string
+	roundNum                  int
+	autoFixAttempts           int
+	executionMS               int64
+	currentRoundID            string
+	requireReviewRevalidation bool
+	boundExpectedHeadSHA      string
+	selectedOutstandingIDs    []string
 	// outstandingFindings is the review step's append-only set of findings that
 	// are not yet positively resolved or explicitly decided. It is persisted as
 	// the parked round's findings_json, so recovering a parked gate restores the
@@ -528,15 +745,59 @@ func (e *Executor) durableExecutionState(stepResultID string) (stepExecutionStat
 }
 
 type recoveredGate struct {
-	index                  int
-	step                   Step
-	stepResult             *db.StepResult
-	findings               string
-	round                  int
-	autoFixes              int
-	lastRoundID            string
-	reviewedHeadSHA        string
-	selectedOutstandingIDs []string
+	index                     int
+	step                      Step
+	stepResult                *db.StepResult
+	findings                  string
+	round                     int
+	autoFixes                 int
+	lastRoundID               string
+	reviewedHeadSHA           string
+	selectedOutstandingIDs    []string
+	requireReviewRevalidation bool
+	boundExpectedHeadSHA      string
+}
+
+func (e *Executor) pendingBoundProtectedRetry(stepResultID string, rounds []*db.StepRound) (string, error) {
+	boundRoundIDs, err := e.db.GetBoundResponseRoundIDsByStep(stepResultID)
+	if err != nil {
+		return "", err
+	}
+	bound := make(map[string]bool, len(boundRoundIDs))
+	for _, id := range boundRoundIDs {
+		bound[id] = true
+	}
+	pending := false
+	latestProtected := false
+	expectedHead := ""
+	for _, round := range rounds {
+		if bound[round.ID] {
+			operationID, err := e.db.GetBoundResponseOperationIDForRound(round.ID)
+			if err != nil {
+				return "", err
+			}
+			operation, err := e.db.GetBoundResponseOperation(operationID)
+			if err != nil || operation == nil || operation.HeadSHA == "" {
+				if err == nil {
+					err = fmt.Errorf("bound response operation %s is incomplete", operationID)
+				}
+				return "", err
+			}
+			pending = true
+			latestProtected = false
+			expectedHead = operation.HeadSHA
+			continue
+		}
+		latestProtected = round.FindingsJSON != nil && HasProtectedPathRefusal(*round.FindingsJSON)
+		if pending && !latestProtected {
+			pending = false
+			expectedHead = ""
+		}
+	}
+	if !pending || !latestProtected {
+		return "", nil
+	}
+	return expectedHead, nil
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -552,6 +813,7 @@ func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
 // an error so startup recovery can fail the run rather than guessing.
 func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
+	defer e.signalRecoveredRunReady()
 	ctx = e.runContext(ctx)
 	if repo == nil {
 		return fmt.Errorf("recovered run has no repository")
@@ -622,6 +884,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		OnPRMerged: e.onPRMerged,
 	}
 	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx, gate.findings); reconciled {
+		e.signalRecoveredRunReady()
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
 		}
@@ -648,6 +911,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.waitingStepResultID = gate.stepResult.ID
 	e.waitingRoundID = gate.lastRoundID
 	e.mu.Unlock()
+	e.signalRecoveredRunReady()
 	e.emitStepEventWithFindingsAndError(
 		ipc.EventStepCompleted,
 		run,
@@ -717,10 +981,15 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	// leaving one would read as the human declining the round's findings.
 	case types.ActionFix, types.ActionAnswer:
 		state := stepExecutionState{
-			roundNum:        gate.round,
-			autoFixAttempts: gate.autoFixes,
-			executionMS:     duration,
-			currentRoundID:  gate.lastRoundID,
+			roundNum:                  gate.round,
+			autoFixAttempts:           gate.autoFixes,
+			executionMS:               duration,
+			currentRoundID:            gate.lastRoundID,
+			requireReviewRevalidation: response.requireReviewRevalidation || gate.requireReviewRevalidation,
+			boundExpectedHeadSHA:      response.boundExpectedHeadSHA,
+		}
+		if state.boundExpectedHeadSHA == "" && gate.requireReviewRevalidation {
+			state.boundExpectedHeadSHA = gate.boundExpectedHeadSHA
 		}
 		if response.action == types.ActionAnswer {
 			state.answering = true
@@ -842,15 +1111,21 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				}
 			}
 			identity := selectedFindingIdentities(rounds)
+			pendingBoundExpectedHead, err := e.pendingBoundProtectedRetry(result.ID, rounds)
+			if err != nil {
+				return nil, fmt.Errorf("restore recovered bound protected-path retry: %w", err)
+			}
 			gate = &recoveredGate{
-				index:                  index,
-				step:                   e.steps[index],
-				stepResult:             result,
-				findings:               *result.FindingsJSON,
-				round:                  latest.Round,
-				autoFixes:              autoFixes,
-				lastRoundID:            latest.ID,
-				selectedOutstandingIDs: retainFindingIDsByIdentity(*result.FindingsJSON, selectedOutstandingIDs, identity),
+				index:                     index,
+				step:                      e.steps[index],
+				stepResult:                result,
+				findings:                  *result.FindingsJSON,
+				round:                     latest.Round,
+				autoFixes:                 autoFixes,
+				lastRoundID:               latest.ID,
+				selectedOutstandingIDs:    retainFindingIDsByIdentity(*result.FindingsJSON, selectedOutstandingIDs, identity),
+				requireReviewRevalidation: pendingBoundExpectedHead != "",
+				boundExpectedHeadSHA:      pendingBoundExpectedHead,
 			}
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
@@ -1182,29 +1457,31 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		return nil
 	}
 	sctx := &StepContext{
-		Ctx:               ctx,
-		Run:               run,
-		Repo:              repo,
-		WorkDir:           workDir,
-		GateDir:           e.paths.RepoDir(repo.ID),
-		Agent:             stepAgent,
-		Config:            e.config,
-		ForgeContext:      e.forge,
-		DB:                e.db,
-		StepResultID:      sr.ID,
-		UserIntent:        userIntent,
-		IntentSource:      userIntentSource,
-		Sessions:          e.sessions,
-		Shared:            e.shared,
-		EvidenceDir:       e.runEvidenceDir(run.ID),
-		Fixing:            state.fixing,
-		SkipFixExecution:  state.skipFixExecution,
-		FinalizingAnswers: state.answering,
-		CarriedFindings:   answerRoundCarriedFindings(state.answering, outstandingFindings),
-		PreviousFindings:  state.previousFindings,
-		DeferredFindings:  state.deferredFindings,
-		Log:               writeLog,
-		LogChunk:          writeLogChunk,
+		Ctx:                       ctx,
+		Run:                       run,
+		Repo:                      repo,
+		WorkDir:                   workDir,
+		GateDir:                   e.paths.RepoDir(repo.ID),
+		Agent:                     stepAgent,
+		Config:                    e.config,
+		ForgeContext:              e.forge,
+		DB:                        e.db,
+		StepResultID:              sr.ID,
+		UserIntent:                userIntent,
+		IntentSource:              userIntentSource,
+		Sessions:                  e.sessions,
+		Shared:                    e.shared,
+		EvidenceDir:               e.runEvidenceDir(run.ID),
+		Fixing:                    state.fixing,
+		SkipFixExecution:          state.skipFixExecution,
+		FinalizingAnswers:         state.answering,
+		CarriedFindings:           answerRoundCarriedFindings(state.answering, outstandingFindings),
+		PreviousFindings:          state.previousFindings,
+		DeferredFindings:          state.deferredFindings,
+		RequireReviewRevalidation: state.requireReviewRevalidation,
+		BoundExpectedHeadSHA:      state.boundExpectedHeadSHA,
+		Log:                       writeLog,
+		LogChunk:                  writeLogChunk,
 		LogFile: func(text string) {
 			fmt.Fprintln(logFile, text)
 			touchLogActivity(text, true)
@@ -1255,6 +1532,18 @@ rounds:
 	for {
 		reviewStartingHeadSHA := run.HeadSHA
 		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
+		if stepName == types.StepCI && sctx.Fixing && sctx.BoundExpectedHeadSHA != "" {
+			if e.beforeBoundFixExecution != nil {
+				e.beforeBoundFixExecution()
+			}
+			retainedRepair, err := e.retainedProtectedPathRepair(sctx.StepResultID)
+			if err != nil {
+				return false, "", fmt.Errorf("refusing bound CI fix: %w", err)
+			}
+			if err := validateBoundWorktree(workDir, sctx.BoundExpectedHeadSHA, !retainedRepair); err != nil {
+				return false, "", fmt.Errorf("refusing bound CI fix: %w", err)
+			}
+		}
 		outcome, err := step.Execute(sctx)
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
@@ -1558,6 +1847,14 @@ rounds:
 				selectedFindings, mergedFindings, normalizedOutstanding, selectedForPersistence := normalizeFixSelection(effectiveFindings, response, carryFindings)
 				sctx.PreviousFindings = mergedFindings
 				sctx.DeferredFindings = removeMatchingFindingsJSON(effectiveFindings, selectedFindings)
+				retainingBoundRetry := sctx.RequireReviewRevalidation && HasProtectedPathRefusal(effectiveFindings)
+				sctx.RequireReviewRevalidation = response.requireReviewRevalidation || retainingBoundRetry
+				switch {
+				case response.boundExpectedHeadSHA != "":
+					sctx.BoundExpectedHeadSHA = response.boundExpectedHeadSHA
+				case !retainingBoundRetry:
+					sctx.BoundExpectedHeadSHA = ""
+				}
 				if carryFindings {
 					// APPEND-ONLY: the selection is additionally handed to the fixer
 					// but is NOT subtracted from the outstanding set. It leaves only
@@ -1716,15 +2013,7 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 	if e.db == nil || e.waitingRoundID == "" {
 		return fmt.Errorf("record the response's decision: no round is in flight for step %s", step)
 	}
-	_, _, _, persisted := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
-	if previous != "" {
-		current, _ := types.ParseFindingsJSON(persisted)
-		prior, _ := types.ParseFindingsJSON(previous)
-		kept := types.ExcludeFindings(prior, findingIDList(persisted))
-		current.Items = append(current.Items, kept.Items...)
-		persisted, _ = types.MarshalFindingsJSON(current)
-	}
-	idsJSON := marshalFindingIDs(combineSelectedFindingIDs(response.findingIDs, persisted))
+	idsJSON, persisted := responseDecisionPayload(e.waitingFindings, response, previous, step == types.StepReview)
 	if idsJSON == "" {
 		if len(response.ignoreFindingIDs) > 0 {
 			if err := e.db.SetStepRoundDeclined(e.waitingRoundID); err != nil {
@@ -1737,6 +2026,55 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 		return fmt.Errorf("record the response's selection: %w", err)
 	}
 	return nil
+}
+
+func responseDecisionPayload(gate string, response approvalResponse, previous string, review bool) (string, string) {
+	_, _, _, persisted := normalizeFixSelection(gate, response, review)
+	if previous != "" {
+		current, _ := types.ParseFindingsJSON(persisted)
+		prior, _ := types.ParseFindingsJSON(previous)
+		kept := types.ExcludeFindings(prior, findingIDList(persisted))
+		current.Items = append(current.Items, kept.Items...)
+		persisted, _ = types.MarshalFindingsJSON(current)
+	}
+	idsJSON := marshalFindingIDs(combineSelectedFindingIDs(response.findingIDs, persisted))
+	return idsJSON, persisted
+}
+
+func (e *Executor) persistBoundResponseDecision(response approvalResponse, previous string, dispositions RespondDispositions, binding ResponseRevalidationBinding) (*db.BoundResponseOperation, error) {
+	idsJSON, persisted := responseDecisionPayload(e.waitingFindings, response, previous, false)
+	if idsJSON == "" {
+		return nil, fmt.Errorf("full revalidation requires at least one selected CI finding or source-correction finding")
+	}
+	dispositionsBytes, err := json.Marshal(dispositions)
+	if err != nil {
+		return nil, fmt.Errorf("encode bound response dispositions: %w", err)
+	}
+	decision := db.BoundResponseDecision{
+		OperationID:      binding.OperationID,
+		Fingerprint:      binding.Fingerprint,
+		RunID:            binding.RunID,
+		RepoID:           binding.RepoID,
+		Branch:           binding.Branch,
+		HeadSHA:          binding.HeadSHA,
+		StepResultID:     binding.StepResultID,
+		RoundID:          binding.RoundID,
+		SelectedIDsJSON:  idsJSON,
+		UserFindingsJSON: persisted,
+		DispositionsJSON: string(dispositionsBytes),
+	}
+	recorded, err := e.db.RecordBoundResponseDecision(decision)
+	if err != nil {
+		return nil, err
+	}
+	op, readErr := e.db.GetBoundResponseOperation(binding.OperationID)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if !recorded || !BoundResponseMatches(op, &binding) {
+		return nil, fmt.Errorf("the active CI run, head, gate round, publication state, or required validation steps changed before the response could be recorded")
+	}
+	return op, nil
 }
 
 // restorePendingDecision folds the decision a re-parked round already recorded

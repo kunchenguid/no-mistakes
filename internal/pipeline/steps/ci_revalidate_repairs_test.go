@@ -2,9 +2,13 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +17,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -31,6 +38,8 @@ type ciRepairFixture struct {
 	gateDir  string
 	logs     *[]string
 }
+
+const boundCIRevalidationFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"repair CI","action":"ask-user","category":"ci-check","check":"test"}]}`
 
 func newCIRepairFixture(t *testing.T, revalidate bool, agentAction func(workDir string)) *ciRepairFixture {
 	t.Helper()
@@ -223,20 +232,439 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 	}
 }
 
+// An explicit response-level demand is tighter than the executor's retained
+// false policy. This is the active published-run recovery case: a descendant
+// CI repair would ordinarily publish immediately, but this one must remain
+// local and revoke review authority until the same run revalidates from Review.
+func TestCIStep_ResponseDemandTightensFalseRepairPolicy(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	f.sctx.RequireReviewRevalidation = true
+	writeCIFix(f.dir)
+
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+	if err != nil {
+		t.Fatalf("CI repair returned error: %v\nlog:\n%s", err, f.log())
+	}
+	if !repair.HeadAdvanced || !repair.Revalidate {
+		t.Fatalf("repair = %#v, want a held repair requiring Review", repair)
+	}
+	localHead := f.localHead(t)
+	if got := f.remoteHead(t); got != f.headSHA {
+		t.Fatalf("remote moved to %s before revalidation; want %s", got, f.headSHA)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("review approval survived explicit revalidation demand: %s", *run.ReviewApprovedHeadSHA)
+	}
+	if run.HeadSHA != localHead {
+		t.Fatalf("current local pipeline head = %s, want held repair %s", run.HeadSHA, localHead)
+	}
+	if run.LastPushedSHA == nil || *run.LastPushedSHA != f.headSHA {
+		t.Fatalf("historical published head = %v, want prior head %s retained until fresh validation", run.LastPushedSHA, f.headSHA)
+	}
+}
+
+func TestPipeline_BoundCIRepairPublishesOnlyAfterEveryValidatorObservesTheRepairedHead(t *testing.T) {
+	dir, baseSHA, initialHead := setupGitRepo(t)
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+	gitCmd(t, dir, "checkout", "--detach", initialHead)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, initialHead, config.Commands{})
+	sctx.Config.CI.RevalidateRepairs = false
+	prURL := "https://github.com/test/repo/pull/42"
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run.PRURL = &prURL
+	env, _ := fakeGH(t, prURL)
+	for key, value := range environmentEntries(t, env) {
+		t.Setenv(key, value)
+	}
+
+	repairedHead := ""
+	assertRepairedValidation := func(name types.StepName, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+		if repairedHead == "" {
+			if name == types.StepReview {
+				return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
+			}
+			return &pipeline.StepOutcome{}, nil
+		}
+		local := gitCmd(t, dir, "rev-parse", "HEAD")
+		remote := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+		if sctx.Run.HeadSHA != repairedHead || local != repairedHead {
+			return nil, fmt.Errorf("%s validated run=%s local=%s, want repaired head %s", name, sctx.Run.HeadSHA, local, repairedHead)
+		}
+		if remote != initialHead {
+			return nil, fmt.Errorf("%s observed premature publication %s, want prior head %s", name, remote, initialHead)
+		}
+		outcome := &pipeline.StepOutcome{}
+		if name == types.StepReview {
+			outcome.ReviewApprovedHeadSHA = repairedHead
+		}
+		return outcome, nil
+	}
+
+	ciCalls := 0
+	ci := &transitionStep{name: types.StepCI, execute: func(ctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+		ciCalls++
+		switch ciCalls {
+		case 1:
+			return &pipeline.StepOutcome{NeedsApproval: true, Findings: boundCIRevalidationFindings}, nil
+		case 2:
+			if !ctx.Fixing || !ctx.RequireReviewRevalidation {
+				return nil, fmt.Errorf("bound repair context = fixing:%v require_review:%v", ctx.Fixing, ctx.RequireReviewRevalidation)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "bound-ci-fix.txt"), []byte("repaired\n"), 0o644); err != nil {
+				return nil, err
+			}
+			repair, err := (&CIStep{}).commitRepair(ctx, "apply bound CI repair", nil)
+			if err != nil {
+				return nil, err
+			}
+			if !repair.HeadAdvanced || !repair.Revalidate {
+				return nil, fmt.Errorf("bound CI repair = %+v, want held head and Review restart", repair)
+			}
+			repairedHead = ctx.Run.HeadSHA
+			if remote := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remote != initialHead {
+				return nil, fmt.Errorf("bound repair published %s before validation; want %s", remote, initialHead)
+			}
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		default:
+			if ctx.Fixing || ctx.RequireReviewRevalidation || ctx.Run.HeadSHA != repairedHead {
+				return nil, fmt.Errorf("final CI context = fixing:%v require_review:%v head:%s want:%s", ctx.Fixing, ctx.RequireReviewRevalidation, ctx.Run.HeadSHA, repairedHead)
+			}
+			if remote := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remote != repairedHead {
+				return nil, fmt.Errorf("final CI remote = %s, want repaired head %s", remote, repairedHead)
+			}
+			return &pipeline.StepOutcome{}, nil
+		}
+	}}
+	steps := []pipeline.Step{
+		&transitionStep{name: types.StepReview, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+			return assertRepairedValidation(types.StepReview, sctx)
+		}},
+		&transitionStep{name: types.StepTest, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+			return assertRepairedValidation(types.StepTest, sctx)
+		}},
+		&transitionStep{name: types.StepDocument, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+			return assertRepairedValidation(types.StepDocument, sctx)
+		}},
+		&transitionStep{name: types.StepLint, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+			return assertRepairedValidation(types.StepLint, sctx)
+		}},
+		&PushStep{},
+		&transitionStep{name: types.StepPR, execute: func(*pipeline.StepContext) (*pipeline.StepOutcome, error) {
+			return &pipeline.StepOutcome{}, nil
+		}},
+		ci,
+	}
+	appPaths := paths.WithRoot(t.TempDir())
+	if err := appPaths.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	exec := pipeline.NewExecutor(sctx.DB, appPaths, sctx.Config, ag, steps, nil)
+	exec.SetForgeContext(&forgecontext.Context{Provider: scm.ProviderGitHub, Host: "github.com"})
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir) }()
+
+	var ciResult *db.StepResult
+	deadline := time.Now().Add(10 * time.Second)
+	for ciResult == nil {
+		results, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, result := range results {
+			if result.StepName == types.StepCI && result.Status == types.StepStatusAwaitingApproval {
+				ciResult = result
+				break
+			}
+		}
+		if ciResult == nil {
+			select {
+			case err := <-done:
+				t.Fatalf("pipeline returned before CI gate: %v", err)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("pipeline did not park at its initial CI gate")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	rounds, err := sctx.DB.GetRoundsByStep(ciResult.ID)
+	if err != nil || len(rounds) != 1 {
+		t.Fatalf("CI gate rounds = %#v err=%v", rounds, err)
+	}
+	binding := pipeline.ResponseRevalidationBinding{
+		OperationID: "operation-real-git", Fingerprint: "sha256:real-git", RunID: sctx.Run.ID,
+		RepoID: sctx.Repo.ID, Branch: sctx.Run.Branch, HeadSHA: initialHead, StepResultID: ciResult.ID, RoundID: rounds[0].ID,
+	}
+	if _, operation, replayed, err := exec.RespondWithBoundRevalidation(types.StepCI, types.ActionFix, []string{"ci-1"}, nil, nil, nil, "", binding); err != nil || operation == nil || replayed {
+		t.Fatalf("bound response: operation=%#v replayed=%v err=%v", operation, replayed, err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("pipeline: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("pipeline did not finish bound repair revalidation")
+	}
+	if repairedHead == "" || repairedHead == initialHead {
+		t.Fatalf("repaired head = %q, initial = %q", repairedHead, initialHead)
+	}
+	remote := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if remote != repairedHead {
+		t.Fatalf("final remote = %s, want repaired head %s", remote, repairedHead)
+	}
+	refreshed, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || refreshed.LastPushedSHA == nil || *refreshed.LastPushedSHA != repairedHead {
+		t.Fatalf("published receipt = %#v err=%v, want %s", refreshed, err, repairedHead)
+	}
+}
+
+func TestPipeline_BoundCIProtectedPathRetryCommitsOnlyTheResolvedRetainedRepair(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	gitCmd(t, f.dir, "checkout", "--detach", f.headSHA)
+	f.sctx.Config.ProtectedPaths = []string{"*.lock"}
+	if err := f.sctx.DB.UpdateRunPRURL(f.sctx.Run.ID, *f.sctx.Run.PRURL); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range environmentEntries(t, f.sctx.Env) {
+		t.Setenv(key, value)
+	}
+
+	agentCalls := 0
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		agentCalls++
+		if err := os.WriteFile(filepath.Join(f.dir, "allowed-fix.go"), []byte("retained allowed repair\n"), 0o644); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(f.dir, "package.lock"), []byte("protected repair\n"), 0o644); err != nil {
+			return nil, err
+		}
+		return &agent.Result{Output: json.RawMessage(`{"summary":"repair CI","code_change_needed":true}`)}, nil
+	}}
+
+	var order []types.StepName
+	pass := func(name types.StepName) pipeline.Step {
+		return &transitionStep{name: name, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+			order = append(order, name)
+			out := &pipeline.StepOutcome{}
+			if name == types.StepReview {
+				out.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+			}
+			return out, nil
+		}}
+	}
+	push := &transitionStep{name: types.StepPush, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+		order = append(order, types.StepPush)
+		return (&PushStep{}).Execute(sctx)
+	}}
+	realCI := &CIStep{}
+	ciCalls := 0
+	ci := &transitionStep{name: types.StepCI, execute: func(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+		order = append(order, types.StepCI)
+		ciCalls++
+		switch ciCalls {
+		case 1:
+			return &pipeline.StepOutcome{NeedsApproval: true, Findings: boundCIRevalidationFindings}, nil
+		case 2, 3, 4:
+			return realCI.Execute(sctx)
+		default:
+			return &pipeline.StepOutcome{}, nil
+		}
+	}}
+	steps := []pipeline.Step{
+		pass(types.StepReview), pass(types.StepTest), pass(types.StepDocument), pass(types.StepLint),
+		push, pass(types.StepPR), ci,
+	}
+	appPaths := paths.WithRoot(t.TempDir())
+	if err := appPaths.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	exec := pipeline.NewExecutor(f.sctx.DB, appPaths, f.sctx.Config, ag, steps, nil)
+	exec.SetForgeContext(&forgecontext.Context{Provider: scm.ProviderGitHub, Host: "github.com"})
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), f.sctx.Run, f.sctx.Repo, f.dir) }()
+
+	waitGate := func(roundCount int) (*types.Findings, string) {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			results, err := f.sctx.DB.GetStepsByRun(f.sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, result := range results {
+				if result.StepName != types.StepCI || result.FindingsJSON == nil {
+					continue
+				}
+				rounds, err := f.sctx.DB.GetRoundsByStep(result.ID)
+				if err == nil && len(rounds) >= roundCount && (result.Status == types.StepStatusAwaitingApproval || result.Status == types.StepStatusFixReview) {
+					findings, err := types.ParseFindingsJSON(*result.FindingsJSON)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return &findings, result.ID
+				}
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("pipeline returned before CI gate %d: %v", roundCount, err)
+			default:
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for CI gate %d", roundCount)
+		return nil, ""
+	}
+	respondToProtectedRefusal := func(findings *types.Findings) {
+		t.Helper()
+		var selected, ignored []string
+		for _, finding := range findings.Items {
+			switch {
+			case finding.ID == "protected-path-refusal":
+				selected = append(selected, finding.ID)
+			case finding.ID != "" && finding.ID != "ci-1":
+				ignored = append(ignored, finding.ID)
+			}
+		}
+		if !slices.Equal(selected, []string{"protected-path-refusal"}) {
+			t.Fatalf("protected-path finding missing from %+v", findings.Items)
+		}
+		if _, err := exec.RespondWithOverrides(types.StepCI, types.ActionFix, selected, ignored, nil, nil, ""); err != nil {
+			t.Fatalf("protected-path retry: %v", err)
+		}
+	}
+
+	_, ciResultID := waitGate(1)
+	rounds, err := f.sctx.DB.GetRoundsByStep(ciResultID)
+	if err != nil || len(rounds) != 1 {
+		t.Fatalf("initial rounds=%#v err=%v", rounds, err)
+	}
+	binding := pipeline.ResponseRevalidationBinding{
+		OperationID: "operation-bound-protected", Fingerprint: "sha256:bound-protected", RunID: f.sctx.Run.ID,
+		RepoID: f.sctx.Repo.ID, Branch: f.sctx.Run.Branch, HeadSHA: f.headSHA, StepResultID: ciResultID, RoundID: rounds[0].ID,
+	}
+	if _, operation, replayed, err := exec.RespondWithBoundRevalidation(types.StepCI, types.ActionFix, []string{"ci-1"}, nil, nil, nil, "", binding); err != nil || operation == nil || replayed {
+		t.Fatalf("bound response operation=%#v replayed=%v err=%v", operation, replayed, err)
+	}
+
+	firstRefusal, _ := waitGate(2)
+	if agentCalls != 1 || ciCalls != 2 {
+		t.Fatalf("initial retained repair executions: agent=%d ci=%d", agentCalls, ciCalls)
+	}
+	respondToProtectedRefusal(firstRefusal)
+	secondRefusal, _ := waitGate(3)
+	if agentCalls != 1 || ciCalls != 3 {
+		t.Fatalf("unresolved retry reran producer or skipped CI: agent=%d ci=%d", agentCalls, ciCalls)
+	}
+	if got := gitStatusPorcelain(t, f.dir); !strings.Contains(got, "allowed-fix.go") || !strings.Contains(got, "package.lock") {
+		t.Fatalf("unresolved protected retry did not retain both changes: %q", got)
+	}
+
+	if err := os.Remove(filepath.Join(f.dir, "package.lock")); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitStatusPorcelain(t, f.dir); !strings.Contains(got, "allowed-fix.go") || strings.Contains(got, "package.lock") {
+		t.Fatalf("operator resolution status=%q", got)
+	}
+	respondToProtectedRefusal(secondRefusal)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("pipeline: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("pipeline did not finish the retained bound repair")
+	}
+
+	if ciCalls != 5 || agentCalls != 1 {
+		t.Fatalf("completed executions: agent=%d ci=%d, want one producer and five CI entries", agentCalls, ciCalls)
+	}
+	if got := gitStatusPorcelain(t, f.dir); got != "" {
+		t.Fatalf("completed retained repair left a dirty worktree: %q", got)
+	}
+	repairedHead := gitCmd(t, f.dir, "rev-parse", "HEAD")
+	if repairedHead == f.headSHA {
+		t.Fatal("resolved retained repair did not advance HEAD")
+	}
+	if got := gitCmd(t, f.dir, "show", "HEAD:allowed-fix.go"); got != "retained allowed repair" {
+		t.Fatalf("allowed retained repair = %q", got)
+	}
+	if got := gitCmd(t, f.dir, "ls-tree", "--name-only", "HEAD", "--", "package.lock"); got != "" {
+		t.Fatalf("protected path reached the repair commit: %q", got)
+	}
+	if got := f.remoteHead(t); got != repairedHead {
+		t.Fatalf("remote head = %s, want revalidated retained repair %s", got, repairedHead)
+	}
+	wantOrder := []types.StepName{
+		types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI,
+		types.StepCI, types.StepCI, types.StepCI,
+		types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI,
+	}
+	if !slices.Equal(order, wantOrder) {
+		t.Fatalf("pipeline order = %v, want %v", order, wantOrder)
+	}
+}
+
+func TestCIRepairPolicyLogSeparatesConfigurationFromResponseDemand(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configured bool
+		response   bool
+		effective  bool
+	}{
+		{name: "ordinary publish policy"},
+		{name: "configured revalidation", configured: true, effective: true},
+		{name: "response tightens false configuration", response: true, effective: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sctx := &pipeline.StepContext{Config: &config.Config{}, RequireReviewRevalidation: tc.response}
+			sctx.Config.CI.RevalidateRepairs = tc.configured
+			got := ciRepairPolicyLog(sctx)
+			for _, want := range []string{
+				"ci.revalidate_repairs: " + strconv.FormatBool(tc.configured),
+				"response_requires_review_revalidation: " + strconv.FormatBool(tc.response),
+				"effective_revalidation: " + strconv.FormatBool(tc.effective),
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("policy log %q does not contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
 // A repair the agent declined to make is not a repair under either policy: no
 // commit, no publication, no restart, and the attempt budget still decides
 // when to stop.
 func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
 	t.Parallel()
-	for _, revalidate := range []bool{false, true} {
-		revalidate := revalidate
-		name := "publish_policy"
-		if revalidate {
-			name = "revalidate_policy"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		policy   bool
+		response bool
+	}{
+		{name: "publish_policy"},
+		{name: "revalidate_policy", policy: true},
+		{name: "response_demand", response: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			f := newCIRepairFixture(t, revalidate, nil)
+			f := newCIRepairFixture(t, tc.policy, nil)
+			f.sctx.RequireReviewRevalidation = tc.response
 			repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 			if err != nil {
 				t.Fatalf("CI repair returned error: %v", err)

@@ -135,6 +135,16 @@ its credit; the scan is never truncated or refused by size, because dropping
 candidates would drop their preservation credit and silently reintroduce the
 deadlock the credit exists to end.
 
+Terminal-head adoption (`axi sync --adopt-terminal-head`) never relies on this
+credit or widens it. The adopted head is a rewrite of the submitted head, so
+the submitted commits are not reachable from `refs/no-mistakes/recover/<run>`
+and a gate branch left at the submitted head would be refused here as at risk.
+Adoption therefore settles the gate branch itself before returning custody: it
+pins the submitted head at `refs/no-mistakes/recover-local/<run>` in the gate
+(an anchor this scan deliberately does not credit) and compare-and-swaps the
+branch from exactly the submitted head to the adopted head, so the next fresh
+run's reconciliation is an ordinary no-op or fast-forward.
+
 **Accepted Decision 41-A (issue #983):** pipeline publication may replace a
 private mirror head that is **exactly equal to a head the publishing run itself
 placed on the mirror** without patch-ID or tree-survival proof: its

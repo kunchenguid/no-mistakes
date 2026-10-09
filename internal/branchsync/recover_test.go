@@ -3,6 +3,7 @@ package branchsync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	pipelinepkg "github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -2195,6 +2197,74 @@ func (f *recoverFixture) localAnchorRef() string {
 	return "refs/no-mistakes/recover-local/" + f.run.ID
 }
 
+func terminalHeadAdoptionRequest(f *recoverFixture) TerminalHeadAdoptionRequest {
+	return TerminalHeadAdoptionRequest{
+		RepositoryID:  f.repo.ID,
+		Branch:        f.run.Branch,
+		RunID:         f.run.ID,
+		CallerHead:    f.submitted,
+		PreservedHead: f.preserved,
+	}
+}
+
+func addDuplicateBranchWorktree(t *testing.T, f *recoverFixture) string {
+	t.Helper()
+	other := filepath.Join(t.TempDir(), "duplicate")
+	mustRun(t, f.local, "worktree", "add", "--force", other, f.run.Branch)
+	mustWrite(t, filepath.Join(other, "operator-draft.txt"), "operator draft in second worktree\n")
+	return other
+}
+
+func newAuthorizedRewriteRecoverFixture(t *testing.T) *recoverFixture {
+	t.Helper()
+	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunFailed, func(t *testing.T, pipelineDir string) {
+		mustWrite(t, filepath.Join(pipelineDir, "feature.txt"), "feature one\nfeature two guarded\n")
+		mustRun(t, pipelineDir, "commit", "-am", "no-mistakes(review): guard the second line")
+	})
+	if err := custody.PreserveRecoveryHead(f.ctx, f.gate, f.run.ID, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func assertRecoveredRewriteFixture(t *testing.T, f *recoverFixture) {
+	t.Helper()
+	if got := mustRun(t, f.local, "symbolic-ref", "--short", "HEAD"); got != f.run.Branch {
+		t.Fatalf("recovered branch = %s, want %s", got, f.run.Branch)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("recovered HEAD = %s, want %s", got, f.preserved)
+	}
+	if clean, reason := worktreeClean(f.ctx, f.local); !clean {
+		t.Fatalf("recovered worktree is not clean: %s", reason)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("preserved anchor = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("caller anchor = %s, want %s", got, f.submitted)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("recovered adoption did not stamp custody")
+	}
+}
+
+func installDestructivePostCheckoutHook(t *testing.T, f *recoverFixture) string {
+	t.Helper()
+	unset := []string{"GIT_CONFIG_COUNT"}
+	for i := 0; i < 32; i++ {
+		unset = append(unset, fmt.Sprintf("GIT_CONFIG_KEY_%d", i), fmt.Sprintf("GIT_CONFIG_VALUE_%d", i))
+	}
+	f.ctx = gitpkg.WithEnvironment(f.ctx, runenv.Overlay{Unset: unset})
+	mustRun(t, f.local, "config", "core.hooksPath", ".git/hooks")
+	hookPath := filepath.Join(f.local, ".git", "hooks", "post-checkout")
+	script := "#!/bin/sh\nmarker=$(git rev-parse --git-path no-mistakes-post-checkout-ran)\nprintf ran > \"$marker\"\nrm -f private.txt\n"
+	if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(f.local, ".git", "no-mistakes-post-checkout-ran")
+}
+
 func newTerminalEqualTreeRewriteFixture(t *testing.T) (*recoverFixture, string) {
 	t.Helper()
 	f := newRebasedRecoverFixture(t, types.RunFailed)
@@ -2558,6 +2628,847 @@ func TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines(t
 	if f.custodyReturned() {
 		t.Fatal("escalation stamped custody")
 	}
+}
+
+// TestAdoptTerminalHeadAcceptsAuthorizedRewrittenLines is the public recovery
+// escape hatch for the deliberate boundary above. Automatic containment must
+// still refuse, while an operator-bound request for the exact run, caller head,
+// and preserved head may adopt that reviewed result without losing either
+// history.
+func TestAdoptTerminalHeadAcceptsAuthorizedRewrittenLines(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunFailed, func(t *testing.T, pipelineDir string) {
+		mustWrite(t, filepath.Join(pipelineDir, "feature.txt"), "feature one\nfeature two guarded\n")
+		mustRun(t, pipelineDir, "commit", "-am", "no-mistakes(review): guard the second line")
+	})
+
+	if automatic := f.service.Recover(f.ctx, false); automatic.Recovered || automatic.Safety != "blocked_recover_diverged" {
+		t.Fatalf("automatic recovery crossed the explicit-authorization boundary: %#v", automatic)
+	}
+
+	state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
+		t.Fatalf("authorized terminal-head adoption = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want authorized preserved head %s", got, f.preserved)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two guarded\n" {
+		t.Fatalf("authorized final tree was not adopted: %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("preserved history anchor = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("submitted history anchor = %s, want %s", got, f.submitted)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("authorized adoption did not return custody")
+	}
+}
+
+func TestAdoptTerminalHeadRefusalMatrixPreservesWorkAndCustody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		wantSafety string
+		mutate     func(*testing.T, *recoverFixture, *TerminalHeadAdoptionRequest)
+	}{
+		{name: "unique local work", wantSafety: "blocked_adopt_terminal_caller_changed", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			mustWrite(t, filepath.Join(f.local, "unique.txt"), "unique local work\n")
+			mustRun(t, f.local, "add", "unique.txt")
+			mustRun(t, f.local, "commit", "-m", "unique local work")
+		}},
+		{name: "dirty tracked work", wantSafety: "blocked_adopt_terminal_dirty", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			mustWrite(t, filepath.Join(f.local, "feature.txt"), "dirty tracked work\n")
+		}},
+		{name: "changed expected caller", wantSafety: "blocked_adopt_terminal_evidence_mismatch", mutate: func(_ *testing.T, f *recoverFixture, request *TerminalHeadAdoptionRequest) {
+			request.CallerHead = f.base
+		}},
+		{name: "wrong run", wantSafety: "blocked_adopt_terminal_binding_mismatch", mutate: func(_ *testing.T, _ *recoverFixture, request *TerminalHeadAdoptionRequest) {
+			request.RunID = "01WRONGRUN00000000000000000"
+		}},
+		{name: "wrong branch", wantSafety: "blocked_adopt_terminal_binding_mismatch", mutate: func(_ *testing.T, _ *recoverFixture, request *TerminalHeadAdoptionRequest) {
+			request.Branch = "feature/other"
+		}},
+		{name: "cross repository", wantSafety: "blocked_adopt_terminal_binding_mismatch", mutate: func(_ *testing.T, _ *recoverFixture, request *TerminalHeadAdoptionRequest) {
+			request.RepositoryID = "repo-other"
+		}},
+		{name: "active run", wantSafety: "blocked_adopt_terminal_run_active", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "published run", wantSafety: "blocked_adopt_terminal_published", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{HeadSHA: f.preserved, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover"}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "missing preserved ref", wantSafety: "blocked_adopt_terminal_anchor_mismatch", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			mustRun(t, f.gate, "update-ref", "-d", f.anchorRef())
+		}},
+		{name: "moved preserved ref", wantSafety: "blocked_adopt_terminal_anchor_mismatch", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+		}},
+		{name: "conflicting worktree preserved ref", wantSafety: "blocked_adopt_terminal_anchor_mismatch", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
+		}},
+		{name: "cross-run preserved ref", wantSafety: "blocked_adopt_terminal_anchor_mismatch", mutate: func(t *testing.T, f *recoverFixture, _ *TerminalHeadAdoptionRequest) {
+			other, err := f.db.InsertRun(f.repo.ID, "feature/other", f.submitted, f.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustRun(t, f.gate, "update-ref", "-d", f.anchorRef())
+			if err := custody.PreserveRecoveryHead(f.ctx, f.gate, other.ID, f.preserved); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuthorizedRewriteRecoverFixture(t)
+			request := terminalHeadAdoptionRequest(f)
+			tc.mutate(t, f, &request)
+			headBefore := mustRun(t, f.local, "rev-parse", "HEAD")
+			statusBefore := mustRun(t, f.local, "status", "--porcelain=v1", "--untracked-files=all")
+
+			state := f.service.AdoptTerminalHead(f.ctx, request)
+			if state.Recovered || state.Changed || state.Safety != tc.wantSafety {
+				t.Fatalf("refusal = %#v, want safety %s", state, tc.wantSafety)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != headBefore {
+				t.Fatalf("refusal moved HEAD from %s to %s", headBefore, got)
+			}
+			if got := mustRun(t, f.local, "status", "--porcelain=v1", "--untracked-files=all"); got != statusBefore {
+				t.Fatalf("refusal changed local work: before %q after %q", statusBefore, got)
+			}
+			run, err := f.db.GetRun(f.run.ID)
+			if err != nil || run.CustodyReturnedAt != nil || run.TerminalAdoptionAuthorizedAt != nil {
+				t.Fatalf("refusal changed adoption record: %#v, err %v", run, err)
+			}
+		})
+	}
+}
+
+func TestAdoptTerminalHeadRejectsAnnotatedTagRecoveryEvidence(t *testing.T) {
+	t.Parallel()
+
+	makeAnnotatedRef := func(t *testing.T, dir, tagName, ref, commit string) string {
+		t.Helper()
+		mustRun(t, dir, "-c", "user.name=No Mistakes Test", "-c", "user.email=test@example.com", "tag", "-a", tagName, "-m", "annotated recovery evidence", commit)
+		tagObject := mustRun(t, dir, "rev-parse", "refs/tags/"+tagName)
+		mustRun(t, dir, "update-ref", ref, tagObject)
+		if got := mustRun(t, dir, "rev-parse", ref+"^{commit}"); got != commit {
+			t.Fatalf("annotated test ref peels to %s, want %s", got, commit)
+		}
+		return tagObject
+	}
+
+	t.Run("gate preserved anchor", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		tagObject := makeAnnotatedRef(t, f.gate, "gate-recovery-tag", f.anchorRef(), f.preserved)
+		status := f.service.InspectCached(f.ctx)
+		if status.NextAction != nil && status.NextAction.Code == "adopt_terminal_head" {
+			t.Fatalf("status offered adoption for annotated-tag evidence: %#v", status)
+		}
+		refused := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+		if refused.Recovered || refused.Changed || refused.Safety != "blocked_adopt_terminal_anchor_mismatch" {
+			t.Fatalf("annotated gate anchor = %#v", refused)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != tagObject {
+			t.Fatalf("annotated gate anchor changed: got %s, want raw tag %s", got, tagObject)
+		}
+		if f.custodyReturned() {
+			t.Fatal("annotated gate anchor stamped custody")
+		}
+	})
+
+	t.Run("local caller anchor", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		tagObject := makeAnnotatedRef(t, f.local, "caller-recovery-tag", f.localAnchorRef(), f.submitted)
+		refused := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+		if refused.Recovered || refused.Changed || refused.Safety != "blocked_adopt_terminal_local_anchor_mismatch" {
+			t.Fatalf("annotated caller anchor = %#v", refused)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != tagObject {
+			t.Fatalf("annotated caller anchor changed: got %s, want raw tag %s", got, tagObject)
+		}
+		if f.custodyReturned() {
+			t.Fatal("annotated caller anchor stamped custody")
+		}
+	})
+}
+
+func TestAdoptTerminalHeadRefusesWhenAutomaticRecoveryIsAvailable(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunFailed)
+	if err := custody.PreserveRecoveryHead(f.ctx, f.gate, f.run.ID, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+	if state.Recovered || state.Changed || state.Safety != "blocked_adopt_terminal_automatic_recovery_available" {
+		t.Fatalf("explicit action replaced ordinary recovery: %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unnecessary explicit action stamped custody")
+	}
+}
+
+func TestAdoptTerminalHeadRevalidatesAfterAuthorization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*testing.T, *recoverFixture)
+		restore func(*testing.T, *recoverFixture)
+		check   func(*testing.T, *recoverFixture)
+	}{
+		{
+			name: "run becomes active",
+			mutate: func(t *testing.T, f *recoverFixture) {
+				if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+					t.Fatal(err)
+				}
+			},
+			restore: func(t *testing.T, f *recoverFixture) {
+				if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunFailed, f.preserved); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "gate anchor moves",
+			mutate: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted, f.preserved)
+			},
+			restore: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved, f.submitted)
+			},
+		},
+		{
+			name: "caller worktree becomes dirty",
+			mutate: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "feature.txt"), "concurrent operator edit\n")
+			},
+			restore: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "feature.txt"), "feature one\nfeature two\n")
+			},
+			check: func(t *testing.T, f *recoverFixture) {
+				if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "concurrent operator edit\n" {
+					t.Fatalf("concurrent caller edit lost: %q", got)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuthorizedRewriteRecoverFixture(t)
+			// Keep the mutation focused on the fresh preflight rather than the
+			// preceding import: the exact preserved history is already local.
+			mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+"+f.anchorRef()+":"+f.anchorRef())
+			f.service.afterTerminalAdoptionAuthorized = func() { tc.mutate(t, f) }
+
+			request := terminalHeadAdoptionRequest(f)
+			state := f.service.AdoptTerminalHead(f.ctx, request)
+			if state.Recovered || state.Changed || state.Safety != "blocked_adopt_terminal_assumptions_changed" {
+				t.Fatalf("post-authorization stale evidence = %#v", state)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+				t.Fatalf("refusal moved caller head to %s", got)
+			}
+			if tc.check != nil {
+				tc.check(t, f)
+			}
+			run, err := f.db.GetRun(f.run.ID)
+			if err != nil || run.TerminalAdoptionAuthorizedAt == nil || run.CustodyReturnedAt != nil {
+				t.Fatalf("post-authorization refusal record = %#v err=%v", run, err)
+			}
+
+			f.service.afterTerminalAdoptionAuthorized = nil
+			tc.restore(t, f)
+			retried := f.service.AdoptTerminalHead(f.ctx, request)
+			if !retried.Recovered || !retried.Changed {
+				t.Fatalf("retry after restoring exact evidence = %#v", retried)
+			}
+		})
+	}
+}
+
+func TestAdoptTerminalHeadDefersToVerifiedEqualTreeRecovery(t *testing.T) {
+	t.Parallel()
+
+	f, recorded := newTerminalEqualTreeRewriteFixture(t)
+	if err := custody.PreserveRecoveryHead(f.ctx, f.gate, f.run.ID, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+	verified, err := f.db.VerifyTerminalRunHeadRewrite(f.run.ID, f.run.Status, recorded, f.preserved)
+	if err != nil || !verified {
+		t.Fatalf("record interrupted equal-tree verification: verified=%v err=%v", verified, err)
+	}
+	f.run, err = f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := f.service.InspectCached(f.ctx)
+	if status.NextAction == nil || status.NextAction.Code != "recover_custody" {
+		t.Fatalf("verified equal-tree status offered explicit adoption instead of ordinary recovery: %#v", status)
+	}
+	refused := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+	if refused.Recovered || refused.Changed || refused.Safety != "blocked_adopt_terminal_automatic_recovery_available" {
+		t.Fatalf("explicit adoption replaced verified equal-tree recovery: %#v", refused)
+	}
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil || run.TerminalAdoptionAuthorizedAt != nil || run.CustodyReturnedAt != nil {
+		t.Fatalf("refused explicit adoption changed run: %#v err=%v", run, err)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("refused explicit adoption moved caller head to %s", got)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || !recovered.Changed {
+		t.Fatalf("ordinary verified equal-tree recovery = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("ordinary recovery head = %s, want %s", got, f.preserved)
+	}
+}
+
+func TestAdoptTerminalHeadMutationBoundaryRacesPreserveConcurrentWork(t *testing.T) {
+	t.Parallel()
+
+	t.Run("branch head", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		var concurrent string
+		f.service.beforeRecoverBranchMove = func() {
+			mustWrite(t, filepath.Join(f.local, "concurrent.txt"), "concurrent commit\n")
+			mustRun(t, f.local, "add", "concurrent.txt")
+			mustRun(t, f.local, "commit", "-m", "concurrent commit")
+			concurrent = mustRun(t, f.local, "rev-parse", "HEAD")
+		}
+		state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+		if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("head race = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != concurrent {
+			t.Fatalf("concurrent head = %s, want %s", got, concurrent)
+		}
+		if got := readOptional(t, filepath.Join(f.local, "concurrent.txt")); got != "concurrent commit\n" {
+			t.Fatalf("concurrent commit lost: %q", got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("head race stamped custody")
+		}
+	})
+
+	t.Run("index and worktree", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		f.service.beforeRecoverBranchMove = func() {
+			mustWrite(t, filepath.Join(f.local, "feature.txt"), "concurrent staged work\n")
+			mustRun(t, f.local, "add", "feature.txt")
+		}
+		state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+		if state.Recovered || state.Safety != "blocked_recover_worktree_busy" {
+			t.Fatalf("index race = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+			t.Fatalf("index race left HEAD at %s", got)
+		}
+		if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "concurrent staged work\n" {
+			t.Fatalf("concurrent staged work lost: %q", got)
+		}
+		if got := mustRun(t, f.local, "diff", "--cached", "--name-only"); got != "feature.txt" {
+			t.Fatalf("concurrent index lost: %q", got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("index race stamped custody")
+		}
+	})
+}
+
+func TestAdoptTerminalHeadRevalidatesEveryAnchorBeforeCustodyStamp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		anchorDir func(*recoverFixture) string
+		anchorRef func(*recoverFixture) string
+		expected  func(*recoverFixture) string
+		deleteRef bool
+	}{
+		{name: "delete gate preserved", anchorDir: func(f *recoverFixture) string { return f.gate }, anchorRef: func(f *recoverFixture) string { return f.anchorRef() }, expected: func(f *recoverFixture) string { return f.preserved }, deleteRef: true},
+		{name: "move gate preserved", anchorDir: func(f *recoverFixture) string { return f.gate }, anchorRef: func(f *recoverFixture) string { return f.anchorRef() }, expected: func(f *recoverFixture) string { return f.preserved }},
+		{name: "delete local preserved", anchorDir: func(f *recoverFixture) string { return f.local }, anchorRef: func(f *recoverFixture) string { return f.anchorRef() }, expected: func(f *recoverFixture) string { return f.preserved }, deleteRef: true},
+		{name: "move local preserved", anchorDir: func(f *recoverFixture) string { return f.local }, anchorRef: func(f *recoverFixture) string { return f.anchorRef() }, expected: func(f *recoverFixture) string { return f.preserved }},
+		{name: "delete local caller", anchorDir: func(f *recoverFixture) string { return f.local }, anchorRef: func(f *recoverFixture) string { return f.localAnchorRef() }, expected: func(f *recoverFixture) string { return f.submitted }, deleteRef: true},
+		{name: "move local caller", anchorDir: func(f *recoverFixture) string { return f.local }, anchorRef: func(f *recoverFixture) string { return f.localAnchorRef() }, expected: func(f *recoverFixture) string { return f.submitted }},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuthorizedRewriteRecoverFixture(t)
+			request := terminalHeadAdoptionRequest(f)
+			dir, ref, expected := tc.anchorDir(f), tc.anchorRef(f), tc.expected(f)
+			f.service.afterRecoverBranchMove = func() {
+				if tc.deleteRef {
+					mustRun(t, dir, "update-ref", "-d", ref, expected)
+					return
+				}
+				mustRun(t, dir, "update-ref", ref, f.base, expected)
+			}
+
+			refused := f.service.AdoptTerminalHead(f.ctx, request)
+			if refused.Recovered || refused.Safety != "blocked_adopt_terminal_incomplete" {
+				t.Fatalf("anchor race = %#v", refused)
+			}
+			if f.custodyReturned() {
+				t.Fatal("anchor race stamped custody")
+			}
+			if got := mustRun(t, f.local, "symbolic-ref", "--short", "HEAD"); got != request.Branch {
+				t.Fatalf("anchor refusal branch = %s, want %s", got, request.Branch)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+				t.Fatalf("anchor refusal HEAD = %s, want %s", got, f.preserved)
+			}
+			if clean, reason := worktreeClean(f.ctx, f.local); !clean {
+				t.Fatalf("anchor refusal left dirty worktree: %s", reason)
+			}
+
+			mustRun(t, dir, "update-ref", ref, expected)
+			f.service.afterRecoverBranchMove = nil
+			retried := f.service.AdoptTerminalHead(f.ctx, request)
+			if !retried.Recovered || retried.Changed {
+				t.Fatalf("retry after restoring exact anchor = %#v", retried)
+			}
+		})
+	}
+}
+
+func TestAdoptTerminalHeadRefusesIgnoredUntrackedCollisionAtMutationBoundary(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunFailed, func(t *testing.T, pipelineDir string) {
+		mustWrite(t, filepath.Join(pipelineDir, "feature.txt"), "feature one\nfeature two guarded\n")
+		mustWrite(t, filepath.Join(pipelineDir, "private.txt"), "pipeline version\n")
+		mustRun(t, pipelineDir, "add", "feature.txt", "private.txt")
+		mustRun(t, pipelineDir, "commit", "-m", "no-mistakes(review): guarded result")
+	})
+	if err := custody.PreserveRecoveryHead(f.ctx, f.gate, f.run.ID, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(f.local, ".git", "info", "exclude"), "private.txt\n")
+	f.service.afterRecoverBranchMove = func() {
+		mustWrite(t, filepath.Join(f.local, "private.txt"), "operator private bytes\n")
+	}
+
+	state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_worktree_busy" {
+		t.Fatalf("ignored collision = %#v", state)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "private.txt")); got != "operator private bytes\n" {
+		t.Fatalf("ignored private file was overwritten: %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("branch = %s, want rollback to %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "status", "--porcelain=v1", "--ignored", "private.txt"); got != "!! private.txt" {
+		t.Fatalf("ignored private file no longer remains untracked: %q", got)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("gate preserved anchor = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("local preserved anchor = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("local caller anchor = %s, want %s", got, f.submitted)
+	}
+	if f.custodyReturned() {
+		t.Fatal("ignored collision stamped custody")
+	}
+}
+
+func TestRecoverAdoptPreservedSuppressesPostCheckoutHooks(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, ".git", "info", "exclude"), "private.txt\n")
+	mustWrite(t, filepath.Join(f.local, "private.txt"), "operator private bytes\n")
+	marker := installDestructivePostCheckoutHook(t, f)
+
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || !state.Changed {
+		t.Fatalf("ordinary hook-free recovery = %#v", state)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "private.txt")); got != "operator private bytes\n" {
+		t.Fatalf("post-checkout hook changed ignored operator data: %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("post-checkout hook ran during recovery: %v", err)
+	}
+}
+
+func TestAdoptTerminalHeadInterruptedResumeSuppressesPostCheckoutHooks(t *testing.T) {
+	t.Parallel()
+
+	f := newAuthorizedRewriteRecoverFixture(t)
+	request := terminalHeadAdoptionRequest(f)
+	mustWrite(t, filepath.Join(f.local, ".git", "info", "exclude"), "private.txt\n")
+	mustWrite(t, filepath.Join(f.local, "private.txt"), "operator private bytes\n")
+	marker := installDestructivePostCheckoutHook(t, f)
+	f.service.afterRecoverBranchMove = func() { panic("simulated process stop after branch CAS") }
+	crashed := false
+	func() {
+		defer func() { crashed = recover() != nil }()
+		_ = f.service.AdoptTerminalHead(f.ctx, request)
+	}()
+	if !crashed {
+		t.Fatal("simulated post-CAS interruption did not stop adoption")
+	}
+	f.service.afterRecoverBranchMove = nil
+
+	retried := f.service.AdoptTerminalHead(f.ctx, request)
+	if !retried.Recovered || !retried.Changed {
+		t.Fatalf("hook-free interrupted adoption retry = %#v", retried)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "private.txt")); got != "operator private bytes\n" {
+		t.Fatalf("post-checkout hook changed ignored operator data on retry: %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("post-checkout hook ran during interrupted retry: %v", err)
+	}
+}
+
+func TestRecoverRefusesIgnoredUntrackedCollisionAtMutationBoundary(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunCancelled, func(t *testing.T, pipelineDir string) {
+		mustWrite(t, filepath.Join(pipelineDir, "private.txt"), "pipeline version\n")
+		mustRun(t, pipelineDir, "add", "private.txt")
+		mustRun(t, pipelineDir, "commit", "-m", "no-mistakes(review): add generated result")
+	})
+	mustWrite(t, filepath.Join(f.local, ".git", "info", "exclude"), "private.txt\n")
+	f.service.afterRecoverBranchMove = func() {
+		mustWrite(t, filepath.Join(f.local, "private.txt"), "operator private bytes\n")
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_worktree_busy" {
+		t.Fatalf("ignored collision = %#v", state)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "private.txt")); got != "operator private bytes\n" {
+		t.Fatalf("ignored private file was overwritten: %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("branch = %s, want rollback to %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "status", "--porcelain=v1", "--ignored", "private.txt"); got != "!! private.txt" {
+		t.Fatalf("ignored private file no longer remains untracked: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("ignored collision stamped custody")
+	}
+}
+
+func TestAdoptTerminalHeadInterruptedAttemptsRemainRetryable(t *testing.T) {
+	t.Parallel()
+
+	assertCrash := func(t *testing.T, run func()) {
+		t.Helper()
+		crashed := false
+		func() {
+			defer func() { crashed = recover() != nil }()
+			run()
+		}()
+		if !crashed {
+			t.Fatal("simulated interruption did not stop the adoption")
+		}
+	}
+
+	t.Run("after preservation", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		f.service.afterTerminalAdoptionPreserved = func() {
+			mustRun(t, f.local, "checkout", "-b", "interruption", f.submitted)
+		}
+		request := terminalHeadAdoptionRequest(f)
+		state := f.service.AdoptTerminalHead(f.ctx, request)
+		if state.Recovered || state.Safety != "blocked_adopt_terminal_assumptions_changed" {
+			t.Fatalf("preservation interruption = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("preserved history lost after interruption: %s", got)
+		}
+		mustRun(t, f.local, "checkout", "feature/recover")
+		f.service.afterTerminalAdoptionPreserved = nil
+		retried := f.service.AdoptTerminalHead(f.ctx, request)
+		if !retried.Recovered || !retried.Changed {
+			t.Fatalf("retry after preservation interruption = %#v", retried)
+		}
+	})
+
+	t.Run("before custody stamp", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.completeTerminalAdoption = func(db.TerminalHeadAdoptionAuthorization) (bool, error) {
+			return false, errors.New("simulated interruption")
+		}
+		state := f.service.AdoptTerminalHead(f.ctx, request)
+		if state.Recovered || state.Safety != "blocked_adopt_terminal_stamp_failed" {
+			t.Fatalf("custody-stamp interruption = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+			t.Fatalf("interrupted adoption head = %s, want %s", got, f.preserved)
+		}
+		if f.custodyReturned() {
+			t.Fatal("interrupted adoption stamped custody")
+		}
+		f.service.completeTerminalAdoption = nil
+		retried := f.service.AdoptTerminalHead(f.ctx, request)
+		if !retried.Recovered || retried.Changed {
+			t.Fatalf("retry after custody-stamp interruption = %#v", retried)
+		}
+		if replay := f.service.AdoptTerminalHead(f.ctx, request); !replay.Recovered || replay.Changed {
+			t.Fatalf("successful replay = %#v", replay)
+		}
+	})
+
+	t.Run("after branch compare and swap", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.afterRecoverBranchMove = func() { panic("simulated process stop after branch CAS") }
+		assertCrash(t, func() { _ = f.service.AdoptTerminalHead(f.ctx, request) })
+		if got := mustRun(t, f.local, "symbolic-ref", "--short", "HEAD"); got != request.Branch {
+			t.Fatalf("interrupted branch = %s, want %s", got, request.Branch)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+			t.Fatalf("interrupted HEAD = %s, want branch ref at %s", got, f.preserved)
+		}
+		if clean, _ := worktreeClean(f.ctx, f.local); clean {
+			t.Fatal("post-CAS caller snapshot unexpectedly reads clean against the preserved branch")
+		}
+		f.service.afterRecoverBranchMove = nil
+		retried := f.service.AdoptTerminalHead(f.ctx, request)
+		if !retried.Recovered || !retried.Changed {
+			t.Fatalf("retry after branch CAS interruption = %#v", retried)
+		}
+		assertRecoveredRewriteFixture(t, f)
+		if replay := f.service.AdoptTerminalHead(f.ctx, request); !replay.Recovered || replay.Changed {
+			t.Fatalf("post-CAS successful replay = %#v", replay)
+		}
+	})
+
+	t.Run("after detaching caller snapshot", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.afterRecoverBranchMove = func() {
+			mustRun(t, f.local, "checkout", "--no-overwrite-ignore", "--detach", f.submitted)
+			panic("simulated process stop after detach")
+		}
+		assertCrash(t, func() { _ = f.service.AdoptTerminalHead(f.ctx, request) })
+		if got := mustRun(t, f.local, "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
+			t.Fatalf("interrupted state is not detached: %s", got)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+			t.Fatalf("detached HEAD = %s, want caller %s", got, f.submitted)
+		}
+		f.service.afterRecoverBranchMove = nil
+		retried := f.service.AdoptTerminalHead(f.ctx, request)
+		if !retried.Recovered || !retried.Changed {
+			t.Fatalf("retry after detach interruption = %#v", retried)
+		}
+		assertRecoveredRewriteFixture(t, f)
+	})
+
+	t.Run("post-CAS operator edit refuses without loss", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.afterRecoverBranchMove = func() { panic("simulated process stop after branch CAS") }
+		assertCrash(t, func() { _ = f.service.AdoptTerminalHead(f.ctx, request) })
+		mustWrite(t, filepath.Join(f.local, "feature.txt"), "operator edit after interruption\n")
+		f.service.afterRecoverBranchMove = nil
+		refused := f.service.AdoptTerminalHead(f.ctx, request)
+		if refused.Recovered || refused.Changed || refused.Safety != "blocked_adopt_terminal_incomplete" {
+			t.Fatalf("dirty post-CAS retry = %#v", refused)
+		}
+		if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "operator edit after interruption\n" {
+			t.Fatalf("post-CAS operator edit lost: %q", got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("dirty post-CAS retry stamped custody")
+		}
+	})
+
+	t.Run("wrong detached head refuses without mutation", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.afterRecoverBranchMove = func() {
+			mustRun(t, f.local, "checkout", "--detach", f.submitted)
+			mustRun(t, f.local, "commit", "--allow-empty", "-m", "unexpected detached commit")
+			panic("simulated process stop at wrong detached head")
+		}
+		assertCrash(t, func() { _ = f.service.AdoptTerminalHead(f.ctx, request) })
+		f.service.afterRecoverBranchMove = nil
+		before := mustRun(t, f.local, "rev-parse", "HEAD")
+		refused := f.service.AdoptTerminalHead(f.ctx, request)
+		if refused.Recovered || refused.Changed || refused.Safety != "blocked_adopt_terminal_incomplete" {
+			t.Fatalf("wrong detached-head retry = %#v", refused)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != before {
+			t.Fatalf("wrong detached-head retry moved HEAD from %s to %s", before, got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("wrong detached-head retry stamped custody")
+		}
+	})
+}
+
+func TestRecoveryRefusesDuplicateBranchCheckoutsAtEveryMutationBoundary(t *testing.T) {
+	assertDraftSurvives := func(t *testing.T, other string) {
+		t.Helper()
+		if got := readOptional(t, filepath.Join(other, "operator-draft.txt")); got != "operator draft in second worktree\n" {
+			t.Fatalf("second-worktree operator draft changed: %q", got)
+		}
+	}
+	assertNoCustody := func(t *testing.T, f *recoverFixture) {
+		t.Helper()
+		if f.custodyReturned() {
+			t.Fatal("duplicate branch checkout stamped custody")
+		}
+	}
+	assertCrash := func(t *testing.T, run func()) {
+		t.Helper()
+		crashed := false
+		func() {
+			defer func() { crashed = recover() != nil }()
+			run()
+		}()
+		if !crashed {
+			t.Fatal("simulated interruption did not stop adoption")
+		}
+	}
+
+	t.Run("ordinary recovery preflight", func(t *testing.T) {
+		f := newRebasedRecoverFixture(t, types.RunCancelled)
+		other := addDuplicateBranchWorktree(t, f)
+		before := mustRun(t, f.local, "rev-parse", "HEAD")
+
+		state := f.service.Recover(f.ctx, false)
+		if state.Recovered || state.Changed || state.Safety != "blocked_branch_ambiguous" {
+			t.Fatalf("duplicate ordinary recovery = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != before {
+			t.Fatalf("duplicate preflight moved invoking HEAD from %s to %s", before, got)
+		}
+		assertDraftSurvives(t, other)
+		assertNoCustody(t, f)
+	})
+
+	t.Run("explicit adoption preflight", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		other := addDuplicateBranchWorktree(t, f)
+		before := mustRun(t, f.local, "rev-parse", "HEAD")
+
+		state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+		if state.Recovered || state.Changed || state.Safety != "blocked_branch_ambiguous" {
+			t.Fatalf("duplicate explicit adoption = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != before {
+			t.Fatalf("duplicate preflight moved invoking HEAD from %s to %s", before, got)
+		}
+		run, err := f.db.GetRun(f.run.ID)
+		if err != nil || run.TerminalAdoptionAuthorizedAt != nil {
+			t.Fatalf("duplicate preflight recorded authorization: run=%#v err=%v", run, err)
+		}
+		assertDraftSurvives(t, other)
+		assertNoCustody(t, f)
+	})
+
+	t.Run("duplicate introduced before branch compare and swap", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		var other string
+		f.service.beforeRecoverBranchMove = func() { other = addDuplicateBranchWorktree(t, f) }
+
+		state := f.service.AdoptTerminalHead(f.ctx, terminalHeadAdoptionRequest(f))
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("mutation-boundary duplicate = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "refs/heads/"+f.run.Branch); got != f.submitted {
+			t.Fatalf("mutation-boundary duplicate moved branch to %s", got)
+		}
+		assertDraftSurvives(t, other)
+		assertNoCustody(t, f)
+	})
+
+	t.Run("attached interrupted adoption", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.afterRecoverBranchMove = func() { panic("simulated process stop after branch CAS") }
+		assertCrash(t, func() { _ = f.service.AdoptTerminalHead(f.ctx, request) })
+		f.service.afterRecoverBranchMove = nil
+		other := addDuplicateBranchWorktree(t, f)
+
+		state := f.service.AdoptTerminalHead(f.ctx, request)
+		if state.Recovered || state.Changed || state.Safety != "blocked_branch_ambiguous" {
+			t.Fatalf("attached interrupted duplicate = %#v", state)
+		}
+		if got := mustRun(t, f.local, "symbolic-ref", "--short", "HEAD"); got != request.Branch {
+			t.Fatalf("interrupted retry detached invoking worktree: %s", got)
+		}
+		assertDraftSurvives(t, other)
+		assertNoCustody(t, f)
+	})
+
+	t.Run("detached interrupted adoption", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.afterRecoverBranchMove = func() {
+			mustRun(t, f.local, "checkout", "--no-overwrite-ignore", "--detach", f.submitted)
+			panic("simulated process stop after detach")
+		}
+		assertCrash(t, func() { _ = f.service.AdoptTerminalHead(f.ctx, request) })
+		f.service.afterRecoverBranchMove = nil
+		other := addDuplicateBranchWorktree(t, f)
+
+		state := f.service.AdoptTerminalHead(f.ctx, request)
+		if state.Recovered || state.Changed || state.Safety != "blocked_branch_ambiguous" {
+			t.Fatalf("detached interrupted duplicate = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
+			t.Fatalf("detached interrupted retry changed HEAD attachment: %s", got)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != request.CallerHead {
+			t.Fatalf("detached interrupted retry moved HEAD to %s", got)
+		}
+		assertDraftSurvives(t, other)
+		assertNoCustody(t, f)
+	})
+
+	t.Run("completed move before custody stamp", func(t *testing.T) {
+		f := newAuthorizedRewriteRecoverFixture(t)
+		request := terminalHeadAdoptionRequest(f)
+		f.service.completeTerminalAdoption = func(db.TerminalHeadAdoptionAuthorization) (bool, error) {
+			return false, errors.New("simulated interruption before custody stamp")
+		}
+		first := f.service.AdoptTerminalHead(f.ctx, request)
+		if first.Recovered || first.Safety != "blocked_adopt_terminal_stamp_failed" {
+			t.Fatalf("completed-move fixture = %#v", first)
+		}
+		f.service.completeTerminalAdoption = nil
+		other := addDuplicateBranchWorktree(t, f)
+
+		state := f.service.AdoptTerminalHead(f.ctx, request)
+		if state.Recovered || state.Changed || state.Safety != "blocked_branch_ambiguous" {
+			t.Fatalf("completed-move duplicate = %#v", state)
+		}
+		assertDraftSurvives(t, other)
+		assertNoCustody(t, f)
+	})
 }
 
 // TestRecoverRebasedPreservedHeadRefusesConcurrentCommitWithoutLosingIt is the

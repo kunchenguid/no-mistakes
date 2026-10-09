@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestAxiRespond_RunFlagAnswersTheNamedRunFromOutsideItsWorktree(t *testing.T) {
@@ -224,5 +226,170 @@ func TestAxiRespond_RunFlagRefusalHelpCarriesTheRunID(t *testing.T) {
 	}
 	if !strings.Contains(out, "`no-mistakes axi status --run run-timeout`") {
 		t.Fatalf("refusal help dropped the run id:\n%s", out)
+	}
+}
+
+func TestAxiRespond_BoundRevalidationProbesAndForwardsEveryExactBinding(t *testing.T) {
+	var gotParams ipc.RespondParams
+	var responded atomic.Bool
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		probeBoundRevalidation: func() (interface{}, error) {
+			return &ipc.ProbeBoundRevalidationResult{OK: true}, nil
+		},
+		respond: func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+			if err := json.Unmarshal(raw, &gotParams); err != nil {
+				return nil, err
+			}
+			responded.Store(true)
+			return &ipc.RespondResult{
+				OK: true, Fixed: []string{"ci-1"}, Replayed: false,
+				Operation: &ipc.ResponseOperationReceipt{
+					ID: "operation-1", RunID: "run-timeout", RepoID: "repo-1", Branch: "feature/timeout",
+					HeadSHA: gotParams.ExpectedHeadSHA, StepResultID: "step-ci", RoundID: "round-ci-3", AcceptedAt: 123,
+				},
+			}, nil
+		},
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
+		if responded.Load() {
+			return fx.completed(), nil
+		}
+		run := fx.running()
+		run.RepoID = "repo-1"
+		run.Steps = []ipc.StepResultInfo{{
+			ID: "step-ci", StepName: types.StepCI, Status: types.StepStatusAwaitingApproval, CurrentRoundID: "round-ci-3",
+		}}
+		return run, nil
+	})
+	chdir(t, t.TempDir())
+
+	out, err := executeCmd(
+		"axi", "respond", "--run", "run-timeout", "--step", "ci", "--action", "fix", "--findings", "ci-1",
+		"--require-review-revalidation", "--operation", "operation-1", "--expected-repo", "repo-1",
+		"--expected-branch", "feature/timeout", "--expected-head", fx.head,
+		"--expected-step-result", "step-ci", "--expected-round", "round-ci-3", "--wait", "3s",
+	)
+	if err != nil {
+		t.Fatalf("bound response: %v\n%s", err, out)
+	}
+	if !gotParams.RequireReviewRevalidation || gotParams.OperationID != "operation-1" || gotParams.RunID != "run-timeout" || gotParams.ExpectedRepoID != "repo-1" || gotParams.ExpectedBranch != "feature/timeout" || gotParams.ExpectedHeadSHA != fx.head || gotParams.ExpectedStepResultID != "step-ci" || gotParams.ExpectedRoundID != "round-ci-3" {
+		t.Fatalf("forwarded params = %#v", gotParams)
+	}
+	for _, want := range []string{"operation:", "id: operation-1", "step_result: step-ci", "round: round-ci-3", "replayed: false"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAxiRespond_BoundRevalidationReplayReturnsTheCurrentReviewGate(t *testing.T) {
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"decide the fresh review","action":"ask-user"}]}`
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		probeBoundRevalidation: func() (interface{}, error) {
+			return &ipc.ProbeBoundRevalidationResult{OK: true}, nil
+		},
+		respond: func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+			var params ipc.RespondParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return nil, err
+			}
+			return &ipc.RespondResult{
+				OK: true, Fixed: []string{"ci-1"}, Replayed: true,
+				Operation: &ipc.ResponseOperationReceipt{
+					ID: "operation-replay", RunID: "run-timeout", RepoID: "repo-1", Branch: "feature/timeout",
+					HeadSHA: params.ExpectedHeadSHA, StepResultID: "step-ci", RoundID: "round-ci-3", AcceptedAt: 123,
+				},
+			}, nil
+		},
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
+		run := fx.running()
+		run.RepoID = "repo-1"
+		run.AwaitingAgent = true
+		run.Steps = []ipc.StepResultInfo{
+			{ID: "step-review", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings, RoundCount: 2, CurrentRoundID: "round-review-2"},
+			{ID: "step-ci", StepName: types.StepCI, Status: types.StepStatusPending},
+		}
+		return run, nil
+	})
+	chdir(t, t.TempDir())
+
+	started := time.Now()
+	out, err := executeCmd(
+		"axi", "respond", "--run", "run-timeout", "--step", "ci", "--action", "fix", "--findings", "ci-1",
+		"--require-review-revalidation", "--operation", "operation-replay", "--expected-repo", "repo-1",
+		"--expected-branch", "feature/timeout", "--expected-head", fx.head,
+		"--expected-step-result", "step-ci", "--expected-round", "round-ci-3", "--wait", "3s",
+	)
+	if err != nil {
+		t.Fatalf("bound replay: %v\n%s", err, out)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("bound replay waited %s on the pending CI result", elapsed)
+	}
+	for _, want := range []string{"replayed: true", "gate:", "review-1", "decide the fresh review"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("replay output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAxiRespond_BoundRevalidationRefusesAnOlderDaemonBeforeRespond(t *testing.T) {
+	var responded atomic.Bool
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		respond: func(context.Context, json.RawMessage) (interface{}, error) {
+			responded.Store(true)
+			return &ipc.RespondResult{OK: true}, nil
+		},
+	})
+	chdir(t, t.TempDir())
+
+	out, err := executeCmd(
+		"axi", "respond", "--run", "run-timeout", "--step", "ci", "--action", "fix", "--findings", "ci-1",
+		"--require-review-revalidation", "--operation", "operation-1", "--expected-repo", "repo-1",
+		"--expected-branch", "feature/timeout", "--expected-head", fx.head,
+		"--expected-step-result", "step-ci", "--expected-round", "round-ci-3", "--wait", "3s",
+	)
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != 1 {
+		t.Fatalf("error = %v, want exit 1\n%s", err, out)
+	}
+	if !strings.Contains(out, "coordinated daemon upgrade is required") {
+		t.Fatalf("output missing capability refusal:\n%s", out)
+	}
+	if responded.Load() {
+		t.Fatal("new client sent a bound response to an older daemon")
+	}
+}
+
+func TestAxiRespond_BoundRevalidationRefusesIgnoreOnlyBeforeProbing(t *testing.T) {
+	var probed, responded atomic.Bool
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		probeBoundRevalidation: func() (interface{}, error) {
+			probed.Store(true)
+			return &ipc.ProbeBoundRevalidationResult{OK: true}, nil
+		},
+		respond: func(context.Context, json.RawMessage) (interface{}, error) {
+			responded.Store(true)
+			return &ipc.RespondResult{OK: true}, nil
+		},
+	})
+	chdir(t, t.TempDir())
+
+	out, err := executeCmd(
+		"axi", "respond", "--run", "run-timeout", "--step", "ci", "--action", "fix", "--ignore", "ci-1",
+		"--require-review-revalidation", "--operation", "operation-ignore-only", "--expected-repo", "repo-1",
+		"--expected-branch", "feature/timeout", "--expected-head", fx.head,
+		"--expected-step-result", "step-ci", "--expected-round", "round-ci-3", "--wait", "3s",
+	)
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != 2 {
+		t.Fatalf("error = %v, want usage exit 2\n%s", err, out)
+	}
+	if !strings.Contains(out, "requires at least one --findings or --add-finding repair") {
+		t.Fatalf("output missing bound selection contract:\n%s", out)
+	}
+	if probed.Load() || responded.Load() {
+		t.Fatalf("ignore-only bound request reached IPC: probed=%v responded=%v", probed.Load(), responded.Load())
 	}
 }

@@ -176,9 +176,9 @@ func TestShellSingleQuote(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shellSingleQuote(tt.input)
+			got := ShellSingleQuote(tt.input)
 			if got != tt.want {
-				t.Errorf("shellSingleQuote(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("ShellSingleQuote(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -204,7 +204,7 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 
 	argsPath := filepath.Join(base, "args.txt")
 	fakeBin := filepath.Join(base, "fake-no-mistakes")
-	fakeScript := "#!/bin/sh\nprintf '%s\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nexit 0\n"
+	fakeScript := "#!/bin/sh\nprintf '%s\n' \"$@\" > " + ShellSingleQuote(argsPath) + "\nexit 0\n"
 	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
 	// the --gate value the hook actually computed.
 	argsPath := filepath.Join(base, "args.txt")
 	fakeBin := filepath.Join(base, "fake-no-mistakes")
-	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nexit 0\n"
+	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + ShellSingleQuote(argsPath) + "\nexit 0\n"
 	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
 
 	argsPath := filepath.Join(base, "args.txt")
 	fakeBin := filepath.Join(base, "fake-no-mistakes")
-	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nexit 0\n"
+	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + ShellSingleQuote(argsPath) + "\nexit 0\n"
 	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
