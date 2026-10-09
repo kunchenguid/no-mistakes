@@ -14,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -1172,6 +1173,9 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 
 func TestAxiSyncAdoptsExactAuthorizedTerminalHeadEndToEnd(t *testing.T) {
 	f := newCLITerminalAdoptionFixture(t)
+	// A terminal run leaves its private mirror lane at the submitted head; the
+	// rewritten result is held only by the run's recovery anchor.
+	cliGit(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
 
 	status, err := executeCmd("axi", "status")
 	if err != nil {
@@ -1228,6 +1232,16 @@ func TestAxiSyncAdoptsExactAuthorizedTerminalHeadEndToEnd(t *testing.T) {
 	}
 	if got := cliGit(t, f.local, "rev-parse", "refs/no-mistakes/recover-local/"+f.runID); got != f.submitted {
 		t.Fatalf("submitted history anchor = %s, want %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("private mirror lane = %s, want adopted head %s", got, f.preserved)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/no-mistakes/recover-local/"+f.runID); got != f.submitted {
+		t.Fatalf("gate submitted history anchor = %s, want %s", got, f.submitted)
+	}
+	// The next `axi run` prepares the private mirror exactly like this.
+	if reconciled, err := gate.ReconcileStaleBranch(context.Background(), f.gate, f.local, "feature/recover", f.preserved, ""); err != nil || reconciled.Reconciled {
+		t.Fatalf("next-run mirror preparation = %#v, err %v", reconciled, err)
 	}
 
 	p, err := paths.New()
