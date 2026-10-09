@@ -21,6 +21,11 @@ func initGitRepo(t *testing.T, dir string) {
 	}
 }
 
+// writeGoMod marks dir as a Go module so the generated workflow sets up Go.
+func writeGoMod(dir string) error {
+	return os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n"), 0644)
+}
+
 func TestGenerateCIWorkflow(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -37,11 +42,54 @@ func TestGenerateCIWorkflow(t *testing.T) {
   test: "go test ./... -race"
 `,
 			wantErr: false,
+			setup:   writeGoMod,
 			validate: func(t *testing.T, workflow map[string]interface{}) {
 				t.Helper()
 				verifyWorkflowName(t, workflow, "CI")
 				verifyJobsExist(t, workflow)
 				verifyStepNames(t, workflow, []string{"Lint", "Test"})
+				verifyStepUses(t, workflow, "actions/setup-go@v5", true)
+			},
+		},
+		{
+			name: "non-go repo omits go setup",
+			configYAML: `commands:
+  lint: "npm run lint"
+  test: "npm test"
+`,
+			wantErr: false,
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyStepNames(t, workflow, []string{"Lint", "Test"})
+				verifyStepUses(t, workflow, "actions/checkout@v4", true)
+				verifyStepUses(t, workflow, "actions/setup-go@v5", false)
+			},
+		},
+		{
+			name: "non-go repo test only omits go setup",
+			configYAML: `commands:
+  test: "npm test"
+`,
+			wantErr: false,
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyStepNames(t, workflow, []string{"Test"})
+				verifyStepNotPresent(t, workflow, "Lint")
+				verifyStepUses(t, workflow, "actions/setup-go@v5", false)
+			},
+		},
+		{
+			name: "go.mod directory is not a go module",
+			configYAML: `commands:
+  test: "npm test"
+`,
+			wantErr: false,
+			setup: func(dir string) error {
+				return os.Mkdir(filepath.Join(dir, "go.mod"), 0755)
+			},
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyStepUses(t, workflow, "actions/setup-go@v5", false)
 			},
 		},
 		{
@@ -50,12 +98,14 @@ func TestGenerateCIWorkflow(t *testing.T) {
   test: "go test ./... -race"
 `,
 			wantErr: false,
+			setup:   writeGoMod,
 			validate: func(t *testing.T, workflow map[string]interface{}) {
 				t.Helper()
 				verifyWorkflowName(t, workflow, "CI")
 				verifyJobsExist(t, workflow)
 				verifyStepNames(t, workflow, []string{"Test"})
 				verifyStepNotPresent(t, workflow, "Lint")
+				verifyStepUses(t, workflow, "actions/setup-go@v5", true)
 			},
 		},
 		{
@@ -405,4 +455,36 @@ func verifyStepRunContains(t *testing.T, workflow map[string]interface{}, stepNa
 		}
 	}
 	t.Errorf("step %q not found", stepName)
+}
+
+func verifyStepUses(t *testing.T, workflow map[string]interface{}, uses string, want bool) {
+	t.Helper()
+	jobs, ok := workflow["jobs"].(map[string]interface{})
+	if !ok {
+		t.Fatal("workflow missing jobs")
+	}
+
+	buildTestJob, ok := jobs["build-test"].(map[string]interface{})
+	if !ok {
+		t.Fatal("workflow missing build-test job")
+	}
+
+	stepsInterface, ok := buildTestJob["steps"].([]interface{})
+	if !ok {
+		t.Fatal("job missing steps")
+	}
+
+	found := false
+	for _, s := range stepsInterface {
+		step, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if u, ok := step["uses"].(string); ok && u == uses {
+			found = true
+		}
+	}
+	if found != want {
+		t.Errorf("workflow step uses %q: found = %v, want %v", uses, found, want)
+	}
 }
