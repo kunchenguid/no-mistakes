@@ -64,7 +64,11 @@ func CIFalseNegativesFromRun(database *db.DB, runID string) ([]FindingGold, erro
 	if err != nil {
 		return nil, fmt.Errorf("read source run: %w", err)
 	}
-	if run == nil || run.Status != types.RunCompleted || run.CIReadyAt == nil || run.CIReadyNoCI {
+	// Both success statuses qualify: a run that ended because the PR merged or
+	// closed, and one that reached its checks-passed verdict and released the
+	// lane while the PR stayed open. A checks_passed run is precisely the run
+	// whose CI readiness is the recorded verdict.
+	if run == nil || (run.Status != types.RunCompleted && run.Status != types.RunChecksPassed) || run.CIReadyAt == nil || run.CIReadyNoCI {
 		return nil, nil
 	}
 	steps, err := database.GetStepsByRun(runID)

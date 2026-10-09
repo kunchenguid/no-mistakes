@@ -626,6 +626,17 @@ func RecordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA stri
 	sctx.Run.ReviewApprovedHeadSHA = &approved
 }
 
+// MonitorUntilMerged opts a CI-step test context into the opt-in
+// ci_monitor_until_merged watch: a green observation keeps the run open and
+// polling until the PR is merged, closed, or the idle timeout elapses. Tests
+// that assert the watch itself - merge and close exit, base-branch re-arm,
+// idle timeout, conflict repair, post-green reruns - call this. Tests that
+// assert the default leave it out, because the default is to record the verdict
+// and release the run the moment the checks are green.
+func MonitorUntilMerged(sctx *pipeline.StepContext) {
+	sctx.Config.CIMonitorUntilMerged = true
+}
+
 func NewTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
 	sctx := NewTestContext(t, ag, workDir, baseSHA, headSHA, cmds)

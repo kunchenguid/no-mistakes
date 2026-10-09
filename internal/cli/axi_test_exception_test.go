@@ -21,7 +21,8 @@ func TestAxiTestExceptionOutput(t *testing.T) {
 		ciReady       bool
 	}{
 		{"completed", "passed-with-override", types.RunCompleted, false},
-		{"checks-ready", "checks-passed", types.RunRunning, true},
+		{"checks-ready", "passed-with-override", types.RunRunning, true},
+		{"released", "passed-with-override", types.RunChecksPassed, false},
 		{"failed", "failed", types.RunFailed, false},
 		{"cancelled", "cancelled", types.RunCancelled, false},
 	} {

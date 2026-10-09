@@ -1248,6 +1248,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	var skipReason string
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
+	var ciReadyNoCIOnCompletion *bool
 	var restartFrom types.StepName
 
 	// Execute with possible fix loop
@@ -1431,6 +1432,7 @@ rounds:
 			// Step completed without needing approval.
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
+			ciReadyNoCIOnCompletion = outcome.CIReadyNoCI
 			skipRemaining = outcome.SkipRemaining
 			stepSkipped = outcome.Skipped
 			skipReason = safeurl.RedactText(outcome.SkipReason)
@@ -1649,6 +1651,10 @@ done:
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+	} else if stepName == types.StepCI && !stepSkipped && ciReadyNoCIOnCompletion != nil {
+		if err := e.db.CompleteCIStep(sr.ID, run.ID, *ciReadyNoCIOnCompletion, finalExitCode, durationMS, logPath); err != nil {
+			return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
+		}
 	} else if stepSkipped {
 		if err := e.db.CompleteSkippedStep(sr.ID, finalExitCode, durationMS, logPath, skipReason); err != nil {
 			return false, "", fmt.Errorf("complete skipped step %s: %w", stepName, err)
@@ -1657,6 +1663,9 @@ done:
 		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
+	if stepName == types.StepCI && !stepSkipped && ciReadyNoCIOnCompletion != nil {
+		ciReadinessChanged(true, *ciReadyNoCIOnCompletion)
+	}
 	return skipRemaining, restartFrom, nil
 }
 
@@ -2151,12 +2160,15 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 }
 
 func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
+	status, err := e.terminalRunStatus(run)
+	if err != nil {
+		return err
+	}
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
-	var err error
 	if verified {
-		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead)
+		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, status, verifiedHead)
 	} else {
-		err = e.db.UpdateRunStatus(run.ID, types.RunCompleted)
+		err = e.db.UpdateRunStatus(run.ID, status)
 	}
 	if err != nil {
 		return err
@@ -2164,9 +2176,53 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 	if verified {
 		run.HeadSHA = verifiedHead
 	}
-	run.Status = types.RunCompleted
+	run.Status = status
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return nil
+}
+
+// terminalRunStatus decides which success status a finished run records.
+//
+// A run whose CI step completed on a green head while its PR was still open did
+// not merely complete: it reached its validation verdict and deliberately
+// stopped observing the PR, so it records checks_passed. That keeps the outcome
+// honest - a caller can tell "checks passed, waiting on a human merge decision"
+// apart from a run that ended because the PR merged or closed - and keeps it
+// stable, because the merge decision was never this run's to observe.
+func (e *Executor) terminalRunStatus(run *db.Run) (types.RunStatus, error) {
+	if run == nil {
+		return "", fmt.Errorf("cannot complete a nil run")
+	}
+	recorded, err := e.db.GetRun(run.ID)
+	if err != nil {
+		return "", fmt.Errorf("read run before recording terminal status: %w", err)
+	}
+	if recorded == nil {
+		return "", fmt.Errorf("cannot complete missing run %s", run.ID)
+	}
+	if recorded.CIReadyAt == nil {
+		return types.RunCompleted, nil
+	}
+	prState := ""
+	if recorded.PRState != nil {
+		prState = strings.ToLower(strings.TrimSpace(*recorded.PRState))
+	}
+	if prState != "open" {
+		return types.RunCompleted, nil
+	}
+	steps, err := e.db.GetStepsByRun(recorded.ID)
+	if err != nil {
+		return "", fmt.Errorf("read steps before recording terminal status: %w", err)
+	}
+	for _, step := range steps {
+		if step.StepName != types.StepCI {
+			continue
+		}
+		if step.Status == types.StepStatusCompleted {
+			return types.RunChecksPassed, nil
+		}
+	}
+	return types.RunCompleted, nil
 }
 
 func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
@@ -2249,9 +2305,9 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 	// banner reads the reason off the delta (like PRURL) so it never needs a
 	// snapshot to distinguish it from a genuinely green run. Derived from step
 	// rows so both ActionApprove sites (live wait and Resume) are covered.
-	// Gated on the terminal status, not the event type: errorRun emits the same
-	// event for failed/cancelled runs, whose banner never reads it.
-	if run.Status == types.RunCompleted {
+	// Gated on the terminal success statuses, not the event type: errorRun emits
+	// the same event for failed/cancelled runs, whose banner never reads it.
+	if run.Status == types.RunCompleted || run.Status == types.RunChecksPassed {
 		if steps, err := e.db.GetStepsByRun(run.ID); err == nil {
 			ciReason, testReason := completionOverrideReasons(steps)
 			if ciReason != "" {

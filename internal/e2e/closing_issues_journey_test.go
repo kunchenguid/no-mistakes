@@ -166,7 +166,11 @@ func waitPublished(t *testing.T, h *Harness, branch, prevID, label string) *ipc.
 	if !run.Status.Terminal() {
 		h.CancelRun(run.ID)
 		h.WaitForRun(branch, time.Minute)
-	} else if run.Status != types.RunCompleted {
+	} else if run.Status != types.RunCompleted && run.Status != types.RunChecksPassed {
+		// Both are successful terminal outcomes for a published PR: completed
+		// when the CI step observed the merge (or was skipped for the run), and
+		// checks_passed when every check came back green and the run reached its
+		// validation verdict and released the branch instead of waiting.
 		t.Fatalf("%s: run %s status=%s error=%v", label, run.ID, run.Status, deref(run.Error))
 	}
 	return run

@@ -30,6 +30,11 @@ func newGreenReviewBotContext(t *testing.T, policy string, env []string) (*pipel
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI.ReviewBotComments = policy
+	// Every case here is about how the monitor treats an open green PR - a
+	// green bot's already-parked decision, or checks-passed while it keeps
+	// watching - so these run the opt-in watch. The default releases the run at
+	// green instead.
+	sctx.Config.CIMonitorUntilMerged = true
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 	everReady := false

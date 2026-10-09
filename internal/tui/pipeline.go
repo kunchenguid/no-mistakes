@@ -68,7 +68,7 @@ func runStatusStyled(status types.RunStatus) string {
 	switch status {
 	case types.RunRunning:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiBlue))
-	case types.RunCompleted:
+	case types.RunCompleted, types.RunChecksPassed:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 	case types.RunFailed, types.RunCancelled:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
@@ -329,6 +329,16 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 		}
 		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 		return style.Render("✓ Pipeline passed") + elapsed
+	case types.RunChecksPassed:
+		// The default green verdict: the run validated the head and released
+		// the branch, so the merge decision is the user's. Keep Test exceptions
+		// and CI overrides visible here exactly as for a completed run.
+		if reason := singleLineReason(run.TestOverrideReason + "\n" + run.CIOverrideReason); reason != "" {
+			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
+			return style.Render("⚠ Checks passed with override - PR ready to merge: "+reason) + elapsed
+		}
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
+		return style.Render("✓ Checks passed - PR ready to merge") + elapsed
 	case types.RunFailed:
 		// Find which step failed.
 		failedLabel := ""

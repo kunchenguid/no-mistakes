@@ -44,7 +44,7 @@ Once the host is wired up, `no-mistakes` can keep owning the branch after it
 pushes to the configured target:
 
 - create or update the PR automatically
-- keep polling hosted CI until the PR is merged, closed, declined, or the configured `ci_timeout` idle window elapses
+- poll hosted CI according to the [CI step lifecycle](/no-mistakes/reference/pipeline-steps/#ci)
 - fetch failing job logs for the CI auto-fix loop when the provider exposes them
 - on GitHub, GitLab, Forgejo, Azure DevOps, and provider plugins that declare `mergeable_state`, watch mergeability and fix merge conflicts when possible
 
@@ -80,7 +80,7 @@ If one daemon serves repositories that require non-overlapping accounts, give ea
 **What you get:**
 
 - PR creation and update on pushes
-- CI check polling with exponential backoff (30s → 60s → 120s) until the PR is merged, closed, or the configured `ci_timeout` idle window elapses
+- CI polling follows the [CI step lifecycle](/no-mistakes/reference/pipeline-steps/#ci)
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
 - A red Greptile check parked as `ask-user` CI findings carrying its unresolved review-thread comments, which are also supplied to CI repair prompts (a green or not-yet-registered one too under [`ci.review_bot_comments: always`](/no-mistakes/reference/repo-config/#cireview_bot_comments)); see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for filtering and prompt-safety details
 - PR mergeability polling, and agent-driven resolution when the provider reports an actual merge conflict
@@ -124,7 +124,7 @@ glab auth login
 **What you get:**
 
 - PR (merge request) creation and update
-- CI pipeline status polling until the merge request is merged, closed, or the configured `ci_timeout` idle window elapses
+- CI polling follows the [CI step lifecycle](/no-mistakes/reference/pipeline-steps/#ci)
 - Failed job trace fetching (`glab ci trace`) for the CI auto-fix step
 - Merge-conflict polling and auto-fix, same as GitHub
 - A supported review bot's unresolved merge request discussion notes as `ask-user` CI findings under [`ci.review_bot_comments: always`](/no-mistakes/reference/repo-config/#cireview_bot_comments) (see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for the identity and filtering rules)
@@ -167,7 +167,7 @@ Get an API token from [Bitbucket account settings](https://bitbucket.org/account
 **What you get:**
 
 - PR creation and update
-- CI pipeline status polling until the PR is merged, declined, or the configured `ci_timeout` idle window elapses
+- CI polling follows the [CI step lifecycle](/no-mistakes/reference/pipeline-steps/#ci)
 - Failed pipeline step log fetching for the CI auto-fix step
 
 **What you don't get (yet):**
@@ -244,7 +244,7 @@ tea logins list
 **What you get:**
 
 - PR creation and update (`tea pulls create`/`edit`)
-- CI status polling through Gitea Actions until the PR is merged or closed, or the configured `ci_timeout` idle window elapses. Job-level pass/fail comes from Gitea's Actions REST API (`GET .../actions/runs/{run}/jobs`), reached through `tea api` (which reuses the same stored login/token, so no separate HTTP client or credential is needed) - `tea`'s own `--output json` on `actions runs view --jobs` reports each job's run/queued/completed status but not its pass/fail conclusion.
+- CI status polling through Gitea Actions follows the [CI step lifecycle](/no-mistakes/reference/pipeline-steps/#ci). Job-level pass/fail comes from Gitea's Actions REST API (`GET .../actions/runs/{run}/jobs`), reached through `tea api` (which reuses the same stored login/token, so no separate HTTP client or credential is needed) - `tea`'s own `--output json` on `actions runs view --jobs` reports each job's run/queued/completed status but not its pass/fail conclusion.
 - Failed job log fetching (`tea actions runs logs`) for the CI auto-fix step
 
 **What you don't get (yet):**
@@ -317,7 +317,7 @@ PR retargeting are optional capabilities the plugin declares in `status`.
 **What you get:**
 
 - PR creation and update, including [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate) and pre-push attestation
-- CI check polling until the PR is merged or closed, or the configured `ci_timeout` idle window elapses
+- CI polling follows the [CI step lifecycle](/no-mistakes/reference/pipeline-steps/#ci)
 - Failed-check log fetching, mergeability polling, merge-conflict auto-fix, and merged-at-head proof, when the plugin declares them
 
 **What you don't get:**

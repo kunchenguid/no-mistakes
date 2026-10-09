@@ -26,14 +26,24 @@ const (
 // producers and consumers agree on them.
 const (
 	ciChecksPassedMsg           = cimonitor.ChecksPassedMsg
+	ciChecksPassedCompleteMsg   = cimonitor.ChecksPassedCompleteMsg
 	ciNoChecksPassedMsg         = cimonitor.NoChecksPassedMsg
+	ciNoChecksPassedCompleteMsg = cimonitor.NoChecksPassedCompleteMsg
 	ciChecksRunningMsg          = cimonitor.ChecksRunningMsg
 	ciChecksAwaitingApprovalMsg = cimonitor.ChecksAwaitingApprovalMsg
 )
 
-// CIStep monitors an open PR until it is merged, closed, or its configured idle
-// timeout elapses, and repairs CI failures through the executor's shared
-// findings machinery.
+// CIStep monitors an open PR until its checks are green, or - when the operator
+// opts into ci_monitor_until_merged - until the PR is merged, closed, or its
+// configured idle timeout elapses. It repairs CI failures through the
+// executor's shared findings machinery.
+//
+// By default the green observation is the step's verdict: readiness is
+// recorded, the step completes, and the run finishes with the terminal
+// checks_passed status, which releases its worktree and lane while leaving the
+// merge decision to a human. Only the opt-in watch keeps the run open for the
+// merge, which is also what makes the recorded step duration include
+// merge-waiting time.
 //
 // Execute has the same shape as the review step's: when the executor
 // re-executes it as a fix round (sctx.Fixing), it first repairs the findings
@@ -403,10 +413,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		timeout = config.DefaultCITimeout
 	}
 
-	if unlimited {
-		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (no timeout, until merged or closed)...", prNumber))
+	monitorUntilMerged := ciMonitorUntilMerged(sctx)
+	if monitorUntilMerged {
+		if unlimited {
+			sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (no timeout, until merged or closed)...", prNumber))
+		} else {
+			sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
+		}
 	} else {
-		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s until every check is green...", prNumber))
 	}
 	// State the repair policy once, at entry, rather than at every poll: which
 	// of the two very differently priced paths a repair will take is the single
@@ -804,8 +819,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						return ciObservationOutcome(botFindings), nil
 					}
 					sctx.DeferredFindings = ""
+					declaredNoCI := len(checks) == 0
+					if !monitorUntilMerged {
+						completeMsg := ciChecksPassedCompleteMsg
+						if declaredNoCI {
+							completeMsg = ciNoChecksPassedCompleteMsg
+						}
+						sctx.Log(completeMsg)
+						sctx.Log("validation complete: releasing the run now; the PR is ready for a human to merge")
+						return &pipeline.StepOutcome{CIReadyNoCI: &declaredNoCI}, nil
+					}
 					passedMsg := ciChecksPassedMsg
-					if len(checks) == 0 {
+					if declaredNoCI {
 						passedMsg = ciNoChecksPassedMsg
 					}
 					lastMonitorLog = logCIMonitorStatus(sctx, passedMsg, lastMonitorLog)
@@ -839,14 +864,32 @@ func ciWaitingMessage(checks []scm.Check) string {
 
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {
 	if message != previous {
-		ready := message == ciChecksPassedMsg || message == ciNoChecksPassedMsg
-		declaredNoCI := message == ciNoChecksPassedMsg
+		ready, declaredNoCI := ciReadyMessage(message)
 		if err := setCIMonitorReadiness(sctx, ready, declaredNoCI); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not persist CI readiness: %v", err))
 		}
 		sctx.Log(message)
 	}
 	return message
+}
+
+func ciReadyMessage(message string) (ready, declaredNoCI bool) {
+	switch message {
+	case ciChecksPassedMsg:
+		return true, false
+	case ciNoChecksPassedMsg:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// ciMonitorUntilMerged reports whether the operator opted into the historical
+// CI-step watch with ci_monitor_until_merged. The default is off: a green
+// observation is the step's verdict, so the run finishes and releases its
+// worktree and lane rather than staying open until a human merges the PR.
+func ciMonitorUntilMerged(sctx *pipeline.StepContext) bool {
+	return sctx != nil && sctx.Config != nil && sctx.Config.CIMonitorUntilMerged
 }
 
 func clearCIMonitorReady(sctx *pipeline.StepContext) {

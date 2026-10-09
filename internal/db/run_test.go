@@ -1772,3 +1772,92 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 		t.Fatalf("rebind result: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
 	}
 }
+
+func TestRecoverStaleRunsCompletedCI(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    types.RunStatus
+		ready     bool
+		completed bool
+		preserved bool
+		want      types.RunStatus
+	}{
+		{"committed verdict", types.RunRunning, true, true, false, types.RunChecksPassed},
+		{"pending run", types.RunPending, true, true, false, types.RunChecksPassed},
+		{"no readiness", types.RunRunning, false, true, false, types.RunFailed},
+		{"live monitor", types.RunRunning, true, false, false, types.RunCIMonitorInterrupted},
+		{"cancelled", types.RunCancelled, true, true, false, types.RunCancelled},
+		{"failed", types.RunFailed, true, true, false, types.RunFailed},
+		{"preserved", types.RunRunning, true, true, true, types.RunRunning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, err := d.InsertRepo("/project", "https://github.com/test/repo", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, err := range []error{d.UpdateRunStatus(run.ID, tc.status), d.UpdateRunPRState(run.ID, "open"), d.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/1")} {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			ci, err := d.InsertStepResult(run.ID, types.StepCI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.StartStep(ci.ID); err != nil {
+				t.Fatal(err)
+			}
+			if tc.ready {
+				if err := d.CompleteCIStep(ci.ID, run.ID, false, 0, 1234, "ci.log"); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.completed {
+				if err := d.CompleteStepWithStatus(ci.ID, types.StepStatusCompleted, 0, 1234, "ci.log"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.completed {
+				if err := d.StartStep(ci.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := d.GetStepResult(ci.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			preserved := map[string]struct{}{}
+			if tc.preserved {
+				preserved[run.ID] = struct{}{}
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				if _, err := d.RecoverStaleRunsExcept("daemon crashed", preserved); err != nil {
+					t.Fatal(err)
+				}
+				got, err := d.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != tc.want {
+					t.Fatalf("status = %s, want %s", got.Status, tc.want)
+				}
+				if tc.want == types.RunChecksPassed && got.Error != nil {
+					t.Fatalf("successful run error = %v", got.Error)
+				}
+				if tc.completed {
+					after, err := d.GetStepResult(ci.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if after.Status != types.StepStatusCompleted || after.DurationMS == nil || *after.DurationMS != 1234 || after.CompletedAt == nil || *after.CompletedAt != *before.CompletedAt {
+						t.Fatalf("recovery changed completed CI timing or status: %+v", after)
+					}
+				}
+			}
+		})
+	}
+}

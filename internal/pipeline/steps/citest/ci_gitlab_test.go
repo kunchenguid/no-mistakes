@@ -56,6 +56,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
+	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -282,6 +283,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
+	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }

@@ -360,6 +360,36 @@ func (d *DB) completeStep(id string, status types.StepStatus, exitCode int, dura
 	return nil
 }
 
+func (d *DB) CompleteCIStep(id, runID string, declaredNoCI bool, exitCode int, durationMS int64, logPath string) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin complete CI step: %w", err)
+	}
+	defer tx.Rollback()
+	ts := now()
+	result, err := tx.Exec(
+		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ? AND run_id = ? AND step_name = ?`,
+		types.StepStatusCompleted, exitCode, durationMS, logPath, ts, ts, "status: completed", id, runID, types.StepCI,
+	)
+	if err != nil {
+		return fmt.Errorf("complete CI step: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("complete CI step: step row not found")
+	}
+	result, err = tx.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ?`, ts, declaredNoCI, ts, runID)
+	if err != nil {
+		return fmt.Errorf("record CI readiness: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("record CI readiness: run row not found")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit completed CI: %w", err)
+	}
+	return nil
+}
+
 // CompleteReviewStep atomically completes a successful review and replaces
 // the run's exact review-approved head. Neither write survives if the other
 // fails, so a failed completion cannot create approval authority and a

@@ -199,8 +199,17 @@ type GlobalConfig struct {
 	// survives on this machine. Global-only for the same reason as Eval: it
 	// describes local disk retention, never a repository policy, so no
 	// pushed branch may set it.
-	Worktree                  Worktree      `yaml:"-"`
-	CITimeout                 time.Duration `yaml:"-"`
+	Worktree  Worktree      `yaml:"-"`
+	CITimeout time.Duration `yaml:"-"`
+	// CIMonitorUntilMerged keeps the historical CI-step behavior of holding the
+	// run open and monitoring the PR until it is merged or closed. It is false
+	// by default: once every check is green the step records its validation
+	// verdict (outcome: checks-passed) and the run completes, releasing its
+	// worktree and its lane instead of waiting on a human merge decision.
+	// Global-only, like CITimeout: it decides how long this machine's runs stay
+	// alive, never a repository policy, so no pushed branch may set it. When
+	// true, CITimeout bounds the wait exactly as before.
+	CIMonitorUntilMerged      bool          `yaml:"-"`
 	StepQuietWarning          time.Duration `yaml:"-"`
 	AgentTimeout              time.Duration `yaml:"-"`
 	ReviewAgentTimeout        time.Duration `yaml:"-"`
@@ -270,6 +279,7 @@ type globalConfigRaw struct {
 	WorktreeRoots             map[string]string          `yaml:"worktree_roots"`
 	Worktree                  WorktreeRaw                `yaml:"worktree"`
 	CITimeout                 string                     `yaml:"ci_timeout"`
+	CIMonitorUntilMerged      *bool                      `yaml:"ci_monitor_until_merged"`
 	DaemonConnectTimeout      string                     `yaml:"daemon_connect_timeout"`
 	BranchSyncRemoteTimeout   string                     `yaml:"branch_sync_remote_timeout"`
 	GateReconcileInterval     string                     `yaml:"gate_reconcile_interval"`
@@ -795,6 +805,7 @@ type Config struct {
 	AgentConfig               map[string]agentcfg.Profile
 	ReviewAgents              map[string]ReviewAgent
 	CITimeout                 time.Duration
+	CIMonitorUntilMerged      bool
 	StepQuietWarning          time.Duration
 	AgentTimeout              time.Duration
 	ReviewAgentTimeout        time.Duration
@@ -1354,7 +1365,22 @@ forgejo_axi_path: forgejo-axi
 # keeps its monitor. Set to "unlimited", "none", "off", "never", or any
 # non-positive duration to monitor until the PR is merged, closed, or the run is
 # aborted with: no-mistakes axi abort --run <id>
+#
+# This bounds only the wait that ci_monitor_until_merged (below) asks for, and
+# the wait for checks that have not finished yet. It no longer bounds a wait for
+# a human merge decision, because the default is not to wait for one.
 ci_timeout: "168h"
+
+# Whether the CI step keeps monitoring the pull request after every check is
+# green, until the PR is merged or closed. Default false: once the checks are
+# green the run records its validation verdict (outcome: checks-passed, run
+# status: checks_passed) and finishes immediately, releasing its worktree and
+# its lane, because whether and when the PR is merged is a human decision that
+# this run neither owns nor needs to observe. Set true to hold the run open and
+# keep monitoring instead - which keeps the older behavior of auto-rebasing and
+# re-pushing the branch if the base branch later conflicts, and of observing the
+# merge itself, bounded by ci_timeout above. Global-only, like ci_timeout.
+ci_monitor_until_merged: false
 
 # AXI status marks a running/fixing step as quiet when no step log or native
 # agent lifecycle activity has appeared for this long. This is observability
@@ -2508,6 +2534,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.CITimeout = d
 	}
+	if raw.CIMonitorUntilMerged != nil {
+		cfg.CIMonitorUntilMerged = *raw.CIMonitorUntilMerged
+	}
 	if raw.StepQuietWarning != "" {
 		d, err := time.ParseDuration(raw.StepQuietWarning)
 		if err != nil {
@@ -3648,6 +3677,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		AgentConfig:               global.AgentConfig,
 		ReviewAgents:              global.ReviewAgents,
 		CITimeout:                 global.CITimeout,
+		CIMonitorUntilMerged:      global.CIMonitorUntilMerged,
 		StepQuietWarning:          global.StepQuietWarning,
 		AgentTimeout:              global.AgentTimeout,
 		ReviewAgentTimeout:        global.ReviewAgentTimeout,

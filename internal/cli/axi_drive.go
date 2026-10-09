@@ -112,6 +112,12 @@ func outcomeFor(status string) string {
 	switch types.RunStatus(status) {
 	case types.RunCompleted:
 		return "passed"
+	case types.RunChecksPassed:
+		// The run reached its validation verdict and stopped observing the PR,
+		// so this is the same word the still-monitoring acknowledgement uses:
+		// checks passed, the PR is ready for a human to merge. It stays
+		// checks-passed for good, because the merge is never observed here.
+		return "checks-passed"
 	case types.RunFailed:
 		return "failed"
 	case types.RunCancelled:
@@ -127,8 +133,11 @@ func outcomeFor(status string) string {
 // or whose publication/verification automatically skipped. Explicit per-run
 // skips carry no automatic cause and retain their existing outcome.
 func outcomeForRun(rv runView) string {
-	word := outcomeFor(rv.Status)
-	if word == "passed" && (rv.CIOverrideReason != "" || rv.TestOverrideReason != "") {
+	return qualifyOutcome(outcomeFor(rv.Status), rv)
+}
+
+func qualifyOutcome(word string, rv runView) string {
+	if (word == "passed" || word == "checks-passed") && (rv.CIOverrideReason != "" || rv.TestOverrideReason != "") {
 		return "passed-with-override"
 	}
 	if word == "passed" && len(rv.automaticSkips()) > 0 {
@@ -1057,11 +1066,13 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // does a gate holding an open review question or an unreadable question history
 // (pipeline.HasUnansweredReviewQuestion / HasUnreadableReviewQuestionHistory).
 //
-// The CI step monitors an open PR until a human merges or closes it (a live
-// status the TUI shows), so it never reaches a terminal state on its own. An
-// agent driving the run must not block on that human action, so once CI checks
-// pass driveRun returns with ciReady=true: the change is validated and the PR is
-// ready for a human to merge. The daemon keeps monitoring in the background.
+// The CI step returns as soon as every check is green, so a run normally
+// finishes there with the checks_passed status and its lane released. Only
+// under the opt-in ci_monitor_until_merged does it keep monitoring an open PR
+// until a human merges or closes it (a live status the TUI shows); in that mode
+// an agent driving the run must not block on that human action, so once CI
+// checks pass driveRun returns with ciReady=true and the daemon keeps
+// monitoring in the background.
 func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	return driveRunSelected(ctx, progress, client, socketPath, runID, autoApprove, false)
 }
@@ -1369,17 +1380,10 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 	// agent stops and asks the user to review and merge instead of waiting.
 	if ciReady {
 		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
-		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
-		merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
-		if activity.DeclaredNoCI {
-			merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
-		}
-		if rv.PRURL != "" {
-			merge = fmt.Sprintf("%s: %s", strings.TrimSuffix(merge, "."), rv.PRURL)
-		}
+		fields = append(fields, toon.Field{Key: "outcome", Value: qualifyOutcome("checks-passed", rv)})
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
-		help := append([]string{merge}, successReportHelp(fixes)...)
+		help := append([]string{checksPassedMergeLine(rv, activity)}, successReportHelp(fixes)...)
 		if rv.TestOverrideReason != "" {
 			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
 		}
@@ -1387,6 +1391,30 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 			help = append(help, branchSyncAgentGuidance)
 		}
 		help = cloneScopedNote(append(help, staleMonitorGuidance))
+		fields = append(fields, toon.Field{Key: "help", Value: help})
+		emitDoc(cmd, fields...)
+		return nil
+	}
+
+	// The default green verdict: the run reached its validation verdict and
+	// released the branch, so it reports the same outcome word with the
+	// released contract instead of the still-monitoring one.
+	if rv.Status == string(types.RunChecksPassed) {
+		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
+		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeForRun(rv)})
+		fixes := rv.fixRows()
+		fields = appendFixesField(fields, fixes)
+		help := append([]string{checksPassedMergeLine(rv, activity)}, successReportHelp(fixes)...)
+		if rv.CIOverrideReason != "" {
+			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
+		}
+		if rv.TestOverrideReason != "" {
+			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
+		}
+		if hasBranchSync {
+			help = append(help, branchSyncAgentGuidance)
+		}
+		help = cloneScopedNote(append(help, releasedChecksPassedGuidance))
 		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)
 		return nil
@@ -1448,6 +1476,20 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 	fields = append(fields, toon.Field{Key: "help", Value: help})
 	emitDoc(cmd, fields...)
 	return &exitError{code: 1}
+}
+
+// checksPassedMergeLine is the shared "checks passed, the PR is ready for a
+// human to merge" sentence, used both at the opt-in monitor's stopping point
+// and by a run that reached its validation verdict and released the lane.
+func checksPassedMergeLine(rv runView, activity cimonitor.Activity) string {
+	merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
+	if activity.DeclaredNoCI {
+		merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
+	}
+	if rv.PRURL != "" {
+		merge = fmt.Sprintf("%s: %s", strings.TrimSuffix(merge, "."), rv.PRURL)
+	}
+	return merge
 }
 
 // appendFixesField adds a fixes table when the pipeline applied any fixes.

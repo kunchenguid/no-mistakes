@@ -38,6 +38,8 @@ agent_args_override:
 
 ci_timeout: "168h"
 
+ci_monitor_until_merged: false
+
 step_quiet_warning: "10m"
 
 agent_timeout: "30m"
@@ -560,7 +562,7 @@ Plugins run through the same environment as built-in provider CLIs (the daemon's
 
 ### ci_timeout
 
-How long the CI step monitors an open PR, including provider CI status and PR mergeability (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), before giving up.
+How long the CI step waits for provider CI status to settle before giving up, and how long the opt-in [`ci_monitor_until_merged`](#ci_monitor_until_merged) watch keeps monitoring an open PR after every check is green.
 
 |         |                                                 |
 | ------- | ----------------------------------------------- |
@@ -570,15 +572,36 @@ How long the CI step monitors an open PR, including provider CI status and PR me
 Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
-So an actively-updated green PR keeps its monitor no matter how long it stays open.
+So an actively-updated green PR keeps its monitor no matter how long it stays open, which matters under `ci_monitor_until_merged` - the only mode that monitors a green PR at all.
 If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
 
-Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
+Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to disable this timeout. The run still ends at readiness by default, or when the PR is merged or closed in either mode. You can cancel it with `no-mistakes axi abort --run <id>`.
 
 Legacy alias: `babysit_timeout`.
+
+### ci_monitor_until_merged
+
+Whether the CI step keeps monitoring the pull request after every check is green, until the PR is merged or closed.
+
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `false`   |
+
+`false` (the default): the green observation is the CI step's verdict.
+The step records readiness and finishes, so the run completes as `checks_passed` and releases its worktree and its lane instead of holding both open for a merge it does not own.
+The recorded CI duration excludes waiting for a later merge. See the [CLI outcome reference](/no-mistakes/reference/cli/#no-mistakes-axi-run) for success and approved-exception reporting.
+The released run does not observe or record a later merge. If merge evidence is independently persisted on the run, it changes only PR state, never the recorded outcome. See [eval merge-derived labels](/no-mistakes/reference/eval/) for the effect on relabeling.
+
+`true`: restores the older watch.
+The run stays active and keeps polling the PR until it is merged, closed, or declined, bounded by [`ci_timeout`](#ci_timeout).
+Use it when you want no-mistakes itself to keep babysitting the PR after checks pass: it re-bases onto the base branch and re-pushes through the force-push safety guard if the PR later conflicts, and it records the merge itself.
+The cost is the lane - the run's worktree stays allocated for as long as the merge takes, and the recorded CI duration then includes that wait.
+
+Global-only, like `ci_timeout`: it decides how long this machine's runs stay alive, so a pushed branch cannot hold another machine's runs open waiting for a merge.
 
 ### step_quiet_warning
 

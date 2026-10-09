@@ -779,6 +779,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.CI.RerunTransient == nil || *raw.CI.RerunTransient != ciDefaults().RerunTransient {
 		t.Errorf("YAML ci.rerun_transient = %v, Go default = %d", raw.CI.RerunTransient, ciDefaults().RerunTransient)
 	}
+	if raw.CIMonitorUntilMerged == nil || *raw.CIMonitorUntilMerged != DefaultGlobalConfig().CIMonitorUntilMerged {
+		t.Errorf("YAML ci_monitor_until_merged = %v, Go default = %t", raw.CIMonitorUntilMerged, DefaultGlobalConfig().CIMonitorUntilMerged)
+	}
 }
 
 func TestLoadGlobal_AutoFixDefaults(t *testing.T) {

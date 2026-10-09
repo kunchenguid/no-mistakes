@@ -29,6 +29,7 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.CIMonitorUntilMerged = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -80,6 +81,7 @@ func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.CIMonitorUntilMerged = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

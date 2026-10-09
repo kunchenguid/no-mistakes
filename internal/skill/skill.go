@@ -255,9 +255,14 @@ Run the pipeline and decide on its findings as they come up:
      the PR is not merged yet. **You are done driving the pipeline.** Do not
      wait for the merge: tell the user the PR is ready and ask them to review
      and merge it (the PR link is in the ` + "`help`" + ` line). A generic empty forge
-     check list without that declaration is not ready. no-mistakes keeps
+     check list without that declaration is not ready.
+     This is the run's own recorded verdict by default: ` + "`run.status`" + ` is
+     ` + "`checks_passed`" + `, the run released its worktree, and nothing is left watching the PR.
+     An update it needs later is a fresh ` + "`no-mistakes axi run`" + ` on the updated head;
+     this run will not rebase or re-push it. Only when the operator set
+     ` + "`ci_monitor_until_merged: true`" + ` does the run stay active and keep
      monitoring the PR in the background until it is merged, closed, or its
-     configured idle timeout elapses, so a human can watch it in the TUI.
+     configured idle timeout elapses.
    - ` + "`passed`" + ` - the pipeline completed under the requested steps, including any
      explicit per-run skips. This alone is not evidence that a PR was merged.
    - ` + "`passed-with-override`" + ` - the pipeline completed with an explicitly approved Test exception or CI failure.
@@ -300,15 +305,16 @@ If synchronization is blocked, process that structured state instead of improvis
 After synchronization, commit the follow-up on top and re-run ` + "`no-mistakes axi run --intent \"...\"`" + ` with the original user intent.
 This preserves every prior gate-fix commit regardless of its configured subject.
 
-The CI step deliberately keeps watching the PR after checks pass, so
-` + "`axi run`" + ` returns ` + "`checks-passed`" + ` the moment checks are green (or a trusted
-` + "`no_ci: true`" + ` declaration covers a zero-check repository) rather than
-blocking on the human merge. Never poll or re-run waiting for the merge yourself.
+The CI step ends the run the moment checks are green (or a trusted
+` + "`no_ci: true`" + ` declaration covers a zero-check repository), so
+` + "`axi run`" + ` returns ` + "`checks-passed`" + ` rather than blocking on the human merge.
+Never poll or re-run waiting for the merge yourself.
 Never treat "no CI checks reported" alone as green.
 
-Because that monitor stays live, a PR that falls behind the default branch or
-hits a merge conflict after checks pass - commonly because another PR merged
-first - needs **no command from you**: never hand-rebase. When the CI monitor
+That monitor only stays live when the operator set
+` + "`ci_monitor_until_merged: true`" + `. Under it, a PR that falls behind the default
+branch or hits a merge conflict after checks pass - commonly because another PR
+merged first - needs **no command from you**: never hand-rebase. When the CI monitor
 sees an actual conflict it **rebases onto the base, resolves it, revalidates from Review
 because rebasing cannot prove continuity with the reviewed head, and re-pushes
 the branch through Push**; a PR that is merely behind but still clean needs nothing
@@ -318,7 +324,8 @@ idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
 with ` + "`no-mistakes rerun`" + `, subject to the clean-head check above. An accepted
 rerun cancels the stale monitor and re-runs the full pipeline including a
 deterministic rebase step. Do **not** reach for
-` + "`no-mistakes axi run`" + ` to refresh a still-active PR: after ` + "`checks-passed`" + ` it
+` + "`no-mistakes axi run`" + ` to refresh a still-active PR: under
+` + "`ci_monitor_until_merged`" + `, after ` + "`checks-passed`" + ` it
 reattaches to the running monitor (HEAD unchanged) and returns its output
 without rebasing.
 

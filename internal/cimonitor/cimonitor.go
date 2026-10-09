@@ -20,14 +20,24 @@ import "strings"
 const (
 	// ChecksPassedMsg is logged when every CI check has passed but the PR is
 	// not yet merged or closed, so the monitor keeps watching subject to its
-	// configured timeout.
+	// configured timeout. It is only produced when the operator opted into that
+	// watch with ci_monitor_until_merged.
 	ChecksPassedMsg = "all CI checks passed - still monitoring until merged or closed"
+	// ChecksPassedCompleteMsg is the default green verdict: every CI check has
+	// passed, so the step records readiness and finishes, releasing the run
+	// instead of waiting for a human merge decision. It names the release
+	// explicitly because the identical observation used to mean the opposite.
+	ChecksPassedCompleteMsg = "all CI checks passed - validation complete, releasing without waiting for the merge"
 	// NoChecksPassedMsg is logged only when the trusted default-branch config
 	// declares `no_ci: true` and the forge reports zero checks. The message
 	// names the positive declaration so agents and operators can inspect the
 	// evidence rather than treating every empty forge response as green. An
 	// empty check list WITHOUT that declaration must never produce this line.
 	NoChecksPassedMsg = "repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"
+	// NoChecksPassedCompleteMsg is the release form of NoChecksPassedMsg: the
+	// declaration is the positive evidence the empty check list is green, and
+	// the run then finishes like any other green run.
+	NoChecksPassedCompleteMsg = "repository declares no CI (no_ci: true) - treating as all checks passed - validation complete, releasing without waiting for the merge"
 	// ChecksRunningMsg is logged when checks are (re-)running with no failures
 	// yet, which clears any previous passed-checks state.
 	ChecksRunningMsg = "CI checks running, waiting for results..."
@@ -89,7 +99,17 @@ func ParseActivity(logs []string) Activity {
 			a.Ready = true
 			a.DeclaredNoCI = false
 			a.LastEvent = line
+		case line == ChecksPassedCompleteMsg:
+			a.AutoFixing = false
+			a.Ready = true
+			a.DeclaredNoCI = false
+			a.LastEvent = line
 		case line == NoChecksPassedMsg:
+			a.AutoFixing = false
+			a.Ready = true
+			a.DeclaredNoCI = true
+			a.LastEvent = line
+		case line == NoChecksPassedCompleteMsg:
 			a.AutoFixing = false
 			a.Ready = true
 			a.DeclaredNoCI = true
