@@ -1260,9 +1260,14 @@ type respondRevalidationBinding struct {
 	expectedRound      string
 }
 
-func probeDaemonBoundRevalidation(client *ipc.Client) error {
+// probeDaemonBoundRevalidation is bounded by ctx, so the caller's --wait and
+// cancellation cover it; a ctx error is returned unwrapped for the wait path.
+func probeDaemonBoundRevalidation(ctx context.Context, client *ipc.Client) error {
 	var result ipc.ProbeBoundRevalidationResult
-	err := client.Call(ipc.MethodProbeBoundRevalidation, &ipc.ProbeBoundRevalidationParams{}, &result)
+	err := client.CallWithContext(ctx, ipc.MethodProbeBoundRevalidation, &ipc.ProbeBoundRevalidationParams{}, &result, 0)
+	if ctxErr := ctx.Err(); err != nil && ctxErr != nil {
+		return ctxErr
+	}
 	if err == nil && !result.OK {
 		err = errors.New("daemon declined the bound-revalidation capability")
 	}
@@ -1694,7 +1699,10 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		runID = active.Run.ID
 	}
 	if ra.requireReviewRevalidation {
-		if err := probeDaemonBoundRevalidation(env.client); err != nil {
+		if err := probeDaemonBoundRevalidation(driveCtx, env.client); err != nil {
+			if isAxiWaitElapsed(ctx, driveCtx, err) {
+				return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, respondCmd+" --action approve|fix|skip")
+			}
 			return emitError(cmd, 1, err.Error())
 		}
 	}
