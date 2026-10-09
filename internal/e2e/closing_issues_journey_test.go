@@ -133,6 +133,8 @@ func saveEvidence(t *testing.T, name, content string) {
 // complete its PR step. A run that does not skip CI keeps monitoring the open
 // PR until it merges, so once the body is published it is cancelled: the
 // next scenario needs the branch idle, not a merged PR.
+// A CI-skipped run must finish naturally; PR completion can precede its
+// terminal status, and cancelling that snapshot races the finished run.
 func waitPublished(t *testing.T, h *Harness, branch, prevID, label string) *ipc.RunInfo {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
@@ -148,7 +150,8 @@ func waitPublished(t *testing.T, h *Harness, branch, prevID, label string) *ipc.
 		}
 		if run != nil {
 			pr, _ := findStep(run.Steps, types.StepPR)
-			if pr.Status == types.StepStatusCompleted || run.Status.Terminal() {
+			ci, _ := findStep(run.Steps, types.StepCI)
+			if run.Status.Terminal() || pr.Status == types.StepStatusCompleted && ci.Status == types.StepStatusRunning {
 				break
 			}
 		}
@@ -164,6 +167,9 @@ func waitPublished(t *testing.T, h *Harness, branch, prevID, label string) *ipc.
 		t.Fatalf("%s: run %s status=%s error=%v: PR step did not complete", label, run.ID, run.Status, deref(run.Error))
 	}
 	if !run.Status.Terminal() {
+		if ci, _ := findStep(run.Steps, types.StepCI); ci.Status != types.StepStatusRunning {
+			t.Fatalf("%s: run %s status=%s: CI did not start monitoring or the run did not finish", label, run.ID, run.Status)
+		}
 		h.CancelRun(run.ID)
 		h.WaitForRun(branch, time.Minute)
 	} else if run.Status != types.RunCompleted {
