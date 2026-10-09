@@ -3329,6 +3329,8 @@ func TestAdoptTerminalHeadInterruptedAttemptsRemainRetryable(t *testing.T) {
 }
 
 func TestRecoveryRefusesDuplicateBranchCheckoutsAtEveryMutationBoundary(t *testing.T) {
+	t.Parallel()
+
 	assertDraftSurvives := func(t *testing.T, other string) {
 		t.Helper()
 		if got := readOptional(t, filepath.Join(other, "operator-draft.txt")); got != "operator draft in second worktree\n" {
