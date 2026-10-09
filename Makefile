@@ -58,10 +58,11 @@ test:
 # Excluded from `make test` because it is behind the `e2e` build tag and
 # rebuilds binaries on each run.
 #
-# scripts/e2e.sh owns temporary-daemon inventory + EXIT/INT/TERM reaping so
-# an interrupted or timed-out go test child cannot leave detached e2e
-# daemons behind. Keepalive shells are out of scope. A SIGKILL of the
-# wrapper shell itself does not run its trap; next-run pre-reap recovers.
+# scripts/e2e.sh owns deterministic full-suite sharding plus temporary-daemon
+# inventory + EXIT/INT/TERM reaping, so an interrupted or timed-out go test
+# child cannot leave detached e2e daemons behind. Keepalive shells are out of
+# scope. A SIGKILL of the wrapper shell itself does not run its trap; next-run
+# pre-reap recovers.
 e2e:
 	@bash scripts/e2e.sh
 

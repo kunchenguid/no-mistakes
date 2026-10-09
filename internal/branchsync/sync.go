@@ -135,6 +135,18 @@ type RecoveryEvidence struct {
 	Proof         string
 }
 
+// TerminalHeadAdoptionRequest is the complete operator-confirmed binding for
+// adopting one exact terminal unpublished pipeline result. Every field is
+// revalidated against the registered repository, checked-out branch, selected
+// run, and run-specific recovery anchor before any branch mutation.
+type TerminalHeadAdoptionRequest struct {
+	RepositoryID  string
+	Branch        string
+	RunID         string
+	CallerHead    string
+	PreservedHead string
+}
+
 // CanApply reports whether Apply may advance the clean checked-out branch for
 // a freshly verified plan. It includes strict fast-forwards and the narrower
 // equivalent-diverged advance that first anchors the pre-sync head.
@@ -178,6 +190,9 @@ type Service struct {
 	beforeRecoverBranchMove           func()
 	afterRecoverBranchMove            func()
 	beforeRecoverRebind               func()
+	afterTerminalAdoptionAuthorized   func()
+	afterTerminalAdoptionPreserved    func()
+	completeTerminalAdoption          func(db.TerminalHeadAdoptionAuthorization) (bool, error)
 }
 
 // remoteTimeout returns the bounded deadline budget for one remote
@@ -579,6 +594,411 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 	return verified
 }
 
+func terminalHeadAdoptionEvidence(request TerminalHeadAdoptionRequest, proof string) *RecoveryEvidence {
+	return &RecoveryEvidence{
+		Source:        "terminal_head_adoption",
+		RepositoryID:  request.RepositoryID,
+		RunID:         request.RunID,
+		Branch:        request.Branch,
+		RequiredHead:  request.CallerHead,
+		PreservedHead: request.PreservedHead,
+		Proof:         proof,
+	}
+}
+
+func terminalHeadAdoptionAuthorizationMatches(run *db.Run, request TerminalHeadAdoptionRequest) bool {
+	return run != nil && run.TerminalAdoptionAuthorizedAt != nil &&
+		ptr(run.TerminalAdoptionCallerHeadSHA) == request.CallerHead &&
+		ptr(run.TerminalAdoptionPreservedHeadSHA) == request.PreservedHead
+}
+
+func terminalHeadAdoptionAuthorizedRunMatches(run *db.Run, request TerminalHeadAdoptionRequest) bool {
+	return run != nil && run.ID == request.RunID && run.RepoID == request.RepositoryID && run.Branch == request.Branch &&
+		terminalRunStatus(run.Status) && run.TerminalHeadVerifiedAt != nil && run.CustodyReturnedAt == nil &&
+		run.LastPushedSHA == nil && run.PRURL == nil && !run.PushActive && run.SubmittedHeadSHA != nil &&
+		ptr(run.SubmittedHeadSHA) == request.CallerHead && run.HeadSHA == request.PreservedHead &&
+		request.CallerHead != request.PreservedHead && terminalHeadAdoptionAuthorizationMatches(run, request)
+}
+
+func exactExistingCommitRef(ctx context.Context, repoDir, ref, expected string) bool {
+	if repoDir == "" || expected == "" {
+		return false
+	}
+	anchored, exists, err := git.DirectCommitRefTarget(ctx, repoDir, ref)
+	return err == nil && exists && anchored == expected
+}
+
+func (s *Service) trustedTerminalEqualTreeRewrite(ctx context.Context, state State, run *db.Run) bool {
+	return run != nil && run.TerminalHeadVerifiedAt != nil && run.ReviewApprovedHeadSHA != nil && *run.ReviewApprovedHeadSHA != run.HeadSHA &&
+		reviewedHeadProvesEquivalentTarget(ctx, s.GateDir, state.Local.Head, *run.ReviewApprovedHeadSHA, run.HeadSHA)
+}
+
+// automaticTerminalAdoptionAvailable is the complete existing guarded-recovery
+// predicate. Explicit exact-head adoption is only for the narrower case this
+// proof cannot settle, so status and the mutating action must share all three
+// accepted automatic proofs.
+func (s *Service) automaticTerminalAdoptionAvailable(ctx context.Context, proofDir string, state State, run *db.Run) bool {
+	return run != nil && (isAncestor(ctx, proofDir, state.Local.Head, run.HeadSHA) ||
+		preservedContainsLocalWork(ctx, proofDir, state.Local.Head, run.HeadSHA) ||
+		s.trustedTerminalEqualTreeRewrite(ctx, state, run))
+}
+
+func terminalHeadAdoptionRequestFor(repo *db.Repo, state State, run *db.Run) TerminalHeadAdoptionRequest {
+	request := TerminalHeadAdoptionRequest{}
+	if repo == nil || run == nil || run.SubmittedHeadSHA == nil {
+		return request
+	}
+	request.RepositoryID = repo.ID
+	request.Branch = run.Branch
+	request.RunID = run.ID
+	request.CallerHead = ptr(run.SubmittedHeadSHA)
+	request.PreservedHead = run.HeadSHA
+	return request
+}
+
+func terminalHeadAdoptionCommand(request TerminalHeadAdoptionRequest) string {
+	return "no-mistakes axi sync --adopt-terminal-head" +
+		" --repository " + git.ShellSingleQuote(request.RepositoryID) +
+		" --branch " + git.ShellSingleQuote(request.Branch) +
+		" --terminal-run " + git.ShellSingleQuote(request.RunID) +
+		" --caller-head " + git.ShellSingleQuote(request.CallerHead) +
+		" --preserved-head " + git.ShellSingleQuote(request.PreservedHead)
+}
+
+// terminalHeadAdoptionCandidate is the read-only half of the explicit escape
+// hatch. It intentionally does not relax ordinary containment: it merely
+// recognizes the exact terminal, unpublished, clean submitted-head state for
+// which status may offer an operator-confirmed action.
+func (s *Service) terminalHeadAdoptionCandidate(ctx context.Context, state State, run *db.Run) (TerminalHeadAdoptionRequest, bool) {
+	request := terminalHeadAdoptionRequestFor(s.Repo, state, run)
+	if request.RepositoryID == "" || state.State != StatePipelineOwned || state.Local.Branch != request.Branch || state.Local.Head != request.CallerHead || !state.Local.Clean ||
+		run.RepoID != request.RepositoryID || !terminalRunStatus(run.Status) || run.TerminalHeadVerifiedAt == nil || run.CustodyReturnedAt != nil || run.PushActive ||
+		run.LastPushedSHA != nil || run.PRURL != nil || request.CallerHead == request.PreservedHead {
+		return TerminalHeadAdoptionRequest{}, false
+	}
+	if run.TerminalAdoptionAuthorizedAt != nil && !terminalHeadAdoptionAuthorizationMatches(run, request) {
+		return TerminalHeadAdoptionRequest{}, false
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if _, err := os.Stat(gateDir); err != nil || !exactExistingCommitRef(ctx, gateDir, custody.RecoveryRef(run.ID), request.PreservedHead) {
+		return TerminalHeadAdoptionRequest{}, false
+	}
+	if compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, request.PreservedHead); err != nil || !compatible {
+		return TerminalHeadAdoptionRequest{}, false
+	}
+	if compatible, err := exactCommitRefCompatible(ctx, s.workDir(), custody.RecoveryLocalRef(run.ID), request.CallerHead); err != nil || !compatible {
+		return TerminalHeadAdoptionRequest{}, false
+	}
+	if s.automaticTerminalAdoptionAvailable(ctx, gateDir, state, run) {
+		return TerminalHeadAdoptionRequest{}, false
+	}
+	return request, true
+}
+
+func blockedTerminalHeadAdoption(state State, safety, message string, request TerminalHeadAdoptionRequest) State {
+	blocked := blockedPlan(state, state.State, safety, message)
+	if request.RepositoryID != "" {
+		blocked.Recovery = terminalHeadAdoptionEvidence(request, "operator_confirmation_required")
+	}
+	return blocked
+}
+
+func terminalHeadAdoptionAuthorization(run *db.Run, request TerminalHeadAdoptionRequest) db.TerminalHeadAdoptionAuthorization {
+	auth := db.TerminalHeadAdoptionAuthorization{
+		RepositoryID:     request.RepositoryID,
+		Branch:           request.Branch,
+		RunID:            request.RunID,
+		CallerHeadSHA:    request.CallerHead,
+		PreservedHeadSHA: request.PreservedHead,
+	}
+	if run != nil {
+		auth.Status = run.Status
+		if run.TerminalHeadVerifiedAt != nil {
+			auth.TerminalHeadVerifiedAt = *run.TerminalHeadVerifiedAt
+		}
+	}
+	return auth
+}
+
+func (s *Service) finishTerminalHeadAdoption(ctx context.Context, run *db.Run, request TerminalHeadAdoptionRequest, changed bool) State {
+	wd := s.workDir()
+	branch, branchErr := git.CurrentBranch(ctx, wd)
+	head, headErr := git.HeadSHA(ctx, wd)
+	clean, _ := worktreeClean(ctx, wd)
+	branchCheckouts, branchCheckoutsOK := branchCheckoutCount(ctx, wd, request.Branch)
+	gateDir := strings.TrimSpace(s.GateDir)
+	if branchErr != nil || headErr != nil || branch != request.Branch || head != request.PreservedHead || !clean || !branchCheckoutsOK || branchCheckouts != 1 ||
+		!exactExistingCommitRef(ctx, gateDir, custody.RecoveryRef(run.ID), request.PreservedHead) ||
+		!exactExistingCommitRef(ctx, wd, custody.RecoveryRef(run.ID), request.PreservedHead) ||
+		!exactExistingCommitRef(ctx, wd, custody.RecoveryLocalRef(run.ID), request.CallerHead) {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_incomplete", "the exact clean preserved branch or one of its required history anchors changed before custody could be recorded; custody was not returned", request)
+	}
+	auth := terminalHeadAdoptionAuthorization(run, request)
+	complete := s.completeTerminalAdoption
+	if complete == nil {
+		complete = s.DB.CompleteTerminalHeadAdoption
+	}
+	completed, err := complete(auth)
+	if err != nil || !completed {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Safety = "blocked_adopt_terminal_stamp_failed"
+		state.Error = "the exact terminal-head adoption reached its preserved result, but custody could not be recorded; both histories remain anchored and the same fully bound action can be retried"
+		state.NextAction = &NextAction{Code: "adopt_terminal_head", Command: terminalHeadAdoptionCommand(request)}
+		state.Recovery = terminalHeadAdoptionEvidence(request, "operator_authorized")
+		return state
+	}
+	state, _, _ := s.inspect(ctx)
+	state.Recovered = true
+	state.Changed = changed
+	state.Recovery = terminalHeadAdoptionEvidence(request, "operator_authorized")
+	return state
+}
+
+// resumeInterruptedTerminalHeadAdoption recognizes only the two partial Git
+// states produced after an already-authorized adoption has compare-and-swapped
+// the branch ref: the branch is still attached while its index/worktree retain
+// the exact caller snapshot, or HEAD is cleanly detached at that caller. This
+// runs before inspect because inspect deliberately refuses detached HEAD and
+// classifies the first state as dirty relative to the newly moved branch.
+func (s *Service) resumeInterruptedTerminalHeadAdoption(ctx context.Context, request TerminalHeadAdoptionRequest) (State, bool) {
+	if s.Repo == nil || request.RepositoryID == "" || request.Branch == "" || request.RunID == "" || request.CallerHead == "" || request.PreservedHead == "" ||
+		request.RepositoryID != s.Repo.ID {
+		return State{}, false
+	}
+	run, err := s.DB.GetRun(request.RunID)
+	if err != nil || !terminalHeadAdoptionAuthorizedRunMatches(run, request) {
+		return State{}, false
+	}
+	wd, err := git.FindGitRoot(s.workDir())
+	if err != nil {
+		return State{}, false
+	}
+	mainRoot, err := git.FindMainRepoRoot(wd)
+	if err != nil || !samePath(mainRoot, s.Repo.WorkingPath) {
+		return State{}, false
+	}
+	branch, branchErr := git.CurrentBranch(ctx, wd)
+	head, headErr := git.HeadSHA(ctx, wd)
+	if branchErr != nil || headErr != nil {
+		return State{}, false
+	}
+	state := State{
+		State:  StatePipelineOwned,
+		Safety: "blocked_adopt_terminal_incomplete",
+		Local:  LocalState{Branch: branch, Head: head},
+		Pipeline: PipelineState{
+			RunID:         run.ID,
+			Status:        string(run.Status),
+			SubmittedHead: request.CallerHead,
+			CurrentHead:   request.PreservedHead,
+		},
+	}
+	state.Local.Clean, state.Local.Reason = worktreeClean(ctx, wd)
+
+	branchRef := "refs/heads/" + request.Branch
+	gateDir := strings.TrimSpace(s.GateDir)
+	anchorsExact := func() bool {
+		return exactExistingCommitRef(ctx, wd, branchRef, request.PreservedHead) &&
+			exactExistingCommitRef(ctx, gateDir, custody.RecoveryRef(run.ID), request.PreservedHead) &&
+			exactExistingCommitRef(ctx, wd, custody.RecoveryRef(run.ID), request.PreservedHead) &&
+			exactExistingCommitRef(ctx, wd, custody.RecoveryLocalRef(run.ID), request.CallerHead)
+	}
+	if !anchorsExact() {
+		return State{}, false
+	}
+
+	attachedCallerSnapshot := branch == request.Branch && head == request.PreservedHead && worktreeMatchesCommit(ctx, wd, request.CallerHead)
+	detachedCallerSnapshot := branch == "HEAD" && head == request.CallerHead && state.Local.Clean
+	completedMove := branch == request.Branch && head == request.PreservedHead && state.Local.Clean
+	if !attachedCallerSnapshot && !detachedCallerSnapshot && !completedMove {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_incomplete", "an interrupted terminal-head adoption does not match its exact authorized branch, caller snapshot, and history anchors; custody was not returned", request), true
+	}
+	branchCheckouts, branchCheckoutsOK := branchCheckoutCount(ctx, wd, request.Branch)
+	wantBranchCheckouts := 1
+	if detachedCallerSnapshot {
+		wantBranchCheckouts = 0
+	}
+	if !branchCheckoutsOK || branchCheckouts != wantBranchCheckouts {
+		return blockedTerminalHeadAdoption(state, "blocked_branch_ambiguous", "the authorized branch is attached to an unexpected worktree while terminal-head adoption is being resumed; no worktree was changed and custody was not returned", request), true
+	}
+
+	// Re-run the durable compare-and-swap immediately before resuming Git. It is
+	// idempotent for this exact authorization and refuses a changed run, a new
+	// active owner, or publication provenance.
+	auth := terminalHeadAdoptionAuthorization(run, request)
+	if authorized, err := s.DB.AuthorizeTerminalHeadAdoption(auth); err != nil || !authorized {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_assumptions_changed", "the run changed while an interrupted terminal-head adoption was being resumed; both histories remain anchored and custody was not returned", request), true
+	}
+	run, err = s.DB.GetRun(request.RunID)
+	branchCheckouts, branchCheckoutsOK = branchCheckoutCount(ctx, wd, request.Branch)
+	if err != nil || !terminalHeadAdoptionAuthorizedRunMatches(run, request) || !anchorsExact() || !branchCheckoutsOK || branchCheckouts != wantBranchCheckouts {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_assumptions_changed", "the run or exact history anchors changed while an interrupted terminal-head adoption was being resumed; custody was not returned", request), true
+	}
+
+	if completedMove {
+		return s.finishTerminalHeadAdoption(ctx, run, request, false), true
+	}
+	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-recovery-hooks-")
+	if err != nil {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_assumptions_changed", "an isolated hook-free Git context could not be created before resuming the interrupted adoption; custody was not returned", request), true
+	}
+	defer os.RemoveAll(emptyHooksDir)
+	if attachedCallerSnapshot {
+		currentBranch, _ := git.CurrentBranch(ctx, wd)
+		currentHead, _ := git.HeadSHA(ctx, wd)
+		branchCheckouts, branchCheckoutsOK = branchCheckoutCount(ctx, wd, request.Branch)
+		if currentBranch != request.Branch || currentHead != request.PreservedHead || !worktreeMatchesCommit(ctx, wd, request.CallerHead) || !anchorsExact() || !branchCheckoutsOK || branchCheckouts != 1 {
+			return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_assumptions_changed", "the branch, caller snapshot, or history anchors changed at the interrupted adoption boundary; custody was not returned", request), true
+		}
+		if err := recoveryCheckout(ctx, wd, emptyHooksDir, "--detach", request.CallerHead); err != nil {
+			return blockedTerminalHeadAdoption(state, "blocked_recover_worktree_busy", "the caller snapshot changed while the interrupted terminal-head adoption was being resumed; no operator content was overwritten and custody was not returned", request), true
+		}
+	}
+	currentBranch, _ := git.CurrentBranch(ctx, wd)
+	currentHead, _ := git.HeadSHA(ctx, wd)
+	currentClean, _ := worktreeClean(ctx, wd)
+	branchCheckouts, branchCheckoutsOK = branchCheckoutCount(ctx, wd, request.Branch)
+	if currentBranch != "HEAD" || currentHead != request.CallerHead || !currentClean || !anchorsExact() || !branchCheckoutsOK || branchCheckouts != 0 {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_assumptions_changed", "the detached caller snapshot or history anchors changed while the interrupted terminal-head adoption was being resumed; custody was not returned", request), true
+	}
+	if err := recoveryCheckout(ctx, wd, emptyHooksDir, request.Branch); err != nil {
+		return blockedTerminalHeadAdoption(state, "blocked_recover_worktree_busy", "the working tree changed while the interrupted terminal-head adoption was being resumed; no operator content was overwritten and custody was not returned", request), true
+	}
+	finalBranch, _ := git.CurrentBranch(ctx, wd)
+	finalHead, _ := git.HeadSHA(ctx, wd)
+	finalClean, finalReason := worktreeClean(ctx, wd)
+	branchCheckouts, branchCheckoutsOK = branchCheckoutCount(ctx, wd, request.Branch)
+	state.Local = LocalState{Branch: finalBranch, Head: finalHead, Clean: finalClean, Reason: finalReason}
+	if finalBranch != request.Branch || finalHead != request.PreservedHead || !finalClean || !anchorsExact() || !branchCheckoutsOK || branchCheckouts != 1 {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_apply_failed", "the interrupted terminal-head adoption did not finish at its exact clean preserved branch and anchors; custody was not returned", request), true
+	}
+	return s.finishTerminalHeadAdoption(ctx, run, request, true), true
+}
+
+// AdoptTerminalHead adopts one exact terminal unpublished result after the
+// operator has confirmed all five immutable bindings: repository, branch, run,
+// observed caller head, and preserved pipeline head. This is deliberately
+// separate from Recover so the automatic containment predicate stays unchanged.
+func (s *Service) AdoptTerminalHead(ctx context.Context, request TerminalHeadAdoptionRequest) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
+	if resumed, handled := s.resumeInterruptedTerminalHeadAdoption(ctx, request); handled {
+		return resumed
+	}
+	state, run, _ := s.inspect(ctx)
+	if state.Safety == "blocked_branch_ambiguous" {
+		return state
+	}
+	if run == nil || s.Repo == nil || request.RepositoryID == "" || request.Branch == "" || request.RunID == "" || request.CallerHead == "" || request.PreservedHead == "" ||
+		request.RepositoryID != s.Repo.ID || request.RepositoryID != run.RepoID || request.Branch != state.Local.Branch || request.Branch != run.Branch || request.RunID != run.ID {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_binding_mismatch", "the repository, branch, or run no longer matches the exact terminal-head authorization; no files, refs, or custody records were changed", request)
+	}
+	if run.CustodyReturnedAt != nil {
+		if !terminalHeadAdoptionAuthorizationMatches(run, request) || state.Local.Head != request.PreservedHead || !state.Local.Clean ||
+			!exactExistingCommitRef(ctx, s.workDir(), custody.RecoveryRef(run.ID), request.PreservedHead) ||
+			!exactExistingCommitRef(ctx, s.workDir(), custody.RecoveryLocalRef(run.ID), request.CallerHead) {
+			return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_replay_mismatch", "the completed terminal-head adoption no longer matches the exact authorized heads; no files, refs, or custody records were changed", request)
+		}
+		state.Recovered = true
+		state.Changed = false
+		state.Recovery = terminalHeadAdoptionEvidence(request, "operator_authorized")
+		return state
+	}
+	if !terminalRunStatus(run.Status) {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_run_active", "the selected run is still active; terminal-head adoption is unavailable and no files, refs, or custody records were changed", request)
+	}
+	if run.LastPushedSHA != nil || run.PRURL != nil {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_published", "the selected run has publication provenance; use its existing published recovery path instead; no files, refs, or custody records were changed", request)
+	}
+	if state.State != StatePipelineOwned || run.TerminalHeadVerifiedAt == nil || run.PushActive || run.SubmittedHeadSHA == nil ||
+		request.CallerHead != ptr(run.SubmittedHeadSHA) || request.PreservedHead != run.HeadSHA || request.CallerHead == request.PreservedHead {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_evidence_mismatch", "the terminal run or its exact caller and preserved heads no longer match the authorization; no files, refs, or custody records were changed", request)
+	}
+	// A prior attempt may have completed the guarded Git move and then stopped
+	// before the conditional custody stamp. Only the immutable authorization
+	// plus all three exact anchors can complete that interrupted operation.
+	if state.Local.Head == request.PreservedHead && terminalHeadAdoptionAuthorizationMatches(run, request) {
+		gateDir := strings.TrimSpace(s.GateDir)
+		if !state.Local.Clean || !exactExistingCommitRef(ctx, gateDir, custody.RecoveryRef(run.ID), request.PreservedHead) ||
+			!exactExistingCommitRef(ctx, s.workDir(), custody.RecoveryRef(run.ID), request.PreservedHead) ||
+			!exactExistingCommitRef(ctx, s.workDir(), custody.RecoveryLocalRef(run.ID), request.CallerHead) {
+			return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_incomplete", "an interrupted terminal-head adoption does not match its exact preserved tree and both history anchors; custody was not returned", request)
+		}
+		return s.finishTerminalHeadAdoption(ctx, run, request, false)
+	}
+	if state.Local.Head != request.CallerHead {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_caller_changed", "the invoking branch no longer points at the authorized caller head; no files, refs, or custody records were changed", request)
+	}
+	if !state.Local.Clean {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_dirty", "the invoking worktree is not clean; terminal-head adoption refuses without changing files, refs, or custody records", request)
+	}
+	if run.TerminalAdoptionAuthorizedAt != nil && !terminalHeadAdoptionAuthorizationMatches(run, request) {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_authorization_conflict", "this run already carries a different terminal-head authorization; no files, refs, or custody records were changed", request)
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	gateAnchor := custody.RecoveryRef(run.ID)
+	if _, err := os.Stat(gateDir); err != nil || !exactExistingCommitRef(ctx, gateDir, gateAnchor, request.PreservedHead) {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_anchor_mismatch", "the run-specific preserved-head evidence is missing, moved, symbolic, non-commit, or belongs to another run; no files, refs, or custody records were changed", request)
+	}
+	if s.automaticTerminalAdoptionAvailable(ctx, gateDir, state, run) {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_automatic_recovery_available", "ordinary guarded recovery already proves that the preserved head carries the caller's work; use the reported automatic recovery action instead; no files, refs, or custody records were changed", request)
+	}
+	if compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, request.PreservedHead); err != nil || !compatible {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_anchor_mismatch", "the invoking worktree has conflicting preserved-head evidence; no files, refs, or custody records were changed", request)
+	}
+	if compatible, err := exactCommitRefCompatible(ctx, s.workDir(), custody.RecoveryLocalRef(run.ID), request.CallerHead); err != nil || !compatible {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_local_anchor_mismatch", "the submitted-head preservation ref conflicts with this authorization; no files, refs, or custody records were changed", request)
+	}
+
+	authorized, err := s.DB.AuthorizeTerminalHeadAdoption(terminalHeadAdoptionAuthorization(run, request))
+	if err != nil || !authorized {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_assumptions_changed", "the run changed while terminal-head authorization was being recorded; no files or refs were changed and custody was not returned", request)
+	}
+	if s.afterTerminalAdoptionAuthorized != nil {
+		s.afterTerminalAdoptionAuthorized()
+	}
+
+	localAnchor := custody.RecoveryRef(run.ID)
+	if !exactExistingCommitRef(ctx, s.workDir(), localAnchor, request.PreservedHead) {
+		if err := git.FetchRemoteRef(ctx, s.workDir(), gateDir, gateAnchor, request.PreservedHead); err != nil {
+			return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_preserve_failed", "the exact preserved pipeline head could not be imported from its run-specific anchor; authorization remains recorded, no branch moved, and custody was not returned", request)
+		}
+		if err := custody.PreserveRecoveryAnchor(ctx, s.workDir(), localAnchor, request.PreservedHead); err != nil {
+			return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_preserve_failed", "the exact preserved pipeline head could not be anchored in the invoking worktree; authorization remains recorded, no branch moved, and custody was not returned", request)
+		}
+	}
+	if !exactExistingCommitRef(ctx, s.workDir(), localAnchor, request.PreservedHead) {
+		return blockedTerminalHeadAdoption(state, "blocked_adopt_terminal_preserve_failed", "the exact preserved pipeline head could not be re-verified after anchoring; authorization remains recorded, no branch moved, and custody was not returned", request)
+	}
+	if s.afterTerminalAdoptionPreserved != nil {
+		s.afterTerminalAdoptionPreserved()
+	}
+
+	freshState, freshRun, _ := s.inspect(ctx)
+	if freshRun == nil || freshRun.ID != request.RunID || freshRun.CustodyReturnedAt != nil || !terminalRunStatus(freshRun.Status) || freshRun.TerminalHeadVerifiedAt == nil ||
+		freshRun.HeadSHA != request.PreservedHead || ptr(freshRun.SubmittedHeadSHA) != request.CallerHead || freshRun.LastPushedSHA != nil || freshRun.PRURL != nil || freshRun.PushActive ||
+		!terminalHeadAdoptionAuthorizationMatches(freshRun, request) || freshState.Local.Branch != request.Branch || !freshState.Local.Clean ||
+		!exactExistingCommitRef(ctx, gateDir, gateAnchor, request.PreservedHead) {
+		return blockedTerminalHeadAdoption(freshState, "blocked_adopt_terminal_assumptions_changed", "the branch, run, worktree, or preserved-head evidence changed during the fresh adoption preflight; both histories remain anchored and custody was not returned", request)
+	}
+	if freshState.Local.Head == request.PreservedHead {
+		if !exactExistingCommitRef(ctx, s.workDir(), custody.RecoveryLocalRef(run.ID), request.CallerHead) {
+			return blockedTerminalHeadAdoption(freshState, "blocked_adopt_terminal_incomplete", "the branch reached the preserved head without the authorized caller-head anchor; custody was not returned", request)
+		}
+		return s.finishTerminalHeadAdoption(ctx, freshRun, request, false)
+	}
+	if freshState.Local.Head != request.CallerHead {
+		return blockedTerminalHeadAdoption(freshState, "blocked_adopt_terminal_caller_changed", "the invoking branch moved after authorization; both histories remain anchored and custody was not returned", request)
+	}
+	return s.recoverAdoptPreserved(ctx, freshRun, freshState, request.PreservedHead, true, func(ctx context.Context, run *db.Run, changed bool) State {
+		return s.finishTerminalHeadAdoption(ctx, run, request, changed)
+	})
+}
+
 // Recover returns custody of a branch stranded by a TERMINAL run whose MOVED
 // pipeline head was never published: cancelled or failed before the push with
 // pipeline commits in the gate, or terminal after a push with additional
@@ -670,6 +1090,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return refusal
 	}
 	state, run, _ := s.inspect(ctx)
+	if state.Safety == "blocked_branch_ambiguous" {
+		return state
+	}
 	// Only a live read can observe a rewritten remote, and a custody-returned
 	// run keeps a push binding a third party can still rewrite, so this check
 	// precedes every cached no-op below.
@@ -774,8 +1197,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	branch := state.Local.Branch
 	local := state.Local.Head
 	preserved := run.HeadSHA
-	trustedEqualTreeRewrite := run.TerminalHeadVerifiedAt != nil && run.ReviewApprovedHeadSHA != nil && *run.ReviewApprovedHeadSHA != preserved &&
-		reviewedHeadProvesEquivalentTarget(ctx, s.GateDir, local, *run.ReviewApprovedHeadSHA, preserved)
+	trustedEqualTreeRewrite := s.trustedTerminalEqualTreeRewrite(ctx, state, run)
 	anchorRef := custody.RecoveryRef(run.ID)
 	localAnchor := custody.RecoveryLocalRef(run.ID)
 	gateDir := strings.TrimSpace(s.GateDir)
@@ -903,14 +1325,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if keepLocal {
 			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA})
 		}
-		if trustedEqualTreeRewrite || preservedContainsLocalWork(ctx, wd, local, preserved) {
+		if s.automaticTerminalAdoptionAvailable(ctx, wd, state, run) {
 			if !state.Local.Clean {
 				state.Relation = RelationDiverged
 				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
 				blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 				return blocked
 			}
-			return s.recoverAdoptPreserved(ctx, run, state, preserved, trustedEqualTreeRewrite)
+			return s.recoverAdoptPreserved(ctx, run, state, preserved, trustedEqualTreeRewrite, nil)
 		}
 		state.Relation = RelationDiverged
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, or use --keep-local to keep the current head. `no-mistakes rerun` resumes validating the selected preserved head, but refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits; no files or refs were changed", anchorRef))
@@ -1206,18 +1628,28 @@ func reviewedHeadProvesEquivalentTarget(ctx context.Context, dir, local, reviewe
 //   - `update-ref <branch> <preserved> <observed>` is an atomic compare-and-swap.
 //     A concurrent commit moved the branch, so the swap refuses and nothing at
 //     all has been touched.
-//   - `read-tree -m -u <observed> <preserved>` refuses to overwrite a modified
-//     or untracked working-tree file. A concurrent edit to a file this move
-//     would rewrite aborts it before any file changes; an edit to a file the
-//     move does not touch is simply carried across. When it refuses, the branch
-//     swap is rolled back by the same compare-and-swap in reverse.
+//   - two `checkout --no-overwrite-ignore` operations first detach at the
+//     observed head (whose tree the index and worktree still hold) and then
+//     attach the compare-and-swapped branch. Branch checkout protects modified,
+//     untracked, AND ignored-untracked paths. A refusal rolls the branch CAS
+//     back without resetting the caller's index; an edit to a path the move
+//     does not touch is simply carried across.
 //
-// A crash between the two leaves the branch at the preserved head with the
-// working tree still holding the pre-recovery content, which reads as ordinary
-// uncommitted changes and loses nothing: containment was proven before the move
-// and the pre-recovery head stays anchored. Custody is stamped only after the
-// whole move is verified.
-func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, containmentProven bool) State {
+// A crash after the compare-and-swap leaves the branch at the preserved head in
+// one of two shapes. Before the first checkout, HEAD is still attached and the
+// working tree holds the pre-recovery content, which reads as ordinary
+// uncommitted changes. Between the two checkouts, HEAD is detached at the
+// pre-recovery head; ordinary --recover refuses detached HEAD, so the operator
+// re-attaches with `git checkout <branch>`. Terminal-head adoption resumes both
+// shapes itself (resumeInterruptedTerminalHeadAdoption). Neither loses anything:
+// containment was proven before the move and the pre-recovery head stays
+// anchored. Custody is stamped only after the whole move is verified.
+func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, containmentProven bool, finish func(context.Context, *db.Run, bool) State) State {
+	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-recovery-hooks-")
+	if err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "an isolated hook-free Git context could not be created before custody was returned; no files or refs were changed")
+	}
+	defer os.RemoveAll(emptyHooksDir)
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
 	}
@@ -1225,7 +1657,8 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	branch, branchErr := git.CurrentBranch(ctx, wd)
 	head, headErr := git.HeadSHA(ctx, wd)
 	clean, _ := worktreeClean(ctx, wd)
-	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
+	branchCheckouts, branchCheckoutsOK := branchCheckoutCount(ctx, wd, state.Local.Branch)
+	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean || !branchCheckoutsOK || branchCheckouts != 1 {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed")
 	}
 	// The containment proof runs before the anchor and the move so that no
@@ -1255,7 +1688,8 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	}
 	branchRef := "refs/heads/" + state.Local.Branch
 	boundaryBranch, boundaryErr := git.CurrentBranch(ctx, wd)
-	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
+	branchCheckouts, branchCheckoutsOK = branchCheckoutCount(ctx, wd, state.Local.Branch)
+	if boundaryErr != nil || boundaryBranch != state.Local.Branch || !branchCheckoutsOK || branchCheckouts != 1 {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; no branch or worktree changes were made")
 	}
 	if _, err := git.Run(ctx, wd, "update-ref", branchRef, preserved, head); err != nil {
@@ -1265,7 +1699,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		s.afterRecoverBranchMove()
 	}
 	// KNOWN BOUNDED FUNDAMENTAL-GIT LIMITATION: a concurrent git checkout
-	// landing between this branch-identity verification and the read-tree
+	// landing between this branch-identity verification and the guarded checkout
 	// working-tree update can apply the preserved tree to another branch's
 	// worktree. This is not data loss: containment is proven before the move,
 	// the pre-recovery head stays anchored at
@@ -1284,22 +1718,38 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		}
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded", rollbackDetail))
 	}
-	if _, err := git.Run(ctx, wd, "read-tree", "-m", "-u", head, preserved); err != nil {
-		rolledBack := ""
-		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
-			rolledBack = fmt.Sprintf("; the branch could not be restored to %s and now points at %s, whose content the pre-recovery head is contained in", head, preserved)
+	branchCheckouts, branchCheckoutsOK = branchCheckoutCount(ctx, wd, state.Local.Branch)
+	if !branchCheckoutsOK || branchCheckouts != 1 {
+		rolledBack := rollbackRecoverBranch(ctx, wd, branchRef, head, preserved)
+		return blockedPlan(state, StateAmbiguousContext, "blocked_branch_ambiguous", fmt.Sprintf("the branch became attached to another worktree while custody was being returned%s; no worktree was changed and custody was not recorded", rolledBack))
+	}
+	if err := recoveryCheckout(ctx, wd, emptyHooksDir, "--detach", head); err != nil {
+		rolledBack := rollbackRecoverBranch(ctx, wd, branchRef, head, preserved)
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so the preserved tree was not applied%s; re-run the recovery once the working tree is settled", rolledBack))
+		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return blocked
+	}
+	if err := recoveryCheckout(ctx, wd, emptyHooksDir, state.Local.Branch); err != nil {
+		rolledBack := rollbackRecoverBranch(ctx, wd, branchRef, head, preserved)
+		if attachErr := recoveryCheckout(ctx, wd, emptyHooksDir, state.Local.Branch); attachErr != nil {
+			rolledBack += fmt.Sprintf("; the branch was restored to %s but HEAD remains detached there, so the worktree requires inspection", head)
 		}
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so no file was overwritten%s; re-run the recovery once the working tree is settled", rolledBack))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so local content was preserved and the branch move was refused%s; re-run the recovery once the working tree is settled", rolledBack))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return blocked
 	}
 
+	finalBranch, _ := git.CurrentBranch(ctx, wd)
 	finalHead, _ := git.HeadSHA(ctx, wd)
 	finalClean, finalReason := worktreeClean(ctx, wd)
+	branchCheckouts, branchCheckoutsOK = branchCheckoutCount(ctx, wd, state.Local.Branch)
 	state.Local.Head = finalHead
 	state.Local.Clean = finalClean
 	state.Local.Reason = finalReason
 	state.Changed = finalHead == preserved && finalHead != head
+	if finalBranch != state.Local.Branch || !branchCheckoutsOK || branchCheckouts != 1 {
+		return blockedPlan(state, StateAmbiguousContext, "blocked_branch_ambiguous", "the recovered branch is attached to an unexpected worktree; custody was not recorded")
+	}
 	if finalHead != preserved {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head did not reach it; final HEAD is %s and the pre-recovery head is anchored at %s; inspect the worktree before retrying", finalHead, localAnchor))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
@@ -1313,7 +1763,24 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return state
 	}
+	if finish != nil {
+		return finish(ctx, run, true)
+	}
 	return s.finishRecover(ctx, run, true)
+}
+
+func recoveryCheckout(ctx context.Context, workDir, emptyHooksDir string, args ...string) error {
+	checkoutArgs := []string{"-c", "core.hooksPath=" + emptyHooksDir, "checkout", "--no-overwrite-ignore"}
+	checkoutArgs = append(checkoutArgs, args...)
+	_, err := git.Run(ctx, workDir, checkoutArgs...)
+	return err
+}
+
+func rollbackRecoverBranch(ctx context.Context, wd, branchRef, head, preserved string) string {
+	if _, err := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); err != nil {
+		return fmt.Sprintf("; the branch could not be restored to %s and now points at %s, whose content the pre-recovery head is contained in", head, preserved)
+	}
+	return ""
 }
 
 // recoverRemoteRewritten owns Recover's outcome for a terminal run whose push
@@ -1708,6 +2175,12 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 	clean, reason := worktreeClean(ctx, root)
 	state.Local.Clean = clean
 	state.Local.Reason = reason
+	if duplicateBranchCheckout(ctx, root, branch) {
+		state.State = StateAmbiguousContext
+		state.Safety = "blocked_branch_ambiguous"
+		state.Error = "the checked-out branch is attached to more than one worktree"
+		return state, nil, false
+	}
 
 	runs, err := s.DB.GetRunsByRepo(s.Repo.ID)
 	if err != nil {
@@ -1832,12 +2305,6 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		state.State = StateTargetChanged
 		state.Safety = "blocked_target_changed"
 		state.Error = "the configured push target or branch ref changed after the pipeline push"
-		return state, run, false
-	}
-	if duplicateBranchCheckout(ctx, root, branch) {
-		state.State = StateAmbiguousContext
-		state.Safety = "blocked_branch_ambiguous"
-		state.Error = "the checked-out branch is attached to more than one worktree"
 		return state, run, false
 	}
 	if !clean {
@@ -1996,20 +2463,8 @@ func refreshable(state State) bool {
 }
 
 func worktreeClean(ctx context.Context, dir string) (bool, string) {
-	markers := []struct{ path, reason string }{
-		{"MERGE_HEAD", "merge_in_progress"}, {"rebase-merge", "rebase_in_progress"}, {"rebase-apply", "rebase_in_progress"},
-		{"CHERRY_PICK_HEAD", "cherry_pick_in_progress"}, {"REVERT_HEAD", "revert_in_progress"}, {"BISECT_LOG", "bisect_in_progress"}, {"sequencer", "sequencer_in_progress"},
-	}
-	for _, marker := range markers {
-		path, err := git.Run(ctx, dir, "rev-parse", "--git-path", marker.path)
-		if err == nil {
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(dir, path)
-			}
-			if _, err := os.Stat(path); err == nil {
-				return false, marker.reason
-			}
-		}
+	if inProgress, reason := worktreeOperationInProgress(ctx, dir); inProgress {
+		return false, reason
 	}
 	dirty, err := git.HasUncommittedChanges(ctx, dir)
 	if err != nil {
@@ -2021,10 +2476,56 @@ func worktreeClean(ctx context.Context, dir string) (bool, string) {
 	return true, ""
 }
 
+func worktreeOperationInProgress(ctx context.Context, dir string) (bool, string) {
+	markers := []struct{ path, reason string }{
+		{"MERGE_HEAD", "merge_in_progress"}, {"rebase-merge", "rebase_in_progress"}, {"rebase-apply", "rebase_in_progress"},
+		{"CHERRY_PICK_HEAD", "cherry_pick_in_progress"}, {"REVERT_HEAD", "revert_in_progress"}, {"BISECT_LOG", "bisect_in_progress"}, {"sequencer", "sequencer_in_progress"},
+	}
+	for _, marker := range markers {
+		path, err := git.Run(ctx, dir, "rev-parse", "--git-path", marker.path)
+		if err == nil {
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(dir, path)
+			}
+			if _, err := os.Stat(path); err == nil {
+				return true, marker.reason
+			}
+		}
+	}
+	return false, ""
+}
+
+// worktreeMatchesCommit proves the tracked index and working tree still hold
+// one exact commit snapshot even when the attached branch ref has already been
+// compare-and-swapped to another commit. Normal untracked files and operation
+// state make the snapshot non-exact. Ignored files remain protected by the
+// mutation's --no-overwrite-ignore checkout guard.
+func worktreeMatchesCommit(ctx context.Context, dir, commit string) bool {
+	if commit == "" {
+		return false
+	}
+	if inProgress, _ := worktreeOperationInProgress(ctx, dir); inProgress {
+		return false
+	}
+	if _, err := git.Run(ctx, dir, "diff", "--cached", "--quiet", commit, "--"); err != nil {
+		return false
+	}
+	if _, err := git.Run(ctx, dir, "diff", "--quiet", "--"); err != nil {
+		return false
+	}
+	untracked, err := git.Run(ctx, dir, "ls-files", "--others", "--exclude-standard")
+	return err == nil && strings.TrimSpace(untracked) == ""
+}
+
 func duplicateBranchCheckout(ctx context.Context, dir, branch string) bool {
+	count, ok := branchCheckoutCount(ctx, dir, branch)
+	return !ok || count != 1
+}
+
+func branchCheckoutCount(ctx context.Context, dir, branch string) (int, bool) {
 	out, err := git.Run(ctx, dir, "worktree", "list", "--porcelain")
 	if err != nil {
-		return true
+		return 0, false
 	}
 	needle := "branch refs/heads/" + branch
 	count := 0
@@ -2033,7 +2534,7 @@ func duplicateBranchCheckout(ctx context.Context, dir, branch string) bool {
 			count++
 		}
 	}
-	return count != 1
+	return count, true
 }
 
 func unpublishedPipelineHead(run *db.Run) bool {
@@ -2121,6 +2622,13 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			// advertised as a missing-head keep-local or archive recovery.
 			if source.archiveClaimed {
 				*state = source.apply(*state)
+				return
+			}
+			if request, eligible := s.terminalHeadAdoptionCandidate(ctx, *state, run); eligible {
+				state.Safety = "blocked_terminal_head_adoption_requires_authorization"
+				state.Error = "the run finished with an exact preserved unpublished head whose intentional fixes cannot pass automatic containment; adopt it only by running the fully bound operator-confirmation command"
+				state.Recovery = terminalHeadAdoptionEvidence(request, "operator_confirmation_required")
+				state.NextAction = &NextAction{Code: "adopt_terminal_head", Command: terminalHeadAdoptionCommand(request)}
 				return
 			}
 			state.Safety = "blocked_recover_manual_reconciliation"
@@ -2307,7 +2815,7 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 
 	ordinaryAvailable := localEligible
 	if !ordinaryAvailable && gateAvailable && objectExists(ctx, gateDir, preserved) && state.Local.Clean && objectExists(ctx, gateDir, local) {
-		ordinaryAvailable = isAncestor(ctx, gateDir, local, preserved) || preservedContainsLocalWork(ctx, gateDir, local, preserved)
+		ordinaryAvailable = s.automaticTerminalAdoptionAvailable(ctx, gateDir, *state, run)
 	}
 	if ordinaryAvailable {
 		return recoverySourceProof{
@@ -2495,18 +3003,14 @@ func recoveryGateAnchorCompatible(ctx context.Context, repoDir, runID, gateHead 
 }
 
 func exactCommitRefCompatible(ctx context.Context, repoDir, ref, expected string) (bool, error) {
-	if symbolic, err := git.Run(ctx, repoDir, "symbolic-ref", "-q", ref); err == nil && symbolic != "" {
-		return false, nil
-	}
-	_, exists, err := git.ExactRefTarget(ctx, repoDir, ref)
+	anchored, exists, err := git.DirectCommitRefTarget(ctx, repoDir, ref)
 	if err != nil {
 		return false, err
 	}
 	if !exists {
 		return true, nil
 	}
-	anchored, err := git.Run(ctx, repoDir, "rev-parse", ref+"^{commit}")
-	return err == nil && anchored == expected, nil
+	return anchored == expected, nil
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the

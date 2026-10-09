@@ -247,6 +247,18 @@ var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN repair_published INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_rounds ADD COLUMN user_findings_json TEXT`,
+	// A response-scoped full-revalidation demand is one immutable operation on
+	// one exact parked CI round. The row already owns step/round identity; the
+	// repeated bindings and fingerprint make an uncertain retry queryable and
+	// prevent the operation id from being reused with different work.
+	`ALTER TABLE step_rounds ADD COLUMN response_operation_id TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN response_fingerprint TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN response_repo_id TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN response_branch TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN response_head_sha TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN response_dispositions_json TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN response_accepted_at INTEGER`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_step_rounds_response_operation ON step_rounds (response_operation_id) WHERE response_operation_id IS NOT NULL`,
 	// A parked round may retain the reviewed commit as a non-authoritative
 	// candidate. Only atomic review completion promotes it onto the run.
 	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
@@ -302,6 +314,12 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	// Exact operator authorization for adopting a terminal unpublished head
+	// that intentionally supersedes submitted lines. Repository, branch, and
+	// run identity come from the owning row; the SHAs bind both histories.
+	`ALTER TABLE runs ADD COLUMN terminal_adoption_authorized_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN terminal_adoption_caller_head_sha TEXT`,
+	`ALTER TABLE runs ADD COLUMN terminal_adoption_preserved_head_sha TEXT`,
 	// Proof bindings remain nullable for ordinary and historical rows. The
 	// partial unique index is the cross-process duplicate defense.
 	`ALTER TABLE runs ADD COLUMN launch_nonce TEXT`,

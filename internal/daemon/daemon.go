@@ -1370,6 +1370,13 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.ProbeOmitIntentResult{OK: true}, nil
 	})
 
+	// Capability probe for the exact-round active-CI revalidation response. An
+	// older daemon must refuse the distinct method before a newer client sends
+	// fields it would otherwise ignore on MethodRespond.
+	srv.Handle(ipc.MethodProbeBoundRevalidation, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeBoundRevalidationResult{OK: true}, nil
+	})
+
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err
@@ -1479,7 +1486,19 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason)
+		boundFields := p.OperationID != "" || p.ExpectedRepoID != "" || p.ExpectedBranch != "" || p.ExpectedHeadSHA != "" || p.ExpectedStepResultID != "" || p.ExpectedRoundID != ""
+		if boundFields && !p.RequireReviewRevalidation {
+			return nil, fmt.Errorf("bound response fields require require_review_revalidation")
+		}
+		var dispositions pipeline.RespondDispositions
+		var operation *db.BoundResponseOperation
+		var replayed bool
+		var err error
+		if p.RequireReviewRevalidation {
+			dispositions, operation, replayed, err = mgr.HandleBoundRevalidationRespond(p)
+		} else {
+			dispositions, err = mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason)
+		}
 		if err != nil {
 			// A refused fix response is the caller's input to fix, not a
 			// transport failure: the gate is still parked. Report it as a
@@ -1491,7 +1510,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			}
 			return nil, err
 		}
-		return &ipc.RespondResult{OK: true, Fixed: dispositions.Fixed, Ignored: dispositions.Ignored, Kept: dispositions.Kept}, nil
+		result := &ipc.RespondResult{OK: true, Fixed: dispositions.Fixed, Ignored: dispositions.Ignored, Kept: dispositions.Kept, Replayed: replayed}
+		if operation != nil {
+			result.Operation = &ipc.ResponseOperationReceipt{
+				ID: operation.OperationID, RunID: operation.RunID, RepoID: operation.RepoID,
+				Branch: operation.Branch, HeadSHA: operation.HeadSHA, StepResultID: operation.StepResultID,
+				RoundID: operation.RoundID, AcceptedAt: operation.AcceptedAt,
+			}
+		}
+		return result, nil
 	})
 
 	srv.Handle(ipc.MethodAnswerReview, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1668,6 +1695,7 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	}
 	if rounds, err := d.StepRoundStats(s.ID); err == nil {
 		info.RoundCount = rounds.TotalRounds
+		info.CurrentRoundID = rounds.LatestRoundID
 		info.FixRoundCount = rounds.FixRounds
 		info.PendingFixSource = rounds.PendingFixSource
 	}

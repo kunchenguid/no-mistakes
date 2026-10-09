@@ -104,6 +104,7 @@ type stepView struct {
 	LastActivity     string
 	AgentPID         *int
 	RoundCount       int
+	CurrentRoundID   string
 	FixRoundCount    int
 	AutoFixLimit     int
 	PendingFixSource string
@@ -116,6 +117,7 @@ type runView struct {
 	PiProfile        *agentcfg.PiProfile
 	VerificationPlan *verificationplan.Snapshot
 	ID               string
+	RepoID           string
 	Branch           string
 	Status           string
 	HeadSHA          string
@@ -138,6 +140,7 @@ type runView struct {
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
 		ID:                 r.ID,
+		RepoID:             r.RepoID,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
@@ -163,6 +166,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 			LastActivityAt:   s.LastActivityAt,
 			AgentPID:         s.AgentPID,
 			RoundCount:       s.RoundCount,
+			CurrentRoundID:   s.CurrentRoundID,
 			FixRoundCount:    s.FixRoundCount,
 			AutoFixLimit:     s.AutoFixLimit,
 			PendingFixSource: s.PendingFixSource,
@@ -188,6 +192,7 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		PiProfile:          r.PiProfile,
 		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
+		RepoID:             r.RepoID,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
@@ -473,9 +478,14 @@ func runObjectField(rv runView) toon.Field {
 func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	fields := []toon.Field{
 		{Key: "id", Value: rv.ID},
-		{Key: "branch", Value: rv.Branch},
-		{Key: "status", Value: rv.Status},
 	}
+	if rv.RepoID != "" {
+		fields = append(fields, toon.Field{Key: "repo_id", Value: rv.RepoID})
+	}
+	fields = append(fields,
+		toon.Field{Key: "branch", Value: rv.Branch},
+		toon.Field{Key: "status", Value: rv.Status},
+	)
 	// Surface the parked-awaiting-agent signal right after status so one read
 	// distinguishes a run waiting for the agent to drive a gate from one that
 	// is actively running/fixing/ci. The value reports how long it has been
@@ -607,6 +617,12 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	gfields := []toon.Field{
 		{Key: "step", Value: gate.Name},
 		{Key: "status", Value: gate.Status},
+	}
+	if gate.ID != "" && gate.CurrentRoundID != "" {
+		gfields = append(gfields,
+			toon.Field{Key: "step_result_id", Value: gate.ID},
+			toon.Field{Key: "round_id", Value: gate.CurrentRoundID},
+		)
 	}
 	if parsed.Summary != "" {
 		gfields = append(gfields, toon.Field{Key: "summary", Value: truncate(parsed.Summary, maxGateSummary)})

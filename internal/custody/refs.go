@@ -32,9 +32,12 @@ func PreserveRecoveryAnchor(ctx context.Context, dir, ref, head string) error {
 	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil {
 		return fmt.Errorf("recovery anchor %s is symbolic to %s instead of the verified commit %s", ref, symbolic, head)
 	}
-	existing, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}")
+	existing, exists, err := git.DirectCommitRefTarget(ctx, dir, ref)
 	if err != nil {
-		return fmt.Errorf("recovery anchor %s exists but is not the verified commit %s: %w", ref, head, err)
+		return fmt.Errorf("recovery anchor %s exists but does not directly name the verified commit %s: %w", ref, head, err)
+	}
+	if !exists {
+		return fmt.Errorf("recovery anchor %s disappeared while preserving verified commit %s", ref, head)
 	}
 	if existing != strings.TrimSpace(head) {
 		return fmt.Errorf("recovery anchor %s conflicts: existing commit %s, verified commit %s", ref, existing, head)

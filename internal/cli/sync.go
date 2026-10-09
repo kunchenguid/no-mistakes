@@ -79,8 +79,9 @@ func newSyncCmd() *cobra.Command {
 }
 
 func newAxiSyncCmd() *cobra.Command {
-	var check, recover, keepLocal, adoptPublished bool
+	var check, recover, keepLocal, adoptPublished, adoptTerminalHead bool
 	var bindArchiveRef string
+	var terminalRequest branchsync.TerminalHeadAdoptionRequest
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -98,28 +99,46 @@ func newAxiSyncCmd() *cobra.Command {
 			"--bind-archive-ref binds one exact existing refs/heads/archive/* commit to\n" +
 			"the selected terminal run; it never creates or moves a Git ref.\n" +
 			"--adopt-published performs the guarded gate-lane recovery offered by\n" +
-			"next_action.code: adopt_published.",
+			"next_action.code: adopt_published.\n" +
+			"--adopt-terminal-head performs only the fully bound operator-confirmed\n" +
+			"action reported as next_action.code: adopt_terminal_head.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if (check && recover) || (check && adoptPublished) || (recover && adoptPublished) {
-				return emitError(cmd, 2, "choose only one of --check, --recover, and --adopt-published")
+			selectedModes := 0
+			for _, selected := range []bool{check, recover, adoptPublished, adoptTerminalHead, bindArchiveRef != ""} {
+				if selected {
+					selectedModes++
+				}
+			}
+			if selectedModes > 1 {
+				return emitError(cmd, 2, "choose only one synchronization or recovery mode")
 			}
 			if keepLocal && !recover {
 				return emitError(cmd, 2, "--keep-local requires --recover")
 			}
-			if bindArchiveRef != "" && (check || recover || keepLocal || adoptPublished) {
-				return emitError(cmd, 2, "--bind-archive-ref cannot be combined with synchronization or recovery flags")
+			bindingsPresent := terminalRequest.RepositoryID != "" || terminalRequest.Branch != "" || terminalRequest.RunID != "" || terminalRequest.CallerHead != "" || terminalRequest.PreservedHead != ""
+			if bindingsPresent && !adoptTerminalHead {
+				return emitError(cmd, 2, "terminal-head binding flags require --adopt-terminal-head")
 			}
-			return runAxiSync(cmd, check, recover, keepLocal, adoptPublished, bindArchiveRef)
+			if adoptTerminalHead && (terminalRequest.RepositoryID == "" || terminalRequest.Branch == "" || terminalRequest.RunID == "" || terminalRequest.CallerHead == "" || terminalRequest.PreservedHead == "") {
+				return emitError(cmd, 2, "--adopt-terminal-head requires --repository, --branch, --terminal-run, --caller-head, and --preserved-head")
+			}
+			return runAxiSync(cmd, check, recover, keepLocal, adoptPublished, adoptTerminalHead, bindArchiveRef, terminalRequest)
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or rebind a terminal run's push binding to a verified rewritten remote head (recover_remote_rewritten)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
+	cmd.Flags().BoolVar(&adoptTerminalHead, "adopt-terminal-head", false, "adopt one exact terminal unpublished result after explicit operator confirmation of every binding")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
+	cmd.Flags().StringVar(&terminalRequest.RepositoryID, "repository", "", "with --adopt-terminal-head: exact repository ID reported by the recovery plan")
+	cmd.Flags().StringVar(&terminalRequest.Branch, "branch", "", "with --adopt-terminal-head: exact branch reported by the recovery plan")
+	cmd.Flags().StringVar(&terminalRequest.RunID, "terminal-run", "", "with --adopt-terminal-head: exact terminal run reported by the recovery plan")
+	cmd.Flags().StringVar(&terminalRequest.CallerHead, "caller-head", "", "with --adopt-terminal-head: exact observed caller HEAD reported by the recovery plan")
+	cmd.Flags().StringVar(&terminalRequest.PreservedHead, "preserved-head", "", "with --adopt-terminal-head: exact preserved pipeline HEAD reported by the recovery plan")
 	return cmd
 }
 
@@ -447,7 +466,7 @@ func humanSyncSummary(state branchsync.State) string {
 	}
 }
 
-func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bool, bindArchiveRef string) error {
+func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished, adoptTerminalHead bool, bindArchiveRef string, terminalRequest branchsync.TerminalHeadAdoptionRequest) error {
 	started := time.Now()
 	mode := "apply"
 	switch {
@@ -461,6 +480,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 		mode = "recover"
 	case adoptPublished:
 		mode = "adopt_published"
+	case adoptTerminalHead:
+		mode = "adopt_terminal_head"
 	}
 	var state branchsync.State
 	result := "error"
@@ -481,6 +502,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 		state = service.Recover(cmd.Context(), keepLocal)
 	case adoptPublished:
 		state = service.AdoptPublished(cmd.Context())
+	case adoptTerminalHead:
+		state = service.AdoptTerminalHead(cmd.Context(), terminalRequest)
 	default:
 		state = service.Apply(cmd.Context())
 	}
@@ -512,6 +535,9 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 	}
 	if adoptPublished {
 		successful = state.Changed
+	}
+	if adoptTerminalHead {
+		successful = state.Recovered
 	}
 	if successful {
 		if state.Changed {

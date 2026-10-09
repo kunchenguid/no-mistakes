@@ -427,6 +427,99 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	}
 }
 
+// newCLITerminalAdoptionFixture models the otherwise-unrecoverable public case:
+// the pipeline rebased the submitted commits, then an authorized fix rewrote a
+// submitted line before the run failed without publishing anything.
+func newCLITerminalAdoptionFixture(t *testing.T) cliRecoverFixture {
+	t.Helper()
+	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	t.Setenv("NM_HOME", nmHome)
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	cliGit(t, root, "init", "--bare", remote)
+	local := filepath.Join(root, "operator")
+	cliGit(t, root, "init", "-b", "main", local)
+	cliGit(t, local, "config", "user.name", "Test")
+	cliGit(t, local, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "file.txt")
+	cliGit(t, local, "commit", "-m", "base")
+	base := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "-b", "feature/recover")
+	if err := os.WriteFile(filepath.Join(local, "feature.txt"), []byte("submitted one\nsubmitted two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "feature.txt")
+	cliGit(t, local, "commit", "-m", "submitted feature")
+	submitted := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(local, "upstream.txt"), []byte("advanced base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "upstream.txt")
+	cliGit(t, local, "commit", "-m", "advance base")
+	cliGit(t, local, "checkout", "feature/recover")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredRoot, err := git.FindGitRoot(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(registeredRoot, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/recover", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gate := p.RepoDir(repo.ID)
+	cliGit(t, filepath.Dir(gate), "init", "--bare", gate)
+	cliGit(t, local, "push", gate, "refs/heads/main:refs/heads/main", "refs/heads/feature/recover:refs/heads/feature/recover")
+	pipeline := filepath.Join(root, "pipeline")
+	cliGit(t, root, "-c", "core.autocrlf=false", "clone", gate, pipeline)
+	cliGit(t, pipeline, "config", "user.name", "Pipeline")
+	cliGit(t, pipeline, "config", "user.email", "pipeline@example.com")
+	cliGit(t, pipeline, "checkout", "feature/recover")
+	cliGit(t, pipeline, "rebase", "origin/main")
+	if err := os.WriteFile(filepath.Join(pipeline, "feature.txt"), []byte("submitted one\nsubmitted two guarded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, pipeline, "commit", "-am", "no-mistakes(review): guard submitted line")
+	preserved := cliGit(t, pipeline, "rev-parse", "HEAD")
+	cliGit(t, pipeline, "push", "--force", "origin",
+		"HEAD:refs/heads/feature/recover",
+		preserved+":refs/no-mistakes/recover/"+run.ID,
+	)
+	if err := database.UpdateRunHeadSHA(run.ID, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, local)
+	return cliRecoverFixture{
+		local: local, gate: gate, remote: remote, base: base, submitted: submitted,
+		preserved: preserved, runID: run.ID, repoID: repo.ID,
+	}
+}
+
 // newCLIDivergentArchiveFixture models a terminal validation whose exact
 // required head remains checked out while a later, genuinely divergent head is
 // durable under both the gate recovery ref and an imported archive ref. The
@@ -1074,6 +1167,90 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	}
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
 		t.Fatal("check moved HEAD")
+	}
+}
+
+func TestAxiSyncAdoptsExactAuthorizedTerminalHeadEndToEnd(t *testing.T) {
+	f := newCLITerminalAdoptionFixture(t)
+
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	for _, want := range []string{
+		"safety: blocked_terminal_head_adoption_requires_authorization",
+		"code: adopt_terminal_head",
+		"--adopt-terminal-head",
+		f.repoID,
+		f.runID,
+		f.submitted,
+		f.preserved,
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("terminal adoption plan missing %q:\n%s", want, status)
+		}
+	}
+
+	automatic, err := executeCmd("axi", "sync", "--recover")
+	var automaticExit *exitError
+	if err == nil || !asExitError(err, &automaticExit) || automaticExit.code != 1 || !strings.Contains(automatic, "safety: blocked_recover_diverged") {
+		t.Fatalf("automatic containment should still refuse, got %#v\n%s", err, automatic)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("automatic refusal moved HEAD to %s", got)
+	}
+
+	args := []string{
+		"axi", "sync", "--adopt-terminal-head",
+		"--repository", f.repoID,
+		"--branch", "feature/recover",
+		"--terminal-run", f.runID,
+		"--caller-head", f.submitted,
+		"--preserved-head", f.preserved,
+	}
+	out, err := executeCmd(args...)
+	if err != nil {
+		t.Fatalf("adopt terminal head: %v\n%s", err, out)
+	}
+	for _, want := range []string{"recovered: true", "changed: true", "source: terminal_head_adoption", "proof: operator_authorized"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("terminal adoption missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want %s", got, f.preserved)
+	}
+	if got := cliGit(t, f.local, "show", "HEAD:feature.txt"); got != "submitted one\nsubmitted two guarded" {
+		t.Fatalf("accepted final tree was not adopted: %q", got)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "refs/no-mistakes/recover/"+f.runID); got != f.preserved {
+		t.Fatalf("preserved history anchor = %s, want %s", got, f.preserved)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "refs/no-mistakes/recover-local/"+f.runID); got != f.submitted {
+		t.Fatalf("submitted history anchor = %s, want %s", got, f.submitted)
+	}
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.GetRun(f.runID)
+	if closeErr := database.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil || run == nil || run.CustodyReturnedAt == nil || run.TerminalAdoptionAuthorizedAt == nil ||
+		run.TerminalAdoptionCallerHeadSHA == nil || *run.TerminalAdoptionCallerHeadSHA != f.submitted ||
+		run.TerminalAdoptionPreservedHeadSHA == nil || *run.TerminalAdoptionPreservedHeadSHA != f.preserved {
+		t.Fatalf("terminal adoption record = %#v, err %v", run, err)
+	}
+
+	replayed, err := executeCmd(args...)
+	if err != nil || !strings.Contains(replayed, "recovered: true") || !strings.Contains(replayed, "changed: false") {
+		t.Fatalf("idempotent terminal adoption replay: %v\n%s", err, replayed)
 	}
 }
 

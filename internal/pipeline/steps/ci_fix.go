@@ -662,14 +662,17 @@ func ciHeadAwaitsRecording(sctx *pipeline.StepContext, headSHA string) bool {
 	return err == nil && run != nil && run.LastPushedSHA != nil && !strings.EqualFold(strings.TrimSpace(*run.LastPushedSHA), headSHA)
 }
 
-// ciRevalidatesRepairs reports whether this run must re-run the whole pipeline
-// from Review after the CI step repairs a failing check, rather than publishing
-// the repair and continuing to monitor. It is the resolved ci.revalidate_repairs
-// policy (global config, overridden by the repository's trusted default-branch
-// config). The repair recorder uses it to choose immediate publication or
-// revalidation, and the CI monitor logs the resolved policy.
-func ciRevalidatesRepairs(sctx *pipeline.StepContext) bool {
+// configuredCIRevalidation is the retained ci.revalidate_repairs value (global
+// config, overridden by the repository's trusted default-branch config).
+func configuredCIRevalidation(sctx *pipeline.StepContext) bool {
 	return sctx.Config != nil && sctx.Config.CI.RevalidateRepairs
+}
+
+// ciRevalidatesRepairs reports the effective delivery policy for this repair:
+// the retained configuration plus any response-scoped tighten-only demand.
+// The repair recorder uses it to choose immediate publication or revalidation.
+func ciRevalidatesRepairs(sctx *pipeline.StepContext) bool {
+	return sctx.RequireReviewRevalidation || configuredCIRevalidation(sctx)
 }
 
 // ciRepairPolicyDescription names the configured policy in the CI step log, so
@@ -680,6 +683,11 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 		return "always restart validation from Review after a repair"
 	}
 	return "publish a repair whose continuity with the reviewed head is provable, otherwise restart validation from Review"
+}
+
+func ciRepairPolicyLog(sctx *pipeline.StepContext) string {
+	return fmt.Sprintf("CI repair policy: %s (ci.revalidate_repairs: %t, response_requires_review_revalidation: %t, effective_revalidation: %t)",
+		ciRepairPolicyDescription(sctx), configuredCIRevalidation(sctx), sctx.RequireReviewRevalidation, ciRevalidatesRepairs(sctx))
 }
 
 // recordRepair binds a freshly produced CI repair commit to the run.

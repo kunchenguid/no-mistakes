@@ -52,6 +52,14 @@ type Run struct {
 	PushGeneration         *int64
 	PushActive             bool
 	TerminalHeadVerifiedAt *int64
+	// TerminalAdoption* records the operator's exact authorization to adopt a
+	// terminal unpublished pipeline head even though ordinary containment
+	// cannot prove that its intentional fixes preserve every submitted line.
+	// Repository, branch, and run identity are the owning row itself; the two
+	// SHAs bind the observed caller and accepted pipeline histories.
+	TerminalAdoptionAuthorizedAt     *int64
+	TerminalAdoptionCallerHeadSHA    *string
+	TerminalAdoptionPreservedHeadSHA *string
 	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
 	// explicitly ended this run's ownership of an unpublished pipeline head
 	// (terminal run whose head was never successfully pushed, or moved after
@@ -105,7 +113,7 @@ type Run struct {
 	UpdatedAt                int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, terminal_adoption_authorized_at, terminal_adoption_caller_head_sha, terminal_adoption_preserved_head_sha, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -116,6 +124,7 @@ func scanRun(row interface {
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
+		&r.TerminalAdoptionAuthorizedAt, &r.TerminalAdoptionCallerHeadSHA, &r.TerminalAdoptionPreservedHeadSHA,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
@@ -619,6 +628,95 @@ func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
 // recovery moment.
 func (d *DB) SetRunCustodyReturned(id string) error {
 	return d.SetRunsCustodyReturned([]string{id})
+}
+
+// TerminalHeadAdoptionAuthorization is the exact operator decision recorded
+// before branchsync may adopt a terminal unpublished pipeline head that fails
+// ordinary containment. The run row already binds repository and branch; they
+// are repeated here so the write can compare-and-swap every caller assumption.
+type TerminalHeadAdoptionAuthorization struct {
+	RepositoryID           string
+	Branch                 string
+	RunID                  string
+	CallerHeadSHA          string
+	PreservedHeadSHA       string
+	Status                 types.RunStatus
+	TerminalHeadVerifiedAt int64
+}
+
+// AuthorizeTerminalHeadAdoption durably records one immutable exact-head
+// decision. An exact retry is idempotent; a different decision, an active or
+// published run, or any changed run/repository/branch/head fact refuses.
+func (d *DB) AuthorizeTerminalHeadAdoption(auth TerminalHeadAdoptionAuthorization) (bool, error) {
+	if auth.RepositoryID == "" || auth.Branch == "" || auth.RunID == "" || auth.CallerHeadSHA == "" || auth.PreservedHeadSHA == "" || auth.TerminalHeadVerifiedAt == 0 {
+		return false, nil
+	}
+	ts := now()
+	result, err := d.sql.Exec(`UPDATE runs
+		SET terminal_adoption_authorized_at = COALESCE(terminal_adoption_authorized_at, ?),
+			terminal_adoption_caller_head_sha = COALESCE(terminal_adoption_caller_head_sha, ?),
+			terminal_adoption_preserved_head_sha = COALESCE(terminal_adoption_preserved_head_sha, ?),
+			updated_at = ?
+		WHERE id = ? AND repo_id = ? AND branch = ? AND status = ?
+			AND submitted_head_sha = ? AND head_sha = ? AND terminal_head_verified_at = ?
+			AND custody_returned_at IS NULL AND last_pushed_sha IS NULL AND pr_url IS NULL
+			AND COALESCE(push_active, 0) = 0
+			AND (
+				(terminal_adoption_authorized_at IS NULL AND terminal_adoption_caller_head_sha IS NULL AND terminal_adoption_preserved_head_sha IS NULL)
+				OR (terminal_adoption_authorized_at IS NOT NULL AND terminal_adoption_caller_head_sha = ? AND terminal_adoption_preserved_head_sha = ?)
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM runs other
+				WHERE other.repo_id = runs.repo_id AND other.branch = runs.branch AND other.id <> runs.id
+					AND other.status NOT IN (?, ?, ?, ?)
+			)`,
+		ts, auth.CallerHeadSHA, auth.PreservedHeadSHA, ts,
+		auth.RunID, auth.RepositoryID, auth.Branch, auth.Status,
+		auth.CallerHeadSHA, auth.PreservedHeadSHA, auth.TerminalHeadVerifiedAt,
+		auth.CallerHeadSHA, auth.PreservedHeadSHA,
+		types.RunCompleted, types.RunFailed, types.RunCancelled, types.RunCIMonitorInterrupted,
+	)
+	if err != nil {
+		return false, fmt.Errorf("authorize terminal head adoption: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("authorize terminal head adoption: %w", err)
+	}
+	return affected == 1, nil
+}
+
+// CompleteTerminalHeadAdoption records the successful outcome only while the
+// exact run facts and immutable authorization still match. The Git adoption
+// and both preservation anchors are verified before this compare-and-swap;
+// failure leaves custody outstanding for a safe retry.
+func (d *DB) CompleteTerminalHeadAdoption(auth TerminalHeadAdoptionAuthorization) (bool, error) {
+	ts := now()
+	result, err := d.sql.Exec(`UPDATE runs SET custody_returned_at = ?, updated_at = ?
+		WHERE id = ? AND repo_id = ? AND branch = ? AND status = ?
+			AND submitted_head_sha = ? AND head_sha = ? AND terminal_head_verified_at = ?
+			AND custody_returned_at IS NULL AND last_pushed_sha IS NULL AND pr_url IS NULL
+			AND COALESCE(push_active, 0) = 0
+			AND terminal_adoption_authorized_at IS NOT NULL
+			AND terminal_adoption_caller_head_sha = ? AND terminal_adoption_preserved_head_sha = ?
+			AND NOT EXISTS (
+				SELECT 1 FROM runs other
+				WHERE other.repo_id = runs.repo_id AND other.branch = runs.branch AND other.id <> runs.id
+					AND other.status NOT IN (?, ?, ?, ?)
+			)`,
+		ts, ts, auth.RunID, auth.RepositoryID, auth.Branch, auth.Status,
+		auth.CallerHeadSHA, auth.PreservedHeadSHA, auth.TerminalHeadVerifiedAt,
+		auth.CallerHeadSHA, auth.PreservedHeadSHA,
+		types.RunCompleted, types.RunFailed, types.RunCancelled, types.RunCIMonitorInterrupted,
+	)
+	if err != nil {
+		return false, fmt.Errorf("complete terminal head adoption: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("complete terminal head adoption: %w", err)
+	}
+	return affected == 1, nil
 }
 
 func (d *DB) SetRunsCustodyReturned(ids []string) error {

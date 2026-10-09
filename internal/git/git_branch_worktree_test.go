@@ -268,7 +268,7 @@ func TestPushWithOptionsForwardsPushOptions(t *testing.T) {
 	run(t, src, "git", "remote", "add", "dest", bare)
 
 	marker := filepath.Join(t.TempDir(), "push-options.txt")
-	hook := "#!/bin/sh\nprintf '%s:%s\n' \"$GIT_PUSH_OPTION_COUNT\" \"$GIT_PUSH_OPTION_0\" > " + shellSingleQuote(marker) + "\n"
+	hook := "#!/bin/sh\nprintf '%s:%s\n' \"$GIT_PUSH_OPTION_COUNT\" \"$GIT_PUSH_OPTION_0\" > " + ShellSingleQuote(marker) + "\n"
 	if err := os.WriteFile(filepath.Join(bare, "hooks", "post-receive"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
