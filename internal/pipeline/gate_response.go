@@ -18,13 +18,13 @@ import (
 // under the normalized IDs used for dispatch and persistence.
 type RespondDispositions struct {
 	// Fixed names the findings the response selected to fix.
-	Fixed []string
+	Fixed []string `json:"fixed,omitempty"`
 	// Ignored names the findings the response explicitly declined.
-	Ignored []string
+	Ignored []string `json:"ignored,omitempty"`
 	// Kept names the findings the response omitted that an earlier round of
 	// the same step had already decided, so it kept that decision instead of
 	// declining them by omission.
-	Kept []string
+	Kept []string `json:"kept,omitempty"`
 }
 
 // RespondRefusal is a fix response the executor refused without touching the

@@ -111,9 +111,12 @@ jobs:
       # overlap. pipeline/steps is its own shard (~10 min) so it runs in
       # parallel with the remaining git-heavy packages instead of setting a
       # ~21 min serial floor.
+      # This shard's -timeout is 25m because internal/branchsync alone runs
+      # 9-15 min here on a slow runner; it stays under timeout-minutes so a
+      # real hang still dumps goroutines.
       - name: Test on Windows (git-heavy)
         if: runner.os == 'Windows' && matrix.shard == 'git'
-        run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
+        run: go test -v -timeout=25m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
 
       - name: Test on Windows (pipeline/steps)
         if: runner.os == 'Windows' && matrix.shard == 'steps'

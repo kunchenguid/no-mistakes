@@ -32,7 +32,7 @@ func preReceiveHookScript(command string) string {
 	return `#!/bin/sh
 # no-mistakes pre-receive hook
 # Authorize the pushing process before any managed gate ref changes.
-NM_BIN=` + shellSingleQuote(command) + `
+NM_BIN=` + ShellSingleQuote(command) + `
 if [ ! -f "$NM_BIN" ]; then
   NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
 fi
@@ -137,7 +137,7 @@ func postReceiveHookScript(command string) string {
 # ignored by git, so we never reject the push here. Instead, failures are
 # surfaced on stderr (so the pushing client sees them) and appended to
 # notify-push.log inside the bare repo for later inspection.
-NM_BIN=` + shellSingleQuote(command) + `
+NM_BIN=` + ShellSingleQuote(command) + `
 if [ ! -f "$NM_BIN" ]; then
   NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
 fi
@@ -208,7 +208,10 @@ exit 0
 `
 }
 
-func shellSingleQuote(value string) string {
+// ShellSingleQuote renders one POSIX shell argument without interpolation.
+// Command guidance and generated hooks share this owner so paths and binding
+// values cannot drift into different quoting rules.
+func ShellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 

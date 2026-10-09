@@ -1,8 +1,13 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 const (
@@ -70,6 +75,7 @@ type StepRoundStats struct {
 	TotalRounds        int
 	FixRounds          int
 	LatestRound        int
+	LatestRoundID      string
 	LatestTrigger      string
 	LatestSelection    string
 	LatestRoundAt      int64
@@ -118,6 +124,7 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 	for _, r := range rounds {
 		stats.TotalRounds++
 		stats.LatestRound = r.Round
+		stats.LatestRoundID = r.ID
 		stats.LatestTrigger = r.Trigger
 		stats.LatestRoundAt = r.CreatedAt
 		if r.SelectionSource != nil {
@@ -296,4 +303,164 @@ func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 		rounds = append(rounds, r)
 	}
 	return rounds, rows.Err()
+}
+
+// BoundResponseDecision is the exact durable input for one response-scoped CI
+// revalidation operation. The selected findings and merged payload are written
+// in the same statement as the operation receipt, so an acknowledged request
+// can never exist without the fixer input it promised.
+type BoundResponseDecision struct {
+	OperationID      string
+	Fingerprint      string
+	RunID            string
+	RepoID           string
+	Branch           string
+	HeadSHA          string
+	StepResultID     string
+	RoundID          string
+	SelectedIDsJSON  string
+	UserFindingsJSON string
+	DispositionsJSON string
+}
+
+// BoundResponseOperation is the queryable receipt for an accepted operation.
+type BoundResponseOperation struct {
+	OperationID      string
+	Fingerprint      string
+	RunID            string
+	RepoID           string
+	Branch           string
+	HeadSHA          string
+	StepResultID     string
+	RoundID          string
+	DispositionsJSON string
+	AcceptedAt       int64
+}
+
+// RecordBoundResponseDecision atomically records a tighten-only response on
+// one exact active, published CI gate. All four validation steps must have
+// completed on the current head; a run that skipped one cannot claim this
+// operation will perform a full Review-through-Lint revalidation.
+func (d *DB) RecordBoundResponseDecision(decision BoundResponseDecision) (bool, error) {
+	if strings.TrimSpace(decision.OperationID) == "" || strings.TrimSpace(decision.Fingerprint) == "" ||
+		decision.RunID == "" || decision.RepoID == "" || decision.Branch == "" || decision.HeadSHA == "" ||
+		decision.StepResultID == "" || decision.RoundID == "" || decision.SelectedIDsJSON == "" ||
+		decision.UserFindingsJSON == "" || decision.DispositionsJSON == "" {
+		return false, nil
+	}
+	ts := now()
+	result, err := d.sql.Exec(`UPDATE step_rounds
+		SET selected_finding_ids = ?, selection_source = ?, user_findings_json = ?,
+			response_operation_id = ?, response_fingerprint = ?, response_repo_id = ?,
+			response_branch = ?, response_head_sha = ?,
+			response_dispositions_json = ?, response_accepted_at = COALESCE(response_accepted_at, ?)
+		WHERE id = ? AND step_result_id = ?
+			AND (response_operation_id IS NULL OR (
+				response_operation_id = ? AND response_fingerprint = ? AND response_repo_id = ?
+				AND response_branch = ? AND response_head_sha = ?
+				AND response_dispositions_json = ?))
+			AND EXISTS (
+				SELECT 1 FROM step_results current
+				JOIN runs run ON run.id = current.run_id
+				WHERE current.id = step_rounds.step_result_id AND current.id = ?
+					AND current.step_name = ? AND current.status IN (?, ?)
+					AND run.id = ? AND run.repo_id = ? AND run.branch = ? AND run.head_sha = ?
+					AND run.status = ?
+					AND run.pr_url IS NOT NULL AND run.last_pushed_sha = run.head_sha
+					AND NOT EXISTS (
+						SELECT 1 FROM step_results required
+						WHERE required.run_id = run.id
+							AND required.step_name IN (?, ?, ?, ?)
+							AND required.status <> ?
+					)
+					AND 4 = (
+						SELECT COUNT(*) FROM step_results required
+						WHERE required.run_id = run.id
+							AND required.step_name IN (?, ?, ?, ?)
+					)
+			)`,
+		decision.SelectedIDsJSON, RoundSelectionSourceUser, decision.UserFindingsJSON,
+		decision.OperationID, decision.Fingerprint, decision.RepoID, decision.Branch, decision.HeadSHA,
+		decision.DispositionsJSON, ts,
+		decision.RoundID, decision.StepResultID,
+		decision.OperationID, decision.Fingerprint, decision.RepoID, decision.Branch, decision.HeadSHA, decision.DispositionsJSON,
+		decision.StepResultID, types.StepCI, types.StepStatusAwaitingApproval, types.StepStatusFixReview,
+		decision.RunID, decision.RepoID, decision.Branch, decision.HeadSHA, types.RunRunning,
+		types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepStatusCompleted,
+		types.StepReview, types.StepTest, types.StepDocument, types.StepLint,
+	)
+	if err != nil {
+		return false, fmt.Errorf("record bound response decision: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("record bound response decision: %w", err)
+	}
+	return affected == 1, nil
+}
+
+// GetBoundResponseOperation returns the immutable receipt for operationID.
+func (d *DB) GetBoundResponseOperation(operationID string) (*BoundResponseOperation, error) {
+	if strings.TrimSpace(operationID) == "" {
+		return nil, nil
+	}
+	op := &BoundResponseOperation{}
+	err := d.sql.QueryRow(`SELECT round.response_operation_id, round.response_fingerprint,
+		run.id, round.response_repo_id, round.response_branch, round.response_head_sha,
+		round.step_result_id, round.id, round.response_dispositions_json,
+		round.response_accepted_at
+		FROM step_rounds round
+		JOIN step_results step ON step.id = round.step_result_id
+		JOIN runs run ON run.id = step.run_id
+		WHERE round.response_operation_id = ?`, operationID).Scan(
+		&op.OperationID, &op.Fingerprint, &op.RunID, &op.RepoID, &op.Branch, &op.HeadSHA,
+		&op.StepResultID, &op.RoundID, &op.DispositionsJSON, &op.AcceptedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get bound response operation: %w", err)
+	}
+	return op, nil
+}
+
+// GetBoundResponseOperationIDForRound reports the immutable operation already
+// accepted on roundID. A recovered receipt-bearing gate may only consume that
+// exact bound retry; an ordinary response must not replace its fingerprinted
+// payload or drop its full-revalidation demand.
+func (d *DB) GetBoundResponseOperationIDForRound(roundID string) (string, error) {
+	if strings.TrimSpace(roundID) == "" {
+		return "", nil
+	}
+	var operationID sql.NullString
+	err := d.sql.QueryRow(`SELECT response_operation_id FROM step_rounds WHERE id = ?`, roundID).Scan(&operationID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get bound response operation for round: %w", err)
+	}
+	return strings.TrimSpace(operationID.String), nil
+}
+
+// GetBoundResponseRoundIDsByStep returns the rounds on stepResultID that own a
+// bound response receipt. Receipt details stay on the dedicated operation
+// query; recovery needs only these markers to recognize a contiguous retained
+// protected-path retry without making the one-shot demand sticky forever.
+func (d *DB) GetBoundResponseRoundIDsByStep(stepResultID string) ([]string, error) {
+	rows, err := d.sql.Query(`SELECT id FROM step_rounds WHERE step_result_id = ? AND response_operation_id IS NOT NULL ORDER BY round`, stepResultID)
+	if err != nil {
+		return nil, fmt.Errorf("get bound response rounds by step: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan bound response round: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

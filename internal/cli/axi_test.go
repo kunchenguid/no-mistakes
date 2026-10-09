@@ -106,6 +106,7 @@ func TestTruncateDisclosesTotal(t *testing.T) {
 func TestWriteRunObjectShape(t *testing.T) {
 	rv := runView{
 		ID:      "run-1",
+		RepoID:  "repo-1",
 		Branch:  "feature/x",
 		Status:  string(types.RunRunning),
 		HeadSHA: "abcdef1234567890",
@@ -119,9 +120,11 @@ func TestWriteRunObjectShape(t *testing.T) {
 	for _, want := range []string{
 		"run:\n",
 		"  id: run-1\n",
+		"  repo_id: repo-1\n",
 		"  branch: feature/x\n",
 		"  status: running\n",
 		"  head: abcdef12\n",
+		"  head_sha: abcdef1234567890\n",
 		"  findings: 1 info\n",
 		"  steps[2]{step,status,findings,duration_ms}:\n",
 		"    review,completed,1,1200\n",
@@ -129,6 +132,22 @@ func TestWriteRunObjectShape(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("run object missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestGateRendersDurableResultAndRoundBindings(t *testing.T) {
+	gate := stepView{
+		ID:             "step-ci",
+		Name:           string(types.StepCI),
+		Status:         string(types.StepStatusAwaitingApproval),
+		CurrentRoundID: "round-ci-3",
+		FindingsJSON:   `{"findings":[{"id":"ci-1","description":"repair CI"}]}`,
+	}
+	out := axiDoc(gateFieldsWithHelp(gate, nil)...)
+	for _, want := range []string{"step_result_id: step-ci", "round_id: round-ci-3"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("gate output missing %q:\n%s", want, out)
 		}
 	}
 }

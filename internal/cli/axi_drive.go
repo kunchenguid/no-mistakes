@@ -1146,7 +1146,7 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if _, err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, ""); err != nil {
+			if _, err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, "", nil); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -1251,7 +1251,33 @@ func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, er
 // what it recorded. A response the daemon refused is returned as a
 // *respondRefusalError - the gate is still parked and the response can be
 // corrected.
-func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) (ipc.RespondResult, error) {
+type respondRevalidationBinding struct {
+	operationID        string
+	expectedRepoID     string
+	expectedBranch     string
+	expectedHeadSHA    string
+	expectedStepResult string
+	expectedRound      string
+}
+
+// probeDaemonBoundRevalidation is bounded by ctx, so the caller's --wait and
+// cancellation cover it; a ctx error is returned unwrapped for the wait path.
+func probeDaemonBoundRevalidation(ctx context.Context, client *ipc.Client) error {
+	var result ipc.ProbeBoundRevalidationResult
+	err := client.CallWithContext(ctx, ipc.MethodProbeBoundRevalidation, &ipc.ProbeBoundRevalidationParams{}, &result, 0)
+	if ctxErr := ctx.Err(); err != nil && ctxErr != nil {
+		return ctxErr
+	}
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the bound-revalidation capability")
+	}
+	if err != nil {
+		return fmt.Errorf("the running daemon cannot honor the bound full-revalidation response (%v); a coordinated daemon upgrade is required before this operation can be submitted", err)
+	}
+	return nil
+}
+
+func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string, binding *respondRevalidationBinding) (ipc.RespondResult, error) {
 	params := &ipc.RespondParams{
 		RunID:            runID,
 		Step:             step,
@@ -1261,6 +1287,15 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 		Instructions:     instructions,
 		AddedFindings:    added,
 		ApprovalReason:   approvalReason,
+	}
+	if binding != nil {
+		params.RequireReviewRevalidation = true
+		params.OperationID = binding.operationID
+		params.ExpectedRepoID = binding.expectedRepoID
+		params.ExpectedBranch = binding.expectedBranch
+		params.ExpectedHeadSHA = binding.expectedHeadSHA
+		params.ExpectedStepResultID = binding.expectedStepResult
+		params.ExpectedRoundID = binding.expectedRound
 	}
 	var result ipc.RespondResult
 	if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
@@ -1311,7 +1346,7 @@ func (e *respondRefusalError) helpLines(runID string) []string {
 // empty for actions that record no finding-level decision, so only a fix
 // response is echoed.
 func respondDispositionFields(result ipc.RespondResult) []toon.Field {
-	if !result.OK || (result.Fixed == nil && result.Ignored == nil && result.Kept == nil) {
+	if !result.OK || (result.Fixed == nil && result.Ignored == nil && result.Kept == nil && result.Operation == nil) {
 		return nil
 	}
 	fixed, ignored, kept := result.Fixed, result.Ignored, result.Kept
@@ -1324,11 +1359,25 @@ func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 	if kept == nil {
 		kept = []string{}
 	}
-	return []toon.Field{{Key: "recorded", Value: toon.NewObject(
+	fields := []toon.Field{{Key: "recorded", Value: toon.NewObject(
 		toon.Field{Key: "fixed", Value: fixed},
 		toon.Field{Key: "ignored", Value: ignored},
 		toon.Field{Key: "kept", Value: kept},
 	)}}
+	if result.Operation != nil {
+		fields = append(fields, toon.Field{Key: "operation", Value: toon.NewObject(
+			toon.Field{Key: "id", Value: result.Operation.ID},
+			toon.Field{Key: "run", Value: result.Operation.RunID},
+			toon.Field{Key: "repo", Value: result.Operation.RepoID},
+			toon.Field{Key: "branch", Value: result.Operation.Branch},
+			toon.Field{Key: "head", Value: result.Operation.HeadSHA},
+			toon.Field{Key: "step_result", Value: result.Operation.StepResultID},
+			toon.Field{Key: "round", Value: result.Operation.RoundID},
+			toon.Field{Key: "accepted_at", Value: result.Operation.AcceptedAt},
+			toon.Field{Key: "replayed", Value: result.Replayed},
+		)})
+	}
+	return fields
 }
 
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
@@ -1469,7 +1518,9 @@ func successReportHelp(fixes []fixRow) []string {
 
 func newAxiRespondCmd() *cobra.Command {
 	var action, step, findings, ignore, instructions, addFinding, reason, runID string
+	var operationID, expectedRepoID, expectedBranch, expectedHeadSHA, expectedStepResult, expectedRound string
 	var autoYes bool
+	var requireReviewRevalidation bool
 	var wait time.Duration
 
 	cmd := &cobra.Command{
@@ -1488,6 +1539,12 @@ func newAxiRespondCmd() *cobra.Command {
 			"--ignore is refused too: reverting an applied fix is out of scope for a gate\n" +
 			"response. The recorded dispositions (fixed, ignored, kept) are echoed in the\n" +
 			"output.\n\n" +
+			"For an active published CI gate, --require-review-revalidation binds this fix\n" +
+			"to the exact run, repository, branch, head, step result, and durable round. A\n" +
+			"changed repair stays local and restarts this run at Review before publication.\n" +
+			"Every binding flag, a unique --operation id, and at least one --findings or\n" +
+			"--add-finding repair are required; identical retries return or complete the\n" +
+			"durable operation, stale evidence refuses, and --yes is unavailable.\n\n" +
 			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
 			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
 			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
@@ -1502,17 +1559,23 @@ func newAxiRespondCmd() *cobra.Command {
 				"auto_yes": autoYes,
 			}, func() error {
 				return runAxiRespond(cmd, respondArgs{
-					action:       action,
-					step:         step,
-					findings:     findings,
-					ignore:       ignore,
-					instructions: instructions,
-					addFinding:   addFinding,
-					reason:       reason,
-					runID:        strings.TrimSpace(runID),
-					runFlagSet:   cmd.Flags().Changed("run"),
-					autoYes:      autoYes,
-					wait:         wait,
+					action:                    action,
+					step:                      step,
+					findings:                  findings,
+					ignore:                    ignore,
+					instructions:              instructions,
+					addFinding:                addFinding,
+					reason:                    reason,
+					runID:                     strings.TrimSpace(runID),
+					runFlagSet:                cmd.Flags().Changed("run"),
+					autoYes:                   autoYes,
+					wait:                      wait,
+					requireReviewRevalidation: requireReviewRevalidation,
+					binding: respondRevalidationBinding{
+						operationID: operationID, expectedRepoID: expectedRepoID,
+						expectedBranch: expectedBranch, expectedHeadSHA: expectedHeadSHA,
+						expectedStepResult: expectedStepResult, expectedRound: expectedRound,
+					},
 				})
 			})
 		},
@@ -1525,23 +1588,32 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&reason, "reason", "", "exception reason preserved with Test approval (with --action approve)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
+	cmd.Flags().BoolVar(&requireReviewRevalidation, "require-review-revalidation", false, "hold a changed CI repair and re-run this same run from Review; requires every exact binding flag and at least one --findings or --add-finding repair")
+	cmd.Flags().StringVar(&operationID, "operation", "", "with --require-review-revalidation: immutable id for this exact response and its safe retries")
+	cmd.Flags().StringVar(&expectedRepoID, "expected-repo", "", "with --require-review-revalidation: exact repository id from status")
+	cmd.Flags().StringVar(&expectedBranch, "expected-branch", "", "with --require-review-revalidation: exact branch from status")
+	cmd.Flags().StringVar(&expectedHeadSHA, "expected-head", "", "with --require-review-revalidation: exact current pipeline head from status")
+	cmd.Flags().StringVar(&expectedStepResult, "expected-step-result", "", "with --require-review-revalidation: exact CI step_result_id from status")
+	cmd.Flags().StringVar(&expectedRound, "expected-round", "", "with --require-review-revalidation: exact CI round_id from status")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve subsequent eligible gates until a decision point or outcome; protected-path and Test unvalidated-work refusals require an explicit response, and an open review question requires `axi answer`")
 	bindAxiWaitFlag(cmd, &wait)
 	return cmd
 }
 
 type respondArgs struct {
-	action       string
-	step         string
-	findings     string
-	ignore       string
-	instructions string
-	addFinding   string
-	reason       string
-	runID        string
-	runFlagSet   bool
-	autoYes      bool
-	wait         time.Duration
+	action                    string
+	step                      string
+	findings                  string
+	ignore                    string
+	instructions              string
+	addFinding                string
+	reason                    string
+	runID                     string
+	runFlagSet                bool
+	autoYes                   bool
+	wait                      time.Duration
+	requireReviewRevalidation bool
+	binding                   respondRevalidationBinding
 }
 
 func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
@@ -1551,6 +1623,28 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 	if err := validateAxiWait(ra.wait); err != nil {
 		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
+	}
+	bindingValues := []string{ra.binding.operationID, ra.binding.expectedRepoID, ra.binding.expectedBranch, ra.binding.expectedHeadSHA, ra.binding.expectedStepResult, ra.binding.expectedRound}
+	anyBinding := false
+	allBinding := true
+	for _, value := range bindingValues {
+		present := strings.TrimSpace(value) != ""
+		anyBinding = anyBinding || present
+		allBinding = allBinding && present
+	}
+	if anyBinding && !ra.requireReviewRevalidation {
+		return emitError(cmd, 2, "the operation and expected-* flags require --require-review-revalidation")
+	}
+	if ra.requireReviewRevalidation {
+		if !allBinding || ra.runID == "" || strings.TrimSpace(ra.step) != string(types.StepCI) || strings.TrimSpace(ra.action) != string(types.ActionFix) {
+			return emitError(cmd, 2, "--require-review-revalidation requires --run, --step ci, --action fix, --operation, --expected-repo, --expected-branch, --expected-head, --expected-step-result, and --expected-round")
+		}
+		if ra.autoYes {
+			return emitError(cmd, 2, "--require-review-revalidation cannot be combined with --yes; drive each fresh validation gate explicitly")
+		}
+		if len(splitCSV(ra.findings)) == 0 && strings.TrimSpace(ra.addFinding) == "" {
+			return emitError(cmd, 2, "--require-review-revalidation requires at least one --findings or --add-finding repair; --ignore alone is valid only for an ordinary fix response")
+		}
 	}
 	ctx := cmd.Context()
 	driveCtx, cancel, err := boundAxiWait(ctx, ra.wait)
@@ -1604,6 +1698,14 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		}
 		runID = active.Run.ID
 	}
+	if ra.requireReviewRevalidation {
+		if err := probeDaemonBoundRevalidation(driveCtx, env.client); err != nil {
+			if isAxiWaitElapsed(ctx, driveCtx, err) {
+				return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, respondCmd+" --action approve|fix|skip")
+			}
+			return emitError(cmd, 1, err.Error())
+		}
+	}
 
 	run, err := getRunInfo(driveCtx, env.p.Socket(), runID)
 	if err != nil {
@@ -1623,7 +1725,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("load run: daemon returned run %s instead of the requested run %s", run.ID, runID))
 	}
 	rv := runViewFromIPC(run)
-	if ra.runID != "" {
+	if ra.runID != "" && !ra.requireReviewRevalidation {
 		if _, ok := rv.awaitingStep(); !ok {
 			return emitError(cmd, 1, fmt.Sprintf("run %s is not parked at a gate (status: %s)", runID, run.Status),
 				"Run `no-mistakes axi status --run "+runID+"` to see the run state")
@@ -1672,7 +1774,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 2, "--findings and --ignore apply only to --action fix")
 	}
 
-	result, err := sendRespond(env.client, runID, stepName, act, findingIDs, ignoreIDs, instructions, added, ra.reason)
+	var binding *respondRevalidationBinding
+	if ra.requireReviewRevalidation {
+		binding = &ra.binding
+	}
+	result, err := sendRespond(env.client, runID, stepName, act, findingIDs, ignoreIDs, instructions, added, ra.reason, binding)
 	if err != nil {
 		var refusal *respondRefusalError
 		if errors.As(err, &refusal) {
@@ -1686,13 +1792,17 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	// dispositions of the decision it just made.
 	lead := respondDispositionFields(result)
 
-	// Let the executor consume the response before we re-read state, so we
-	// don't immediately observe the same gate we just answered.
-	if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateIdentityFor(rv, string(stepName))); err != nil {
-		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, "no-mistakes axi run", lead...)
+	// Let the executor consume a newly accepted response before we re-read
+	// state, so we don't immediately observe the same gate we just answered.
+	// A durable replay proves that gate already left; waiting on its now-pending
+	// CI result can hide the Review gate that the original response reached.
+	if !result.Replayed {
+		if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateIdentityFor(rv, string(stepName))); err != nil {
+			if isAxiWaitElapsed(ctx, driveCtx, err) {
+				return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, "no-mistakes axi run", lead...)
+			}
+			return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 		}
-		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
 	final, ciReady, err := driveRunSelected(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, ra.runID != "")

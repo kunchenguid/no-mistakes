@@ -350,6 +350,10 @@ func TestNoMistakesBinary_WaitAndSlowDaemon(t *testing.T) {
 type axiTimeoutOpts struct {
 	responded *atomic.Bool
 	subscribe ipc.StreamHandlerFunc
+	// probeBoundRevalidation, when set, exposes the newer daemon capability
+	// probe used before an exact active-CI response is submitted. Leaving it
+	// nil models an older daemon with no such method.
+	probeBoundRevalidation func() (interface{}, error)
 	// answer, when set, serves the daemon's answer-review-question call.
 	answer func() *ipc.AnswerReviewQuestionResult
 	// respond, when set, replaces the default respond handler so a test can
@@ -470,6 +474,11 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 	srv.Handle(ipc.MethodGateContext, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GateContextResult{Nested: false}, nil
 	})
+	if opts.probeBoundRevalidation != nil {
+		srv.Handle(ipc.MethodProbeBoundRevalidation, func(context.Context, json.RawMessage) (interface{}, error) {
+			return opts.probeBoundRevalidation()
+		})
+	}
 	srv.Handle(ipc.MethodGetActiveRun, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
 		run, err := fx.callGetActive(ctx)
 		if err != nil {

@@ -408,11 +408,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	} else {
 		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
 	}
-	// State the repair policy once, at entry, rather than at every poll: which
-	// of the two very differently priced paths a repair will take is the single
-	// most useful thing to know when reading a CI step log after the fact, and
-	// it cannot be inferred from the repair line alone until a repair happens.
-	sctx.Log(fmt.Sprintf("CI repair policy: %s (ci.revalidate_repairs: %t)", ciRepairPolicyDescription(sctx), ciRevalidatesRepairs(sctx)))
+	// State the effective repair policy once, at entry, rather than at every
+	// poll. Keep its two inputs separate: a response-scoped demand may tighten
+	// retained false configuration, but must never be logged as config=true.
+	sctx.Log(ciRepairPolicyLog(sctx))
 	now := s.now
 	if now == nil {
 		now = time.Now

@@ -813,6 +813,24 @@ func DirectRefTarget(ctx context.Context, dir, ref string) (string, bool, error)
 	return "", false, nil
 }
 
+// DirectCommitRefTarget returns the raw object named by one exact direct ref
+// only when that object itself is a commit. In particular, an annotated tag
+// that peels to a commit is not direct commit evidence.
+func DirectCommitRefTarget(ctx context.Context, dir, ref string) (string, bool, error) {
+	target, exists, err := DirectRefTarget(ctx, dir, ref)
+	if err != nil || !exists {
+		return target, exists, err
+	}
+	objectType, err := Run(ctx, dir, "cat-file", "-t", target)
+	if err != nil {
+		return "", true, fmt.Errorf("inspect direct ref %s target %s: %w", ref, target, err)
+	}
+	if objectType != "commit" {
+		return "", true, fmt.Errorf("ref %s directly names a %s object, not a commit", ref, objectType)
+	}
+	return target, true, nil
+}
+
 func ExactRefTarget(ctx context.Context, dir, ref string) (string, bool, error) {
 	out, err := Run(ctx, dir, "for-each-ref", "--format=%(refname) %(objectname)", ref)
 	if err != nil {

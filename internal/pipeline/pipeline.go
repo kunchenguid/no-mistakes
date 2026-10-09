@@ -59,6 +59,15 @@ type StepContext struct {
 	CarriedFindings  string
 	PreviousFindings string // JSON findings selected for the current fix round
 	DeferredFindings string // JSON findings left unselected when the current fix round began
+	// RequireReviewRevalidation is a response-scoped, tighten-only demand on
+	// one CI fix round. A changed repair must remain unpublished and restart
+	// this same run at Review even when the executor's retained
+	// ci.revalidate_repairs policy is false. It is never inferred from prose.
+	RequireReviewRevalidation bool
+	// BoundExpectedHeadSHA is the exact live worktree head authorized by that
+	// bound response. The executor checks it again immediately before invoking
+	// the CI fixer; descendant continuity is intentionally insufficient here.
+	BoundExpectedHeadSHA string
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string

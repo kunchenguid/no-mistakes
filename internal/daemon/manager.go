@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -411,6 +412,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor.PrepareRecoveredRun()
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
 		go func() {
@@ -1962,6 +1964,54 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 	}
 
 	return exec.RespondWithOverrides(step, action, findingIDs, ignoreFindingIDs, instructions, addedFindings, approvalReason)
+}
+
+func boundRespondFingerprint(p ipc.RespondParams) (string, error) {
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		return "", fmt.Errorf("encode bound response: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum[:]), nil
+}
+
+// HandleBoundRevalidationRespond accepts or replays one exact active-CI fix
+// response. A completed operation remains queryable even after its executor
+// leaves the gate or terminates, which makes an uncertain client reply safe to
+// retry without dispatching another fixer.
+func (m *RunManager) HandleBoundRevalidationRespond(p ipc.RespondParams) (pipeline.RespondDispositions, *db.BoundResponseOperation, bool, error) {
+	fingerprint, err := boundRespondFingerprint(p)
+	if err != nil {
+		return pipeline.RespondDispositions{}, nil, false, err
+	}
+	binding := pipeline.ResponseRevalidationBinding{
+		OperationID:  p.OperationID,
+		Fingerprint:  fingerprint,
+		RunID:        p.RunID,
+		RepoID:       p.ExpectedRepoID,
+		Branch:       p.ExpectedBranch,
+		HeadSHA:      p.ExpectedHeadSHA,
+		StepResultID: p.ExpectedStepResultID,
+		RoundID:      p.ExpectedRoundID,
+	}
+	m.mu.Lock()
+	exec, ok := m.executors[p.RunID]
+	m.mu.Unlock()
+	if !ok {
+		op, readErr := m.db.GetBoundResponseOperation(p.OperationID)
+		if readErr != nil {
+			return pipeline.RespondDispositions{}, nil, false, readErr
+		}
+		if !pipeline.BoundResponseMatches(op, &binding) {
+			return pipeline.RespondDispositions{}, nil, false, fmt.Errorf("no active executor for run %s and no identical accepted operation %s", p.RunID, p.OperationID)
+		}
+		dispositions, decodeErr := pipeline.DispositionsFromBoundOperation(op)
+		if decodeErr != nil {
+			return pipeline.RespondDispositions{}, nil, false, decodeErr
+		}
+		return dispositions, op, true, nil
+	}
+	return exec.RespondWithBoundRevalidation(p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason, binding)
 }
 
 // HandleAnswerReviewQuestion records one operator answer to a question the

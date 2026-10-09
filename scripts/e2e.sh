@@ -56,14 +56,90 @@ fi
 
 trap 'reap_inventory; if [[ "${OWNED_INVENTORY}" -eq 1 ]]; then rm -rf "$NM_E2E_DAEMON_INVENTORY" 2>/dev/null || true; fi' EXIT INT TERM
 
-# Default args match the historical Makefile e2e target; callers may override.
-if [[ "$#" -eq 0 ]]; then
-  # The user-journey matrix runs native backends serially because each case
-  # owns process-wide environment. A pristine-main run took 497s for internal/e2e
-  # under normal load, so the package budget includes room for ordinary variance.
-  set -- -tags=e2e -count=1 -timeout 720s ./internal/e2e/... ./internal/pipeline/steps/...
+# Explicit caller arguments keep the historical single-command override path.
+if [[ "$#" -gt 0 ]]; then
+  go test "$@"
+  code=$?
+  exit "$code"
 fi
 
-go test "$@"
+# The canonical internal/e2e package has 104 top-level tests and no parallel
+# top-level tests. Three aggregate receipts reached different late tests at the
+# 720s, 720s, and 1200s package ceilings without an assertion failure;
+# TestUserJourney alone accounted for about five minutes in the first receipt.
+# Discovering the top-level names keeps new tests in the canonical gate without
+# maintaining a mirrored allowlist. The long native-backend matrix gets its own
+# process, and every other test is assigned in discovery order across three
+# deterministic shards. Each process owns a meaningful 10-minute timeout while
+# this wrapper retains one inventory owner and one EXIT cleanup boundary.
+listed_tests="$(go test -tags=e2e -count=1 -timeout 60s -list '^Test' ./internal/e2e)"
+code=$?
+if [[ "$code" -ne 0 ]]; then
+  exit "$code"
+fi
+
+tests=()
+while IFS= read -r test_name; do
+  case "$test_name" in
+    Test*)
+      if [[ ! "$test_name" =~ ^Test[A-Za-z0-9_]+$ ]]; then
+        printf 'e2e: refusing unsafe discovered test name %q\n' "$test_name" >&2
+        exit 1
+      fi
+      tests+=("$test_name")
+      ;;
+  esac
+done <<<"$listed_tests"
+
+if [[ "${#tests[@]}" -eq 0 ]]; then
+  printf 'e2e: no top-level tests discovered in ./internal/e2e\n' >&2
+  exit 1
+fi
+
+shards=("" "" "")
+shard_counts=(0 0 0)
+journey_found=0
+sharded_count=0
+for test_name in "${tests[@]}"; do
+  if [[ "$test_name" == "TestUserJourney" ]]; then
+    journey_found=$((journey_found + 1))
+    continue
+  fi
+  shard=$((sharded_count % 3))
+  if [[ -n "${shards[$shard]}" ]]; then
+    shards[$shard]="${shards[$shard]}|$test_name"
+  else
+    shards[$shard]="$test_name"
+  fi
+  shard_counts[$shard]=$((shard_counts[$shard] + 1))
+  sharded_count=$((sharded_count + 1))
+done
+
+if [[ "$journey_found" -ne 1 || "$sharded_count" -ne "$((${#tests[@]} - 1))" ]]; then
+  printf 'e2e: TestUserJourney discovery was missing or ambiguous\n' >&2
+  exit 1
+fi
+
+printf 'e2e: running native-backend journey shard (1 test)\n'
+go test -tags=e2e -count=1 -timeout 600s -run '^TestUserJourney$' ./internal/e2e
+code=$?
+if [[ "$code" -ne 0 ]]; then
+  exit "$code"
+fi
+
+for shard in 0 1 2; do
+  if [[ -z "${shards[$shard]}" ]]; then
+    continue
+  fi
+  printf 'e2e: running internal/e2e shard %d/3 (%d tests)\n' "$((shard + 1))" "${shard_counts[$shard]}"
+  go test -tags=e2e -count=1 -timeout 600s -run "^(${shards[$shard]})$" ./internal/e2e
+  code=$?
+  if [[ "$code" -ne 0 ]]; then
+    exit "$code"
+  fi
+done
+
+printf 'e2e: running step-local e2e packages\n'
+go test -tags=e2e -count=1 -timeout 600s ./internal/pipeline/steps/...
 code=$?
 exit "$code"
