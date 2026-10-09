@@ -13,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const ciWorkflowTemplateWithLint = `name: CI
+// ciWorkflowTemplate is the generated workflow. The placeholders are, in
+// order: the default branch, the toolchain setup steps (empty when the repo
+// has no recognized toolchain), and the check steps.
+const ciWorkflowTemplate = `name: CI
 
 on:
   push:
@@ -32,46 +35,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+%s%s`
 
+// ciWorkflowGoSetupStep installs the Go toolchain pinned by go.mod. It is
+// emitted only when go.mod exists at the repo root, since setup-go fails the
+// job when go-version-file points at a missing file.
+const ciWorkflowGoSetupStep = `
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           check-latest: true
+`
 
+const ciWorkflowLintStep = `
       - name: Lint
-        run: |
-          %s
-
-      - name: Test
         run: |
           %s
 `
 
-const ciWorkflowTemplateTestOnly = `name: CI
-
-on:
-  push:
-    branches: ['%s']
-  pull_request:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-jobs:
-  build-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
+const ciWorkflowTestStep = `
       - name: Test
         run: |
           %s
@@ -126,13 +108,20 @@ func generateCIWorkflow(dir string, force bool) error {
 	// Extract lint command (optional; empty means combined document+lint)
 	lint := cfg.Commands.Lint
 
-	// Select template and generate workflow
-	var workflow string
-	if lint == "" {
-		workflow = fmt.Sprintf(ciWorkflowTemplateTestOnly, yamlSingleQuote(defaultBranch), indentCommand(test))
-	} else {
-		workflow = fmt.Sprintf(ciWorkflowTemplateWithLint, yamlSingleQuote(defaultBranch), indentCommand(lint), indentCommand(test))
+	// Only set up Go when the repo is a Go module; non-Go repos would
+	// otherwise get a setup step that fails on the missing go.mod.
+	setup := ""
+	if info, err := os.Stat(filepath.Join(root, "go.mod")); err == nil && info.Mode().IsRegular() {
+		setup = ciWorkflowGoSetupStep
 	}
+
+	checks := ""
+	if lint != "" {
+		checks += fmt.Sprintf(ciWorkflowLintStep, indentCommand(lint))
+	}
+	checks += fmt.Sprintf(ciWorkflowTestStep, indentCommand(test))
+
+	workflow := fmt.Sprintf(ciWorkflowTemplate, yamlSingleQuote(defaultBranch), setup, checks)
 
 	// Determine output path
 	workflowDir := filepath.Join(root, ".github", "workflows")
