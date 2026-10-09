@@ -150,6 +150,23 @@ exception does not extend to another recorded head, an agent-created head, an
 abbreviated SHA, or an external, newer, or divergent private head. Fresh AXI
 submissions do not receive this exception.
 
+An explicit `sync --recover --keep-local` retry can also finish the original
+handoff for a terminal, never-pushed run whose custody was already returned.
+`reconcileReturnedMirror` requires the private branch to equal that run's exact
+submitted head, verified terminal-head metadata and a custody stamp, matching
+local and gate recovery anchors at the recorded recovered head, and a local
+pre-recovery anchor at the submitted head. The clean current branch must be the
+recovered head or its descendant. When submitted and recovered heads differ,
+a three-way merge must prove the submitted content survived in the **recorded
+recovered head**; later descendant edits may change that content. This permits
+the original submitted-head handoff, not a new submission's ownership claim.
+The retry uses the same archive-before-delete planner and guarded deletion
+below, leaving the worktree and external remote untouched. Missing or
+contradictory proof refuses; concurrent mirror movement is preserved. With a
+clean worktree, an already-current mirror, or an absent mirror with the exact
+submitted-head archive recorded, makes the retry a no-op. Plain `--recover`
+remains a no-op after custody return for a never-pushed run.
+
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old
