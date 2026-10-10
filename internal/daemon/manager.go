@@ -100,6 +100,11 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 	}
 }
 
+// recoveryRefusalKeptWorktreeFormat is appended to a recovery refusal's error
+// when the refused run's worktree holds uncommitted changes; cleanup keeps such
+// a worktree until the operator removes it.
+const recoveryRefusalKeptWorktreeFormat = "; its worktree has uncommitted changes and is kept for you to recover or remove: %s"
+
 type recoveredRunPlan struct {
 	run     *db.Run
 	repo    *db.Repo
@@ -140,11 +145,23 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 				// so it anchors its own head first so a fix commit in the worktree is
 				// not lost to worktree cleanup.
 				workDir := worktrees.RecordedDir(m.paths, run.WorktreePath(), run.RepoID, run.ID)
+				reason := err.Error()
+				// The head anchor saves commits only; uncommitted fixes (e.g. a Test
+				// agent timeout) live only in the worktree, so keep it from cleanup
+				// (removableOrphanWorktree keys on this suffix). An unreadable status
+				// fails toward keeping it.
+				if dirty, statusErr := git.HasUncommittedChanges(ctx, workDir); dirty || statusErr != nil {
+					reason += fmt.Sprintf(recoveryRefusalKeptWorktreeFormat, workDir)
+				}
 				var dbErr error
 				if head, ok := preserveRunHead(m.db, workDir, run); ok {
-					dbErr = m.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, err.Error(), types.RunFailed, head)
+					dbErr = m.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, reason, types.RunFailed, head)
 				} else {
-					dbErr = m.db.UpdateRunErrorStatus(run.ID, err.Error(), types.RunFailed)
+					dbErr = m.db.UpdateRunErrorStatus(run.ID, reason, types.RunFailed)
+				}
+				if dbErr == nil && run.AwaitingAgentSince != nil {
+					// The run never resumes, so the gate's park ends here.
+					dbErr = m.db.CompleteRunAwaitingAgent(run.ID, time.Since(time.Unix(*run.AwaitingAgentSince, 0)).Milliseconds())
 				}
 				if dbErr != nil {
 					slog.Error("failed to terminalize run refused for branch-local protected_paths", "run_id", run.ID, "error", dbErr)

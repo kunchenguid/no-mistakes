@@ -582,6 +582,12 @@ func TestProtectedPathsBranchLocalRecoveredRunTerminalizes(t *testing.T) {
 	if err := database.UpdateRunHeadSHA(run.ID, fixHead); err != nil {
 		t.Fatal(err)
 	}
+	// An unfinished fix left uncommitted (e.g. by a Test agent timeout) exists
+	// only in the worktree; cleanup must not delete it.
+	unfinished := filepath.Join(managed, "unfinished.txt")
+	if err := os.WriteFile(unfinished, []byte("uncommitted fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -603,6 +609,16 @@ func TestProtectedPathsBranchLocalRecoveredRunTerminalizes(t *testing.T) {
 	}
 	if got.Error == nil || !strings.Contains(*got.Error, "protected_paths") || !strings.Contains(*got.Error, "tests/**") {
 		t.Fatalf("refused recovered run did not record the named refusal: %v", got.Error)
+	}
+	if !strings.Contains(*got.Error, "uncommitted changes") || !strings.Contains(*got.Error, managed) {
+		t.Fatalf("refusal does not say the dirty worktree is kept: %v", *got.Error)
+	}
+	if got.AwaitingAgentSince != nil {
+		t.Fatalf("failed run still reports awaiting agent since %d", *got.AwaitingAgentSince)
+	}
+	cleanupOrphanWorktrees(database, p, nil)
+	if data, err := os.ReadFile(unfinished); err != nil || string(data) != "uncommitted fix\n" {
+		t.Fatalf("cleanup deleted the refused run's uncommitted work: %v", err)
 	}
 }
 

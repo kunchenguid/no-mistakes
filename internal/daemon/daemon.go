@@ -935,6 +935,11 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
+	if run != nil && run.Status == types.RunFailed && run.Error != nil &&
+		strings.HasSuffix(*run.Error, fmt.Sprintf(recoveryRefusalKeptWorktreeFormat, wt.dir)) {
+		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", "recovery refusal kept uncommitted changes")
+		return false
+	}
 	return true
 }
 
