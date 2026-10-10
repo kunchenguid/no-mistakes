@@ -117,8 +117,17 @@ resolve_receiving_gate() {
     RECEIVE_GATE_ERROR="cannot derive the gate home for $RECEIVE_GATE (expected <root>/repos/<id>.git)"
     return 1
   fi
-  if [ "$RECEIVE_GATE" != "$GATE_DIR" ]; then
-    RECEIVE_GATE_ERROR="receiving gate $RECEIVE_GATE does not match enrolled gate $GATE_DIR"
+  enrolled_gate=$GATE_DIR
+  case "$enrolled_gate" in
+    [A-Za-z]:[\\/]*)
+      enrolled_gate=$(cygpath -u "$enrolled_gate" 2>/dev/null) || {
+        RECEIVE_GATE_ERROR='cannot normalize enrolled Git gate path'
+        return 1
+      }
+      ;;
+  esac
+  if [ "$RECEIVE_GATE" != "$enrolled_gate" ]; then
+    RECEIVE_GATE_ERROR="receiving gate $RECEIVE_GATE does not match enrolled gate $enrolled_gate"
     return 1
   fi
   return 0

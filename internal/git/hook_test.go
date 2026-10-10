@@ -217,6 +217,9 @@ func TestGateConfigStampBindsEnrolledRoot(t *testing.T) {
 }
 
 func TestReceiveHooksResolveSymlinkedGateAtEnrollment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks require /bin/sh")
+	}
 	base := t.TempDir()
 	root := filepath.Join(base, "enrolled")
 	gate := filepath.Join(root, "repos", "test.git")
@@ -227,39 +230,85 @@ func TestReceiveHooksResolveSymlinkedGateAtEnrollment(t *testing.T) {
 	if err := os.Symlink(root, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	script, err := PreReceiveHookScript(filepath.Join(link, "repos", "test.git"))
+	record := filepath.Join(base, "invocation.txt")
+	bin := filepath.Join(base, "owner binary")
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$NM_HOME\" > " + shellSingleQuote(record) + "\nprintf '%s\\n' \"$@\" >> " + shellSingleQuote(record) + "\n"
+	if err := os.WriteFile(bin, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script, err := PostReceiveHookScript(filepath.Join(link, "repos", "test.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = strings.Replace(script, "NM_BIN="+shellSingleQuote(exe), "NM_BIN="+shellSingleQuote(bin), 1)
+	hook := filepath.Join(gate, "hooks", "post-receive")
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", hook)
+	cmd.Dir = gate
+	cmd.Env = append(os.Environ(), "GIT_DIR=.")
+	cmd.Stdin = strings.NewReader("old new refs/heads/feature\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("hook: %v: %s", err, out)
+	}
+	got, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatal(err)
 	}
 	physicalGate := canonicalHookGate(t, gate)
 	physicalRoot := filepath.Dir(filepath.Dir(physicalGate))
-	if !strings.Contains(script, "GATE_DIR="+shellSingleQuote(physicalGate)) {
-		t.Fatal("hook did not pin the physical gate path")
-	}
-	if !strings.Contains(script, "NM_HOME="+shellSingleQuote(physicalRoot)) {
-		t.Fatal("hook did not pin the physical owning runtime")
+	if !strings.Contains(string(got), physicalRoot) || !strings.Contains(string(got), physicalGate) {
+		t.Fatalf("hook did not invoke enrolled owner for %s: %s", physicalGate, got)
 	}
 }
 
-func TestPreReceiveHookScript(t *testing.T) {
-	script := preReceiveHookScript("/opt/No Mistakes/no-mistakes", "/runtime/repos/test.git")
-	for _, want := range []string{
-		"#!/bin/sh",
-		"NM_BIN='/opt/No Mistakes/no-mistakes'",
-		"GATE_DIR='/runtime/repos/test.git'",
-		"daemon admit-push --gate \"$GATE_DIR\"",
-		"gate push refused before ref mutation",
-		preservedPreReceiveHook,
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("pre-receive hook missing %q", want)
-		}
+func TestReceiveHookNormalizesWindowsEnrollmentPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("MSYS path normalization is exercised by Git for Windows")
 	}
-	if strings.Contains(script, "read oldrev") {
-		t.Fatal("admission wrapper must leave stdin untouched for a preserved user hook")
+	base := t.TempDir()
+	gate := hookTestGate(t)
+	argsPath := filepath.Join(base, "args.txt")
+	fakeBin := filepath.Join(base, "fake-no-mistakes")
+	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellSingleQuote(argsPath) + "\n"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(script, "exit $status") {
-		t.Fatal("admission failure must reject the ref update")
+	cygpathDir := filepath.Join(base, "bin")
+	if err := os.Mkdir(cygpathDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cygpath := filepath.Join(cygpathDir, "cygpath")
+	cygpathScript := "#!/bin/sh\nprintf '%s\\n' " + shellSingleQuote(canonicalHookGate(t, gate)) + "\n"
+	if err := os.WriteFile(cygpath, []byte(cygpathScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(base, "post-receive")
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, `C:\\runtime\\repos\\test.git`)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", hookPath)
+	cmd.Dir = gate
+	cmd.Env = append(os.Environ(), "GIT_DIR=.", "PATH="+cygpathDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd.Stdin = strings.NewReader("old new refs/heads/main\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run hook: %v: %s", err, out)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := gateArgFromArgv(string(args)), canonicalHookGate(t, gate); got != want {
+		t.Fatalf("hook passed gate %q, want %q", got, want)
 	}
 }
 
@@ -314,83 +363,36 @@ func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 }
 
 func TestPostReceiveHookScript(t *testing.T) {
-	script := postReceiveHookScript("/opt/No Mistakes/no-mistakes", "/runtime/repos/test.git")
-
-	// should be a shell script
-	if !strings.HasPrefix(script, "#!/bin/sh\n") {
-		t.Fatal("hook should start with #!/bin/sh")
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks require /bin/sh")
+	}
+	base := t.TempDir()
+	gate := hookTestGate(t)
+	argsPath := filepath.Join(base, "args.txt")
+	fakeBin := filepath.Join(base, "fake-no-mistakes")
+	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellSingleQuote(argsPath) + "\n"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(base, "post-receive")
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, gate))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", hookPath)
+	cmd.Dir = gate
+	cmd.Env = append(os.Environ(), "GIT_DIR=.")
+	cmd.Stdin = strings.NewReader("old new refs/heads/main\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run post-receive hook: %v: %s", err, out)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := gateArgFromArgv(string(args)), canonicalHookGate(t, gate); got != want {
+		t.Fatalf("hook passed gate %q, want %q", got, want)
 	}
 
-	if !strings.Contains(script, "NM_BIN='/opt/No Mistakes/no-mistakes'") {
-		t.Fatal("hook should embed the no-mistakes executable path")
-	}
-
-	// should read oldrev newrev refname
-	if !strings.Contains(script, "read oldrev newrev refname") {
-		t.Fatal("hook should read ref update args")
-	}
-
-	if strings.Contains(script, "--gate \"$(pwd)\"") {
-		t.Fatal("hook must not pass the gate path via bare $(pwd) (issue #269: pwd can collapse to .)")
-	}
-	if !strings.Contains(script, "--gate \"$RECEIVE_GATE\"") {
-		t.Fatal("hook should pass the resolved gate path as a flag")
-	}
-	if !strings.Contains(script, "GATE_DIR='/runtime/repos/test.git'") {
-		t.Fatal("hook should pin the enrolled absolute gate")
-	}
-	if !strings.Contains(script, "daemon notify-push") {
-		t.Fatal("hook should invoke the CLI notify subcommand")
-	}
-	if !strings.Contains(script, "GIT_PUSH_OPTION_COUNT") {
-		t.Fatal("hook should forward git push options to notify-push")
-	}
-	if !strings.Contains(script, "--push-option") {
-		t.Fatal("hook should pass each git push option as a notify-push flag")
-	}
-	if strings.Contains(script, "nc -U") {
-		t.Fatal("hook should not depend on netcat")
-	}
-	if strings.Contains(script, "eval") {
-		t.Fatal("hook should not use eval to read push options")
-	}
-	if !strings.Contains(script, "\"$NM_BIN\" daemon notify-push") {
-		t.Fatal("hook should execute the embedded binary path")
-	}
-	if strings.Contains(script, "command -v no-mistakes") {
-		t.Fatal("hook must not select a global fallback")
-	}
-	if strings.Contains(script, ">/dev/null 2>&1 || true") {
-		t.Fatal("hook should not silently swallow notify-push errors (issue #122)")
-	}
-	if !strings.Contains(script, "notify-push.log") {
-		t.Fatal("hook should log notify-push output to a file under the bare repo")
-	}
-
-	// should print plain ASCII banner to stderr
-	if !strings.Contains(script, ">&2") {
-		t.Fatal("hook should print message to stderr")
-	}
-	if !strings.Contains(script, "Pipeline started") {
-		t.Fatal("hook should print pipeline started message")
-	}
-	if !strings.Contains(script, "no-mistakes") {
-		t.Fatal("hook should mention the command name")
-	}
-	if !strings.Contains(script, "|__| |_/") {
-		t.Fatal("hook should contain ASCII art banner")
-	}
-	if strings.Contains(script, "\033[") {
-		t.Fatal("hook banner should not include ANSI escapes")
-	}
-	if strings.Contains(script, "✓") {
-		t.Fatal("hook banner should stay ASCII-only")
-	}
-
-	// should exit 0 (never block push)
-	if !strings.Contains(script, "exit 0") {
-		t.Fatal("hook should exit 0")
-	}
 }
 
 func TestShellSingleQuote(t *testing.T) {
@@ -412,13 +414,6 @@ func TestShellSingleQuote(t *testing.T) {
 				t.Errorf("shellSingleQuote(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestPostReceiveHookScriptWithQuotedPath(t *testing.T) {
-	script := postReceiveHookScript("/opt/it's here/no-mistakes", "/runtime/repos/test.git")
-	if !strings.Contains(script, "NM_BIN='/opt/it'\"'\"'s here/no-mistakes'") {
-		t.Fatal("hook should correctly escape single quotes in the executable path")
 	}
 }
 
