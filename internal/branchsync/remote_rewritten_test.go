@@ -75,7 +75,7 @@ func TestRecoverRebindsTerminalRunToVerifiedRewrittenRemote(t *testing.T) {
 	gateBranch := mustRun(t, f.service.GateDir, "rev-parse", "refs/heads/feature/sync")
 	oldGeneration := value(f.run.PushGeneration)
 
-	recovered := f.service.Recover(f.ctx, false)
+	recovered := f.service.Recover(f.ctx, false, nil)
 	if !recovered.Recovered || recovered.Changed {
 		t.Fatalf("recover = %#v", recovered)
 	}
@@ -120,7 +120,7 @@ func TestRecoverRewrittenRemoteRefusesKeepLocal(t *testing.T) {
 	t.Parallel()
 
 	f, _ := newRemoteRewrittenFixture(t)
-	state := f.service.Recover(f.ctx, true)
+	state := f.service.Recover(f.ctx, true, nil)
 	if state.Recovered || state.Safety != "blocked_recover_keep_local_not_applicable" || state.NextAction != nil {
 		t.Fatalf("keep-local recover = %#v", state)
 	}
@@ -138,7 +138,7 @@ func TestRecoverRewrittenRemoteRefusesWhenRemoteChangesAgain(t *testing.T) {
 	f.service.beforeRecoverRebind = func() {
 		second = forceRewriteRemote(t, f, "second-rewrite")
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Safety != "blocked_recover_remote_changed" {
 		t.Fatalf("recover across a second rewrite = %#v", state)
 	}
@@ -147,7 +147,7 @@ func TestRecoverRewrittenRemoteRefusesWhenRemoteChangesAgain(t *testing.T) {
 	// A retry freshly verifies the new live head and rebinds to it; the
 	// superseded pipeline head anchor from the refused attempt is reused.
 	f.service.beforeRecoverRebind = nil
-	retried := f.service.Recover(f.ctx, false)
+	retried := f.service.Recover(f.ctx, false, nil)
 	if !retried.Recovered || retried.Recovery == nil || retried.Recovery.RequiredHead != second {
 		t.Fatalf("retry = %#v", retried)
 	}
@@ -175,7 +175,7 @@ func TestRecoverRewrittenRemoteRefusesChangedInvokingWorktreeBeforeRebind(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			f, _ := newRemoteRewrittenFixture(t)
 			f.service.beforeRecoverRebind = func() { tc.change(t, f) }
-			state := f.service.Recover(f.ctx, false)
+			state := f.service.Recover(f.ctx, false, nil)
 			if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
 				t.Fatalf("recover after changed %s = %#v", tc.name, state)
 			}
@@ -197,7 +197,7 @@ func TestRecoverRewrittenRemoteRefusesWhenSupersededHeadCannotBeAnchored(t *test
 	// Neither the worktree nor any gate holds the superseded pipeline head, so
 	// rebinding would drop the last record of it.
 	f.service.GateDir = ""
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Safety != "blocked_recover_preserve_failed" {
 		t.Fatalf("recover without an anchorable superseded head = %#v", state)
 	}
@@ -211,7 +211,7 @@ func TestRecoverDoesNotRebindActiveRunWithRewrittenRemote(t *testing.T) {
 	if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered {
 		t.Fatalf("active run recover = %#v", state)
 	}
@@ -254,7 +254,7 @@ func TestRecoverRewrittenRemoteRefusesWhenPushTargetChangesBeforeRebind(t *testi
 		}
 		return gitpkg.LsRemote(ctx, dir, remote, ref)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if calls != 2 {
 		t.Fatalf("ls-remote calls = %d, want the refresh and the final live check", calls)
 	}
@@ -278,7 +278,7 @@ func TestRewrittenRemoteOnRetiredPRIsNotRecoverable(t *testing.T) {
 			if refreshed.NextAction != nil {
 				t.Fatalf("retired %s PR must not offer an action, got %#v", prState, refreshed.NextAction)
 			}
-			state := f.service.Recover(f.ctx, false)
+			state := f.service.Recover(f.ctx, false, nil)
 			if state.Recovered {
 				t.Fatalf("retired %s PR recover = %#v", prState, state)
 			}
@@ -297,7 +297,7 @@ func TestRecoverDoesNotReportSuccessWhenLiveVerificationFails(t *testing.T) {
 	if err := os.Rename(f.remote, f.remote+".offline"); err != nil {
 		t.Fatal(err)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered || state.Safety != "blocked_offline" {
 		t.Fatalf("recover without a verifiable live target = %#v", state)
 	}
@@ -307,7 +307,7 @@ func TestRecoverDoesNotReportSuccessWhenLiveVerificationFails(t *testing.T) {
 	if err := os.Rename(f.remote+".offline", f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if rebound := f.service.Recover(f.ctx, false); !rebound.Recovered || rebound.Recovery == nil || rebound.Recovery.Source != "remote_rewritten" {
+	if rebound := f.service.Recover(f.ctx, false, nil); !rebound.Recovered || rebound.Recovery == nil || rebound.Recovery.Source != "remote_rewritten" {
 		t.Fatalf("recover after the target returned = %#v", rebound)
 	}
 }
@@ -320,7 +320,7 @@ func TestRecoverAfterCustodyReturnDoesNotSucceedWhenBoundRemoteRefIsDeleted(t *t
 		t.Fatal(err)
 	}
 	mustRun(t, f.local, "push", f.remote, ":refs/heads/feature/sync")
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered {
 		t.Fatalf("recover with a deleted bound remote ref = %#v", state)
 	}
@@ -337,7 +337,7 @@ func TestRecoverAfterCustodyReturnDoesNotSucceedForClosedPRWithRewrittenRemote(t
 	if err := f.db.UpdateRunPRState(f.run.ID, "closed"); err != nil {
 		t.Fatal(err)
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered {
 		t.Fatalf("recover for a closed PR with a rewritten remote = %#v", state)
 	}
@@ -357,7 +357,7 @@ func TestRecoverRewrittenRemoteRefusesWhenNewerRunTakesBranchBeforeRebind(t *tes
 			t.Fatal(err)
 		}
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered {
 		t.Fatalf("recover after a newer run took the branch = %#v", state)
 	}
@@ -467,7 +467,7 @@ func TestRecoverOnPushedRunSucceedsOnlyForCommittedRebindOrVerifiedBinding(t *te
 				tc.setup(t, f)
 			}
 			keepLocal := tc.name == "rewritten remote with keep-local"
-			state := f.service.Recover(f.ctx, keepLocal)
+			state := f.service.Recover(f.ctx, keepLocal, nil)
 			if state.Recovered != tc.wantRecovered {
 				t.Fatalf("Recovered = %v, want %v; state = %#v", state.Recovered, tc.wantRecovered, state)
 			}
@@ -492,7 +492,7 @@ func TestRecoverRewrittenRemoteRefusesWhenRunHeadChangesBeforeRebind(t *testing.
 			t.Fatal(err)
 		}
 	}
-	state := f.service.Recover(f.ctx, false)
+	state := f.service.Recover(f.ctx, false, nil)
 	if state.Recovered {
 		t.Fatalf("recover after the run head changed = %#v", state)
 	}

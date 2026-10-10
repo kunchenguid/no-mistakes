@@ -251,6 +251,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if recoverableBranchSync(m.branchSync) && m.syncRecover != nil {
 			m.err = nil
 			m.recoverConfirm = true
+			plan := *m.branchSync
+			m.recoverPlan = &plan
 			return m, nil
 		}
 		if m.syncRefresh == nil || m.branchSync.NextAction == nil || m.branchSync.NextAction.Code != "sync" {

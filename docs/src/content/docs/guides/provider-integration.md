@@ -97,7 +97,7 @@ no-mistakes init --fork-url git@github.com:your-user/repo.git
 
 With this setup, pipeline pushes update the fork, including CI repairs whether they are published immediately or first revalidated under [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs), while the PR and CI steps stay scoped to the parent repository.
 The GitHub PR step opens PRs with a fork-qualified head such as `your-user:feature-branch`.
-Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`.
+For registration refreshes and running executors, follow the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init).
 
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
 GitLab, Forgejo, Bitbucket, Azure DevOps, Gitea, and provider plugins do not implement fork MR/PR routing yet; if a legacy or manually edited repo record has `fork_url` set for those providers, PR creation skips instead of opening an unsafe self PR.

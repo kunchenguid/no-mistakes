@@ -214,6 +214,8 @@ If you push to a fork (see [GitHub fork contributions](/no-mistakes/guides/provi
 no-mistakes init --fork-url https://<new-token>@github.com/<fork-owner>/<repo>.git
 ```
 
+For an already-running executor, follow the [registration-refresh guidance](/no-mistakes/reference/cli/#no-mistakes-init) before retrying publication.
+
 Prefer authenticating through the credential helper (`gh auth setup-git`) over embedding a PAT in the URL — a clean URL with no embedded token needs no `init` after a credential refresh.
 
 This only affects branches that modify workflow files.
