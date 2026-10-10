@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -22,43 +23,58 @@ const preservedPreReceiveHook = "pre-receive.no-mistakes-user"
 // Git mutates any managed gate ref. The daemon authenticates the hook process's
 // ancestry, so a validation-step descendant cannot bypass CLI guards with a
 // direct push.
-func receiveHookOwner(bareDir string) (string, string, error) {
+func receiveHookOwner(bareDir string) (string, string, string, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return "", "", fmt.Errorf("resolve hook executable: %w", err)
+		return "", "", "", fmt.Errorf("resolve hook executable: %w", err)
 	}
 	exe, err = filepath.EvalSymlinks(exe)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve hook executable: %w", err)
+		return "", "", "", fmt.Errorf("resolve hook executable: %w", err)
 	}
 	gate, err := filepath.Abs(bareDir)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve hook gate: %w", err)
+		return "", "", "", fmt.Errorf("resolve hook gate: %w", err)
 	}
 	gate, err = filepath.EvalSymlinks(gate)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve hook gate: %w", err)
+		return "", "", "", fmt.Errorf("resolve hook gate: %w", err)
 	}
 	if _, err := paths.ForGate(gate); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return exe, gate, nil
+	comparisonGate, err := receiveHookComparisonPath(gate, runtime.GOOS)
+	if err != nil {
+		return "", "", "", err
+	}
+	return exe, gate, comparisonGate, nil
 }
 
+func receiveHookComparisonPath(gate, goos string) (string, error) {
+	if goos != "windows" {
+		return gate, nil
+	}
+	volume := filepath.VolumeName(gate)
+	if len(volume) != 2 || volume[1] != ':' {
+		return "", fmt.Errorf("resolve Git for Windows gate path: unsupported volume %q", volume)
+	}
+	return "/" + strings.ToLower(volume[:1]) + filepath.ToSlash(strings.TrimPrefix(gate, volume)), nil
+}
 func PreReceiveHookScript(bareDir string) (string, error) {
-	exe, gate, err := receiveHookOwner(bareDir)
+	exe, gate, comparisonGate, err := receiveHookOwner(bareDir)
 	if err != nil {
 		return "", err
 	}
-	return preReceiveHookScript(exe, gate), nil
+	return preReceiveHookScript(exe, gate, comparisonGate), nil
 }
 
-func preReceiveHookScript(command, gate string) string {
+func preReceiveHookScript(command, gate, comparisonGate string) string {
 	return `#!/bin/sh
 # no-mistakes pre-receive hook
 # Authorize the pushing process before any managed gate ref changes.
 NM_BIN=` + shellSingleQuote(command) + `
 GATE_DIR=` + shellSingleQuote(gate) + `
+GATE_COMPARE_DIR=` + shellSingleQuote(comparisonGate) + `
 NM_HOME=` + shellSingleQuote(filepath.Dir(filepath.Dir(gate))) + `
 export NM_HOME
 ` + receivingGateResolverScript() + `
@@ -117,17 +133,8 @@ resolve_receiving_gate() {
     RECEIVE_GATE_ERROR="cannot derive the gate home for $RECEIVE_GATE (expected <root>/repos/<id>.git)"
     return 1
   fi
-  enrolled_gate=$GATE_DIR
-  case "$enrolled_gate" in
-    [A-Za-z]:[\\/]*)
-      enrolled_gate=$(cygpath -u "$enrolled_gate" 2>/dev/null) || {
-        RECEIVE_GATE_ERROR='cannot normalize enrolled Git gate path'
-        return 1
-      }
-      ;;
-  esac
-  if [ "$RECEIVE_GATE" != "$enrolled_gate" ]; then
-    RECEIVE_GATE_ERROR="receiving gate $RECEIVE_GATE does not match enrolled gate $enrolled_gate"
+  if [ "$RECEIVE_GATE" != "$GATE_COMPARE_DIR" ]; then
+    RECEIVE_GATE_ERROR="receiving gate $RECEIVE_GATE does not match enrolled gate $GATE_COMPARE_DIR"
     return 1
   fi
   return 0
@@ -200,14 +207,14 @@ func RefreshManagedGateHooks(bareDir string) error {
 // It never blocks the push - notification failures are surfaced to stderr and
 // appended to notify-push.log inside the bare repo.
 func PostReceiveHookScript(bareDir string) (string, error) {
-	exe, gate, err := receiveHookOwner(bareDir)
+	exe, gate, comparisonGate, err := receiveHookOwner(bareDir)
 	if err != nil {
 		return "", err
 	}
-	return postReceiveHookScript(exe, gate), nil
+	return postReceiveHookScript(exe, gate, comparisonGate), nil
 }
 
-func postReceiveHookScript(command, gate string) string {
+func postReceiveHookScript(command, gate, comparisonGate string) string {
 	return `#!/bin/sh
 # no-mistakes post-receive hook
 # Notifies the daemon of the push. Non-blocking: post-receive exit code is
@@ -216,6 +223,7 @@ func postReceiveHookScript(command, gate string) string {
 # notify-push.log inside the bare repo for later inspection.
 NM_BIN=` + shellSingleQuote(command) + `
 GATE_DIR=` + shellSingleQuote(gate) + `
+GATE_COMPARE_DIR=` + shellSingleQuote(comparisonGate) + `
 NM_HOME=` + shellSingleQuote(filepath.Dir(filepath.Dir(gate))) + `
 export NM_HOME
 ` + receivingGateResolverScript() + `
@@ -393,11 +401,11 @@ func MarkGateConfigCurrent(bareDir string) error {
 }
 
 func gateConfigStampContent(bareDir string) (string, error) {
-	exe, gate, err := receiveHookOwner(bareDir)
+	exe, gate, comparisonGate, err := receiveHookOwner(bareDir)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte("gate-config-v3\x00" + preReceiveHookScript(exe, gate) + "\x00" + postReceiveHookScript(exe, gate)))
+	sum := sha256.Sum256([]byte("gate-config-v3\x00" + preReceiveHookScript(exe, gate, comparisonGate) + "\x00" + postReceiveHookScript(exe, gate, comparisonGate)))
 	return fmt.Sprintf("v3:%x\n", sum), nil
 }
 

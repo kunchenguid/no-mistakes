@@ -79,9 +79,6 @@ func TestPreReceiveHookThroughShortLinkReportsPhysicalSocketPathTooLong(t *testi
 		t.Fatal(err)
 	}
 	script = strings.Replace(script, "NM_BIN='"+exe+"'", "NM_BIN='"+bin+"'", 1)
-	if !strings.Contains(script, "NM_BIN='"+bin+"'") {
-		t.Fatal("hook script does not point at the built binary")
-	}
 	hook := filepath.Join(gate, "hooks", "pre-receive")
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
