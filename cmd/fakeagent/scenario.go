@@ -162,10 +162,60 @@ func (s *Scenario) Match(prompt string) Action {
 func (s *Scenario) MatchInDir(wd, prompt string) Action {
 	for _, a := range s.Actions {
 		if a.Match == "" || strings.Contains(prompt, a.Match) {
-			return withReviewCoverage(wd, prompt, a)
+			return withEvidenceDir(prompt, withReviewCoverage(wd, prompt, a))
 		}
 	}
 	return Action{Text: "no matching scenario"}
+}
+
+// evidenceDirPlaceholder stands, inside a scenario's structured output, for
+// the run's evidence directory. A real test agent reports every artifact by
+// the absolute path the prompt steered it to, and the PR step only attaches
+// an artifact whose path is absolute and under that directory - a scenario
+// cannot spell out a path it does not know, so the placeholder is resolved
+// from the prompt the same way write_evidence resolves its destination.
+const evidenceDirPlaceholder = "{{evidence_dir}}"
+
+// withEvidenceDir resolves evidenceDirPlaceholder in every string of the
+// action's structured output against the evidence directory the prompt names.
+// A prompt that names none leaves the action untouched, so a mistaken
+// placeholder shows up as a relative path the product refuses rather than as
+// a silent rewrite.
+func withEvidenceDir(prompt string, a Action) Action {
+	if a.Structured == nil || a.StructuredRaw != "" {
+		return a
+	}
+	dir := evidenceDirFromPrompt(prompt)
+	if dir == "" {
+		return a
+	}
+	resolved, ok := substituteEvidenceDir(a.Structured, dir).(map[string]any)
+	if !ok {
+		return a
+	}
+	a.Structured = resolved
+	return a
+}
+
+func substituteEvidenceDir(value any, dir string) any {
+	switch v := value.(type) {
+	case string:
+		return strings.ReplaceAll(v, evidenceDirPlaceholder, dir)
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, item := range v {
+			out[k] = substituteEvidenceDir(item, dir)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = substituteEvidenceDir(item, dir)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 // reviewPromptMarker opens every review turn's prompt (initial review and
