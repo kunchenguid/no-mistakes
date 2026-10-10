@@ -354,7 +354,10 @@ type RepoConfig struct {
 	IgnorePatterns []string          `yaml:"ignore_patterns"`
 	// ProtectedPaths prevents automatic staging of dirty matching paths. It is
 	// trusted-only, regardless of allow_repo_commands, so a pushed branch cannot
-	// remove the maintainer's protection from its own fixes.
+	// remove the maintainer's protection from its own fixes. A submitted branch
+	// that declares entries the trusted config does not carry is refused before
+	// any fix commit (CheckProtectedPathsBranchLocal) rather than failing open
+	// with its declaration silently dropped.
 	ProtectedPaths []string `yaml:"protected_paths"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
 	// fields (commands.{prepare,test,lint,format} and agent) from a contributor's
@@ -3099,6 +3102,78 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Agents = nil
 	}
 	return &effective
+}
+
+// ErrProtectedPathsBranchLocal is returned when a submitted (pushed) branch
+// declares protected_paths entries that the trusted default-branch config does
+// not carry. EffectiveRepoConfig is trusted-only for protected_paths (a pushed
+// branch must never weaken the maintainer's protection), so those entries would
+// be silently dropped and the branch's own auto-fix could mutate the very paths
+// it asked to protect. Rather than fail open, the run is refused before any fix
+// commit is created.
+var ErrProtectedPathsBranchLocal = errors.New("branch-local protected_paths are not supported")
+
+// ProtectedPathsBranchLocalError names the protected_paths entries a submitted
+// branch declared that the trusted default-branch config does not carry, so the
+// refusal tells the contributor exactly which rules were ignored and how to
+// resolve it.
+type ProtectedPathsBranchLocalError struct {
+	// Branch is the submitted branch that declared the entries (best effort;
+	// empty when the caller does not know it).
+	Branch string
+	// Entries are the pushed-branch protected_paths entries the trusted config
+	// does not carry and would therefore silently drop.
+	Entries []string
+}
+
+func (e *ProtectedPathsBranchLocalError) Error() string {
+	subject := e.Branch
+	if subject == "" {
+		subject = "the submitted branch"
+	} else {
+		subject = "branch " + subject
+	}
+	return fmt.Sprintf("%s: %s declares protected_paths %v, but the trusted default-branch config does not carry them; protected_paths is honored only from the default branch, so those entries would be silently ignored and the branch's own auto-fix could mutate the paths it asked to protect. Add the same entries to the default branch's .no-mistakes.yaml, or remove them from the branch's copy", ErrProtectedPathsBranchLocal, subject, e.Entries)
+}
+
+func (e *ProtectedPathsBranchLocalError) Unwrap() error { return ErrProtectedPathsBranchLocal }
+
+// CheckProtectedPathsBranchLocal fails closed when a submitted branch declares
+// protected_paths entries the trusted default-branch config does not carry.
+//
+// EffectiveRepoConfig is trusted-only for protected_paths: the effective list
+// always comes from the trusted copy so a pushed branch can never weaken the
+// maintainer's protection. That is the right supply-chain posture, but it makes
+// a branch-local declaration inert - when the trusted config carries none (or
+// is absent), a branch that declares any is asking for protection that will not
+// apply, and the pipeline would silently proceed to auto-fix those very paths.
+// This check refuses that instead of failing open.
+//
+// The comparison is entry-wise, not list-wise: an entry the trusted config
+// already carries is honored, so a branch that merely re-declares the
+// maintainer's own rules (or a subset of them) is not refused. Only entries
+// that would be dropped are reported. An empty or absent pushed list is always
+// fine - a branch may omit the setting without consequence.
+func CheckProtectedPathsBranchLocal(pushed, trusted *RepoConfig, branch string) error {
+	if pushed == nil || len(pushed.ProtectedPaths) == 0 {
+		return nil
+	}
+	trustedSet := make(map[string]struct{})
+	if trusted != nil {
+		for _, p := range trusted.ProtectedPaths {
+			trustedSet[p] = struct{}{}
+		}
+	}
+	var dropped []string
+	for _, p := range pushed.ProtectedPaths {
+		if _, ok := trustedSet[p]; !ok {
+			dropped = append(dropped, p)
+		}
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	return &ProtectedPathsBranchLocalError{Branch: branch, Entries: dropped}
 }
 
 // ParseLogLevel converts a log level string to slog.Level.
