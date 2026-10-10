@@ -21,6 +21,7 @@ func TestReceiveHooksGitForWindows(t *testing.T) {
 		t.Fatal("NM_TEST_GIT_WINDOWS_SHELL must name the Git for Windows bash.exe")
 	}
 	ctx := t.Context()
+	testedHead := run(t, "", "git", "rev-parse", "HEAD")
 	base := t.TempDir()
 	cli := filepath.Join(base, "owner's native CLI.exe")
 	build := exec.CommandContext(ctx, "go", "build", "-o", cli, "./testdata/receive-recorder")
@@ -132,7 +133,7 @@ func TestReceiveHooksGitForWindows(t *testing.T) {
 			if err != nil || !strings.Contains(string(log), "does not match enrolled gate") {
 				t.Fatalf("copied notification refusal missing from receiving gate log: %v: %s", err, log)
 			}
-			t.Logf("%s: enrolled push accepted; copied admission, notification and stamp refused; copied refs unchanged", gate)
+			t.Logf("tested_head=%s case=%s result=pass gate=%q: enrolled push accepted with pinned native arguments; copied admission, notification and stamp refused; copied refs unchanged", testedHead, tc.name, gate)
 		})
 	}
 }

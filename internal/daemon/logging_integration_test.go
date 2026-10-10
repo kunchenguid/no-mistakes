@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,8 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/safepath"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
 // TestDetachedDaemonUsesBoundedDedicatedLogSinks is a production-shaped
@@ -44,8 +50,10 @@ func TestDetachedDaemonUsesBoundedDedicatedLogSinks(t *testing.T) {
 	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "10s")
 	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "10ms")
 
+	started := time.Now()
 	if err := startDetachedDaemon(p); err != nil {
-		t.Fatalf("start isolated daemon: %v", err)
+		t.Logf("startup failed after %v; logs before cleanup:\n%s", time.Since(started), detachedDaemonStartupDiagnostics(p))
+		t.Fatalf("start isolated daemon: %s", sanitizeDaemonStartupDiagnostic(p, err.Error()))
 	}
 	pid, err := ReadPID(p)
 	if err != nil {
@@ -108,6 +116,100 @@ func TestDetachedDaemonUsesBoundedDedicatedLogSinks(t *testing.T) {
 
 	shutdownIsolatedDaemon(t, p, pid)
 	stopped = true
+}
+
+const daemonStartupDiagnosticTailBytes = 4096
+
+// Read only bounded tails from the two startup sinks and their retained
+// backups. Missing/empty files also locate how far startup got before failing.
+func detachedDaemonStartupDiagnostics(p *paths.Paths) string {
+	var out strings.Builder
+	for _, sink := range []struct {
+		path    string
+		backups int
+	}{
+		{p.DaemonBootstrapLog(), logstore.BootstrapPolicy().Backups},
+		{p.DaemonLog(), logstore.LifecyclePolicy().Backups},
+	} {
+		for i := 0; i <= sink.backups; i++ {
+			path := sink.path
+			if i > 0 {
+				path += fmt.Sprintf(".%d", i)
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				fmt.Fprintf(&out, "%s: missing=%t error=%q\n", filepath.Base(path), os.IsNotExist(err), sanitizeDaemonStartupDiagnostic(p, err.Error()))
+				continue
+			}
+			info, err := file.Stat()
+			if err != nil {
+				_ = file.Close()
+				fmt.Fprintf(&out, "%s: stat error=%q\n", filepath.Base(path), sanitizeDaemonStartupDiagnostic(p, err.Error()))
+				continue
+			}
+			size := min(info.Size(), int64(daemonStartupDiagnosticTailBytes))
+			tail := make([]byte, size)
+			n, err := file.ReadAt(tail, info.Size()-size)
+			_ = file.Close()
+			fmt.Fprintf(&out, "%s: exists=true size=%d tail=%q\n", filepath.Base(path), info.Size(), sanitizeDaemonStartupDiagnostic(p, string(tail[:n])))
+			if err != nil && err != io.EOF {
+				fmt.Fprintf(&out, "read error=%q\n", sanitizeDaemonStartupDiagnostic(p, err.Error()))
+			}
+		}
+	}
+	return out.String()
+}
+
+func sanitizeDaemonStartupDiagnostic(p *paths.Paths, text string) string {
+	text = strings.ReplaceAll(text, p.Root(), "<test-root>")
+	return intent.RedactSecrets(safeurl.RedactText(safepath.RedactText(text)))
+}
+
+func TestDetachedDaemonStartupFailureDiagnostics(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "password=abcdefghijklmnopqrstuv"
+	const credentialURL = "https://user:abcdefghijklmnopqrstuv@example.com/repo"
+	// The prefix must be excluded, while the tail and rotated records survive.
+	bootstrap := "omitted-prefix" + strings.Repeat("x", daemonStartupDiagnosticTailBytes) + "\nbootstrap-tail " + p.Root() + " /home/private-user/daemon " + secret + " " + credentialURL
+	for path, content := range map[string]string{
+		p.DaemonBootstrapLog():        bootstrap,
+		p.DaemonBootstrapLog() + ".1": "rotated-bootstrap-tail",
+		p.DaemonLog():                 "",
+		p.DaemonLog() + ".1":          "rotated-daemon-tail",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NM_TEST_START_DAEMON", "1")
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "block")
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "40ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "5ms")
+	if err := startDetachedDaemon(p); err == nil || !strings.Contains(err.Error(), "did not become ready") {
+		t.Fatalf("expected a real child readiness timeout, got %v", err)
+	}
+	diagnostic := detachedDaemonStartupDiagnostics(p)
+	for _, want := range []string{
+		fmt.Sprintf("daemon-bootstrap.log: exists=true size=%d", len(bootstrap)),
+		"bootstrap-tail", "rotated-bootstrap-tail", "rotated-daemon-tail",
+		"daemon.log: exists=true size=0", "daemon.log.3: missing=true", "<test-root>",
+	} {
+		if !strings.Contains(diagnostic, want) {
+			t.Errorf("startup diagnostic missing %q: %s", want, diagnostic)
+		}
+	}
+	for _, excluded := range []string{"omitted-prefix", p.Root(), "/home/private-user", secret, credentialURL} {
+		if strings.Contains(diagnostic, excluded) {
+			t.Errorf("startup diagnostic retained excluded content %q", excluded)
+		}
+	}
+	if len(diagnostic) > 2*daemonStartupDiagnosticTailBytes {
+		t.Errorf("diagnostic size=%d exceeds the fixture's bounded tails", len(diagnostic))
+	}
+	t.Logf("real child timeout captured bounded, sanitized current and rotated logs before cleanup")
 }
 
 func shutdownIsolatedDaemon(t *testing.T, p *paths.Paths, pid int) {
