@@ -1066,8 +1066,8 @@ type TestRaw struct {
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type EvidenceRaw struct {
 	StoreInRepo *bool `yaml:"store_in_repo"`
-	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// when the PR body is rendered. It defaults on so default-config PRs stop
+	// AttachMedia uploads image and video evidence to the forge (GitHub
+	// user-attachments, GitLab project uploads) when the PR body is rendered. It defaults on so default-config PRs stop
 	// citing local disk paths for screenshots; set false to opt out. The
 	// orphan-branch store (store_in_repo) is independent: when both are on,
 	// the PR body carries both the commit-pinned link and the attachment.
@@ -1112,7 +1112,8 @@ type Test struct {
 // never enters the pushed code branch, so it never reaches the default
 // branch's history. Otherwise evidence stays on local disk under LocalRoot.
 // AttachMedia (default true) additionally uploads image and video artifacts to
-// GitHub user-attachments at PR render time so remote reviewers can open them
+// the forge (GitHub user-attachments, GitLab project uploads) at PR render time
+// so remote reviewers can open them
 // without an evidence branch. Text artifacts stay inlined or locally cited.
 type Evidence struct {
 	StoreInRepo bool
@@ -1552,8 +1553,9 @@ intent:
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept on local
 # disk under <NM_HOME>/evidence. attach_media (default true) uploads image and
-# video artifacts to GitHub user-attachments when the PR is rendered so remote
-# reviewers can open them; text artifacts stay inlined. Opt in to
+# video artifacts to the forge (GitHub user-attachments, GitLab project
+# uploads) when the PR is rendered so remote reviewers can open them; text
+# artifacts stay inlined. Opt in to
 # store_in_repo to also publish the full directory to an orphan evidence branch
 # in the same repository and link it from the PR body. The evidence branch
 # shares no history with your code branches, so artifacts never enter the

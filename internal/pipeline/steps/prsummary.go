@@ -102,10 +102,15 @@ type testingSummaryOptions struct {
 	// branch. It is nil when nothing was published, and the artifacts then
 	// render as local paths rather than as links that would not resolve.
 	evidence *evidenceLinks
-	// attachments maps a local evidence path to a GitHub user-attachments URL
+	// attachments maps a local evidence path to a forge attachment URL
 	// uploaded at PR render time. Nil means nothing was uploaded; the renderer
 	// then keeps today's local-path or commit-pinned link.
 	attachments map[string]string
+	// videoAttachmentsAsImages renders an attached video with image syntax.
+	// GitLab turns an image-syntax link to a video into an inline player and
+	// leaves a bare URL as text; GitHub does the opposite, so it stays false
+	// there.
+	videoAttachmentsAsImages bool
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -360,6 +365,7 @@ func buildPRTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepR
 	opts.evidenceRoot = evidenceRoot
 	opts.evidence = links
 	opts.attachments = attachments
+	opts.videoAttachmentsAsImages = provider == scm.ProviderGitLab
 	return buildTestingSummary(steps, rounds, opts)
 }
 
@@ -743,7 +749,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if caption == "" && !hasFile {
 		if attachment != "" {
 			var b strings.Builder
-			b.WriteString(renderAttachmentMarkdown(artifact, attachment, label))
+			b.WriteString(renderAttachmentMarkdown(artifact, attachment, label, opts))
 			if target != "" {
 				b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 			}
@@ -776,7 +782,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if attachment == "" {
 		return folded
 	}
-	return renderAttachmentMarkdown(artifact, attachment, label) + "\n" + folded
+	return renderAttachmentMarkdown(artifact, attachment, label, opts) + "\n" + folded
 }
 
 func (opts testingSummaryOptions) attachmentURL(artifact types.TestArtifact) string {
@@ -789,8 +795,8 @@ func (opts testingSummaryOptions) attachmentURL(artifact types.TestArtifact) str
 	return strings.TrimSpace(opts.attachments[filepath.Clean(artifact.Path)])
 }
 
-func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string) string {
-	if isVideoArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, url) {
+func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string, opts testingSummaryOptions) string {
+	if !opts.videoAttachmentsAsImages && (isVideoArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, url)) {
 		return url + "\n"
 	}
 	return fmt.Sprintf("![%s](%s)\n", markdownAltText(label), url)
@@ -1105,7 +1111,10 @@ func isVideoArtifact(kind, target string) bool {
 		return true
 	}
 	lower := strings.ToLower(target)
-	for _, suffix := range []string{".mp4", ".webm", ".mov"} {
+	// Every video extension a forge uploader accepts must be listed here: a
+	// recording reported without a kind is inferred from its extension, and one
+	// this misses is skipped before the uploader validates it.
+	for _, suffix := range []string{".mp4", ".m4v", ".mov", ".webm", ".ogv"} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
 		}

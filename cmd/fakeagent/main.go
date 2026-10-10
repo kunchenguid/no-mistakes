@@ -56,6 +56,8 @@ func run(argv []string) int {
 		return runGhStub(args)
 	case "tea":
 		return runTeaStub(args)
+	case "glab":
+		return runGlabStub(args)
 	case fakeplugin.ExecutableName:
 		// The reference provider plugin, configured through the global
 		// provider_plugins block by internal/e2e/provider_plugin_test.go.
