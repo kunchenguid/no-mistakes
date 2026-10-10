@@ -1155,13 +1155,30 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 		return "", err
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
-	args = append(args, "--json", "mergeable", "--jq", ".mergeable")
+	args = append(args, "--json", "mergeable,mergeStateStatus", "--jq", `.mergeable + " " + .mergeStateStatus`)
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view mergeable: %w", err)
 	}
-	return normalizeMergeableState(strings.TrimSpace(string(out))), nil
+	return parseMergeableState(string(out)), nil
+}
+
+// parseMergeableState reads "<mergeable> <mergeStateStatus>". mergeable alone
+// is MERGEABLE for a conflict-free PR that is behind its base, so a merge the
+// base's "require branches to be up to date" rule refuses looked mergeable.
+// GitHub reports mergeStateStatus BEHIND only under that rule; without it a
+// behind PR reads CLEAN, so BEHIND alone is the signal.
+func parseMergeableState(out string) scm.MergeableState {
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return normalizeMergeableState("")
+	}
+	state := normalizeMergeableState(fields[0])
+	if state == scm.MergeableOK && len(fields) > 1 && strings.EqualFold(fields[1], "BEHIND") {
+		return scm.MergeableBehind
+	}
+	return state
 }
 
 func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, headSHA string, failingNames []string) (string, error) {

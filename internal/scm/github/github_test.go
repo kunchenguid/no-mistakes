@@ -1159,6 +1159,40 @@ func TestPRStateAndMergeableTargetKnownPRByURL(t *testing.T) {
 	}
 }
 
+// A conflict-free PR behind a base that requires up-to-date branches reads
+// mergeable MERGEABLE, so only mergeStateStatus says GitHub will refuse it.
+func TestGetMergeableStateReadsMergeStateStatusBehind(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		out  string
+		want scm.MergeableState
+	}{
+		{"MERGEABLE BEHIND\n", scm.MergeableBehind},
+		{"MERGEABLE CLEAN\n", scm.MergeableOK},
+		{"MERGEABLE BLOCKED\n", scm.MergeableOK},
+		{"MERGEABLE\n", scm.MergeableOK},
+		{"CONFLICTING DIRTY\n", scm.MergeableConflict},
+		{"CONFLICTING BEHIND\n", scm.MergeableConflict},
+		{"UNKNOWN UNKNOWN\n", scm.MergeablePending},
+		{"UNKNOWN BEHIND\n", scm.MergeablePending},
+		{"\n", scm.MergeablePending},
+	} {
+		var args [][]string
+		host := New(recordingCmdFactory(tc.out, &args), nil, "", "test/repo")
+		got, err := host.GetMergeableState(context.Background(), &scm.PR{Number: "7"})
+		if err != nil {
+			t.Fatalf("GetMergeableState(%q) error = %v", tc.out, err)
+		}
+		if got != tc.want {
+			t.Errorf("GetMergeableState(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+		if joined := strings.Join(args[0], " "); !strings.Contains(joined, "--json mergeable,mergeStateStatus") {
+			t.Fatalf("GetMergeableState args = %q, want mergeStateStatus requested", joined)
+		}
+	}
+}
+
 func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 

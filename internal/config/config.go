@@ -1349,9 +1349,10 @@ forgejo_axi_path: forgejo-axi
 #   devin: devin acp
 
 # Maximum time the CI monitor babysits an open PR with no base-branch movement
-# before giving up. The monitor watches CI and auto-rebases when the base branch
-# advances; each base advance re-arms this timer, so an actively-updated green PR
-# keeps its monitor. Set to "unlimited", "none", "off", "never", or any
+# before giving up. The monitor watches CI and rebases the PR onto its base when
+# it has a merge conflict or, on GitHub, when it is green but behind a base that
+# requires up-to-date branches; each base advance re-arms this timer, so an
+# actively-updated green PR keeps its monitor. Set to "unlimited", "none", "off", "never", or any
 # non-positive duration to monitor until the PR is merged, closed, or the run is
 # aborted with: no-mistakes axi abort --run <id>
 ci_timeout: "168h"

@@ -49,6 +49,9 @@ type ciIssues struct {
 	// cancelledWithoutRerun).
 	unresolvedCancelled []string
 	mergeConflict       bool
+	// behindBase is a green PR the forge refuses to merge until it is
+	// brought up to date with its base.
+	behindBase bool
 	// reruns reports how many transient reruns this run spent on a check.
 	reruns func(string) int
 	// botComments are the unresolved review-thread comments left by
@@ -71,6 +74,8 @@ type ciIssues struct {
 //     agent, not this classifier, decides whether the code caused it (its
 //     no-code-change conclusion parks for a decision);
 //   - a merge conflict is an auto-fix error whose repair always revalidates;
+//   - a green PR behind a base that requires up-to-date branches takes the
+//     same rebase repair;
 //   - a failing check published by a registered review bot (scm.ReviewBots)
 //     is the bot's opinion about the change, not a verdict on it, so it
 //     becomes one ask-user warning per unresolved bot comment, anchored to
@@ -117,6 +122,14 @@ func ciObservationFindings(issues ciIssues) Findings {
 			Description: "PR has merge conflicts with the base branch",
 		})
 	}
+	if issues.behindBase {
+		items = append(items, Finding{
+			Severity:    types.FindingSeverityError,
+			Action:      types.ActionAutoFix,
+			Category:    types.FindingCategoryCIBehindBase,
+			Description: ciBehindBaseDescription,
+		})
+	}
 	transient, transientSummary := unresolvedTransientFindings(issues.unresolvedCancelled, issues.checks, issues.reruns)
 	items = append(items, transient...)
 
@@ -130,6 +143,9 @@ func ciObservationFindings(issues ciIssues) Findings {
 	}
 	if issues.mergeConflict {
 		parts = append(parts, "PR has merge conflicts with the base branch")
+	}
+	if issues.behindBase {
+		parts = append(parts, ciBehindBaseDescription)
 	}
 	if summary := reviewBotSummary(items); summary != "" {
 		parts = append(parts, summary)
@@ -443,6 +459,10 @@ func reviewBotCommentsReadFailureOutcome(err error) *pipeline.StepOutcome {
 	return &pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}
 }
 
+// ciBehindBaseDescription names a green PR the forge refuses to merge until it
+// is up to date with its base.
+const ciBehindBaseDescription = "PR is behind a base branch that requires branches to be up to date before merging"
+
 // ciFixTargets is what a CI fix round repairs: the findings the executor
 // selected for it (the auto-fix subset of the last observation, or whatever
 // the human selected at the gate), reduced to the exact checks whose logs the
@@ -451,6 +471,9 @@ type ciFixTargets struct {
 	Findings      Findings
 	Checks        []scm.CheckTarget
 	MergeConflict bool
+	// BehindBase asks for the merge-conflict repair's rebase on a PR that
+	// has no conflicts but is behind its base.
+	BehindBase bool
 }
 
 func parseCIFixTargets(raw string) (ciFixTargets, error) {
@@ -466,6 +489,9 @@ func parseCIFixTargets(raw string) (ciFixTargets, error) {
 	for _, item := range findings.Items {
 		if item.Category == types.FindingCategoryCIMergeConflict {
 			targets.MergeConflict = true
+		}
+		if item.Category == types.FindingCategoryCIBehindBase {
+			targets.BehindBase = true
 		}
 		name := strings.TrimSpace(item.Check)
 		id := strings.TrimSpace(item.CheckID)
@@ -504,6 +530,10 @@ func (t ciFixTargets) description() string {
 		desc += " + merge conflict"
 	case t.MergeConflict:
 		desc = "merge conflict"
+	case t.BehindBase && desc != "":
+		desc += " + behind base"
+	case t.BehindBase:
+		desc = "behind base"
 	case desc == "":
 		count := len(t.Findings.Items)
 		if count == 1 {

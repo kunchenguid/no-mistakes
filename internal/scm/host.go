@@ -123,14 +123,22 @@ const (
 	MergeableConflict MergeableState = "CONFLICTING"
 	MergeablePending  MergeableState = "PENDING"
 	MergeableUnknown  MergeableState = "UNKNOWN"
+	// MergeableBehind is a conflict-free PR the forge still refuses to merge
+	// because its base requires branches to be up to date. Only GitHub
+	// reports it (mergeStateStatus BEHIND).
+	MergeableBehind MergeableState = "BEHIND"
 )
 
 // Conflict reports whether the state indicates a known merge conflict.
 func (s MergeableState) Conflict() bool { return s == MergeableConflict }
 
-// Resolved reports whether the state is final (MERGEABLE or CONFLICTING).
+// Behind reports whether the PR must be brought up to date with its base
+// before the forge will merge it.
+func (s MergeableState) Behind() bool { return s == MergeableBehind }
+
+// Resolved reports whether the state is final (MERGEABLE, BEHIND or CONFLICTING).
 func (s MergeableState) Resolved() bool {
-	return s == MergeableOK || s == MergeableConflict
+	return s == MergeableOK || s == MergeableBehind || s == MergeableConflict
 }
 
 // CheckBucket is the normalized outcome of a CI check.
