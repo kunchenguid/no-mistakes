@@ -236,9 +236,11 @@ At init or refresh, both managed hooks pin the canonical gate path, its owning
 At invocation, each hook reads `GIT_DIR` from Git, resolves the physical path,
 and requires it to match the enrolled gate. On Git for Windows, enrollment
 embeds a comparison path in the shell's spelling for both drive-letter and UNC
-gate paths. This prevents a copied hook from authorizing or notifying for a
-different repository. The hooks do not select an
-owner from the pushing shell's `PATH`, `NM_HOME`, working directory, or a
+gate paths. After that comparison succeeds, both hooks pass the pinned native
+gate path to the CLI, including when `MSYS2_ARG_CONV_EXCL=*` disables shell
+argument conversion. This prevents a copied hook from authorizing or notifying
+for a different repository. The hooks do not select an owner from the pushing
+shell's `PATH`, `NM_HOME`, working directory, or a
 PATH-selected Git executable. Refresh records the binary-and-root pair in the
 gate stamp. If the enrolled executable or receiving gate cannot be verified,
 pre-receive refuses the update before refs change. A post-receive notification
