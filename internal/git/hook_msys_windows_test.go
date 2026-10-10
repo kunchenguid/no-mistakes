@@ -49,7 +49,13 @@ func TestReceiveHooksGitForWindows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			gate := filepath.Join(tc.root, "repos", "owned.git")
 			other := filepath.Join(tc.root, "other owner", "repos", "copied.git")
+			// Git for Windows treats loopback UNC repositories as non-local.
+			// Trust only these fixtures in a private config inherited by both
+			// send-pack and receive-pack; never change the user's Git config.
+			gitConfig := filepath.Join(base, tc.name+"-gitconfig")
+			t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
 			for _, dir := range []string{gate, other} {
+				run(t, base, "git", "config", "--file", gitConfig, "--add", "safe.directory", filepath.ToSlash(dir))
 				if err := InitBare(ctx, dir); err != nil {
 					t.Fatal(err)
 				}
@@ -66,11 +72,15 @@ func TestReceiveHooksGitForWindows(t *testing.T) {
 			if err := os.Mkdir(poison, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			otherComparison, err := windowsGateComparisonPath(other)
+			// A spoofed converter must return the receiving shell's actual
+			// spelling, including /tmp aliases, to exercise the bypass.
+			pwd := exec.CommandContext(ctx, shell, "--noprofile", "--norc", "-c", "/bin/pwd -P")
+			pwd.Dir = other
+			otherComparison, err := pwd.CombinedOutput()
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("resolve copied gate shell path: %v: %s", err, otherComparison)
 			}
-			writeFile(t, filepath.Join(poison, "cygpath"), "#!/bin/sh\nprintf '%s\\n' "+shellSingleQuote(otherComparison)+"\n")
+			writeFile(t, filepath.Join(poison, "cygpath"), "#!/bin/sh\nprintf '%s\\n' "+shellSingleQuote(strings.TrimSpace(string(otherComparison)))+"\n")
 			cliBytes, err := os.ReadFile(cli)
 			if err != nil {
 				t.Fatal(err)

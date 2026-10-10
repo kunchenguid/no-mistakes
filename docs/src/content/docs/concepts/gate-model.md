@@ -234,9 +234,10 @@ An existing custom `pre-receive` hook is preserved and runs after admission.
 At init or refresh, both managed hooks pin the canonical gate path, its owning
 `NM_HOME`, and the exact `no-mistakes` executable that enrolled the gate.
 At invocation, each hook reads `GIT_DIR` from Git, resolves the physical path,
-and requires it to match the enrolled gate. On Git for Windows, enrollment
-embeds a comparison path in the shell's spelling for both drive-letter and UNC
-gate paths. After that comparison succeeds, both hooks pass the pinned native
+and requires it to match the enrolled gate. Both paths are resolved with the
+fixed `/bin/pwd` in the receiving shell, so Git for Windows mount aliases such
+as `/tmp` use the same spelling for drive-letter and UNC gates. After that
+comparison succeeds, both hooks pass the pinned native
 gate path to the CLI, including when `MSYS2_ARG_CONV_EXCL=*` disables shell
 argument conversion. This prevents a copied hook from authorizing or notifying
 for a different repository. The hooks do not select an owner from the pushing

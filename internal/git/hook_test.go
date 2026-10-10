@@ -28,32 +28,6 @@ func hookTestGate(t *testing.T) string {
 	return gate
 }
 
-func TestWindowsGateComparisonPaths(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		gate string
-		want string
-	}{
-		{name: "drive letter", gate: `C:\Users\runner\nm\repos\repo.git`, want: "/c/Users/runner/nm/repos/repo.git"},
-		{name: "UNC", gate: `\\server\share\nm\repos\repo.git`, want: "//server/share/nm/repos/repo.git"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := windowsGateComparisonPath(tc.gate)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tc.want {
-				t.Fatalf("windowsGateComparisonPath(%q) = %q, want %q", tc.gate, got, tc.want)
-			}
-		})
-	}
-	for _, path := range []string{`relative\repos\repo.git`, `\\server`} {
-		if _, err := windowsGateComparisonPath(path); err == nil {
-			t.Errorf("windowsGateComparisonPath(%q) unexpectedly succeeded", path)
-		}
-	}
-}
-
 // The selected hook owner must survive a pushing shell's unrelated runtime
 // and PATH. Execute the generated shell rather than checking only its text.
 func TestReceiveHooksKeepEnrolledOwner(t *testing.T) {
@@ -73,9 +47,9 @@ func TestReceiveHooksKeepEnrolledOwner(t *testing.T) {
 			if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$NM_HOME\" > "+shellSingleQuote(record)+"\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			script := preReceiveHookScript(bin, canonicalHookGate(t, gate), canonicalHookGate(t, gate))
+			script := preReceiveHookScript(bin, canonicalHookGate(t, gate))
 			if kind == "post" {
-				script = postReceiveHookScript(bin, canonicalHookGate(t, gate), canonicalHookGate(t, gate))
+				script = postReceiveHookScript(bin, canonicalHookGate(t, gate))
 			}
 			hook := filepath.Join(gate, "hooks", kind+"-receive")
 			if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
@@ -129,9 +103,9 @@ func TestReceiveHooksRefuseCopiedHook(t *testing.T) {
 			if err := os.WriteFile(bin, []byte("#!/bin/sh\n: > "+shellSingleQuote(marker)+"\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			script := preReceiveHookScript(bin, canonicalHookGate(t, ownedGate), canonicalHookGate(t, ownedGate))
+			script := preReceiveHookScript(bin, canonicalHookGate(t, ownedGate))
 			if kind == "post" {
-				script = postReceiveHookScript(bin, canonicalHookGate(t, ownedGate), canonicalHookGate(t, ownedGate))
+				script = postReceiveHookScript(bin, canonicalHookGate(t, ownedGate))
 			}
 			hook := filepath.Join(receivingGate, "hooks", kind+"-receive")
 			if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
@@ -185,9 +159,9 @@ func TestReceiveHooksNeverSelectGlobalFallback(t *testing.T) {
 				t.Fatal(err)
 			}
 			missing := filepath.Join(base, "removed-owner")
-			script := preReceiveHookScript(missing, canonicalHookGate(t, gate), canonicalHookGate(t, gate))
+			script := preReceiveHookScript(missing, canonicalHookGate(t, gate))
 			if kind == "post" {
-				script = postReceiveHookScript(missing, canonicalHookGate(t, gate), canonicalHookGate(t, gate))
+				script = postReceiveHookScript(missing, canonicalHookGate(t, gate))
 			}
 			hook := filepath.Join(gate, "hooks", kind+"-receive")
 			if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
@@ -366,20 +340,22 @@ func TestPostReceiveHookScript(t *testing.T) {
 	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	alias := filepath.Join(base, "gate alias")
+	if err := os.Symlink(canonicalHookGate(t, gate), alias); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name string
 		gate string
 	}{
-		{name: "POSIX", gate: canonicalHookGate(t, gate)},
-		{name: "Windows drive", gate: `C:\Users\runner\nm\repos\repo.git`},
-		{name: "Windows UNC", gate: `\\server\share\nm\repos\repo.git`},
+		{name: "physical path", gate: canonicalHookGate(t, gate)},
+		{name: "alias", gate: alias},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The real shell resolves the local receiving gate; the recording
-			// CLI must receive the separately pinned native spelling. This
-			// exercises argument selection without requiring a Windows host.
+			// Compare physical paths but pass the original pinned spelling
+			// to the CLI, even when automatic argument conversion is disabled.
 			hookPath := filepath.Join(base, "post-receive")
-			if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, tc.gate, canonicalHookGate(t, gate))), 0o755); err != nil {
+			if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, tc.gate)), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			cmd := exec.Command("/bin/sh", hookPath)
@@ -442,7 +418,7 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	}
 
 	hookPath := filepath.Join(base, "post-receive")
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare), canonicalHookGate(t, bare))), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -508,7 +484,7 @@ func TestInstallPostReceiveHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != postReceiveHookScript(resolvedExe, canonicalHookGate(t, bare), canonicalHookGate(t, bare)) {
+	if string(content) != postReceiveHookScript(resolvedExe, canonicalHookGate(t, bare)) {
 		t.Fatal("hook content doesn't match template")
 	}
 }
@@ -592,7 +568,7 @@ func TestPostReceiveHook_PinsEnrolledGate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare), canonicalHookGate(t, bare))), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -665,7 +641,7 @@ func TestPostReceiveHookRefusesWhenReceivingGateCannotBeResolved(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare), canonicalHookGate(t, bare))), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -758,7 +734,7 @@ func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	hookPath := filepath.Join(hooksDir, "post-receive")
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare), canonicalHookGate(t, bare))), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
