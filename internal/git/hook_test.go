@@ -372,7 +372,7 @@ func TestPostReceiveHookScript(t *testing.T) {
 	}
 	cmd := exec.Command("/bin/sh", hookPath)
 	cmd.Dir = gate
-	cmd.Env = append(os.Environ(), "GIT_DIR=.")
+	cmd.Env = append(os.Environ(), "GIT_DIR=.", "MSYS2_ARG_CONV_EXCL=*")
 	cmd.Stdin = strings.NewReader("old new refs/heads/main\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run post-receive hook: %v: %s", err, out)
@@ -382,7 +382,7 @@ func TestPostReceiveHookScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := gateArgFromArgv(string(args)), canonicalHookGate(t, gate); got != want {
-		t.Fatalf("hook passed gate %q, want %q", got, want)
+		t.Fatalf("hook passed gate %q, want pinned native gate %q", got, want)
 	}
 
 }

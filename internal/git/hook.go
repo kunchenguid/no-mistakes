@@ -232,7 +232,7 @@ LOG="$RECEIVE_GATE/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
 notify_failed=0
 while read oldrev newrev refname; do
-	  set -- --gate "$RECEIVE_GATE" \
+	  set -- --gate "$GATE_DIR" \
 	    --ref "$refname" \
 	    --old "$oldrev" \
 	    --new "$newrev"
