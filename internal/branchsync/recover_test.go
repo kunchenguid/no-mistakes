@@ -1356,6 +1356,7 @@ func TestRecoverKeepLocalPreservesHeadRestoredAfterPreflight(t *testing.T) {
 }
 
 func TestRecoverKeepLocalIgnoresSupersededUnpublishedRuns(t *testing.T) {
+	t.Parallel()
 	f := newRecoverFixture(t, types.RunCancelled)
 	binding := db.PushBinding{HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover"}
 	if err := f.db.UpdateRunPushBinding(f.run.ID, binding); err != nil {
@@ -1401,6 +1402,7 @@ func TestRecoverKeepLocalIgnoresSupersededUnpublishedRuns(t *testing.T) {
 }
 
 func TestRecoverKeepLocalPreflightsEveryStrandedRun(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		setup func(*recoverFixture, *db.Run)
@@ -1427,6 +1429,7 @@ func TestRecoverKeepLocalPreflightsEveryStrandedRun(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			f := newRecoverFixture(t, types.RunCancelled)
 			tt.setup(f, f.run)
 			time.Sleep(1100 * time.Millisecond)
@@ -1458,6 +1461,7 @@ func TestRecoverKeepLocalPreflightsEveryStrandedRun(t *testing.T) {
 }
 
 func TestRecoverMissingHeadRevalidatesGateBeforeStamping(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name       string
 		mutateGate func(*recoverFixture)
@@ -1481,6 +1485,7 @@ func TestRecoverMissingHeadRevalidatesGateBeforeStamping(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			f := newRecoverFixture(t, types.RunCancelled)
 			if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
 				t.Fatal(err)
@@ -1500,6 +1505,7 @@ func TestRecoverMissingHeadRevalidatesGateBeforeStamping(t *testing.T) {
 }
 
 func TestRecoverKeepLocalRefusesDanglingIndependentGateHead(t *testing.T) {
+	t.Parallel()
 	f := newRecoverFixture(t, types.RunCancelled)
 	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
 		t.Fatal(err)

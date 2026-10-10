@@ -37,7 +37,7 @@ func TestAvailableDivergentHeadsOfferNonDiscardingKeepLocal(t *testing.T) {
 	if mustRun(t, f.local, "show-ref") != localRefs || mustRun(t, f.gate, "show-ref") != gateRefs || f.custodyReturned() {
 		t.Fatal("inspection mutated custody or refs")
 	}
-	if refused := f.service.Recover(f.ctx, false, nil); refused.Recovered || refused.Safety != "blocked_recover_diverged" {
+	if refused := f.service.Recover(f.ctx, false, state.Recovery); refused.Recovered || refused.Safety != "blocked_recover_diverged" {
 		t.Fatalf("plain recovery took non-containing head: %#v", refused)
 	}
 	confirmed := f.service.InspectCached(f.ctx)
@@ -270,8 +270,10 @@ func TestConfirmedAvailableHeadsRefuseEvidenceLostDuringConfirmation(t *testing.
 // The confirmed run-to-head set is the preservation contract: a newly stranded
 // run or a changed caller head must require a fresh operator decision.
 func TestConfirmedAvailableHeadsRefuseChangedHeadSet(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"caller", "new-run"} {
 		t.Run(change, func(t *testing.T) {
+			t.Parallel()
 			f := divergentAvailableFixture(t)
 			confirmed := f.service.InspectCached(f.ctx)
 			assertKeepLocalRecoveryOffer(t, confirmed)

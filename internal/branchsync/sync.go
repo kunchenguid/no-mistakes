@@ -682,8 +682,8 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool, confirmed *Recove
 		return refusal
 	}
 	state, run, _ := s.inspect(ctx)
-	if confirmed != nil && confirmed.Source == "available_heads" {
-		if !keepLocal || !reflect.DeepEqual(confirmed, state.Recovery) {
+	if keepLocal && confirmed != nil && confirmed.Source == "available_heads" {
+		if !reflect.DeepEqual(confirmed, state.Recovery) {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the confirmed available-head custody proof changed; no files or refs were changed")
 		}
 	}
