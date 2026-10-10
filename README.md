@@ -117,7 +117,7 @@ Every change runs through the same pipeline. Pick the entry point that fits how 
 - **`no-mistakes`** - the TUI. Run it after making changes (no commit needed) and a wizard walks you through creating a branch, committing, and pushing through the gate, then attaches to the run. `no-mistakes -y` does all of that automatically.
 - **`/no-mistakes`** - the agent skill. Tell the coding agent to do a task and gate it with `/no-mistakes <task>`, or use bare `/no-mistakes` to gate existing committed work. It runs the pipeline, has the pipeline apply safe fixes, and stops to ask you about anything that needs a human call.
 
-`no-mistakes init` installs the `/no-mistakes` skill for Claude Code and other agents. Under the hood the skill drives `no-mistakes axi`, a non-interactive TOON interface to the same approval flow.
+See the [`init` reference](https://kunchenguid.github.io/no-mistakes/reference/cli/#no-mistakes-init) for agent skill installation options. Under the hood the skill drives `no-mistakes axi`, a non-interactive TOON interface to the same approval flow.
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 

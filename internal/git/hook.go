@@ -19,10 +19,6 @@ var runGit = RunBare
 const gateConfigStampFile = "no-mistakes-gate-config"
 const preservedPreReceiveHook = "pre-receive.no-mistakes-user"
 
-// PreReceiveHookScript returns the fail-closed admission hook that runs before
-// Git mutates any managed gate ref. The daemon authenticates the hook process's
-// ancestry, so a validation-step descendant cannot bypass CLI guards with a
-// direct push.
 func receiveHookOwner(bareDir string) (string, string, string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -50,6 +46,9 @@ func receiveHookOwner(bareDir string) (string, string, string, error) {
 	return exe, gate, comparisonGate, nil
 }
 
+// receiveHookComparisonPath converts the enrolled path to the receiving shell's
+// spelling before rendering the hook, avoiding a PATH-selected converter during
+// a push that could disguise a copied hook's receiving gate.
 func receiveHookComparisonPath(gate, goos string) (string, error) {
 	if goos != "windows" {
 		return gate, nil
@@ -70,6 +69,11 @@ func windowsGateComparisonPath(gate string) (string, error) {
 	}
 	return "", fmt.Errorf("resolve Git for Windows gate path: unsupported path %q", gate)
 }
+
+// PreReceiveHookScript returns the fail-closed admission hook that runs before
+// Git mutates any managed gate ref. The daemon authenticates the hook process's
+// ancestry, so a validation-step descendant cannot bypass CLI guards with a
+// direct push.
 func PreReceiveHookScript(bareDir string) (string, error) {
 	exe, gate, comparisonGate, err := receiveHookOwner(bareDir)
 	if err != nil {

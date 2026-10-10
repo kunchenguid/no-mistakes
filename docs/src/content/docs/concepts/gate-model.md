@@ -37,11 +37,11 @@ When you run `no-mistakes init` in a repo:
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
 6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
-7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
+7. Agent skill installation and its opt-out follow the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init).
 8. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.
-If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
+If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, and origin/default-branch metadata are repaired or updated where needed.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
 If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
@@ -234,8 +234,10 @@ An existing custom `pre-receive` hook is preserved and runs after admission.
 At init or refresh, both managed hooks pin the canonical gate path, its owning
 `NM_HOME`, and the exact `no-mistakes` executable that enrolled the gate.
 At invocation, each hook reads `GIT_DIR` from Git, resolves the physical path,
-and requires it to match the enrolled gate. This prevents a copied hook from
-authorizing or notifying for a different repository. The hooks do not select an
+and requires it to match the enrolled gate. On Git for Windows, enrollment
+embeds a comparison path in the shell's spelling for both drive-letter and UNC
+gate paths. This prevents a copied hook from authorizing or notifying for a
+different repository. The hooks do not select an
 owner from the pushing shell's `PATH`, `NM_HOME`, working directory, or a
 PATH-selected Git executable. Refresh records the binary-and-root pair in the
 gate stamp. If the enrolled executable or receiving gate cannot be verified,
