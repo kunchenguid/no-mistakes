@@ -363,6 +363,23 @@ type PRContentReader interface {
 	GetPRContent(ctx context.Context, pr *PR) (PRContent, error)
 }
 
+// MediaUploader is an optional interface for uploading a local image or video
+// from the Test step's evidence. evidenceRoot is the run's evidence directory.
+// It returns a validated upload URL, absolute on GitHub and project-relative
+// on GitLab. On error the caller keeps the artifact's existing rendering.
+type MediaUploader interface {
+	UploadMedia(ctx context.Context, path, evidenceRoot string) (string, error)
+}
+
+// RepositoryFileLinker builds blob and raw file URL prefixes, free of
+// credentials, from a registered source or push-target remote. SSH aliases
+// resolve to the host's forge identity. Both prefixes end in "/", and callers
+// append a commit SHA and an escaped repository-relative path. ok is false for
+// an unsupported or ambiguous repository, so its evidence branch is not pushed.
+type RepositoryFileLinker interface {
+	RepositoryFileLinks(remoteURL string) (blobPrefix, rawPrefix string, ok bool)
+}
+
 // MergedProof is provider evidence that a specific PR head was merged.
 type MergedProof struct {
 	Merged         bool

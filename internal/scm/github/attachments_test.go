@@ -244,18 +244,18 @@ func TestUserAssetClientUploadFileRejectsUnexpectedURL(t *testing.T) {
 	}
 }
 
-func TestHostUploadUserAssetSkipsGHES(t *testing.T) {
+func TestHostUploadMediaSkipsGHES(t *testing.T) {
 	t.Parallel()
 	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		t.Fatalf("GHES must not call %s %s", name, strings.Join(args, " "))
 		return exec.CommandContext(ctx, "false")
 	}, func() bool { return true }, "ghe.example.com", "ghe.example.com/test/repo")
-	if _, err := host.UploadUserAsset(context.Background(), "dot.png"); err == nil || !strings.Contains(err.Error(), "Enterprise Server") {
+	if _, err := host.UploadMedia(context.Background(), "dot.png", ""); err == nil || !strings.Contains(err.Error(), "Enterprise Server") {
 		t.Fatalf("error = %v, want GHES refusal", err)
 	}
 }
 
-func TestHostUploadUserAssetSkipsInstallationToken(t *testing.T) {
+func TestHostUploadMediaSkipsInstallationToken(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	png := filepath.Join(dir, "dot.png")
@@ -265,13 +265,13 @@ func TestHostUploadUserAssetSkipsInstallationToken(t *testing.T) {
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
 		"gh auth token --hostname github.com": {stdout: "ghs_installation\n"},
 	}), func() bool { return true }, "github.com", "test/repo")
-	_, err := host.UploadUserAsset(context.Background(), png)
+	_, err := host.UploadMedia(context.Background(), png, dir)
 	if err == nil || !strings.Contains(err.Error(), "installation") {
 		t.Fatalf("error = %v, want installation-token refusal", err)
 	}
 }
 
-func TestHostUploadUserAssetUploadsWithOAuthToken(t *testing.T) {
+func TestHostUploadMediaUploadsWithOAuthToken(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	png := filepath.Join(dir, "dot.png")
@@ -302,9 +302,9 @@ func TestHostUploadUserAssetUploadsWithOAuthToken(t *testing.T) {
 	host.assetHTTP = server.Client()
 	host.assetUploadPrefix = server.URL + "/"
 
-	url, err := host.UploadUserAsset(context.Background(), png)
+	url, err := host.UploadMedia(context.Background(), png, dir)
 	if err != nil {
-		t.Fatalf("UploadUserAsset: %v", err)
+		t.Fatalf("UploadMedia: %v", err)
 	}
 	if !strings.Contains(url, "user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") {
 		t.Fatalf("url = %q", url)

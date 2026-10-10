@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -1161,7 +1163,8 @@ func TestBuildPRTestingSummary_SeparatesDetailsFromAdjacentAttachments(t *testin
 				"rec.mp4":  "https://github.com/user-attachments/assets/rec",
 			}
 
-			md := buildPRTestingSummary(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil, scm.ProviderUnknown, attachments)
+			sctx := &pipeline.StepContext{Ctx: context.Background(), Repo: &db.Repo{UpstreamURL: "git@github.com:example/widgets.git"}, Run: &db.Run{HeadSHA: "abc123"}, WorkDir: t.TempDir()}
+			md := buildPRTestingSummary(sctx, steps, rounds, nil, scm.ProviderUnknown, attachments)
 
 			if !strings.Contains(md, tt.want) {
 				t.Errorf("expected %q, got:\n%s", tt.want, md)

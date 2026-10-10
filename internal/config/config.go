@@ -1067,10 +1067,9 @@ type TestRaw struct {
 type EvidenceRaw struct {
 	StoreInRepo *bool `yaml:"store_in_repo"`
 	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// when the PR body is rendered. It defaults on so default-config PRs stop
-	// citing local disk paths for screenshots; set false to opt out. The
-	// orphan-branch store (store_in_repo) is independent: when both are on,
-	// the PR body carries both the commit-pinned link and the attachment.
+	// or GitLab project uploads when the PR or MR body is rendered. It defaults
+	// on; set it false to opt out. store_in_repo also turns uploads on, and when
+	// both apply the body shows the attachment next to its commit-pinned link.
 	// Like store_in_repo, this is pushed-readable.
 	AttachMedia *bool   `yaml:"attach_media"`
 	Dir         *string `yaml:"dir"`
@@ -1106,14 +1105,14 @@ type Test struct {
 	AllowApproveOverFailure string
 }
 
-// Evidence is the resolved test-evidence config. When StoreInRepo is true, the
-// run publishes its evidence artifacts to the orphan Branch of the same
-// repository, under Dir, and links them from the pull request body. Evidence
-// never enters the pushed code branch, so it never reaches the default
-// branch's history. Otherwise evidence stays on local disk under LocalRoot.
-// AttachMedia (default true) additionally uploads image and video artifacts to
-// GitHub user-attachments at PR render time so remote reviewers can open them
-// without an evidence branch. Text artifacts stay inlined or locally cited.
+// Evidence is the resolved test-evidence config. Evidence is always written to
+// local disk under LocalRoot. When StoreInRepo is true for a GitHub.com or
+// GitLab repository, the run also publishes its artifacts to the orphan Branch
+// of the same repository, under Dir, and links them from the PR or MR body.
+// Evidence never enters the pushed code branch, so it never reaches the
+// default branch's history. AttachMedia (default true) uploads image and video
+// artifacts to GitHub user-attachments or GitLab project uploads when the body
+// is rendered. Text artifacts stay inlined or locally cited.
 type Evidence struct {
 	StoreInRepo bool
 	AttachMedia bool
@@ -1552,13 +1551,13 @@ intent:
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept on local
 # disk under <NM_HOME>/evidence. attach_media (default true) uploads image and
-# video artifacts to GitHub user-attachments when the PR is rendered so remote
-# reviewers can open them; text artifacts stay inlined. Opt in to
-# store_in_repo to also publish the full directory to an orphan evidence branch
-# in the same repository and link it from the PR body. The evidence branch
-# shares no history with your code branches, so artifacts never enter the
-# pushed branch or the default branch. When both are on, the PR body carries
-# both the attachment and the commit-pinned link.
+# video artifacts to GitHub user-attachments or GitLab project uploads when
+# the PR or MR is rendered; text artifacts stay inlined. On GitHub.com and
+# GitLab, opt in to store_in_repo to also publish the full directory to an
+# orphan evidence branch in the same repository and link it from the PR or MR.
+# The evidence branch shares no history with your code branches, so artifacts
+# never enter the pushed branch or the default branch. When both are on, the
+# description carries both the attachment and the commit-pinned link.
 #
 # no-mistakes reaps its own evidence rather than leaving that to an OS temp
 # directory timer: retention ages run directories out (default 14 days) and
@@ -3152,9 +3151,9 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 }
 
 // testDefaults returns the default test-step settings. Orphan-branch evidence
-// publication is opt-in (off by default). GitHub image/video attachments at PR
-// render time are on by default so remote reviewers can open screenshots
-// without that branch.
+// publication is opt-in (off by default). Image and video uploads at PR render
+// time are on by default so remote reviewers can open screenshots without that
+// branch.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{

@@ -21,9 +21,9 @@ import (
 // PRStep creates or updates a pull request via the provider CLI or API.
 type PRStep struct {
 	// mediaUploader uploads image/video evidence at PR render time. Nil uses
-	// the GitHub host's user-attachments client. Tests inject a stub so they
-	// never talk to live GitHub.
-	mediaUploader userAssetUploader
+	// the forge host from buildHost. Tests inject a stub so they never talk to
+	// a live forge.
+	mediaUploader scm.MediaUploader
 }
 
 type prContent struct {
@@ -645,7 +645,7 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 	if owned && provider == scm.ProviderBitbucket && pipelineMD != "" {
 		pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
 	}
-	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds))
+	testingMD = buildPRTestingSummary(sctx, steps, rounds, publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds))
 	return pipelineMD, riskLine, testingMD
 }
 
@@ -1264,11 +1264,11 @@ func pipelineUpdatesOmissionMarker(omitted int) string {
 	if omitted == 1 {
 		rounds = "round"
 	}
-	return fmt.Sprintf("_... (%d earlier update %s omitted to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", omitted, rounds, githubPullRequestBodyHardLimitChars)
+	return fmt.Sprintf("_... (%d earlier update %s omitted to keep the description within its %d-byte body budget; full history is in the run log.)_", omitted, rounds, maxPullRequestBodyBytes)
 }
 
 func pipelineLatestUpdateTruncationMarker() string {
-	return fmt.Sprintf("_... (latest pipeline update truncated to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", githubPullRequestBodyHardLimitChars)
+	return fmt.Sprintf("_... (latest pipeline update truncated to keep the description within its %d-byte body budget; full history is in the run log.)_", maxPullRequestBodyBytes)
 }
 
 func truncateEssentialPRBodyIfNeeded(body string) string {
@@ -1279,7 +1279,7 @@ func truncateEssentialPRBodyIfNeeded(body string) string {
 }
 
 func essentialPRBodyTruncationMarker() string {
-	return fmt.Sprintf("_... (body truncated to keep the PR body within GitHub's %d-char limit.)_", githubPullRequestBodyHardLimitChars)
+	return fmt.Sprintf("_... (body truncated to keep the description within its %d-byte body budget.)_", maxPullRequestBodyBytes)
 }
 
 func truncatePRBodySections(body string, maxBytes int, marker string) string {

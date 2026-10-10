@@ -2,6 +2,7 @@ package steps
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -15,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -86,8 +88,9 @@ type testingArtifactRenderState struct {
 
 type testingSummaryOptions struct {
 	flavor               prBodyFlavor
-	githubBlobBase       string
-	githubRawBase        string
+	provider             scm.Provider
+	repoBlobBase         string
+	repoRawBase          string
 	includeTestedDetails bool
 	compactArtifacts     bool
 	summaryParagraph     bool
@@ -102,9 +105,9 @@ type testingSummaryOptions struct {
 	// branch. It is nil when nothing was published, and the artifacts then
 	// render as local paths rather than as links that would not resolve.
 	evidence *evidenceLinks
-	// attachments maps a local evidence path to a GitHub user-attachments URL
-	// uploaded at PR render time. Nil means nothing was uploaded; the renderer
-	// then keeps today's local-path or commit-pinned link.
+	// attachments maps a local evidence path to the forge's validated upload
+	// URL. Nil means nothing was uploaded; the renderer then keeps the
+	// local-path or commit-pinned link.
 	attachments map[string]string
 }
 
@@ -347,17 +350,22 @@ func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.St
 }
 
 func BuildTestingSummaryForPRWithProvider(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider) string {
-	return buildPRTestingSummary(steps, rounds, upstreamURL, ref, repoRoot, evidenceRoot, links, provider, nil)
+	sctx := &pipeline.StepContext{
+		Ctx: context.Background(), Repo: &db.Repo{UpstreamURL: upstreamURL},
+		Run: &db.Run{HeadSHA: ref}, WorkDir: repoRoot, EvidenceDir: evidenceRoot,
+	}
+	return buildPRTestingSummary(sctx, steps, rounds, links, provider, nil)
 }
 
-func buildPRTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider, attachments map[string]string) string {
-	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
+func buildPRTestingSummary(sctx *pipeline.StepContext, steps []*db.StepResult, rounds map[string][]*db.StepRound, links *evidenceLinks, provider scm.Provider, attachments map[string]string) string {
+	opts := testingSummaryOptionsForRepository(sctx, provider)
 	opts.flavor = prBodyFlavorFor(provider)
+	opts.provider = provider
 	opts.compactArtifacts = true
 	opts.summaryParagraph = true
 	opts.omitOutcome = true
-	opts.repoRoot = repoRoot
-	opts.evidenceRoot = evidenceRoot
+	opts.repoRoot = sctx.WorkDir
+	opts.evidenceRoot = sctx.EvidenceDir
 	opts.evidence = links
 	opts.attachments = attachments
 	return buildTestingSummary(steps, rounds, opts)
@@ -453,9 +461,15 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 }
 
 func needsArtifactBlockSeparator(previous, current string) bool {
-	previousEndsDetails := strings.HasSuffix(strings.TrimSpace(previous), "</details>")
-	currentStartsDetails := strings.HasPrefix(strings.TrimSpace(current), "<details>")
-	return previousEndsDetails != currentStartsDetails
+	previous = strings.TrimSpace(previous)
+	current = strings.TrimSpace(current)
+	previousEndsDetails := strings.HasSuffix(previous, "</details>")
+	currentStartsDetails := strings.HasPrefix(current, "<details>")
+	if previousEndsDetails != currentStartsDetails {
+		return true
+	}
+	lastLine := previous[strings.LastIndexByte(previous, '\n')+1:]
+	return strings.HasPrefix(lastLine, "- ") && !strings.HasPrefix(current, "- ")
 }
 
 func shouldRenderTestingOutcome(opts testingSummaryOptions, wroteSummary bool, outcome string) bool {
@@ -483,45 +497,22 @@ func writeTestingSummary(b *strings.Builder, rendered string, opts testingSummar
 	b.WriteString("\n")
 }
 
-func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptions {
-	repoPath := githubRepoPath(upstreamURL)
-	ref = strings.TrimSpace(ref)
-	if repoPath == "" || ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
+func testingSummaryOptionsForRepository(sctx *pipeline.StepContext, provider scm.Provider) testingSummaryOptions {
+	ref := strings.TrimSpace(sctx.Run.HeadSHA)
+	if ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
+		return testingSummaryOptions{}
+	}
+	if provider == scm.ProviderUnknown {
+		provider = resolvedProvider(sctx)
+	}
+	blob, raw, supported := repositoryFileLinks(sctx, provider, sctx.Repo.UpstreamURL)
+	if !supported {
 		return testingSummaryOptions{}
 	}
 	return testingSummaryOptions{
-		githubBlobBase:       "https://github.com/" + repoPath + "/blob/" + url.PathEscape(ref) + "/",
-		githubRawBase:        "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/",
-		includeTestedDetails: false,
+		repoBlobBase: blob + url.PathEscape(ref) + "/",
+		repoRawBase:  raw + url.PathEscape(ref) + "/",
 	}
-}
-
-func githubRepoPath(remote string) string {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return ""
-	}
-	if strings.HasPrefix(remote, "git@github.com:") {
-		repo := strings.TrimPrefix(remote, "git@github.com:")
-		return cleanGitHubRepoPath(repo)
-	}
-	parsed, err := url.Parse(remote)
-	if err != nil || !strings.EqualFold(parsed.Host, "github.com") {
-		return ""
-	}
-	return cleanGitHubRepoPath(strings.TrimPrefix(parsed.Path, "/"))
-}
-
-func cleanGitHubRepoPath(repo string) string {
-	repo = strings.TrimSuffix(strings.TrimSpace(repo), ".git")
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return ""
-	}
-	if strings.ContainsAny(repo, "\n\r <>[]()\\") || strings.Contains(repo, "..") {
-		return ""
-	}
-	return url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
 }
 
 func collectTestingSummary(sr *db.StepResult, rounds []*db.StepRound) string {
@@ -743,7 +734,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if caption == "" && !hasFile {
 		if attachment != "" {
 			var b strings.Builder
-			b.WriteString(renderAttachmentMarkdown(artifact, attachment, label))
+			b.WriteString(renderAttachmentMarkdown(artifact, attachment, label, opts.provider))
 			if target != "" {
 				b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 			}
@@ -776,7 +767,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if attachment == "" {
 		return folded
 	}
-	return renderAttachmentMarkdown(artifact, attachment, label) + "\n" + folded
+	return renderAttachmentMarkdown(artifact, attachment, label, opts.provider) + "\n" + folded
 }
 
 func (opts testingSummaryOptions) attachmentURL(artifact types.TestArtifact) string {
@@ -789,8 +780,8 @@ func (opts testingSummaryOptions) attachmentURL(artifact types.TestArtifact) str
 	return strings.TrimSpace(opts.attachments[filepath.Clean(artifact.Path)])
 }
 
-func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string) string {
-	if isVideoArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, url) {
+func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string, provider scm.Provider) string {
+	if provider != scm.ProviderGitLab && (isVideoArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, url)) {
 		return url + "\n"
 	}
 	return fmt.Sprintf("![%s](%s)\n", markdownAltText(label), url)
@@ -920,13 +911,13 @@ func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptio
 	if repoPath == "" {
 		return ""
 	}
-	if opts.githubBlobBase == "" || opts.githubRawBase == "" {
+	if opts.repoBlobBase == "" || opts.repoRawBase == "" {
 		return repoPath
 	}
 	if isImageArtifact(artifact.Kind, repoPath) || isVideoArtifact(artifact.Kind, repoPath) {
-		return opts.githubRawBase + repoPath
+		return opts.repoRawBase + joinURLPath("", repoPath)
 	}
-	return opts.githubBlobBase + repoPath
+	return opts.repoBlobBase + joinURLPath("", repoPath)
 }
 
 func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
@@ -937,10 +928,10 @@ func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryO
 	if repoPath == "" {
 		return ""
 	}
-	if opts.githubBlobBase == "" {
+	if opts.repoBlobBase == "" {
 		return repoPath
 	}
-	return opts.githubBlobBase + repoPath
+	return opts.repoBlobBase + joinURLPath("", repoPath)
 }
 
 func sanitizeArtifactPath(target string, opts testingSummaryOptions) string {
@@ -1092,7 +1083,7 @@ func isImageArtifact(kind, target string) bool {
 		return true
 	}
 	lower := strings.ToLower(target)
-	for _, suffix := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"} {
+	for _, suffix := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
 		}
@@ -1105,7 +1096,7 @@ func isVideoArtifact(kind, target string) bool {
 		return true
 	}
 	lower := strings.ToLower(target)
-	for _, suffix := range []string{".mp4", ".webm", ".mov"} {
+	for _, suffix := range []string{".mp4", ".webm", ".mov", ".m4v", ".ogv"} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
 		}

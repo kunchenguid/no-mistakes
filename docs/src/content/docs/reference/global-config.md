@@ -1229,7 +1229,9 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On GitHub.com/GHEC, supported image and video artifacts are also uploaded when the PR is rendered; see `attach_media` below.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. Media uploads are enabled by default on GitHub.com/GHEC and GitLab through `attach_media: true`.
+After upgrading, GitLab now uploads supported image and video evidence to the project's uploads store and embeds it in the merge request description, where earlier versions left local references.
+To opt out, set `attach_media: false` in global or repository config and leave `store_in_repo` off. Evidence-branch publication remains opt-in through `store_in_repo: true` on both forges; enabling it also enables media uploads.
 
 |      |          |
 | ---- | -------- |
@@ -1237,8 +1239,8 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On 
 
 | Field                         | Type     | Default                  | Description                                                                |
 | ----------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence artifacts to the repository's orphan evidence branch |
-| `test.evidence.attach_media`  | `bool`   | `true`                   | Upload image and video evidence to GitHub user-attachments when the PR is rendered |
+| `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence to the repository's orphan evidence branch (GitHub.com and GitLab); also turns on media uploads |
+| `test.evidence.attach_media`  | `bool`   | `true`                   | Upload image and video evidence when rendering a GitHub PR or GitLab MR |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
 | `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
 | `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute directory where run evidence is written on local disk             |
@@ -1247,16 +1249,25 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On 
 
 The test step always collects evidence outside the worktree, so artifacts never enter the branch under validation.
 On GitHub.com and GitHub Enterprise Cloud, image and video artifacts that pass GitHub's attach rules (png, jpg, jpeg, gif, webp, svg, mp4, mov, webm; images at most 10 MiB and videos at most 100 MiB) are uploaded to GitHub user-attachments when the PR body is rendered, unless `attach_media` is false and `store_in_repo` is also false.
-The testing section embeds the returned image markdown or bare video URL so remote reviewers can open the media. Upload is fail-closed: any error, unsupported type, oversize file, GitHub Enterprise Server, non-GitHub forge, or GitHub App/Actions token keeps today's rendering (a commit-pinned evidence-branch link if `store_in_repo` published, otherwise a local path) rather than a dead attachment URL. Text artifacts stay inlined as they are today.
-When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
-When both `attach_media` and `store_in_repo` apply, the testing section carries the user-attachments embed in addition to the commit-pinned git link.
-The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
+On GitHub, the testing section embeds images as Markdown and videos as bare URLs.
+On GitLab, the PR step uploads png, jpg, jpeg, gif, webp, svg, bmp, avif, mp4, webm, mov, m4v, and ogv files to the project's uploads API through `glab`, using the authentication and API settings glab has for that host. Only non-empty regular files inside the run's evidence directory are uploaded, and symbolic links are refused whether they point at a file or a directory. The returned project-relative URL is validated, then rendered with the artifact label as alt text; GitLab turns that image syntax into a video player for video files. The instance's own upload limits apply. The same `attach_media` and `store_in_repo` settings turn uploads on for both forges.
+Uploads are cached per run, path, and content digest, so regenerating the description does not upload unchanged evidence again; a file whose contents changed is uploaded again.
+Uploads fail closed. An upload error or refusal is logged, and the artifact keeps its existing rendering: the commit-pinned evidence-branch link when there is one, otherwise a local reference. A failed upload never blocks PR or MR publication and never inserts a dead or guessed attachment URL.
+Other providers and GitHub Enterprise Server do not support these uploads, and GitHub App or Actions tokens cannot upload GitHub user-attachments. Text artifacts stay inlined.
+When `store_in_repo` is true for a GitHub.com or GitLab repository, the PR step copies the evidence directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when GitHub fork routing is configured), pushes it, and links the artifacts from the description. Text artifacts such as logs and transcripts are still shown inline, with a commit-pinned link to the file added.
+When both `attach_media` and `store_in_repo` apply, the testing section shows the uploaded image or video next to its commit-pinned evidence-branch link.
+The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links are pinned to the evidence commit rather than the branch, so later runs cannot change the evidence referenced by an older description.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 `branch` must be a valid Git branch name; an invalid value fails the config with the offending key and value.
 The publisher never force-pushes. It appends to the fetched evidence-branch tip with a fast-forward push, retries one lost race, and refuses to use the run branch, default branch, or an existing branch whose tip lacks the `.no-mistakes-evidence` marker.
-Publication is also refused when the remote cannot be read or pushed, an artifact exceeds 64 MiB, a run exceeds 500 files or 256 MiB, or another writer wins the retry. The PR body then keeps its local rendering instead of adding links that would not resolve.
-Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
-Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
+Publication is also refused when the remote cannot be read or pushed, an artifact exceeds 64 MiB, a run exceeds 500 files or 256 MiB, or another writer wins the retry. The description then leaves out evidence-branch links that would not resolve; uploaded media attachments may still render.
+Evidence-branch publication supports GitHub.com and GitLab, including self-hosted GitLab and projects in nested groups.
+GitLab links use the project's `/-/blob/<evidence-commit>/...` and `/-/raw/<evidence-commit>/...` routes on the resolved remote host. An HTTP(S) remote keeps its scheme and port; an SSH remote is linked over HTTPS on the default port.
+The URLs never contain credentials, so viewers of a private project sign in to GitLab as usual.
+Tracked code-tree artifacts use the same forge file routes pinned to the run's source head. They are linked from that source revision, not copied into the evidence directory or uploaded from the worktree.
+Other providers, and GitHub hosts other than github.com, are not supported, and no evidence branch is pushed there.
+Enabling `store_in_repo` can push a branch to your remote, so pick a `branch` name your CI workflows do not build.
+The evidence branch is meant to persist: published descriptions link to its commits, and deleting the branch can eventually make those commits unavailable.
 
 #### Local storage and cleanup
 

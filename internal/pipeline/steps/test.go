@@ -204,7 +204,11 @@ Previous test findings to address:
 	reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + planSection + testguidance.Rule
 	evidenceGuidance := fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree: %s", evidenceDir)
 	if sctx.Config.Test.Evidence.StoreInRepo {
-		evidenceGuidance = fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree; they are published to the repository's %s branch automatically and linked from the PR: %s", sctx.Config.Test.Evidence.Branch, evidenceDir)
+		if _, _, supported := repositoryFileLinks(sctx, resolvedProvider(sctx), sctx.Repo.PushURL()); supported {
+			evidenceGuidance += fmt.Sprintf("\n- The PR step tries to publish these files to the repository's orphan evidence branch %s and link them from the PR or MR. If that fails, the description renders them as it would without the branch.", sctx.Config.Test.Evidence.Branch)
+		} else {
+			evidenceGuidance += "\n- This repository's forge has no supported file links, so no orphan evidence branch is published."
+		}
 	}
 	configuredTestCommand := ""
 	for _, result := range baselineResults {

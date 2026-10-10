@@ -9,8 +9,10 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -205,7 +207,8 @@ func TestPublishRunEvidence_InvalidBranchNameFallsBackToLocalPaths(t *testing.T)
 func TestPublishRunEvidence_ProviderWithoutFileLinksPublishesNothing(t *testing.T) {
 	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
-	sctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+	sctx.Repo.UpstreamURL = "https://ghe.example.com/example/widgets.git"
+	sctx.ForgeContext = &forgecontext.Context{Provider: scm.ProviderGitHub, Host: "ghe.example.com"}
 	writeRunEvidence(t, sctx, map[string]string{"cli-run.txt": "it works\n"})
 
 	if links := publishRunEvidence(sctx); links != nil {

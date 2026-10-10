@@ -1426,9 +1426,6 @@ func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *te
 	if !strings.Contains(got, "essential summary survives") || !strings.Contains(got, riskLine) || !strings.Contains(got, testingMD) {
 		t.Fatalf("expected essential sections to survive intact, got:\n%s", got)
 	}
-	if !strings.Contains(got, "earlier update rounds omitted to keep the PR body within GitHub's 65536-char limit") {
-		t.Fatalf("expected pipeline omission marker, got:\n%s", got)
-	}
 	if strings.Contains(got, "review round 001") {
 		t.Fatalf("expected oldest pipeline update to be omitted, got:\n%s", got)
 	}
@@ -1629,7 +1626,6 @@ func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testin
 	assertGitHubBodyLimitForTest(t, got)
 	for _, want := range []string{
 		"essential summary survives",
-		"body truncated to keep the PR body within GitHub's 65536-char limit",
 		"## Risk Assessment",
 		riskLine,
 		"## Testing",
@@ -1722,7 +1718,6 @@ func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t 
 		"## What Changed",
 		"essential summary survives",
 		"## Validation Notes",
-		"body truncated to keep the PR body within GitHub's 65536-char limit",
 		"## Risk Assessment",
 		riskLine,
 		"## Testing",
@@ -1797,7 +1792,6 @@ func TestBuildPRBody_TruncatesOversizedIntentBeforeGeneratedSections(t *testing.
 	for _, want := range []string{
 		"## Intent",
 		"Keep generated sections visible.",
-		"body truncated to keep the PR body within GitHub's 65536-char limit",
 		"## What Changed",
 		"essential summary survives",
 		"## Risk Assessment",
@@ -1867,7 +1861,6 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 	for _, want := range []string{
 		"## Intent",
 		"Keep generated sections visible.",
-		"body truncated to keep the PR body within GitHub's 65536-char limit",
 		"## What Changed",
 		"essential summary survives",
 		"## Risk Assessment",

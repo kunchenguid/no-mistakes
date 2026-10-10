@@ -319,10 +319,11 @@ func userAttachmentHostOK(got, expected string) bool {
 	return got == expected || got == "github.com"
 }
 
-// UploadUserAsset validates path and uploads it as a GitHub user-attachment
-// against this Host's repository. Callers must treat any error as fail-closed:
-// keep today's PR rendering rather than inventing a URL.
-func (h *Host) UploadUserAsset(ctx context.Context, path string) (string, error) {
+// UploadMedia validates path and uploads it as a GitHub user-attachment
+// against this Host's repository. GitHub applies its own file rules and does
+// not use evidenceRoot. Callers must treat any error as fail-closed: keep
+// today's PR rendering rather than inventing a URL.
+func (h *Host) UploadMedia(ctx context.Context, path, _ string) (string, error) {
 	if h == nil {
 		return "", errors.New("GitHub host is not configured")
 	}
