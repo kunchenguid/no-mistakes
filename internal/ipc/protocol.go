@@ -470,17 +470,22 @@ type RunInfo struct {
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
-	ID               string          `json:"id"`
-	RepoID           string          `json:"repo_id"`
-	Branch           string          `json:"branch"`
-	HeadSHA          string          `json:"head_sha"`
-	SubmittedHeadSHA *string         `json:"submitted_head_sha,omitempty"`
-	BaseSHA          string          `json:"base_sha"`
-	Status           types.RunStatus `json:"status"`
-	PRURL            *string         `json:"pr_url,omitempty"`
-	Error            *string         `json:"error,omitempty"`
-	CIReady          bool            `json:"ci_ready,omitempty"`
-	CIReadyNoCI      bool            `json:"ci_ready_no_ci,omitempty"`
+	ID               string  `json:"id"`
+	RepoID           string  `json:"repo_id"`
+	Branch           string  `json:"branch"`
+	HeadSHA          string  `json:"head_sha"`
+	SubmittedHeadSHA *string `json:"submitted_head_sha,omitempty"`
+	// ReviewApprovedHeadSHA is the commit the last completed Review approved.
+	// It is omitted when Review has not recorded an approval, including a
+	// skipped Review and an approval revoked for revalidation. Reporting only:
+	// consumers compare it with head_sha; it does not gate publication.
+	ReviewApprovedHeadSHA *string         `json:"reviewed_head_sha,omitempty"`
+	BaseSHA               string          `json:"base_sha"`
+	Status                types.RunStatus `json:"status"`
+	PRURL                 *string         `json:"pr_url,omitempty"`
+	Error                 *string         `json:"error,omitempty"`
+	CIReady               bool            `json:"ci_ready,omitempty"`
+	CIReadyNoCI           bool            `json:"ci_ready_no_ci,omitempty"`
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`

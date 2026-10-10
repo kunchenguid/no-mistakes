@@ -1177,6 +1177,109 @@ func TestAxiAgentJourney(t *testing.T) {
 	}
 }
 
+// reviewedHeadAfterDocumentScenario completes Review without findings, then
+// has the Document step write a documentation file so the pipeline commits
+// after the review-approved head.
+func reviewedHeadAfterDocumentScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "reviewed-head-scenario.yaml")
+	content := `actions:
+  - match: "Perform the combined documentation and lint housekeeping pass for this change."
+    text: "documentation updated"
+    edits:
+      - path: "docs/reviewed-head.md"
+        new: "# Reviewed head\n"
+    structured:
+      findings: []
+      summary: "note the reviewed head"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
+      artifacts: []
+      title: "feat: fakeagent change"
+      body: "## Summary\nfakeagent canned PR body"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write reviewed-head scenario: %v", err)
+	}
+	return path
+}
+
+func TestAxiStatusShowsReviewedHeadAfterDocumentCommit(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: reviewedHeadAfterDocumentScenario(t)})
+
+	h.CommitChange("init-reviewed-head", "seed.txt", "seed\n", "seed for reviewed-head status")
+	initWorktree := h.AddWorktree("init-reviewed-head")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	h.CommitChange("feature/reviewed-head", "feature.txt", "change\n", "add feature change")
+	fw := h.AddWorktree("feature/reviewed-head")
+	doneOut, err := h.RunInDir(fw, "axi", "run", "--yes", "--intent", "show whether the published head is the head Review approved")
+	if err != nil {
+		t.Fatalf("axi run --yes: %v\n%s", err, doneOut)
+	}
+
+	completed := h.WaitForRun("feature/reviewed-head", 60*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed (error %v)", completed.Status, completed.Error)
+	}
+	if completed.ReviewApprovedHeadSHA == nil || *completed.ReviewApprovedHeadSHA == "" {
+		t.Fatal("completed run has no review-approved head")
+	}
+	if completed.HeadSHA == *completed.ReviewApprovedHeadSHA {
+		t.Fatalf("head %s still equals the review-approved head; Document did not commit", completed.HeadSHA)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	subjects, err := h.runGit(ctx, gateDir, "log", "--format=%s", *completed.ReviewApprovedHeadSHA+".."+completed.HeadSHA)
+	if err != nil {
+		t.Fatalf("log commits after review: %v\n%s", err, subjects)
+	}
+	if !strings.Contains(string(subjects), "no-mistakes(document): note the reviewed head") {
+		t.Fatalf("commits after review = %q, want the Document commit", strings.TrimSpace(string(subjects)))
+	}
+
+	want := []string{
+		"outcome: passed",
+		"head_sha: " + completed.HeadSHA,
+		"reviewed_head_sha: " + *completed.ReviewApprovedHeadSHA,
+		"head_reviewed: false",
+	}
+	for _, field := range want {
+		if !strings.Contains(doneOut, field) {
+			t.Errorf("outcome document missing %q in:\n%s", field, doneOut)
+		}
+	}
+
+	statusOut, err := h.RunInDir(fw, "axi", "status")
+	if err != nil {
+		t.Fatalf("axi status: %v\n%s", err, statusOut)
+	}
+	for _, field := range want[1:] {
+		if !strings.Contains(statusOut, field) {
+			t.Errorf("axi status missing %q in:\n%s", field, statusOut)
+		}
+	}
+}
+
 func TestAxiRunReportsImmediateAgentlessFailureWithoutRerun(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 
