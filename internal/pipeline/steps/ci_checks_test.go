@@ -172,3 +172,50 @@ func TestTerminalFailureCompletionTimesStillCoverFailingChecks(t *testing.T) {
 		t.Fatalf("completion times = %v, want nothing recorded for non-failures", quiet)
 	}
 }
+
+func TestPollIntervalLongPoll(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		elapsed time.Duration
+		want    time.Duration
+	}{
+		{0, 30 * time.Second},
+		{4*time.Minute + 59*time.Second, 30 * time.Second},
+		{5 * time.Minute, 60 * time.Second},
+		{14*time.Minute + 59*time.Second, 60 * time.Second},
+		{15 * time.Minute, 300 * time.Second},
+		{3 * time.Hour, 300 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := pollInterval(tc.elapsed); got != tc.want {
+			t.Fatalf("pollInterval(%v) = %v, want %v", tc.elapsed, got, tc.want)
+		}
+	}
+}
+
+func TestJitteredPollIntervalBounds(t *testing.T) {
+	t.Parallel()
+
+	const lo, hi = 240 * time.Second, 360 * time.Second
+	for _, unit := range []float64{0, 0.001, 0.25, 0.5, 0.75, 0.999999} {
+		got := jitteredPollInterval(300*time.Second, unit)
+		if got < lo || got > hi {
+			t.Fatalf("jitteredPollInterval(300s, %v) = %v, want within [%v, %v]", unit, got, lo, hi)
+		}
+	}
+	if got := jitteredPollInterval(300*time.Second, 0); got != lo {
+		t.Fatalf("lowest draw = %v, want %v", got, lo)
+	}
+	if got := jitteredPollInterval(300*time.Second, 0.5); got != 300*time.Second {
+		t.Fatalf("middle draw = %v, want exactly 300s", got)
+	}
+	// The early, prompt polls are never jittered.
+	for _, base := range []time.Duration{30 * time.Second, 60 * time.Second} {
+		for _, unit := range []float64{0, 0.5, 0.999999} {
+			if got := jitteredPollInterval(base, unit); got != base {
+				t.Fatalf("jitteredPollInterval(%v, %v) = %v, want unchanged", base, unit, got)
+			}
+		}
+	}
+}

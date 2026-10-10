@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +59,10 @@ func handleFakeCLI(mode string) {
 		}
 	}
 	logFakeCLIStdinBody(args, logFile)
+
+	if strings.HasPrefix(mode, "ci-gh") && fakeGHPollSnapshot(args) {
+		return
+	}
 
 	switch mode {
 	case "gh":
@@ -1209,4 +1214,55 @@ func fakeGraphQLRepo(args []string) string {
 		return ""
 	}
 	return owner + "/" + name
+}
+
+const fakeGHSnapshotFields = "state,mergeable,headRefOid"
+
+// fakeGHPollSnapshot answers the CI poll's single
+// `gh pr view --json state,mergeable,headRefOid` by asking this same fake for
+// each field through the per-field handlers the older tests already shape, so
+// every ci-gh mode keeps its own state, mergeable, and head behavior. The
+// child runs are not logged: one snapshot is one `pr view` in FAKE_CLI_LOG.
+// It reports false when args are not a snapshot request.
+func fakeGHPollSnapshot(args []string) bool {
+	if len(args) < 3 || args[0] != "pr" || args[1] != "view" {
+		return false
+	}
+	fieldsAt := -1
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--json" && args[i+1] == fakeGHSnapshotFields {
+			fieldsAt = i + 1
+		}
+	}
+	if fieldsAt < 0 {
+		return false
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	values := map[string]string{}
+	for _, field := range []string{"state", "mergeable", "headRefOid"} {
+		childArgs := append([]string{}, args...)
+		childArgs[fieldsAt] = field
+		childArgs = append(childArgs, "--jq", "."+field)
+		cmd := exec.Command(exe, childArgs...)
+		cmd.Args[0] = os.Args[0]
+		cmd.Env = append(os.Environ(), "FAKE_CLI_LOG=")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprint(os.Stderr, stderr.String())
+			os.Exit(1)
+		}
+		values[field] = strings.TrimSpace(stdout.String())
+	}
+	payload, err := json.Marshal(values)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(payload))
+	return true
 }

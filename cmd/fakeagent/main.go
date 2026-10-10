@@ -121,6 +121,10 @@ func runGhForkPRStub(args []string) int {
 		return 0
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
+		if hasArgValue(args, "--json", "state,mergeable,headRefOid") {
+			fmt.Println(`{"state":"MERGED","mergeable":"MERGEABLE","headRefOid":""}`)
+			return 0
+		}
 		if hasArgValue(args, "--json", "state") {
 			fmt.Println("MERGED")
 			return 0

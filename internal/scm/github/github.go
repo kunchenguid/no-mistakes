@@ -34,6 +34,9 @@ type Host struct {
 	// http.DefaultClient against uploads.github.com (or uploads.<ghec-host>).
 	assetHTTP         *http.Client
 	assetUploadPrefix string
+	// rateLimitSleep replaces the real wait between secondary-rate-limit
+	// retries (see runRead) in tests. Production leaves it nil.
+	rateLimitSleep func(ctx context.Context, d time.Duration) error
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
@@ -265,8 +268,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		jsonFields = "number,url,baseRefName,headRefName,headRepositoryOwner"
 	}
 	args = append(args, "--state", "open", "--json", jsonFields)
-	cmd := h.cmd(ctx, "gh", args...)
-	out, detail, err := stdoutOnly(cmd)
+	out, detail, err := h.runRead(ctx, false, args...)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list: %s: %w", detail, err)
 	}
@@ -431,12 +433,40 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "state", "--jq", ".state")
-	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.Output()
+	out, _, err := h.runRead(ctx, false, args...)
 	if err != nil {
 		return "", fmt.Errorf("gh pr view: %w", err)
 	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
+}
+
+// GetPRPollSnapshot reads the PR's state, mergeability, and head commit with
+// one `gh pr view`, which is what the CI poll needs and used to spend four
+// requests on.
+func (h *Host) GetPRPollSnapshot(ctx context.Context, pr *scm.PR) (scm.PRPollSnapshot, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return scm.PRPollSnapshot{}, err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "state,mergeable,headRefOid")
+	out, _, err := h.runRead(ctx, false, args...)
+	if err != nil {
+		return scm.PRPollSnapshot{}, fmt.Errorf("gh pr view: %w", err)
+	}
+	var parsed struct {
+		State      string `json:"state"`
+		Mergeable  string `json:"mergeable"`
+		HeadRefOid string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return scm.PRPollSnapshot{}, fmt.Errorf("parse gh pr view: %w", err)
+	}
+	return scm.PRPollSnapshot{
+		State:     normalizePRState(strings.TrimSpace(parsed.State)),
+		Mergeable: normalizeMergeableState(strings.TrimSpace(parsed.Mergeable)),
+		HeadSHA:   strings.TrimSpace(parsed.HeadRefOid),
+	}, nil
 }
 
 func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
@@ -459,10 +489,16 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		return nil, err
 	}
 	headSHA := ""
+	polledHead := strings.TrimSpace(pr.PollHeadSHA)
 	if strings.TrimSpace(pr.HeadSHA) != "" {
-		headSHA, err = h.getPRHeadSHA(ctx, selector)
-		if err != nil {
-			return nil, err
+		if polledHead != "" {
+			// The poll's own single PR read is the head for this discovery.
+			headSHA = polledHead
+		} else {
+			headSHA, err = h.getPRHeadSHA(ctx, selector)
+			if err != nil {
+				return nil, err
+			}
 		}
 		pr.HeadSHA = headSHA
 	}
@@ -482,12 +518,17 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		}
 		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
 		checks = h.collapseLatestByName(checks)
-		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
-		if err != nil {
-			return nil, err
-		}
-		if currentHeadSHA != headSHA {
-			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+		// A polled head already is this poll's read of the PR, taken moments
+		// before discovery; a move since then shows up in the next poll's
+		// snapshot, so the closing re-read is only paid without one.
+		if polledHead == "" {
+			currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
+			if err != nil {
+				return nil, err
+			}
+			if currentHeadSHA != headSHA {
+				return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+			}
 		}
 	}
 	return checks, nil
@@ -496,8 +537,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, error) {
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt,link")
-	cmd := h.cmd(ctx, "gh", args...)
-	out, detail, err := stdoutOnly(cmd)
+	out, detail, err := h.runRead(ctx, false, args...)
 	if err != nil {
 		if strings.Contains(detail, "no checks reported") {
 			out = []byte("[]")
@@ -560,7 +600,7 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 		if cursor != "" {
 			args = append(args, "-F", "cursor="+cursor)
 		}
-		out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+		out, _, err := h.runRead(ctx, true, args...)
 		if err != nil {
 			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", strings.TrimSpace(string(out)), err)
 		}
@@ -781,7 +821,7 @@ func (h *Host) checkStartedAfter(a, b scm.Check) (bool, bool) {
 func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
-	out, err := h.cmd(ctx, "gh", args...).Output()
+	out, _, err := h.runRead(ctx, false, args...)
 	if err != nil {
 		return "", fmt.Errorf("gh pr view head commit: %w", err)
 	}
@@ -807,7 +847,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		"-f", "per_page=100",
 		"--paginate", "--slurp",
 	)
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	out, _, err := h.runRead(ctx, true, args...)
 	if err != nil {
 		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -1156,8 +1196,7 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "mergeable", "--jq", ".mergeable")
-	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.Output()
+	out, _, err := h.runRead(ctx, false, args...)
 	if err != nil {
 		return "", fmt.Errorf("gh pr view mergeable: %w", err)
 	}

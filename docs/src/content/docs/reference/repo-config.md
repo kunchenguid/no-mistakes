@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -86,6 +86,8 @@ ci:
   rerun_transient: 0
   revalidate_repairs: false
   review_bot_comments: on_failure # or: always
+  instructions: |
+    The macOS job is flaky; do not retry it, fix the cause.
 
 # How a base branch that moved under your branch is integrated.
 # Read only from the trusted default branch.
@@ -835,6 +837,20 @@ Forges that cannot supply review comments are unaffected by either value. Becaus
 
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot silence a green bot's comments on itself, and cannot opt itself in either.
 A value set here wins over the operator's own [`ci.review_bot_comments`](/no-mistakes/reference/global-config/#cireview_bot_comments).
+
+### ci.instructions
+
+Repository-specific guidance for the agent that repairs failing CI checks.
+
+| | |
+| --- | --- |
+| Type | `string` (multiline) |
+| Default | Empty |
+| Trust | Read only from the trusted default branch |
+
+The CI step injects these instructions into the CI-fix prompt only, after the built-in repair rules, so the agent knows what the logs cannot tell it: a check that only fails on one platform, a command that must not be run, or the file that owns a generated artifact.
+They augment the built-in rules and cannot relax them.
+Like [`test.instructions`](#testinstructions), the value is repository-only: it describes one repository's checks, so a global config has nothing to put here, and a pushed branch cannot rewrite the guidance for repairing its own CI.
 
 ### rebase.strategy
 

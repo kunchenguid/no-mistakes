@@ -68,14 +68,74 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 		t.Fatalf("expected cancellation after observing adaptive waits, got %v", err)
 	}
 
-	want := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
-	if len(waits) != len(want) {
-		t.Fatalf("wait count = %d, want %d (%v)", len(waits), len(want), waits)
+	want := []time.Duration{30 * time.Second, 60 * time.Second}
+	if len(waits) != len(want)+1 {
+		t.Fatalf("wait count = %d, want %d (%v)", len(waits), len(want)+1, waits)
 	}
 	for i := range want {
 		if waits[i] != want[i] {
 			t.Fatalf("wait %d = %v, want %v (all waits: %v)", i, waits[i], want[i], waits)
 		}
+	}
+	// Past 15 minutes the poll is 300s +/- 20% so concurrent monitors spread.
+	if long := waits[2]; long < 240*time.Second || long > 360*time.Second {
+		t.Fatalf("long poll = %v, want 300s jittered within [240s, 360s]", long)
+	}
+}
+
+// One poll reads the PR once: state, mergeability and head arrive together,
+// and check discovery reuses that head instead of reading it again.
+func TestCIStep_PollReadsThePROnce(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	env := stepstest.FakeCIGH(t, "OPEN", `[{"name":"build","state":"PENDING","bucket":"pending"}]`)
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	env = append(env, "FAKE_CLI_LOG="+logPath)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		polls++
+		if polls == 3 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	})
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want cancellation after three polls", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read gh log: %v", err)
+	}
+	snapshots, otherPRViews := 0, 0
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.Contains(line, "pr view") && strings.Contains(line, "--json state,mergeable,headRefOid"):
+			snapshots++
+		case strings.Contains(line, "pr view") && (strings.Contains(line, "--json state") ||
+			strings.Contains(line, "--json mergeable") || strings.Contains(line, "--json headRefOid")):
+			otherPRViews++
+		}
+	}
+	if snapshots != polls {
+		t.Fatalf("snapshot reads = %d for %d polls, want one per poll\n%s", snapshots, polls, data)
+	}
+	if otherPRViews != 0 {
+		t.Fatalf("%d separate pr view reads, want none besides the one snapshot per poll\n%s", otherPRViews, data)
 	}
 }
 

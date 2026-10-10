@@ -259,6 +259,7 @@ CI logs:
 	// decision made at an earlier gate, at an earlier run on this branch, or
 	// at the CI step's own gate. The rows are already loaded onto this context
 	// by pipeline.BindBranchDecisions, which the executor runs for every step.
+	prompt += trustedCIInstructionsSection(sctx)
 	prompt += roundHistoryPromptSection(sctx)
 	prompt += userIntentPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
@@ -958,4 +959,19 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 		}
 	}
 	return fmt.Errorf("attestation rebind failed after %d attempts: %w", attempts, lastErr)
+}
+
+// trustedCIInstructionsSection renders ci.instructions for the CI-fix prompt.
+// The text is trusted (default branch) and augments, never replaces, the
+// repair rules above it.
+func trustedCIInstructionsSection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.CI.Instructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\n\nRepository CI-fix instructions (trusted, from the default branch):\n" +
+		sanitizePromptMultilineText(instructions) + "\n"
 }

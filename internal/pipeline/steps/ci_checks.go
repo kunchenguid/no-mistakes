@@ -15,8 +15,20 @@ type lastFixedIssues struct {
 	MergeConflict bool              `json:"mergeConflict,omitempty"`
 }
 
+const (
+	// longPollInterval is the steady-state poll once a run has been monitored
+	// for 15 minutes. It is long because by then a run is waiting on slow
+	// checks or a human, and many monitors share one forge token: the rate of
+	// requests, not the latency of noticing a merge, is what the secondary
+	// rate limit punishes.
+	longPollInterval = 300 * time.Second
+	// longPollJitter is the +/- fraction applied to the long poll so monitors
+	// that started together drift apart instead of polling in lockstep.
+	longPollJitter = 0.2
+)
+
 // pollInterval returns the polling interval based on elapsed time since CI monitoring started.
-// 30s for first 5min, 60s for 5-15min, 120s after.
+// 30s for first 5min, 60s for 5-15min, 300s after (jittered by jitteredPollInterval).
 func pollInterval(elapsed time.Duration) time.Duration {
 	switch {
 	case elapsed < 5*time.Minute:
@@ -24,8 +36,19 @@ func pollInterval(elapsed time.Duration) time.Duration {
 	case elapsed < 15*time.Minute:
 		return 60 * time.Second
 	default:
-		return 120 * time.Second
+		return longPollInterval
 	}
+}
+
+// jitteredPollInterval spreads the long poll over longPollInterval +/-
+// longPollJitter. unit is a draw in [0,1). The short early polls are returned
+// unchanged so a fresh push is still noticed promptly.
+func jitteredPollInterval(base time.Duration, unit float64) time.Duration {
+	if base < longPollInterval {
+		return base
+	}
+	span := float64(base) * longPollJitter
+	return base - time.Duration(span) + time.Duration(2*span*unit)
 }
 
 // hasFailingChecks returns true if any CI check is in the fail bucket.
