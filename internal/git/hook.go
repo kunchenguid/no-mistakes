@@ -54,11 +54,21 @@ func receiveHookComparisonPath(gate, goos string) (string, error) {
 	if goos != "windows" {
 		return gate, nil
 	}
-	volume := filepath.VolumeName(gate)
-	if len(volume) != 2 || volume[1] != ':' {
-		return "", fmt.Errorf("resolve Git for Windows gate path: unsupported volume %q", volume)
+	return windowsGateComparisonPath(gate)
+}
+
+func windowsGateComparisonPath(gate string) (string, error) {
+	posix := strings.ReplaceAll(gate, `\`, "/")
+	if len(posix) >= 3 && ((posix[0] >= 'A' && posix[0] <= 'Z') || (posix[0] >= 'a' && posix[0] <= 'z')) && posix[1:3] == ":/" {
+		return "/" + strings.ToLower(posix[:1]) + posix[2:], nil
 	}
-	return "/" + strings.ToLower(volume[:1]) + filepath.ToSlash(strings.TrimPrefix(gate, volume)), nil
+	if strings.HasPrefix(posix, "//") {
+		parts := strings.Split(strings.TrimLeft(posix, "/"), "/")
+		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+			return "//" + strings.Join(parts, "/"), nil
+		}
+	}
+	return "", fmt.Errorf("resolve Git for Windows gate path: unsupported path %q", gate)
 }
 func PreReceiveHookScript(bareDir string) (string, error) {
 	exe, gate, comparisonGate, err := receiveHookOwner(bareDir)
@@ -97,9 +107,8 @@ exit 0
 }
 
 // receivingGateResolverScript resolves the repository that invoked the hook
-// from Git's receive-hook environment. It validates the managed path shape
-// before comparing it with the canonical gate selected at enrollment. It does
-// not invoke a PATH-selected Git executable, which could misreport the target.
+// from Git's receive-hook environment and compares it with the canonical gate
+// selected at enrollment.
 func receivingGateResolverScript() string {
 	return `RECEIVE_GATE=
 RECEIVE_GATE_ERROR=
@@ -122,17 +131,6 @@ resolve_receiving_gate() {
     RECEIVE_GATE_ERROR='cannot resolve receiving Git gate path'
     return 1
   }
-  receive_gate_parent=${RECEIVE_GATE%/*}
-  receive_gate_parent_name=${receive_gate_parent##*/}
-  receive_gate_name=${RECEIVE_GATE##*/}
-  case "$receive_gate_name" in
-    *.git) receive_gate_id=${receive_gate_name%.git} ;;
-    *) receive_gate_id= ;;
-  esac
-  if [ "$receive_gate_parent_name" != repos ] || [ -z "$receive_gate_id" ]; then
-    RECEIVE_GATE_ERROR="cannot derive the gate home for $RECEIVE_GATE (expected <root>/repos/<id>.git)"
-    return 1
-  fi
   if [ "$RECEIVE_GATE" != "$GATE_COMPARE_DIR" ]; then
     RECEIVE_GATE_ERROR="receiving gate $RECEIVE_GATE does not match enrolled gate $GATE_COMPARE_DIR"
     return 1

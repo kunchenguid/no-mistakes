@@ -28,6 +28,32 @@ func hookTestGate(t *testing.T) string {
 	return gate
 }
 
+func TestWindowsGateComparisonPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gate string
+		want string
+	}{
+		{name: "drive letter", gate: `C:\Users\runner\nm\repos\repo.git`, want: "/c/Users/runner/nm/repos/repo.git"},
+		{name: "UNC", gate: `\\server\share\nm\repos\repo.git`, want: "//server/share/nm/repos/repo.git"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := windowsGateComparisonPath(tc.gate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("windowsGateComparisonPath(%q) = %q, want %q", tc.gate, got, tc.want)
+			}
+		})
+	}
+	for _, path := range []string{`relative\repos\repo.git`, `\\server`} {
+		if _, err := windowsGateComparisonPath(path); err == nil {
+			t.Errorf("windowsGateComparisonPath(%q) unexpectedly succeeded", path)
+		}
+	}
+}
+
 // The selected hook owner must survive a pushing shell's unrelated runtime
 // and PATH. Execute the generated shell rather than checking only its text.
 func TestReceiveHooksKeepEnrolledOwner(t *testing.T) {
@@ -92,6 +118,13 @@ func TestReceiveHooksRefuseCopiedHook(t *testing.T) {
 				}
 			}
 			marker := filepath.Join(base, "owner-executed")
+			poisonDir := filepath.Join(base, "bin")
+			if err := os.Mkdir(poisonDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(poisonDir, "cygpath"), []byte("#!/bin/sh\nprintf '%s\\n' "+shellSingleQuote(canonicalHookGate(t, receivingGate))+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			bin := filepath.Join(base, "fake-no-mistakes")
 			if err := os.WriteFile(bin, []byte("#!/bin/sh\n: > "+shellSingleQuote(marker)+"\n"), 0o755); err != nil {
 				t.Fatal(err)
@@ -107,7 +140,7 @@ func TestReceiveHooksRefuseCopiedHook(t *testing.T) {
 
 			cmd := exec.Command("/bin/sh", hook)
 			cmd.Dir = receivingGate
-			cmd.Env = []string{"GIT_DIR=" + receivingGate}
+			cmd.Env = []string{"GIT_DIR=" + receivingGate, "PATH=" + poisonDir + string(os.PathListSeparator) + os.Getenv("PATH")}
 			cmd.Stdin = strings.NewReader("old new refs/heads/feature\n")
 			out, err := cmd.CombinedOutput()
 			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
@@ -268,52 +301,6 @@ func TestReceiveHooksResolveSymlinkedGateAtEnrollment(t *testing.T) {
 	physicalRoot := filepath.Dir(filepath.Dir(physicalGate))
 	if !strings.Contains(string(got), physicalRoot) || !strings.Contains(string(got), physicalGate) {
 		t.Fatalf("hook did not invoke enrolled owner for %s: %s", physicalGate, got)
-	}
-}
-
-func TestCopiedReceiveHookCannotUsePATHConverter(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("receive hooks require /bin/sh")
-	}
-	base := t.TempDir()
-	ownedGate := filepath.Join(base, "owned", "repos", "owned.git")
-	receivingGate := filepath.Join(base, "receiving", "repos", "receiving.git")
-	for _, gate := range []string{ownedGate, receivingGate} {
-		if err := InitBare(context.Background(), gate); err != nil {
-			t.Fatal(err)
-		}
-	}
-	marker := filepath.Join(base, "owner-invoked")
-	fakeBin := filepath.Join(base, "owner-bin")
-	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\n: > "+shellSingleQuote(marker)+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	poisonDir := filepath.Join(base, "bin")
-	if err := os.Mkdir(poisonDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	poison := filepath.Join(poisonDir, "cygpath")
-	if err := os.WriteFile(poison, []byte("#!/bin/sh\nprintf '%s\\n' "+shellSingleQuote(canonicalHookGate(t, receivingGate))+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	hookPath := filepath.Join(receivingGate, "hooks", "post-receive")
-	script := postReceiveHookScript(fakeBin, canonicalHookGate(t, ownedGate), canonicalHookGate(t, ownedGate))
-	if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("/bin/sh", hookPath)
-	cmd.Dir = receivingGate
-	cmd.Env = append(os.Environ(), "GIT_DIR=.", "PATH="+poisonDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cmd.Stdin = strings.NewReader("old new refs/heads/main\n")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("post-receive should preserve accepted update: %v: %s", err, out)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("copied hook invoked enrolled binary through PATH conversion: %v", err)
-	}
-	if !strings.Contains(string(out), "does not match enrolled gate") {
-		t.Fatalf("copied hook did not refuse the receiving gate: %s", out)
 	}
 }
 
