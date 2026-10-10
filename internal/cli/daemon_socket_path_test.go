@@ -70,7 +70,14 @@ func TestPreReceiveHookThroughShortLinkReportsPhysicalSocketPathTooLong(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := git.PreReceiveHookScript()
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := git.PreReceiveHookScript(gate)
+	if err != nil {
+		t.Fatal(err)
+	}
 	script = strings.Replace(script, "NM_BIN='"+exe+"'", "NM_BIN='"+bin+"'", 1)
 	if !strings.Contains(script, "NM_BIN='"+bin+"'") {
 		t.Fatal("hook script does not point at the built binary")
@@ -91,7 +98,7 @@ func TestPreReceiveHookThroughShortLinkReportsPhysicalSocketPathTooLong(t *testi
 
 	cmd := exec.Command("/bin/sh", hook)
 	cmd.Dir = linkedGate
-	cmd.Env = append(os.Environ(), "PWD="+linkedGate, "NM_HOME="+link)
+	cmd.Env = append(os.Environ(), "PWD="+linkedGate, "NM_HOME="+link, "GIT_DIR="+linkedGate)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("hook should refuse the push; output %q", out)

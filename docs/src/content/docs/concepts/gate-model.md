@@ -231,11 +231,23 @@ validation step before mutation, including direct pushes, and safely omits run
 or phase details when authenticated ancestry cannot identify them uniquely.
 An existing custom `pre-receive` hook is preserved and runs after admission.
 
+At init or refresh, both managed hooks pin the canonical gate path, its owning
+`NM_HOME`, and the exact `no-mistakes` executable that enrolled the gate.
+At invocation, each hook reads `GIT_DIR` from Git, resolves the physical path,
+and requires it to match the enrolled gate. This prevents a copied hook from
+authorizing or notifying for a different repository. The hooks do not select an
+owner from the pushing shell's `PATH`, `NM_HOME`, working directory, or a
+PATH-selected Git executable. Refresh records the binary-and-root pair in the
+gate stamp. If the enrolled executable or receiving gate cannot be verified,
+pre-receive refuses the update before refs change. A post-receive notification
+failure is logged in the resolved receiving gate, or in the enrolled gate when
+Git's receiving path cannot be resolved, and shown to the pusher. The already
+accepted Git update remains in place.
+
 When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
-fires. It resolves the gate to an absolute bare-repo path using Git's own view
-of the repository, falling back to the hook location if needed, then calls
-`no-mistakes daemon notify-push` with that gate path, ref name, old/new SHAs,
-and any Git push options such as `no-mistakes.skip=test,lint`.
+calls the enrolled `no-mistakes daemon notify-push` with the pinned gate path,
+ref name, old/new SHAs, and any Git push options such as
+`no-mistakes.skip=test,lint`.
 For compatibility with older managed hooks, `notify-push` also normalizes
 relative gate paths before handing them to the daemon.
 The post-receive hook never blocks an already admitted push - Git ignores its
