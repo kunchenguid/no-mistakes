@@ -10,30 +10,276 @@ import (
 	"testing"
 )
 
-func TestPreReceiveHookScript(t *testing.T) {
-	script := preReceiveHookScript("/opt/No Mistakes/no-mistakes")
-	for _, want := range []string{
-		"#!/bin/sh",
-		"NM_BIN='/opt/No Mistakes/no-mistakes'",
-		"git rev-parse --absolute-git-dir",
-		"daemon admit-push --gate \"$GATE_DIR\"",
-		"gate push refused before ref mutation",
-		preservedPreReceiveHook,
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("pre-receive hook missing %q", want)
+func canonicalHookGate(t *testing.T, gate string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func hookTestGate(t *testing.T) string {
+	t.Helper()
+	gate := filepath.Join(t.TempDir(), "repos", "test.git")
+	if err := InitBare(context.Background(), gate); err != nil {
+		t.Fatal(err)
+	}
+	return gate
+}
+
+// The selected hook owner must survive a pushing shell's unrelated runtime
+// and PATH. Execute the generated shell rather than checking only its text.
+func TestReceiveHooksKeepEnrolledOwner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks require /bin/sh")
+	}
+	for _, kind := range []string{"pre", "post"} {
+		t.Run(kind, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "owner's runtime")
+			gate := filepath.Join(root, "repos", "test.git")
+			if err := InitBare(context.Background(), gate); err != nil {
+				t.Fatal(err)
+			}
+			record := filepath.Join(base, "owner.txt")
+			bin := filepath.Join(base, "owner's binary")
+			if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$NM_HOME\" > "+shellSingleQuote(record)+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			script := preReceiveHookScript(bin, canonicalHookGate(t, gate))
+			if kind == "post" {
+				script = postReceiveHookScript(bin, canonicalHookGate(t, gate))
+			}
+			hook := filepath.Join(gate, "hooks", kind+"-receive")
+			if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", hook)
+			cmd.Dir = gate
+			cmd.Env = append(os.Environ(), "NM_HOME="+filepath.Join(base, "unrelated"), "GIT_DIR="+gate)
+			cmd.Stdin = strings.NewReader("old new refs/heads/feature\n")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("hook: %v: %s", err, out)
+			}
+			got, err := os.ReadFile(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := filepath.EvalSymlinks(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(got)) != want {
+				t.Fatalf("executed root %q, want enrolled %q", got, want)
+			}
+		})
+	}
+}
+
+func TestReceiveHooksRefuseCopiedHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks require /bin/sh")
+	}
+	for _, kind := range []string{"pre", "post"} {
+		t.Run(kind, func(t *testing.T) {
+			base := t.TempDir()
+			ownedGate := filepath.Join(base, "owner", "repos", "owned.git")
+			receivingGate := filepath.Join(base, "other", "repos", "receiving.git")
+			for _, gate := range []string{ownedGate, receivingGate} {
+				if err := InitBare(context.Background(), gate); err != nil {
+					t.Fatal(err)
+				}
+			}
+			marker := filepath.Join(base, "owner-executed")
+			poisonDir := filepath.Join(base, "bin")
+			if err := os.Mkdir(poisonDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(poisonDir, "cygpath"), []byte("#!/bin/sh\nprintf '%s\\n' "+shellSingleQuote(canonicalHookGate(t, receivingGate))+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			bin := filepath.Join(base, "fake-no-mistakes")
+			if err := os.WriteFile(bin, []byte("#!/bin/sh\n: > "+shellSingleQuote(marker)+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			script := preReceiveHookScript(bin, canonicalHookGate(t, ownedGate))
+			if kind == "post" {
+				script = postReceiveHookScript(bin, canonicalHookGate(t, ownedGate))
+			}
+			hook := filepath.Join(receivingGate, "hooks", kind+"-receive")
+			if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("/bin/sh", hook)
+			cmd.Dir = receivingGate
+			cmd.Env = []string{"GIT_DIR=" + receivingGate, "PATH=" + poisonDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+			cmd.Stdin = strings.NewReader("old new refs/heads/feature\n")
+			out, err := cmd.CombinedOutput()
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("copied hook invoked the enrolled binary: %v; output: %s", statErr, out)
+			}
+			if !strings.Contains(string(out), "does not match enrolled gate") {
+				t.Fatalf("copied hook did not report the gate mismatch: %s", out)
+			}
+			if kind == "pre" && err == nil {
+				t.Fatalf("copied pre-receive hook admitted the update: %s", out)
+			}
+			if kind == "post" {
+				if err != nil {
+					t.Fatalf("post-receive must preserve an accepted update: %v: %s", err, out)
+				}
+				log, readErr := os.ReadFile(filepath.Join(receivingGate, "notify-push.log"))
+				if readErr != nil || !strings.Contains(string(log), "does not match enrolled gate") {
+					t.Fatalf("copied post-receive failure was not logged to its receiving gate: %v: %s", readErr, log)
+				}
+			}
+		})
+	}
+}
+
+func TestReceiveHooksNeverSelectGlobalFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks require /bin/sh")
+	}
+	for _, kind := range []string{"pre", "post"} {
+		t.Run(kind, func(t *testing.T) {
+			base := t.TempDir()
+			gate := filepath.Join(base, "repos", "test.git")
+			if err := InitBare(context.Background(), gate); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(base, "global-executed")
+			poison := filepath.Join(base, "bin")
+			if err := os.Mkdir(poison, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(poison, "no-mistakes"), []byte("#!/bin/sh\ntouch "+shellSingleQuote(marker)+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			missing := filepath.Join(base, "removed-owner")
+			script := preReceiveHookScript(missing, canonicalHookGate(t, gate))
+			if kind == "post" {
+				script = postReceiveHookScript(missing, canonicalHookGate(t, gate))
+			}
+			hook := filepath.Join(gate, "hooks", kind+"-receive")
+			if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", hook)
+			cmd.Dir = gate
+			cmd.Env = append(os.Environ(), "PATH="+poison+string(os.PathListSeparator)+os.Getenv("PATH"), "GIT_DIR="+gate)
+			cmd.Stdin = strings.NewReader("old new refs/heads/feature\n")
+			out, err := cmd.CombinedOutput()
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("global binary was selected: %v", statErr)
+			}
+			if kind == "pre" && err == nil {
+				t.Fatalf("missing owner admitted push: %s", out)
+			}
+			if kind == "post" {
+				if err != nil {
+					t.Fatalf("post-receive must preserve accepted update: %v", err)
+				}
+				if strings.Contains(string(out), "Pipeline started") {
+					t.Fatalf("failed notification reported launch: %s", out)
+				}
+				log, readErr := os.ReadFile(filepath.Join(gate, "notify-push.log"))
+				if readErr != nil || !strings.Contains(string(log), "notify-push failed") {
+					t.Fatalf("missing durable failure: %v: %s", readErr, log)
+				}
+			}
+		})
+	}
+}
+
+func TestGateConfigStampBindsEnrolledRoot(t *testing.T) {
+	base := t.TempDir()
+	a := filepath.Join(base, "a", "repos", "test.git")
+	b := filepath.Join(base, "b", "repos", "test.git")
+	for _, gate := range []string{a, b} {
+		if err := InitBare(context.Background(), gate); err != nil {
+			t.Fatal(err)
+		}
+		if err := RefreshManagedGateHooks(gate); err != nil {
+			t.Fatal(err)
+		}
+		if err := MarkGateConfigCurrent(gate); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if strings.Contains(script, "read oldrev") {
-		t.Fatal("admission wrapper must leave stdin untouched for a preserved user hook")
+	for _, rel := range []string{gateConfigStampFile, "hooks/pre-receive", "hooks/post-receive"} {
+		bytes, err := os.ReadFile(filepath.Join(a, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(b, rel), bytes, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !strings.Contains(script, "exit $status") {
-		t.Fatal("admission failure must reject the ref update")
+	if GateConfigCurrent(b) {
+		t.Fatal("another runtime's hook stamp was accepted")
+	}
+}
+
+func TestReceiveHooksResolveSymlinkedGateAtEnrollment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks require /bin/sh")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "enrolled")
+	gate := filepath.Join(root, "repos", "test.git")
+	if err := InitBare(context.Background(), gate); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "alias")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	record := filepath.Join(base, "invocation.txt")
+	bin := filepath.Join(base, "owner binary")
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$NM_HOME\" > " + shellSingleQuote(record) + "\nprintf '%s\\n' \"$@\" >> " + shellSingleQuote(record) + "\n"
+	if err := os.WriteFile(bin, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script, err := PostReceiveHookScript(filepath.Join(link, "repos", "test.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = strings.Replace(script, "NM_BIN="+shellSingleQuote(exe), "NM_BIN="+shellSingleQuote(bin), 1)
+	hook := filepath.Join(gate, "hooks", "post-receive")
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", hook)
+	cmd.Dir = gate
+	cmd.Env = append(os.Environ(), "GIT_DIR=.")
+	cmd.Stdin = strings.NewReader("old new refs/heads/feature\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("hook: %v: %s", err, out)
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalGate := canonicalHookGate(t, gate)
+	physicalRoot := filepath.Dir(filepath.Dir(physicalGate))
+	if !strings.Contains(string(got), physicalRoot) || !strings.Contains(string(got), physicalGate) {
+		t.Fatalf("hook did not invoke enrolled owner for %s: %s", physicalGate, got)
 	}
 }
 
 func TestRefreshManagedPreReceiveHookPreservesCustomHook(t *testing.T) {
-	bare := t.TempDir()
+	bare := hookTestGate(t)
 	hooks := filepath.Join(bare, "hooks")
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
@@ -63,7 +309,7 @@ func TestRefreshManagedPreReceiveHookPreservesCustomHook(t *testing.T) {
 }
 
 func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
-	bare := t.TempDir()
+	bare := hookTestGate(t)
 	if err := RefreshManagedGateHooks(bare); err != nil {
 		t.Fatalf("install hooks: %v", err)
 	}
@@ -83,82 +329,51 @@ func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 }
 
 func TestPostReceiveHookScript(t *testing.T) {
-	script := postReceiveHookScript("/opt/No Mistakes/no-mistakes")
-
-	// should be a shell script
-	if !strings.HasPrefix(script, "#!/bin/sh\n") {
-		t.Fatal("hook should start with #!/bin/sh")
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks require /bin/sh")
 	}
-
-	if !strings.Contains(script, "NM_BIN='/opt/No Mistakes/no-mistakes'") {
-		t.Fatal("hook should embed the no-mistakes executable path")
+	base := t.TempDir()
+	gate := hookTestGate(t)
+	argsPath := filepath.Join(base, "args.txt")
+	fakeBin := filepath.Join(base, "fake-no-mistakes")
+	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellSingleQuote(argsPath) + "\n"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	// should read oldrev newrev refname
-	if !strings.Contains(script, "read oldrev newrev refname") {
-		t.Fatal("hook should read ref update args")
+	alias := filepath.Join(base, "gate alias")
+	if err := os.Symlink(canonicalHookGate(t, gate), alias); err != nil {
+		t.Fatal(err)
 	}
-
-	if strings.Contains(script, "--gate \"$(pwd)\"") {
-		t.Fatal("hook must not pass the gate path via bare $(pwd) (issue #269: pwd can collapse to .)")
-	}
-	if !strings.Contains(script, "--gate \"$GATE_DIR\"") {
-		t.Fatal("hook should pass the resolved gate path as a flag")
-	}
-	if !strings.Contains(script, "git rev-parse --absolute-git-dir") {
-		t.Fatal("hook should resolve the bare repo dir absolutely (issue #269)")
-	}
-	if !strings.Contains(script, "daemon notify-push") {
-		t.Fatal("hook should invoke the CLI notify subcommand")
-	}
-	if !strings.Contains(script, "GIT_PUSH_OPTION_COUNT") {
-		t.Fatal("hook should forward git push options to notify-push")
-	}
-	if !strings.Contains(script, "--push-option") {
-		t.Fatal("hook should pass each git push option as a notify-push flag")
-	}
-	if strings.Contains(script, "nc -U") {
-		t.Fatal("hook should not depend on netcat")
-	}
-	if strings.Contains(script, "eval") {
-		t.Fatal("hook should not use eval to read push options")
-	}
-	if !strings.Contains(script, "\"$NM_BIN\" daemon notify-push") {
-		t.Fatal("hook should execute the embedded binary path")
-	}
-	if !strings.Contains(script, "command -v no-mistakes") {
-		t.Fatal("hook should fall back to PATH when baked-in path doesn't exist")
-	}
-	if strings.Contains(script, ">/dev/null 2>&1 || true") {
-		t.Fatal("hook should not silently swallow notify-push errors (issue #122)")
-	}
-	if !strings.Contains(script, "notify-push.log") {
-		t.Fatal("hook should log notify-push output to a file under the bare repo")
-	}
-
-	// should print plain ASCII banner to stderr
-	if !strings.Contains(script, ">&2") {
-		t.Fatal("hook should print message to stderr")
-	}
-	if !strings.Contains(script, "Pipeline started") {
-		t.Fatal("hook should print pipeline started message")
-	}
-	if !strings.Contains(script, "no-mistakes") {
-		t.Fatal("hook should mention the command name")
-	}
-	if !strings.Contains(script, "|__| |_/") {
-		t.Fatal("hook should contain ASCII art banner")
-	}
-	if strings.Contains(script, "\033[") {
-		t.Fatal("hook banner should not include ANSI escapes")
-	}
-	if strings.Contains(script, "✓") {
-		t.Fatal("hook banner should stay ASCII-only")
-	}
-
-	// should exit 0 (never block push)
-	if !strings.Contains(script, "exit 0") {
-		t.Fatal("hook should exit 0")
+	for _, tc := range []struct {
+		name string
+		gate string
+	}{
+		{name: "physical path", gate: canonicalHookGate(t, gate)},
+		{name: "alias", gate: alias},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Compare physical paths but pass the original pinned spelling
+			// to the CLI, even when automatic argument conversion is disabled.
+			hookPath := filepath.Join(base, "post-receive")
+			if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, tc.gate)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", hookPath)
+			cmd.Dir = gate
+			cmd.Env = append(os.Environ(), "GIT_DIR=.", "MSYS2_ARG_CONV_EXCL=*")
+			cmd.Stdin = strings.NewReader("old new refs/heads/main\n")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run post-receive hook: %v: %s", err, out)
+			}
+			args, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gateArgFromArgv(string(args)); got != tc.gate {
+				t.Fatalf("hook passed gate %q, want pinned native gate %q", got, tc.gate)
+			}
+			t.Logf("MSYS2_ARG_CONV_EXCL=*: CLI received --gate %q", gateArgFromArgv(string(args)))
+		})
 	}
 }
 
@@ -184,20 +399,13 @@ func TestShellSingleQuote(t *testing.T) {
 	}
 }
 
-func TestPostReceiveHookScriptWithQuotedPath(t *testing.T) {
-	script := postReceiveHookScript("/opt/it's here/no-mistakes")
-	if !strings.Contains(script, "NM_BIN='/opt/it'\"'\"'s here/no-mistakes'") {
-		t.Fatal("hook should correctly escape single quotes in the executable path")
-	}
-}
-
 func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-receive hook is /bin/sh-only")
 	}
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
+	bare := filepath.Join(base, "repos", "test.git")
 	if err := os.MkdirAll(bare, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +418,7 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	}
 
 	hookPath := filepath.Join(base, "post-receive")
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -219,6 +427,7 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	cmd.Dir = bare
 	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
 	cmd.Env = append(os.Environ(),
+		"GIT_DIR="+bare,
 		"GIT_PUSH_OPTION_COUNT=1",
 		"GIT_PUSH_OPTION_0=ok; touch "+markerPath,
 	)
@@ -240,7 +449,7 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 
 func TestInstallPostReceiveHook(t *testing.T) {
 	ctx := context.Background()
-	bare := filepath.Join(t.TempDir(), "test.git")
+	bare := filepath.Join(t.TempDir(), "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -271,14 +480,18 @@ func TestInstallPostReceiveHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != postReceiveHookScript(exe) {
+	resolvedExe, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != postReceiveHookScript(resolvedExe, canonicalHookGate(t, bare)) {
 		t.Fatal("hook content doesn't match template")
 	}
 }
 
 func TestRefreshManagedPostReceiveHookPreservesCustomHook(t *testing.T) {
 	ctx := context.Background()
-	bare := filepath.Join(t.TempDir(), "test.git")
+	bare := filepath.Join(t.TempDir(), "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +519,7 @@ func TestRefreshManagedPostReceiveHookPreservesCustomHook(t *testing.T) {
 
 func TestRefreshManagedPostReceiveHookInstallsMissingHook(t *testing.T) {
 	ctx := context.Background()
-	bare := filepath.Join(t.TempDir(), "test.git")
+	bare := filepath.Join(t.TempDir(), "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -327,26 +540,17 @@ func TestRefreshManagedPostReceiveHookInstallsMissingHook(t *testing.T) {
 	}
 }
 
-// TestPostReceiveHook_ResolvesAbsoluteGateDir covers issue #269: when git
-// invokes the hook from a cwd whose `pwd` collapses to "." (observed in real
-// pushes though not reliably reproducible by hand), the hook used to pass
-// `--gate .`, which the daemon rejects with "invalid gate path: ." so the
-// pipeline never started. The hook must resolve the bare repo dir explicitly
-// via `git rev-parse --absolute-git-dir` so the gate path is absolute in every
-// cwd state.
-//
-// We force the failure condition deterministically by poisoning PWD="." in
-// the hook's environment: the POSIX `pwd` builtin then returns "." exactly as
-// the reporter saw, while `git rev-parse --absolute-git-dir` still returns the
-// true absolute path.
-func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
+// TestPostReceiveHook_PinsEnrolledGate covers issue #269 with a poisoned PWD.
+// The hook resolves Git's receiving gate and confirms it matches the canonical
+// gate recorded at enrollment before notifying the daemon.
+func TestPostReceiveHook_PinsEnrolledGate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-receive hook is /bin/sh-only")
 	}
 	ctx := context.Background()
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
+	bare := filepath.Join(base, "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -364,17 +568,16 @@ func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Poison PWD so the shell `pwd` builtin returns "." (the reported failure
-	// state). git resolves the repo via the real cwd, not $PWD, so the fix's
-	// `git rev-parse --absolute-git-dir` still returns the bare dir.
+	// Poison PWD and invoke from the bare repo. The embedded enrollment path
+	// must remain the selected gate.
 	cmd := exec.Command("/bin/sh", hookPath)
 	cmd.Dir = bare
 	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
-	cmd.Env = append(os.Environ(), "PWD=.")
+	cmd.Env = append(os.Environ(), "PWD=.", "GIT_DIR="+bare)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run hook: %v: %s", err, out)
 	}
@@ -405,14 +608,14 @@ func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
 	}
 }
 
-func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
+func TestPostReceiveHookRefusesWhenReceivingGateCannotBeResolved(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("post-receive hook is /bin/sh-only")
 	}
 	ctx := context.Background()
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
+	bare := filepath.Join(base, "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +632,8 @@ func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeGit := filepath.Join(fakePath, "git")
-	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nexit 127\n"), 0o755); err != nil {
+	gitMarker := filepath.Join(base, "git-executed")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n: > "+shellSingleQuote(gitMarker)+"\nexit 127\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -437,7 +641,7 @@ func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -448,31 +652,22 @@ func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
 		"PATH=" + fakePath,
 		"PWD=.",
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("run hook: %v: %s", err, out)
 	}
-
-	args, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("fake binary should have recorded argv: %v", err)
+	if _, err := os.Stat(argsPath); !os.IsNotExist(err) {
+		t.Fatalf("hook invoked its binary without a resolved receiving gate: %v", err)
 	}
-	gate := gateArgFromArgv(string(args))
-	if gate == "" {
-		t.Fatalf("hook did not pass --gate; recorded argv:\n%s", args)
+	if _, err := os.Stat(gitMarker); !os.IsNotExist(err) {
+		t.Fatalf("hook trusted PATH-selected git to discover its receiving gate: %v", err)
 	}
-	if gate == "." || !filepath.IsAbs(gate) {
-		t.Fatalf("--gate must fall back to an absolute hook-derived path, got %q; argv:\n%s", gate, args)
+	if !strings.Contains(string(out), "GIT_DIR is unavailable") || strings.Contains(string(out), "Pipeline started") {
+		t.Fatalf("unresolved receiving gate was not reported as a failed notification: %s", out)
 	}
-	wantAbs, err := filepath.EvalSymlinks(bare)
-	if err != nil {
-		wantAbs = bare
-	}
-	gotAbs, err := filepath.EvalSymlinks(gate)
-	if err != nil {
-		gotAbs = gate
-	}
-	if gotAbs != wantAbs {
-		t.Fatalf("--gate = %q (resolved %q), want bare dir %q", gate, gotAbs, wantAbs)
+	log, err := os.ReadFile(filepath.Join(bare, "notify-push.log"))
+	if err != nil || !strings.Contains(string(log), "GIT_DIR is unavailable") {
+		t.Fatalf("unresolved receiving gate failure was not logged: %v: %s", err, log)
 	}
 }
 
@@ -504,7 +699,7 @@ func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
 	ctx := context.Background()
 
 	base := t.TempDir()
-	bare := filepath.Join(base, "test.git")
+	bare := filepath.Join(base, "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +734,7 @@ func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	hookPath := filepath.Join(hooksDir, "post-receive")
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, bare))), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -563,7 +758,7 @@ func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
 
 func TestIsolateHooksPath_OverridesPoisonedSharedConfig(t *testing.T) {
 	ctx := context.Background()
-	bare := filepath.Join(t.TempDir(), "test.git")
+	bare := filepath.Join(t.TempDir(), "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -780,7 +975,7 @@ func TestIsolateHooksPath_MigratesFromPreFixState(t *testing.T) {
 
 func TestIsolateHooksPath_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	bare := filepath.Join(t.TempDir(), "test.git")
+	bare := filepath.Join(t.TempDir(), "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +989,7 @@ func TestIsolateHooksPath_Idempotent(t *testing.T) {
 
 func TestIsolateHooksPath_SkipsIsolationWhenWorktreeConfigUnsupported(t *testing.T) {
 	ctx := context.Background()
-	bare := filepath.Join(t.TempDir(), "test.git")
+	bare := filepath.Join(t.TempDir(), "repos", "test.git")
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +1146,7 @@ func worktreeConfigIsolatesCoreBare(t *testing.T, bare string) bool {
 func TestInstallPostReceiveHookCreatesDir(t *testing.T) {
 	// hooks dir might not exist in some bare repos; installer should create it
 	dir := t.TempDir()
-	bareDir := filepath.Join(dir, "test.git")
+	bareDir := filepath.Join(dir, "repos", "test.git")
 	if err := os.MkdirAll(bareDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

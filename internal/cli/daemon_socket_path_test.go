@@ -70,11 +70,15 @@ func TestPreReceiveHookThroughShortLinkReportsPhysicalSocketPathTooLong(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := git.PreReceiveHookScript()
-	script = strings.Replace(script, "NM_BIN='"+exe+"'", "NM_BIN='"+bin+"'", 1)
-	if !strings.Contains(script, "NM_BIN='"+bin+"'") {
-		t.Fatal("hook script does not point at the built binary")
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
 	}
+	script, err := git.PreReceiveHookScript(gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = strings.Replace(script, "NM_BIN='"+exe+"'", "NM_BIN='"+bin+"'", 1)
 	hook := filepath.Join(gate, "hooks", "pre-receive")
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
@@ -91,11 +95,12 @@ func TestPreReceiveHookThroughShortLinkReportsPhysicalSocketPathTooLong(t *testi
 
 	cmd := exec.Command("/bin/sh", hook)
 	cmd.Dir = linkedGate
-	cmd.Env = append(os.Environ(), "PWD="+linkedGate, "NM_HOME="+link)
+	cmd.Env = append(os.Environ(), "PWD="+linkedGate, "NM_HOME="+link, "GIT_DIR="+linkedGate)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("hook should refuse the push; output %q", out)
 	}
+	t.Logf("Enrolled hook through a short symlink refused admission:\n%s", out)
 	wantSocket := filepath.Join(root, "socket")
 	for _, want := range []string{wantSocket, fmt.Sprintf("is %d bytes", len(wantSocket)), "-byte limit", "gate push refused"} {
 		if !strings.Contains(string(out), want) {

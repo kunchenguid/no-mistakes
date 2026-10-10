@@ -1369,7 +1369,15 @@ func TestExecutor_ReviewCarryForward_AnAnswerRoundCannotWithdrawTheOperatorsOwnF
 			t.Fatal(err)
 		}
 		if len(steps) > 0 && steps[0].FindingsJSON != nil && strings.Contains(*steps[0].FindingsJSON, "finalize turn ran") {
-			break
+			// Findings are persisted before the approval gate is registered.
+			// Wait for this payload to be the actual respondable gate, rather
+			// than treating a DB snapshot or the previous status as readiness.
+			exec.mu.Lock()
+			ready := exec.waiting && exec.waitingStep == types.StepReview && exec.waitingFindings == *steps[0].FindingsJSON
+			exec.mu.Unlock()
+			if ready {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the answer round never landed")

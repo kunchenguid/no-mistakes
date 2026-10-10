@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
 var runGit = RunBare
@@ -16,38 +18,54 @@ var runGit = RunBare
 const gateConfigStampFile = "no-mistakes-gate-config"
 const preservedPreReceiveHook = "pre-receive.no-mistakes-user"
 
+func receiveHookOwner(bareDir string) (string, string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve hook executable: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve hook executable: %w", err)
+	}
+	gate, err := filepath.Abs(bareDir)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve hook gate: %w", err)
+	}
+	gate, err = filepath.EvalSymlinks(gate)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve hook gate: %w", err)
+	}
+	if _, err := paths.ForGate(gate); err != nil {
+		return "", "", err
+	}
+	return exe, gate, nil
+}
+
 // PreReceiveHookScript returns the fail-closed admission hook that runs before
 // Git mutates any managed gate ref. The daemon authenticates the hook process's
 // ancestry, so a validation-step descendant cannot bypass CLI guards with a
 // direct push.
-func PreReceiveHookScript() string {
-	exe, err := os.Executable()
+func PreReceiveHookScript(bareDir string) (string, error) {
+	exe, gate, err := receiveHookOwner(bareDir)
 	if err != nil {
-		exe = "no-mistakes"
+		return "", err
 	}
-	return preReceiveHookScript(exe)
+	return preReceiveHookScript(exe, gate), nil
 }
 
-func preReceiveHookScript(command string) string {
+func preReceiveHookScript(command, gate string) string {
 	return `#!/bin/sh
 # no-mistakes pre-receive hook
 # Authorize the pushing process before any managed gate ref changes.
 NM_BIN=` + shellSingleQuote(command) + `
-if [ ! -f "$NM_BIN" ]; then
-  NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
+GATE_DIR=` + shellSingleQuote(gate) + `
+NM_HOME=` + shellSingleQuote(filepath.Dir(filepath.Dir(gate))) + `
+export NM_HOME
+` + receivingGateResolverScript() + `
+if ! resolve_receiving_gate; then
+  printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$RECEIVE_GATE_ERROR" >&2
+  exit 1
 fi
-GATE_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || :)
-case "$GATE_DIR" in
-  /*) ;;
-  *)
-    HOOK_PATH=$0
-    case "$HOOK_PATH" in
-      */*) HOOK_DIR=${HOOK_PATH%/*} ;;
-      *) HOOK_DIR=. ;;
-    esac
-    GATE_DIR=$(cd "$HOOK_DIR/.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
-    ;;
-esac
 out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" 2>&1)
 status=$?
 if [ $status -ne 0 ]; then
@@ -59,6 +77,37 @@ if [ -x "$USER_HOOK" ]; then
   exec "$USER_HOOK"
 fi
 exit 0
+`
+}
+
+// receivingGateResolverScript resolves the repository that invoked the hook
+// from Git's receive-hook environment and compares it with the canonical gate
+// selected at enrollment.
+func receivingGateResolverScript() string {
+	return `RECEIVE_GATE=
+RECEIVE_GATE_ERROR=
+resolve_receiving_gate() {
+  if [ -z "${GIT_DIR:-}" ]; then
+    RECEIVE_GATE_ERROR='cannot resolve receiving Git gate: GIT_DIR is unavailable'
+    return 1
+  fi
+  # Use the fixed utility path: shell pwd can cache an inherited relative PWD.
+  RECEIVE_GATE=$(CDPATH= cd -P "$GIT_DIR" 2>/dev/null && /bin/pwd -P) || {
+    RECEIVE_GATE_ERROR='cannot resolve receiving Git gate path'
+    return 1
+  }
+  # Resolve both paths in this shell: MSYS can map the enrolled drive path
+  # to /tmp (or another mount), rather than the assumed /<drive>/ spelling.
+  GATE_COMPARE_DIR=$(CDPATH= cd -P "$GATE_DIR" 2>/dev/null && /bin/pwd -P) || {
+    RECEIVE_GATE_ERROR='cannot resolve enrolled Git gate path'
+    return 1
+  }
+  if [ "$RECEIVE_GATE" != "$GATE_COMPARE_DIR" ]; then
+    RECEIVE_GATE_ERROR="receiving gate $RECEIVE_GATE does not match enrolled gate $GATE_COMPARE_DIR"
+    return 1
+  fi
+  return 0
+}
 `
 }
 
@@ -76,7 +125,11 @@ func RefreshManagedPreReceiveHook(bareDir string) (bool, error) {
 	}
 	hookPath := filepath.Join(hooksDir, "pre-receive")
 	companion := filepath.Join(hooksDir, preservedPreReceiveHook)
-	desired := []byte(PreReceiveHookScript())
+	script, err := PreReceiveHookScript(bareDir)
+	if err != nil {
+		return false, err
+	}
+	desired := []byte(script)
 	existing, err := os.ReadFile(hookPath)
 	if err == nil {
 		if string(existing) == string(desired) {
@@ -118,19 +171,19 @@ func RefreshManagedGateHooks(bareDir string) error {
 }
 
 // PostReceiveHookScript returns the shell script for the post-receive hook.
-// The hook notifies the daemon via the CLI so it works across platforms.
-// It resolves the gate to an absolute bare-repo path before notifying.
+// The hook notifies the daemon via the enrolled CLI. Enrollment pins the
+// canonical gate and runtime paths into the script.
 // It never blocks the push - notification failures are surfaced to stderr and
 // appended to notify-push.log inside the bare repo.
-func PostReceiveHookScript() string {
-	exe, err := os.Executable()
+func PostReceiveHookScript(bareDir string) (string, error) {
+	exe, gate, err := receiveHookOwner(bareDir)
 	if err != nil {
-		exe = "no-mistakes"
+		return "", err
 	}
-	return postReceiveHookScript(exe)
+	return postReceiveHookScript(exe, gate), nil
 }
 
-func postReceiveHookScript(command string) string {
+func postReceiveHookScript(command, gate string) string {
 	return `#!/bin/sh
 # no-mistakes post-receive hook
 # Notifies the daemon of the push. Non-blocking: post-receive exit code is
@@ -138,31 +191,19 @@ func postReceiveHookScript(command string) string {
 # surfaced on stderr (so the pushing client sees them) and appended to
 # notify-push.log inside the bare repo for later inspection.
 NM_BIN=` + shellSingleQuote(command) + `
-if [ ! -f "$NM_BIN" ]; then
-  NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
+GATE_DIR=` + shellSingleQuote(gate) + `
+NM_HOME=` + shellSingleQuote(filepath.Dir(filepath.Dir(gate))) + `
+export NM_HOME
+` + receivingGateResolverScript() + `
+if ! resolve_receiving_gate; then
+  LOG="${RECEIVE_GATE:-$GATE_DIR}/notify-push.log"
+  {
+    printf '[%s] notify-push failed before notification: %s\n\n' "$(date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown)" "$RECEIVE_GATE_ERROR"
+  } >> "$LOG" 2>/dev/null || :
+  printf 'no-mistakes: notify-push failed before notification: %s\n' "$RECEIVE_GATE_ERROR" >&2
+  exit 0
 fi
-# Resolve the bare repo dir explicitly. Git can invoke this hook from a cwd
-# whose pwd collapses to "." (issue #269), which would pass "--gate ." and be
-# rejected by the daemon ("invalid gate path: ."), so the pipeline never
-# starts. Prefer git's own absolute dir query (Git 2.13+, May 2017), then fall
-# back to the hook file's location so a poisoned PWD still cannot produce ".".
-GATE_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || :)
-case "$GATE_DIR" in
-  /*) ;;
-  *)
-    HOOK_PATH=$0
-    case "$HOOK_PATH" in
-      */*) HOOK_DIR=${HOOK_PATH%/*} ;;
-      *) HOOK_DIR=. ;;
-    esac
-    GATE_DIR=$(cd "$HOOK_DIR/.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
-    ;;
-esac
-case "$GATE_DIR" in
-  /*) ;;
-  *) GATE_DIR=$(/bin/pwd -P 2>/dev/null || pwd -P 2>/dev/null || pwd) ;;
-esac
-LOG="$GATE_DIR/notify-push.log"
+LOG="$RECEIVE_GATE/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
 notify_failed=0
 while read oldrev newrev refname; do
@@ -225,7 +266,11 @@ func InstallPostReceiveHook(bareDir string) error {
 		return err
 	}
 	hookPath := filepath.Join(hooksDir, "post-receive")
-	return writeHookFileAtomic(hookPath, []byte(PostReceiveHookScript()))
+	script, err := PostReceiveHookScript(bareDir)
+	if err != nil {
+		return err
+	}
+	return writeHookFileAtomic(hookPath, []byte(script))
 }
 
 // RefreshManagedPostReceiveHook updates an existing no-mistakes-owned hook.
@@ -236,7 +281,11 @@ func RefreshManagedPostReceiveHook(bareDir string) (bool, error) {
 		return false, err
 	}
 	hookPath := filepath.Join(hooksDir, "post-receive")
-	desired := []byte(PostReceiveHookScript())
+	script, err := PostReceiveHookScript(bareDir)
+	if err != nil {
+		return false, err
+	}
+	desired := []byte(script)
 	existing, err := os.ReadFile(hookPath)
 	if err == nil {
 		if string(existing) == string(desired) {
@@ -285,31 +334,47 @@ func writeGateFileAtomic(path string, content []byte, mode os.FileMode, pattern 
 // rendered managed hook and a version marker for the non-hook config contract.
 // Bump the marker when receive or worktree config requirements change.
 func GateConfigCurrent(bareDir string) bool {
+	stamp, err := gateConfigStampContent(bareDir)
+	if err != nil {
+		return false
+	}
 	content, err := os.ReadFile(filepath.Join(bareDir, gateConfigStampFile))
-	if err != nil || string(content) != gateConfigStampContent() {
+	if err != nil || string(content) != stamp {
 		return false
 	}
 	// Admission is a security boundary, not merely notification. Verify the
 	// managed pre-receive bytes on every startup so a stale stamp cannot hide a
 	// removed or replaced guard. This remains filesystem-only for current gates.
 	preReceive, err := os.ReadFile(filepath.Join(bareDir, "hooks", "pre-receive"))
-	return err == nil && string(preReceive) == PreReceiveHookScript()
+	if err != nil {
+		return false
+	}
+	script, err := PreReceiveHookScript(bareDir)
+	return err == nil && string(preReceive) == script
 }
 
 // MarkGateConfigCurrent atomically records a fully completed gate migration.
 // Callers must validate the gate and finish every mutation before marking it.
 func MarkGateConfigCurrent(bareDir string) error {
+	stamp, err := gateConfigStampContent(bareDir)
+	if err != nil {
+		return err
+	}
 	return writeGateFileAtomic(
 		filepath.Join(bareDir, gateConfigStampFile),
-		[]byte(gateConfigStampContent()),
+		[]byte(stamp),
 		0o644,
 		".no-mistakes-gate-config-*",
 	)
 }
 
-func gateConfigStampContent() string {
-	sum := sha256.Sum256([]byte("gate-config-v2\x00" + PreReceiveHookScript() + "\x00" + PostReceiveHookScript()))
-	return fmt.Sprintf("v2:%x\n", sum)
+func gateConfigStampContent(bareDir string) (string, error) {
+	exe, gate, err := receiveHookOwner(bareDir)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte("gate-config-v3\x00" + preReceiveHookScript(exe, gate) + "\x00" + postReceiveHookScript(exe, gate)))
+	return fmt.Sprintf("v3:%x\n", sum), nil
 }
 
 // IsolateHooksPath protects the gate's post-receive hook from being

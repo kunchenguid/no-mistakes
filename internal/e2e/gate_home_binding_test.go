@@ -75,9 +75,9 @@ func TestGateHookBindsPushToTheHomeThatOwnsTheGate(t *testing.T) {
 	}
 }
 
-// TestPushToAMisshapenGateIsRefusedClosed: a gate that is not laid out as
-// <home>/repos/<id>.git gives the hook no owning root to derive, and admission
-// is a security boundary, so the push must be refused rather than routed to
+// TestPushToAMisshapenGateIsRefusedClosed: a hook copied into a gate outside
+// <home>/repos/<id>.git must refuse the receiving gate's ownership mismatch
+// before admission, rather than route the push to the enrolled daemon or
 // whichever daemon the ambient NM_HOME names.
 func TestPushToAMisshapenGateIsRefusedClosed(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude"})
@@ -91,8 +91,7 @@ func TestPushToAMisshapenGateIsRefusedClosed(t *testing.T) {
 	if out, err := h.runGit(ctx, h.WorkDir, "init", "--bare", misshapen); err != nil {
 		t.Fatalf("init misshapen gate: %v\n%s", err, out)
 	}
-	// The managed hooks as the product rendered them, in a gate whose path
-	// carries no owning root.
+	// Copy the enrolled hooks into a gate whose path carries no owning root.
 	for _, hook := range []string{"pre-receive", "post-receive"} {
 		src, err := os.ReadFile(filepath.Join(ownedGate, "hooks", hook))
 		if err != nil {
@@ -107,9 +106,9 @@ func TestPushToAMisshapenGateIsRefusedClosed(t *testing.T) {
 	h.CommitChange(branch, "misshapen.txt", "misshapen\n", "add misshapen file")
 	out, err := h.runGit(ctx, h.WorkDir, "push", misshapen, branch)
 	if err == nil {
-		t.Fatalf("push to a gate with no derivable home was accepted:\n%s", out)
+		t.Fatalf("push to a different receiving gate was accepted:\n%s", out)
 	}
-	if !strings.Contains(string(out), "cannot derive the gate home") {
+	if !strings.Contains(string(out), "does not match enrolled gate") {
 		t.Fatalf("refusal must name the cause, got:\n%s", out)
 	}
 	t.Logf("refused push:\n%s", out)

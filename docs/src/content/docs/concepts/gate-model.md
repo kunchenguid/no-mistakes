@@ -37,11 +37,11 @@ When you run `no-mistakes init` in a repo:
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
 6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
-7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
+7. Agent skill installation and its opt-out follow the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init).
 8. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.
-If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
+If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, and origin/default-branch metadata are repaired or updated where needed.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
 If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
@@ -231,11 +231,28 @@ validation step before mutation, including direct pushes, and safely omits run
 or phase details when authenticated ancestry cannot identify them uniquely.
 An existing custom `pre-receive` hook is preserved and runs after admission.
 
+At init or refresh, both managed hooks pin the canonical gate path, its owning
+`NM_HOME`, and the exact `no-mistakes` executable that enrolled the gate.
+At invocation, each hook reads `GIT_DIR` from Git, resolves the physical path,
+and requires it to match the enrolled gate. Both paths are resolved with the
+fixed `/bin/pwd` in the receiving shell, so Git for Windows mount aliases such
+as `/tmp` use the same spelling for drive-letter and UNC gates. After that
+comparison succeeds, both hooks pass the pinned native
+gate path to the CLI, including when `MSYS2_ARG_CONV_EXCL=*` disables shell
+argument conversion. This prevents a copied hook from authorizing or notifying
+for a different repository. The hooks do not select an owner from the pushing
+shell's `PATH`, `NM_HOME`, working directory, or a
+PATH-selected Git executable. Refresh records the binary-and-root pair in the
+gate stamp. If the enrolled executable or receiving gate cannot be verified,
+pre-receive refuses the update before refs change. A post-receive notification
+failure is logged in the resolved receiving gate, or in the enrolled gate when
+Git's receiving path cannot be resolved, and shown to the pusher. The already
+accepted Git update remains in place.
+
 When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
-fires. It resolves the gate to an absolute bare-repo path using Git's own view
-of the repository, falling back to the hook location if needed, then calls
-`no-mistakes daemon notify-push` with that gate path, ref name, old/new SHAs,
-and any Git push options such as `no-mistakes.skip=test,lint`.
+calls the enrolled `no-mistakes daemon notify-push` with the pinned gate path,
+ref name, old/new SHAs, and any Git push options such as
+`no-mistakes.skip=test,lint`.
 For compatibility with older managed hooks, `notify-push` also normalizes
 relative gate paths before handing them to the daemon.
 The post-receive hook never blocks an already admitted push - Git ignores its
