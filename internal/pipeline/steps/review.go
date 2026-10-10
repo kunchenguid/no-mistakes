@@ -773,15 +773,20 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 		return findings, errors.New("review analyzer returned no structured findings")
 	}
 	var payload struct {
-		Findings *[]json.RawMessage `json:"findings"`
+		// The shallow raw field wins over Findings.Items' same JSON name. It
+		// preserves absent/null distinction while the rest of the envelope is
+		// decoded into Findings in the same pass.
+		RawFindings json.RawMessage `json:"findings"`
+		Findings
 	}
 	if err := json.Unmarshal(result.Output, &payload); err != nil {
 		return findings, fmt.Errorf("validate review analyzer findings: %w", err)
 	}
-	if payload.Findings == nil {
+	if len(payload.RawFindings) == 0 || string(payload.RawFindings) == "null" {
 		return findings, errors.New("review analyzer findings missing findings array")
 	}
-	if err := json.Unmarshal(result.Output, &findings); err != nil {
+	findings = payload.Findings
+	if err := json.Unmarshal(payload.RawFindings, &findings.Items); err != nil {
 		return findings, fmt.Errorf("validate review analyzer findings: %w", err)
 	}
 	findings.RiskLevel = strings.TrimSpace(findings.RiskLevel)
