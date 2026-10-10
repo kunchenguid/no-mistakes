@@ -117,17 +117,8 @@ resolve_receiving_gate() {
     RECEIVE_GATE_ERROR='cannot resolve receiving Git gate: GIT_DIR is unavailable'
     return 1
   fi
-  case "$GIT_DIR" in
-    /*) receive_gate_candidate=$GIT_DIR ;;
-    *)
-      receive_gate_cwd=$(pwd -P) || {
-        RECEIVE_GATE_ERROR='cannot resolve receiving Git gate working directory'
-        return 1
-      }
-      receive_gate_candidate=$receive_gate_cwd/$GIT_DIR
-      ;;
-  esac
-  RECEIVE_GATE=$(CDPATH= cd -P "$receive_gate_candidate" 2>/dev/null && pwd -P) || {
+  # Use the fixed utility path: shell pwd can cache an inherited relative PWD.
+  RECEIVE_GATE=$(CDPATH= cd -P "$GIT_DIR" 2>/dev/null && /bin/pwd -P) || {
     RECEIVE_GATE_ERROR='cannot resolve receiving Git gate path'
     return 1
   }

@@ -82,6 +82,7 @@ func TestInitSkillOptOut(t *testing.T) {
 	if !strings.Contains(first, "Gate initialized") || !strings.Contains(first, "disabled (--install-skill=false)") {
 		t.Fatalf("disabled fresh init must enroll the gate and report the opt-out:\n%s", first)
 	}
+	t.Logf("Fresh enrollment with skill installation disabled:\n%s", first)
 	for _, path := range skillPaths {
 		if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
 			t.Fatalf("disabled init created a skill directory or could not inspect it: %s: %v", path, err)
@@ -92,6 +93,7 @@ func TestInitSkillOptOut(t *testing.T) {
 		t.Fatalf("disabled init must wire the gate: %v\n%s", err, gateOut)
 	}
 	gateURL := strings.TrimSpace(string(gateOut))
+	t.Logf("Gate remote wired to %s; neither user-skill directory was created.", gateURL)
 	const staleSkill = "---\nname: no-mistakes\n---\nstale user skill\n"
 	for _, path := range skillPaths {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -109,6 +111,7 @@ func TestInitSkillOptOut(t *testing.T) {
 	if !strings.Contains(second, "Gate already initialized (refreshed)") || !strings.Contains(second, "disabled (--install-skill=false)") {
 		t.Fatalf("disabled refresh must report refreshed gate and disabled skills:\n%s", second)
 	}
+	t.Logf("Refresh with skill installation disabled:\n%s", second)
 	for _, path := range skillPaths {
 		content, err := os.ReadFile(path)
 		if err != nil || string(content) != staleSkill {
@@ -118,6 +121,7 @@ func TestInitSkillOptOut(t *testing.T) {
 	if out, err := h.runGit(ctx, h.WorkDir, "remote", "get-url", "no-mistakes"); err != nil || strings.TrimSpace(string(out)) != gateURL {
 		t.Fatalf("disabled refresh must preserve the gate identity: %q, %v", out, err)
 	}
+	t.Log("Refresh preserved both existing user skills byte-for-byte and kept the same gate remote.")
 
 	enabled, err := h.Run("init", "--install-skill=true")
 	if err != nil {
@@ -127,6 +131,7 @@ func TestInitSkillOptOut(t *testing.T) {
 		t.Fatalf("enabled refresh must report skill installation:\n%s", enabled)
 	}
 	assertSkillInstalled(t, h)
+	t.Logf("Refresh with installation re-enabled created the user skills:\n%s", enabled)
 }
 
 // TestInitLegacyNotice proves init in a repo that still carries a vendored
