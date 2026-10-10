@@ -227,9 +227,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
 		return nil, err
 	}
-	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
-		return nil, err
-	}
 	sctx.Log("creating pull request...")
 	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent(content))
 	if err != nil {
