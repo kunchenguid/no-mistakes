@@ -22,6 +22,7 @@ import (
 // memory-limited scope with OOMPolicy=continue so the configured test command
 // is OOM-killed after printing a marker.
 func TestTestStep_OutOfMemoryKeepsTheCommandOutputInTheStepLog(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("NM_STEPS_OOM_INNER") == "1" {
 		runTestStepOOMInner(t)
 		return

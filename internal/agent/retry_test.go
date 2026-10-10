@@ -415,6 +415,52 @@ func TestRunWithRetry_CombinedClassifierForClaude(t *testing.T) {
 	}
 }
 
+func TestClaudeRetryClassifier_ReportedAPIErrorDecidesAlone(t *testing.T) {
+	exit := errors.New("exit status 1")
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantLabel string
+		wantRetry bool
+	}{
+		{
+			name:      "transient status",
+			err:       claudeExitError(exit, "", &claudeAPIError{Status: 503, Message: "API Error: 503"}),
+			wantLabel: "http 503",
+			wantRetry: true,
+		},
+		{
+			name: "exhausted quota behind a transient status",
+			err:  claudeExitError(exit, "", &claudeAPIError{Status: 429, Message: "API Error: 429 You exceeded your current quota"}),
+		},
+		{
+			name: "exhausted quota behind the displayed message cut",
+			err:  claudeExitError(exit, "", &claudeAPIError{Status: 429, Message: strings.Repeat("x", claudeAPIErrorMessageMaxRunes+50) + " quota exceeded"}),
+		},
+		{
+			name: "permanent status beside transient-looking stderr",
+			err:  claudeExitError(exit, "upstream proxy returned 503", &claudeAPIError{Status: 400, Message: "API Error: 400"}),
+		},
+		{
+			name: "cancelled invocation",
+			err:  claudeExitError(context.Canceled, "", &claudeAPIError{Status: 529, Message: "API Error: 529"}),
+		},
+		{
+			name:      "stderr alone",
+			err:       claudeExitError(exit, "HTTP 529 from api.anthropic.com", nil),
+			wantLabel: "http 529",
+			wantRetry: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			label, retry := claudeRetryClassifier(tc.err)
+			if retry != tc.wantRetry || label != tc.wantLabel {
+				t.Errorf("claudeRetryClassifier(%q) = (%q, %v), want (%q, %v)", tc.err, label, retry, tc.wantLabel, tc.wantRetry)
+			}
+		})
+	}
+}
+
 func TestTransientBackoffDuration_Progression(t *testing.T) {
 	// Without jitter, progression should be base * 4^(attempt-1).
 	base := time.Second

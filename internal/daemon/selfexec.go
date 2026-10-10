@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -543,6 +544,9 @@ func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 		if statErr != nil {
 			return false, fmt.Errorf("check daemon socket: %w", statErr)
 		}
+		if cleared, clearErr := clearDeadDaemonArtifacts(p); clearErr == nil && cleared {
+			return false, nil
+		}
 		return false, fmt.Errorf("connect to daemon socket: %w", err)
 	}
 	defer client.Close()
@@ -866,6 +870,60 @@ func waitForDaemonStop(p *paths.Paths, instance daemonInstance) error {
 	return fmt.Errorf("daemon pid %d still running after kill", pid)
 }
 
+// clearDeadDaemonArtifacts removes the socket and PID file of a daemon that
+// is provably gone: the PID file names a process that no longer exists or
+// whose start time no longer matches, and no process holds the NM_HOME
+// singleton lock. A live or unverifiable PID leaves everything in place. The
+// lock is held only to re-check the PID file and remove the artifacts, so a
+// daemon that is starting up is neither blocked by the inspection nor loses
+// the socket it just bound.
+func clearDeadDaemonArtifacts(p *paths.Paths) (bool, error) {
+	data, err := os.ReadFile(p.PIDFile())
+	if err != nil {
+		return false, fmt.Errorf("read pid file: %w", err)
+	}
+	record, err := readDaemonPIDFileData(data)
+	if err != nil {
+		return false, fmt.Errorf("read pid file: %w", err)
+	}
+	running, err := daemonProcessRunning(record.PID)
+	if err != nil {
+		return false, fmt.Errorf("inspect daemon pid %d: %w", record.PID, err)
+	}
+	if running {
+		if record.StartedAt.IsZero() {
+			return false, nil
+		}
+		startedAt, err := daemonProcessStartTime(record.PID)
+		if err != nil {
+			return false, fmt.Errorf("inspect daemon pid %d: %w", record.PID, err)
+		}
+		diff := startedAt.Sub(record.StartedAt.UTC())
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= orphanStartTimeTolerance {
+			return false, nil
+		}
+	}
+
+	f, err := os.OpenFile(p.LockFile(), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return false, fmt.Errorf("open daemon lock: %w", err)
+	}
+	defer f.Close()
+	if err := tryLockFile(f); err != nil {
+		return false, nil
+	}
+	defer func() { _ = unlockFile(f) }()
+	current, err := os.ReadFile(p.PIDFile())
+	if err != nil || !bytes.Equal(current, data) {
+		return false, nil
+	}
+	cleanupDaemonArtifacts(p)
+	return true, nil
+}
+
 func cleanupDaemonArtifacts(p *paths.Paths) {
 	_ = os.Remove(p.Socket())
 	_ = os.Remove(p.PIDFile())
@@ -893,6 +951,9 @@ func upsertEnv(env []string, key, value string) []string {
 
 // EnsureDaemon starts the daemon if it's not already running.
 func EnsureDaemon(p *paths.Paths) error {
+	if err := ipc.CheckEndpointPath(p.Socket()); err != nil {
+		return err
+	}
 	alive, err := daemonHealthCheck(p)
 	if err != nil {
 		return fmt.Errorf("%w (run 'no-mistakes daemon start' to recover)", err)

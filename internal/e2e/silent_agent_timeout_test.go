@@ -97,9 +97,9 @@ func TestSilentAgentTimeoutReportsMeasuredEvidence(t *testing.T) {
 	t.Logf("stock axi status surface:\n%s", statusOut)
 	surfaces := runOut + "\n" + statusOut
 
-	// The absolute wall-clock limit that expired must be named...
-	if !strings.Contains(surfaces, "reached its absolute wall-clock limit after 3s") {
-		t.Fatalf("axi surfaces did not name the expired review wall-clock limit:\n--- run ---\n%s\n--- status ---\n%s", runOut, statusOut)
+	// The stall budget that expired must be named...
+	if !strings.Contains(surfaces, "reached its invocation budget after 3s") {
+		t.Fatalf("axi surfaces did not name the expired review stall budget:\n--- run ---\n%s\n--- status ---\n%s", runOut, statusOut)
 	}
 	// ...and the silence must be a measurement, not the budget restated.
 	if !strings.Contains(surfaces, "produced no output at all") {

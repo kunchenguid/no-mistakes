@@ -516,3 +516,59 @@ func TestFinding_Action_Values(t *testing.T) {
 		}
 	}
 }
+
+// A finding's ID is trimmed when it arrives: surrounding whitespace is not part
+// of the identity the gate shows and a response names.
+func TestNormalizeFindingsTrimsFindingIDs(t *testing.T) {
+	got := NormalizeFindings(Findings{Items: []Finding{
+		{ID: " R1 ", Description: "padded"},
+		{ID: "   ", Description: "blank"},
+		{ID: "R2", Description: "clean"},
+	}}, "findings")
+	want := []string{"R1", "findings-2", "R2"}
+	for i, id := range want {
+		if got.Items[i].ID != id {
+			t.Fatalf("id[%d] = %q, want %q", i, got.Items[i].ID, id)
+		}
+	}
+}
+
+func TestNormalizeFindingsAvoidsIDCollisions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ids  []string
+		want []string
+	}{
+		{"earlier explicit ID", []string{"test-2", ""}, []string{"test-2", "test-3"}},
+		{"later padded explicit ID", []string{"", " test-1 "}, []string{"test-2", "test-1"}},
+		{"multiple occupied IDs", []string{"test-2", "", "", "test-4"}, []string{"test-2", "test-3", "test-5", "test-4"}},
+		{"repeated explicit ID", []string{"x", "x"}, []string{"x", "test-2"}},
+		{"padded repeated IDs", []string{" x ", "x", " x "}, []string{"x", "test-2", "test-3"}},
+		{"duplicate skips later explicit IDs", []string{"x", "x", "test-2", "test-3"}, []string{"x", "test-4", "test-2", "test-3"}},
+		{"duplicates and generated IDs", []string{"test-2", "test-2", "", "test-3"}, []string{"test-2", "test-4", "test-5", "test-3"}},
+		{"no collision", []string{"custom", "", ""}, []string{"custom", "test-2", "test-3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := Findings{Items: make([]Finding, len(tc.ids))}
+			for i, id := range tc.ids {
+				findings.Items[i] = Finding{ID: id, Description: fmt.Sprintf("finding %d", i)}
+			}
+			got := NormalizeFindings(findings, "test")
+			for i, id := range tc.want {
+				if got.Items[i].ID != id {
+					t.Fatalf("id[%d] = %q, want %q", i, got.Items[i].ID, id)
+				}
+				selected := FilterFindings(got, []string{id})
+				if len(selected.Items) != 1 || selected.Items[0].Description != findings.Items[i].Description {
+					t.Fatalf("selection %q = %+v, want only finding %d", id, selected.Items, i)
+				}
+			}
+			got = NormalizeFindings(got, "test")
+			for i, id := range tc.want {
+				if got.Items[i].ID != id {
+					t.Fatalf("renormalized id[%d] = %q, want %q", i, got.Items[i].ID, id)
+				}
+			}
+		})
+	}
+}

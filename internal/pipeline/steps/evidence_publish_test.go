@@ -78,6 +78,7 @@ func testStepWithArtifacts(artifacts string) ([]*db.StepResult, map[string][]*db
 }
 
 func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.T) {
+	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	writeRunEvidence(t, sctx, map[string]string{
 		"checkout.png": "\x89PNG binary",
@@ -135,6 +136,7 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 }
 
 func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T) {
+	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Config.Test.Evidence.Dir = "evidence archive #1 100%"
 	artifact := "capture #1 100%/checkout 100%.png"
@@ -158,6 +160,7 @@ func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T)
 }
 
 func TestPublishRunEvidence_UsesTheConfiguredBranchName(t *testing.T) {
+	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Config.Test.Evidence.Branch = "team/ci/evidence"
 	writeRunEvidence(t, sctx, map[string]string{"cli-run.txt": "it works\n"})
@@ -176,6 +179,7 @@ func TestPublishRunEvidence_UsesTheConfiguredBranchName(t *testing.T) {
 }
 
 func TestPublishRunEvidence_InvalidBranchNameFallsBackToLocalPaths(t *testing.T) {
+	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Config.Test.Evidence.Branch = "not a branch"
 	writeRunEvidence(t, sctx, map[string]string{"cli-run.txt": "it works\n"})
@@ -199,6 +203,7 @@ func TestPublishRunEvidence_InvalidBranchNameFallsBackToLocalPaths(t *testing.T)
 }
 
 func TestPublishRunEvidence_ProviderWithoutFileLinksPublishesNothing(t *testing.T) {
+	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
 	writeRunEvidence(t, sctx, map[string]string{"cli-run.txt": "it works\n"})
@@ -212,6 +217,7 @@ func TestPublishRunEvidence_ProviderWithoutFileLinksPublishesNothing(t *testing.
 }
 
 func TestPublishRunEvidence_DisabledDoesNotTouchTheRemote(t *testing.T) {
+	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Config.Test.Evidence.StoreInRepo = false
 	writeRunEvidence(t, sctx, map[string]string{"cli-run.txt": "it works\n"})
@@ -236,6 +242,7 @@ func TestPublishRunEvidence_DisabledDoesNotTouchTheRemote(t *testing.T) {
 // applies. Real test evidence beside it must still publish, so the assertion is
 // not simply "nothing was published".
 func TestPublishRunEvidence_NeverPublishesTheReviewConversation(t *testing.T) {
+	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	writeRunEvidence(t, sctx, map[string]string{
 		"cli-run.txt": "it works\n",

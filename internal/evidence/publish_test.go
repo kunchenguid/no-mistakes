@@ -13,7 +13,22 @@ import (
 // git call these tests make, so drop it for the package.
 func TestMain(m *testing.M) {
 	os.Unsetenv("GIT_CONFIG_COUNT")
-	os.Exit(m.Run())
+	// Fixtures must not depend on the machine's system git config: some
+	// distributions ship safe.bareRepository=explicit there, which refuses
+	// the in-directory use of the bare fixture repositories these tests
+	// create. Mirrors internal/git's TestMain.
+	os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// Fixtures must not inherit the developer's global git config: a
+	// commit.gpgsign=true there makes every fixture commit ask gpg to sign.
+	globalConfigDir, err := os.MkdirTemp("", "no-mistakes-evidence-tests-")
+	if err != nil {
+		panic(err)
+	}
+	globalConfig := filepath.Join(globalConfigDir, "gitconfig")
+	os.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	code := m.Run()
+	os.RemoveAll(globalConfigDir)
+	os.Exit(code)
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
@@ -373,8 +388,8 @@ func TestPublish_ReportsPublishedFilesRelativeToTheSourceDirectory(t *testing.T)
 // conversation depends on. Its files live in the run's evidence directory - the
 // PR step's `ExcludeDirs` names them - but they are NOT test evidence: publishing
 // them would put the operator's questions and answers on the orphan branch
-// verbatim and permanently, with none of the bounding or home-path redaction the
-// deliberate PR-body rendering applies.
+// permanently, with none of the bounding the deliberate PR-body rendering
+// applies.
 //
 // The exclusion has to skip the directory WHOLE, not filter its files out at the
 // end, because an excluded file must not count against the publication budgets
@@ -430,5 +445,44 @@ func TestPublish_ExcludedDirectoryAlonePublishesNothing(t *testing.T) {
 	}
 	if refs := runGit(t, remote, "for-each-ref", "--format=%(refname)"); refs != "refs/heads/main" {
 		t.Fatalf("remote refs changed: %q", refs)
+	}
+}
+
+// Captured command output carries absolute paths under the operator's home, so
+// a text file gets the same home-directory redaction the PR body gets before it
+// reaches the branch. A binary artifact and the local file are left as written.
+// Each binary fixture trips exactly one of the two binary checks, so removing
+// either check fails this test.
+func TestPublish_RedactsHomePathsInTextEvidence(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	binaries := map[string]string{
+		"nul-byte.bin": "valid utf-8 /home/alice/shot\x00 with a nul",
+		"invalid.bin":  "\x89PNG /home/alice/shot without a nul",
+	}
+	const text = "ran /home/alice/project/bin/tool\nwrote /Users/alice/out.json\n"
+	source := writeEvidence(t, t.TempDir(), map[string]string{
+		"nul-byte.bin": binaries["nul-byte.bin"],
+		"invalid.bin":  binaries["invalid.bin"],
+		"logs/run.txt": text,
+	})
+
+	result, err := Publish(context.Background(), baseRequest(remote, work, source))
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	prefix := result.CommitSHA + ":.no-mistakes/evidence/fm/add-login/"
+	got := runGit(t, remote, "cat-file", "-p", prefix+"logs/run.txt")
+	if want := "ran ~/project/bin/tool\nwrote ~/out.json"; got != want {
+		t.Errorf("published text = %q, want %q", got, want)
+	}
+	for name, binary := range binaries {
+		cmd := exec.Command("git", "cat-file", "blob", prefix+name)
+		cmd.Dir = remote
+		if out, err := cmd.Output(); err != nil || string(out) != binary {
+			t.Errorf("published %s = %q (%v), want it byte for byte", name, out, err)
+		}
+	}
+	if local, err := os.ReadFile(filepath.Join(source, "logs", "run.txt")); err != nil || string(local) != text {
+		t.Errorf("local evidence = %q (%v), want it untouched", local, err)
 	}
 }

@@ -1026,6 +1026,7 @@ func TestCommitAgentFixes_DocumentDoesNotPersistUncertifiedRange(t *testing.T) {
 }
 
 func TestStepCmd_AppliesRunForgeEnvironmentAfterInjectedEnvironment(t *testing.T) {
+	t.Parallel()
 	sctx := &pipeline.StepContext{
 		Ctx:     context.Background(),
 		WorkDir: t.TempDir(),
@@ -1060,6 +1061,7 @@ func TestStepCmd_AppliesRunForgeEnvironmentAfterInjectedEnvironment(t *testing.T
 }
 
 func TestStepCmdPreservesAmbientMultiAccountSelectionWithoutProfiles(t *testing.T) {
+	t.Parallel()
 	profileDir := t.TempDir()
 	hosts := "github.com:\n    users:\n        personal:\n        work:\n    user: work\n"
 	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte(hosts), 0o644); err != nil {

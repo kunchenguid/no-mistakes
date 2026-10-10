@@ -62,7 +62,7 @@ func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 	daemonStop = func(*paths.Paths) error { return nil }
 	daemonStart = func(*paths.Paths) error { return errors.New("boom") }
 
-	err := defaultResetDaemon(&paths.Paths{})
+	err := defaultResetDaemon(&paths.Paths{}, false)
 	if err == nil {
 		t.Fatal("defaultResetDaemon should fail when restart fails")
 	}
@@ -204,7 +204,7 @@ func TestDefaultResetDaemonRecoversWhenHealthCheckErrors(t *testing.T) {
 		return nil
 	}
 
-	if err := defaultResetDaemon(&paths.Paths{}); err != nil {
+	if err := defaultResetDaemon(&paths.Paths{}, false); err != nil {
 		t.Fatalf("defaultResetDaemon error = %v", err)
 	}
 	if !stopCalled {
@@ -238,7 +238,7 @@ func TestDefaultResetDaemonNoopWhenDaemonOfflineAndNoArtifacts(t *testing.T) {
 		return nil
 	}
 
-	if err := defaultResetDaemon(p); err != nil {
+	if err := defaultResetDaemon(p, false); err != nil {
 		t.Fatalf("defaultResetDaemon error = %v", err)
 	}
 	if stopCalled {
@@ -276,7 +276,7 @@ func TestDefaultResetDaemonRecoversWhenDaemonArtifactsRemain(t *testing.T) {
 		return nil
 	}
 
-	if err := defaultResetDaemon(p); err != nil {
+	if err := defaultResetDaemon(p, false); err != nil {
 		t.Fatalf("defaultResetDaemon error = %v", err)
 	}
 	if !stopCalled {
@@ -308,7 +308,7 @@ func TestDefaultResetDaemonDoesNotReportOfflineWhenRestartLeavesDaemonRunning(t 
 	daemonStop = func(*paths.Paths) error { return nil }
 	daemonStart = func(*paths.Paths) error { return errors.New("daemon already running") }
 
-	err := defaultResetDaemon(&paths.Paths{})
+	err := defaultResetDaemon(&paths.Paths{}, false)
 	if err == nil {
 		t.Fatal("defaultResetDaemon should fail when restart fails")
 	}

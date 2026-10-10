@@ -104,7 +104,7 @@ func TestTriggerRunReconcilesPrivateMirrorPreservedByRecoveryAnchor(t *testing.T
 
 	// Loop iteration 1, no anchor yet: the exact refusal from issue #1233.
 	// Nothing may move - the private branch stays put with its work intact.
-	_, firstErr := triggerRun(ctx, env, "main", nil, "", "", false, "", "")
+	_, firstErr := triggerRun(ctx, env, "main", nil, "", "", false, "", "", nil)
 	if firstErr == nil {
 		t.Fatal("unanchored private-only chain was reconciled instead of refused")
 	}
@@ -132,7 +132,7 @@ func TestTriggerRunReconcilesPrivateMirrorPreservedByRecoveryAnchor(t *testing.T
 	// Loop iteration 2: the same command now reconciles, archives the exact
 	// private head before deleting the ref, lands the submission, and the run
 	// starts - the loop terminates.
-	gotRun, err := triggerRun(ctx, env, "main", nil, "", "", false, "", "")
+	gotRun, err := triggerRun(ctx, env, "main", nil, "", "", false, "", "", nil)
 	if err != nil {
 		t.Fatalf("recovery-anchored chain still refused: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestTriggerRunReconcilesPrivateMirrorPreservedByRecoveryAnchor(t *testing.T
 	for _, want := range []string{
 		"refs/no-mistakes/recover/<run>",
 		"ancestry",
-		"patch-ID",
+		"tree-survival",
 	} {
 		if !strings.Contains(firstErr.Error(), want) {
 			t.Fatalf("refusal did not name satisfier %q: %v", want, firstErr)

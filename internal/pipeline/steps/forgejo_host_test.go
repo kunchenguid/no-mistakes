@@ -13,6 +13,7 @@ import (
 )
 
 func TestDetectProviderForStep_UsesForgejoBaseFromStepEnvironment(t *testing.T) {
+	t.Parallel()
 	sctx := &pipeline.StepContext{Env: []string{"FORGEJO_BASE_URL=https://code.example:3443/scm"}}
 	got := detectProviderForStep(sctx, "https://code.example:3443/scm/octo/widgets.git")
 	if got != scm.ProviderForgejo {
@@ -21,6 +22,7 @@ func TestDetectProviderForStep_UsesForgejoBaseFromStepEnvironment(t *testing.T) 
 }
 
 func TestForgejoTokenEnvForStep_PrefersHostScopedToken(t *testing.T) {
+	t.Parallel()
 	sctx := &pipeline.StepContext{Env: []string{
 		"FORGEJO_TOKEN=generic-secret",
 		"FORGEJO_TOKEN_FORGE_2E_EXAMPLE_3A_8443=host-secret",
@@ -37,6 +39,7 @@ func TestForgejoTokenEnvForStep_PrefersHostScopedToken(t *testing.T) {
 }
 
 func TestBuildHost_Forgejo(t *testing.T) {
+	t.Parallel()
 	sctx := &pipeline.StepContext{
 		Ctx: context.Background(),
 		Run: &db.Run{Branch: "feature/forgejo", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -58,6 +61,7 @@ func TestBuildHost_Forgejo(t *testing.T) {
 }
 
 func TestVerifyMergedProof_RequiresProofForExpectedHead(t *testing.T) {
+	t.Parallel()
 	pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
 	host := &mergedProofTestHost{proof: scm.MergedProof{
 		Merged:  true,
@@ -73,6 +77,7 @@ func TestVerifyMergedProof_RequiresProofForExpectedHead(t *testing.T) {
 }
 
 func TestVerifyMergedProof_RejectsIncompleteProof(t *testing.T) {
+	t.Parallel()
 	pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
 	host := &mergedProofTestHost{proof: scm.MergedProof{Number: "42", URL: pr.URL, HeadSHA: "expected"}}
 	if err := verifyMergedProof(context.Background(), host, pr, "expected"); err == nil {
@@ -81,6 +86,7 @@ func TestVerifyMergedProof_RejectsIncompleteProof(t *testing.T) {
 }
 
 func TestBuildHost_ForgejoRejectsForkRouting(t *testing.T) {
+	t.Parallel()
 	sctx := &pipeline.StepContext{
 		Ctx:    context.Background(),
 		Run:    &db.Run{},

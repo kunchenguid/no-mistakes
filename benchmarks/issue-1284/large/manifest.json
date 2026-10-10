@@ -1,0 +1,37 @@
+{
+  "main": "667530452f6eede6989beeff224954594942d35e",
+  "strict": "e07fd4ade4bea4581ccadc790849fc62fbdcce47",
+  "repetitions": 10,
+  "cases": [
+    {
+      "name": "machine-local-overrides",
+      "base": "e0432007c17c3a64e49bb5d6d8a325a573882660",
+      "head": "f4b85ae161cef8f14e289cc90aebae044ed570b9",
+      "files": 20,
+      "insertions": 1293,
+      "deletions": 37
+    },
+    {
+      "name": "review-coverage",
+      "base": "10de791c738136d428f88c8d92465e56efe38c33",
+      "head": "ac8e342c54b97a99936dddc238198db342b7b966",
+      "files": 12,
+      "insertions": 1054,
+      "deletions": 34
+    },
+    {
+      "name": "review-answer-follow",
+      "base": "a1c06cdaefcefa7cbc6902ac507f68ce9eed14ad",
+      "head": "cf93ddc28b79ecff5500d07a9d57e0ff0276e7c8",
+      "files": 20,
+      "insertions": 1136,
+      "deletions": 38
+    }
+  ],
+  "provider": "openai-codex",
+  "model": "gpt-6.1-sol",
+  "thinking": "high",
+  "pi_version": "0.99.1",
+  "harness_sha256": "6c3337a8c7e02675cf824eabf2b596d1b0f55476da95c58f2c86a4e7aab12aeb",
+  "script_sha256": "4fdb6a22fd3afa664119aa9c6ec6935e5f1dd4af446418076673a7a4b13fa736"
+}

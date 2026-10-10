@@ -25,6 +25,7 @@ import (
 // runShellCommandWithEnv: the heartbeat keeps advancing and the PID is never
 // reaped within the window.
 func TestRunShellCommandWithEnv_KillsGrandchildOnCancel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	heartbeat := filepath.Join(dir, "tick")
 	pidFile := filepath.Join(dir, "grandchild.pid")
@@ -82,6 +83,7 @@ func TestRunShellCommandWithEnv_KillsGrandchildOnCancel(t *testing.T) {
 // This test fails if that defer is removed: the heartbeat keeps advancing and
 // the grandchild is never reaped after the command returns.
 func TestRunShellCommandWithEnv_ReapsGrandchildOnCleanExit(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	heartbeat := filepath.Join(dir, "tick")
 	pidFile := filepath.Join(dir, "grandchild.pid")

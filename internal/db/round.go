@@ -10,7 +10,8 @@ const (
 	RoundSelectionSourceAutoFix = "auto_fix"
 	// RoundSelectionSourceUserDeclined records that a human resolved the
 	// round's approval gate without selecting any finding to fix: approve,
-	// skip, or abort. Before this existed, those three resolutions wrote no
+	// skip, or abort, or a fix response that declined every finding the gate
+	// showed (--ignore with no --findings). Before this existed, those three resolutions wrote no
 	// finding-level state at all, so "the human declined every finding" and
 	// "there were no findings" were the same row and no later step or run
 	// could tell them apart. The decline itself is still stored the way a
@@ -240,7 +241,9 @@ func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source
 // findings were selected for fix, how the selection was made, and the merged
 // finding list dispatched to the fix agent. The same empty-string versus
 // DeclinedSelectionJSON distinction described on SetStepRoundSelection
-// applies here.
+// applies here. The decline set is derived on read as the complement of the
+// selection (minus any finding an earlier user round of the same step chose to
+// fix), never stored, so there is no decline column to keep in step with it.
 func (d *DB) SetStepRoundUserDecision(id string, selectedFindingIDs *string, source string, userFindingsJSON *string) error {
 	var selectionSource *string
 	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {

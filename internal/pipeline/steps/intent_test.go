@@ -62,6 +62,7 @@ func newIntentStepContext(t *testing.T) *pipeline.StepContext {
 }
 
 func TestIntentStep_SuccessPersistsAndAttaches(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -113,6 +114,7 @@ func TestIntentStep_SuccessPersistsAndAttaches(t *testing.T) {
 }
 
 func TestIntentStep_SuccessSanitizesLoggedIntentOnly(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -158,6 +160,7 @@ func TestIntentStep_SuccessSanitizesLoggedIntentOnly(t *testing.T) {
 }
 
 func TestIntentStep_NoMatchReturnsSkipped(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -178,6 +181,7 @@ func TestIntentStep_NoMatchReturnsSkipped(t *testing.T) {
 }
 
 func TestIntentStep_ExtractErrorReturnsSkippedNotError(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -198,6 +202,7 @@ func TestIntentStep_ExtractErrorReturnsSkippedNotError(t *testing.T) {
 }
 
 func TestIntentStep_UsesFiveMinuteExtractionTimeout(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	var remaining time.Duration
 	var hasDeadline bool
@@ -223,6 +228,7 @@ func TestIntentStep_UsesFiveMinuteExtractionTimeout(t *testing.T) {
 }
 
 func TestIntentStep_SlowExtractionPastOldTimeoutStillAttachesIntent(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(ctx context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -258,6 +264,7 @@ func TestIntentStep_SlowExtractionPastOldTimeoutStillAttachesIntent(t *testing.T
 }
 
 func TestIntentStep_DisambiguatorCleanupErrorReturnsError(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -278,6 +285,7 @@ func TestIntentStep_DisambiguatorCleanupErrorReturnsError(t *testing.T) {
 }
 
 func TestIntentStep_DisabledByConfigSkipsExtractor(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	sctx.Config.Intent.Enabled = false
 
@@ -302,6 +310,7 @@ func TestIntentStep_DisabledByConfigSkipsExtractor(t *testing.T) {
 }
 
 func TestIntentStep_PanicReturnsSkipped(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -319,6 +328,7 @@ func TestIntentStep_PanicReturnsSkipped(t *testing.T) {
 }
 
 func TestIntentStep_UsesSuppliedIntent(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	supplied := "agent-supplied: add retry to the uploader"
 	sctx.Run.Intent = &supplied

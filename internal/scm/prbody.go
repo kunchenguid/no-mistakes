@@ -37,6 +37,25 @@ func MaxPRBodyChars(p Provider) int {
 	}
 }
 
+// PRBodyLimiter is implemented by hosts whose description limit is only known
+// at runtime. Provider plugins declare theirs in the "status" handshake,
+// so the limit is valid only after Host.Available succeeded.
+type PRBodyLimiter interface {
+	MaxPRBodyChars() int
+}
+
+// HostMaxPRBodyChars returns the description limit for host, preferring the
+// host's own runtime declaration over the static per-provider table.
+func HostMaxPRBodyChars(host Host) int {
+	if host == nil {
+		return 0
+	}
+	if limiter, ok := host.(PRBodyLimiter); ok {
+		return limiter.MaxPRBodyChars()
+	}
+	return MaxPRBodyChars(host.Provider())
+}
+
 // ClampPRBody truncates body to at most max PRBodyLen units, cutting on a rune
 // boundary and appending a truncation marker (kept inside the budget) when it
 // cuts. max <= 0 means unlimited and returns body unchanged. This is the

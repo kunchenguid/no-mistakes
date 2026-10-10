@@ -76,7 +76,7 @@ the run's test evidence and never the conversation. The only published copy is
 the bounded rendering in the PR body, which goes through the home-path redaction
 every published body does. Publishing the raw files instead would put the full
 question text, the full answer text and who answered on an orphan branch
-verbatim and permanently, with neither of those protections.
+permanently and unbounded.
 
 ### questions.ndjson
 
@@ -264,7 +264,7 @@ whose category is `review-question`, which means:
 - the TUI, the IPC event stream and `axi status` already surface the park;
 - `review_agent_timeout` (30 m) cannot count the wait, because there is no
   agent turn in flight: the turn ended before the park, and the finalize turn
-  is a fresh invocation with a fresh deadline from `reviewAgentContext`.
+  is a fresh invocation with its own stall budget from the shared agent-run path.
 
 The findings payload rides the IPC event stream, so the gate renders at most 50
 question rows. When more are open, one further notice reports the count and

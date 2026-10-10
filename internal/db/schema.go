@@ -402,4 +402,12 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN pr_base_branch_requested INTEGER NOT NULL DEFAULT 0`,
 	// Explicit caller ownership of CI verification outside this pipeline.
 	`ALTER TABLE runs ADD COLUMN external_ci_owner TEXT NOT NULL DEFAULT ''`,
+	// Explicit axi run --closes references for the PR body Issues section (nullable;
+	// NULL means none).
+	`ALTER TABLE runs ADD COLUMN closing_issue_refs TEXT`,
+	// Set once, atomically with the read that resolves the closing issue references into
+	// the PR body. NULL means no PR body has sampled the closing issue references yet, so
+	// a late --closes can still reach the Issues section; non-NULL closes that window
+	// (see UpdateRunClosingIssueRefs / ClaimClosingIssueRefsForPRBody).
+	`ALTER TABLE runs ADD COLUMN closing_issue_refs_locked_at INTEGER`,
 }

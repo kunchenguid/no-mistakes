@@ -41,7 +41,8 @@ func TestFindingsSelectionKeepsTestEvidence(t *testing.T) {
 		"select by id":     filterFindingsJSON(original, []string{"t-1"}),
 		"select none":      filterFindingsJSON(original, nil),
 		"retain matching":  retainMatchingFindingsJSON(original, keepOne),
-		"remove matching":  removeMatchingFindingsJSON(original, keepOne),
+		"exclude by id":    excludeFindingsJSON(original, []string{"t-1"}),
+		"exclude none":     excludeFindingsJSON(original, nil),
 		"merge additional": mergeFindingsJSON(original, keepOne),
 	} {
 		parsed, err := types.ParseFindingsJSON(got)

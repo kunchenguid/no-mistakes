@@ -117,6 +117,12 @@ const FindingCategoryReviewQuestion = "review-question"
 // recorded as an override rather than a silent green completion.
 const FindingCategoryTestCommand = "test-command"
 
+// FindingCategoryTestVerdict marks the finding the Test step derives from its
+// evidence turn's verdict. A completed evidence turn replaces an earlier
+// verdict finding; a budget-cut park can retain the last completed turn's
+// verdict finding because the cut supplies no new verdict.
+const FindingCategoryTestVerdict = "test-verdict"
+
 // FindingIDTestAgentTimeout is the Test-step park when an evidence or repair
 // invocation burned its wall-clock budget. It is a budget/provider-slowness
 // cut, not a product defect; TestOverrideReason treats an approval of this
@@ -389,13 +395,34 @@ func FindingsMetadata(findings Findings) Findings {
 	return findings
 }
 
-// NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
+// NormalizeFindings trims IDs and makes them unique within the findings set.
+// The first occurrence of an explicit ID keeps it; missing IDs and later
+// duplicates receive deterministic prefix-N IDs that skip every reserved ID,
+// including explicit IDs later in the set. Selecting one finding must never
+// select or discard an unrelated finding with the same ID.
+// Surrounding whitespace is never part of a finding's identity: the gate shows
+// the ID and a response names it, and the response side trims what it is given,
+// so a padded gate ID used to have no spelling that could select or decline it.
 func NormalizeFindings(findings Findings, prefix string) Findings {
+	used := make(map[string]bool, len(findings.Items))
+	for i := range findings.Items {
+		findings.Items[i].ID = strings.TrimSpace(findings.Items[i].ID)
+		if used[findings.Items[i].ID] {
+			findings.Items[i].ID = ""
+			continue
+		}
+		used[findings.Items[i].ID] = true
+	}
 	for i := range findings.Items {
 		if findings.Items[i].ID != "" {
 			continue
 		}
-		findings.Items[i].ID = prefix + "-" + itoa(i+1)
+		id := prefix + "-" + itoa(i+1)
+		for next := i + 2; used[id]; next++ {
+			id = prefix + "-" + itoa(next)
+		}
+		findings.Items[i].ID = id
+		used[id] = true
 	}
 	return findings
 }
@@ -480,6 +507,10 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 		if item.Action == "" {
 			item.Action = ActionAutoFix
 		}
+		// The added ID is trimmed for the same reason the producer's is: the
+		// identity a later round attributes by must not carry whitespace, and a
+		// padded collision must still be seen as a collision.
+		item.ID = strings.TrimSpace(item.ID)
 		if item.ID == "" || used[item.ID] {
 			item.ID, counter = nextUserFindingID(used, counter)
 		} else {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -377,6 +378,7 @@ func TestRestampPRAttestation_MissingReaderIsSkipped(t *testing.T) {
 }
 
 func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	bindPublicationComparison(t, f.sctx, f.headSHA)
 	original := compliantPipelineBody(t, f.headSHA)
@@ -397,7 +399,7 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 	f.sctx.Ctx = context.Background()
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err != nil {
 		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
 	}
@@ -422,6 +424,7 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 }
 
 func TestCIStep_UnsettledRepairPushParksImmediately(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
@@ -454,6 +457,7 @@ func TestCIStep_UnsettledRepairPushParksImmediately(t *testing.T) {
 }
 
 func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	bindPublicationComparison(t, f.sctx, f.headSHA)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
@@ -471,7 +475,7 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 	f.sctx.Ctx = context.Background()
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err == nil || !strings.Contains(err.Error(), "failed after 3 attempts") {
 		t.Fatalf("commitRepair error = %v, want unsettled attestation failure", err)
 	}
@@ -494,13 +498,14 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 // An unavailable GitLab host cannot supply the PR's live target. The repair
 // stays local even though attestation interaction would also be unavailable.
 func TestCIStep_PublishRepairRefusesUnknownGitLabTarget(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
 	f.sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	f.sctx.Run.PRURL = &gitlabPR
 	writeCIFix(f.dir)
 
-	if _, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check"); err == nil || !strings.Contains(err.Error(), "glab CLI is not installed") {
+	if _, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil); err == nil || !strings.Contains(err.Error(), "glab CLI is not installed") {
 		t.Fatalf("commitRepair error = %v, want unavailable target refusal", err)
 	}
 	if remoteHead := gitCmd(t, f.upstream, "rev-parse", "refs/heads/feature"); remoteHead != f.headSHA {
@@ -512,6 +517,7 @@ func TestCIStep_PublishRepairRefusesUnknownGitLabTarget(t *testing.T) {
 }
 
 func TestCIStep_PublishRepairDoesNotMintAttestation(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	const foreign = "a regular pull request with no pipeline section"
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
@@ -530,7 +536,7 @@ func TestCIStep_PublishRepairDoesNotMintAttestation(t *testing.T) {
 	f.sctx.Ctx = context.Background()
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err != nil {
 		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
 	}
@@ -881,6 +887,9 @@ func TestPushStep_DoesNotMintAttestation(t *testing.T) {
 	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, newHead)
 
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(foreign), 0o644); err != nil {
 		t.Fatal(err)
@@ -908,8 +917,58 @@ func TestPushStep_DoesNotMintAttestation(t *testing.T) {
 	if string(body) != foreign {
 		t.Fatal("body without an attestation must be left untouched")
 	}
+	if want := "skipping attestation rebind: pull request body carries no attestation marker"; !slices.Contains(logs, want) {
+		t.Fatalf("log = %q, want %q", logs, want)
+	}
 	if got, out := runVerifyPy(t, foreign, newHead); got != "failure" {
 		t.Fatalf("a PR not raised through no-mistakes must still fail, got %s\n%s", got, out)
+	}
+}
+
+// TestPushStep_NoPullRequestLogsTheSkippedAttestation pins the log line for
+// the skip where the PR lookup finds nothing and the run holds no PR URL: the
+// push still happens and no PR is written.
+func TestPushStep_NoPullRequestLogsTheSkippedAttestation(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, _ := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	if err := os.WriteFile(filepath.Join(dir, "new-work.txt"), []byte("new work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "new work")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, newHead, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
+	sctx.Run.Branch = "refs/heads/feature"
+	setupGateMirror(t, sctx)
+	recordReviewApproval(t, sctx, newHead)
+
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	sctx.Env = append(fakeCIGH(t, "OPEN", `[]`),
+		"FAKE_CLI_PR_LIST_JSON=[]",
+		"FAKE_CLI_LOG="+logFile,
+	)
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("push step failed: %v", err)
+	}
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != newHead {
+		t.Fatalf("remote head = %s, want %s", remoteHead, newHead)
+	}
+	if logData, err := os.ReadFile(logFile); err == nil && strings.Contains(string(logData), "pr edit") {
+		t.Fatalf("must not write a PR body when no PR exists:\n%s", logData)
+	}
+	if want := "skipping attestation write: no pull request found for this branch"; !slices.Contains(logs, want) {
+		t.Fatalf("log = %q, want %q", logs, want)
 	}
 }
 

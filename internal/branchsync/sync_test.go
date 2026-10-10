@@ -336,6 +336,29 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 			if state.State != tc.wantState || state.Relation != RelationDiverged || state.Safety != tc.wantSafe || state.Changed {
 				t.Fatalf("state = %#v", state)
 			}
+			if tc.wantSafe == "blocked_diverged" {
+				if state.NextAction == nil {
+					t.Fatalf("next action = nil, want a command that reaches %s", f.pushed)
+				}
+				if tc.name != "same path pipeline overwrite after represented work" {
+					if want := "git checkout --detach " + f.pushed; state.NextAction.Command != want {
+						t.Fatalf("next action command = %q, want %q", state.NextAction.Command, want)
+					}
+					return
+				}
+				branchRef := mustRun(t, f.local, "symbolic-ref", "HEAD")
+				localHead := mustRun(t, f.local, "rev-parse", "HEAD")
+				mustRun(t, f.local, strings.Fields(state.NextAction.Command)[1:]...)
+				if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+					t.Fatalf("HEAD after %q = %s, want %s", state.NextAction.Command, got, f.pushed)
+				}
+				if got := mustRun(t, f.local, "rev-parse", branchRef); got != localHead {
+					t.Fatalf("%s after %q = %s, want %s", branchRef, state.NextAction.Command, got, localHead)
+				}
+				if _, err := gitpkg.Run(f.ctx, f.local, "symbolic-ref", "-q", "HEAD"); err == nil {
+					t.Fatalf("HEAD still on a branch after %q", state.NextAction.Command)
+				}
+			}
 		})
 	}
 }

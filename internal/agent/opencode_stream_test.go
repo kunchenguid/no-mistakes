@@ -12,8 +12,8 @@ func TestOpencodeTokensToUsage(t *testing.T) {
 		Cache:  &opencodeCache{Read: 30, Write: 10},
 	}
 	u := opencodeTokensToUsage(tokens)
-	if u.InputTokens != 100 {
-		t.Errorf("expected input 100, got %d", u.InputTokens)
+	if u.InputTokens != 140 {
+		t.Errorf("expected input 140, got %d", u.InputTokens)
 	}
 	if u.OutputTokens != 50 {
 		t.Errorf("expected output 50, got %d", u.OutputTokens)
@@ -266,8 +266,8 @@ data: {"payload":{"type":"session.idle"}}
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if state.usage.InputTokens != 100 {
-		t.Errorf("expected input 100, got %d", state.usage.InputTokens)
+	if state.usage.InputTokens != 125 {
+		t.Errorf("expected input 125, got %d", state.usage.InputTokens)
 	}
 	if state.usage.OutputTokens != 50 {
 		t.Errorf("expected output 50, got %d", state.usage.OutputTokens)

@@ -301,3 +301,63 @@ func TestResolvePushURL_ForkWinsOverCredential(t *testing.T) {
 		t.Errorf("resolvePushURL = %q, want fork URL %q", got, forkURL)
 	}
 }
+
+// TestResolveBranchBaseSHA_EvalReplayResolvesWithoutAnUpstreamFetch pins the
+// guard that keeps eval replay off the network. An eval replay worktree is
+// restored from a captured case with the base pinned in
+// refs/remotes/origin/main and no configured remote behind it, so #1147's
+// unconditional fetchRunUpstreamBranch (first shipped in v1.83.0) made every
+// replayed review step fail with `git fetch --no-tags "" +refs/heads/main:
+// refs/remotes/origin/main: exit status 128` - reported as all codex cases
+// failing case-material prep. bff2d06 (v1.85.3, #1236) skipped the fetch for
+// EvalReplay contexts but landed without a test, so this pins both sides: the
+// replay resolves against the pinned ref, and a live gate context still
+// refuses to resolve rather than trusting a stale ref when the fetch fails.
+func TestResolveBranchBaseSHA_EvalReplayResolvesWithoutAnUpstreamFetch(t *testing.T) {
+	t.Parallel()
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-q", "--initial-branch=main", seed)
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("captured base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "base.txt")
+	gitCmd(t, seed, "commit", "-q", "-m", "captured base")
+	capturedBase := strings.TrimSpace(gitCmd(t, seed, "rev-parse", "main"))
+
+	// The replay worktree shape: no origin remote, base reachable only through
+	// the pinned remote-tracking ref.
+	replay := t.TempDir()
+	gitCmd(t, replay, "init", "-q", "--initial-branch=main", replay)
+	gitCmd(t, replay, "config", "user.name", "test")
+	gitCmd(t, replay, "config", "user.email", "test@test.com")
+	gitCmd(t, replay, "fetch", "-q", seed, "main:refs/remotes/origin/main")
+	gitCmd(t, replay, "checkout", "-q", "-b", "topic", "origin/main")
+	if err := os.WriteFile(filepath.Join(replay, "change.txt"), []byte("replayed work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, replay, "add", "change.txt")
+	gitCmd(t, replay, "commit", "-q", "-m", "replayed change")
+
+	// Use a nonexistent recorded upstream so an attempted fetch fails on every
+	// Git version; an empty fetch source is not consistently rejected.
+	unreachable := filepath.Join(t.TempDir(), "does-not-exist")
+	replayCtx := minimalStepContext(t, replay, unreachable)
+	replayCtx.EvalReplay = true
+	base, err := resolveBranchBaseSHA(context.Background(), replayCtx, "", "main")
+	if err != nil {
+		t.Fatalf("eval replay resolution failed: %v", err)
+	}
+	if base != capturedBase {
+		t.Fatalf("eval replay base = %s, want the pinned %s", base, capturedBase)
+	}
+
+	// The live-gate contrast: the same unreachable upstream must refuse to
+	// resolve rather than silently trust the pinned ref.
+	gateCtx := minimalStepContext(t, replay, unreachable)
+	_, err = resolveBranchBaseSHA(context.Background(), gateCtx, "", "main")
+	if err == nil || !strings.Contains(err.Error(), "fetch default branch") {
+		t.Fatalf("non-replay resolution error = %v, want the fetch-default-branch refusal", err)
+	}
+}

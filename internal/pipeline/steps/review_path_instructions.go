@@ -138,12 +138,13 @@ func promptPath(path string) string {
 	return path
 }
 
-// reviewPathInstructionsSection renders the matched blocks for the review
-// prompt. No configured rules, or none whose glob matches, returns the empty
-// string, which leaves the prompt byte for byte what it is without this
-// setting. The labels come from internal/config so the size the config was
-// validated against measures this exact output.
-func reviewPathInstructionsSection(matches pathInstructionMatches) string {
+// reviewPathInstructionsSection renders one source's matched blocks for the
+// review prompt under that source's heading. No configured rules, or none whose
+// glob matches, returns the empty string, which leaves the prompt byte for byte
+// what it is without this setting. The heading and labels come from
+// internal/config so the size the config was validated against measures this
+// exact output.
+func reviewPathInstructionsSection(heading string, matches pathInstructionMatches) string {
 	if len(matches.Blocks) == 0 {
 		return ""
 	}
@@ -155,13 +156,13 @@ func reviewPathInstructionsSection(matches pathInstructionMatches) string {
 				config.ReviewPathInstructionsRulesLabel+"\n"+
 				block.Instructions)
 	}
-	return "\n\n" + config.ReviewPathInstructionsHeading + "\n" + strings.Join(rendered, "\n\n")
+	return "\n\n" + heading + "\n" + strings.Join(rendered, "\n\n")
 }
 
-// logPathInstructions reports which trusted rules steered this review and which
-// did not, so a rule that never fires is visible in the step log instead of
-// looking identical to a rule that has no effect.
-func logPathInstructions(log func(string), matches pathInstructionMatches) {
+// logPathInstructions reports which rules of one source steered this review
+// and which did not, so a rule that never fires is visible in the step log
+// instead of looking identical to a rule that has no effect.
+func logPathInstructions(log func(string), source string, matches pathInstructionMatches) {
 	if log == nil {
 		return
 	}
@@ -170,15 +171,15 @@ func logPathInstructions(log func(string), matches pathInstructionMatches) {
 		for _, block := range matches.Blocks {
 			scopes = append(scopes, fmt.Sprintf("%s (%d file(s))", block.Path, len(block.Files)))
 		}
-		log(fmt.Sprintf("applied %d trusted review instruction block(s) for changed paths: %s", len(matches.Blocks), strings.Join(scopes, "; ")))
+		log(fmt.Sprintf("applied %d %s review instruction block(s) for changed paths: %s", len(matches.Blocks), source, strings.Join(scopes, "; ")))
 	}
 	if len(matches.UnmatchedIDs) > 0 {
-		log(fmt.Sprintf("%d trusted review instruction rule(s) matched no changed path: %s", len(matches.UnmatchedIDs), strings.Join(matches.UnmatchedIDs, ", ")))
+		log(fmt.Sprintf("%d %s review instruction rule(s) matched no changed path: %s", len(matches.UnmatchedIDs), source, strings.Join(matches.UnmatchedIDs, ", ")))
 	}
 	if len(matches.DuplicateIDs) > 0 {
-		log(fmt.Sprintf("skipped %d duplicate trusted review instruction rule(s): %s", len(matches.DuplicateIDs), strings.Join(matches.DuplicateIDs, ", ")))
+		log(fmt.Sprintf("skipped %d duplicate %s review instruction rule(s): %s", len(matches.DuplicateIDs), source, strings.Join(matches.DuplicateIDs, ", ")))
 	}
 	if len(matches.UnusableIDs) > 0 {
-		log(fmt.Sprintf("skipped %d trusted review instruction rule(s) with no usable path or instructions: %s", len(matches.UnusableIDs), strings.Join(matches.UnusableIDs, ", ")))
+		log(fmt.Sprintf("skipped %d %s review instruction rule(s) with no usable path or instructions: %s", len(matches.UnusableIDs), source, strings.Join(matches.UnusableIDs, ", ")))
 	}
 }

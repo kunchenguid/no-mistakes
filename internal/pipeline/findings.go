@@ -116,6 +116,12 @@ func findingFingerprint(item types.Finding) findingIdentity {
 	return key
 }
 
+// SameFinding reports whether a and b describe the same finding, ignoring the
+// ID, action, source, and operator instructions a later round may restate.
+func SameFinding(a, b types.Finding) bool {
+	return findingKey(a) == findingKey(b)
+}
+
 func countFindingFingerprints(items []types.Finding) map[findingIdentity]int {
 	counts := make(map[findingIdentity]int, len(items))
 	for _, item := range items {
@@ -150,11 +156,11 @@ func normalizeFindingsJSON(raw string, prefix string) string {
 
 func excludeFindingsJSON(raw string, ids []string) string {
 	if raw == "" || len(ids) == 0 {
-		return ""
+		return raw
 	}
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
-		return ""
+		return raw
 	}
 	excluded := types.ExcludeFindings(findings, ids)
 	if len(excluded.Items) == 0 {
@@ -162,7 +168,7 @@ func excludeFindingsJSON(raw string, ids []string) string {
 	}
 	excludedRaw, err := types.MarshalFindingsJSON(excluded)
 	if err != nil {
-		return ""
+		return raw
 	}
 	return excludedRaw
 }
@@ -186,6 +192,11 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	existingCounts := countFindingFingerprints(existing.Items)
 	additionalCounts := countFindingFingerprints(additional.Items)
 	merged := types.FindingsMetadata(existing)
+	if additional.RiskLevel != "" {
+		merged.RiskLevel = additional.RiskLevel
+		merged.RiskRationale = additional.RiskRationale
+		merged.RiskScope = additional.RiskScope
+	}
 	for _, item := range existing.Items {
 		merged.Items = append(merged.Items, item)
 		seen[findingKey(item)] = true
@@ -261,7 +272,6 @@ func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
 	}
 	return filteredRaw
 }
-
 func retainMatchingFindingsJSON(existingRaw, keepRaw string) string {
 	if existingRaw == "" || keepRaw == "" {
 		return ""
@@ -314,6 +324,32 @@ func autoFixableFindingsJSON(raw string) string {
 		return raw
 	}
 	return fixableRaw
+}
+
+// gateAutoFixEligible keeps command-gate automation action-driven. An ask-user
+// finding parks the whole gate, and another repair requires fewer findings than
+// the round it answered, including the findings deferred from that repair.
+func gateAutoFixEligible(current, previous, deferred string, fixing bool) bool {
+	findings, err := types.ParseFindingsJSON(current)
+	if err != nil || types.HasAskUserFindings(findings) || len(types.AutoFixableFindings(findings).Items) == 0 {
+		return false
+	}
+	if !fixing {
+		return true
+	}
+	prior, err := types.ParseFindingsJSON(previous)
+	if err != nil {
+		return false
+	}
+	priorCount := len(prior.Items)
+	if deferred != "" {
+		unselected, err := types.ParseFindingsJSON(deferred)
+		if err != nil {
+			return false
+		}
+		priorCount += len(unselected.Items)
+	}
+	return len(findings.Items) < priorCount
 }
 
 func hasAskUserFindingsJSON(raw string) bool {
@@ -788,9 +824,16 @@ func combineSelectedFindingIDs(selected []string, mergedFindings string) []strin
 	return result
 }
 
-// mergeUserOverridesJSON takes a findings JSON payload and applies
-// per-finding user instructions and user-authored findings. When no
-// overrides are present the input is returned unchanged.
+func resolveAddedFindingIDs(added []types.Finding, reserved ...string) []types.Finding {
+	gate := types.Findings{}
+	for _, raw := range reserved {
+		findings, _ := types.ParseFindingsJSON(raw)
+		gate.Items = append(gate.Items, findings.Items...)
+	}
+	merged := types.MergeUserOverrides(gate, nil, added)
+	return merged.Items[len(gate.Items):]
+}
+
 func mergeUserOverridesJSON(raw string, instructions map[string]string, added []types.Finding) string {
 	if len(instructions) == 0 && len(added) == 0 {
 		return raw

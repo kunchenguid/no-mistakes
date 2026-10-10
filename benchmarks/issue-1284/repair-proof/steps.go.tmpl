@@ -1,0 +1,44 @@
+package steps
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+)
+
+func Issue1284ProofOpts(kind, cwd, base, head, logs string) agent.RunOpts {
+	prompt := fmt.Sprintf(`Fix the following selected finding in this repository.
+
+Context:
+- branch: proof
+- base commit: %s
+- target commit: %s
+
+Finding:
+NonNegative violates its documented lower-bound contract. Negative inputs stay negative and positive inputs are replaced with zero. Correct this invariant without changing the test expectations.
+
+Rules:
+- Inspect the current implementation and tests, then make the smallest correct fix.
+- Do not edit tests, create commits, push, or change anything outside this repository.
+- Verify the correction with go test ./... before finishing.
+
+Observed local failing test output:
+%s`, base, head, logs)
+	schema := commitSummarySchema
+	if kind == "ci-fix" {
+		schema = ciFixConclusionSchema
+		prompt = "The following CI check failed on this change. Diagnose and fix the issue.\nFailing check: go test ./...\n\n" + prompt + "\n\nCI repair rules:\n" + ciFailingCheckFixRules
+	}
+	return agent.RunOpts{CWD: cwd, Prompt: fixerPrompt(prompt), JSONSchema: schema}
+}
+
+func Issue1284ProofValidate(kind string, output json.RawMessage) error {
+	result := &agent.Result{Output: output}
+	if kind == "ci-fix" {
+		_, err := extractCIFixConclusion(result)
+		return err
+	}
+	_, err := extractCommitSummary(result)
+	return err
+}

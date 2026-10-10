@@ -245,6 +245,7 @@ func TestLintStep_NoConfiguredLint_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 }
 
 func TestLintStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "hanging-lint-agent",

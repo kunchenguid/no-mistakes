@@ -43,6 +43,17 @@ func IsConnectTimeout(err error) bool {
 	return errors.As(err, &timeoutErr)
 }
 
+// SocketPathTooLongError reports a daemon socket path longer than the platform
+// accepts for a Unix socket (the size of sun_path, less its NUL terminator).
+type SocketPathTooLongError struct {
+	Path  string
+	Limit int
+}
+
+func (e *SocketPathTooLongError) Error() string {
+	return fmt.Sprintf("daemon socket path %s is %d bytes, over the %d-byte limit for Unix sockets on this platform; use a shorter NM_HOME (the resolved physical path counts, not a symbolic link to it)", e.Path, len(e.Path), e.Limit)
+}
+
 // CallTimeoutError reports an IPC method whose response did not arrive before
 // the caller-selected read deadline. The connection was accepted; this is a
 // slow or stuck reply, not a refused dial.
@@ -121,7 +132,7 @@ func Dial(socketPath string) (*Client, error) {
 		return nil, err
 	}
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, MaxFrameBytes), MaxFrameBytes)
 	return &Client{
 		conn:    conn,
 		encoder: json.NewEncoder(conn),
@@ -250,7 +261,7 @@ func SubscribeContext(ctx context.Context, socketPath string, params *SubscribeP
 	}
 	encoder := json.NewEncoder(conn)
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, MaxFrameBytes), MaxFrameBytes)
 
 	// Send subscribe request.
 	req, err := NewRequest(MethodSubscribe, params)

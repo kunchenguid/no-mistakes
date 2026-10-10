@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -34,6 +35,7 @@ var daemonExecutablePath = runningDaemonExecutablePath
 var daemonStop = daemon.Stop
 var daemonStart = daemon.Start
 var windowsExecutablePathForPID = defaultWindowsExecutablePathForPID
+var nixStoreDir = "/nix/store"
 
 type platformSpec struct {
 	GOOS   string
@@ -53,9 +55,10 @@ type updater struct {
 	stderr             io.Writer
 	now                func() time.Time
 	spawnBackground    func(currentVersion string) error
-	resetDaemon        func() error
+	resetDaemon        func(daemonExpected bool) error
 	paths              *paths.Paths
 	disableBackground  bool
+	nixStoreInstall    bool
 	noColor            bool
 	includePrereleases bool
 	assumeYes          bool
@@ -128,16 +131,22 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		cachePath:       p.UpdateCheckFile(),
 		executablePath:  execPath,
+		nixStoreInstall: inNixStore(execPath),
 		stdin:           os.Stdin,
 		stdout:          stdout,
 		stderr:          stderr,
 		now:             time.Now,
 		paths:           p,
 		spawnBackground: defaultSpawnBackground,
-		resetDaemon: func() error {
-			return defaultResetDaemon(p)
+		resetDaemon: func(daemonExpected bool) error {
+			return defaultResetDaemon(p, daemonExpected)
 		},
 	}, nil
+}
+
+func inNixStore(path string) bool {
+	rel, err := filepath.Rel(nixStoreDir, resolveExecutablePath(path))
+	return err == nil && rel != "." && filepath.IsLocal(rel)
 }
 
 func (u *updater) refreshCache(ctx context.Context) error {
@@ -152,7 +161,7 @@ func (u *updater) refreshCache(ctx context.Context) error {
 }
 
 func (u *updater) maybeNotifyAndCheck(args []string) {
-	if u.disableBackground || isDevVersion(u.currentVersion) || os.Getenv(noUpdateCheckEnv) == "1" {
+	if u.disableBackground || u.nixStoreInstall || isDevVersion(u.currentVersion) || os.Getenv(noUpdateCheckEnv) == "1" {
 		return
 	}
 	// Informational commands must be side-effect-free probes: `update` and the
@@ -175,7 +184,7 @@ func (u *updater) maybeNotifyAndCheck(args []string) {
 }
 
 func (u *updater) cachedLatestVersion() string {
-	if u == nil || u.disableBackground || isDevVersion(u.currentVersion) || os.Getenv(noUpdateCheckEnv) == "1" {
+	if u == nil || u.disableBackground || u.nixStoreInstall || isDevVersion(u.currentVersion) || os.Getenv(noUpdateCheckEnv) == "1" {
 		return ""
 	}
 	cache := readCache(u.cachePath)
@@ -194,6 +203,10 @@ func (u *updater) run(ctx context.Context) error {
 		fmt.Fprintf(u.stdoutWriter(), "self-update unavailable for development builds (%s)\n", u.currentVersion)
 		return nil
 	}
+	if u.nixStoreInstall {
+		fmt.Fprintf(u.stdoutWriter(), "self-update unavailable for Nix installs; upgrade through Nix (for example `nix profile upgrade %s`), then run `%s daemon restart`\n", u.appName, u.appName)
+		return nil
+	}
 	plan, err := u.checkLatest(ctx)
 	if err != nil {
 		return err
@@ -208,6 +221,7 @@ func (u *updater) run(ctx context.Context) error {
 	if err := u.confirmActiveRunsBeforeUpdate(); err != nil {
 		return err
 	}
+	daemonExpected := u.paths != nil && daemonArtifactsExist(u.paths)
 	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
 		return err
 	}
@@ -239,7 +253,7 @@ func (u *updater) run(ctx context.Context) error {
 		return err
 	}
 	if u.resetDaemon != nil {
-		if err := u.resetDaemon(); err != nil {
+		if err := u.resetDaemon(daemonExpected); err != nil {
 			var resetErr *daemonResetError
 			if errors.As(err, &resetErr) && resetErr.daemonOffline {
 				return fmt.Errorf("updated %s to %s, but daemon is offline: %w", u.appName, plan.LatestVersion, err)

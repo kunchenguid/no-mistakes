@@ -592,7 +592,7 @@ func TestAverageTokensRequiresCompleteReplayCoverage(t *testing.T) {
 		{TokensReported: true, FreshInputTokens: 10, OutputTokens: 2},
 		{TokensReported: false},
 	}
-	if cost, ok := averageTokens(rows); ok {
+	if cost, _, _, ok := averageTokens(rows); ok {
 		t.Fatalf("partial token cost = %v, want unknown", cost)
 	}
 }

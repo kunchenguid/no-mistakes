@@ -1887,7 +1887,7 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 			state.State = StateDiverged
 			state.Relation = RelationDiverged
 			state.Safety = "blocked_diverged"
-			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + pushed}
+			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git checkout --detach " + pushed}
 			state.Error = "local and pipeline-pushed histories have diverged; no files or refs were changed"
 			return
 		}

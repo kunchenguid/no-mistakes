@@ -31,6 +31,8 @@ const (
 	// ChecksRunningMsg is logged when checks are (re-)running with no failures
 	// yet, which clears any previous passed-checks state.
 	ChecksRunningMsg = "CI checks running, waiting for results..."
+	// ChecksHeadWaitingPrefix precedes the reason checks could not be bound to the delivered commit.
+	ChecksHeadWaitingPrefix = "waiting for the delivered commit's own checks: "
 	// ChecksAwaitingApprovalMsg is logged when the provider is holding a
 	// workflow until a maintainer approves it - GitHub does this to a
 	// first-time contributor's workflows - so nothing is running and nothing
@@ -97,6 +99,7 @@ func ParseActivity(logs []string) Activity {
 		case strings.Contains(line, "issues detected"),
 			strings.Contains(line, "CI checks running"),
 			line == ChecksAwaitingApprovalMsg,
+			strings.HasPrefix(line, ChecksHeadWaitingPrefix),
 			strings.Contains(line, "mergeable state still pending"),
 			strings.Contains(line, "no CI checks reported"),
 			strings.Contains(line, "waiting for checks to register"),

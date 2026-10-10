@@ -88,7 +88,10 @@ func TestDriveRun_SlowGetRunRetriesAfterHealthProbe(t *testing.T) {
 }
 
 func TestDriveRun_GetRunRPCErrorIsNotRetried(t *testing.T) {
-	setDriveGetRunTimeout(t, 60*time.Millisecond)
+	// The deadline is generous so the immediate RPC error always wins the race
+	// on a loaded runner; a short one let the attempt time out first and take
+	// the slow-reply health probe this test asserts never happens.
+	setDriveGetRunTimeout(t, 10*time.Second)
 
 	var healthCalls atomic.Int32
 	socketPath := filepath.Join(makeSocketSafeTempDir(t), "rpc-fail.sock")
@@ -349,6 +352,9 @@ type axiTimeoutOpts struct {
 	subscribe ipc.StreamHandlerFunc
 	// answer, when set, serves the daemon's answer-review-question call.
 	answer func() *ipc.AnswerReviewQuestionResult
+	// respond, when set, replaces the default respond handler so a test can
+	// return the refusals and recorded dispositions the CLI has to render.
+	respond func(context.Context, json.RawMessage) (interface{}, error)
 }
 
 type axiTimeoutFixture struct {
@@ -474,7 +480,9 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 		}
 		return &ipc.GetActiveRunResult{Run: run}, nil
 	})
-	if opts.responded != nil {
+	if opts.respond != nil {
+		srv.Handle(ipc.MethodRespond, opts.respond)
+	} else if opts.responded != nil {
 		srv.Handle(ipc.MethodRespond, func(context.Context, json.RawMessage) (interface{}, error) {
 			opts.responded.Store(true)
 			return &ipc.RespondResult{OK: true}, nil

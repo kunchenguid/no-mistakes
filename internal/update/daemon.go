@@ -72,12 +72,15 @@ func executablePathsMatch(a, b string) bool {
 	return strings.EqualFold(a, b)
 }
 
-func defaultResetDaemon(p *paths.Paths) error {
+// defaultResetDaemon restarts the daemon. daemonExpected records that daemon
+// artifacts existed before update's first probe, which may have cleared a dead
+// daemon's socket and PID file; that daemon is still started again.
+func defaultResetDaemon(p *paths.Paths, daemonExpected bool) error {
 	if p == nil {
 		return nil
 	}
 	alive, err := daemonIsRunning(p)
-	if err == nil && !alive && !daemonArtifactsExist(p) {
+	if err == nil && !alive && !daemonExpected && !daemonArtifactsExist(p) {
 		return nil
 	}
 	if err := daemonStop(p); err != nil {

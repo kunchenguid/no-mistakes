@@ -15,6 +15,7 @@ import (
 )
 
 func TestReviewAndTestRefuseLostVerificationPlan(t *testing.T) {
+	t.Parallel()
 	for _, step := range []pipeline.Step{&ReviewStep{}, &TestStep{}} {
 		t.Run(string(step.Name()), func(t *testing.T) {
 			dir, base, head := setupGitRepo(t)
@@ -48,6 +49,7 @@ func TestReviewAndTestRefuseLostVerificationPlan(t *testing.T) {
 }
 
 func TestVerificationPlanExecutionGuidanceOnlyReachesTest(t *testing.T) {
+	t.Parallel()
 	for _, step := range []pipeline.Step{&ReviewStep{}, &TestStep{}} {
 		t.Run(string(step.Name()), func(t *testing.T) {
 			dir, base, head := setupGitRepo(t)

@@ -12,6 +12,7 @@ import (
 )
 
 func TestCIFixSurfacesForgejoLogRetrievalFailures(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		logs       string
@@ -70,10 +71,13 @@ func TestFetchCILogOutputBudgetsEachSelectedTargetAndSurfacesErrors(t *testing.T
 		},
 		errs: map[string]error{"check-b": errors.New("job log expired")},
 	}
-	output := fetchCILogOutput(context.Background(), host, &scm.PR{Number: "42"}, "feature", "abc123", []scm.CheckTarget{
+	output, err := fetchCILogOutput(context.Background(), host, &scm.PR{Number: "42"}, "feature", "abc123", []scm.CheckTarget{
 		{Name: "test", ProviderID: "check-a"},
 		{Name: "test", ProviderID: "check-b"},
 	}, 32*1024)
+	if err != nil {
+		t.Fatalf("fetchCILogOutput error = %v", err)
+	}
 	if len(output) > 32*1024 {
 		t.Fatalf("log output length = %d, want at most 32768", len(output))
 	}

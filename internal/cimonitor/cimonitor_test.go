@@ -198,3 +198,20 @@ func TestParseActivity_LastEvent(t *testing.T) {
 		t.Errorf("expected merged as last event, got %q", a.LastEvent)
 	}
 }
+
+func TestHeadBindingWaitReplacesPreviousActivity(t *testing.T) {
+	t.Parallel()
+	// The monitor's emitted log contract says this is waiting, regardless of
+	// whether the preceding activity was green or a repair.
+	wait := "waiting for the delivered commit's own checks: PR head changed"
+	for _, previous := range []string{ChecksPassedMsg, NoChecksPassedMsg, "running agent to fix CI"} {
+		t.Run(previous, func(t *testing.T) {
+			logs := []string{previous, wait}
+			for _, activity := range []Activity{ParseActivity(logs), FromAuthoritative(false, false, logs)} {
+				if activity.Ready || activity.DeclaredNoCI || activity.AutoFixing || activity.LastEvent != wait {
+					t.Fatalf("activity = %+v, want waiting with the latest event", activity)
+				}
+			}
+		})
+	}
+}

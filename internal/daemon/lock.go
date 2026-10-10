@@ -14,6 +14,8 @@ import (
 // process already holds the lock for the same NM_HOME.
 var ErrSingletonLockHeld = errors.New("a no-mistakes daemon is already running for this NM_HOME")
 
+const singletonLockRetry = 250 * time.Millisecond
+
 // singletonLock guards NM_HOME against more than one live daemon process.
 // It must be acquired before any global, destructive startup operation
 // (stale-run recovery, orphan worktree cleanup) and before the IPC socket is
@@ -34,14 +36,22 @@ type singletonLock struct {
 // p.LockFile(). If another live daemon already holds it, it returns
 // ErrSingletonLockHeld wrapped with whatever diagnostic info (pid, start
 // time) the holder recorded, so the caller can report the existing daemon
-// instead of silently proceeding.
+// instead of silently proceeding. It retries for singletonLockRetry first,
+// because a status probe clearing a dead daemon's socket and PID file holds
+// the lock for a moment (clearDeadDaemonArtifacts); a real daemon holds it
+// for its whole life and still fails the acquire.
 func acquireSingletonLock(p *paths.Paths) (*singletonLock, error) {
 	path := p.LockFile()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open daemon lock %s: %w", path, err)
 	}
-	if lockErr := tryLockFile(f); lockErr != nil {
+	lockErr := tryLockFile(f)
+	for deadline := time.Now().Add(singletonLockRetry); lockErr != nil && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		lockErr = tryLockFile(f)
+	}
+	if lockErr != nil {
 		holder := readLockHolder(f)
 		f.Close()
 		if holder != "" {

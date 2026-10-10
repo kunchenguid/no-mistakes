@@ -74,6 +74,11 @@ type StepContext struct {
 	CarriedFindings  string
 	PreviousFindings string // JSON findings selected for the current fix round
 	DeferredFindings string // JSON findings left unselected when the current fix round began
+	// AutoFixRound is true when the automatic fix loop, not a human response,
+	// started the current fix round. Only then do DeferredFindings hold
+	// findings nobody has decided on: a human fix response accounts for every
+	// finding it leaves unselected as an explicit decline.
+	AutoFixRound bool
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string
@@ -139,6 +144,12 @@ type StepContext struct {
 	// AXI checks-passed outcome read a running status. Nil in embeddings that
 	// never fix.
 	MarkRunning func() error
+	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
+	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
+	OnPRMerged func(ctx context.Context, runID string)
+	// ClosingIssueRefs are the explicit --closes values claimed from the DB at
+	// PR-step start. Steps read this snapshot instead of mutable run state.
+	ClosingIssueRefs []string
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,
@@ -149,7 +160,7 @@ type StepContext struct {
 // from the session that prescribed the fixes under review. Every other agent
 // invocation goes through RunAgent.
 func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(sctx.Ctx, opts, role)
+	return sctx.runAgent(sctx.Ctx, opts, role, 0, 0, nil)
 }
 
 // StepOutcome is the result of executing a pipeline step.

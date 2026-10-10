@@ -152,7 +152,7 @@ func (s *Server) CloseListener() {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, MaxFrameBytes), MaxFrameBytes)
 	encoder := json.NewEncoder(conn)
 
 	// Bind OS-authenticated peer identity to every request on this connection.

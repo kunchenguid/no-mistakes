@@ -12,6 +12,7 @@ import (
 )
 
 func TestLogConfiguredCommandOutputKeepsFullFileLogAndBoundsIPC(t *testing.T) {
+	t.Parallel()
 	for _, step := range []types.StepName{types.StepTest, types.StepLint} {
 		t.Run(string(step), func(t *testing.T) {
 			middle := "IPC_MUST_OMIT_THIS_MIDDLE"
@@ -49,6 +50,7 @@ func TestLogConfiguredCommandOutputKeepsFullFileLogAndBoundsIPC(t *testing.T) {
 }
 
 func TestConfiguredCommandFailureSummaryBoundsHeadTailAndUTF8(t *testing.T) {
+	t.Parallel()
 	head := "HEAD_MARKER context before failure\n"
 	tail := "\nTAIL_MARKER 最后的错误🙂\n"
 	output := head + strings.Repeat("middle diagnostic line αβγ\n", 10000) + tail
@@ -85,6 +87,7 @@ func TestConfiguredCommandFailureSummaryBoundsHeadTailAndUTF8(t *testing.T) {
 }
 
 func TestConfiguredCommandFailureSummaryUsesLintLogAndLeavesSmallOutputIntact(t *testing.T) {
+	t.Parallel()
 	small := "lint failed at file.go:10\n"
 	if got := configuredCommandFailureSummary(small, types.StepLint); got != small {
 		t.Fatalf("small output changed: %q", got)

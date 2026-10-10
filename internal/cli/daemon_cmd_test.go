@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -157,5 +158,23 @@ func TestReconciledPreviousHeadPushOptionRoundTrip(t *testing.T) {
 	}
 	if _, err := parseReconciledPreviousHeadPushOptions([]string{"no-mistakes.reconciled-previous-head=refs/heads/main"}); err == nil {
 		t.Fatal("a non-SHA previous head claim was accepted")
+	}
+}
+
+func TestClosingIssueRefsPushOptionsRoundTrip(t *testing.T) {
+	options := formatClosingIssueRefsPushOptions([]string{"42", "owner/repo#9"})
+	got, err := parseClosingIssueRefsPushOptions(append([]string{"ci.skip"}, options...))
+	if err != nil {
+		t.Fatalf("parseClosingIssueRefsPushOptions() error = %v", err)
+	}
+	if refs := strings.Join(got, ","); refs != "42,owner/repo#9" {
+		t.Fatalf("parseClosingIssueRefsPushOptions() = %q, want both references", refs)
+	}
+}
+
+func TestParseClosingIssueRefsPushOptionsRejectsInvalidValue(t *testing.T) {
+	_, err := parseClosingIssueRefsPushOptions([]string{"no-mistakes.closes=42 Fixes #99"})
+	if err == nil {
+		t.Fatal("expected invalid closing issue references push option to fail")
 	}
 }

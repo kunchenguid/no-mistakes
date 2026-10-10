@@ -201,14 +201,14 @@ func TestAxiStatusForeignRunGateHelpCannotMutateCurrentBranch(t *testing.T) {
 		"gate:",
 		"other branch gate",
 		"inspection-only",
-		"no run-scoped response command exists",
+		"axi respond --run " + other.ID + " --action",
 		"axi logs --run " + other.ID + " --step review --full",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("foreign-run gate status missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "axi respond") {
+	if strings.Contains(out, "axi respond --action") {
 		t.Fatalf("foreign-run gate status offered a branch-scoped mutation command:\n%s", out)
 	}
 }
@@ -254,14 +254,14 @@ func TestAxiStatusExplicitOlderSameBranchRunGateIsInspectionOnly(t *testing.T) {
 	if doc.Run.ID != older.ID {
 		t.Fatalf("explicit status resolved run %q, want older run %s:\n%s", doc.Run.ID, older.ID, out)
 	}
-	if strings.Contains(out, "axi respond") {
+	if strings.Contains(out, "axi respond --action") {
 		t.Fatalf("explicit older-run status offered a bare command that would target newer run %s:\n%s", newer.ID, out)
 	}
 	for _, want := range []string{
 		"gate:",
 		"older run gate",
 		"inspection-only",
-		"no run-scoped response command exists",
+		"axi respond --run " + older.ID + " --action",
 		"axi logs --run " + older.ID + " --step review --full",
 	} {
 		if !strings.Contains(out, want) {
@@ -329,14 +329,14 @@ func TestAxiStatusExplicitRunWithUnknownCallerBranchCannotOfferMutationCommands(
 	if doc.OtherBranchRun.ID != "" {
 		t.Fatalf("status asserted an unproven branch relationship:\n%s", out.String())
 	}
-	if strings.Contains(out.String(), "axi respond") {
+	if strings.Contains(out.String(), "axi respond --action") {
 		t.Fatalf("explicit run without proven caller-branch ownership offered a mutation command:\n%s", out.String())
 	}
 	for _, want := range []string{
 		"gate:",
 		"other branch gate",
 		"inspection-only",
-		"no run-scoped response command exists",
+		"axi respond --run " + other.ID + " --action",
 		"axi logs --run " + other.ID + " --step review --full",
 	} {
 		if !strings.Contains(out.String(), want) {

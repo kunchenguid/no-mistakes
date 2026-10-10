@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
 )
 
 // Logging and stateful PR readback consume the same command stdin, not two
@@ -23,11 +25,25 @@ import (
 var readFakeBody = sync.OnceValues(func() ([]byte, error) { return io.ReadAll(os.Stdin) })
 
 func main() {
+	// The fake provider plugin is selected by executable name, not by
+	// FAKE_CLI_MODE: that variable is shared by every fake gh/git in the same
+	// step environment.
+	if isFakeProviderPlugin(os.Args[0]) {
+		os.Exit(fakeplugin.Main(os.Args[1:], os.Stdin, os.Stdout, os.Getenv(fakeplugin.EnvState), os.Getenv(fakeplugin.EnvLog)))
+	}
 	mode := os.Getenv("FAKE_CLI_MODE")
 	if mode == "" {
 		os.Exit(1)
 	}
 	handleFakeCLI(mode)
+}
+
+// isFakeProviderPlugin ignores the extension and its case: Windows resolves
+// a PATH lookup through PATHEXT, which yields an upper-case ".EXE".
+func isFakeProviderPlugin(arg0 string) bool {
+	base := filepath.Base(arg0)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	return strings.EqualFold(base, fakeplugin.ExecutableName)
 }
 
 func handleFakeCLI(mode string) {
@@ -196,6 +212,9 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		if os.Getenv("FAKE_CLI_PR_CREATE_EMPTY") == "1" {
+			os.Exit(0)
+		}
 		fakeGHStorePRBody(args)
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
@@ -425,16 +444,71 @@ func fakeGlabHandler(args []string) {
 			fmt.Println(mrViewJSON)
 			os.Exit(0)
 		}
+		if state, ok := fakeGlabMRState(); ok {
+			fmt.Println(state)
+			os.Exit(0)
+		}
 		os.Exit(1)
 	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "update" {
+		fakeGlabRecordMR(args, 0)
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "create" {
+		fakeGlabRecordMR(args, 99)
 		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+// fakeGlabRecordMR keeps a created or updated merge request's title and
+// description in FAKE_CLI_MR_STATE_FILE, so a later `glab mr view` - which the
+// PR step uses to verify the body it published - reads back what was published.
+// A flag the update omits keeps the recorded value, mirroring GitLab's
+// partial-update semantics. State is only kept when the variable is set;
+// without it the handler answers statically from FAKE_CLI_MR_VIEW_JSON.
+func fakeGlabRecordMR(args []string, iid int) {
+	path := os.Getenv("FAKE_CLI_MR_STATE_FILE")
+	if path == "" {
+		return
+	}
+	record := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &record)
+	}
+	if value, ok := fakeCLIFlagValue(args, "--title"); ok {
+		record["title"] = value
+	}
+	if value, ok := fakeCLIFlagValue(args, "--description"); ok {
+		record["description"] = value
+	}
+	if iid != 0 {
+		record["iid"] = iid
+	}
+	record["web_url"] = fmt.Sprintf("https://gitlab.com/test/repo/-/merge_requests/%v", record["iid"])
+	data, err := json.Marshal(record)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// fakeGlabMRState renders the recorded merge request as `glab mr view` would.
+func fakeGlabMRState() (string, bool) {
+	path := os.Getenv("FAKE_CLI_MR_STATE_FILE")
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "", false
+	}
+	return string(data), true
 }
 
 func fakeCLIFlagValue(args []string, flag string) (string, bool) {
@@ -862,10 +936,7 @@ func fakeCIGlabHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "mr view") {
-		fmt.Printf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":{"id":7}}`,
-			state, conflicts, mergeStatus)
-		fmt.Println()
-		os.Exit(0)
+		fakeCIGlabServeMRView(state, conflicts, mergeStatus)
 	}
 	if strings.Contains(joined, "mr create") {
 		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
@@ -874,7 +945,7 @@ func fakeCIGlabHandler(args []string) {
 	if strings.Contains(joined, "mr update") {
 		os.Exit(0)
 	}
-	if strings.Contains(joined, "api --paginate projects/test%2Frepo/pipelines/7/jobs") {
+	if fakeCIGlabIsPipelineJobsRead(joined) {
 		fmt.Println(checksJSON)
 		os.Exit(0)
 	}
@@ -890,7 +961,91 @@ func fakeCIGlabHandler(args []string) {
 		fmt.Println(traceOutput)
 		os.Exit(0)
 	}
+	// The review-comment read asks for the merge request's discussion notes.
+	// FAKE_CLI_REVIEW_DISCUSSIONS is the raw array the discussions endpoint
+	// returns; an unset value answers an MR with no discussions.
+	if strings.Contains(joined, "/discussions") {
+		discussions := os.Getenv("FAKE_CLI_REVIEW_DISCUSSIONS")
+		if discussions == "" {
+			discussions = "[]"
+		}
+		fmt.Println(discussions)
+		os.Exit(0)
+	}
 	os.Exit(1)
+}
+
+// fakeCIGlabServeMRView answers `glab mr view` for the CI fakes.
+// FAKE_CLI_MR_VIEW_ERR makes the read fail like a provider or CLI failure;
+// otherwise the fakes' scripted merge request is printed.
+func fakeCIGlabServeMRView(state, conflicts, mergeStatus string) {
+	if os.Getenv("FAKE_CLI_MR_VIEW_ERR") == "1" {
+		fmt.Fprintln(os.Stderr, "merge request read failed")
+		os.Exit(1)
+	}
+	fmt.Println(fakeCIGlabMRViewJSON(state, conflicts, mergeStatus))
+	os.Exit(0)
+}
+
+// fakeCIGlabMRViewJSON renders the merge request the CI fakes serve. The source
+// revision it reports comes from FAKE_CLI_MR_HEAD_SHA, and the head pipeline
+// (id 7) ran at FAKE_CLI_PIPELINE_SHA (the source revision by default) for
+// FAKE_CLI_PIPELINE_REF. The CI step names the run's head on every poll, so a
+// GitLab check read is bound to it: a fake merge request that cannot name the
+// revision the run is delivering is refused by design, and a test that wants a
+// stale pipeline sets FAKE_CLI_PIPELINE_SHA to a different commit.
+func fakeCIGlabMRViewJSON(state, conflicts, mergeStatus string) string {
+	sourceSHA := os.Getenv("FAKE_CLI_MR_HEAD_SHA")
+	pipelineSHA := os.Getenv("FAKE_CLI_PIPELINE_SHA")
+	pipelineRef := os.Getenv("FAKE_CLI_PIPELINE_REF")
+	if pipelineSHA == "" {
+		pipelineSHA = sourceSHA
+	}
+	if pipelineRef == "" {
+		pipelineRef = "refs/heads/feature"
+	}
+	pipeline := `{"id":7}`
+	if pipelineSHA != "" {
+		pipeline = fmt.Sprintf(`{"id":7,"sha":%q,"ref":%q}`, pipelineSHA, pipelineRef)
+	}
+	return fmt.Sprintf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","sha":%q,"state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":%s}`,
+		sourceSHA, state, conflicts, mergeStatus, pipeline)
+}
+
+// fakeCIGlabIsPipelineJobsRead reports whether the invocation is the REST jobs
+// read the adapter uses when a project path is known: a pipeline's job list is
+// read through `glab api --paginate projects/<path>/pipelines/<id>/jobs`.
+func fakeCIGlabIsPipelineJobsRead(joined string) bool {
+	return strings.HasPrefix(joined, "api ") && strings.Contains(joined, "/pipelines/") && strings.HasSuffix(joined, "/jobs")
+}
+
+// fakeCIGlabSequenceChecks returns the next entry of the checks sequence the
+// ci-glab-seq fake serves and advances the index, so a test can script a
+// pending job followed by a passing one. The index sticks at the last entry.
+func fakeCIGlabSequenceChecks() (string, bool) {
+	data, err := os.ReadFile(os.Getenv("FAKE_CLI_CHECKS_PATH"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return "", false
+	}
+	entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(entries) == 0 || entries[0] == "" {
+		return "[]", true
+	}
+	index := 0
+	if rawIndex, err := os.ReadFile(os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
+			index = parsed
+		}
+	}
+	if index >= len(entries) {
+		index = len(entries) - 1
+	}
+	if err := os.WriteFile(os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH"), []byte(strconv.Itoa(index+1)), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return "", false
+	}
+	return entries[index], true
 }
 
 func fakeCIGlabSequenceHandler(args []string) {
@@ -907,8 +1062,6 @@ func fakeCIGlabSequenceHandler(args []string) {
 	if mergeStatus == "" {
 		mergeStatus = "mergeable"
 	}
-	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
-	indexPath := os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
@@ -923,36 +1076,14 @@ func fakeCIGlabSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "mr view") {
-		fmt.Printf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":{"id":7}}`,
-			state, conflicts, mergeStatus)
-		fmt.Println()
-		os.Exit(0)
+		fakeCIGlabServeMRView(state, conflicts, mergeStatus)
 	}
-	if strings.Contains(joined, "ci status") || strings.Contains(joined, "ci get") {
-		data, err := os.ReadFile(checksPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+	if fakeCIGlabIsPipelineJobsRead(joined) || strings.Contains(joined, "ci status") || strings.Contains(joined, "ci get") {
+		entry, ok := fakeCIGlabSequenceChecks()
+		if !ok {
 			os.Exit(1)
 		}
-		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(entries) == 0 || entries[0] == "" {
-			fmt.Println("[]")
-			os.Exit(0)
-		}
-		index := 0
-		if rawIndex, err := os.ReadFile(indexPath); err == nil {
-			if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
-				index = parsed
-			}
-		}
-		if index >= len(entries) {
-			index = len(entries) - 1
-		}
-		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		fmt.Println(entries[index])
+		fmt.Println(entry)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "ci trace") {

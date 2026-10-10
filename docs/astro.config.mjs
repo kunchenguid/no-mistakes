@@ -56,6 +56,7 @@ export default defineConfig({
             { label: "Pipeline Steps", slug: "reference/pipeline-steps" },
             { label: "Global Config", slug: "reference/global-config" },
             { label: "Repo Config", slug: "reference/repo-config" },
+            { label: "Provider Plugin Protocol", slug: "reference/provider-plugin-protocol" },
             { label: "Environment Variables", slug: "reference/environment" },
           ],
         },
