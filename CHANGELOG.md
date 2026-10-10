@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.93.0](https://github.com/kunchenguid/no-mistakes/compare/v1.92.0...v1.93.0) (2026-10-10)
+
+
+### Features
+
+* **pipeline:** log the two silent attestation skips before push ([#1400](https://github.com/kunchenguid/no-mistakes/issues/1400)) ([e5ce16b](https://github.com/kunchenguid/no-mistakes/commit/e5ce16b2cbc63b6fedd1a600043d2bd8ebdaa851))
+
+
+### Bug Fixes
+
+* **gate:** let rebased-equivalent mirror commits reconcile when later live commits edited them ([#1238](https://github.com/kunchenguid/no-mistakes/issues/1238)) ([f5b4bf9](https://github.com/kunchenguid/no-mistakes/commit/f5b4bf92df755e5526d18cfeeb321a6446ebadb1))
+* **pipeline:** preserve unselected Test findings during auto-fix ([#1407](https://github.com/kunchenguid/no-mistakes/issues/1407)) ([40a56a7](https://github.com/kunchenguid/no-mistakes/commit/40a56a7f27f33115c1b12774db77f7b93be1a10a))
+* **scm:** bind GitLab CI evidence to the delivered commit ([#1401](https://github.com/kunchenguid/no-mistakes/issues/1401)) ([ec80c6a](https://github.com/kunchenguid/no-mistakes/commit/ec80c6a83fbf672f3245b52d76626644ac098c31))
+* **scm:** reject unreadable GitLab check responses ([#1370](https://github.com/kunchenguid/no-mistakes/issues/1370)) ([8920066](https://github.com/kunchenguid/no-mistakes/commit/8920066df6c108d16df1ea98747772bbe2175712))
+
 ## [1.92.0](https://github.com/kunchenguid/no-mistakes/compare/v1.91.0...v1.92.0) (2026-10-09)
 
 
