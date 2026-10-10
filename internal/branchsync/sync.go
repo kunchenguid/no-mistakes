@@ -59,6 +59,16 @@ const (
 const (
 	SafetySafeFastForward       = "safe_fast_forward"
 	SafetySafeEquivalentAdvance = "safe_equivalent_advance"
+	// SafetyStaleSubmittedMirror qualifies a released (user_owned) branch whose
+	// local head was rewritten - a rebase onto a moved base, an amend for the
+	// next revision - while the private gate lane still names the exact
+	// submitted head of the terminal run that released it. An ordinary gate
+	// push refuses that lane as non-fast-forward, so the reported run_pipeline
+	// action is a fresh `axi run`: it archives the stale head under
+	// refs/tags/no-mistakes-abandoned/<branch>/<sha> before submitting the
+	// rewritten branch (docs/src/content/docs/concepts/gate-model.md, Private
+	// mirror reconciliation).
+	SafetyStaleSubmittedMirror = "stale_submitted_mirror"
 )
 
 // State is the shared branch synchronization contract rendered by CLI, AXI,
@@ -2512,14 +2522,60 @@ func exactCommitRefCompatible(ctx context.Context, repoDir, ref, expected string
 // classifyUserOwned reports a branch released by its terminal outcome: the
 // terminal run ended before the pipeline changed the submitted head, so no
 // pipeline-created content exists to recover. The exact branch and head are
-// the operator's and immediately usable - no sync action is required or
-// offered, and a separately authorized direct push or PR is never blocked.
+// the operator's and immediately usable - no sync action is required, and a
+// separately authorized direct push or PR is never blocked.
+//
+// One rewrite shape still needs a named next step. Only the push step advances
+// the private gate lane, so a workflow that skips it (a review server publishes
+// the change itself) leaves the lane at the submitted head of a run that has
+// long since ended. When the operator then rewrites the released branch for its
+// next revision - a rebase onto a moved base, an amend - the local head diverges
+// from that exact submitted head, an ordinary gate push is refused as
+// non-fast-forward, and the content proof refuses the changed patch as at risk.
+// That lane head is the operator's own exact submission with nothing
+// pipeline-authored behind it, so when the worktree is clean status reports
+// SafetyStaleSubmittedMirror with run_pipeline: the fresh `axi run` archives the
+// head and submits the rewritten branch (internal/cli/axi_drive.go
+// releasedRunSubmittedHeadForFreshRun). A dirty worktree keeps the plain
+// released classification, because `axi run` refuses it and the action could
+// not be followed. A lane at any other head keeps the plain released
+// classification too, and a local head that is merely behind is not a rewrite.
 func (s *Service) classifyUserOwned(ctx context.Context, state *State) {
 	state.State = StateUserOwned
 	state.Safety = "user_owned"
 	state.Error = ""
 	state.NextAction = nil
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, state.Pipeline.CurrentHead)
+	if state.Local.Clean && state.Relation == RelationDiverged && s.gateLaneHoldsReleasedSubmittedHead(ctx, *state) {
+		state.Safety = SafetyStaleSubmittedMirror
+		state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+	}
+}
+
+// gateLaneHoldsReleasedSubmittedHead reports whether the private gate lane of a
+// released branch still names the exact submitted head its terminal run never
+// moved off, in a shape a fresh submission can archive: the run never
+// published, the lane is a direct (non-symbolic) ref at that head, and any
+// existing archive tag already records the same head. It reads the gate only;
+// it never fetches, writes, or dereferences a ref.
+func (s *Service) gateLaneHoldsReleasedSubmittedHead(ctx context.Context, state State) bool {
+	submitted := state.Pipeline.SubmittedHead
+	if submitted == "" || state.Pipeline.CurrentHead != submitted || state.Pipeline.PushedHead != "" {
+		return false
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return false
+	}
+	gateHead, exists, err := git.DirectRefTarget(ctx, gateDir, "refs/heads/"+state.Local.Branch)
+	if err != nil || !exists || gateHead != submitted {
+		return false
+	}
+	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, "refs/tags/no-mistakes-abandoned/"+state.Local.Branch+"/"+submitted)
+	return err == nil && (!archived || archivedHead == submitted)
 }
 
 // runHeadUnmoved reports whether the run's pipeline head still equals the

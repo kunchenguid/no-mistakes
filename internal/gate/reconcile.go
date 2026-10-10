@@ -58,7 +58,10 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 //
 // Rewritten histories require both stable per-file patch identities and final
 // tree survival. runOwnedHead is a policy exception, not containment evidence:
-// fresh submissions must leave it empty, and pipeline publication goes through
+// a fresh submission supplies it only as the exact submitted head of the
+// terminal, never-published run that released the branch
+// (internal/cli/axi_drive.go releasedRunSubmittedHeadForFreshRun) and leaves it
+// empty otherwise; pipeline publication goes through
 // PlanMirrorPublicationReconciliation instead. The contract and rationale are
 // owned by docs/src/content/docs/concepts/gate-model.md (Private mirror
 // reconciliation).
