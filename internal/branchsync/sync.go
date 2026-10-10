@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -133,6 +134,8 @@ type RecoveryEvidence struct {
 	ArchiveRef    string
 	KeepLocal     bool
 	Proof         string
+	// StrandedHeads binds every run whose history the operator chose to preserve.
+	StrandedHeads map[string]string
 }
 
 // CanApply reports whether Apply may advance the clean checked-out branch for
@@ -672,11 +675,18 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 // stranded stack; inspection then reports custody_returned (never-pushed runs)
 // or the ordinary classification against the last push binding (pushed runs),
 // both pointing at run_pipeline as the next step.
-func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
+// confirmed binds an available-head choice to the inspected proof; nil retains
+// the separately authorized keep-local discard semantics.
+func (s *Service) Recover(ctx context.Context, keepLocal bool, confirmed *RecoveryEvidence) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
 	}
 	state, run, _ := s.inspect(ctx)
+	if confirmed != nil && confirmed.Source == "available_heads" {
+		if !keepLocal || !reflect.DeepEqual(confirmed, state.Recovery) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the confirmed available-head custody proof changed; no files or refs were changed")
+		}
+	}
 	// Only a live read can observe a rewritten remote, and a custody-returned
 	// run keeps a push binding a third party can still rewrite, so this check
 	// precedes every cached no-op below.
@@ -812,7 +822,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// keep-local path at the exact required head recorded in the proof.
 	source := s.recoverySourceAvailable(ctx, &state, run)
 	if state.Recovery != nil && state.Recovery.Source == "available_heads" &&
-		(!source.available || source.evidence == nil || source.evidence.Source != "available_heads") {
+		(!source.available || !reflect.DeepEqual(state.Recovery, source.evidence)) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the available-head custody proof changed; no files or refs were changed")
 	}
 	if source.archiveClaimed {
@@ -2404,13 +2414,17 @@ func (s *Service) availableHeadsKeepLocalSource(ctx context.Context, state *Stat
 	if err != nil || !exists || !objectExists(ctx, s.GateDir, gateHead) {
 		return recoverySourceProof{}
 	}
+	strandedHeads := make(map[string]string, len(runIDs))
+	for i, id := range runIDs {
+		strandedHeads[id] = heads[i]
+	}
 	return recoverySourceProof{
 		available: true, runIDs: runIDs, heads: heads,
 		action: NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"},
 		evidence: &RecoveryEvidence{
 			Source: "available_heads", RepositoryID: s.Repo.ID, RunID: run.ID,
 			Branch: state.Local.Branch, RequiredHead: state.Local.Head, PreservedHead: run.HeadSHA,
-			KeepLocal: true, Proof: "verified",
+			KeepLocal: true, Proof: "verified", StrandedHeads: strandedHeads,
 		},
 	}
 }

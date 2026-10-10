@@ -1772,3 +1772,80 @@ func asExitError(err error, target **exitError) bool {
 	}
 	return false
 }
+
+// confirmationReader changes the external Git state only when the command
+// consumes the operator's answer, after rendering its recovery promise.
+type confirmationReader struct {
+	before func()
+}
+
+func (r confirmationReader) Read(p []byte) (int, error) {
+	r.before()
+	return copy(p, "yes\n"), nil
+}
+
+func TestHumanRecoveryBindsConfirmedAvailableHeads(t *testing.T) {
+	for _, drift := range []bool{false, true} {
+		t.Run(fmt.Sprint(drift), func(t *testing.T) {
+			f := newCLIRecoverFixture(t)
+			if err := os.WriteFile(filepath.Join(f.local, "operator.txt"), []byte("independent fix\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cliGit(t, f.local, "add", "operator.txt")
+			cliGit(t, f.local, "commit", "-m", "operator fix")
+			local := cliGit(t, f.local, "rev-parse", "HEAD")
+			cliGit(t, f.gate, "fetch", f.local, local+":refs/no-mistakes/test-local")
+			p, err := paths.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			database, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			if err := database.UpdateRunStatusWithVerifiedHead(f.runID, types.RunFailed, f.preserved); err != nil {
+				t.Fatal(err)
+			}
+			previous := syncInteractive
+			syncInteractive = func() bool { return true }
+			t.Cleanup(func() { syncInteractive = previous })
+			cmd := newRootCmd()
+			out := new(bytes.Buffer)
+			cmd.SetOut(out)
+			cmd.SetErr(out)
+			var localRefs, gateRefs string
+			cmd.SetIn(confirmationReader{before: func() {
+				if drift {
+					cliGit(t, f.local, "commit", "--allow-empty", "-m", "concurrent change")
+				}
+				localRefs = cliGit(t, f.local, "show-ref")
+				gateRefs = cliGit(t, f.gate, "show-ref")
+			}})
+			cmd.SetArgs([]string{"sync", "--recover", "--keep-local"})
+			err = cmd.Execute()
+			run, readErr := database.GetRun(f.runID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if drift {
+				if err == nil || run.CustodyReturnedAt != nil {
+					t.Fatalf("drift accepted: %v\n%s", err, out)
+				}
+				if cliGit(t, f.local, "show-ref") != localRefs || cliGit(t, f.gate, "show-ref") != gateRefs {
+					t.Fatal("refusal mutated refs")
+				}
+			} else {
+				if err != nil || run.CustodyReturnedAt == nil {
+					t.Fatalf("unchanged proof refused: %v\n%s", err, out)
+				}
+				if cliGit(t, f.local, "rev-parse", "HEAD") != local {
+					t.Fatal("recovery moved caller")
+				}
+				if cliGit(t, f.local, "rev-parse", "refs/no-mistakes/recover/"+f.runID) != f.preserved {
+					t.Fatal("recovery lost pipeline history")
+				}
+			}
+		})
+	}
+}

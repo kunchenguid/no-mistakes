@@ -89,9 +89,10 @@ type Model struct {
 	syncService    *branchsync.Service
 	syncRefresh    func() branchsync.State
 	syncApply      func() branchsync.State
-	syncRecover    func(bool) branchsync.State
+	syncRecover    func(bool, *branchsync.RecoveryEvidence) branchsync.State
 	syncConfirm    bool
 	recoverConfirm bool
+	recoverPlan    *branchsync.State
 	syncRefreshing bool
 }
 
@@ -497,7 +498,9 @@ func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion 
 		model.syncService = service
 		model.syncRefresh = func() branchsync.State { return service.Refresh(context.Background()) }
 		model.syncApply = func() branchsync.State { return service.Apply(context.Background()) }
-		model.syncRecover = func(keepLocal bool) branchsync.State { return service.Recover(context.Background(), keepLocal) }
+		model.syncRecover = func(keepLocal bool, confirmed *branchsync.RecoveryEvidence) branchsync.State {
+			return service.Recover(context.Background(), keepLocal, confirmed)
+		}
 		model.refreshCachedSync()
 	}
 	p := tea.NewProgram(model, tea.WithAltScreen())

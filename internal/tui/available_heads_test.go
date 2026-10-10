@@ -20,7 +20,10 @@ func TestAvailableHeadsRecoveryKeepsLocalAfterConfirmation(t *testing.T) {
 	}
 	m.branchSync = &state
 	called := false
-	m.syncRecover = func(keepLocal bool) branchsync.State {
+	m.syncRecover = func(keepLocal bool, confirmed *branchsync.RecoveryEvidence) branchsync.State {
+		if confirmed != state.Recovery {
+			t.Fatal("confirmed preservation proof was not forwarded")
+		}
 		if !keepLocal {
 			t.Fatal("available-head custody recovery did not keep local")
 		}
@@ -45,6 +48,9 @@ func TestAvailableHeadsRecoveryKeepsLocalAfterConfirmation(t *testing.T) {
 			t.Errorf("confirmation missing %q:\n%s", want, confirmation)
 		}
 	}
+	refreshed := state
+	refreshed.Recovery = nil
+	m.branchSync = &refreshed
 	next, cmd = m.handleKey(keyMsg("enter"))
 	m = next.(Model)
 	if cmd == nil || called {

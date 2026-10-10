@@ -418,10 +418,14 @@ func (m Model) applyRecoverCmd() tea.Cmd {
 	if recover == nil {
 		return nil
 	}
-	keepLocal := m.branchSync != nil && m.branchSync.Recovery != nil && m.branchSync.Recovery.KeepLocal
+	keepLocal := m.recoverPlan != nil && m.recoverPlan.Recovery != nil && m.recoverPlan.Recovery.KeepLocal
+	var confirmed *branchsync.RecoveryEvidence
+	if m.recoverPlan != nil {
+		confirmed = m.recoverPlan.Recovery
+	}
 	return func() tea.Msg {
 		started := time.Now()
-		state := recover(keepLocal)
+		state := recover(keepLocal, confirmed)
 		result := "refused"
 		if state.Recovered && state.Changed {
 			result = "applied"

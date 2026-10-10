@@ -309,7 +309,7 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 		}
 	}
 
-	recovered := service.Recover(cmd.Context(), keepLocal)
+	recovered := service.Recover(cmd.Context(), keepLocal, state.Recovery)
 	observed = recovered
 	printHumanSyncState(cmd, recovered)
 	if recovered.Recovered {
@@ -485,7 +485,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 	case check:
 		state = service.Refresh(cmd.Context())
 	case recover:
-		state = service.Recover(cmd.Context(), keepLocal)
+		confirmed := service.InspectCached(cmd.Context())
+		state = service.Recover(cmd.Context(), keepLocal, confirmed.Recovery)
 	case adoptPublished:
 		state = service.AdoptPublished(cmd.Context())
 	default:
