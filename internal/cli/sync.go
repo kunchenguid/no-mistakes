@@ -19,6 +19,7 @@ var syncInteractive = terminalInteractive
 func newSyncCmd() *cobra.Command {
 	var check, yes, recover, keepLocal, adoptPublished bool
 	var bindArchiveRef string
+	var reviewed reviewedRecoveryFlags
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Safely move the current branch to an exact pipeline-pushed head",
@@ -45,6 +46,12 @@ func newSyncCmd() *cobra.Command {
 			"published there.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if reviewed.requested() {
+				if check || yes || recover || keepLocal || adoptPublished || bindArchiveRef != "" {
+					return &exitError{code: 2, err: fmt.Errorf("reviewed recovery cannot be combined with ordinary sync/recovery flags or --yes")}
+				}
+				return runReviewedRecovery(cmd, reviewed, false)
+			}
 			if check && yes {
 				return &exitError{code: 2, err: fmt.Errorf("--check and --yes cannot be used together")}
 			}
@@ -75,12 +82,14 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
+	reviewed.register(cmd)
 	return cmd
 }
 
 func newAxiSyncCmd() *cobra.Command {
 	var check, recover, keepLocal, adoptPublished bool
 	var bindArchiveRef string
+	var reviewed reviewedRecoveryFlags
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -103,6 +112,12 @@ func newAxiSyncCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if reviewed.requested() {
+				if check || recover || keepLocal || adoptPublished || bindArchiveRef != "" {
+					return emitError(cmd, 2, "reviewed recovery cannot be combined with ordinary sync/recovery flags")
+				}
+				return runReviewedRecovery(cmd, reviewed, true)
+			}
 			if (check && recover) || (check && adoptPublished) || (recover && adoptPublished) {
 				return emitError(cmd, 2, "choose only one of --check, --recover, and --adopt-published")
 			}
@@ -120,6 +135,7 @@ func newAxiSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
+	reviewed.register(cmd)
 	return cmd
 }
 

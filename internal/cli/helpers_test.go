@@ -73,10 +73,7 @@ func init() {
 }
 
 func TestMain(m *testing.M) {
-	base := os.TempDir()
-	if runtime.GOOS != "windows" {
-		base = "/tmp"
-	}
+	base := socketSafeTempBase(os.TempDir(), runtime.GOOS)
 	root, err := os.MkdirTemp(base, "nm-cli-test-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create test NM_HOME: %v\n", err)
@@ -349,10 +346,7 @@ func TestIsMissingWorktreeError(t *testing.T) {
 func makeSocketSafeTempDir(t *testing.T) string {
 	t.Helper()
 
-	base := os.TempDir()
-	if runtime.GOOS != "windows" {
-		base = "/tmp"
-	}
+	base := socketSafeTempBase(os.TempDir(), runtime.GOOS)
 	dir, err := os.MkdirTemp(base, "nmh-")
 	if err != nil {
 		t.Fatal(err)

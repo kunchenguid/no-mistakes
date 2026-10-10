@@ -1218,6 +1218,13 @@ func reviewedHeadProvesEquivalentTarget(ctx context.Context, dir, local, reviewe
 // and the pre-recovery head stays anchored. Custody is stamped only after the
 // whole move is verified.
 func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, containmentProven bool) State {
+	return s.recoverMovePreserved(ctx, run, state, preserved, containmentProven, nil, nil)
+}
+
+// recoverMovePreserved shares only the fail-closed Git materialization. Explicit
+// reviewed adoption supplies its own evidence guard and conditional stamp;
+// ordinary recovery retains its existing containment proof and finish path.
+func (s *Service) recoverMovePreserved(ctx context.Context, run *db.Run, state State, preserved string, containmentProven bool, guard func() bool, finish func() State) State {
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
 	}
@@ -1253,6 +1260,9 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	if s.beforeRecoverBranchMove != nil {
 		s.beforeRecoverBranchMove()
 	}
+	if guard != nil && !guard() {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the reviewed recovery tuple changed before the branch move; preserved refs remain and custody was not returned")
+	}
 	branchRef := "refs/heads/" + state.Local.Branch
 	boundaryBranch, boundaryErr := git.CurrentBranch(ctx, wd)
 	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
@@ -1267,7 +1277,8 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	// KNOWN BOUNDED FUNDAMENTAL-GIT LIMITATION: a concurrent git checkout
 	// landing between this branch-identity verification and the read-tree
 	// working-tree update can apply the preserved tree to another branch's
-	// worktree. This is not data loss: containment is proven before the move,
+	// worktree. The ordinary path proves containment before the move; the
+	// explicit reviewed path binds consent to the exact replacement. In both,
 	// the pre-recovery head stays anchored at
 	// refs/no-mistakes/recover-local/<run>, custody is never stamped, and the
 	// operation fails closed to a reported failure rather than a false success.
@@ -1287,7 +1298,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	if _, err := git.Run(ctx, wd, "read-tree", "-m", "-u", head, preserved); err != nil {
 		rolledBack := ""
 		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
-			rolledBack = fmt.Sprintf("; the branch could not be restored to %s and now points at %s, whose content the pre-recovery head is contained in", head, preserved)
+			rolledBack = fmt.Sprintf("; the branch could not be restored to %s; the pre-recovery head remains anchored at %s", head, localAnchor)
 		}
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so no file was overwritten%s; re-run the recovery once the working tree is settled", rolledBack))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
@@ -1312,6 +1323,9 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		state.Error = fmt.Sprintf("HEAD reached the preserved pipeline head, but the worktree is not clean; nothing was overwritten and the pre-recovery head is anchored at %s; custody was not recorded", localAnchor)
 		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return state
+	}
+	if finish != nil {
+		return finish()
 	}
 	return s.finishRecover(ctx, run, true)
 }

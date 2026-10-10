@@ -62,6 +62,25 @@ func OpenReadOnly(path string) (*DB, error) {
 	return &DB{sql: sqlDB}, nil
 }
 
+// OpenExisting opens an existing current-schema database for a guarded local
+// mutation without creating tables or repairing a legacy schema. Recovery must
+// validate its evidence before its first write.
+func OpenExisting(path string) (*DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	sqlDB, err := sql.Open("sqlite", "file:"+path+"?mode=rw&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
+		return nil, err
+	}
+	return &DB{sql: sqlDB}, nil
+}
+
 // isDuplicateColumnErr reports whether err is SQLite's "duplicate column name"
 // error, which ALTER TABLE ADD COLUMN emits when the column already exists.
 // Treating this as a no-op keeps migrations idempotent without a version table.
