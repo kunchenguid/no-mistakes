@@ -10,6 +10,13 @@ Google Cloud Secure Source Manager, or anything else with an API - without that
 forge's code living in no-mistakes. This page is the contract the executable
 implements.
 
+Protocol v1 provides PR and CI operations, but does not define the complete
+PR-facts contract required by PR-context resolution. Plugin-backed network
+runs must have complete PR-facts support before core steps can proceed;
+otherwise they fail closed at PR-context resolution. Protocol-v1 plugins do
+not currently provide that support, so configuring one alone is insufficient
+to run core steps against its network host.
+
 The plugin is an **AXI-shaped CLI**: subcommands such as `pr find` and
 `pr checks`, each printing one JSON document when called with `--json`. It is
 the same shape no-mistakes uses to drive

@@ -7,14 +7,16 @@ The PR and CI steps need to talk to your git host. Six hosts are supported:
 GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps
 (`dev.azure.com` and legacy `*.visualstudio.com`), and Gitea (almost always
 self-hosted). Any other host can be wired up on your machine with a
-[provider plugin](#custom-hosts-with-provider-plugins); without one, the PR and
-CI steps short-circuit with `skipped`.
+[provider plugin](#custom-hosts-with-provider-plugins). Provider integration is
+required for PR-context resolution on network remotes; without a provider that
+supplies complete PR facts, the run fails closed before core steps can proceed.
 
-Provider integration is optional for the local gate. You only need it for the
-steps that happen after validation: opening or updating the PR, watching hosted
-CI, and fixing remote-only failures.
+Provider integration is needed for PR-context resolution, opening or updating
+the PR, watching hosted CI, and fixing remote-only failures. A local-only target
+can use the local gate without a forge provider.
 
-Without any provider setup, `no-mistakes` still gives you the local gate:
+For a local-only target without provider setup, `no-mistakes` still gives you
+the local gate:
 
 - rebase
 - review
@@ -322,8 +324,13 @@ JSON document on stdout (PR bodies arrive in a private `--body-file`). Six
 subcommands are required (`status`, `pr find`, `pr create`, `pr update`,
 `pr view`, `pr checks`); mergeability, failed-log fetching, merged proof, and
 PR retargeting are optional capabilities the plugin declares in `status`.
+These commands do not define the complete PR-facts contract required by
+PR-context resolution. Plugin-backed network runs must have complete PR-facts
+support before core steps can proceed; otherwise they fail closed at
+PR-context resolution. Protocol-v1 plugins do not currently provide that
+support.
 
-**What you get:**
+Once complete PR-facts support is available, the plugin provides:
 
 - PR creation and update, including [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate) and pre-push attestation
 - CI check polling until the PR is merged or closed, or the configured `ci_timeout` idle window elapses
@@ -352,7 +359,7 @@ If your upstream isn't GitHub, GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, o
 - The **PR** step marks itself as `skipped`.
 - The **CI** step marks itself as `skipped`.
 
-Everything before push (rebase, review, test, document, lint) still works regardless of host. To add PR and CI support, write a [provider plugin](#custom-hosts-with-provider-plugins).
+For a network remote, the run requires a provider with complete PR-facts support before core steps can proceed; otherwise PR-context resolution fails closed. The plugin protocol below does not currently define that PR-facts contract, so a protocol-v1 plugin alone does not satisfy the prerequisite. Local-only targets can still run the local gate. To add PR and CI command support, write a [provider plugin](#custom-hosts-with-provider-plugins), but PR-context support is also required for a network-host integration.
 
 ## Checking what's wired up
 
