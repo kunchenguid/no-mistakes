@@ -645,6 +645,13 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 //     the gate branch to the kept head with an atomic compare-and-swap, so a
 //     concurrent gate push wins and recovery refuses. An independently moved
 //     gate head is pinned first so that CAS never discards it.
+//   - Clean divergent heads can offer available_heads keep-local recovery only
+//     with a verified terminal head, both local and pipeline heads present in
+//     the gate, and verified available evidence for every stranded run. No run
+//     may have an archive binding, and the gate branch must be a direct commit
+//     ref. Recovery anchors every stranded history without claiming containment
+//     or combining fixes. Changed availability refuses instead of falling back
+//     to missing-head discard; the gate CAS never dereferences a symbolic ref.
 //   - A bound archive can make that keep-local choice discoverable for a
 //     divergent later P without authorizing P as the working result. Exactly one
 //     append-only record must revalidate its repository, run, branch, exact
