@@ -366,25 +366,39 @@ func TestPostReceiveHookScript(t *testing.T) {
 	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hookPath := filepath.Join(base, "post-receive")
-	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, canonicalHookGate(t, gate), canonicalHookGate(t, gate))), 0o755); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name string
+		gate string
+	}{
+		{name: "POSIX", gate: canonicalHookGate(t, gate)},
+		{name: "Windows drive", gate: `C:\Users\runner\nm\repos\repo.git`},
+		{name: "Windows UNC", gate: `\\server\share\nm\repos\repo.git`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The real shell resolves the local receiving gate; the recording
+			// CLI must receive the separately pinned native spelling. This
+			// exercises argument selection without requiring a Windows host.
+			hookPath := filepath.Join(base, "post-receive")
+			if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin, tc.gate, canonicalHookGate(t, gate))), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", hookPath)
+			cmd.Dir = gate
+			cmd.Env = append(os.Environ(), "GIT_DIR=.", "MSYS2_ARG_CONV_EXCL=*")
+			cmd.Stdin = strings.NewReader("old new refs/heads/main\n")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run post-receive hook: %v: %s", err, out)
+			}
+			args, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gateArgFromArgv(string(args)); got != tc.gate {
+				t.Fatalf("hook passed gate %q, want pinned native gate %q", got, tc.gate)
+			}
+			t.Logf("MSYS2_ARG_CONV_EXCL=*: CLI received --gate %q", gateArgFromArgv(string(args)))
+		})
 	}
-	cmd := exec.Command("/bin/sh", hookPath)
-	cmd.Dir = gate
-	cmd.Env = append(os.Environ(), "GIT_DIR=.", "MSYS2_ARG_CONV_EXCL=*")
-	cmd.Stdin = strings.NewReader("old new refs/heads/main\n")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("run post-receive hook: %v: %s", err, out)
-	}
-	args, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := gateArgFromArgv(string(args)), canonicalHookGate(t, gate); got != want {
-		t.Fatalf("hook passed gate %q, want pinned native gate %q", got, want)
-	}
-
 }
 
 func TestShellSingleQuote(t *testing.T) {

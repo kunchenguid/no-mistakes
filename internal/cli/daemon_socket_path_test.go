@@ -100,6 +100,7 @@ func TestPreReceiveHookThroughShortLinkReportsPhysicalSocketPathTooLong(t *testi
 	if err == nil {
 		t.Fatalf("hook should refuse the push; output %q", out)
 	}
+	t.Logf("Enrolled hook through a short symlink refused admission:\n%s", out)
 	wantSocket := filepath.Join(root, "socket")
 	for _, want := range []string{wantSocket, fmt.Sprintf("is %d bytes", len(wantSocket)), "-byte limit", "gate push refused"} {
 		if !strings.Contains(string(out), want) {

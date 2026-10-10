@@ -38,7 +38,11 @@ func TestCIWorkflowUsesDedicatedLocalRunner(t *testing.T) {
 		}
 	}
 	for name, job := range wf.Jobs {
-		if !slices.Equal(wfList(job.RunsOn), []string{"self-hosted", "Linux", "X64", "king-server", "no-mistakes"}) {
+		wantRunner := []string{"self-hosted", "Linux", "X64", "king-server", "no-mistakes"}
+		if name == "windows-receive-hooks" {
+			wantRunner = []string{"windows-2025"}
+		}
+		if !slices.Equal(wfList(job.RunsOn), wantRunner) {
 			t.Errorf("%s runner routing = %v", name, job.RunsOn)
 		}
 		if job.If != "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository" {
@@ -74,4 +78,20 @@ func TestCIWorkflowRunsEndToEndJourneys(t *testing.T) {
 		}
 	}
 	t.Fatal("local CI must exercise make e2e")
+}
+
+func TestCIWorkflowRunsGitForWindowsReceiveHooks(t *testing.T) {
+	job := loadCIWorkflowDoc(t).Jobs["windows-receive-hooks"]
+	if job == nil {
+		t.Fatal("CI workflow has no Windows receive-hook runtime job")
+	}
+	if wfScalar(job.RunsOn) != "windows-2025" {
+		t.Fatalf("Windows receive-hook runner = %v", job.RunsOn)
+	}
+	for _, command := range workflowCommandsMatching(job.Steps, func(wfStep) bool { return true }) {
+		if command.name == "go" && slices.Equal(command.args, []string{"test", "-vet=off", "-tags=e2e", "./internal/git", "-run", "'^TestReceiveHooksGitForWindows$'", "-count=1", "-v", "-timeout=3m", "|", "Tee-Object", "-FilePath", "windows-receive-hooks.log"}) {
+			return
+		}
+	}
+	t.Fatal("Windows CI must execute the targeted receive-hook integration test")
 }

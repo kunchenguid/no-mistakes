@@ -78,3 +78,44 @@ jobs:
           go-version: '1.27.1'
       - name: End-to-end journeys with temporary daemon cleanup
         run: make e2e
+
+  windows-receive-hooks:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+      - name: Git for Windows drive and UNC receive hooks
+        shell: pwsh
+        env:
+          NM_TEST_GIT_WINDOWS_SHELL: 'C:\Program Files\Git\bin\bash.exe'
+          NO_MISTAKES_TELEMETRY: 'off'
+          NO_MISTAKES_NO_UPDATE_CHECK: '1'
+        run: |
+          $scratch = Join-Path $env:GITHUB_WORKSPACE '.windows-receive-hooks'
+          New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+          $env:TMP = $scratch
+          $env:TEMP = $scratch
+          try {
+            "Tested head: $(git rev-parse HEAD)" | Set-Content windows-receive-hooks-head.txt
+            go test -vet=off -tags=e2e ./internal/git -run '^TestReceiveHooksGitForWindows$' -count=1 -v -timeout=3m | Tee-Object -FilePath windows-receive-hooks.log
+            $testExit = $LASTEXITCODE
+          } finally {
+            Remove-Item -Recurse -Force $scratch
+          }
+          exit $testExit
+      - name: Receive-hook evidence for the exact head
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-receive-hooks-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            windows-receive-hooks-head.txt
+            windows-receive-hooks.log
+          if-no-files-found: error
