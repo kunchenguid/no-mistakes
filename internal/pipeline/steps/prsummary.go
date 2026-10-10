@@ -1111,7 +1111,10 @@ func isVideoArtifact(kind, target string) bool {
 		return true
 	}
 	lower := strings.ToLower(target)
-	for _, suffix := range []string{".mp4", ".webm", ".mov"} {
+	// Every video extension a forge uploader accepts must be listed here: a
+	// recording reported without a kind is inferred from its extension, and one
+	// this misses is skipped before the uploader validates it.
+	for _, suffix := range []string{".mp4", ".m4v", ".mov", ".webm", ".ogv"} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
 		}

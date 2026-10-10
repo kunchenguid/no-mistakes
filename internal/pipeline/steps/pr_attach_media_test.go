@@ -305,6 +305,44 @@ func TestPRStep_GitLabVideoAttachmentUsesImageSyntax(t *testing.T) {
 	}
 }
 
+// TestPRStep_GitLabKindlessRecordingsAreAttached proves a recording reported
+// with only a label and a path still reaches the uploader: TestArtifact.Kind
+// is optional, so every video extension GitLab accepts must be inferred from
+// the path, or the artifact is skipped as "not an image or video" before
+// GitLab's validator ever sees it and stays a local-file reference.
+func TestPRStep_GitLabKindlessRecordingsAreAttached(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	sctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+	m4v := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.m4v", []byte("m4v"))
+	ogv := writeEvidenceFile(t, sctx.EvidenceDir, "signup.ogv", []byte("ogv"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"Checkout recording","path":%q},{"label":"Signup recording","path":%q}]}`, m4v, ogv)
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+	gitlabRules := gitlab.New(nil, nil, "", "example/widgets")
+	urls := map[string]string{
+		"checkout.m4v": "/uploads/66dbcd21ec5d24ed6ea225176098d52b/checkout.m4v",
+		"signup.ogv":   "/uploads/77dbcd21ec5d24ed6ea225176098d52b/signup.ogv",
+	}
+	uploader := &stubMediaUploader{t: t, urls: urls, validate: gitlabRules.ValidateUserAsset}
+	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitLab, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uploader.calls) != 2 {
+		t.Fatalf("uploads = %d, want 2 (%v)", len(uploader.calls), uploader.calls)
+	}
+	for label, name := range map[string]string{"Checkout recording": "checkout.m4v", "Signup recording": "signup.ogv"} {
+		if !strings.Contains(content.Body, "!["+label+"]("+urls[name]+")") {
+			t.Fatalf("expected image-syntax link for %s, got:\n%s", name, content.Body)
+		}
+	}
+	if strings.Contains(content.Body, "local file:") {
+		t.Fatalf("kind-less recordings must not cite a local path, got:\n%s", content.Body)
+	}
+}
+
 // TestPRStep_GitLabAppliesItsOwnUploadLimits proves validation is the
 // uploader's, not GitHub's: an 11 MiB screenshot is over GitHub's image limit
 // but within GitLab's 100 MiB one, so on GitLab it is uploaded.
