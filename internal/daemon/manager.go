@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -128,6 +129,30 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		}
 		plan, err := m.prepareRecoveredRun(ctx, run)
 		if err != nil {
+			// A branch-local protected_paths refusal is a permanent config error
+			// for this run's head, not a transient setup failure: terminalize it
+			// (recording the refusal) instead of leaving it marked running, where
+			// it would be re-prepared on every restart and finally swept with the
+			// unrelated "daemon crashed" reason. See CheckProtectedPathsBranchLocal.
+			if errors.Is(err, config.ErrProtectedPathsBranchLocal) {
+				// Startup recovery anchors an active run's unpublished head before
+				// failing it (preserveStaleRunHeads); this run is failed here, earlier,
+				// so it anchors its own head first so a fix commit in the worktree is
+				// not lost to worktree cleanup.
+				workDir := worktrees.RecordedDir(m.paths, run.WorktreePath(), run.RepoID, run.ID)
+				var dbErr error
+				if head, ok := preserveRunHead(m.db, workDir, run); ok {
+					dbErr = m.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, err.Error(), types.RunFailed, head)
+				} else {
+					dbErr = m.db.UpdateRunErrorStatus(run.ID, err.Error(), types.RunFailed)
+				}
+				if dbErr != nil {
+					slog.Error("failed to terminalize run refused for branch-local protected_paths", "run_id", run.ID, "error", dbErr)
+				} else {
+					slog.Warn("refused to recover run with branch-local protected_paths", "run_id", run.ID, "error", err)
+				}
+				continue
+			}
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", err)
 			continue
 		}
@@ -249,6 +274,12 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	// SECURITY: same fail-closed refusal as startRun. A recovered run must not
+	// resume into auto-fix of paths its own branch asked to protect but the
+	// trusted config does not carry.
+	if err := config.CheckProtectedPathsBranchLocal(repoCfg, trustedRepoCfg, run.Branch); err != nil {
+		return nil, err
+	}
 	cfg := config.MergeForRemote(globalCfg, effectiveRepoCfg, repo.UpstreamURL)
 	if err := cfg.Review.ValidatePathInstructionsBudget(); err != nil {
 		return nil, err
@@ -1595,6 +1626,15 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	// SECURITY: protected_paths is trusted-only, so a submitted branch's own
+	// declaration is inert. Refuse the run before any fix commit is created
+	// rather than fail open and let auto-fix mutate the paths the branch asked
+	// to protect (see config.CheckProtectedPathsBranchLocal).
+	if err := config.CheckProtectedPathsBranchLocal(repoCfg, trustedRepoCfg, branch); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("branch_local_protected_paths")
+		return "", err
+	}
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
 	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
