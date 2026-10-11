@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.94.0](https://github.com/kunchenguid/no-mistakes/compare/v1.93.0...v1.94.0) (2026-10-11)
+
+
+### Features
+
+* **scm:** add Cursor Origin SCM provider ([#1242](https://github.com/kunchenguid/no-mistakes/issues/1242)) ([9818eec](https://github.com/kunchenguid/no-mistakes/commit/9818eec7d2544265f50cc14cdd9866da97d599df))
+
+
+### Bug Fixes
+
+* **branchsync:** return custody at an unverified head that extends the gate branch ([#1423](https://github.com/kunchenguid/no-mistakes/issues/1423)) ([21c3920](https://github.com/kunchenguid/no-mistakes/commit/21c39201305a3f8a8ccc8b9844ac6a1f8c7c77a9))
+* **evidence:** redact home-directory paths in published text evidence ([#1417](https://github.com/kunchenguid/no-mistakes/issues/1417)) ([ea0be91](https://github.com/kunchenguid/no-mistakes/commit/ea0be911b81077781475974b6bca3c9dbeb17c4e))
+* **pipeline:** give each GitHub evidence attachment its own paragraph ([#1418](https://github.com/kunchenguid/no-mistakes/issues/1418)) ([3913d32](https://github.com/kunchenguid/no-mistakes/commit/3913d32756273c1272882a9baf6a5a381045bfbd))
+
 ## [1.93.0](https://github.com/kunchenguid/no-mistakes/compare/v1.92.0...v1.93.0) (2026-10-10)
 
 
