@@ -5,10 +5,10 @@ description: The AXI-shaped CLI contract a provider plugin implements to give no
 
 A provider plugin is an executable you configure under global
 [`provider_plugins`](/no-mistakes/reference/global-config/#provider_plugins). It
-lets the PR and CI steps work against any forge - a company-internal host,
+defines PR and CI operations for a custom forge - a company-internal host,
 Google Cloud Secure Source Manager, or anything else with an API - without that
 forge's code living in no-mistakes. This page is the contract the executable
-implements.
+implements, with the current pipeline limitation below.
 
 Protocol v1 provides PR and CI operations, but does not define the complete
 PR-facts contract required by PR-context resolution. Plugin-backed network
@@ -123,11 +123,12 @@ no-mistakes treats two kinds of failure differently:
 
 - **The plugin cannot serve the repository.** `status` exits non-zero (not
   authenticated, wrong account, repository unknown), or the configured command
-  does not resolve. The PR and CI steps skip with the plugin's message, exactly
-  like a built-in provider whose CLI is not logged in. The skip is not silent:
-  it is recorded as the step's skip reason and `axi` reports the run as
-  `passed-with-skips` with the reason under `run.automatic_skips`. Make the
-  message actionable (for example "run `gcloud auth login`").
+  does not resolve. At PR-context resolution this stops the run before Rebase.
+  If availability is lost later at a PR or CI step, that step's adapter records
+  a skip reason under `run.automatic_skips`; skipped delivery cannot satisfy
+  pending Review support. Make the message actionable (for example
+  "run `gcloud auth login`"). This delivery behavior does not bypass the
+  complete PR-facts prerequisite described above.
 - **The plugin broke this contract.** Unreadable output, a `protocol_version`
   other than `1`, a timeout, oversized output, a missing required key, an
   unknown enum value, a PR identity that does not match the request, or an
@@ -304,13 +305,15 @@ PR.
 
 ## What plugins do not cover
 
-These are built-in-provider features with no plugin subcommand in protocol
-version 1; with a plugin they behave as they do for providers that lack them:
+Complete PR-facts reads and discovery are not defined in protocol version 1,
+as described above. These other built-in-provider features also have no plugin
+subcommand:
 
-- Fork PR routing: a repository with a fork URL skips the PR and CI steps
-  with the reason `fork PR routing for provider plugin "<name>" is not
-  implemented`, reported under `run.automatic_skips` like every non-GitHub
-  provider. It never opens a PR from the upstream repository to itself.
+- Fork PR routing: the adapter refuses a repository with a fork URL with the
+  reason `fork PR routing for provider plugin "<name>" is not implemented`.
+  PR-context resolution fails on that refusal; if encountered in a delivery
+  step, it is recorded as a skip. It never opens a PR from the upstream
+  repository to itself.
 - Review-bot findings and transient-check reruns at the CI gate.
 - `axi run --closes` closing references (refused, as on every provider that does
   not declare the closing-reference capability) and GitHub media attachments.

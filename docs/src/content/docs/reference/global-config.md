@@ -556,7 +556,7 @@ Selection happens per run, before built-in detection and forge profiles: the rem
 
 `provider_plugins` is global-only. A plugin runs with your credentials for every repository on its hosts, so a repository `.no-mistakes.yaml` can never add, change, or redirect one; a `provider_plugins` block there is ignored.
 
-Plugins run through the same environment as built-in provider CLIs (the daemon's login-shell environment plus any forge-profile overlay) with the run worktree as the working directory. A plugin whose `status` exits non-zero (for example, not authenticated) makes the PR and CI steps skip with its message, reported under `run.automatic_skips`; a plugin that breaks the protocol (unreadable output, wrong protocol version, timeout) fails the step instead, in its `status` handshake or in any later call (a timeout during the CI step's repeated polls or log retrieval is handled like any failed read instead). `no-mistakes doctor` lists configured plugins and checks that each command resolves; it does not run the plugin, because the handshake is per repository.
+The [provider plugin protocol](/no-mistakes/reference/provider-plugin-protocol/) owns invocation, availability failures, and timeout handling, including the current complete PR-facts limitation that prevents protocol-v1 plugins from running core steps on network hosts. `no-mistakes doctor` lists configured plugins and checks that each command resolves; it does not run the plugin, because the handshake is per repository.
 
 ### ci_timeout
 
@@ -574,7 +574,7 @@ So an actively-updated green PR keeps its monitor no matter how long it stays op
 If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
-If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
+If the PR is merged or closed externally, an eligible stale gate returns to CI execution under the [CI completion rules](/no-mistakes/reference/pipeline-steps/#ci); the observation alone does not complete the run. An open, unknown, or temporarily unreachable PR remains parked for a user decision.
 
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
 
@@ -767,7 +767,7 @@ Raise this if your environment's Git credential helper (for example `gh auth git
 
 ### gate_reconcile_interval
 
-How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and clears the gate when the PR was merged or closed, and to a [review gate parked on its reviewer's own questions](/no-mistakes/concepts/review-conversation/), which resumes the reviewer once none are open.
+How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and reconciles terminal PR observations under the [CI completion rules](/no-mistakes/reference/pipeline-steps/#ci), and to a [review gate parked on its reviewer's own questions](/no-mistakes/concepts/review-conversation/), which resumes the reviewer once none are open.
 
 |         |                        |
 | ------- | ---------------------- |

@@ -192,7 +192,7 @@ Only attached runs receive plan-aware guidance. Review and Test assess the propo
 
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
-An existing open PR's actual target wins over the configured target. A fresh, explicit `--base-branch` request may retarget that exact PR before Rebase; the run reads the PR back before using the new target. A run without an owned PR keeps the selected branch as its prospective target. `--external-ci-owner` is persisted for the run and does not turn a skipped CI step into a passing check. When Review has pending CI support and Push, PR, and CI are explicitly skipped, the outcome is `pending-external-ci`. Read the typed handoff below and let the named external owner prove those claims before merge. Without that owner, pending claims block completion.
+The [`pr.base_branch` reference](/no-mistakes/reference/repo-config/#prbase_branch) owns target precedence and the one-time retarget rules. `--external-ci-owner` is explicit per run and persisted for recovery; a new run or rerun does not inherit it. Omit the flag to reattach to an active run, or supply the same owner with the required skip set; a conflicting owner is refused. It does not turn a skipped CI step into a passing check. When Review has pending CI support and Push, PR, and CI are explicitly skipped, the outcome is `pending-external-ci`. Read the typed handoff below and let the named external owner prove those claims before merge. Without that owner, pending claims block completion.
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
@@ -241,6 +241,7 @@ Report that missing evidence; this outcome does not establish CI readiness or a 
 Explicit per-run skips retain their existing behavior.
 If the run also has a Test or CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible.
 Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
+For a completed run with an external CI owner, `pending-external-ci` takes precedence over override and skip outcomes while CI claims await the handoff owner. The Test override reason remains visible. If those claims cannot be read or validated, `external-ci-handoff-unavailable` reports the error instead; neither outcome certifies CI or authorizes merge. See [`axi ci-handoff`](#no-mistakes-axi-ci-handoff).
 
 When the pipeline applied fixes, successful outcomes include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
@@ -269,6 +270,7 @@ A different nonce creates a distinct run rather than reattaching to a same-head 
 The up-to-date-push fallback preserves the latest same-head run's PR URL unless its recorded PR state is closed or merged, including when an explicit `--base-branch` retargets that PR.
 An explicit `--base-branch` is persisted on creation and must match the stored per-run base on replay; omitting it on replay preserves the stored base.
 A replay that adds `--no-publish-intent` against a run bound to publish the section is refused for the same reason; the stored omit decision folds in the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default at creation, so a replay without the flag still matches a run whose row omits publication.
+An external CI owner must match the stored owner exactly on strict-launch replay; omitting it does not match a run created with that owner.
 Explicit `--model`/`--effort` must match a stored pin the same way; omitting both preserves it.
 A conflicting claim does not consume the first `created` disposition.
 Without the two proof flags, ordinary reattachment is unchanged, and historical runs without a nonce are not adopted into a proof binding.
@@ -281,7 +283,7 @@ Read a completed run's explicit external CI proof handoff as JSON:
 no-mistakes axi ci-handoff --run <run-id>
 ```
 
-This succeeds only for a completed run with `controller-ship-pr` ownership, exactly skipped Push, PR, and CI steps, and current pending Review CI claims. The JSON includes `outcome: pending-external-ci`, `run_id`, `external_ci_owner`, the run's source repository and branch, and each claim's provider check identity and PR comparison receipt. A missing, stale, or unreadable claim returns an error and a nonzero exit. The caller verifies the source identity, PR comparison, and live checks before merge. The handoff does not assert that CI passed.
+This succeeds only for a completed run with `controller-ship-pr` ownership, skipped Push, PR, and CI steps, and 1–128 current pending Review CI claims from its approved Review. The JSON includes `outcome: pending-external-ci`, `run_id`, `external_ci_owner`, the run's source repository and branch, and each claim's provider check identity and PR comparison receipt. A missing, stale, or unreadable claim returns an error and a nonzero exit. The caller verifies the source identity, PR comparison, and live checks before merge. The handoff does not assert that CI passed.
 
 ## no-mistakes axi review-receipt
 
@@ -291,7 +293,7 @@ Read the exact comparison recorded for a completed run as JSON:
 no-mistakes axi review-receipt --run <run-id>
 ```
 
-The command requires a verified terminal head and a current comparison receipt. It returns the run and source identity, any recorded PR URL and forge head, the local head, target branch and commit, merge base, raw diff digest, and receipt generation. It fails when the receipt is missing or points at a different head. The caller must reread the live PR and target immediately before publishing or merging; this stored receipt is evidence of what the run checked, not a claim that the forge still has those coordinates.
+The command requires a verified terminal head and a current comparison receipt. It returns the run and source identity, any recorded PR URL and forge head, the local head, target branch and commit, merge base, raw diff digest, and receipt generation. It fails when the receipt is missing, points at a different head, or lacks the source repository or branch. The caller must reread the live PR and target immediately before publishing or merging; this stored receipt is evidence of what the run checked, not a claim that the forge still has those coordinates.
 
 ## no-mistakes axi respond
 

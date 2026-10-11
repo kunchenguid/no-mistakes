@@ -11,8 +11,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// PRContextCandidate is the exact PR identity and comparison observed by a
-// caller. The PR URL and forge head are empty only before a PR exists.
+// PRContextCandidate is the exact attached PR identity and comparison observed
+// by a caller. The PR URL and forge head may be empty while discovery supplies
+// an existing PR's target without binding its identity to the run.
 type PRContextCandidate struct {
 	PRURL        string
 	SourceRepo   string

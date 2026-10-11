@@ -14,8 +14,9 @@ import (
 
 var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
-// PRTargetSelection is the read-only forge target selected before any pipeline
-// step can use a base branch. An empty PRURL means no existing PR was found.
+// PRTargetSelection is the read-only forge target selected before scoped
+// pipeline work. An empty PRURL means no PR is attached; discovery may still
+// supply an existing PR's target when its head differs from the local head.
 type PRTargetSelection struct {
 	PRURL        string
 	SourceRepo   string

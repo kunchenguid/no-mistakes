@@ -70,7 +70,7 @@ Core steps use these outcomes as applicable:
 - **Return findings** with severity (`error`, `warning`, `info`) and an action (`auto-fix`, `ask-user`, `no-op`).
 - **Trigger auto-fix** if the step's `auto_fix` limit is above 0, the step result is auto-fixable, and any finding is `auto-fix`-eligible. The document step applies safe documentation fixes during its initial pass and, when `commands.lint` is empty, combines that pass with initial safe lint fixes before the lint step consumes its findings.
 - **Pause for approval** if blocking findings remain after auto-fix, any finding is `ask-user`, or Review has a selected finding still awaiting positive rereview verification. The [Review step reference](/no-mistakes/reference/pipeline-steps/#review) owns that carry-forward rule.
-- **Skip** when there's nothing to do (e.g., no diff, unsupported host).
+- **Skip** when there's nothing to do (e.g., no diff). [Unsupported network hosts](/no-mistakes/guides/provider-integration/#unsupported-hosts) fail before core validation rather than skip through it.
 - **Fail** on fatal errors and stop the pipeline.
 
 See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works, and [Using the TUI](/no-mistakes/guides/tui/) for what the approval UI looks like.

@@ -6,10 +6,11 @@ description: Set up GitHub, GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, Gite
 The PR and CI steps need to talk to your git host. Six hosts are supported:
 GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps
 (`dev.azure.com` and legacy `*.visualstudio.com`), and Gitea (almost always
-self-hosted). Any other host can be wired up on your machine with a
-[provider plugin](#custom-hosts-with-provider-plugins). Provider integration is
-required for PR-context resolution on network remotes; without a provider that
-supplies complete PR facts, the run fails closed before core steps can proceed.
+self-hosted). Custom-host operations use a
+[provider plugin](#custom-hosts-with-provider-plugins), subject to the current
+PR-facts limitation below. Network remotes fail closed before core steps unless
+the provider supplies complete PR facts; the
+[pipeline scope rules](/no-mistakes/reference/pipeline-steps/) own that prerequisite.
 
 Provider integration is needed for PR-context resolution, opening or updating
 the PR, watching hosted CI, and fixing remote-only failures. A local-only target
@@ -39,6 +40,9 @@ What you do not get is PR automation and CI monitoring.
 | **Review-bot findings and comments at the CI gate** | GitHub via `gh` CLI (check identity by app slug, comments from review threads) | GitLab via `glab` CLI (comments from unresolved discussion notes, matched by the bot's login; no check identity) | not supported | not supported | not supported | not supported | not supported |
 | **[Explicit issue closure](/no-mistakes/reference/cli/#closing-issues)** (`axi run --closes`) | `gh` CLI | `glab` CLI | not supported | not supported | not supported | not supported | not supported |
 | **[Transient-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)** (cancellations and pre-run infra failures) | `gh` CLI | not supported | not supported | not supported | not supported | not supported | not supported |
+
+The plugin column describes protocol operations; it does not establish the
+[PR-facts prerequisite](#custom-hosts-with-provider-plugins) for a core run.
 
 ## What changes when provider wiring is present
 
@@ -324,42 +328,33 @@ JSON document on stdout (PR bodies arrive in a private `--body-file`). Six
 subcommands are required (`status`, `pr find`, `pr create`, `pr update`,
 `pr view`, `pr checks`); mergeability, failed-log fetching, merged proof, and
 PR retargeting are optional capabilities the plugin declares in `status`.
-These commands do not define the complete PR-facts contract required by
-PR-context resolution. Plugin-backed network runs must have complete PR-facts
-support before core steps can proceed; otherwise they fail closed at
-PR-context resolution. Protocol-v1 plugins do not currently provide that
-support.
-
-Once complete PR-facts support is available, the plugin provides:
-
-- PR creation and update, including [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate) and pre-push attestation
-- CI check polling until the PR is merged or closed, or the configured `ci_timeout` idle window elapses
-- Failed-check log fetching, mergeability polling, merge-conflict auto-fix, and merged-at-head proof, when the plugin declares them
+Protocol-v1 plugins do not currently satisfy the complete PR-facts requirement,
+so a plugin-backed network run fails closed at PR-context resolution before
+core steps can proceed. The
+[protocol reference](/no-mistakes/reference/provider-plugin-protocol/) owns
+this limitation and the operation contracts; configuring a plugin alone does
+not enable a core pipeline run on its host.
 
 **What you don't get:**
 
 - Fork PR routing, review-bot findings, transient-check reruns, and `--closes` (a plugin declares neither the review-comment nor the closing-reference capability)
 
-no-mistakes validates every plugin answer - PR identity, URL shape, check
-buckets, and merged-proof head - and fails closed on anything malformed, on a
-protocol version mismatch, and on a timeout, so a buggy plugin cannot open a
-duplicate PR, certify the wrong commit, or turn a broken integration into a
-skipped step. A plugin that reports it cannot serve the repository (for
-example, not authenticated) skips the PR and CI steps with its message, like
-a built-in provider whose CLI is logged out. The
+The [protocol's failure rules](/no-mistakes/reference/provider-plugin-protocol/#failing-closed)
+distinguish availability failures from malformed answers and define timeout
+handling. The
 [global config reference](/no-mistakes/reference/global-config/#provider_plugins)
 owns host matching, precedence, and the trust boundary: plugins are global-only
 and a repository can never configure one.
 
 ## Unsupported hosts
 
-If your upstream isn't GitHub, GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, or Gitea, and no provider plugin claims its host:
-
-- The **push** step still runs - `no-mistakes` pushes through git to the configured target like any other remote.
-- The **PR** step marks itself as `skipped`.
-- The **CI** step marks itself as `skipped`.
-
-For a network remote, the run requires a provider with complete PR-facts support before core steps can proceed; otherwise PR-context resolution fails closed. The plugin protocol below does not currently define that PR-facts contract, so a protocol-v1 plugin alone does not satisfy the prerequisite. Local-only targets can still run the local gate. To add PR and CI command support, write a [provider plugin](#custom-hosts-with-provider-plugins), but PR-context support is also required for a network-host integration.
+An unsupported network host fails at PR-context resolution before Rebase;
+skipping PR and CI does not enable pre-push Review or Test. See the
+[pipeline scope rules](/no-mistakes/reference/pipeline-steps/) for the exact
+local-only exception. Eligible local-only targets still run the local gate
+and Push through Git, while PR and CI skip. A protocol-v1 plugin alone does
+not remove the network-host restriction; see the
+[plugin limitation](#custom-hosts-with-provider-plugins).
 
 ## Checking what's wired up
 

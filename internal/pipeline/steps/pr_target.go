@@ -130,10 +130,11 @@ func validatePRFacts(facts scm.PRFacts, provider scm.Provider, sourceRepo, branc
 	return nil
 }
 
-// currentPRTargetBranch returns the forge target for a run already bound to a
-// pull request. A run without a PR uses the same prospective target as PR
-// creation. A recorded PR must be readable: stale config cannot replace its
-// live base when a diff or integration decision is made.
+// currentPRTargetBranch uses the guard's selected target, including one from
+// an unbound PR whose head differs from the local head. Without a selection,
+// it reads a recorded PR's live target or uses the prospective creation target.
+// A recorded PR must be readable: stale config cannot replace its live base
+// when a diff or integration decision is made.
 func currentPRTargetBranch(sctx *pipeline.StepContext) (string, error) {
 	if sctx.PRTarget != nil {
 		if sctx.PRTarget.TargetBranch == "" {
