@@ -54,6 +54,10 @@ func TestPipeline_CIRepairRefreshesPublishedAttestationBeforeReadiness(t *testin
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, initialHead, config.Commands{})
 
 			prURL := "https://github.com/test/repo/pull/42"
+			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Run.PRURL = &prURL
 			env, _ := fakeGH(t, prURL)
 			bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 			if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, baseSHA)), 0o644); err != nil {
@@ -62,7 +66,11 @@ func TestPipeline_CIRepairRefreshesPublishedAttestationBeforeReadiness(t *testin
 			env = append(env,
 				"FAKE_CLI_PR_BODY_FILE="+bodyFile,
 				"FAKE_CLI_PR_TITLE=fix: stale title",
+				"FAKE_CLI_PR_BASE=main",
+				"FAKE_CLI_PR_HEAD_SHA="+initialHead,
 			)
+			sctx.Env = env
+			bindExistingPRMutationFixture(t, sctx, prURL, "main")
 			if tc.failUpdate {
 				env = append(env, "FAKE_CLI_PR_EDIT_ERR=simulated PR update failure")
 			}
@@ -207,6 +215,15 @@ func (s *attestationTransitionCI) Execute(sctx *pipeline.StepContext) (*pipeline
 	remoteHead = gitCmd(s.t, s.remote, "rev-parse", "refs/heads/feature")
 	if attested != remoteHead || remoteHead != s.finalHead {
 		return nil, fmt.Errorf("required check failure after repair: body=%s remote=%s run=%s", attested, remoteHead, s.finalHead)
+	}
+	// The fixture's CI owner returns after publishing, so it must observe the
+	// published comparison just as the normal executor boundary does.
+	_, err = guardPRContextWithSelection(sctx, types.StepCI, pipeline.PRTargetSelection{
+		PRURL: *sctx.Run.PRURL, SourceRepo: "test/repo", SourceBranch: "feature",
+		ForgeHeadSHA: remoteHead, TargetBranch: "main",
+	}, false)
+	if err != nil {
+		return nil, err
 	}
 	return &pipeline.StepOutcome{}, nil
 }

@@ -19,7 +19,7 @@ const declinedTestFindings = `{"findings":[` +
 func runGateAndRespond(t *testing.T, action types.ApprovalAction, findings string) []*db.StepRound {
 	t.Helper()
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -147,7 +147,8 @@ func TestExecutor_RecoveredGateResolutionsWithoutASelectionRecordTheDecline(t *t
 
 			exec := NewExecutor(database, p, nil, nil, []Step{newApprovalStep(types.StepTest, declinedTestFindings)}, nil)
 			done := make(chan error, 1)
-			go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+			completionDir := completionFixture(t, database, run)
+			go func() { done <- exec.Resume(context.Background(), run, repo, completionDir) }()
 
 			deadline := time.Now().Add(5 * time.Second)
 			for {
@@ -197,7 +198,7 @@ func TestExecutor_GateResolutionWithNoFindingsRecordsNoDecision(t *testing.T) {
 // Choosing to fix is still recorded as a selection, not as a decline.
 func TestExecutor_FixResolutionStillRecordsAUserSelection(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	calls := 0
 	step := &adaptiveCallStep{

@@ -19,6 +19,7 @@ func TestExecutor_FixEmitsFixReviewStatusWithoutStreamingTheDiff(t *testing.T) {
 	// Create a real git repo as workDir so DiffHead works
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
+	bindCompletionFixture(t, database, run, workDir)
 
 	// Step that needs approval on first call and after fix
 	callCount := 0
@@ -71,6 +72,8 @@ func TestExecutor_FixEmitsFixReviewStatusWithoutStreamingTheDiff(t *testing.T) {
 	}
 
 	// Approve to end
+	execGit(t, workDir, "commit", "-m", "agent fix")
+	advanceCompletionFixture(t, database, run, workDir)
 	exec.Respond(types.StepReview, types.ActionApprove, nil)
 
 	select {
@@ -85,7 +88,7 @@ func TestExecutor_FixEmitsFixReviewStatusWithoutStreamingTheDiff(t *testing.T) {
 
 func TestExecutor_FixEmitsFixingStatusImmediately(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	fixStarted := make(chan struct{})
 	releaseFix := make(chan struct{})
@@ -168,7 +171,7 @@ func TestExecutor_FixEmitsFixingStatusImmediately(t *testing.T) {
 
 func TestExecutor_FixingEventIncludesFindingStats(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 	releaseFix := make(chan struct{})
 	callCount := 0
 	findings := `{"findings":[{"id":"r1","severity":"warning","file":"one.go","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","file":"two.go","description":"two","action":"auto-fix"}],"summary":"two"}`
@@ -228,6 +231,7 @@ func TestExecutor_FixReviewNoChanges(t *testing.T) {
 	// Create a real git repo as workDir
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
+	bindCompletionFixture(t, database, run, workDir)
 
 	// Step that needs approval both times but agent makes no changes on fix
 	callCount := 0
@@ -268,7 +272,7 @@ func TestExecutor_FixReviewNoChanges(t *testing.T) {
 
 func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	findings := `{"findings":[{"severity":"error","file":"main.go","line":42,"description":"nil pointer dereference","action":"auto-fix"}],"summary":"1 error found"}`
 	var capturedFindings string
@@ -327,7 +331,7 @@ func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 
 func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -385,7 +389,7 @@ func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 
 func TestExecutor_FixAppliesUserInstructionsAndAddedFindings(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var capturedFindings string
 	callCount := 0
@@ -484,7 +488,7 @@ func firstStepID(t *testing.T, database *db.DB, runID string) string {
 
 func TestExecutor_FixUsesSelectedFindingIDsOnly(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var capturedFindings string
 	callCount := 0
@@ -539,7 +543,7 @@ func TestExecutor_FixUsesSelectedFindingIDsOnly(t *testing.T) {
 
 func TestExecutor_FixClearsStoredFindingsAfterSuccessfulReRun(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	callCount := 0
 	step := &adaptiveCallStep{
@@ -591,7 +595,7 @@ func TestExecutor_FixClearsStoredFindingsAfterSuccessfulReRun(t *testing.T) {
 
 func TestExecutor_FixPersistsFollowUpRoundAsAutoFix(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	callCount := 0
 	step := &adaptiveCallStep{
@@ -658,7 +662,7 @@ func TestExecutor_FixPersistsFollowUpRoundAsAutoFix(t *testing.T) {
 
 func TestExecutor_FixSelectedFindingsRewritesSummary(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var capturedFindings string
 	callCount := 0
@@ -719,7 +723,7 @@ func TestExecutor_FixSelectedFindingsRewritesSummary(t *testing.T) {
 
 func TestExecutor_UserFixRecordsSelectedFindingIDsAndFixSummary(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	callCount := 0
 	step := &adaptiveCallStep{
@@ -795,7 +799,7 @@ func TestExecutor_UserFixRecordsSelectedFindingIDsAndFixSummary(t *testing.T) {
 func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	cfg := &config.Config{AutoFix: config.AutoFix{Review: 1}}
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	callCount := 0
 	step := &adaptiveCallStep{
@@ -867,7 +871,7 @@ func TestRoundInsertIDClearsOnInsertFailure(t *testing.T) {
 
 func TestExecutor_StepResultIDIsExposedToSteps(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var capturedStepResultID string
 	step := &adaptiveCallStep{
@@ -897,7 +901,7 @@ func TestExecutor_StepResultIDIsExposedToSteps(t *testing.T) {
 
 func TestExecutor_PreviousFindingsEmptyOnFirstExecution(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var capturedFindings string
 	step := &adaptiveCallStep{

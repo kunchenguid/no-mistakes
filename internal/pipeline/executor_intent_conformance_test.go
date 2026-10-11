@@ -24,7 +24,7 @@ import (
 // key off the step status and the marker, not the run status.
 func TestExecutor_AutoFixContradictingIntentParksForApproval(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// Persisted, resolved intent: removal is REQUIRED, retry-only is REJECTED,
 	// and it is authoritative (Source=="agent"), as `axi run --intent` stamps.

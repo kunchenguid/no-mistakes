@@ -55,6 +55,20 @@ func TestEffectivePRBaseBranch_DefaultBranchWhenUnset(t *testing.T) {
 	}
 }
 
+func TestCurrentPRTargetBranch_RejectsClosedRecordedPR(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	prURL := "https://github.com/test/repo/pull/42"
+	env, _ := fakeGHWithBase(t, prURL, "develop")
+	env = append(env, "FAKE_CLI_PR_STATE=CLOSED")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+
+	if _, err := currentPRTargetBranch(sctx); err == nil {
+		t.Fatal("closed recorded PR must not supply the review target")
+	}
+}
+
 func TestValidateRunPRBaseBranchName_RejectsInvalidBranch(t *testing.T) {
 	t.Parallel()
 	_, err := ValidateRunPRBaseBranchName("bad..branch")
@@ -113,10 +127,11 @@ func TestPRStep_PerRunBaseBranchOverridesRepoConfig(t *testing.T) {
 	}
 }
 
-func TestPRStep_RetargetsExistingPRWhenPerRunBaseDiffers(t *testing.T) {
+func TestPRStep_KeepsExistingPRBaseWhenPerRunBaseDiffers(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ensureLocalBranch(t, dir, "epic/feature", baseSHA)
+	ensureLocalBranch(t, dir, "develop", baseSHA)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
@@ -125,6 +140,9 @@ func TestPRStep_RetargetsExistingPRWhenPerRunBaseDiffers(t *testing.T) {
 	sctx.Run.PRBaseBranch = &runBase
 	owned := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &owned
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: owned, TargetBranch: "develop"}
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: owned, TargetBranch: "develop"}
+	bindExistingPRMutationFixture(t, sctx, owned, "develop")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -136,24 +154,25 @@ func TestPRStep_RetargetsExistingPRWhenPerRunBaseDiffers(t *testing.T) {
 	}
 	ghLog := string(logData)
 	if strings.Contains(ghLog, "pr create") {
-		t.Fatalf("expected existing PR to be retargeted, not duplicated, got:\n%s", ghLog)
+		t.Fatalf("expected existing PR to be updated, not duplicated, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "pr edit") {
-		t.Fatalf("expected gh pr edit, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "pr edit 42 --repo test/repo --base epic/feature") && !strings.Contains(ghLog, "--base epic/feature") {
-		t.Fatalf("expected retarget --base epic/feature, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "--base epic/feature") {
+		t.Fatalf("an ordinary rerun must keep the PR's live base, got:\n%s", ghLog)
 	}
 }
 
 func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	ensureLocalBranch(t, dir, "develop", baseSHA)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Config.PR.BaseBranch = "main"
+	owned := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &owned
+	bindExistingPRMutationFixture(t, sctx, owned, "develop")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -168,74 +187,11 @@ func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
 	}
 }
 
-func TestRetargetExistingPRIfNeeded_MismatchedIdentityFailsClosed(t *testing.T) {
-	t.Parallel()
-	owned := "https://github.com/test/repo/pull/42"
-	sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}, Log: func(string) {}}
-	host := &recordingRetargetHost{}
-	discovered := &scm.PR{
-		Number:     "99",
-		URL:        "https://github.com/test/repo/pull/99",
-		BaseBranch: "develop",
-	}
-
-	err := retargetExistingPRIfNeeded(sctx, host, discovered, "epic/feature")
-	if err == nil {
-		t.Fatal("expected error when discovered PR is not the run's persisted PR")
-	}
-	if host.calls != 0 {
-		t.Fatalf("retargeted %s to %s; a mismatched pull request must not be moved", describePR(host.pr), host.base)
-	}
-	if !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("error = %v, want identity mismatch", err)
-	}
-}
-
-func TestRetargetExistingPRIfNeeded_MissingIdentityFailsClosed(t *testing.T) {
-	t.Parallel()
-	sctx := &pipeline.StepContext{Run: &db.Run{}, Log: func(string) {}}
-	host := &recordingRetargetHost{}
-	discovered := &scm.PR{
-		Number:     "99",
-		URL:        "https://github.com/test/repo/pull/99",
-		BaseBranch: "develop",
-	}
-
-	err := retargetExistingPRIfNeeded(sctx, host, discovered, "epic/feature")
-	if err == nil {
-		t.Fatal("expected error when the run has no persisted PR identity")
-	}
-	if host.calls != 0 {
-		t.Fatalf("retargeted %s to %s; an unproven pull request must not be moved", describePR(host.pr), host.base)
-	}
-	if !strings.Contains(err.Error(), "no persisted PR identity") {
-		t.Fatalf("error = %v, want missing identity", err)
-	}
-}
-
-func TestRetargetExistingPRIfNeeded_MatchingIdentityRetargets(t *testing.T) {
-	t.Parallel()
-	owned := "https://github.com/test/repo/pull/42"
-	sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}, Log: func(string) {}}
-	host := &recordingRetargetHost{}
-	existing := &scm.PR{
-		Number:     "42",
-		URL:        owned,
-		BaseBranch: "develop",
-	}
-
-	if err := retargetExistingPRIfNeeded(sctx, host, existing, "epic/feature"); err != nil {
-		t.Fatal(err)
-	}
-	if host.calls != 1 || host.base != "epic/feature" {
-		t.Fatalf("retargets = %d base %q, want 1 call to epic/feature", host.calls, host.base)
-	}
-}
-
-func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
+func TestPRStep_PrefersPersistedPROverUnboundSibling(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ensureLocalBranch(t, dir, "epic/feature", baseSHA)
+	ensureLocalBranch(t, dir, "develop", baseSHA)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/99", "develop")
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
@@ -244,6 +200,8 @@ func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
 	sctx.Run.PRBaseBranch = &runBase
 	owned := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &owned
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: owned, TargetBranch: "develop"}
+	bindExistingPRMutationFixture(t, sctx, owned, "develop")
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -255,7 +213,7 @@ func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
 	}
 	ghLog := string(logData)
 	if strings.Contains(ghLog, "pr edit 99") {
-		t.Fatalf("sibling FindPR hit must not be mutated, got:\n%s", ghLog)
+		t.Fatalf("unbound sibling pull request was mutated, got:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "pr edit 42") {
 		t.Fatalf("expected persisted PR #42 to be updated, got:\n%s", ghLog)
@@ -265,115 +223,38 @@ func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
 	}
 }
 
-func TestBindExistingPR_PrefersPersistedURLOverSibling(t *testing.T) {
-	t.Parallel()
-	owned := "https://github.com/test/repo/pull/42"
-	sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}, Log: func(string) {}}
-	sibling := &scm.PR{Number: "99", URL: "https://github.com/test/repo/pull/99", BaseBranch: "develop"}
-	host := &recordingRetargetHost{state: scm.PRStateOpen}
-
-	got, err := bindExistingPR(sctx, host, sibling)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got == nil || !samePRIdentity(owned, got) {
-		t.Fatalf("bindExistingPR = %+v, want persisted %s", got, owned)
-	}
-	if got == sibling {
-		t.Fatal("bindExistingPR returned the sibling pointer")
-	}
-	if host.stateCalls != 1 {
-		t.Fatalf("GetPRState calls = %d, want 1 before prefer-owned", host.stateCalls)
-	}
-}
-
-func TestPRStep_StaleIdentityRefusesRetargetOfEitherPR(t *testing.T) {
+func TestMutablePR_RejectsClosedBoundPR(t *testing.T) {
 	t.Parallel()
 	for _, state := range []scm.PRState{scm.PRStateClosed, scm.PRStateMerged} {
 		t.Run(string(state), func(t *testing.T) {
 			owned := "https://github.com/test/repo/pull/42"
-			sctx := &pipeline.StepContext{
-				Run: &db.Run{PRURL: &owned, PRBaseBranch: strptr("epic/feature")},
-				Log: func(string) {},
-			}
-			host := &recordingRetargetHost{state: state}
-			discovered := &scm.PR{
-				Number:     "99",
-				URL:        "https://github.com/test/repo/pull/99",
-				BaseBranch: "develop",
-			}
+			sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}}
+			host := &recordingPRStateHost{state: state}
 
-			bound, err := bindExistingPR(sctx, host, discovered)
+			bound, err := mutablePR(sctx, host)
 			if err == nil {
-				t.Fatal("expected stale identity to refuse retarget")
+				t.Fatal("expected closed bound pull request refusal")
 			}
 			if bound != nil {
-				t.Fatalf("bindExistingPR = %+v, want nil when retarget is refused", bound)
+				t.Fatalf("mutablePR = %+v, want nil", bound)
 			}
 			if host.stateCalls != 1 {
 				t.Fatalf("GetPRState calls = %d, want 1", host.stateCalls)
 			}
-			if host.calls != 0 {
-				t.Fatalf("retargeted %s to %s; stale identity must not move either PR", describePR(host.pr), host.base)
-			}
-			if !strings.Contains(err.Error(), "stale") && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(string(state))) {
-				t.Fatalf("error = %v, want stale/closed/merged identity", err)
+			if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(string(state))) {
+				t.Fatalf("error = %v, want closed/merged identity", err)
 			}
 		})
 	}
 }
 
-func TestRetargetExistingPRIfNeeded_ProviderWithoutRetargetFailsClosed(t *testing.T) {
-	t.Parallel()
-	sctx := &pipeline.StepContext{Run: &db.Run{}}
-	host := nonRetargetHost{}
-	cases := []struct {
-		name string
-		pr   *scm.PR
-	}{
-		{
-			name: "unknown live base",
-			pr:   &scm.PR{Number: "7", URL: "https://gitea.example.com/owner/repo/pulls/7"},
-		},
-		{
-			name: "known mismatched base",
-			pr:   &scm.PR{Number: "7", URL: "https://gitea.example.com/owner/repo/pulls/7", BaseBranch: "main"},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			owned := tc.pr.URL
-			sctx.Run.PRURL = &owned
-			err := retargetExistingPRIfNeeded(sctx, host, tc.pr, "epic/feature")
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !strings.Contains(err.Error(), "cannot retarget") {
-				t.Fatalf("error = %v, want cannot retarget", err)
-			}
-		})
-	}
-}
-
-// recordingRetargetHost records SetPRBaseBranch calls so identity-mismatch
-// tests can prove the discovered PR was not moved.
-type recordingRetargetHost struct {
+type recordingPRStateHost struct {
 	scm.Host
-	calls      int
 	stateCalls int
-	pr         *scm.PR
-	base       string
 	state      scm.PRState
 }
 
-func (h *recordingRetargetHost) SetPRBaseBranch(_ context.Context, pr *scm.PR, base string) error {
-	h.calls++
-	h.pr = pr
-	h.base = base
-	return nil
-}
-
-func (h *recordingRetargetHost) GetPRState(_ context.Context, _ *scm.PR) (scm.PRState, error) {
+func (h *recordingPRStateHost) GetPRState(_ context.Context, _ *scm.PR) (scm.PRState, error) {
 	h.stateCalls++
 	if h.state == "" {
 		return scm.PRStateOpen, nil
@@ -382,11 +263,6 @@ func (h *recordingRetargetHost) GetPRState(_ context.Context, _ *scm.PR) (scm.PR
 }
 
 func strptr(s string) *string { return &s }
-
-// nonRetargetHost is a scm.Host that does not implement PRBaseRetargeter, so
-// a per-run --base-branch override cannot silently skip when the live forge
-// base is missing or disagrees.
-type nonRetargetHost struct{ scm.Host }
 
 func TestPRStep_SkipsWhenBranchEqualsPerRunBase(t *testing.T) {
 	t.Parallel()
@@ -408,7 +284,7 @@ func TestPRStep_SkipsWhenBranchEqualsPerRunBase(t *testing.T) {
 	}
 }
 
-func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
+func TestCIStep_AutoFixUsesPinnedPRTarget(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	upstream := t.TempDir()
@@ -431,7 +307,8 @@ func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
 	sctx.Run.PRBaseBranch = &runBase
 	sctx.Config.PR.BaseBranch = "main"
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
-	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42", BaseBranch: "develop"}
+	sctx.PRTarget = &pipeline.PRTargetSelection{TargetBranch: "develop"}
+	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42", BaseBranch: "main"}
 
 	var prompt string
 	sctx.Agent = &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -447,7 +324,7 @@ func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(prompt, "base commit: "+developTip) {
-		t.Fatalf("expected existing PR forge base %s to win over per-run override, got:\n%s", developTip, prompt)
+		t.Fatalf("expected pinned PR target base %s to win over stale configuration, got:\n%s", developTip, prompt)
 	}
 }
 

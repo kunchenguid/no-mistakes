@@ -67,8 +67,11 @@ func (s *LintStep) executeRepositoryLint(sctx *pipeline.StepContext) (*pipeline.
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseBranch := effectivePRBaseBranch(sctx)
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	targetBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return nil, err
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, targetBranch)
 	if err != nil {
 		return nil, err
 	}

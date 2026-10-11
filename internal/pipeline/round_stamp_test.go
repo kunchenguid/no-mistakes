@@ -46,7 +46,7 @@ func TestExecutorStampsRoundSoReviewRolesCanHandOver(t *testing.T) {
 		},
 	}
 	exec := NewExecutor(database, p, &config.Config{Agent: types.AgentClaude}, routed, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := exec.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 

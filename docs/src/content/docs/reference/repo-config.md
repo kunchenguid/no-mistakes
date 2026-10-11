@@ -213,12 +213,12 @@ Select the branch that newly created pull requests target.
 | Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
 
 Use this when the repository's integration branch differs from its forge default branch, for example `develop` instead of `main`.
-The configured branch is used for PR creation and pipeline integration and change scoping; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) describe which steps use it and how the recorded per-run override takes precedence.
+The configured branch is the prospective PR target and Rebase integration base when no open PR exists. An existing PR's live target is used for comparison, integration, and change scoping. Each step that scopes work to branch changes fetches the live target tip and fails if that fetch fails; see the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/).
 When unset and without a per-run override, no-mistakes targets the repository's forge default branch.
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
-A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, Gitea, and [provider plugins](/no-mistakes/reference/provider-plugin-protocol/) that advertise `set_pr_base_branch`) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
-Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created.
+A fresh per-run `--base-branch` request may retarget only that run's persisted, exact-head open PR before Rebase. The provider must read back the new target, and the one-time request is consumed after verification. An inherited override, unrecorded PR, moved head, or changed `pr.base_branch` does not retarget it. The supported provider must implement PR retargeting; provider plugins must advertise `set_pr_base_branch`. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
+Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for comparison, Rebase, and CI base-tip monitoring, protecting a resumed run from a configuration change made after the PR was created.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.

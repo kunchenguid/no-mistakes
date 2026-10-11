@@ -8,27 +8,43 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
+// PRTargetSelection is the read-only forge target selected before scoped
+// pipeline work. An empty PRURL means no PR is attached; discovery may still
+// supply an existing PR's target when its head differs from the local head.
+type PRTargetSelection struct {
+	PRURL        string
+	SourceRepo   string
+	SourceBranch string
+	ForgeHeadSHA string
+	TargetBranch string
+	State        scm.PRState
+}
+
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx              context.Context
-	Run              *db.Run
-	Repo             *db.Repo
-	WorkDir          string
-	GateDir          string
-	Agent            agent.Agent
-	Config           *config.Config
-	ForgeContext     *forgecontext.Context
-	DB               *db.DB
-	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
-	LogChunk         func(string) // raw streaming chunk (user-visible + file)
-	LogFile          func(string) // file-only log callback (not shown to user)
-	Fixing           bool         // true when re-executing after a "fix" action
-	SkipFixExecution bool         // replay an already-completed fix round's review turn only
+	Ctx                context.Context
+	Run                *db.Run
+	Repo               *db.Repo
+	WorkDir            string
+	GateDir            string
+	Agent              agent.Agent
+	Config             *config.Config
+	ForgeContext       *forgecontext.Context
+	PRTarget           *PRTargetSelection
+	PRContext          *db.PRContext
+	PRContextAfterStep bool // guard observes a completed step's own published head
+	DB                 *db.DB
+	Log                func(string) // discrete log line (newline-terminated, user-visible + file)
+	LogChunk           func(string) // raw streaming chunk (user-visible + file)
+	LogFile            func(string) // file-only log callback (not shown to user)
+	Fixing             bool         // true when re-executing after a "fix" action
+	SkipFixExecution   bool         // replay an already-completed fix round's review turn only
 	// EvalReplay marks a review driven directly by `eval replay` rather than by
 	// the executor. Replay scores the review's findings against captured gold
 	// and never consumes the reviewed_paths certification, so ReviewStep skips

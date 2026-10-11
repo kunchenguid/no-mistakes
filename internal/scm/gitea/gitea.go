@@ -460,6 +460,7 @@ func jobsToChecks(jobs []giteaJob) []scm.Check {
 		checks = append(checks, scm.Check{
 			Name:        job.Name,
 			ProviderID:  providerID,
+			HeadSHA:     job.HeadSHA,
 			Bucket:      giteaStatusBucket(job.Status, job.Conclusion),
 			CompletedAt: job.completedAt(),
 			Link:        job.HTMLURL,

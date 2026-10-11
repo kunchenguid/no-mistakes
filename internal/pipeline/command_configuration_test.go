@@ -46,7 +46,7 @@ func TestExecutor_CommandConfigurationRecordedBeforeChecks(t *testing.T) {
 		return &StepOutcome{}, nil
 	}}
 	executor := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -95,7 +95,7 @@ func TestExecutor_CommandConfigurationRestrictsExistingFileBeforeChecks(t *testi
 		return &StepOutcome{}, nil
 	}}
 	executor := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -103,7 +103,7 @@ func TestExecutor_CommandConfigurationRestrictsExistingFileBeforeChecks(t *testi
 func TestExecutor_NoOverrideCreatesNoCommandConfigurationEvidence(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	executor := NewExecutor(database, p, &config.Config{}, nil, []Step{newPassStep(types.StepTest)}, nil)
-	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+	if err := executor.Execute(context.Background(), run, repo, completionFixture(t, database, run)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(p.RunLogDir(run.ID), commandConfigurationFile)); !os.IsNotExist(err) {

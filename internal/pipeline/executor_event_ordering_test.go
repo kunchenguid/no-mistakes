@@ -22,7 +22,7 @@ import (
 // stamped with and then discard the delta that would have repaired it.
 func TestExecutor_StateEventsAreEmittedAfterTheirDatabaseWrite(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var mu sync.Mutex
 	var violations []string
@@ -93,7 +93,7 @@ func TestExecutor_StateEventsAreEmittedAfterTheirDatabaseWrite(t *testing.T) {
 // The skip path takes a different set of emitters, so exercise it too.
 func TestExecutor_SkippedStepEventsAlsoFollowTheirDatabaseWrite(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var mu sync.Mutex
 	var violations []string
@@ -166,7 +166,7 @@ func TestExecutor_ApprovalPersistenceFailureDoesNotPublishOrWaitAtGate(t *testin
 		eventsMu.Unlock()
 	})
 
-	err = exec.Execute(context.Background(), run, repo, t.TempDir())
+	err = exec.Execute(context.Background(), run, repo, completionFixture(t, database, run))
 	if err == nil || !strings.Contains(err.Error(), "persist review approval gate") {
 		t.Fatalf("Execute error = %v, want approval persistence failure", err)
 	}

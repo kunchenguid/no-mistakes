@@ -2,10 +2,12 @@ package cli
 
 // staleMonitorGuidance is the canonical, point-of-use guidance an agent reads
 // when `axi run` returns `checks-passed`: what to do if that PR later falls
-// behind the default branch or hits a merge conflict (commonly because another
-// PR merged first). The live CI monitor keeps running after checks pass and
-// auto-rebases onto the base, resolves the conflict, revalidates from Review,
-// and re-pushes itself, so the agent runs no command and never hand-rebases. `no-mistakes
+// behind its live target branch or hits a merge conflict (commonly because
+// another PR merged first). The live CI monitor keeps running after checks
+// pass. An actual conflict triggers a rebase onto the live target, conflict
+// repair, revalidation from Review, and a guarded re-push. A clean target
+// advance withholds readiness because the pinned comparison changed; it does
+// not itself trigger a rebase. The agent never hand-rebases. `no-mistakes
 // rerun` is only the recovery for a monitor that is no longer running, and a
 // known clean caller head must match the head rerun already selects.
 //

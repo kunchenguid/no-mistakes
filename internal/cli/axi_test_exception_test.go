@@ -51,6 +51,40 @@ func TestAxiTestExceptionOutput(t *testing.T) {
 	}
 }
 
+func TestAxiExternalCIHandoffReportsTestException(t *testing.T) {
+	for _, tc := range []struct {
+		name, unavailable, handoff string
+	}{
+		{"unavailable", "comparison unavailable", "External CI handoff is unavailable"},
+		{"pending", "", "CI remains pending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			cmd.SetOut(&out)
+			run := &ipc.RunInfo{ID: "synthetic", Status: types.RunCompleted,
+				ExternalCIOwner:       types.ExternalCIOwnerControllerShipPR,
+				PendingCISupport:      []types.PendingCISupport{{ClaimID: "claim"}},
+				PendingCISupportError: tc.unavailable,
+				TestOverrideReason:    "approved Test exception"}
+			if err := renderDriveResult(cmd, run, false); err != nil {
+				t.Fatal(err)
+			}
+			var doc struct {
+				Help []string `toon:"help"`
+			}
+			if err := toon.UnmarshalString(out.String(), &doc); err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(doc.Help, "\n")
+			if !strings.Contains(joined, tc.handoff) || !strings.Contains(joined, "Report the approved Test exception") {
+				t.Fatalf("handoff and exception guidance = %q", joined)
+			}
+		})
+	}
+}
+
 func TestRunViewFromDBQualifiesLegacyTestOverrides(t *testing.T) {
 	const condition = "configured test command failed with exit code 7"
 	const reason = "operator explanation"

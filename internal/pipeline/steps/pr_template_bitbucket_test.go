@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 func TestPRTemplateBitbucketVisibleAttestationUsesExistingConsumer(t *testing.T) {
@@ -67,7 +69,10 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 			w.WriteHeader(400)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "title": title, "summary": map[string]any{"raw": body}, "links": map[string]any{"html": map[string]string{"href": "https://bitbucket.org/test/repo/pull-requests/42"}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "state": "OPEN", "title": title, "summary": map[string]any{"raw": body},
+			"source":      map[string]any{"branch": map[string]string{"name": "feature"}, "repository": map[string]string{"full_name": "test/repo"}, "commit": map[string]string{"hash": sctx.Run.HeadSHA}},
+			"destination": map[string]any{"branch": map[string]string{"name": "main"}},
+			"links":       map[string]any{"html": map[string]string{"href": "https://bitbucket.org/test/repo/pull-requests/42"}}})
 	}))
 	defer server.Close()
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
@@ -78,6 +83,13 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 	if !exists || !strings.Contains(body, "```text\n"+pipelineAttestationCommentPrefix) {
 		t.Fatal("no owned text declaration created")
 	}
+	createdRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || createdRun.PRURL == nil {
+		t.Fatalf("created PR identity was not persisted: run=%+v err=%v", createdRun, err)
+	}
+	sctx.Run.PRURL = createdRun.PRURL
+	sctx.PRTarget = &pipeline.PRTargetSelection{PRURL: *createdRun.PRURL, TargetBranch: "main"}
+	bindExistingPRMutationFixture(t, sctx, *createdRun.PRURL, "main")
 	title = "Human changed title"
 	parts, err := parsePROwnedBody(body)
 	if err != nil {
@@ -90,7 +102,8 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
-	newHead := strings.Repeat("bc", 20)
+	gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "proposed update")
+	newHead := gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
 	if err := attestHeadBeforePush(sctx, newHead, nil); err != nil {
 		t.Fatal(err)
 	}

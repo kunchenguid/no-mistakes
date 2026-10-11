@@ -64,6 +64,7 @@ func seedRecoveredReviewGate(t *testing.T, database *db.DB, run *db.Run, finding
 
 func TestExecutor_ReviewCarryForward_RecoverySeedsPendingVerification(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	findings := `{"findings":[{"id":"review-1","severity":"error","file":"service.go","description":"selected issue","action":"ask-user"}],"summary":"1 finding"}`
 	stepResult, recoveredRun := seedRecoveredReviewGate(t, database, run, findings, types.StepStatusFixReview, `["review-1"]`)
 	step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
@@ -73,7 +74,7 @@ func TestExecutor_ReviewCarryForward_RecoverySeedsPendingVerification(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(ctx, recoveredRun, repo, t.TempDir()) }()
+	go func() { done <- exec.Resume(ctx, recoveredRun, repo, workDir) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	var respondErr error
@@ -107,6 +108,7 @@ func TestExecutor_ReviewCarryForward_RecoverySeedsPendingVerification(t *testing
 
 func TestExecutor_ReviewCarryForward_RecoveryPersistsRemappedSelection(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	findings := `{"findings":[` +
 		`{"id":"user-1","severity":"warning","file":"old.go","description":"old carried issue","action":"ask-user"},` +
 		`{"id":"review-1","severity":"error","file":"service.go","description":"selected issue","action":"ask-user"}],"summary":"2 findings"}`
@@ -118,7 +120,7 @@ func TestExecutor_ReviewCarryForward_RecoveryPersistsRemappedSelection(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(ctx, recoveredRun, repo, t.TempDir()) }()
+	go func() { done <- exec.Resume(ctx, recoveredRun, repo, workDir) }()
 
 	added := []types.Finding{{ID: "user-1", Severity: types.FindingSeverityInfo, File: "new.go", Description: "new user note", Action: types.ActionNoOp}}
 	deadline := time.Now().Add(5 * time.Second)
@@ -218,6 +220,7 @@ func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
+	bindCompletionFixture(t, database, run, workDir)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -243,6 +246,7 @@ func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 					return nil, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
 				}
 			}
+			advanceCompletionFixture(t, database, run, workDir)
 			// The rereview reports nothing new and offers no coverage record for
 			// service.go: it did not look there, so nothing about the finding is
 			// proven. Silence may never read as resolution.
@@ -325,7 +329,7 @@ func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 // a verified fix would park forever.
 func TestExecutor_ReviewCarryForward_UserAddedFindingStaysOutstanding(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	calls := 0
 	step := &adaptiveCallStep{
@@ -378,7 +382,7 @@ func TestExecutor_ReviewCarryForward_UserAddedFindingStaysOutstanding(t *testing
 
 func TestExecutor_ReviewCarryForward_RemintsUserAddedCollisionForPendingVerification(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -442,7 +446,7 @@ func TestExecutor_ReviewCarryForward_RemintsUserAddedCollisionForPendingVerifica
 
 func TestExecutor_ReviewCarryForward_PendingSelectionsSurviveLaterRounds(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -534,7 +538,7 @@ func TestExecutor_ReviewCarryForward_PendingSelectionsSurviveLaterRounds(t *test
 
 func TestExecutor_ReviewCarryForward_PositiveCoverageClearsFinding(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -589,7 +593,7 @@ func TestExecutor_ReviewCarryForward_PositiveCoverageClearsFinding(t *testing.T)
 // EVERY selected finding for as long as any question stayed open.
 func TestExecutor_ReviewCarryForward_AnOpenQuestionDoesNotBlockVerification(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -655,7 +659,7 @@ func TestExecutor_ReviewCarryForward_AnOpenQuestionDoesNotBlockVerification(t *t
 // so the category-keyed drop does not reach it.
 func TestExecutor_ReviewCarryForward_AnUnreadableHistoryDoesNotBlockVerification(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -723,7 +727,7 @@ func TestExecutor_ReviewCarryForward_AnUnreadableHistoryDoesNotBlockVerification
 // it. The sibling below pins that silence now keeps a finding.
 func TestExecutor_ReviewCarryForward_AnAnswerRoundWithdrawsByName(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -780,7 +784,7 @@ func TestExecutor_ReviewCarryForward_AnAnswerRoundWithdrawsByName(t *testing.T) 
 // covers the file and withdraws NOTHING, so the unrelated finding must survive.
 func TestExecutor_ReviewCarryForward_AnAnswerRoundSilenceKeepsAnUnrelatedFinding(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -1130,6 +1134,7 @@ func TestExecutor_ReviewCarryForward_AFixRoundCannotWithdraw(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
+	bindCompletionFixture(t, database, run, workDir)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -1154,6 +1159,7 @@ func TestExecutor_ReviewCarryForward_AFixRoundCannotWithdraw(t *testing.T) {
 					return nil, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
 				}
 			}
+			advanceCompletionFixture(t, database, run, workDir)
 			// The rereview never looked at service.go, so it has no coverage
 			// record to clear the selected finding with - and tries to retract
 			// it by name instead.
@@ -1217,7 +1223,7 @@ func TestExecutor_ReviewCarryForward_AFixRoundCannotWithdraw(t *testing.T) {
 // instructs records a duplicate that releases nothing.
 func TestExecutor_ReviewCarryForward_AnAnswerRoundDoesNotCarryItsOwnQuestions(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	round := 0
 	var carried string
@@ -1285,6 +1291,7 @@ func TestExecutor_ReviewCarryForward_AnAnswerRoundCannotWithdrawTheOperatorsOwnF
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
+	bindCompletionFixture(t, database, run, workDir)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -1454,6 +1461,7 @@ func TestExecutor_ReviewCarryForward_ARetractionIsRecordedOnlyOnTheRoundThatMade
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
+	bindCompletionFixture(t, database, run, workDir)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -1535,6 +1543,7 @@ func TestExecutor_ReviewCarryForward_AnEmptyOutstandingSetRecordsNoRetraction(t 
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
+	bindCompletionFixture(t, database, run, workDir)
 
 	round := 0
 	step := &adaptiveCallStep{
@@ -1632,6 +1641,7 @@ func waitForRounds(t *testing.T, database *db.DB, stepResultID string, want int)
 // record as its own.
 func TestExecutor_ReviewCarryForward_ARecoveredRoundInheritsNoRetractionRecord(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	workDir := completionFixture(t, database, run)
 	// Seeded exactly as a retracting answer round leaves the gate.
 	findings := `{"findings":[{"id":"review-2","severity":"warning","file":"cache.go","line":42,"description":"unbounded cache growth","action":"ask-user"}],"summary":"1 finding","withdrawn_findings":[{"id":"review-1","reason":"the answer settled it"}]}`
 	stepResult, recoveredRun := seedRecoveredReviewGate(t, database, run, findings, types.StepStatusAwaitingApproval, "")
@@ -1643,7 +1653,7 @@ func TestExecutor_ReviewCarryForward_ARecoveredRoundInheritsNoRetractionRecord(t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(ctx, recoveredRun, repo, t.TempDir()) }()
+	go func() { done <- exec.Resume(ctx, recoveredRun, repo, workDir) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	var respondErr error

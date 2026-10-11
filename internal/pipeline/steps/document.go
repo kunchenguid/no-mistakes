@@ -90,8 +90,11 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseBranch := effectivePRBaseBranch(sctx)
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	targetBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return nil, err
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, targetBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +130,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		sctx.Log("updating documentation...")
 	}
 
-	prompt := s.buildPrompt(sctx, baseSHA, ignorePatterns, combinedLint)
+	prompt := s.buildPrompt(sctx, baseSHA, targetBranch, ignorePatterns, combinedLint)
 	schema := findingsSchema
 	purpose := "document"
 	if combinedLint {
@@ -199,7 +202,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 // buildPrompt assembles the document (or combined document+lint) prompt: the
 // placement policy, scope discipline, trusted repository-specific policy,
 // the task, and - in combined mode - the lint duty.
-func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, ignorePatterns string, combinedLint bool) string {
+func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, targetBranch, ignorePatterns string, combinedLint bool) string {
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 
 	intro := "Keep the project documentation accurate for this change."
@@ -253,7 +256,7 @@ Rules:
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
-		effectivePRBaseBranch(sctx),
+		targetBranch,
 		ignorePatterns,
 		documentPlacementPolicy,
 		documentScopeDiscipline,

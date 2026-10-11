@@ -583,9 +583,18 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	if err != nil {
 		return nil, err
 	}
-	checks, err := parseGitlabJobs(jobsOut)
+	jobs, err := decodeGitlabJobs(jobsOut)
 	if err != nil {
 		return nil, err
+	}
+	// The pipeline endpoint supplies the association when a job omits its
+	// commit, but it cannot override contradictory evidence in a reported job.
+	for _, job := range jobs {
+		for _, revision := range []string{job.Commit.ID, job.Pipeline.SHA} {
+			if strings.TrimSpace(revision) != "" && !sameCommitSHA(revision, pipeline.SHA) {
+				return nil, fmt.Errorf("%w: merge request %s job %q reported commit %s, not verified pipeline %d commit %s", scm.ErrHeadChanged, pr.Number, job.Name, revision, pipeline.ID, pipeline.SHA)
+			}
+		}
 	}
 	after, err := h.viewMR(ctx, pr.Number)
 	if err != nil {
@@ -595,6 +604,13 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 		return nil, fmt.Errorf("merge request %s reported no source commit", pr.Number)
 	} else if !sameCommitSHA(revision, headSHA) {
 		return nil, fmt.Errorf("%w: merge request %s source commit changed during check discovery from %s to %s", scm.ErrHeadChanged, pr.Number, headSHA, revision)
+	}
+	// The checks came from the pipeline proven above to run at headSHA or at a
+	// merged-results commit that includes it. Expose that verified association
+	// so downstream consumers bind the evidence to the delivered source head.
+	checks := jobsToChecks(jobs)
+	for i := range checks {
+		checks[i].HeadSHA = headSHA
 	}
 	return checks, nil
 }
@@ -921,6 +937,12 @@ type gitlabJob struct {
 	Status     string `json:"status"`
 	Stage      string `json:"stage"`
 	FinishedAt string `json:"finished_at"`
+	Commit     struct {
+		ID string `json:"id"`
+	} `json:"commit"`
+	Pipeline struct {
+		SHA string `json:"sha"`
+	} `json:"pipeline"`
 }
 
 // completedAt parses the job's finished_at timestamp, returning the zero time
@@ -985,6 +1007,7 @@ func decodeGitlabJobs(out []byte) ([]gitlabJob, error) {
 func decodeGitlabJobPage(raw json.RawMessage) ([]gitlabJob, error) {
 	trimmed := bytes.TrimSpace(raw)
 	var entries []json.RawMessage
+	var pipelineSHA string
 	switch {
 	case len(trimmed) > 0 && trimmed[0] == '[':
 		if err := json.Unmarshal(trimmed, &entries); err != nil {
@@ -993,10 +1016,12 @@ func decodeGitlabJobPage(raw json.RawMessage) ([]gitlabJob, error) {
 	case len(trimmed) > 0 && trimmed[0] == '{':
 		var page struct {
 			Jobs json.RawMessage `json:"jobs"`
+			SHA  string          `json:"sha"`
 		}
 		if err := json.Unmarshal(trimmed, &page); err != nil {
 			return nil, fmt.Errorf("decode gitlab jobs: %w", err)
 		}
+		pipelineSHA = page.SHA
 		pageJobs := bytes.TrimSpace(page.Jobs)
 		if len(pageJobs) == 0 {
 			return nil, errors.New(`decode gitlab jobs: pipeline object has no "jobs" field`)
@@ -1028,6 +1053,9 @@ func decodeGitlabJobPage(raw json.RawMessage) ([]gitlabJob, error) {
 		if strings.TrimSpace(job.Status) == "" {
 			return nil, fmt.Errorf("decode gitlab jobs: job %q has no status", job.Name)
 		}
+		if job.Commit.ID == "" && job.Pipeline.SHA == "" {
+			job.Pipeline.SHA = pipelineSHA
+		}
 		jobs = append(jobs, job)
 	}
 	return jobs, nil
@@ -1055,11 +1083,22 @@ func jobsToChecks(jobs []gitlabJob) []scm.Check {
 		checks = append(checks, scm.Check{
 			Name:        job.Name,
 			ProviderID:  providerID,
+			HeadSHA:     gitlabJobHeadSHA(job),
 			Bucket:      gitlabStatusBucket(job.Status),
 			CompletedAt: job.completedAt(),
 		})
 	}
 	return checks
+}
+
+func gitlabJobHeadSHA(job gitlabJob) string {
+	if job.Commit.ID != "" && job.Pipeline.SHA != "" && job.Commit.ID != job.Pipeline.SHA {
+		return ""
+	}
+	if job.Commit.ID != "" {
+		return job.Commit.ID
+	}
+	return job.Pipeline.SHA
 }
 
 func findFailedJobTargetIDs(out []byte, checkTargets []scm.CheckTarget) []int {

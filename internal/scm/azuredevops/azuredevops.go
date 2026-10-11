@@ -372,9 +372,14 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if id := strings.TrimSpace(e.EvaluationID); id != "" {
 			providerID = "azure-policy-evaluation:" + id
 		}
+		head, err := h.checkSourceCommit(ctx, pr, e)
+		if err != nil {
+			return nil, err
+		}
 		checks = append(checks, scm.Check{
 			Name:        e.checkName(),
 			ProviderID:  providerID,
+			HeadSHA:     head,
 			Bucket:      bucket,
 			CompletedAt: parseAzTime(e.CompletedDate),
 		})

@@ -43,7 +43,8 @@ func runApprovalOverrideCase(t *testing.T, step Step) *string {
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Execute(context.Background(), run, repo, completionDir) }()
 
 	waitForStepStatus(t, database, run.ID, step.Name(), types.StepStatusAwaitingApproval)
 	if err := exec.Respond(step.Name(), types.ActionApprove, nil); err != nil {
@@ -186,7 +187,8 @@ func TestExecutor_ApprovalOverride_RecoveredPathStillFailing(t *testing.T) {
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Resume(context.Background(), run, repo, completionDir) }()
 
 	// The step is already parked at awaiting_approval in the DB before Resume
 	// even starts (that is what "recovered" means), so waitForStepStatus
@@ -294,7 +296,8 @@ func TestExecutor_ApprovalOverride_RunCompletedEventCarriesReason(t *testing.T) 
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, onEvent)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Execute(context.Background(), run, repo, completionDir) }()
 
 	waitForStepStatus(t, database, run.ID, step.Name(), types.StepStatusAwaitingApproval)
 	if err := exec.Respond(step.Name(), types.ActionApprove, nil); err != nil {

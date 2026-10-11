@@ -16,7 +16,7 @@ import (
 // so the same gate still accepts a valid response afterwards.
 func TestExecutor_RespondRefusesUnrecognizedActionAndKeepsGateParked(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -68,7 +68,7 @@ func TestExecutor_RespondRefusesUnrecognizedActionAndKeepsGateParked(t *testing.
 // error naming the action rather than looping back into the park.
 func TestExecutor_GateLoopFailsStepOnUnrecognizedAction(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	calls := 0
 	step := &adaptiveCallStep{

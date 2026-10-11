@@ -29,7 +29,10 @@ const forkBranchRefPrefix = "refs/remotes/no-mistakes-push/"
 func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
-	defaultBranch := effectivePRBaseBranch(sctx)
+	defaultBranch, err := currentPRTargetBranch(sctx)
+	if err != nil {
+		return nil, err
+	}
 	branchTarget := ""
 	pushRemote := resolveUpstreamURL(sctx)
 	if branch != "" {
@@ -117,7 +120,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 				return nil, err
 			}
 		}
-		outcome, err := updateHeadSHA(ctx, sctx)
+		outcome, err := updateHeadSHA(ctx, sctx, defaultBranch)
 		if err == nil {
 			if sctx.Run.HeadSHA == before {
 				outcome.FixSummary = NoChangesAppliedSummary
@@ -170,7 +173,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	return updateHeadSHA(ctx, sctx)
+	return updateHeadSHA(ctx, sctx, defaultBranch)
 }
 
 // rebaseTargets returns the ordered list of refs to rebase onto.
@@ -802,9 +805,9 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 	return filtered
 }
 
-// updateHeadSHA syncs the run's head SHA after rebase and checks for an empty diff.
-// When the branch diff against the default branch is empty, SkipRemaining is set.
-func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+// updateHeadSHA syncs the run's head SHA after rebase and checks for an empty
+// diff against the same PR target selected before integration.
+func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext, targetBranch string) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve head after rebase: %w", err)
@@ -819,15 +822,14 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
 
-	// Check if the branch has any diff against the default branch.
+	// Check if the branch has any diff against the selected PR target.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
 	// Execute already fetched the base branch (fail-closed) before integrating,
 	// so reuse that ref instead of fetching again after HEAD was rewritten and
 	// persisted: a failure here could not undo either.
-	defaultBranch := effectivePRBaseBranch(sctx)
-	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, targetBranch)
 	if baseSHA == "" {
-		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
+		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, targetBranch)
 	}
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {

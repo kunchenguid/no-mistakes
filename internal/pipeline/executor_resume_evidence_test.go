@@ -105,7 +105,8 @@ func TestExecutor_RecoveredGateResumerReceivesTheRunsEvidenceDir(t *testing.T) {
 	exec.SetGateReconcileTimings(10*time.Millisecond, time.Second)
 
 	done := make(chan error, 1)
-	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	completionDir := completionFixture(t, database, run)
+	go func() { done <- exec.Resume(context.Background(), run, repo, completionDir) }()
 
 	select {
 	case <-resumed:

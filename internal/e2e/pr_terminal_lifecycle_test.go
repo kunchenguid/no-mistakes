@@ -11,12 +11,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// TestTerminalPRRunDisappearsFromActiveListing reproduces the operator-visible
-// defect with a real CLI and an isolated daemon/home. A terminal PR observation
-// is the initiating trigger. The normal executor's immediate follow-up status
-// write usually masks the defect, so this fixture stops at the durable
-// observation boundary where an interruption used to leave status=running.
-func TestTerminalPRRunDisappearsFromActiveListing(t *testing.T) {
+// A terminal PR observation does not certify support or finish a run.
+func TestTerminalPRObservationDoesNotCompleteRun(t *testing.T) {
 	for _, state := range []string{"merged", "closed"} {
 		t.Run(state, func(t *testing.T) {
 			h := NewHarness(t, SetupOpts{Agent: "claude"})
@@ -55,8 +51,8 @@ func TestTerminalPRRunDisappearsFromActiveListing(t *testing.T) {
 				t.Fatalf("runs: %v\n%s", err, out)
 			}
 			t.Logf("no-mistakes runs after %s PR observation:\n%s", state, out)
-			if !strings.Contains(out, "completed") || strings.Contains(out, "running") {
-				t.Fatalf("terminal PR remained visibly active:\n%s", out)
+			if strings.Contains(out, "completed") || !strings.Contains(out, "running") {
+				t.Fatalf("unverified PR observation incorrectly completed the run:\n%s", out)
 			}
 
 			activeDB, err := db.Open(p.DB())
@@ -68,8 +64,8 @@ func TestTerminalPRRunDisappearsFromActiveListing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(active) != 0 {
-				t.Fatalf("authoritative DB still lists terminal PR run as active: %+v", active)
+			if len(active) != 1 || active[0].ID != run.ID {
+				t.Fatalf("unverified PR observation lost its active run: %+v", active)
 			}
 		})
 	}

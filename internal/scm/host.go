@@ -47,6 +47,17 @@ func ExtractHost(remote string) string {
 	return strings.ToLower(s)
 }
 
+// SameSourceRepository applies the provider's authoritative repository-name
+// case semantics when comparing PR source identities.
+func SameSourceRepository(provider Provider, left, right string) bool {
+	switch provider {
+	case ProviderGitHub, ProviderGitLab, ProviderGitea, ProviderAzureDevOps:
+		return strings.EqualFold(left, right)
+	default:
+		return left == right
+	}
+}
+
 // stripPort removes a trailing :port from a host, leaving bare hosts and
 // bracketed IPv6 literals intact.
 func stripPort(host string) string {
@@ -98,6 +109,33 @@ type PR struct {
 	// authoritative once a PR exists and protects resumed CI repair from a
 	// later configuration change.
 	BaseBranch string
+}
+
+// PRFacts is one forge observation of a pull request. The source identity,
+// head, and target are kept together so a run cannot combine facts from
+// different PRs or observation times. It is separate from PR, whose HeadSHA
+// is also used as a mutable check-query input by existing providers.
+type PRFacts struct {
+	PR               PR
+	State            PRState
+	SourceRepository string
+	SourceBranch     string
+	HeadSHA          string
+	BaseBranch       string
+	// MergeCommitSHA is the forge-recorded result of a completed merge, read
+	// with the source and head above. It must be a full SHA for a merged PR.
+	// For an open PR, providers may report a tentative merge commit instead.
+	MergeCommitSHA string
+}
+
+// PRFactsReader reads a recorded PR by identity and discovers every open PR
+// for an exact source repository and branch. Discovery must be complete; an
+// incomplete or malformed provider result is an error, never an empty list.
+// Callers reject multiple candidates and compare the observed head with the
+// run's exact head before binding a previously unrecorded PR.
+type PRFactsReader interface {
+	ReadPRFacts(ctx context.Context, pr *PR) (PRFacts, error)
+	FindOpenPRFacts(ctx context.Context, sourceRepository, sourceBranch string) ([]PRFacts, error)
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -155,6 +193,7 @@ const (
 type Check struct {
 	Name       string
 	ProviderID string `json:"provider_id,omitempty"`
+	HeadSHA    string
 	Bucket     CheckBucket
 	Kind       CheckKind
 	// State is the provider's own outcome string for the check (GitHub

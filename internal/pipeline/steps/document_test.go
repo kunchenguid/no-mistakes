@@ -60,6 +60,26 @@ func TestDocumentStep_AgentManaged_FixesAndCommitsWithoutApproval(t *testing.T) 
 	}
 }
 
+// The emitted agent prompt must describe the selected PR comparison, even
+// when repository configuration names a different prospective target.
+func TestDocumentStep_PromptUsesSelectedPRTarget(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ensureLocalBranch(t, dir, "release", baseSHA)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"no stale facts"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.PR.BaseBranch = "main"
+	sctx.PRTarget = &pipeline.PRTargetSelection{TargetBranch: "release"}
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 || !strings.Contains(ag.calls[0].Prompt, "- base branch: release\n") ||
+		!strings.Contains(ag.calls[0].Prompt, "- base commit: "+baseSHA+"\n") {
+		t.Fatalf("document agent did not receive the selected PR comparison: %+v", ag.calls)
+	}
+}
+
 func TestDocumentStep_AgentManaged_NormalizesMultilineCommitSummary(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

@@ -312,9 +312,20 @@ var reviewFindingsSchema = json.RawMessage(`{
 					"line": {"type": "integer"},
 					"description": {"type": "string"},
 					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]},
-					"review_scope": {"type": "string", "enum": ["source", "pipeline-owned-delivery", "external-delivery"]}
+					"review_scope": {"type": "string", "enum": ["source", "pipeline-owned-delivery", "external-delivery"]},
+					"support": {
+						"type": "object",
+						"properties": {
+							"claim_type": {"type": "string", "enum": ["source", "test", "ci", "runtime"]},
+							"source": {"type": "object", "properties": {"path": {"type": "string"}, "line": {"type": "integer"}, "quote": {"type": "string"}, "head_sha": {"type": "string"}, "run_id": {"type": "string"}, "observed_at": {"type": "string"}}},
+							"test": {"type": "object", "properties": {"command": {"type": "string"}}},
+							"ci": {"type": "object", "properties": {"check_id": {"type": "string"}, "head_sha": {"type": "string"}}},
+							"runtime": {"type": "object", "properties": {"entity": {"type": "string"}, "transition": {"type": "string"}, "transition_at": {"type": "string"}, "observed_at": {"type": "string"}, "revision": {"type": "string"}}}
+						},
+						"required": ["claim_type"]
+					}
 				},
-				"required": ["severity", "description", "action", "review_scope"]
+				"required": ["severity", "description", "action", "review_scope", "support"]
 			}
 		},
 		"reviewed_paths": {

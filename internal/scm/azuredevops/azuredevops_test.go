@@ -661,6 +661,9 @@ func TestGetChecksMapsPolicyEvaluations(t *testing.T) {
 	if checks[0].Name != "Build validation" || checks[0].Bucket != scm.CheckBucketPass {
 		t.Fatalf("checks[0] = %+v, want passing 'Build validation'", checks[0])
 	}
+	if checks[0].HeadSHA != "" || checks[1].HeadSHA != "" {
+		t.Fatalf("provider commit association = %+v", checks)
+	}
 	wantTime := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
 	if !checks[0].CompletedAt.Equal(wantTime) {
 		t.Fatalf("checks[0].CompletedAt = %v, want %v", checks[0].CompletedAt, wantTime)

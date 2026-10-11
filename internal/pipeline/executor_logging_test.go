@@ -20,7 +20,7 @@ import (
 
 func TestExecutor_LogCallback(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var logMessages []string
 	var mu sync.Mutex
@@ -62,7 +62,7 @@ func TestExecutor_LogCallback(t *testing.T) {
 
 func TestExecutor_LogCallbackTouchesStepActivity(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -87,7 +87,7 @@ func TestExecutor_LogCallbackTouchesStepActivity(t *testing.T) {
 
 func TestExecutor_LogChunkThrottlesStepActivityWrites(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	counterDB, err := sql.Open("sqlite", p.DB()+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -185,7 +185,7 @@ func (lifecycleTestAgent) Close() error { return nil }
 
 func TestExecutor_AgentLifecycleLoggedAndClearsPID(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -224,7 +224,7 @@ func TestExecutor_AgentLifecycleLoggedAndClearsPID(t *testing.T) {
 
 func TestExecutor_LogVsLogChunk(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	var chunks []string
 	var mu sync.Mutex
@@ -276,7 +276,7 @@ func TestExecutor_LogVsLogChunk(t *testing.T) {
 
 func TestExecutor_RunLogDir(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	exec := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, nil)
 	exec.Execute(context.Background(), run, repo, workDir)
@@ -300,7 +300,7 @@ func TestExecutor_RunLogDir(t *testing.T) {
 
 func TestExecutor_LogFileWritten(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -331,7 +331,7 @@ func TestExecutor_LogFileWritten(t *testing.T) {
 
 func TestExecutor_LogFileWritten_OnStepError(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// The error a step returns (e.g. the underlying git stderr from a rejected
 	// push) must be persisted to the step's own log file, not only surfaced via
@@ -355,7 +355,7 @@ func TestExecutor_LogFileWritten_OnStepError(t *testing.T) {
 
 func TestExecutor_StepErrorRedactsCredentialURL(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	// A step error carrying a credentialled upstream URL (as a real git push
 	// rejection error would). It must be redacted before reaching the step log
@@ -415,7 +415,7 @@ func TestExecutor_StepErrorRedactsCredentialURL(t *testing.T) {
 
 func TestExecutor_LogFileMultipleSteps(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step1 := &adaptiveCallStep{
 		name: types.StepReview,
@@ -467,7 +467,7 @@ func TestExecutor_LogFileMultipleSteps(t *testing.T) {
 // half an hour, and the step log is what an operator actually reads.
 func TestExecutor_SubprocessLivenessUpdatesActivityWithoutFloodingTheStepLog(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	livenessAgent := &lifecycleEmittingAgent{
 		events: []agent.LifecycleEvent{

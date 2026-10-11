@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -162,6 +163,22 @@ func TestOmitIntentJourney(t *testing.T) {
 		}
 	}
 
+	// Each completed fixture PR now really advances the parent target. Start
+	// the next topic from that target, so this Intent journey does not also
+	// introduce a rebase/custody transition in the contributor worktree.
+	syncMain := func() {
+		t.Helper()
+		if out, err := h.runGit(ctx, h.WorkDir, "fetch", h.UpstreamDir, "refs/heads/main"); err != nil {
+			t.Fatalf("fetch merged fixture main: %v\n%s", err, out)
+		}
+		if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+			t.Fatalf("checkout fixture main: %v\n%s", err, out)
+		}
+		if out, err := h.runGit(ctx, h.WorkDir, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
+			t.Fatalf("advance fixture main: %v\n%s", err, out)
+		}
+	}
+
 	// Baseline: publication is the default.
 	const publishedIntent = "publish this baseline intent on the PR body"
 	h.CommitChange("feature/omit-baseline", "feature.txt", "baseline\n", "add baseline feature")
@@ -183,6 +200,7 @@ func TestOmitIntentJourney(t *testing.T) {
 
 	// Per-run flag: section gone, prompts unchanged.
 	const secretIntent = "SECRET-INTENT keep this contributor context off the public PR"
+	syncMain()
 	h.CommitChange("feature/omit-flag", "feature.txt", "flag\n", "add flag feature")
 	flagWT := h.AddWorktree("feature/omit-flag")
 	if out, err := h.RunInDir(flagWT, "axi", "run", "--intent", secretIntent, "--no-publish-intent"); err != nil {
@@ -205,12 +223,45 @@ func TestOmitIntentJourney(t *testing.T) {
 	promptsCarry(secretIntent)
 
 	// A bare rerun inherits the omission; the flag is tighten-only so nothing
-	// on the rerun surface can restore the section.
+	// on the rerun surface can restore the section. Give it a fresh delta so
+	// it must draft a new PR, rather than complete with an already merged diff.
+	if out, err := h.runGit(ctx, flagWT, "fetch", h.UpstreamDir, "refs/heads/main"); err != nil {
+		t.Fatalf("fetch merged target for rerun: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, flagWT, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
+		t.Fatalf("advance rerun branch to merged target: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(flagWT, "rerun.txt"), []byte("fresh rerun delta\n"), 0o644); err != nil {
+		t.Fatalf("write rerun delta: %v", err)
+	}
+	if out, err := h.runGit(ctx, flagWT, "add", "rerun.txt"); err != nil {
+		t.Fatalf("stage rerun delta: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, flagWT, "commit", "-m", "add rerun delta"); err != nil {
+		t.Fatalf("commit rerun delta: %v\n%s", err, out)
+	}
+	// Seed the local gate ref without invoking its push hook; bare rerun must
+	// select this clean caller head while inheriting the previous run's flag.
+	gateDir := paths.WithRoot(h.NMHome).RepoDir(h.repoID())
+	if out, err := h.runGit(ctx, gateDir, "fetch", flagWT, "refs/heads/"+flagged.Branch+":refs/heads/"+flagged.Branch); err != nil {
+		t.Fatalf("seed fresh rerun gate head: %v\n%s", err, out)
+	}
+	beforeRerun := len(readGHStubInvocations(t, ghLog))
 	rerun := runCLIAndWait(t, h, flagWT, "feature/omit-flag", "rerun")
 	if rerun.ID == flagged.ID || !rerun.OmitIntent {
 		t.Fatalf("rerun %s omit_intent=%v, want a new run inheriting omission from %s", rerun.ID, rerun.OmitIntent, flagged.ID)
 	}
-	rerunBody := prBodyFor(rerun)
+	var rerunBody string
+	var rerunCreates int
+	for _, inv := range readGHStubInvocations(t, ghLog)[beforeRerun:] {
+		if len(inv.Args) >= 2 && inv.Args[0] == "pr" && inv.Args[1] == "create" && strings.HasSuffix(inv.Head, ":"+rerun.Branch) {
+			rerunCreates++
+			rerunBody = inv.Body
+		}
+	}
+	if rerunCreates != 1 || !strings.Contains(rerunBody, "## What Changed") {
+		t.Fatalf("rerun made %d new PR creates, want one with a drafted body:\n%s", rerunCreates, rerunBody)
+	}
 	if strings.Contains(rerunBody, "## Intent") || strings.Contains(rerunBody, "SECRET-INTENT") {
 		t.Fatalf("rerun PR body re-published the Intent section:\n%s", rerunBody)
 	}
@@ -226,6 +277,7 @@ func TestOmitIntentJourney(t *testing.T) {
 		t.Fatalf("write global config: %v", err)
 	}
 	const globalIntent = "GLOBAL-DEFAULT intent that the operator keeps private"
+	syncMain()
 	h.CommitChange("feature/omit-global", "feature.txt", "global\n", "add global feature")
 	globalWT := h.AddWorktree("feature/omit-global")
 	if out, err := h.RunInDir(globalWT, "axi", "run", "--intent", globalIntent); err != nil {
@@ -249,6 +301,7 @@ func TestOmitIntentJourney(t *testing.T) {
 
 	// Adversarial reattach: an active run started WITHOUT the flag must not be
 	// silently adopted by a caller that asked for omission.
+	syncMain()
 	h.CommitChange(omitIntentSlowBranch, "feature.txt", "reattach\n", "add reattach feature")
 	reattachWT := h.AddWorktree(omitIntentSlowBranch)
 	h.PushToGate(omitIntentSlowBranch)

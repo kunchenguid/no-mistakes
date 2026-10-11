@@ -9,21 +9,33 @@ import (
 
 // azPR is the subset of `az repos pr show/list/create` JSON output we consume.
 type azPR struct {
-	Title         string  `json:"title"`
-	Description   *string `json:"description"`
-	PullRequestID int     `json:"pullRequestId"`
-	Status        string  `json:"status"`      // active | completed | abandoned
-	MergeStatus   string  `json:"mergeStatus"` // notSet | queued | conflicts | succeeded | rejectedByPolicy | failure
-	SourceRefName string  `json:"sourceRefName"`
-	TargetRefName string  `json:"targetRefName"`
-	URL           string  `json:"url"` // _apis/... endpoint - NOT browsable
-	Repository    struct {
-		Name    string `json:"name"`
-		WebURL  string `json:"webUrl"` // .../_git/{repo} - browsable base
-		Project struct {
-			Name string `json:"name"`
-		} `json:"project"`
-	} `json:"repository"`
+	Title         string       `json:"title"`
+	Description   *string      `json:"description"`
+	PullRequestID int          `json:"pullRequestId"`
+	Status        string       `json:"status"`      // active | completed | abandoned
+	MergeStatus   string       `json:"mergeStatus"` // notSet | queued | conflicts | succeeded | rejectedByPolicy | failure
+	SourceRefName string       `json:"sourceRefName"`
+	TargetRefName string       `json:"targetRefName"`
+	URL           string       `json:"url"` // _apis/... endpoint - NOT browsable
+	Repository    azRepository `json:"repository"`
+	ForkSource    *struct {
+		Repository azRepository `json:"repository"`
+	} `json:"forkSource"`
+	LastMergeCommit struct {
+		CommitID string `json:"commitId"`
+	} `json:"lastMergeCommit"`
+	LastMergeSourceCommit struct {
+		CommitID string `json:"commitId"`
+	} `json:"lastMergeSourceCommit"`
+}
+
+type azRepository struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	WebURL  string `json:"webUrl"` // .../_git/{repo} - browsable base
+	Project struct {
+		Name string `json:"name"`
+	} `json:"project"`
 }
 
 // policyEval is the subset of `az repos pr policy list` evaluation records we
@@ -38,7 +50,11 @@ type policyEval struct {
 			DisplayName string `json:"displayName"`
 		} `json:"type"`
 		Settings struct {
-			DisplayName string `json:"displayName"`
+			DisplayName       string `json:"displayName"`
+			BuildDefinitionID int    `json:"buildDefinitionId"`
+			StatusName        string `json:"statusName"`
+			StatusGenre       string `json:"statusGenre"`
+			AuthorID          string `json:"authorId"`
 		} `json:"settings"`
 	} `json:"configuration"`
 	Context map[string]any `json:"context"`

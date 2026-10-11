@@ -103,6 +103,9 @@ func TestSelectedFixFollowedByDocumentEditDoesNotRestartReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selected fix: %v\n%s", err, result)
 	}
+	if strings.Contains(result, "step: review") && strings.Contains(result, "fix_review") {
+		t.Fatalf("selected fix remained at Review:\n%s", result)
+	}
 	gated := waitForStepStatus(t, h, branch, types.StepLint, types.StepStatusAwaitingApproval, 90*time.Second)
 	if gated == nil {
 		t.Fatal("lint step never parked on the failing lint command")

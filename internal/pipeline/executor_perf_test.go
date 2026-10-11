@@ -59,7 +59,7 @@ func (a *fallbackUsageAgent) Close() error { return nil }
 // the raw session id never lands in the telemetry row.
 func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -187,7 +187,7 @@ func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T)
 // run's persisted parked total once the wait ends.
 func TestExecutor_AccumulatesParkedDuration(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := completionFixture(t, database, run)
 
 	step := newApprovalStep(types.StepReview, `{"findings":[{"severity":"warning","description":"x","action":"ask-user"}],"summary":"1"}`)
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)

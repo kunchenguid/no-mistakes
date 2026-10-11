@@ -100,11 +100,24 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		checks = append(checks, scm.Check{
 			Name:        statusName(status),
 			ProviderID:  statusProviderID(status),
+			HeadSHA:     statusCommitSHA(status),
 			Bucket:      statusBucket(status.State),
 			ExecutionID: pipelineBuildNumberFromStatusURL(status.URL),
 		})
 	}
 	return checks, nil
+}
+
+func statusCommitSHA(status CommitStatus) string {
+	link, err := url.Parse(status.Links.Commit.Href)
+	if err != nil || link.Scheme != "https" || link.Host == "" {
+		return ""
+	}
+	_, sha, ok := strings.Cut(link.Path, "/commit/")
+	if !ok || !fullBitbucketHash(sha) {
+		return ""
+	}
+	return sha
 }
 
 func (h *Host) GetMergeableState(_ context.Context, _ *scm.PR) (scm.MergeableState, error) {

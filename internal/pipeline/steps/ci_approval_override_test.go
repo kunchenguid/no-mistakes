@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -34,6 +35,12 @@ func TestCIStep_VerifyApprovalOverride(t *testing.T) {
 			name:           "became green",
 			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"PR must be raised via no-mistakes","state":"SUCCESS","bucket":"pass"}]`,
 			wantUnresolved: false,
+		},
+		{
+			name:           "green after retarget",
+			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+			wantUnresolved: true,
+			wantContains:   "comparison",
 		},
 		// Regression for the upstream review P1 "unresolved checks become
 		// clean passes": before this fix, VerifyApprovalOverride used
@@ -79,7 +86,10 @@ func TestCIStep_VerifyApprovalOverride(t *testing.T) {
 			prURL := "https://github.com/test/repo/pull/42"
 			sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = env
-			sctx.Run.PRURL = &prURL
+			bindExistingPRMutationFixture(t, sctx, prURL, "main")
+			if tc.name == "green after retarget" {
+				sctx.Env = append(sctx.Env, "FAKE_CLI_PR_FACTS_JSON="+fmt.Sprintf(`{"number":42,"html_url":%q,"state":"open","merged":false,"head":{"ref":"feature","sha":%q,"repo":{"full_name":"test/repo"}},"base":{"ref":"develop"}}`, prURL, headSHA))
+			}
 
 			step := &CIStep{}
 			unresolved, err := step.VerifyApprovalOverride(sctx)

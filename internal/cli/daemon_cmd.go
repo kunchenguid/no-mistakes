@@ -133,6 +133,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			externalCIOwner, err := parseExternalCIOwnerPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			piProfile, err := parsePiProfilePushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -179,6 +183,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				ValidationGeneration:   validationGeneration,
 				PRBaseBranch:           prBaseBranch,
 				OmitIntent:             omitIntent,
+				ExternalCIOwner:        externalCIOwner,
 				PiProfile:              piProfile,
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
@@ -358,6 +363,30 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 // Like every publication control it is tighten-only: the option can only ask
 // for omission, never for publication.
 const omitIntentPushOption = "no-mistakes.omit-intent"
+
+const externalCIOwnerPushOptionPrefix = "no-mistakes.external-ci-owner="
+
+func formatExternalCIOwnerPushOption(owner string) string {
+	if owner == "" {
+		return ""
+	}
+	return externalCIOwnerPushOptionPrefix + owner
+}
+
+func parseExternalCIOwnerPushOptions(options []string) (string, error) {
+	owner := ""
+	for _, option := range options {
+		if !strings.HasPrefix(option, externalCIOwnerPushOptionPrefix) {
+			continue
+		}
+		value := strings.TrimPrefix(option, externalCIOwnerPushOptionPrefix)
+		if value != types.ExternalCIOwnerControllerShipPR || owner != "" {
+			return "", fmt.Errorf("invalid or duplicate external CI owner push option")
+		}
+		owner = value
+	}
+	return owner, nil
+}
 
 // formatOmitIntentPushOption encodes the caller-side omit-intent request as a
 // push option. An absent request formats to no option at all.
