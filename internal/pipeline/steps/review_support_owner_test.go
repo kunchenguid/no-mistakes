@@ -160,13 +160,13 @@ func completedReviewSupportFixture(t *testing.T, claim Finding) (*pipeline.StepC
 
 func pendingReviewTestClaim(command string) Finding {
 	return Finding{ID: "review-1", Severity: types.FindingSeverityError, Action: types.ActionNoOp,
-		Category: reviewSupportPendingCategory, Description: "reported test failure",
+		Category: types.FindingCategoryReviewSupportPending, Description: "reported test failure",
 		Support: &types.FindingSupport{ClaimType: types.FindingClaimTest, Test: &types.FindingTestSupport{Command: command}}}
 }
 
 func pendingReviewCIClaim(checkID, head string) Finding {
 	return Finding{ID: "review-1", Severity: types.FindingSeverityError, Action: types.ActionNoOp,
-		Category: reviewSupportPendingCategory, Description: "reported CI failure",
+		Category: types.FindingCategoryReviewSupportPending, Description: "reported CI failure",
 		Support: &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: checkID, HeadSHA: head}}}
 }
 

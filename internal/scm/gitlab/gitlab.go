@@ -596,6 +596,12 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	} else if !sameCommitSHA(revision, headSHA) {
 		return nil, fmt.Errorf("%w: merge request %s source commit changed during check discovery from %s to %s", scm.ErrHeadChanged, pr.Number, headSHA, revision)
 	}
+	// The checks came from the pipeline proven above to run at headSHA or at a
+	// merged-results commit that includes it. Expose that verified association
+	// so downstream consumers bind the evidence to the delivered source head.
+	for i := range checks {
+		checks[i].HeadSHA = headSHA
+	}
 	return checks, nil
 }
 

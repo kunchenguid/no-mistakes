@@ -256,7 +256,7 @@ Rules:
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
-		effectivePRBaseBranch(sctx),
+		targetBranch,
 		ignorePatterns,
 		documentPlacementPolicy,
 		documentScopeDiscipline,

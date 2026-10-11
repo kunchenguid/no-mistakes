@@ -46,7 +46,7 @@ func currentReviewSupportClaims(sctx *pipeline.StepContext, claimType types.Find
 	}
 	var pending []Finding
 	for _, item := range findings.Items {
-		if item.Category != reviewSupportPendingCategory || item.Support == nil || item.Support.ClaimType != claimType {
+		if item.Category != types.FindingCategoryReviewSupportPending || item.Support == nil || item.Support.ClaimType != claimType {
 			continue
 		}
 		if item.ID == "" || item.Support.OwnerResult != nil {

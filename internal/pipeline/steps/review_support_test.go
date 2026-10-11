@@ -134,7 +134,7 @@ func TestReviewStepPinnedSupportRoutesPendingTestClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.Items) != 1 || parsed.Items[0].Category != reviewSupportPendingCategory {
+	if len(parsed.Items) != 1 || parsed.Items[0].Category != types.FindingCategoryReviewSupportPending {
 		t.Fatalf("pending test claim lost: %+v", parsed.Items)
 	}
 }
@@ -142,11 +142,11 @@ func TestReviewStepPinnedSupportRoutesPendingTestClaim(t *testing.T) {
 func TestReviewPendingCIClaimSurvivesDeliveryFilter(t *testing.T) {
 	t.Parallel()
 	findings := Findings{Items: []Finding{
-		{ReviewScope: types.FindingReviewScopePipelineOwnedDelivery, Category: reviewSupportPendingCategory, Action: types.ActionNoOp, Support: &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "42", HeadSHA: strings.Repeat("a", 40)}}},
+		{ReviewScope: types.FindingReviewScopePipelineOwnedDelivery, Category: types.FindingCategoryReviewSupportPending, Action: types.ActionNoOp, Support: &types.FindingSupport{ClaimType: types.FindingClaimCI, CI: &types.FindingCISupport{CheckID: "42", HeadSHA: strings.Repeat("a", 40)}}},
 		{ReviewScope: types.FindingReviewScopePipelineOwnedDelivery, Description: "PR is not open yet"},
 	}}
 	got, dropped := stripDeferredPipelineOwnedDeliveryFindings(findings)
-	if dropped != 1 || len(got.Items) != 1 || got.Items[0].Category != reviewSupportPendingCategory {
+	if dropped != 1 || len(got.Items) != 1 || got.Items[0].Category != types.FindingCategoryReviewSupportPending {
 		t.Fatalf("filtered = %+v, dropped = %d; want pending CI retained", got.Items, dropped)
 	}
 }
@@ -174,7 +174,7 @@ func TestReviewSupportPendingClaimsDoNotBlockReview(t *testing.T) {
 		t.Fatalf("pending owner claims blocked Review: %+v", got.Items)
 	}
 	for _, item := range got.Items {
-		if item.Category != reviewSupportPendingCategory || item.Action != types.ActionNoOp {
+		if item.Category != types.FindingCategoryReviewSupportPending || item.Action != types.ActionNoOp {
 			t.Fatalf("pending finding = %+v", item)
 		}
 	}
@@ -195,7 +195,7 @@ func TestReviewSupportMissingAndHistoricalClaimsFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Items[0].Action != types.ActionAskUser || got.Items[0].Category != reviewSupportPendingCategory {
+	if got.Items[0].Action != types.ActionAskUser || got.Items[0].Category != types.FindingCategoryReviewSupportPending {
 		t.Fatalf("historical claim = %+v, want pending human decision", got.Items[0])
 	}
 	items.Items[0].Support.OwnerResult = &types.FindingOwnerResult{Disposition: types.FindingSupportDispositionDisproven}

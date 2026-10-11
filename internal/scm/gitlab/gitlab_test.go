@@ -1218,8 +1218,8 @@ func TestGetChecksAcceptsAMergedResultsPipelineThatIncludesTheDeliveredCommit(t 
 	if err != nil {
 		t.Fatalf("GetChecks() error = %v", err)
 	}
-	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
-		t.Fatalf("GetChecks() = %+v, want the merged-results pipeline's passing build job", checks)
+	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass || checks[0].HeadSHA != deliveredSHA {
+		t.Fatalf("GetChecks() = %+v, want the merged-results pipeline's passing build job bound to source head %s", checks, deliveredSHA)
 	}
 }
 

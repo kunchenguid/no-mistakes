@@ -50,7 +50,7 @@ func (e *Executor) validateReviewSupportOwnersAtBoundary(runID string, through t
 	}
 	var pending []types.Finding
 	for _, finding := range findings.Items {
-		if finding.Category == "review-support-pending" && finding.Support != nil &&
+		if finding.Category == types.FindingCategoryReviewSupportPending && finding.Support != nil &&
 			(finding.Support.ClaimType == claimType ||
 				(through == types.StepCI && finding.Support.ClaimType == types.FindingClaimTest)) {
 			pending = append(pending, finding)
@@ -117,7 +117,7 @@ func (e *Executor) validateReviewSupportOwnersAtBoundary(runID string, through t
 			}
 			result := candidate.Support.OwnerResult
 			if result.ReviewFindingID != claim.ID || result.HeadSHA != receipt.LocalHeadSHA || result.TargetSHA != receipt.TargetSHA ||
-				result.Generation != receipt.Generation || result.Disposition != types.FindingSupportDispositionDisproven {
+				result.Generation != receipt.Generation || (result.Disposition != types.FindingSupportDispositionDisproven && result.Disposition != types.FindingSupportDispositionSupported) {
 				continue
 			}
 			if result.DiffDigest != receipt.DiffDigest {
@@ -127,11 +127,20 @@ func (e *Executor) validateReviewSupportOwnersAtBoundary(runID string, through t
 			if err != nil || observedAt.IsZero() {
 				continue
 			}
-			if ownerName == types.StepTest && (result.ExitCode == nil || *result.ExitCode != 0) {
+			if ownerName == types.StepTest && (result.ExitCode == nil || (result.Disposition == types.FindingSupportDispositionDisproven && *result.ExitCode != 0) || (result.Disposition == types.FindingSupportDispositionSupported && *result.ExitCode == 0)) {
 				continue
 			}
-			if ownerName == types.StepCI && result.CheckState != "pass" && !strings.HasPrefix(result.CheckState, "pass:") {
+			if ownerName == types.StepCI && ((result.Disposition == types.FindingSupportDispositionDisproven && result.CheckState != "pass" && !strings.HasPrefix(result.CheckState, "pass:")) || (result.Disposition == types.FindingSupportDispositionSupported && result.CheckState != "fail" && !strings.HasPrefix(result.CheckState, "fail:"))) {
 				continue
+			}
+			if result.Disposition == types.FindingSupportDispositionSupported {
+				ownerResult, err := e.db.GetStepResult(owner.ID)
+				if err != nil {
+					return fmt.Errorf("read %s approval override: %w", ownerName, err)
+				}
+				if ownerResult == nil || ownerResult.OverrideReason == nil || strings.TrimSpace(*ownerResult.OverrideReason) == "" {
+					continue
+				}
 			}
 			resolved = true
 			break

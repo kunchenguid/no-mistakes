@@ -14,8 +14,6 @@ import (
 
 // A pending claim is retained for the owning evidence step. Review itself
 // cannot make test, CI, or runtime observations authoritative.
-const reviewSupportPendingCategory = "review-support-pending"
-
 func validateReviewFindingSupport(sctx *pipeline.StepContext, findings Findings, reviewedHead string) (Findings, error) {
 	if sctx == nil || sctx.PRContext == nil {
 		// Direct fixture and eval calls have no pinned comparison. They retain
@@ -134,7 +132,7 @@ func validateRemovedSourceLine(sctx *pipeline.StepContext, base, head string, re
 }
 
 func markReviewSupportPending(item *Finding, ownerStepWillCheck bool) {
-	item.Category = reviewSupportPendingCategory
+	item.Category = types.FindingCategoryReviewSupportPending
 	if ownerStepWillCheck {
 		// Review must advance to Test/CI. Its own approval/fix loop does not
 		// own this claim, while the finding remains in the durable payload.
@@ -146,7 +144,7 @@ func markReviewSupportPending(item *Finding, ownerStepWillCheck bool) {
 
 func hasBlockingReviewFindings(items []Finding) bool {
 	for _, item := range items {
-		if item.Category != reviewSupportPendingCategory || item.Action != types.ActionNoOp {
+		if item.Category != types.FindingCategoryReviewSupportPending || item.Action != types.ActionNoOp {
 			if item.Severity == types.FindingSeverityError || item.Severity == types.FindingSeverityWarning {
 				return true
 			}

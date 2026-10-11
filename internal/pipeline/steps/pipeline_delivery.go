@@ -71,7 +71,7 @@ func isDeferredPipelineOwnedDeliveryFinding(item Finding) bool {
 	// run. Review cannot validate it, but the owning Test/CI step can. Keep
 	// that pending reference for handoff while dropping claims that merely
 	// complain this run has not produced its later delivery artifacts yet.
-	if item.Category == reviewSupportPendingCategory && item.Support != nil {
+	if item.Category == types.FindingCategoryReviewSupportPending && item.Support != nil {
 		switch item.Support.ClaimType {
 		case types.FindingClaimTest, types.FindingClaimCI:
 			return false

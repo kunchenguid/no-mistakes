@@ -508,6 +508,27 @@ func TestExecutorTestSupportRejectsPostReviewDocumentCommitAtCompletion(t *testi
 	if err := executor.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
 		t.Fatalf("current Test support was not accepted before the document commit: %v", err)
 	}
+	failed := 1
+	resolved.Support.OwnerResult.Disposition = types.FindingSupportDispositionSupported
+	resolved.Support.OwnerResult.ExitCode = &failed
+	resolved.Severity = types.FindingSeverityError
+	resolved.Action = types.ActionAskUser
+	failedJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{resolved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(testStep.ID, failedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepTest); err == nil {
+		t.Fatal("supported Test claim passed without an operator override")
+	}
+	if err := database.SetStepOverrideReason(testStep.ID, "approved configured command failure"); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepTest); err != nil {
+		t.Fatalf("approved Test failure was rejected: %v", err)
+	}
 	if err := database.UpdateRunHeadSHA(run.ID, advancedHead); err != nil {
 		t.Fatal(err)
 	}
@@ -602,6 +623,28 @@ func TestExecutorCIHistoricalClaimAcceptsFinalComparisonProof(t *testing.T) {
 	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
 		t.Fatalf("final CI owner result refused: %v", err)
 	}
+	resolved.Support.OwnerResult.Disposition = types.FindingSupportDispositionSupported
+	resolved.Support.OwnerResult.CheckState = "fail:failure"
+	resolved.Severity = types.FindingSeverityError
+	resolved.Action = types.ActionAskUser
+	failedJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{resolved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(ci.ID, failedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err == nil {
+		t.Fatal("supported CI claim passed without an operator override")
+	}
+	if err := database.SetStepOverrideReason(ci.ID, "approved required-check failure"); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.validateReviewSupportOwners(run.ID, types.StepCI); err != nil {
+		t.Fatalf("approved CI failure was rejected: %v", err)
+	}
+	resolved.Support.OwnerResult.Disposition = types.FindingSupportDispositionDisproven
+	resolved.Support.OwnerResult.CheckState = "pass"
 	resolved.Support.OwnerResult.Generation--
 	staleJSON, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{resolved}})
 	if err != nil {

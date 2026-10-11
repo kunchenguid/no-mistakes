@@ -394,7 +394,7 @@ func hasBlockingFindingsAtStepJSON(raw string, step types.StepName) bool {
 		if item.Severity != types.FindingSeverityError && item.Severity != types.FindingSeverityWarning {
 			continue
 		}
-		if item.Category == "review-support-pending" && item.Action == types.ActionNoOp && item.Support != nil &&
+		if item.Category == types.FindingCategoryReviewSupportPending && item.Action == types.ActionNoOp && item.Support != nil &&
 			(item.Support.ClaimType == types.FindingClaimTest || item.Support.ClaimType == types.FindingClaimCI) && item.Support.Validate() == nil {
 			continue
 		}
