@@ -1212,7 +1212,7 @@ func TestGetChecksAcceptsAMergedResultsPipelineThatIncludesTheDeliveredCommit(t 
 			stdout: fmt.Sprintf(`{"id":%q,"parent_ids":[%q,%q]}`, mergeRefSHA, targetSHA, deliveredSHA) + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
-			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
+			stdout: fmt.Sprintf(`[{"id":1,"name":"build","status":"success","commit":{"id":%q},"pipeline":{"sha":%q}}]`, mergeRefSHA, mergeRefSHA) + "\n",
 		},
 	}), nil, "gitlab.example.com", "group/project")
 
@@ -1222,6 +1222,40 @@ func TestGetChecksAcceptsAMergedResultsPipelineThatIncludesTheDeliveredCommit(t 
 	}
 	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass || checks[0].HeadSHA != deliveredSHA {
 		t.Fatalf("GetChecks() = %+v, want the merged-results pipeline's passing build job bound to source head %s", checks, deliveredSHA)
+	}
+}
+
+// A job's explicit commit must agree with the verified pipeline commit,
+// including the synthetic commit for merged results. The endpoint alone must
+// not let contradictory successful jobs certify the delivered source head.
+func TestGetChecksRejectsJobCommitsOutsideTheVerifiedPipeline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		pipelineSHA string
+		jobEvidence string
+	}{
+		{"old job commit", deliveredSHA, `"commit":{"id":"` + otherSHA + `"}`},
+		{"old job pipeline", deliveredSHA, `"pipeline":{"sha":"` + otherSHA + `"}`},
+		{"conflicting job evidence", deliveredSHA, `"commit":{"id":"` + deliveredSHA + `"},"pipeline":{"sha":"` + otherSHA + `"}`},
+		{"conflicting pipeline evidence", deliveredSHA, `"commit":{"id":"` + otherSHA + `"},"pipeline":{"sha":"` + deliveredSHA + `"}`},
+		{"source commit instead of merged commit", mergeRefSHA, `"commit":{"id":"` + deliveredSHA + `"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+				"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, tc.pipelineSHA, "refs/merge-requests/123/merge"),
+				"glab api projects/group%2Fproject/repository/commits/" + mergeRefSHA: {
+					stdout: fmt.Sprintf(`{"id":%q,"parent_ids":[%q,%q]}`, mergeRefSHA, targetSHA, deliveredSHA),
+				},
+				"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+					stdout: `[{"id":1,"name":"build","status":"success",` + tc.jobEvidence + `}]`,
+				},
+			}), nil, "gitlab.example.com", "group/project")
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+			if !errors.Is(err, scm.ErrHeadChanged) || len(checks) != 0 {
+				t.Fatalf("GetChecks() = (%+v, %v), want no checks and a head-change refusal", checks, err)
+			}
+		})
 	}
 }
 

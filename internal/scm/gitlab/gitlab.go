@@ -583,9 +583,18 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	if err != nil {
 		return nil, err
 	}
-	checks, err := parseGitlabJobs(jobsOut)
+	jobs, err := decodeGitlabJobs(jobsOut)
 	if err != nil {
 		return nil, err
+	}
+	// The pipeline endpoint supplies the association when a job omits its
+	// commit, but it cannot override contradictory evidence in a reported job.
+	for _, job := range jobs {
+		for _, revision := range []string{job.Commit.ID, job.Pipeline.SHA} {
+			if strings.TrimSpace(revision) != "" && !sameCommitSHA(revision, pipeline.SHA) {
+				return nil, fmt.Errorf("%w: merge request %s job %q reported commit %s, not verified pipeline %d commit %s", scm.ErrHeadChanged, pr.Number, job.Name, revision, pipeline.ID, pipeline.SHA)
+			}
+		}
 	}
 	after, err := h.viewMR(ctx, pr.Number)
 	if err != nil {
@@ -599,6 +608,7 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	// The checks came from the pipeline proven above to run at headSHA or at a
 	// merged-results commit that includes it. Expose that verified association
 	// so downstream consumers bind the evidence to the delivered source head.
+	checks := jobsToChecks(jobs)
 	for i := range checks {
 		checks[i].HeadSHA = headSHA
 	}

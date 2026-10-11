@@ -93,7 +93,7 @@ func TestCIStep_GitLabOldGreenJobCannotCertifyCurrentHead(t *testing.T) {
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
-	sctx.Env = stepstest.FakeCIGlab(t, "opened", checksJSON)
+	sctx.Env = stepstest.FakeCIGlab(t, "opened", checksJSON, headSHA)
 	stepstest.BindCurrentPRComparison(t, sctx, prURL, "test/repo", "main")
 	sctx.Config.CITimeout = 5 * time.Second
 	var logs []string
@@ -109,14 +109,18 @@ func TestCIStep_GitLabOldGreenJobCannotCertifyCurrentHead(t *testing.T) {
 	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("monitor result = %v", err)
 	}
+	readyLogged := false
 	for _, line := range logs {
 		if strings.Contains(line, "all CI checks passed") {
-			t.Fatalf("old job announced readiness: %v", logs)
+			readyLogged = true
 		}
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || run.CIReadyAt != nil {
-		t.Fatalf("old job persisted readiness: %+v, %v", run, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readyLogged || run.CIReadyAt != nil {
+		t.Fatalf("old job announced or persisted readiness: ready=%t logs=%v", run.CIReadyAt != nil, logs)
 	}
 }
 

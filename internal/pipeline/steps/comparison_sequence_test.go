@@ -66,7 +66,26 @@ func TestTestRepairCommitRestartsThroughReview(t *testing.T) {
 		if e.StepName != nil && *e.StepName == types.StepTest && e.Status != nil && (*e.Status == string(types.StepStatusAwaitingApproval) || *e.Status == string(types.StepStatusFixReview)) {
 			fixes++
 			if fixes == 1 {
-				if err := ex.Respond(types.StepTest, types.ActionFix, nil); err != nil {
+				steps, err := c.DB.GetStepsByRun(c.Run.ID)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				var selected []string
+				for _, step := range steps {
+					if step.StepName != types.StepTest || step.FindingsJSON == nil {
+						continue
+					}
+					findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					for _, finding := range findings.Items {
+						selected = append(selected, finding.ID)
+					}
+				}
+				if err := ex.Respond(types.StepTest, types.ActionFix, selected); err != nil {
 					t.Error(err)
 				}
 			}
