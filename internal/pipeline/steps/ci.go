@@ -534,6 +534,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	timeoutMergeConflict := false
 	lastMonitorLog := ciMonitorStatus{}
 	consecutiveCheckErrs := 0
+	var pending pendingObservations
 	consecutiveBotCommentErrs := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		if handoffPending(sctx) {
@@ -714,6 +715,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return nil, err
 		}
 		if err != nil {
+			pending = pendingObservations{}
+			previousRepair, _ := decodeLastFixedChecks(s.lastFixedChecks)
+			if mergeConflict && !previousRepair.MergeConflict {
+				if readyErr := setCIMonitorReadiness(sctx, false, false); readyErr != nil {
+					return nil, readyErr
+				}
+				findings := ciObservationFindings(ciIssues{mergeConflict: true})
+				readFailure, _ := types.ParseFindingsJSON(ciCheckReadFailureOutcome(err).Findings)
+				findings.Items = append(findings.Items, readFailure.Items...)
+				outcome := ciTerminalRepairOutcome(ciObservationOutcome(findings), Findings{}, sctx.DeferredFindings)
+				outcome.AutoFixable = true
+				return outcome, nil
+			}
 			if errors.Is(err, scm.ErrHeadChanged) {
 				// The provider answered, but nothing it offered is evidence for
 				// the commit this run is delivering: no pipeline has registered
@@ -871,6 +885,35 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					return nil, err
 				}
 			}
+			stalled := pending.observe(pr.HeadSHA, checks, s.transientReruns, now())
+			if len(stalled) > 0 {
+				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+					return nil, err
+				}
+				unresolvedCancelled = mergeCheckNames(unresolvedCancelled, s.transientReruns.cancelledWithoutRerun(checks))
+				findings := ciObservationFindings(ciIssues{
+					provider: host.Provider(), checks: checks, failing: failing,
+					unresolvedCancelled: unresolvedCancelled, mergeConflict: mergeConflict,
+					reruns: s.transientReruns.used, botComments: reviewBotComments(sctx, host, pr, checks),
+					greenBots: reviewBotCommentsAlways(sctx),
+				})
+				if s.lastRepairStillUnverified(checks, mergeConflict, pollBaseTip) {
+					for i := range findings.Items {
+						findings.Items[i].Action = types.ActionAskUser
+					}
+				}
+				stallFindings := stalledCheckFindings(checks, stalled)
+				if findings.Summary != "" {
+					stallFindings.Summary += "; " + findings.Summary
+				}
+				findings.Summary = stallFindings.Summary
+				findings.Items = append(findings.Items, stallFindings.Items...)
+				s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+				sctx.Log(findings.Summary)
+				outcome := ciTerminalRepairOutcome(ciObservationOutcome(findings), Findings{}, sctx.DeferredFindings)
+				outcome.AutoFixable = hasAutoFixFindings(findings.Items)
+				return outcome, nil
+			}
 			if rerunIssued || (!hasIssues && len(awaitingRerun) > 0) {
 				// The re-run checks are running again for the same commit, so
 				// the monitor waits rather than escalating. This also clears any
@@ -880,7 +923,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				if err := logStatus(ciChecksRunningMsg); err != nil {
 					return nil, err
 				}
-			} else if hasIssues && checksPending {
+			} else if hasIssues && checksPending && !mergeConflict {
 				// Issue handling waits only for checks that can still complete on
 				// their own. A cancelled check whose rerun budget is exhausted must
 				// reach the approval gate instead of waiting forever.
@@ -918,7 +961,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// comments) never starts a round.
 					s.lastFixedChecks = ""
 					s.lastFixedCompletedAt = nil
-					sctx.DeferredFindings = ""
+					// A conflict may now arrive before the rollup settles; that
+					// partial observation cannot supersede deferred decisions.
+					partialConflict := mergeConflict && (checksPending || len(checks) == 0)
+					if !partialConflict {
+						sctx.DeferredFindings = ""
+					}
 					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
 					findings := ciObservationFindings(ciIssues{
 						provider:            host.Provider(),
@@ -935,7 +983,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						sctx.Log(hold)
 					}
 					sctx.Log(fmt.Sprintf("issues detected: %s", findings.Summary))
-					return ciObservationOutcome(findings), nil
+					outcome := ciObservationOutcome(findings)
+					if partialConflict {
+						outcome = ciTerminalRepairOutcome(outcome, Findings{}, sctx.DeferredFindings)
+						outcome.AutoFixable = hasAutoFixFindings(findings.Items)
+					}
+					return outcome, nil
 				}
 			} else {
 				s.lastFixedChecks = ""
