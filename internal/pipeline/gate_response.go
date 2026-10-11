@@ -227,8 +227,16 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 }
 
 func FindingDecisionKey(item types.Finding) string {
-	encoded, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{findingKey(item)}})
-	return encoded
+	key := findingKey(item)
+	encoded, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{key.finding}})
+	// Keep the finding's wire encoding and include its support selectors,
+	// without treating refreshed observations as a new decision.
+	identity, _ := json.Marshal([]any{
+		json.RawMessage(encoded), key.hasSupport, key.claimType, key.sourcePath,
+		key.testCommand, key.ciCheckID, key.ciHeadSHA, key.runtimeEntity,
+		key.runtimeTransition, key.runtimeTransitionAt, key.runtimeRevision,
+	})
+	return string(identity)
 }
 
 func ChosenFindingKeys(round *db.StepRound) map[string]bool {

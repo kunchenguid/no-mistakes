@@ -246,7 +246,7 @@ func TestPushStep_AttestsCommittedDescendantWithRecordedHeadUnadvanced(t *testin
 func TestCIRepair_AttestsCommittedDescendantWithRecordedHeadUnadvanced(t *testing.T) {
 	f, logFile := publicationAttestationFixture(t)
 	writeCIFix(f.dir)
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
 	if err != nil || !repair.HeadAdvanced || repair.Revalidate {
 		t.Fatalf("publish CI repair = %+v, %v; log: %s", repair, err, f.log())
 	}

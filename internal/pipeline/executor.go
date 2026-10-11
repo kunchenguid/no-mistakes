@@ -2023,13 +2023,13 @@ func restorePendingDecision(response approvalResponse, previous, gate string) (a
 	for _, id := range findingIDsInPayloadOrder(gate) {
 		inGate[id] = true
 	}
-	restated := make(map[types.Finding]types.Finding, len(response.addedFindings))
+	restated := make(map[findingIdentity]types.Finding, len(response.addedFindings))
 	for _, item := range response.addedFindings {
 		restated[findingKey(item)] = item
 	}
 	var restoredGateIDs []string
 	var restoredAdditions []types.Finding
-	var restoredKeys []types.Finding
+	var restoredKeys []findingIdentity
 	instructions := make(map[string]string)
 	for _, item := range recorded.Items {
 		if item.ID == "" {
@@ -2068,7 +2068,7 @@ func restorePendingDecision(response approvalResponse, previous, gate string) (a
 	}
 	// A restatement is dropped in favor of the restored item: dispatching both
 	// would hand the fixer the same finding twice.
-	restored := make(map[types.Finding]bool, len(restoredKeys))
+	restored := make(map[findingIdentity]bool, len(restoredKeys))
 	for _, key := range restoredKeys {
 		restored[key] = true
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -89,6 +90,18 @@ func TestSupportedFindingSelectorsAndFreshEvidence(t *testing.T) {
 			}
 			if tc.wantSame && !reflect.DeepEqual(items[0].Support, tc.b) {
 				t.Fatalf("new evidence was not retained: %+v", items[0].Support)
+			}
+			// A recorded human decision applies to the named claim, not a
+			// different check, command, or transition with the same prose.
+			// Refreshing that claim's observations does not revoke the decision.
+			round := userDecisionRound(t, marshalFindingItems(t, a), a.ID)
+			got, err := splitFixResponse(marshalFindingItems(t, b), []*db.StepRound{round}, nil, nil)
+			if tc.wantSame {
+				if err != nil || len(got.Kept) != 1 || got.Kept[0] != b.ID {
+					t.Fatalf("refreshed claim lost its recorded decision: %+v, %v", got, err)
+				}
+			} else if err == nil {
+				t.Fatal("a different claim inherited the recorded decision")
 			}
 		})
 	}

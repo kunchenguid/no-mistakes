@@ -125,19 +125,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	bodyLimit := scm.HostMaxPRBodyChars(host)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, "")
+	existing, err := mutablePR(sctx, host)
 	if err != nil {
 		return nil, err
-	}
-	existing, err = bindExistingPR(sctx, host, existing)
-	if err != nil {
-		return nil, err
-	}
-	if existing == nil {
-		existing, err = mutablePR(sctx, host)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if existing != nil {
 		var live scm.PRContent

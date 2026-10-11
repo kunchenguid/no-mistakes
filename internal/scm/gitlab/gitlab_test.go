@@ -749,7 +749,9 @@ func TestGetChecksPreservesProviderCommitForNamedProof(t *testing.T) {
 			stdout: `{"sha":"` + current + `","jobs":[{"id":1,"name":"test","status":"success","commit":{"id":"` + old + `"}},{"id":2,"name":"test","status":"failed","commit":{"id":"` + current + `"}},{"id":3,"name":"lint","status":"success"}]}`,
 		},
 	}), nil, "", "")
-	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: current})
+	// Unbound observations preserve each provider commit for the consumer to
+	// compare. Supplying HeadSHA selects the separately tested bound-MR read.
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +768,7 @@ func TestGetChecksRejectsConflictingJobAndPipelineCommitEvidence(t *testing.T) {
 			stdout: `[{"id":1,"name":"build","status":"success","commit":{"id":"` + current + `"},"pipeline":{"sha":"` + old + `"}}]`,
 		},
 	}), nil, "", "")
-	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: current})
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil || len(checks) != 1 || checks[0].HeadSHA != "" {
 		t.Fatalf("ambiguous job commit = %+v, %v", checks, err)
 	}
