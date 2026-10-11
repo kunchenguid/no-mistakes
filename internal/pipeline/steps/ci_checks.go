@@ -442,3 +442,102 @@ func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
 		Findings:      string(findingsJSON),
 	}
 }
+
+// pendingObservations belongs to one Execute invocation. Missing, ambiguous, or
+// unavailable evidence never supplies idle credit to a later observation.
+const pendingCheckIdleWindow = 20 * time.Minute
+
+type pendingObservation struct {
+	check scm.Check
+	since time.Time
+}
+
+type pendingObservations struct {
+	head   string
+	checks map[string]pendingObservation
+}
+
+func pendingObservationKey(check scm.Check) string {
+	if check.ProviderID != "" {
+		return "id:" + check.ProviderID
+	}
+	return fmt.Sprintf("%q/%d/%q/%q", check.Kind, check.WorkflowID, check.Name, check.Link)
+}
+
+func (p *pendingObservations) observe(head string, checks []scm.Check, reruns checkRerunBudget, now time.Time) []scm.Check {
+	if p.head != head {
+		p.checks = nil
+		p.head = head
+	}
+	counts := make(map[string]int)
+	for _, check := range checks {
+		counts[pendingObservationKey(check)]++
+	}
+	next := make(map[string]pendingObservation)
+	var stalled []scm.Check
+	for _, check := range checks {
+		key := pendingObservationKey(check)
+		_, rerunning := reruns.rollup[check.Name]
+		if !check.Pending() || check.AwaitingApproval || rerunning || counts[key] != 1 {
+			continue
+		}
+		previous, ok := p.checks[key]
+		old := previous.check
+		if !ok || old.State != check.State || old.ExecutionID != check.ExecutionID ||
+			!old.StartedAt.Equal(check.StartedAt) || old.Link != check.Link ||
+			old.Kind != check.Kind || old.WorkflowID != check.WorkflowID || old.Name != check.Name {
+			previous.since = now
+		}
+		previous.check = check
+		next[key] = previous
+		if now.Sub(previous.since) >= pendingCheckIdleWindow {
+			stalled = append(stalled, check)
+		}
+	}
+	p.checks = next
+	return stalled
+}
+
+// Bound both individual attribution and the aggregate to keep provider-owned
+// strings from overflowing the findings IPC payload. Raw checks stay untouched.
+func stalledCheckFindings(checks, stalled []scm.Check) Findings {
+	concluded := 0
+	for _, check := range checks {
+		switch check.Bucket {
+		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip, scm.CheckBucketCancel:
+			concluded++
+		}
+	}
+	findings := Findings{Summary: fmt.Sprintf("%d CI checks stalled; %d concluded, %d unresolved", len(stalled), concluded, len(checks)-concluded)}
+	var omitted string
+	for i, check := range stalled {
+		name := boundStalledCheckText(check.Name, 512)
+		id := boundStalledCheckText(check.ProviderID, 512)
+		if i >= 50 {
+			if len(omitted) < 4096 {
+				omitted = boundStalledCheckText(omitted+fmt.Sprintf("%s [%s]; ", name, id), 4096)
+			}
+			continue
+		}
+		findings.Items = append(findings.Items, Finding{
+			Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+			Category: types.FindingCategoryCICheck, Check: name, CheckID: id,
+			Description: fmt.Sprintf("CI check %s [%s] (%s, workflow %d, %s) has remained %s with no observed execution or state transition for 20 minutes. It may still finish; decide whether to keep waiting or proceed with an override.", name, id, boundStalledCheckText(string(check.Kind), 128), check.WorkflowID, boundStalledCheckText(check.Link, 512), boundStalledCheckText(check.State, 128)),
+		})
+	}
+	if len(stalled) > 50 {
+		findings.Items = append(findings.Items, Finding{
+			Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
+			Description: fmt.Sprintf("%d additional stalled checks (names and provider identities, bounded): %s", len(stalled)-50, omitted),
+		})
+	}
+	return findings
+}
+
+func boundStalledCheckText(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
+}
