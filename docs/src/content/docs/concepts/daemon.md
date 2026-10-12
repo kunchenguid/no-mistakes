@@ -165,6 +165,6 @@ The [starting and stopping](#starting-and-stopping) section owns the active-run
 guard, the top-level `--force` override, and the separate validation-step
 containment rule.
 
-1. Cancels all active runs
+1. Cancels all active runs, except that a run fully recorded as waiting at an approval gate keeps its record and worktree so the next start resumes it (see [Crash recovery](#crash-recovery))
 2. Waits up to 30 seconds for goroutines to finish
 3. Removes the PID file and socket
