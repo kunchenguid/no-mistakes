@@ -2055,7 +2055,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 				}
 				return <-e.approvalCh, false, nil
 			}
-			if errors.Is(err, ErrFatalGateReconciliation) {
+			if errors.Is(err, ErrFatalGateReconciliation) && ctx.Err() == nil {
 				return approvalResponse{}, false, err
 			}
 			if err != nil && ctx.Err() == nil {

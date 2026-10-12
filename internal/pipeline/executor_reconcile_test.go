@@ -455,3 +455,43 @@ func TestExecutor_GateRecheckStopsAfterApprovalCancelAndShutdown(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutor_ShutdownDuringFatalReconcileKeepsRunParked(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &reconcilingApprovalStep{
+		name:    types.StepCI,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	reconcileErr := error(fmt.Errorf("%w: head lookup cancelled", ErrFatalGateReconciliation))
+	step.err.Store(&reconcileErr)
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec.SetGateReconcileTimings(10*time.Millisecond, 100*time.Millisecond)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(ctx, run, repo, t.TempDir()) }()
+	select {
+	case <-step.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("gate reconciliation did not start")
+	}
+	cancel(ErrDaemonShutdown)
+	close(step.release)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrParkedAtShutdown) {
+			t.Fatalf("Execute() error = %v, want ErrParkedAtShutdown", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Execute did not stop after shutdown")
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunRunning || got.AwaitingAgentSince == nil {
+		t.Fatalf("run after shutdown = status %s awaiting %v, want running and parked", got.Status, got.AwaitingAgentSince)
+	}
+}
