@@ -1748,3 +1748,41 @@ func TestFinalSourceReadWithoutRevisionIsAProviderError(t *testing.T) {
 		})
 	}
 }
+
+func TestParseGitlabJobsTreatsAllowedFailureAsNonBlocking(t *testing.T) {
+	t.Parallel()
+
+	checks, err := parseGitlabJobs([]byte(`[
+		{"id":1,"name":"flaky-lint","status":"failed","allow_failure":true},
+		{"id":2,"name":"unit","status":"failed","allow_failure":false},
+		{"id":3,"name":"e2e","status":"failed"}
+	]`))
+	if err != nil {
+		t.Fatalf("parseGitlabJobs() error = %v", err)
+	}
+	want := map[string]scm.CheckBucket{
+		"flaky-lint": scm.CheckBucketSkip,
+		"unit":       scm.CheckBucketFail,
+		"e2e":        scm.CheckBucketFail,
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("parseGitlabJobs() = %+v, want %d checks", checks, len(want))
+	}
+	for _, c := range checks {
+		if c.Bucket != want[c.Name] {
+			t.Errorf("check %q bucket = %q, want %q", c.Name, c.Bucket, want[c.Name])
+		}
+	}
+}
+
+func TestFindFailedJobTargetIDsIgnoresAllowedFailure(t *testing.T) {
+	t.Parallel()
+
+	out := []byte(`[
+		{"id":1,"name":"flaky-lint","status":"failed","allow_failure":true},
+		{"id":2,"name":"unit","status":"failed"}
+	]`)
+	if got := findFailedJobTargetIDs(out, nil); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("findFailedJobTargetIDs() = %v, want [2]", got)
+	}
+}

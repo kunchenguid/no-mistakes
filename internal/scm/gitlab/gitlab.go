@@ -921,6 +921,21 @@ type gitlabJob struct {
 	Status     string `json:"status"`
 	Stage      string `json:"stage"`
 	FinishedAt string `json:"finished_at"`
+	// AllowFailure marks a job GitLab lets fail without failing the pipeline
+	// (`allow_failure: true`). Such a job reports status "failed" but does not
+	// block the merge request.
+	AllowFailure bool `json:"allow_failure"`
+}
+
+// bucket maps the job to a check bucket. A failed job with allow_failure set
+// is non-blocking in GitLab (the pipeline is green, shown as "passed with
+// warnings"), so it maps to CheckBucketSkip like other non-blocking outcomes
+// instead of CheckBucketFail.
+func (j gitlabJob) bucket() scm.CheckBucket {
+	if j.AllowFailure && strings.EqualFold(strings.TrimSpace(j.Status), "failed") {
+		return scm.CheckBucketSkip
+	}
+	return gitlabStatusBucket(j.Status)
 }
 
 // completedAt parses the job's finished_at timestamp, returning the zero time
@@ -1055,7 +1070,7 @@ func jobsToChecks(jobs []gitlabJob) []scm.Check {
 		checks = append(checks, scm.Check{
 			Name:        job.Name,
 			ProviderID:  providerID,
-			Bucket:      gitlabStatusBucket(job.Status),
+			Bucket:      job.bucket(),
 			CompletedAt: job.completedAt(),
 		})
 	}
@@ -1077,7 +1092,7 @@ func findFailedJobTargetIDs(out []byte, checkTargets []scm.CheckTarget) []int {
 	jobs, _ := decodeGitlabJobs(out)
 	var matched []int
 	for _, job := range jobs {
-		if !strings.EqualFold(job.Status, "failed") {
+		if !strings.EqualFold(job.Status, "failed") || job.AllowFailure {
 			continue
 		}
 		_, nameMatch := names[job.Name]
