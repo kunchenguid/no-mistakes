@@ -793,6 +793,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				outcome.AutoFixable = hasAutoFixFindings(findings.Items)
 				return outcome, nil
 			}
+			// A pending check the last published repair targeted is the
+			// provider re-running the repaired head, so that repair is no
+			// longer unverified. This runs before the branches below because a
+			// known conflict does not wait for pending checks: left inside the
+			// pending branch, a conflict-only repair would never clear and the
+			// remaining repair attempts would strand until timeout.
+			repairRerunStarted := false
+			if hasIssues && checksPending && pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
+				s.lastFixedChecks = ""
+				s.lastFixedCompletedAt = nil
+				repairRerunStarted = true
+			}
 			if rerunIssued || (!hasIssues && len(awaitingRerun) > 0) {
 				// The re-run checks are running again for the same commit, so
 				// the monitor waits rather than escalating. This also clears any
@@ -805,14 +817,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// their own. A cancelled check whose rerun budget is exhausted must
 				// reach the approval gate instead of waiting forever.
 				lastMonitorLog = ""
-				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
-					s.lastFixedChecks = ""
-					s.lastFixedCompletedAt = nil
-				}
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
 				lastMonitorLog = ""
-				if s.lastRepairStillUnverified(checks, mergeConflict) {
+				if repairRerunStarted {
+					// This poll is the one that showed the repaired head's
+					// checks starting; the issues beside them may predate the
+					// repair, so the next poll decides whether to repair again.
+					sctx.Log("repair is being re-checked, waiting for a fresh observation...")
+				} else if s.lastRepairStillUnverified(checks, mergeConflict) {
 					// The provider has not re-run the checks the last
 					// published repair targeted: the failures on screen are
 					// the ones that repair was for, not a verdict on it.
