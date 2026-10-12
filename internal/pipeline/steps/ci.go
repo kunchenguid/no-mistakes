@@ -66,6 +66,10 @@ type CIStep struct {
 	// must not re-arm the timeout. Overridable for testing; defaults to
 	// fetching the upstream default branch.
 	baseBranchTip func(context.Context) (string, bool)
+	// replayBase is the resolved base tip an in-flight rebase repair targets,
+	// set only for the duration of that repair's recording. recordRepair
+	// proves a pure replay against exactly this commit and nothing else.
+	replayBase string
 }
 
 // SetPollIntervalOverride is a test hook; production leaves the override unset.
@@ -373,7 +377,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		retryRefusal = false
 		if repair.Revalidate {
-			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom()}, nil
 		}
 	}
 	baseBranch := effectivePRBaseBranch(sctx)

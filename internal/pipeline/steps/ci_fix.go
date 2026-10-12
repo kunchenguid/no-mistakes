@@ -136,7 +136,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			// Carry them on the restart outcome: ask-user findings park before
 			// the restart, while an empty or informational set proceeds.
 			return &pipeline.StepOutcome{
-				RestartFrom: types.StepReview,
+				RestartFrom: repair.restartFrom(),
 				Findings:    sctx.DeferredFindings,
 			}, nil
 		}
@@ -282,6 +282,10 @@ CI logs:
 	conclusion, conclusionErr := extractCIFixConclusion(result)
 	if conclusionErr != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
+	}
+	if rebase {
+		s.replayBase = rebaseBaseSHA
+		defer func() { s.replayBase = "" }()
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
 	var refusal *pipeline.ProtectedPathError
@@ -567,10 +571,21 @@ type ciRepairResult struct {
 	// HeadAdvanced is true when the run's recorded head moved to the repair.
 	HeadAdvanced bool
 	// Revalidate is true when the repair was NOT published and the pipeline
-	// must re-run from Review before Push may publish it.
-	Revalidate         bool
+	// must re-run before Push may publish it.
+	Revalidate bool
+	// ReviewCarried is true when a revalidating repair kept the run's review
+	// approval as a proven pure replay, so revalidation starts at Test.
+	ReviewCarried      bool
 	NoCodeChangeNeeded bool
 	Summary            string
+}
+
+// restartFrom is the step a revalidating repair restarts validation at.
+func (r ciRepairResult) restartFrom() types.StepName {
+	if r.ReviewCarried {
+		return types.StepTest
+	}
+	return types.StepReview
 }
 
 // commitAndPush remains as the narrow test seam for the default summary.
@@ -714,10 +729,56 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 		return s.recordLocalRepair(sctx, headSHA)
 	}
 	if reason := ciRepairContinuityGap(sctx, headSHA); reason != "" {
+		if s.replayBase != "" && ciCarriesReviewOnReplay(sctx) {
+			repair, carried, err := s.recordReplayedRepair(sctx, headSHA, s.replayBase)
+			if err != nil || carried {
+				return repair, err
+			}
+		}
 		sctx.Log(fmt.Sprintf("cannot prove the repaired head continues the reviewed head: %s; revalidating from Review instead of publishing", reason))
 		return s.recordLocalRepair(sctx, headSHA)
 	}
 	return s.publishRepair(sctx, headSHA)
+}
+
+// recordReplayedRepair keeps a rebase repair local and moves the run's review
+// approval to it when it is a provable pure replay of the approved commits
+// onto base (see pureReplayGap). The reviewed diff is unchanged, so only the
+// steps that depend on the base - Test onward - re-run. It reports carried =
+// false, having recorded nothing, whenever the proof does not hold, so the
+// caller takes the ordinary revalidation path.
+func (s *CIStep) recordReplayedRepair(sctx *pipeline.StepContext, headSHA, base string) (ciRepairResult, bool, error) {
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return ciRepairResult{}, false, nil
+	}
+	approvedHead, _ := reviewApprovedHead(sctx, run)
+	if approvedHead == "" {
+		return ciRepairResult{}, false, nil
+	}
+	if gate := reviewAnchoredGate(sctx); gate != "" {
+		sctx.Log(fmt.Sprintf("not carrying the review approval across the rebase: gate %q runs after Review", gate))
+		return ciRepairResult{}, false, nil
+	}
+	if gap := pureReplayGap(sctx, approvedHead, base, headSHA); gap != "" {
+		sctx.Log(fmt.Sprintf("rebase repair is not a pure replay of the reviewed commits: %s", gap))
+		return ciRepairResult{}, false, nil
+	}
+	if err := updateNonSharedBranchRef(sctx, headSHA); err != nil {
+		return ciRepairResult{}, false, err
+	}
+	startingHead := sctx.Run.HeadSHA
+	// Durable first, then in memory, as in recordLocalRepair. The write only
+	// lands while the approval is still the one the proof was made against.
+	carried, err := sctx.DB.UpdateRunHeadSHAWithCarriedReview(sctx.Run.ID, approvedHead, headSHA)
+	if err != nil || !carried {
+		return ciRepairResult{}, false, err
+	}
+	sctx.Run.HeadSHA = headSHA
+	sctx.Run.ReviewApprovedHeadSHA = &headSHA
+	pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, startingHead, headSHA)
+	sctx.Log(fmt.Sprintf("rebase repair is a pure replay of reviewed head %s onto %s; carrying the review approval to %s and revalidating from Test", shortObjectID(approvedHead), shortObjectID(base), shortObjectID(headSHA)))
+	return ciRepairResult{HeadAdvanced: true, Revalidate: true, ReviewCarried: true}, true, nil
 }
 
 // ciRepairContinuityGap returns why the repaired head cannot be proven to

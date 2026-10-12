@@ -87,6 +87,7 @@ ci:
   revalidate_repairs: false
   review_bot_comments: on_failure # or: always
   rebase_behind: false
+  carry_review_on_replay: false
 
 rebase:
   strategy: rebase # or: merge
@@ -956,6 +957,22 @@ The operator-level fallback for [`ci.rebase_behind`](/no-mistakes/reference/repo
 ```yaml
 ci:
   rebase_behind: true
+```
+
+A value in the trusted repository config overrides this global value in both directions. When the trusted repository config omits the key, this global value applies.
+
+### ci.carry_review_on_replay
+
+The operator-level fallback for [`ci.carry_review_on_replay`](/no-mistakes/reference/repo-config/#cicarry_review_on_replay), whose per-repository reference owns the pure-replay proof, its limits, and the trust boundary.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+```yaml
+ci:
+  carry_review_on_replay: true
 ```
 
 A value in the trusted repository config overrides this global value in both directions. When the trusted repository config omits the key, this global value applies.

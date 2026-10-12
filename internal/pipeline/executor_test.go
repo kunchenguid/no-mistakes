@@ -91,6 +91,62 @@ func TestExecutor_SuccessfulStepsDoNotEmitTelemetry(t *testing.T) {
 	}
 }
 
+// A CI repair that carried the review approval (a proven pure replay) asks to
+// restart at Test: the rewind re-runs Test onward and leaves the completed
+// Review untouched, rather than paying for a second Review.
+func TestExecutor_RestartFromTestKeepsTheCompletedReview(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	var order []types.StepName
+	pass := func(name types.StepName) Step {
+		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+			order = append(order, name)
+			return &StepOutcome{}, nil
+		}}
+	}
+	ciCalls := 0
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		order = append(order, types.StepCI)
+		ciCalls++
+		switch ciCalls {
+		case 1:
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"severity":"error","description":"PR is behind its base","action":"auto-fix","category":"ci-behind-base"}],"summary":"behind base"}`,
+			}, nil
+		case 2:
+			return &StepOutcome{RestartFrom: types.StepTest}, nil
+		default:
+			return &StepOutcome{}, nil
+		}
+	}}
+	cycle := []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR}
+	steps := make([]Step, 0, len(cycle)+1)
+	for _, name := range cycle {
+		steps = append(steps, pass(name))
+	}
+	steps = append(steps, ci)
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{CI: 1}}, nil, steps, nil)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	want := append(append([]types.StepName{}, cycle...), types.StepCI, types.StepCI)
+	want = append(want, cycle[1:]...)
+	want = append(want, types.StepCI)
+	if !slices.Equal(order, want) {
+		t.Fatalf("execution order = %v, want %v", order, want)
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range results {
+		if result.Status != types.StepStatusCompleted {
+			t.Errorf("step %s = %s, want completed", result.StepName, result.Status)
+		}
+	}
+}
+
 func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

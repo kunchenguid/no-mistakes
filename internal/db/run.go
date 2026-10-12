@@ -843,6 +843,24 @@ func (d *DB) UpdateRunHeadSHAForRevalidation(id, headSHA string) error {
 	return nil
 }
 
+// UpdateRunHeadSHAWithCarriedReview records a late repair that was proven to
+// be a pure replay of the approved commits and moves the review approval to
+// it in the same write. The update applies only while the run still holds
+// approvedHeadSHA as its approval, so an approval revoked or replaced in the
+// meantime is never resurrected onto the new head; it reports whether the
+// carry was recorded.
+func (d *DB) UpdateRunHeadSHAWithCarriedReview(id, approvedHeadSHA, headSHA string) (bool, error) {
+	result, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, review_approved_head_sha = ?, updated_at = ? WHERE id = ? AND review_approved_head_sha = ?`, headSHA, headSHA, now(), id, approvedHeadSHA)
+	if err != nil {
+		return false, fmt.Errorf("update run head sha with carried review: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("update run head sha with carried review: %w", err)
+	}
+	return rows == 1, nil
+}
+
 // UpdateRunError sets the error message on a run.
 func (d *DB) UpdateRunError(id, errMsg string) error {
 	return d.UpdateRunErrorStatus(id, errMsg, types.RunFailed)

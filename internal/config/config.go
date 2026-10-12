@@ -686,6 +686,8 @@ type CIRaw struct {
 	ReviewBotComments string `yaml:"review_bot_comments"`
 	// RebaseBehind is a pointer for the same reason as RevalidateRepairs.
 	RebaseBehind *bool `yaml:"rebase_behind"`
+	// CarryReviewOnReplay is a pointer for the same reason as RevalidateRepairs.
+	CarryReviewOnReplay *bool `yaml:"carry_review_on_replay"`
 }
 
 // CI holds the resolved CI-step settings.
@@ -744,6 +746,20 @@ type CI struct {
 	// a green BEHIND PR reports checks-passed and waits for a human to bring
 	// it up to date (see VISION.md's cost rule).
 	RebaseBehind bool
+	// CarryReviewOnReplay opts a CI rebase repair that is a provable pure
+	// replay into keeping the run's review approval: when the repaired head
+	// is the reviewed commits replayed onto the resolved base tip - a linear
+	// chain of the same length, each commit replaying onto its new parent with
+	// no conflict to exactly its recorded tree, and each one patch-identical
+	// (`git patch-id --verbatim`) to the reviewed commit it replaced - the
+	// approval moves to the replayed head and validation restarts at Test
+	// instead of Review. Anything that fails any part of that proof, or any
+	// error while checking it, takes today's path and revalidates from Review.
+	//
+	// Off by default. It has no effect when RevalidateRepairs is true, which
+	// keeps meaning "every repair re-passes Review", or when the run has a
+	// review-anchored gate, which would otherwise be skipped for the new head.
+	CarryReviewOnReplay bool
 }
 
 // RebaseRaw is the YAML representation of rebase-step settings.
@@ -1555,6 +1571,15 @@ ci:
   # pass. A repository that sets ci.rebase_behind on its own default branch
   # overrides this value.
   rebase_behind: false
+  # Whether a CI rebase repair that only replayed the reviewed commits keeps
+  # its review approval. Defaults to false: every rebase repair revalidates
+  # from Review. Set true to restart at Test instead when the rebase is a
+  # provable pure replay - every reviewed commit replayed without a conflict
+  # and patch-identical to the one it replaced. Anything else still
+  # revalidates from Review. No effect when revalidate_repairs is true. A
+  # repository that sets ci.carry_review_on_replay on its own default branch
+  # overrides this value.
+  carry_review_on_replay: false
 
 # Auto-fix commit subject template. Available variables: {{.Step}}, {{.Summary}}, and {{.Branch}}.
 # {{.Branch}} is the normalized branch name, or the only capture group from
@@ -3052,6 +3077,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// ci.review_bot_comments decides whether a green review-bot check
 		// can still block checks-passed, so a pushed branch must not be able
 		// to silence the bot's unresolved comments on itself.
+		// ci.carry_review_on_replay decides whether a rebased head may skip
+		// Review, so a pushed branch must not be able to opt its own rebases
+		// out of the maintainer's review.
 		effective.CI = trusted.CI
 		// rebase.strategy is gate-control in the same sense no_ci is. It decides
 		// whether integrating a moved base leaves an auditable merge commit
@@ -3496,6 +3524,9 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	}
 	if src.RebaseBehind != nil {
 		dst.RebaseBehind = *src.RebaseBehind
+	}
+	if src.CarryReviewOnReplay != nil {
+		dst.CarryReviewOnReplay = *src.CarryReviewOnReplay
 	}
 }
 
