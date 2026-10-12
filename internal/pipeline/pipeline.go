@@ -13,6 +13,15 @@ import (
 
 var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
+// ErrDaemonShutdown is the cancellation cause RunManager.Shutdown gives every
+// active run.
+var ErrDaemonShutdown = errors.New("daemon shutting down")
+
+// ErrParkedAtShutdown is returned when a daemon shutdown reached a run that was
+// fully recorded as waiting at an approval gate. The run keeps that record so
+// the next start resumes it, as it would after a crash.
+var ErrParkedAtShutdown = errors.New("run left parked at an approval gate by daemon shutdown")
+
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
 	Ctx              context.Context
