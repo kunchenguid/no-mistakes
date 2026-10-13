@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.96.0](https://github.com/kunchenguid/no-mistakes/compare/v1.95.0...v1.96.0) (2026-10-13)
+
+
+### Features
+
+* **ci:** opt-in carry of Review approval across a pure-replay rebase repair ([#1442](https://github.com/kunchenguid/no-mistakes/issues/1442)) ([911ab15](https://github.com/kunchenguid/no-mistakes/commit/911ab1506cda7b0ab9acdd5c8a7d42165a5f4be2))
+
+
+### Bug Fixes
+
+* **daemon:** guard daemon start's drift restart against active runs ([#1443](https://github.com/kunchenguid/no-mistakes/issues/1443)) ([54c1550](https://github.com/kunchenguid/no-mistakes/commit/54c155053a7fad1e5fac3b5b04c186e7ed93c39c)), closes [#1425](https://github.com/kunchenguid/no-mistakes/issues/1425)
+* **daemon:** keep runs parked at an approval gate across a clean stop ([#1438](https://github.com/kunchenguid/no-mistakes/issues/1438)) ([82747bc](https://github.com/kunchenguid/no-mistakes/commit/82747bcd7f5cf3e558c7d449ac9eb240e7934aca))
+* **gitlab:** ignore allowed job failures ([#1439](https://github.com/kunchenguid/no-mistakes/issues/1439)) ([3cb4df4](https://github.com/kunchenguid/no-mistakes/commit/3cb4df456cd092464a154e24f417397fdff67d47))
+
 ## [1.95.0](https://github.com/kunchenguid/no-mistakes/compare/v1.94.0...v1.95.0) (2026-10-12)
 
 
