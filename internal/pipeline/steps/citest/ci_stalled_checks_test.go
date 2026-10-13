@@ -158,3 +158,47 @@ func TestCIStep_StallWindowRequiresContinuousUnchangedEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestCIStep_StallWindowFollowsCIStallTimeout(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		stall   time.Duration
+		minutes int
+		stalled bool
+	}{
+		{name: "extended", stall: 45 * time.Minute, minutes: 45, stalled: true},
+		{name: "disabled", stall: config.CITimeoutUnlimited, minutes: 60},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+			checks := `{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"build","status":"IN_PROGRESS","detailsUrl":"https://github.com/test/repo/actions/runs/1/job/1","startedAt":"2026-10-10T00:00:00Z"}],"pageInfo":{"hasNextPage":false}}}}}}}`
+			sctx := stepstest.NewTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = stepstest.FakeCIGHMergeable(t, "OPEN", checks, "MERGEABLE")
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx.Run.PRURL = &prURL
+			sctx.Config.CITimeout = time.Hour
+			sctx.Config.CIStallTimeout = tc.stall
+			start := time.Unix(1700000000, 0)
+			now := start
+			step := (&steps.CIStep{}).SetNow(func() time.Time { return now }).SetPollIntervalOverride(15 * time.Minute).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+				now = now.Add(15 * time.Minute)
+				if now.Sub(start) > time.Duration(tc.minutes)*time.Minute {
+					t.Fatal("monitor kept polling past its expected park")
+				}
+				return nil
+			})
+			outcome, err := step.Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !outcome.NeedsApproval || now.Sub(start) != time.Duration(tc.minutes)*time.Minute {
+				t.Fatalf("unexpected park after %v: %+v", now.Sub(start), outcome)
+			}
+			if got := strings.Contains(outcome.Findings, "stalled"); got != tc.stalled {
+				t.Fatalf("stalled finding = %v, want %v: %s", got, tc.stalled, outcome.Findings)
+			}
+		})
+	}
+}

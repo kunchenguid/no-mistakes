@@ -38,6 +38,8 @@ agent_args_override:
 
 ci_timeout: "168h"
 
+ci_stall_timeout: "20m"
+
 step_quiet_warning: "10m"
 
 agent_timeout: "30m"
@@ -584,6 +586,19 @@ If the PR is merged or closed externally, the stale gate completes automatically
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
 
 Legacy alias: `babysit_timeout`.
+
+### ci_stall_timeout
+
+How long one pending CI check may go with no observed execution or state transition before the CI step parks it for a human decision.
+
+|         |                                                 |
+| ------- | ----------------------------------------------- |
+| Type    | `string` (Go duration, or an unlimited keyword) |
+| Default | `20m`                                           |
+
+A check that stays running with the same start time makes no observable progress, so raise this above your longest legitimate CI job.
+Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to never park on a stalled check; [`ci_timeout`](#ci_timeout) still bounds the monitor.
+The [CI step reference](/no-mistakes/reference/pipeline-steps/) owns what resets a check's window and what the park preserves.
 
 ### step_quiet_warning
 

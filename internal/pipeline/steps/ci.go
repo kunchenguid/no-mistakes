@@ -474,7 +474,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	timeoutMergeConflict := false
 	lastMonitorLog := ""
 	consecutiveCheckErrs := 0
-	var pending pendingObservations
+	pending := pendingObservations{window: pendingCheckIdleWindow(sctx.Config)}
 	consecutiveBotCommentErrs := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		sctx.Log("CI timeout reached")
@@ -620,7 +620,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return nil, err
 		}
 		if err != nil {
-			pending = pendingObservations{}
+			pending = pendingObservations{window: pending.window}
 			previousRepair, _ := decodeLastFixedChecks(s.lastFixedChecks)
 			if mergeConflict && !previousRepair.MergeConflict {
 				if readyErr := setCIMonitorReadiness(sctx, false, false); readyErr != nil {
@@ -781,7 +781,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						findings.Items[i].Action = types.ActionAskUser
 					}
 				}
-				stallFindings := stalledCheckFindings(checks, stalled)
+				stallFindings := stalledCheckFindings(checks, stalled, pending.window)
 				if findings.Summary != "" {
 					stallFindings.Summary += "; " + findings.Summary
 				}

@@ -846,3 +846,41 @@ func TestLoadGlobal_AutoFixPartial(t *testing.T) {
 		t.Errorf("test = %v, want nil", cfg.AutoFix.Test)
 	}
 }
+
+func TestLoadGlobal_CIStallTimeout(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{"unset", `ci_timeout: "1h"`, DefaultCIStallTimeout},
+		{"duration", `ci_stall_timeout: "1h30m"`, 90 * time.Minute},
+		{"keyword", `ci_stall_timeout: "off"`, CITimeoutUnlimited},
+		{"zero", `ci_stall_timeout: "0"`, CITimeoutUnlimited},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.value), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadGlobal(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.CIStallTimeout != tc.want {
+				t.Fatalf("ci_stall_timeout = %v, want %v", cfg.CIStallTimeout, tc.want)
+			}
+			if got := Merge(cfg, &RepoConfig{}).CIStallTimeout; got != tc.want {
+				t.Fatalf("merged ci_stall_timeout = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`ci_stall_timeout: "soon"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadGlobal(path); err == nil || !strings.Contains(err.Error(), "ci_stall_timeout") {
+		t.Fatalf("expected ci_stall_timeout parse error, got %v", err)
+	}
+}
