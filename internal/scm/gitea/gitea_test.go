@@ -473,6 +473,41 @@ func TestGetPRStateReportsOpen(t *testing.T) {
 	}
 }
 
+func TestGetChecksDistinguishesQueuedFromRunningJobsByStartedAt(t *testing.T) {
+	t.Parallel()
+
+	// Queued and running jobs share the pending bucket, so started_at is what
+	// shows a queued job began running.
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
+			stdout: `[{"id":"10","status":"in_progress","branch":"feature/x","event":"push"}]`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"queued","status":"queued","head_sha":"abc123"},` +
+				`{"id":11,"name":"running","status":"in_progress","head_sha":"abc123","started_at":"2026-08-20T06:30:00Z"}]}`,
+		},
+	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	byName := map[string]scm.Check{}
+	for _, c := range checks {
+		byName[c.Name] = c
+	}
+	if c := byName["queued"]; c.Bucket != scm.CheckBucketPending || !c.StartedAt.IsZero() {
+		t.Fatalf("queued check = %+v, want pending with zero StartedAt", c)
+	}
+	want := time.Date(2026, 8, 20, 6, 30, 0, 0, time.UTC)
+	if c := byName["running"]; c.Bucket != scm.CheckBucketPending || !c.StartedAt.Equal(want) {
+		t.Fatalf("running check = %+v, want pending with StartedAt %v", c, want)
+	}
+}
+
 func TestGetChecksFetchesJobsForMatchingHeadRun(t *testing.T) {
 	t.Parallel()
 
