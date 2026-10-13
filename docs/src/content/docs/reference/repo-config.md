@@ -896,6 +896,8 @@ A rebase repair is a pure replay only when every part of this holds:
 
 Any git error while checking also counts as not a pure replay. The check is deliberately narrower than "the rebase did not stop": a base change that lands within a few lines of a reviewed hunk changes that hunk's context, so its patch-id changes and the repair revalidates from Review, even though Git applied it cleanly.
 
+The carry applies only when the repaired head's own commits are exactly the reviewed commits. If any commit was added after Review approved the head (a Test, Document, or Lint auto-fix commit, or an earlier published CI repair), the repair is not a pure replay of the reviewed commits and Review re-runs as it does with the key off.
+
 The key has no effect when:
 
 - [`ci.revalidate_repairs`](#cirevalidate_repairs) is `true`, which keeps meaning that every repair re-passes Review.
