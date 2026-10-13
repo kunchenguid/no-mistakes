@@ -525,3 +525,46 @@ func TestCIStep_CarryReviewOnReplay_AFailedFixRoundStillRestartsAtTest(t *testin
 		t.Fatalf("remote moved to %s; the carried head was published before Test ran", f.remoteHead(t))
 	}
 }
+
+// A fixer that commits on top of a pending carried head and then fails must
+// not have that commit restart at Test under the carried approval: Test and
+// Push both accept a descendant, so the unreviewed commit would publish. It is
+// recorded like any other repair on a pending carry - approval revoked,
+// revalidation from Review.
+func TestCIStep_CarryReviewOnReplay_AFailedFixerCommitOnTopRevalidatesFromReview(t *testing.T) {
+	t.Parallel()
+	f := newReplayFixture(t, true, false)
+	f.carry(t)
+	f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		writeCIFix(opts.CWD)
+		gitCmd(t, opts.CWD, "add", "-A")
+		gitCmd(t, opts.CWD, "commit", "-m", "partial fix")
+		return nil, errors.New("fixer crashed after committing")
+	}}
+	f.sctx.Fixing = true
+	f.sctx.PreviousFindings = ciGateFindingsJSON("test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.sctx.Ctx = ctx
+
+	outcome, err := (&CIStep{observedCompletedAt: map[string]checkFreshness{}, waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}}).Execute(f.sctx)
+	if err != nil {
+		t.Fatalf("Execute: %v\nlog:\n%s", err, f.log())
+	}
+	if outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("outcome = %+v, want a restart from Review\nlog:\n%s", outcome, f.log())
+	}
+	committed := f.localHead(t)
+	if f.sctx.Run.HeadSHA != committed {
+		t.Fatalf("run head = %s, want the fixer's commit %s recorded", f.sctx.Run.HeadSHA, committed)
+	}
+	if got := f.approval(t); got != "" {
+		t.Fatalf("approval = %q, want it revoked", got)
+	}
+	if f.remoteHead(t) != f.reviewedHead {
+		t.Fatalf("remote moved to %s; the failed fixer's commit was published", f.remoteHead(t))
+	}
+}

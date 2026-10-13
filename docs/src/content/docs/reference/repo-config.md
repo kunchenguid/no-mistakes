@@ -906,7 +906,7 @@ The key has no effect when:
 
 The approval is moved only from the approval the check was made against: an approval that was revoked or replaced in the meantime is never carried. Nothing is published early; the replayed head stays local until the Push step republishes it after Test.
 
-The restart at Test is recorded with the carried approval, in the same write, and stays pending until the Push step publishes after Test onward has run. So it survives the CI step parking on findings that need your decision: approving them, even after a daemon restart, restarts at Test; a fix round that changes nothing or fails restarts at Test too; and a fix round that commits on top of the carried head revalidates from Review. None of these publishes the carried head directly.
+The restart at Test is recorded with the carried approval, in the same write, and stays pending until the Push step publishes after Test onward has run. So it survives the CI step parking on findings that need your decision: approving them, even after a daemon restart, restarts at Test; a fix round that changes nothing or fails restarts at Test too; and a fix round that commits on top of the carried head revalidates from Review, even when its fixer then fails. None of these publishes the carried head directly.
 
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot let its own rebases skip Review.
 A value set here wins over the operator's own [`ci.carry_review_on_replay`](/no-mistakes/reference/global-config/#cicarry_review_on_replay) in both directions.
