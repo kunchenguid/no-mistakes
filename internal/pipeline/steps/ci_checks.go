@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -503,7 +504,13 @@ func getCIChecks(ctx context.Context, host scm.Host, pr *scm.PR) ([]scm.Check, s
 
 // pendingObservations belongs to one Execute invocation. Missing, ambiguous, or
 // unavailable evidence never supplies idle credit to a later observation.
-const pendingCheckIdleWindow = 20 * time.Minute
+// A negative window disables the stall park.
+func pendingCheckIdleWindow(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.CIStallTimeout == 0 {
+		return config.DefaultCIStallTimeout
+	}
+	return cfg.CIStallTimeout
+}
 
 type pendingObservation struct {
 	check scm.Check
@@ -511,6 +518,7 @@ type pendingObservation struct {
 }
 
 type pendingObservations struct {
+	window time.Duration
 	head   string
 	checks map[string]pendingObservation
 }
@@ -523,6 +531,9 @@ func pendingObservationKey(check scm.Check) string {
 }
 
 func (p *pendingObservations) observe(head string, checks []scm.Check, reruns checkRerunBudget, now time.Time) []scm.Check {
+	if p.window < 0 {
+		return nil
+	}
 	if p.head != head {
 		p.checks = nil
 		p.head = head
@@ -548,7 +559,7 @@ func (p *pendingObservations) observe(head string, checks []scm.Check, reruns ch
 		}
 		previous.check = check
 		next[key] = previous
-		if now.Sub(previous.since) >= pendingCheckIdleWindow {
+		if now.Sub(previous.since) >= p.window {
 			stalled = append(stalled, check)
 		}
 	}
@@ -558,7 +569,7 @@ func (p *pendingObservations) observe(head string, checks []scm.Check, reruns ch
 
 // Bound both individual attribution and the aggregate to keep provider-owned
 // strings from overflowing the findings IPC payload. Raw checks stay untouched.
-func stalledCheckFindings(checks, stalled []scm.Check) Findings {
+func stalledCheckFindings(checks, stalled []scm.Check, window time.Duration) Findings {
 	concluded := 0
 	for _, check := range checks {
 		switch check.Bucket {
@@ -580,7 +591,7 @@ func stalledCheckFindings(checks, stalled []scm.Check) Findings {
 		findings.Items = append(findings.Items, Finding{
 			Severity: types.FindingSeverityWarning, Action: types.ActionAskUser,
 			Category: types.FindingCategoryCICheck, Check: name, CheckID: id,
-			Description: fmt.Sprintf("CI check %s [%s] (%s, workflow %d, %s) has remained %s with no observed execution or state transition for 20 minutes. It may still finish; decide whether to keep waiting or proceed with an override.", name, id, boundStalledCheckText(string(check.Kind), 128), check.WorkflowID, boundStalledCheckText(check.Link, 512), boundStalledCheckText(check.State, 128)),
+			Description: fmt.Sprintf("CI check %s [%s] (%s, workflow %d, %s) has remained %s with no observed execution or state transition for %s. It may still finish; decide whether to keep waiting or proceed with an override.", name, id, boundStalledCheckText(string(check.Kind), 128), check.WorkflowID, boundStalledCheckText(check.Link, 512), boundStalledCheckText(check.State, 128), window),
 		})
 	}
 	if len(stalled) > 50 {
