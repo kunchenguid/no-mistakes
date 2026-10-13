@@ -377,4 +377,7 @@ var migrationStatements = []string{
 	// a late --closes can still reach the Issues section; non-NULL closes that window
 	// (see UpdateRunClosingIssueRefs / ClaimClosingIssueRefsForPRBody).
 	`ALTER TABLE runs ADD COLUMN closing_issue_refs_locked_at INTEGER`,
+	// Set with a CI repair's carried review approval and cleared by the next
+	// publication (UpdateRunHeadSHAWithCarriedReview / UpdateRunPublication).
+	`ALTER TABLE runs ADD COLUMN ci_test_restart_pending INTEGER NOT NULL DEFAULT 0`,
 }

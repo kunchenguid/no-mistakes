@@ -738,6 +738,18 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 		sctx.Log(fmt.Sprintf("cannot prove the repaired head continues the reviewed head: %s; revalidating from Review instead of publishing", reason))
 		return s.recordLocalRepair(sctx, headSHA)
 	}
+	// A head that carried its review approval across a rebase has not been
+	// through Test onward yet, so nothing on it may publish here. The same head
+	// restarts at Test; a new commit on top of it revalidates from Review, as
+	// the rebase would have with the carry off. An unreadable flag fails
+	// closed the same way.
+	if pending, err := sctx.DB.RunTestRestartPending(sctx.Run.ID); err != nil || pending {
+		if err == nil && strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
+			sctx.Log("carried review approval still awaits validation from Test; restarting there instead of publishing")
+			return ciRepairResult{HeadAdvanced: true, Revalidate: true, ReviewCarried: true}, nil
+		}
+		return s.recordLocalRepair(sctx, headSHA)
+	}
 	return s.publishRepair(sctx, headSHA)
 }
 

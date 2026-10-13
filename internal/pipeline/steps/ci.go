@@ -405,6 +405,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if repairOutcome != nil {
 			return repairOutcome, nil
 		}
+		// A repair that recorded nothing (the fixer failed) must not fall
+		// through to monitoring the old published head while a carried review
+		// approval still awaits its restart at Test: green checks there would
+		// complete the run with the carried head never published.
+		pending, err := sctx.DB.RunTestRestartPending(sctx.Run.ID)
+		if err != nil {
+			return nil, err
+		}
+		if pending {
+			return &pipeline.StepOutcome{RestartFrom: types.StepTest, Findings: sctx.DeferredFindings}, nil
+		}
 	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never

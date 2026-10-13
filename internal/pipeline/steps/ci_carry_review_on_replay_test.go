@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -403,5 +405,123 @@ func TestCIStep_CarryReviewOnReplay_BehindPRRestartsAtTest(t *testing.T) {
 	}
 	if remote := gitCmd(t, sctx.WorkDir, "ls-remote", "origin", "refs/heads/feature"); !strings.HasPrefix(remote, originalHead) {
 		t.Fatalf("rebased head was pushed before Test ran; remote = %q", remote)
+	}
+}
+
+// carry records a pure replay that carried the approval, as a rebase repair
+// round does, and returns the replayed head.
+func (f *replayFixture) carry(t *testing.T) string {
+	t.Helper()
+	gitCmd(t, f.dir, "rebase", f.base)
+	if repair := f.record(t); !repair.ReviewCarried {
+		t.Fatalf("setup: the pure replay did not carry; log:\n%s", f.log())
+	}
+	return f.localHead(t)
+}
+
+func (f *replayFixture) testRestartPending(t *testing.T) bool {
+	t.Helper()
+	pending, err := f.sctx.DB.RunTestRestartPending(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pending
+}
+
+// The restart at Test a carry asks for must outlive the outcome that asked
+// for it. CI parked on ask-user findings and answered with a fix whose fixer
+// changed nothing reaches the repair recorder with the repaired head equal to
+// the (carried) approved head: that must restart at Test again, never publish
+// the carried head untested. Only a publication - the Push step's, once Test
+// onward ran - settles it.
+func TestCIStep_CarryReviewOnReplay_ALaterNoChangeFixStillRestartsAtTest(t *testing.T) {
+	t.Parallel()
+	f := newReplayFixture(t, true, false)
+	replayed := f.carry(t)
+	if !f.testRestartPending(t) {
+		t.Fatal("the carry did not record its pending Test restart")
+	}
+
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "", nil)
+	if err != nil {
+		t.Fatalf("no-change fix round: %v\nlog:\n%s", err, f.log())
+	}
+
+	if !repair.Revalidate || repair.restartFrom() != types.StepTest {
+		t.Fatalf("repair = %+v, want a restart from Test", repair)
+	}
+	if f.remoteHead(t) != f.reviewedHead {
+		t.Fatalf("remote moved to %s; the carried head was published before Test ran", f.remoteHead(t))
+	}
+	if got := f.approval(t); got != replayed {
+		t.Fatalf("approval = %q, want it still on the carried head %s", got, replayed)
+	}
+	if !f.testRestartPending(t) {
+		t.Fatal("the pending Test restart was dropped before Test ran")
+	}
+
+	if err := f.sctx.DB.UpdateRunPublication(f.sctx.Run.ID, db.PushBinding{HeadSHA: replayed, TargetKind: "upstream", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.testRestartPending(t) {
+		t.Fatal("publishing the carried head did not settle its pending Test restart")
+	}
+}
+
+// A fix round that commits on top of a carried head that never went through
+// Test is not published either; it revalidates from Review, as the rebase
+// would have with the carry off.
+func TestCIStep_CarryReviewOnReplay_ACommitOnTopOfAPendingCarryRevalidatesFromReview(t *testing.T) {
+	t.Parallel()
+	f := newReplayFixture(t, true, false)
+	f.carry(t)
+	writeCIFix(f.dir)
+
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+	if err != nil {
+		t.Fatalf("fix round: %v\nlog:\n%s", err, f.log())
+	}
+
+	if !repair.Revalidate || repair.restartFrom() != types.StepReview {
+		t.Fatalf("repair = %+v, want a restart from Review", repair)
+	}
+	if f.remoteHead(t) != f.reviewedHead {
+		t.Fatalf("remote moved to %s; a repair on an untested carried head was published", f.remoteHead(t))
+	}
+	if got := f.approval(t); got != "" {
+		t.Fatalf("approval = %q, want it revoked", got)
+	}
+}
+
+// A fix round whose fixer fails records nothing, and must not fall back to
+// monitoring the old published head while a carry is pending: green checks
+// there would complete the run with the carried head never published.
+func TestCIStep_CarryReviewOnReplay_AFailedFixRoundStillRestartsAtTest(t *testing.T) {
+	t.Parallel()
+	f := newReplayFixture(t, true, false)
+	f.carry(t)
+	f.sctx.Agent = &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return nil, errors.New("fixer unavailable")
+	}}
+	f.sctx.Fixing = true
+	f.sctx.PreviousFindings = ciGateFindingsJSON("test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.sctx.Ctx = ctx
+
+	// The live step already observed the checks it parked on, so the fix
+	// round does not snapshot them again.
+	outcome, err := (&CIStep{observedCompletedAt: map[string]checkFreshness{}, waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}}).Execute(f.sctx)
+	if err != nil {
+		t.Fatalf("Execute: %v\nlog:\n%s", err, f.log())
+	}
+	if outcome == nil || outcome.RestartFrom != types.StepTest {
+		t.Fatalf("outcome = %+v, want a restart from Test\nlog:\n%s", outcome, f.log())
+	}
+	if f.remoteHead(t) != f.reviewedHead {
+		t.Fatalf("remote moved to %s; the carried head was published before Test ran", f.remoteHead(t))
 	}
 }

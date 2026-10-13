@@ -546,11 +546,14 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 }
 
 // UpdateRunPublication atomically records the exact published head and its
-// successful-push provenance.
+// successful-push provenance. A publication also settles a pending Test
+// restart (see UpdateRunHeadSHAWithCarriedReview): while one is pending the CI
+// step refuses to publish, so only the Push step - after Test onward ran - can
+// reach this write.
 func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 	ts := now()
 	_, err := d.sql.Exec(
-		`UPDATE runs SET head_sha = ?, last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ?`,
+		`UPDATE runs SET head_sha = ?, last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, ci_test_restart_pending = 0, updated_at = ? WHERE id = ?`,
 		binding.HeadSHA, binding.HeadSHA, binding.TargetKind, binding.TargetFingerprint, binding.Ref, ts, ts, id,
 	)
 	if err != nil {
@@ -849,8 +852,13 @@ func (d *DB) UpdateRunHeadSHAForRevalidation(id, headSHA string) error {
 // approvedHeadSHA as its approval, so an approval revoked or replaced in the
 // meantime is never resurrected onto the new head; it reports whether the
 // carry was recorded.
+//
+// The same write marks a Test restart pending. The carried head has not been
+// through Test onward yet, and the outcome that asks for that restart does not
+// survive a later fix response or a daemon restart while the CI step is
+// parked; the durable flag does, until UpdateRunPublication settles it.
 func (d *DB) UpdateRunHeadSHAWithCarriedReview(id, approvedHeadSHA, headSHA string) (bool, error) {
-	result, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, review_approved_head_sha = ?, updated_at = ? WHERE id = ? AND review_approved_head_sha = ?`, headSHA, headSHA, now(), id, approvedHeadSHA)
+	result, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, review_approved_head_sha = ?, ci_test_restart_pending = 1, updated_at = ? WHERE id = ? AND review_approved_head_sha = ?`, headSHA, headSHA, now(), id, approvedHeadSHA)
 	if err != nil {
 		return false, fmt.Errorf("update run head sha with carried review: %w", err)
 	}
@@ -859,6 +867,16 @@ func (d *DB) UpdateRunHeadSHAWithCarriedReview(id, approvedHeadSHA, headSHA stri
 		return false, fmt.Errorf("update run head sha with carried review: %w", err)
 	}
 	return rows == 1, nil
+}
+
+// RunTestRestartPending reports whether a carried review approval still
+// awaits its restart at Test (see UpdateRunHeadSHAWithCarriedReview).
+func (d *DB) RunTestRestartPending(id string) (bool, error) {
+	var pending bool
+	if err := d.sql.QueryRow(`SELECT ci_test_restart_pending FROM runs WHERE id = ?`, id).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read run test restart pending: %w", err)
+	}
+	return pending, nil
 }
 
 // UpdateRunError sets the error message on a run.

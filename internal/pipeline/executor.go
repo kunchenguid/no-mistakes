@@ -699,6 +699,22 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
+		// The live path approves with the parked outcome's restart in hand; a
+		// recovered CI gate has only the durable flag a carried review
+		// approval left (db.UpdateRunHeadSHAWithCarriedReview).
+		if gate.step.Name() == types.StepCI {
+			pending, err := e.db.RunTestRestartPending(run.ID)
+			if err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+			if pending {
+				restartIndex, err := e.prepareRestart(run.ID, types.StepTest, gate.index)
+				if err != nil {
+					return e.failRun(run, repo, fmt.Errorf("restart recovered run from %s: %w", types.StepTest, err), ctx)
+				}
+				return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
+			}
+		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
 	case types.ActionSkip:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
