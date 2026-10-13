@@ -741,6 +741,40 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 	}
 }
 
+func TestGetChecksDistinguishesQueuedFromRunningJobsByStartedAt(t *testing.T) {
+	t.Parallel()
+
+	// Queued and running jobs share the pending bucket, so started_at is what
+	// shows a queued job began running.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab ci status --mr 123 --output json": {
+			stderr: "unknown flag: --mr\n",
+			code:   1,
+		},
+		"glab mr view 123 --output json": {
+			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":9,"name":"queued","status":"pending","started_at":null},{"id":10,"name":"running","status":"running","started_at":"2026-04-24T04:10:00.000Z"}]` + "\n",
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("len(checks) = %d, want 2", len(checks))
+	}
+	if checks[0].Bucket != scm.CheckBucketPending || !checks[0].StartedAt.IsZero() {
+		t.Fatalf("queued check = %+v, want pending with zero StartedAt", checks[0])
+	}
+	want := time.Date(2026, 4, 24, 4, 10, 0, 0, time.UTC)
+	if checks[1].Bucket != scm.CheckBucketPending || !checks[1].StartedAt.Equal(want) {
+		t.Fatalf("running check = %+v, want pending with StartedAt %v", checks[1], want)
+	}
+}
+
 func TestGetChecksLeavesCompletedAtZeroWhenFinishedAtMissingOrInvalid(t *testing.T) {
 	t.Parallel()
 
