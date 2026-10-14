@@ -30,6 +30,10 @@ const (
 	// concurrent run overwriting the ref cannot redirect this publish.
 	fetchRef = "refs/no-mistakes/evidence-fetch"
 
+	// Evidence is not a deployable code branch. Keep every configured name
+	// outside refs/heads so branch-triggered integrations ignore publication.
+	publishRefPrefix = "refs/no-mistakes/evidence/"
+
 	scratchIndexName = "no-mistakes-evidence-index"
 )
 
@@ -44,7 +48,8 @@ type Request struct {
 	// target the pipeline pushes the code branch to, so fork contributions
 	// keep their evidence in the fork the PR head lives in.
 	PushURL string
-	// Branch is the evidence branch name (already normalized).
+	// Branch is the evidence history name (already normalized). Publication
+	// places it under refs/no-mistakes/evidence/, never refs/heads/.
 	Branch string
 	// Dir is an optional directory prefix inside the evidence branch.
 	Dir string
@@ -134,9 +139,20 @@ func Publish(ctx context.Context, req Request) (*Result, error) {
 }
 
 func publishOnce(ctx context.Context, req Request, branch, dir string, files []collectedFile) (*Result, error) {
-	tip, err := remoteTip(ctx, req.RepoDir, req.PushURL, branch)
+	ref := publishRefPrefix + branch
+	tip, err := remoteTip(ctx, req.RepoDir, req.PushURL, ref)
 	if err != nil {
 		return nil, err
+	}
+	migrating := false
+	if tip == "" {
+		// Preserve older evidence and its commit links without another push
+		// to the legacy branch. Never delete or move that branch automatically.
+		tip, err = remoteTip(ctx, req.RepoDir, req.PushURL, "refs/heads/"+branch)
+		if err != nil {
+			return nil, err
+		}
+		migrating = tip != ""
 	}
 	if tip != "" {
 		if err := assertEvidenceBranch(ctx, req.RepoDir, tip, branch); err != nil {
@@ -180,7 +196,7 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 
 	if tip != "" {
 		tipTree, err := git.Run(ctx, req.RepoDir, "rev-parse", "--verify", tip+"^{tree}")
-		if err == nil && tipTree == tree {
+		if err == nil && tipTree == tree && !migrating {
 			// The branch already holds exactly these bytes (a re-run of the
 			// same step). Link against the existing commit instead of pushing
 			// an empty one.
@@ -192,7 +208,7 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 	if err != nil {
 		return nil, err
 	}
-	if _, err := git.Run(ctx, req.RepoDir, "push", req.PushURL, commit+":refs/heads/"+branch); err != nil {
+	if _, err := git.Run(ctx, req.RepoDir, "push", req.PushURL, commit+":"+ref); err != nil {
 		return nil, fmt.Errorf("push evidence branch %s to %s: %w", branch, safeurl.Redact(req.PushURL), err)
 	}
 	return &Result{Branch: branch, CommitSHA: commit, Dir: dir, Files: published}, nil
@@ -216,24 +232,24 @@ func hashEvidenceFile(ctx context.Context, repoDir string, env []string, abs str
 	return git.RunWithEnv(ctx, repoDir, env, "hash-object", "-w", "--", abs)
 }
 
-// remoteTip returns the remote evidence branch head, fetched into the local
-// object store, or "" when the branch does not exist yet. A failure to read
+// remoteTip returns the remote evidence ref tip, fetched into the local
+// object store, or "" when the ref does not exist yet. A failure to read
 // the remote is an error: publishing onto a branch whose current state is
 // unknown is exactly the case that must not proceed.
-func remoteTip(ctx context.Context, repoDir, pushURL, branch string) (string, error) {
-	out, err := git.Run(ctx, repoDir, "ls-remote", "--heads", pushURL, "refs/heads/"+branch)
+func remoteTip(ctx context.Context, repoDir, pushURL, ref string) (string, error) {
+	out, err := git.Run(ctx, repoDir, "ls-remote", "--refs", pushURL, ref)
 	if err != nil {
-		return "", fmt.Errorf("read evidence branch %s on %s: %w", branch, safeurl.Redact(pushURL), err)
+		return "", fmt.Errorf("read evidence ref %s on %s: %w", ref, safeurl.Redact(pushURL), err)
 	}
 	if strings.TrimSpace(out) == "" {
 		return "", nil
 	}
-	if _, err := git.Run(ctx, repoDir, "fetch", "--no-tags", "--force", pushURL, "+refs/heads/"+branch+":"+fetchRef); err != nil {
-		return "", fmt.Errorf("fetch evidence branch %s: %w", branch, err)
+	if _, err := git.Run(ctx, repoDir, "fetch", "--no-tags", "--force", pushURL, "+"+ref+":"+fetchRef); err != nil {
+		return "", fmt.Errorf("fetch evidence ref %s: %w", ref, err)
 	}
 	sha, err := git.Run(ctx, repoDir, "rev-parse", "--verify", fetchRef+"^{commit}")
 	if err != nil {
-		return "", fmt.Errorf("resolve fetched evidence branch %s: %w", branch, err)
+		return "", fmt.Errorf("resolve fetched evidence ref %s: %w", ref, err)
 	}
 	return sha, nil
 }

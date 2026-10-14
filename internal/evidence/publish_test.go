@@ -121,7 +121,7 @@ func TestPublish_LandsEvidenceOnOrphanBranchAndLeavesCodeBranchesUntouched(t *te
 		t.Errorf("branch = %q, want default %q", result.Branch, DefaultBranch)
 	}
 
-	tip := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch)
+	tip := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/"+DefaultBranch)
 	if tip != result.CommitSHA {
 		t.Errorf("remote tip %s != published commit %s", tip, result.CommitSHA)
 	}
@@ -175,10 +175,10 @@ func TestPublish_UsesConfiguredBranchName(t *testing.T) {
 	if result.Branch != "team/ci/evidence" {
 		t.Errorf("branch = %q, want team/ci/evidence", result.Branch)
 	}
-	if got := runGit(t, remote, "rev-parse", "refs/heads/team/ci/evidence"); got != result.CommitSHA {
+	if got := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/team/ci/evidence"); got != result.CommitSHA {
 		t.Errorf("configured branch tip = %s, want %s", got, result.CommitSHA)
 	}
-	runGitFails(t, remote, "rev-parse", "--verify", "refs/heads/"+DefaultBranch)
+	runGitFails(t, remote, "rev-parse", "--verify", "refs/no-mistakes/evidence/"+DefaultBranch)
 }
 
 func TestPublish_RejectsInvalidBranchName(t *testing.T) {
@@ -245,15 +245,15 @@ func TestPublish_RefusesExistingBranchThatIsNotAnEvidenceBranch(t *testing.T) {
 	remote, work := newRepoWithRemote(t)
 	source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "ok\n"})
 	// Someone already uses this branch name for code.
-	runGit(t, work, "push", "origin", "main:refs/heads/no-mistakes/evidence")
-	before := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch)
+	runGit(t, work, "push", "origin", "main:refs/no-mistakes/evidence/no-mistakes/evidence")
+	before := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/"+DefaultBranch)
 
 	if _, err := Publish(context.Background(), baseRequest(remote, work, source)); err == nil {
 		t.Fatal("Publish appended to a branch that is not an evidence branch")
 	} else if !strings.Contains(err.Error(), MarkerPath) {
 		t.Errorf("error %q does not explain the missing marker", err)
 	}
-	if after := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch); after != before {
+	if after := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/"+DefaultBranch); after != before {
 		t.Errorf("pre-existing branch moved from %s to %s", before, after)
 	}
 }
@@ -266,15 +266,15 @@ func TestPublish_RefusesExistingBranchWithWrongMarkerContent(t *testing.T) {
 	}
 	runGit(t, work, "add", MarkerPath)
 	runGit(t, work, "commit", "-m", "add unrelated marker")
-	runGit(t, work, "push", "origin", "HEAD:refs/heads/"+DefaultBranch)
-	before := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch)
+	runGit(t, work, "push", "origin", "HEAD:refs/no-mistakes/evidence/"+DefaultBranch)
+	before := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/"+DefaultBranch)
 
 	if _, err := Publish(context.Background(), baseRequest(remote, work, source)); err == nil {
 		t.Fatal("Publish appended to a branch with the wrong marker content")
 	} else if !strings.Contains(err.Error(), "invalid "+MarkerPath+" marker") {
 		t.Errorf("error %q does not explain the invalid marker", err)
 	}
-	if after := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch); after != before {
+	if after := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/"+DefaultBranch); after != before {
 		t.Errorf("pre-existing branch moved from %s to %s", before, after)
 	}
 }
@@ -305,7 +305,7 @@ func TestPublish_FailsClosedWhenTheRemoteRefusesThePush(t *testing.T) {
 	if _, err := Publish(context.Background(), baseRequest(remote, work, source)); err == nil {
 		t.Fatal("Publish reported success although the remote refused the push")
 	}
-	runGitFails(t, remote, "rev-parse", "--verify", "refs/heads/"+DefaultBranch)
+	runGitFails(t, remote, "rev-parse", "--verify", "refs/no-mistakes/evidence/"+DefaultBranch)
 }
 
 func TestPublish_FailsClosedWhenTheRemoteIsUnreadable(t *testing.T) {
@@ -342,7 +342,7 @@ func TestPublish_WorksFromADetachedShallowClone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Publish from a detached shallow clone: %v", err)
 	}
-	if got := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch); got != result.CommitSHA {
+	if got := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/"+DefaultBranch); got != result.CommitSHA {
 		t.Errorf("evidence tip = %s, want %s", got, result.CommitSHA)
 	}
 	if head := runGit(t, shallow, "rev-parse", "--abbrev-ref", "HEAD"); head != "HEAD" {
@@ -418,7 +418,7 @@ func TestPublish_ExcludedDirectoryIsNeverCollected(t *testing.T) {
 		t.Fatalf("files = %q, want only %q", got, want)
 	}
 	// Nothing from the excluded directory reached the branch, under any name.
-	tree := runGit(t, remote, "ls-tree", "-r", "--name-only", "refs/heads/"+result.Branch)
+	tree := runGit(t, remote, "ls-tree", "-r", "--name-only", "refs/no-mistakes/evidence/"+result.Branch)
 	for _, unwanted := range []string{"review/", "questions.ndjson", "answers.ndjson", "huge.ndjson"} {
 		if strings.Contains(tree, unwanted) {
 			t.Fatalf("published tree contains %q:\n%s", unwanted, tree)
@@ -485,4 +485,87 @@ func TestPublish_RedactsHomePathsInTextEvidence(t *testing.T) {
 	if local, err := os.ReadFile(filepath.Join(source, "logs", "run.txt")); err != nil || string(local) != text {
 		t.Errorf("local evidence = %q (%v), want it untouched", local, err)
 	}
+}
+
+// A branch-only integration must never receive an evidence update, whether
+// publishing a new store or appending to it with a configured name.
+func TestPublish_NeverUpdatesAHeadRef(t *testing.T) {
+	for _, branch := range []string{"", "team/ci/evidence"} {
+		t.Run(branch, func(t *testing.T) {
+			remote, work := newRepoWithRemote(t)
+			hook := "#!/bin/sh\nwhile read old new ref; do\ncase \"$ref\" in refs/heads/*) echo 'branch deployment triggered' >&2; exit 1;; esac\ndone\n"
+			if err := os.WriteFile(filepath.Join(remote, "hooks", "pre-receive"), []byte(hook), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "first"})
+			req := baseRequest(remote, work, source)
+			req.Branch = branch
+			first, err := Publish(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeEvidence(t, source, map[string]string{"proof.txt": "second"})
+			second, err := Publish(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := runGit(t, remote, "rev-parse", second.CommitSHA+"^"); got != first.CommitSHA {
+				t.Fatalf("parent = %s, want %s", got, first.CommitSHA)
+			}
+			if got := runGit(t, remote, "cat-file", "blob", first.CommitSHA+":"+first.Dir+"/proof.txt"); got != "first" {
+				t.Fatalf("old commit link content = %q", got)
+			}
+			if got := runGit(t, remote, "for-each-ref", "--format=%(refname)", "refs/heads/"); got != "refs/heads/main" {
+				t.Fatalf("unexpected branch refs: %s", got)
+			}
+		})
+	}
+}
+
+func TestPublish_InheritsLegacyEvidenceWithoutUpdatingItsBranch(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "legacy"})
+	req := baseRequest(remote, work, source)
+	first, err := Publish(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Leave only the old heads namespace, as an earlier publisher would.
+	legacyRef := "refs/heads/" + DefaultBranch
+	newRef := "refs/no-mistakes/evidence/" + DefaultBranch
+	runGit(t, remote, "update-ref", legacyRef, first.CommitSHA)
+	runGit(t, remote, "update-ref", "-d", newRef)
+	// Even identical evidence must establish the new durable reference.
+	migrated, err := Publish(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, remote, "rev-parse", newRef); got != migrated.CommitSHA {
+		t.Fatalf("new ref = %s, want %s", got, migrated.CommitSHA)
+	}
+	runGit(t, remote, "merge-base", "--is-ancestor", first.CommitSHA, migrated.CommitSHA)
+	writeEvidence(t, source, map[string]string{"proof.txt": "current"})
+	latest, err := Publish(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, remote, "rev-parse", latest.CommitSHA+"^"); got != migrated.CommitSHA {
+		t.Fatalf("append did not use the new ref: parent %s", got)
+	}
+	if got := runGit(t, remote, "rev-parse", legacyRef); got != first.CommitSHA {
+		t.Fatalf("legacy branch moved to %s", got)
+	}
+	if got := runGit(t, remote, "cat-file", "blob", first.CommitSHA+":"+first.Dir+"/proof.txt"); got != "legacy" {
+		t.Fatalf("legacy commit link content = %q", got)
+	}
+}
+
+func TestPublish_RefusesUnmarkedLegacyBranch(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	runGit(t, work, "push", "origin", "main:refs/heads/"+DefaultBranch)
+	source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "ok"})
+	if _, err := Publish(context.Background(), baseRequest(remote, work, source)); err == nil {
+		t.Fatal("unmarked legacy branch accepted")
+	}
+	runGitFails(t, remote, "rev-parse", "--verify", "refs/no-mistakes/evidence/"+DefaultBranch)
 }
