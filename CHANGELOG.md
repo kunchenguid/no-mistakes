@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.97.0](https://github.com/kunchenguid/no-mistakes/compare/v1.96.0...v1.97.0) (2026-10-14)
+
+
+### Features
+
+* **config:** customize push and evidence commit messages ([#1448](https://github.com/kunchenguid/no-mistakes/issues/1448)) ([5f3dcd1](https://github.com/kunchenguid/no-mistakes/commit/5f3dcd118496dd7375b1625652bf61c336fa6592))
+
+
+### Bug Fixes
+
+* **daemon:** accept a case-variant spelling of the gate path ([#1455](https://github.com/kunchenguid/no-mistakes/issues/1455)) ([542881b](https://github.com/kunchenguid/no-mistakes/commit/542881b087da9878c78033ce2c2ce8e6e0f5e55d)), closes [#1452](https://github.com/kunchenguid/no-mistakes/issues/1452)
+* **pipeline:** bound prompts and enforce Test completion ([#1449](https://github.com/kunchenguid/no-mistakes/issues/1449)) ([1afdd47](https://github.com/kunchenguid/no-mistakes/commit/1afdd473303f3f7ad114dfb4ce2131c54db19e75))
+
 ## [1.96.0](https://github.com/kunchenguid/no-mistakes/compare/v1.95.0...v1.96.0) (2026-10-13)
 
 
