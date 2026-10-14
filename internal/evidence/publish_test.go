@@ -522,50 +522,21 @@ func TestPublish_NeverUpdatesAHeadRef(t *testing.T) {
 	}
 }
 
-func TestPublish_InheritsLegacyEvidenceWithoutUpdatingItsBranch(t *testing.T) {
+func TestPublish_StartsFreshAndLeavesAHeadsBranchOfTheSameNameAlone(t *testing.T) {
 	remote, work := newRepoWithRemote(t)
-	source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "legacy"})
-	req := baseRequest(remote, work, source)
-	first, err := Publish(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Leave only the old heads namespace, as an earlier publisher would.
 	legacyRef := "refs/heads/" + DefaultBranch
-	newRef := "refs/no-mistakes/evidence/" + DefaultBranch
-	runGit(t, remote, "update-ref", legacyRef, first.CommitSHA)
-	runGit(t, remote, "update-ref", "-d", newRef)
-	// Even identical evidence must establish the new durable reference.
-	migrated, err := Publish(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := runGit(t, remote, "rev-parse", newRef); got != migrated.CommitSHA {
-		t.Fatalf("new ref = %s, want %s", got, migrated.CommitSHA)
-	}
-	runGit(t, remote, "merge-base", "--is-ancestor", first.CommitSHA, migrated.CommitSHA)
-	writeEvidence(t, source, map[string]string{"proof.txt": "current"})
-	latest, err := Publish(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := runGit(t, remote, "rev-parse", latest.CommitSHA+"^"); got != migrated.CommitSHA {
-		t.Fatalf("append did not use the new ref: parent %s", got)
-	}
-	if got := runGit(t, remote, "rev-parse", legacyRef); got != first.CommitSHA {
-		t.Fatalf("legacy branch moved to %s", got)
-	}
-	if got := runGit(t, remote, "cat-file", "blob", first.CommitSHA+":"+first.Dir+"/proof.txt"); got != "legacy" {
-		t.Fatalf("legacy commit link content = %q", got)
-	}
-}
-
-func TestPublish_RefusesUnmarkedLegacyBranch(t *testing.T) {
-	remote, work := newRepoWithRemote(t)
-	runGit(t, work, "push", "origin", "main:refs/heads/"+DefaultBranch)
+	runGit(t, work, "push", "origin", "main:"+legacyRef)
+	legacyTip := runGit(t, remote, "rev-parse", legacyRef)
 	source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "ok"})
-	if _, err := Publish(context.Background(), baseRequest(remote, work, source)); err == nil {
-		t.Fatal("unmarked legacy branch accepted")
+	res, err := Publish(context.Background(), baseRequest(remote, work, source))
+	if err != nil {
+		t.Fatal(err)
 	}
-	runGitFails(t, remote, "rev-parse", "--verify", "refs/no-mistakes/evidence/"+DefaultBranch)
+	if got := runGit(t, remote, "rev-parse", "refs/no-mistakes/evidence/"+DefaultBranch); got != res.CommitSHA {
+		t.Fatalf("new ref = %s, want %s", got, res.CommitSHA)
+	}
+	runGitFails(t, remote, "rev-parse", "--verify", res.CommitSHA+"^")
+	if got := runGit(t, remote, "rev-parse", legacyRef); got != legacyTip {
+		t.Fatalf("heads branch moved to %s", got)
+	}
 }

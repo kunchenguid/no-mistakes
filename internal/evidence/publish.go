@@ -144,16 +144,6 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 	if err != nil {
 		return nil, err
 	}
-	migrating := false
-	if tip == "" {
-		// Preserve older evidence and its commit links without another push
-		// to the legacy branch. Never delete or move that branch automatically.
-		tip, err = remoteTip(ctx, req.RepoDir, req.PushURL, "refs/heads/"+branch)
-		if err != nil {
-			return nil, err
-		}
-		migrating = tip != ""
-	}
 	if tip != "" {
 		if err := assertEvidenceBranch(ctx, req.RepoDir, tip, branch); err != nil {
 			return nil, err
@@ -196,7 +186,7 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 
 	if tip != "" {
 		tipTree, err := git.Run(ctx, req.RepoDir, "rev-parse", "--verify", tip+"^{tree}")
-		if err == nil && tipTree == tree && !migrating {
+		if err == nil && tipTree == tree {
 			// The branch already holds exactly these bytes (a re-run of the
 			// same step). Link against the existing commit instead of pushing
 			// an empty one.
