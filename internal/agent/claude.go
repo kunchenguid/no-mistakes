@@ -392,7 +392,21 @@ type claudeMessage struct {
 type claudeContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+
+	// tool_use fields
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+
+	// tool_result fields
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 }
+
+// claudeStructuredOutputTool is the tool Claude Code exposes for submitting
+// the --json-schema payload. A run can call it several times; the latest
+// accepted call is the review's current state.
+const claudeStructuredOutputTool = "StructuredOutput"
 
 // parseClaudeEvents reads JSONL from the reader and dispatches events.
 // It accumulates token usage and captures the final result event.
@@ -404,6 +418,11 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 	var lastModel string
 	var usageLimitReached bool
 	usageByMsg := make(map[string]TokenUsage)
+	// A terminal result event can carry only prose after background work
+	// completes, so the latest accepted StructuredOutput submission is kept
+	// and used when the result event has no structured payload of its own.
+	pendingSubmissions := make(map[string]json.RawMessage)
+	var lastSubmission json.RawMessage
 
 	for scanner.Scan() {
 		select {
@@ -444,6 +463,28 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 						onChunk(c.Text)
 					}
 				}
+				if c.Type == "tool_use" && c.Name == claudeStructuredOutputTool && c.ID != "" && len(c.Input) > 0 {
+					pendingSubmissions[c.ID] = c.Input
+				}
+			}
+
+		case "user":
+			var msg claudeMessage
+			if err := json.Unmarshal(event.Message, &msg); err != nil {
+				continue
+			}
+			for _, c := range msg.Content {
+				if c.Type != "tool_result" {
+					continue
+				}
+				input, ok := pendingSubmissions[c.ToolUseID]
+				if !ok {
+					continue
+				}
+				delete(pendingSubmissions, c.ToolUseID)
+				if !c.IsError {
+					lastSubmission = input
+				}
 			}
 
 		case "rate_limit_event":
@@ -459,10 +500,16 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 			if result != nil {
 				raw := make(json.RawMessage, len(line))
 				copy(raw, line)
+				structured := event.StructuredOutput
+				if len(structured) == 0 || string(structured) == "null" {
+					structured = lastSubmission
+				} else {
+					lastSubmission = structured
+				}
 				*result = &claudeResult{
 					Subtype:          event.Subtype,
 					IsError:          event.IsError,
-					StructuredOutput: event.StructuredOutput,
+					StructuredOutput: structured,
 					text:             textBuf,
 					rawEvent:         raw,
 					sessionID:        lastSessionID,

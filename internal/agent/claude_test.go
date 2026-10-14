@@ -926,3 +926,126 @@ func claudeArgsContainPair(args []string, flag, value string) bool {
 	}
 	return false
 }
+
+func claudeSubmissionStream(t *testing.T, calls ...claudeSubmissionCall) string {
+	t.Helper()
+	var b strings.Builder
+	for _, c := range calls {
+		use, err := json.Marshal(map[string]any{
+			"type": "assistant",
+			"message": map[string]any{
+				"id": "msg_" + c.id,
+				"content": []map[string]any{{
+					"type": "tool_use", "id": c.id, "name": "StructuredOutput", "input": json.RawMessage(c.input),
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := json.Marshal(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"content": []map[string]any{{
+					"type": "tool_result", "tool_use_id": c.id, "is_error": c.isError,
+					"content": "Structured output provided successfully",
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(use)
+		b.WriteByte('\n')
+		b.Write(res)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+type claudeSubmissionCall struct {
+	id      string
+	input   string
+	isError bool
+}
+
+func parseClaudeStream(t *testing.T, stream string) *claudeResult {
+	t.Helper()
+	var usage TokenUsage
+	var result *claudeResult
+	if err := parseClaudeEvents(context.Background(), strings.NewReader(stream), nil, &usage, &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result event")
+	}
+	return result
+}
+
+const claudeProseOnlyResult = `{"type":"result","subtype":"success","is_error":false,"result":"All background agents finished."}` + "\n"
+
+func TestParseClaudeEvents_ProseOnlyResultKeepsEarlierSubmission(t *testing.T) {
+	stream := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: `{"findings":[{"id":"a"}]}`}) + claudeProseOnlyResult
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"a"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+	res, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if string(res.Output) != `{"findings":[{"id":"a"}]}` {
+		t.Fatalf("output = %s", res.Output)
+	}
+}
+
+func TestParseClaudeEvents_LatestSubmissionWins(t *testing.T) {
+	stream := claudeSubmissionStream(t,
+		claudeSubmissionCall{id: "toolu_1", input: `{"findings":[{"id":"a"}]}`},
+		claudeSubmissionCall{id: "toolu_2", input: `{"findings":[{"id":"a"},{"id":"b"}]}`},
+	) + claudeProseOnlyResult
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"a"},{"id":"b"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+}
+
+func TestParseClaudeEvents_RejectedSubmissionDoesNotReplaceAcceptedOne(t *testing.T) {
+	stream := claudeSubmissionStream(t,
+		claudeSubmissionCall{id: "toolu_1", input: `{"findings":[{"id":"a"}]}`},
+		claudeSubmissionCall{id: "toolu_2", input: `{"findings":"bad"}`, isError: true},
+	) + claudeProseOnlyResult
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"a"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+}
+
+func TestParseClaudeEvents_ResultStructuredOutputBeatsEarlierSubmission(t *testing.T) {
+	stream := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: `{"findings":[]}`}) +
+		`{"type":"result","subtype":"success","structured_output":{"findings":[{"id":"z"}]}}` + "\n"
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"z"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+}
+
+func TestParseClaudeEvents_NoSubmissionStillFailsAsMissing(t *testing.T) {
+	result := parseClaudeStream(t, claudeProseOnlyResult)
+	if result.StructuredOutput != nil {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+	_, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if !errors.Is(err, errNoStructuredOutput) {
+		t.Fatalf("expected errNoStructuredOutput, got %v", err)
+	}
+}
+
+func TestParseClaudeEvents_ErrorResultFailsDespiteEarlierSubmission(t *testing.T) {
+	stream := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: `{"findings":[]}`}) +
+		`{"type":"result","subtype":"error_during_execution","is_error":true}` + "\n"
+	result := parseClaudeStream(t, stream)
+	if _, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{}); err == nil {
+		t.Fatal("expected error result to fail closed")
+	}
+}
