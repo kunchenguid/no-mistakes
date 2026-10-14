@@ -441,15 +441,10 @@ func preservedByRecoveryAnchors(ctx context.Context, gateDir, liveHead string, c
 	return preserved, nil
 }
 
-// privateCommitsAbsentFromLive returns nil when the private head's content is
-// proven to survive in the live history, and the entire private-only range
-// otherwise. A clean merge of the private head into the live head that leaves
-// the live tree unchanged proves every commit contained, including a rebased
-// copy whose patch ID differs only by context the base moved; when that merge
-// conflicts, privateTreeSurvives proves survival instead. Both are whole-tree
-// proofs, so a commit's own patch ID is never required to match: a rebase that
-// moved context and a later live edit of the copied lines would otherwise
-// refuse content that demonstrably landed.
+// privateCommitsAbsentFromLive returns nil when a clean merge of the private
+// head into the live head leaves the live tree unchanged. A conflict cannot
+// prove that the final live tree contains the private content, so the entire
+// private-only range remains at risk.
 func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privateHead string) ([]string, error) {
 	privateOnly, err := commitList(ctx, repoDir, "--right-only", liveHead+"..."+privateHead)
 	if err != nil {
@@ -461,92 +456,13 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 	if contained, err := mergeLeavesTree(ctx, repoDir, liveHead, privateHead); err != nil || contained {
 		return nil, err
 	}
-	paths, err := privateOnlyPaths(ctx, repoDir, privateOnly)
-	if err != nil {
-		return nil, err
-	}
-	survives, err := privateTreeSurvives(ctx, repoDir, liveHead, privateHead, paths)
-	if err != nil {
-		return nil, err
-	}
-	if survives {
-		return nil, nil
-	}
 	return privateOnly, nil
 }
 
-// privateOnlyPaths names the paths the private-only commits touch, bounding
-// the live scan for a survival point to those paths. A merge commit
-// contributes no paths of its own: its combined meaning is not safely
-// represented by first-parent patches.
-func privateOnlyPaths(ctx context.Context, repoDir string, commits []string) (map[string]bool, error) {
-	paths := make(map[string]bool)
-	for _, commit := range commits {
-		rawPaths, err := git.RunRaw(ctx, repoDir, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commit)
-		if err != nil {
-			return nil, err
-		}
-		for _, rawPath := range strings.Split(strings.TrimSuffix(string(rawPaths), "\x00"), "\x00") {
-			if rawPath != "" {
-				paths[rawPath] = true
-			}
-		}
-	}
-	return paths, nil
-}
-
-// maxSurvivalCandidates bounds the first-parent live commits tried as
-// survival points. Past it the proof fails closed.
-const maxSurvivalCandidates = 64
-
-// privateTreeSurvives proves the private head's changes are present in the
-// live history once the direct proof, a clean three-way merge of the private
-// head into the live head that leaves the live tree unchanged, has failed.
-//
-// A rebased branch whose later live commits edit the lines the private commits
-// wrote fails that proof by conflicting although nothing was dropped, so this
-// proof has two halves. Resolving each conflicting hunk toward the live
-// head must still leave the live tree unchanged, so every private hunk that
-// merges cleanly is already live and a change the live head reverted or lacks
-// still refuses. And some first-parent live commit touching the private paths
-// must pass the direct proof, placing all of the private content in the live
-// history. First-parent only, so a merge that discarded a side branch never
-// serves as that point.
-func privateTreeSurvives(ctx context.Context, repoDir, liveHead, privateHead string, paths map[string]bool) (bool, error) {
-	if len(paths) == 0 {
-		return false, nil
-	}
-	if ok, err := mergeLeavesTree(ctx, repoDir, liveHead, privateHead, "-X", "ours"); err != nil || !ok {
-		return false, err
-	}
-	args := []string{"--first-parent", liveHead, "^" + privateHead, "--"}
-	for path := range paths {
-		args = append(args, ":(literal)"+path)
-	}
-	candidates, err := commitList(ctx, repoDir, args...)
-	if err != nil {
-		return false, err
-	}
-	for i, candidate := range candidates {
-		if i == maxSurvivalCandidates {
-			break
-		}
-		if candidate == liveHead {
-			continue
-		}
-		if ok, err := mergeLeavesTree(ctx, repoDir, candidate, privateHead); err != nil || ok {
-			return ok, err
-		}
-	}
-	return false, nil
-}
-
-// mergeLeavesTree reports whether merging privateHead into liveCommit with the
-// given merge options is clean and leaves liveCommit's tree unchanged. A Git
-// too old for an option fails the merge, and so the proof.
-func mergeLeavesTree(ctx context.Context, repoDir, liveCommit, privateHead string, options ...string) (bool, error) {
-	args := append([]string{"merge-tree", "--write-tree"}, options...)
-	mergedTree, mergeErr := git.Run(ctx, repoDir, append(args, liveCommit, privateHead)...)
+// mergeLeavesTree reports whether merging privateHead into liveCommit is clean
+// and leaves liveCommit's tree unchanged.
+func mergeLeavesTree(ctx context.Context, repoDir, liveCommit, privateHead string) (bool, error) {
+	mergedTree, mergeErr := git.Run(ctx, repoDir, "merge-tree", "--write-tree", liveCommit, privateHead)
 	if mergeErr != nil {
 		return false, nil
 	}

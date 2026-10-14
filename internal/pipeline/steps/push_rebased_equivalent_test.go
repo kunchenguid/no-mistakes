@@ -9,17 +9,12 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-// TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead reproduces a
-// new run on a branch an earlier run already published. The new run's head
-// carries one more commit that edits the lines the published commits wrote,
-// and the rebase step moved it onto a newer main, so the private mirror still
-// holds the earlier run's pre-rebase copies of the same commits. That head is
-// not run-owned, so Decision 41-A does not apply and the preservation proof
-// must: the rebased copies survive in the live history, so the push goes
-// through, while a commit whose content the live head genuinely lacks still
-// refuses, naming the whole private-only range.
-func TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead(t *testing.T) {
-	for _, variant := range []string{"rebased_equivalents", "dropped_commits", "mixed"} {
+// TestPushStep_RebasedPrivateContentRequiresCurrentTreeProof checks that a
+// clean replay can publish when its current tree proves containment, while an
+// edited private copy from an earlier run is refused because that run owns no
+// exception. Dropped content also refuses and names the whole private range.
+func TestPushStep_RebasedPrivateContentRequiresCurrentTreeProof(t *testing.T) {
+	for _, variant := range []string{"clean_rebased_equivalents", "conflicting_rebased_equivalents", "dropped_commits", "mixed"} {
 		t.Run(variant, func(t *testing.T) {
 			upstream := t.TempDir()
 			gitCmd(t, upstream, "init", "--bare")
@@ -53,10 +48,14 @@ func TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead(t *testing.T)
 			gitCmd(t, dir, "remote", "add", "origin", upstream)
 			gitCmd(t, dir, "push", "-q", "origin", "main", "feature")
 
-			// The author adds a commit that edits the widget's own lines and
-			// starts a new run from it.
-			write("src/widget.go", widgetV2)
-			submitted := commit("fix: widget size")
+			// The new run starts from the earlier published head. Its clean
+			// variant adds unrelated content; the other variants edit the widget.
+			if variant == "clean_rebased_equivalents" {
+				write("docs/followup.md", "unrelated follow-up\n")
+			} else {
+				write("src/widget.go", widgetV2)
+			}
+			submitted := commit("follow-up: author change")
 
 			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submitted, config.Commands{})
 			sctx.Repo.UpstreamURL = upstream
@@ -70,7 +69,7 @@ func TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead(t *testing.T)
 			gitCmd(t, dir, "push", "-q", "origin", "main")
 			gitCmd(t, dir, "checkout", "-q", "-B", "feature", "main")
 			switch variant {
-			case "rebased_equivalents":
+			case "clean_rebased_equivalents", "conflicting_rebased_equivalents":
 				gitCmd(t, dir, "cherry-pick", widget, published, submitted)
 			case "dropped_commits":
 				write("src/widget.go", widgetV2)
@@ -86,9 +85,9 @@ func TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead(t *testing.T)
 			recordReviewApproval(t, sctx, rebased)
 
 			_, err := (&PushStep{}).Execute(sctx)
-			if variant != "rebased_equivalents" {
+			if variant != "clean_rebased_equivalents" {
 				if err == nil || !strings.Contains(err.Error(), "refusing to reconcile private mirror ref") {
-					t.Fatalf("genuinely dropped content was published: %v", err)
+					t.Fatalf("unsafe private content was published: %v", err)
 				}
 				if !strings.Contains(err.Error(), published) || !strings.Contains(err.Error(), "docs: widget notes") {
 					t.Fatalf("refusal did not name the dropped commit %s: %v", published, err)
@@ -107,7 +106,7 @@ func TestPushStep_PublishesRebasedEquivalentsOverAnEarlierRunsHead(t *testing.T)
 				return
 			}
 			if err != nil {
-				t.Fatalf("rebased equivalents of the published commits were refused: %v", err)
+				t.Fatalf("clean rebased equivalents were refused: %v", err)
 			}
 			for _, repo := range []string{upstream, gateDir} {
 				if got := gitCmd(t, repo, "rev-parse", "refs/heads/feature"); got != rebased {
