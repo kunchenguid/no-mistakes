@@ -160,12 +160,13 @@ a built-in provider's failure does; it is never read as an empty answer.
 ### Check
 
 ```json
-{ "name": "build", "id": "run-42", "bucket": "fail", "state": "FAILURE", "link": "https://ci/run/42", "started_at": "2026-01-02T03:04:05Z", "completed_at": "2026-01-02T03:09:00Z", "execution_id": "42" }
+{ "name": "build", "id": "run-42", "head_sha": "abc123", "bucket": "fail", "state": "FAILURE", "link": "https://ci/run/42", "started_at": "2026-01-02T03:04:05Z", "completed_at": "2026-01-02T03:09:00Z", "execution_id": "42" }
 ```
 
 | Field | Rules |
 | --- | --- |
 | `name` | Required, non-empty. Shown in findings and passed back to `pr check-logs`. |
+| `head_sha` | Required and equal to `--head-sha` when that flag is given. A missing or different value means the checks are not evidence for the requested commit; wait and poll again. The adapter never fills this field in. |
 | `bucket` | Required: `pass`, `fail`, `pending`, `cancel`, or `skipping`. Map your forge's states onto these; anything else fails the call. |
 | `id`, `state`, `link`, `execution_id` | Optional provider identifiers and raw state, surfaced for diagnostics. |
 | `started_at`, `completed_at` | Optional RFC 3339 timestamps. |
@@ -239,7 +240,10 @@ required, because an existing PR's live base outranks configuration.
 
 ### pr checks (required)
 
-Print the checks for the PR's current head.
+Print the checks for the PR's current head. When `--head-sha` is given, every
+check must include its actual `head_sha`; missing or different head evidence is
+treated as a moving or not-yet-settled head and the caller waits and polls
+again. Do not stamp the requested SHA onto checks from another observation.
 
 - **args:** `<number> [--head-sha=<sha>]`
 - **result:** `{ "checks": [Check, ...] }`

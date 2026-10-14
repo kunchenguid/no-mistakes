@@ -333,12 +333,21 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		return nil, h.protocolf(CmdPRChecks, "response did not include a checks list")
 	}
 	checks := make([]scm.Check, 0, len(*result.Checks))
+	expectedHead := strings.TrimSpace(pr.HeadSHA)
 	for i, raw := range *result.Checks {
 		check, err := normalizeCheck(raw)
 		if err != nil {
 			return nil, h.protocolf(CmdPRChecks, "check %d: %v", i, err)
 		}
 		checks = append(checks, check)
+	}
+	if expectedHead != "" {
+		for i, raw := range *result.Checks {
+			got := strings.TrimSpace(raw.HeadSHA)
+			if got != expectedHead {
+				return nil, fmt.Errorf("provider plugin %q %s: %w: check %q reported head %q, expected %q", h.opts.Name, CmdPRChecks, scm.ErrHeadChanged, checks[i].Name, got, expectedHead)
+			}
+		}
 	}
 	return checks, nil
 }

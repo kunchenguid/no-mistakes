@@ -491,6 +491,68 @@ func TestCIResumedRepairSnapshotsSelectedCheckCompletion(t *testing.T) {
 	}
 }
 
+func TestCIResumedRepairWaitsWhenSnapshotHeadChanged(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		newHost func() *snapshotHeadHost
+	}{
+		{name: "provider reports head changed", newHost: func() *snapshotHeadHost { return &snapshotHeadHost{providerChanged: true} }},
+		{name: "snapshot PR head changed", newHost: func() *snapshotHeadHost { return &snapshotHeadHost{mutateHead: true} }},
+	} {
+		for _, cached := range []bool{false, true} {
+			name := tc.name + "/empty completion cache"
+			if cached {
+				name = tc.name + "/cached completion snapshot"
+			}
+			t.Run(name, func(t *testing.T) {
+				dir, baseSHA, headSHA := setupGitRepo(t)
+				ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					t.Error("fix agent ran from a stale check snapshot")
+					return nil, errors.New("unexpected fix agent invocation")
+				}}
+				sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"}]}`
+				host := tc.newHost()
+				step := &CIStep{}
+				if cached {
+					step.observedCompletedAt = map[string]checkFreshness{"name:test": {}}
+				}
+
+				outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+				if outcome != nil || err != nil {
+					t.Fatalf("repair outcome = %#v, err = %v; want monitoring to resume without repair", outcome, err)
+				}
+				if host.calls != 1 {
+					t.Fatalf("snapshot reads = %d, want one fresh read before repair", host.calls)
+				}
+				if len(ag.calls) != 0 {
+					t.Fatalf("agent calls = %d, want none for a stale snapshot", len(ag.calls))
+				}
+			})
+		}
+	}
+}
+
+type snapshotHeadHost struct {
+	scm.Host
+	providerChanged bool
+	mutateHead      bool
+	calls           int
+}
+
+func (h *snapshotHeadHost) Capabilities() scm.Capabilities { return scm.Capabilities{} }
+func (h *snapshotHeadHost) GetChecks(_ context.Context, pr *scm.PR) ([]scm.Check, error) {
+	h.calls++
+	if h.providerChanged {
+		return nil, scm.ErrHeadChanged
+	}
+	if h.mutateHead {
+		pr.HeadSHA = "newer-head"
+	}
+	return []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}, nil
+}
+
 type completionSnapshotHost struct {
 	scm.Host
 	checks  []scm.Check

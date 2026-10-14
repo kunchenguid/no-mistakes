@@ -76,7 +76,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
 		return nil, nil
 	}
-	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
+	if len(targets.Checks) > 0 {
 		expectedHeadSHA, err := stepGitHeadSHA(sctx)
 		if err != nil {
 			return nil, fmt.Errorf("resolve head before snapshotting selected CI checks: %w", err)
@@ -85,10 +85,15 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		snapshotPR.HeadSHA = expectedHeadSHA
 		checks, err := host.GetChecks(sctx.Ctx, &snapshotPR)
 		if err != nil {
+			if errors.Is(err, scm.ErrHeadChanged) {
+				sctx.Log("selected CI check snapshot belongs to a stale head; waiting for current checks before repair")
+				return nil, nil
+			}
 			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
 		}
 		if snapshotPR.HeadSHA != expectedHeadSHA {
-			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", scm.ErrHeadChanged)
+			sctx.Log("selected CI check snapshot belongs to a stale head; waiting for current checks before repair")
+			return nil, nil
 		}
 		s.observedCompletedAt = terminalFailureCompletionTimes(checks)
 	}

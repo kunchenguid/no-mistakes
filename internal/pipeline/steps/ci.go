@@ -631,6 +631,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// the wait, and the readiness signal is cleared because the
 				// previous observation was for a different head.
 				consecutiveCheckErrs = 0
+				// The last check snapshot is no longer evidence for the head this
+				// run is delivering. Keep independent merge-conflict evidence, but
+				// never turn an earlier check failure into a timeout finding.
+				timeoutFailingChecks = nil
 				lastMonitorLog = logCIMonitorStatus(sctx, fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err), lastMonitorLog)
 			} else {
 				clearCIMonitorReady(sctx)

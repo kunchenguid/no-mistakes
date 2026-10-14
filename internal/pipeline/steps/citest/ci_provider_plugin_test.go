@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,6 +150,116 @@ func TestCIStep_ProviderPluginFailingCheckNeedsApproval(t *testing.T) {
 	}
 	if len(findings.Items) == 0 || !strings.Contains(findings.Items[0].Description, "unit-tests") {
 		t.Fatalf("expected a failing unit-tests finding, got %+v", findings.Items)
+	}
+}
+
+func TestCIStep_ProviderPluginStaleFailureAndCancellationWaitForCurrentHead(t *testing.T) {
+	t.Parallel()
+	agent := &stepstest.MockAgent{AgentName: "test"}
+	sctx, statePath := pluginCIContext(t, fakeplugin.State{
+		Checks: []fakeplugin.Check{
+			{Name: "stale-failure", Bucket: "fail", HeadSHA: "old-head"},
+			{Name: "stale-cancel", Bucket: "cancel", HeadSHA: "old-head"},
+		},
+	})
+	sctx.Agent = agent
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	var readiness []bool
+	sctx.CIReadinessChanged = func(ready, _ bool) { readiness = append(readiness, ready) }
+
+	polls := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+		polls++
+		if polls == 1 {
+			for _, ready := range readiness {
+				if ready {
+					return errors.New("stale checks set CI readiness")
+				}
+			}
+			if len(agent.Calls) != 0 {
+				return errors.New("stale checks invoked the repair agent")
+			}
+			state, err := fakeplugin.Load(statePath)
+			if err != nil {
+				return err
+			}
+			state.Checks = []fakeplugin.Check{
+				{Name: "build", Bucket: "pass", HeadSHA: sctx.Run.HeadSHA},
+				{Name: "lint", Bucket: "pass", HeadSHA: sctx.Run.HeadSHA},
+			}
+			return fakeplugin.Save(statePath, state)
+		}
+		if polls == 2 {
+			if len(readiness) == 0 || !readiness[len(readiness)-1] {
+				return errors.New("current-head green checks did not set CI readiness")
+			}
+			cancel()
+			return nil
+		}
+		return fmt.Errorf("unexpected extra CI poll %d", polls)
+	})
+	pinCIMonitorClock(step)
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want context cancellation after current-head checks", err)
+	}
+	if len(agent.Calls) != 0 {
+		t.Fatalf("agent calls = %d, want none", len(agent.Calls))
+	}
+	if len(readiness) == 0 || !readiness[len(readiness)-1] {
+		t.Fatalf("readiness changes = %v, want readiness only after current-head checks", readiness)
+	}
+	if strings.Contains(strings.Join(logs, "\n"), "CI check failing:") || strings.Contains(strings.Join(logs, "\n"), "cancelled") {
+		t.Fatalf("stale checks produced findings or rerun handling: %v", logs)
+	}
+}
+
+func TestCIStep_HeadMismatchClearsPriorTimeoutFailures(t *testing.T) {
+	t.Parallel()
+	sctx, statePath := pluginCIContext(t, fakeplugin.State{Checks: []fakeplugin.Check{
+		{Name: "unit-tests", Bucket: "fail", HeadSHA: ""},
+		{Name: "integration", Bucket: "pending", HeadSHA: ""},
+	}})
+	sctx.Config.CITimeout = 2 * time.Second
+	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	step := (&steps.CIStep{}).SetNow(func() time.Time { return current }).SetBaseBranchTip(func(context.Context) (string, bool) { return "base", true })
+	polls := 0
+	step.SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		polls++
+		if polls == 1 {
+			state, err := fakeplugin.Load(statePath)
+			if err != nil {
+				return err
+			}
+			for i := range state.Checks {
+				state.Checks[i].HeadSHA = "old-head"
+			}
+			if err := fakeplugin.Save(statePath, state); err != nil {
+				return err
+			}
+			current = current.Add(time.Second)
+			return nil
+		}
+		current = current.Add(2 * time.Second)
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("timeout outcome = %#v, want an approval outcome", outcome)
+	}
+	if strings.Contains(outcome.Findings, "unit-tests") {
+		t.Fatalf("stale timeout findings retained an earlier failed check: %s", outcome.Findings)
+	}
+	if !strings.Contains(outcome.Findings, "timed out") {
+		t.Fatalf("timeout findings = %s, want generic monitoring timeout", outcome.Findings)
 	}
 }
 

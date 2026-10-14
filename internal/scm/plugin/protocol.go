@@ -155,6 +155,7 @@ type viewResult struct {
 type wireCheck struct {
 	Name        string `json:"name"`
 	ID          string `json:"id"`
+	HeadSHA     string `json:"head_sha"`
 	Bucket      string `json:"bucket"`
 	State       string `json:"state"`
 	Link        string `json:"link"`

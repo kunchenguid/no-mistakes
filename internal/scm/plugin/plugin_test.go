@@ -505,9 +505,9 @@ func TestViewPR_StateContentAndBase(t *testing.T) {
 func TestGetChecks(t *testing.T) {
 	host, transport := newTestHost(t, Options{})
 	transport.reply(`{"checks":[
-		{"name":"build","id":"b1","bucket":"pass","state":"SUCCESS","link":"https://ci/1","started_at":"2026-01-02T03:04:05Z","completed_at":"2026-01-02T03:05:05Z","execution_id":"run-1"},
-		{"name":"lint","bucket":"FAIL"},
-		{"name":"deploy","bucket":"skipping"}
+		{"name":"build","id":"b1","head_sha":"abc123","bucket":"pass","state":"SUCCESS","link":"https://ci/1","started_at":"2026-01-02T03:04:05Z","completed_at":"2026-01-02T03:05:05Z","execution_id":"run-1"},
+		{"name":"lint","head_sha":"abc123","bucket":"FAIL"},
+		{"name":"deploy","head_sha":"abc123","bucket":"skipping"}
 	]}`)
 	checks, err := host.GetChecks(context.Background(), testPR())
 	if err != nil {
@@ -547,6 +547,63 @@ func TestGetChecks(t *testing.T) {
 		if _, err := host.GetChecks(context.Background(), testPR()); err == nil || !errors.Is(err, ErrProtocol) {
 			t.Fatalf("%s: GetChecks = %v for %s, want a protocol error", name, err, stdout)
 		}
+	}
+}
+
+func TestGetChecksRejectsChecksNotBoundToRequestedHead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("current head", func(t *testing.T) {
+		host, transport := newTestHost(t, Options{})
+		transport.reply(`{"checks":[{"name":"build","bucket":"pass","head_sha":"abc123"}]}`)
+		checks, err := host.GetChecks(context.Background(), testPR())
+		if err != nil || len(checks) != 1 || checks[0].Name != "build" {
+			t.Fatalf("GetChecks() = (%+v, %v), want current-head check", checks, err)
+		}
+	})
+	t.Run("mixed heads reject the whole observation", func(t *testing.T) {
+		host, transport := newTestHost(t, Options{})
+		transport.reply(`{"checks":[{"name":"green","bucket":"pass","head_sha":"abc123"},{"name":"stale failure","bucket":"fail","head_sha":"old-head"}]}`)
+		checks, err := host.GetChecks(context.Background(), testPR())
+		if err == nil || !errors.Is(err, scm.ErrHeadChanged) || len(checks) != 0 {
+			t.Fatalf("GetChecks() = (%+v, %v), want empty result and ErrHeadChanged", checks, err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		bucket string
+		sha    string
+		want   error
+	}{
+		{name: "stale failure", bucket: "fail", sha: "old-head", want: scm.ErrHeadChanged},
+		{name: "stale cancellation", bucket: "cancel", sha: "old-head", want: scm.ErrHeadChanged},
+		{name: "stale green", bucket: "pass", sha: "old-head", want: scm.ErrHeadChanged},
+		{name: "stale pending", bucket: "pending", sha: "old-head", want: scm.ErrHeadChanged},
+		{name: "stale skip", bucket: "skipping", sha: "old-head", want: scm.ErrHeadChanged},
+		{name: "missing failure head", bucket: "fail", want: scm.ErrHeadChanged},
+		{name: "missing cancellation head", bucket: "cancel", want: scm.ErrHeadChanged},
+		{name: "missing green head", bucket: "pass", want: scm.ErrHeadChanged},
+		{name: "missing pending head", bucket: "pending", want: scm.ErrHeadChanged},
+		{name: "missing skip head", bucket: "skipping", want: scm.ErrHeadChanged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, transport := newTestHost(t, Options{})
+			check := `{"name":"build","bucket":"` + tc.bucket + `"`
+			if tc.sha != "" {
+				check += `,"head_sha":"` + tc.sha + `"`
+			}
+			check += `}`
+			transport.reply(`{"checks":[` + check + `]}`)
+
+			checks, err := host.GetChecks(context.Background(), testPR())
+			if err == nil || !errors.Is(err, tc.want) {
+				t.Fatalf("GetChecks() = (%+v, %v), want error matching %v", checks, err, tc.want)
+			}
+			if len(checks) != 0 {
+				t.Fatalf("GetChecks() returned actionable checks alongside head error: %+v", checks)
+			}
+		})
 	}
 }
 

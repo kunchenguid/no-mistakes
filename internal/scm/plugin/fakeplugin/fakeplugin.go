@@ -68,10 +68,11 @@ type PR struct {
 
 // Check is one fake CI check.
 type Check struct {
-	Name   string `json:"name"`
-	Bucket string `json:"bucket"`
-	State  string `json:"state,omitempty"`
-	Link   string `json:"link,omitempty"`
+	Name    string `json:"name"`
+	HeadSHA string `json:"head_sha,omitempty"`
+	Bucket  string `json:"bucket"`
+	State   string `json:"state,omitempty"`
+	Link    string `json:"link,omitempty"`
 }
 
 // Call is one parsed invocation, as recorded in the request log.
@@ -341,7 +342,7 @@ func servePR(state *State, pr *PR, call Call, body string) (any, bool, error) {
 	case "pr view":
 		return map[string]any{"pr": wire(*pr), "state": pr.State, "title": pr.Title, "body": pr.Body}, false, nil
 	case "pr checks":
-		checks := state.Checks
+		checks := append([]Check(nil), state.Checks...)
 		if checks == nil {
 			checks = []Check{}
 		}
@@ -349,6 +350,11 @@ func servePR(state *State, pr *PR, call Call, body string) (any, bool, error) {
 		if head := call.Flag("head-sha"); head != "" && pr.HeadSHA != head {
 			pr.HeadSHA = head
 			changed = true
+		}
+		for i := range checks {
+			if checks[i].HeadSHA == "" {
+				checks[i].HeadSHA = pr.HeadSHA
+			}
 		}
 		if state.MergeWhenChecksPass && pr.State == "open" && allPass(checks) {
 			pr.State = "merged"
