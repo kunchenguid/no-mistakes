@@ -486,13 +486,14 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	pr.ObservedHeadSHA = ""
 	headSHA := ""
 	if strings.TrimSpace(pr.HeadSHA) != "" {
 		headSHA, err = h.getPRHeadSHA(ctx, selector)
 		if err != nil {
 			return nil, err
 		}
-		pr.HeadSHA = headSHA
+		pr.ObservedHeadSHA = headSHA
 	}
 	var checks []scm.Check
 	if headSHA != "" {
@@ -514,8 +515,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if err != nil {
 			return nil, err
 		}
+		pr.ObservedHeadSHA = currentHeadSHA
 		if currentHeadSHA != headSHA {
-			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+			return nil, fmt.Errorf("%w: PR head changed during check discovery from %s to %s", scm.ErrHeadChanged, headSHA, currentHeadSHA)
 		}
 	}
 	return checks, nil

@@ -323,6 +323,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	pr.ObservedHeadSHA = ""
 	args := []string{number}
 	if headSHA := strings.TrimSpace(pr.HeadSHA); headSHA != "" {
 		args = append(args, flag("head-sha", headSHA))
@@ -357,6 +358,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		}
 		for i, raw := range *result.Checks {
 			actualHead := strings.TrimSpace(raw.HeadSHA)
+			if actualHead != "" {
+				pr.ObservedHeadSHA = actualHead
+			}
 			if actualHead != "" && actualHead != expectedHead {
 				return nil, fmt.Errorf("provider plugin %q %s check %d: %w: expected %s, got %q", h.opts.Name, CmdPRChecks, i, scm.ErrHeadChanged, expectedHead, actualHead)
 			}

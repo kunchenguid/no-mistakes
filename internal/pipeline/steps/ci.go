@@ -221,7 +221,7 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, err
 	// must never be recorded from another commit's checks. Review-bot identity
 	// comes from that same head read, exactly as the polling loop names it.
 	pr.HeadSHA = sctx.Run.HeadSHA
-	checks, err := host.GetChecks(ctx, pr)
+	checks, _, _, err := getCIChecks(ctx, host, pr)
 	if err != nil {
 		if errors.Is(err, scm.ErrHeadChanged) {
 			// The provider answered; nothing it offered is evidence for the
@@ -614,10 +614,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 
 		// Check CI status - wait for all checks to complete before escalating
 		pr.HeadSHA = sctx.Run.HeadSHA
-		checks, err := host.GetChecks(ctx, pr)
-		if pr.HeadSHA != lastCheckHeadSHA {
+		checks, observedHead, _, err := getCIChecks(ctx, host, pr)
+		if observedHead != "" && observedHead != lastCheckHeadSHA {
 			timeoutFailingChecks = nil
-			lastCheckHeadSHA = pr.HeadSHA
+			lastCheckHeadSHA = observedHead
 		}
 		if err != nil && pluginPollFailsStep(err) {
 			clearCIMonitorReady(sctx)

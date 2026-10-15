@@ -93,7 +93,8 @@ type PR struct {
 	// HeadSHA scopes provider check discovery to the exact commit currently
 	// being certified. Providers that expose CI outside the PR check rollup
 	// use it to include those runs.
-	HeadSHA string
+	HeadSHA         string
+	ObservedHeadSHA string
 	// BaseBranch is the forge's actual target branch for this PR. It is
 	// authoritative once a PR exists and protects resumed CI repair from a
 	// later configuration change.

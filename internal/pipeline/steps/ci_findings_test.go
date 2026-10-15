@@ -669,10 +669,8 @@ func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
 
 type completionSnapshotHost struct {
 	scm.Host
-	checks  []scm.Check
-	headSHA string
-	// observedHead, when set, is what the adapter reports it actually saw by
-	// overwriting pr.HeadSHA, the way the GitHub adapter does.
+	checks       []scm.Check
+	headSHA      string
 	observedHead string
 	err          error
 }
@@ -684,7 +682,7 @@ func (h *completionSnapshotHost) GetChecks(_ context.Context, pr *scm.PR) ([]scm
 		return nil, h.err
 	}
 	if h.observedHead != "" {
-		pr.HeadSHA = h.observedHead
+		pr.ObservedHeadSHA = h.observedHead
 	}
 	return h.checks, nil
 }
@@ -812,5 +810,58 @@ func TestReviewBotFindingsKeepProviderIdentity(t *testing.T) {
 		if len(got.Items) != 1 || !strings.HasSuffix(got.Items[0].Description, ": "+tc.want) {
 			t.Fatalf("provider %s findings = %+v", tc.provider, got)
 		}
+	}
+}
+
+func TestCIResumedRepairGitHubMovedHeadReadErrorWaits(t *testing.T) {
+	t.Parallel()
+	for _, read := range []string{"commit", "workflow", "final-head", "back-to-requested"} {
+		t.Run(read, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				t.Error("fixer invoked for another head")
+				return nil, errors.New("unexpected fixer")
+			}}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.PreviousFindings = `{"findings":[{"id":"check","category":"ci-check","check":"test","description":"failed"}]}`
+			sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","bucket":"fail","state":"FAILURE"}]`)
+			for i, entry := range sctx.Env {
+				if strings.HasPrefix(entry, "FAKE_CLI_PR_HEAD_SHA=") {
+					sctx.Env[i] = "FAKE_CLI_PR_HEAD_SHA=head-B"
+				}
+			}
+			switch read {
+			case "commit":
+				sctx.Env = append(sctx.Env, "FAKE_CLI_CHECKS_ERR=read failed")
+			case "workflow":
+				sctx.Env = append(sctx.Env, "FAKE_CLI_WORKFLOW_RUNS=invalid-json")
+			case "final-head", "back-to-requested":
+				heads := []string{headSHA, "head-B"}
+				if read == "back-to-requested" {
+					heads = []string{"head-B", headSHA}
+				}
+				sequence, err := json.Marshal(heads)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SEQUENCE="+string(sequence), "FAKE_CLI_PR_HEAD_INDEX="+filepath.Join(t.TempDir(), "head-index"))
+			}
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx.Run.PRURL = &prURL
+			host, reason := buildHost(sctx, scm.ProviderGitHub)
+			if host == nil {
+				t.Fatal(reason)
+			}
+			prior := checkFreshness{CompletedAt: time.Unix(1700000000, 0)}
+			step := &CIStep{observedCompletedAt: map[string]checkFreshness{"test": prior}}
+			outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42", URL: prURL})
+			if err != nil || outcome != nil || len(ag.calls) != 0 {
+				t.Fatalf("repair = %#v, %v; calls = %d, want wait", outcome, err, len(ag.calls))
+			}
+			if step.observedCompletedAt["test"] != prior {
+				t.Fatal("stale snapshot changed completion evidence")
+			}
+		})
 	}
 }

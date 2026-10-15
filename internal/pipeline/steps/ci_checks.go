@@ -1,7 +1,9 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -441,4 +443,16 @@ func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),
 	}
+}
+
+func getCIChecks(ctx context.Context, host scm.Host, pr *scm.PR) ([]scm.Check, string, bool, error) {
+	requestedHead := pr.HeadSHA
+	pr.ObservedHeadSHA = ""
+	checks, err := host.GetChecks(ctx, pr)
+	observedHead := pr.ObservedHeadSHA
+	moved := errors.Is(err, scm.ErrHeadChanged) || observedHead != "" && observedHead != requestedHead
+	if moved && err != nil && !pluginContractBroken(err) {
+		err = fmt.Errorf("%w: %v", scm.ErrHeadChanged, err)
+	}
+	return checks, observedHead, moved, err
 }

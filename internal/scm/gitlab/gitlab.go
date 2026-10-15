@@ -528,6 +528,7 @@ func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	pr.ObservedHeadSHA = ""
 	if headSHA := strings.TrimSpace(pr.HeadSHA); headSHA != "" {
 		return h.getChecksForHead(ctx, pr, headSHA)
 	}
@@ -569,6 +570,7 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	if err != nil {
 		return nil, err
 	}
+	pr.ObservedHeadSHA = mr.sourceRevision()
 	pipeline, err := h.headPipelineBoundTo(ctx, pr, mr, headSHA)
 	if err != nil {
 		return nil, err
@@ -590,6 +592,9 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	after, err := h.viewMR(ctx, pr.Number)
 	if err != nil {
 		return nil, err
+	}
+	if revision := after.sourceRevision(); revision != "" {
+		pr.ObservedHeadSHA = revision
 	}
 	if revision := after.sourceRevision(); revision == "" {
 		return nil, fmt.Errorf("merge request %s reported no source commit", pr.Number)
