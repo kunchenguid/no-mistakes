@@ -166,7 +166,7 @@ a built-in provider's failure does; it is never read as an empty answer.
 | Field | Rules |
 | --- | --- |
 | `name` | Required, non-empty. Shown in findings and passed back to `pr check-logs`. |
-| `head_sha` | Optional commit the check was recorded for. When present and `--head-sha` is given, it must equal `--head-sha`; a different value marks the check stale, and the caller waits and polls again instead of acting on it. Omitting it keeps the check unbound. A plugin that declares `check_head_sha` must send it on every check. The adapter never fills it in. |
+| `head_sha` | Optional commit the check was recorded for. When present and `--head-sha` is given, it must equal `--head-sha`; a different value marks the check snapshot stale, and the caller waits and polls again instead of acting on it. Omitting it keeps the check unbound unless the plugin opts into the [`check_head_sha` capability](#status-required). The adapter never fills it in. |
 | `bucket` | Required: `pass`, `fail`, `pending`, `cancel`, or `skipping`. Map your forge's states onto these; anything else fails the call. |
 | `id`, `state`, `link`, `execution_id` | Optional provider identifiers and raw state, surfaced for diagnostics. |
 | `started_at`, `completed_at` | Optional RFC 3339 timestamps. |
@@ -204,6 +204,8 @@ is refused before any write.
 every check from `pr checks` carries `head_sha`; a check without one while
 `--head-sha` is given then fails the call with a protocol error naming the
 plugin and the check, instead of waiting silently.
+This is additive within protocol version `1`: omitting the capability or
+setting it to `false` preserves support for checks without `head_sha`.
 
 ### pr find (required)
 
