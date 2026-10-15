@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.97.2](https://github.com/kunchenguid/no-mistakes/compare/v1.97.1...v1.97.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **pipeline:** restore every caret pair in legacy appendix digest fallback ([#1473](https://github.com/kunchenguid/no-mistakes/issues/1473)) ([1773fc4](https://github.com/kunchenguid/no-mistakes/commit/1773fc4b465bd154ed225c909eec271ab8fc73d2))
+* **scm:** update GitHub PR content over REST instead of gh pr edit ([#1477](https://github.com/kunchenguid/no-mistakes/issues/1477)) ([9c0a7e2](https://github.com/kunchenguid/no-mistakes/commit/9c0a7e2c85ff2f6c0a87c120207c5cc9d304e365))
+
 ## [1.97.1](https://github.com/kunchenguid/no-mistakes/compare/v1.97.0...v1.97.1) (2026-10-14)
 
 
