@@ -491,15 +491,126 @@ func TestCIResumedRepairSnapshotsSelectedCheckCompletion(t *testing.T) {
 	}
 }
 
+func TestCIResumedRepairEmptySnapshotSkipsRepairAndPreservesCompletionMap(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Error("fix agent ran without a selected failing check in the fresh snapshot")
+		return nil, errors.New("unexpected fixer invocation")
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"}]}`
+	prior := map[string]checkFreshness{"id:github-check-run:42": {CompletedAt: time.Now()}}
+	step := &CIStep{observedCompletedAt: prior}
+	host := &completionSnapshotHost{}
+	outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil {
+		t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+	}
+	if host.headSHA != headSHA {
+		t.Fatalf("snapshot head = %q, want current head %q", host.headSHA, headSHA)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want none", len(ag.calls))
+	}
+	if got := step.observedCompletedAt["id:github-check-run:42"]; !got.CompletedAt.Equal(prior["id:github-check-run:42"].CompletedAt) {
+		t.Fatalf("completion map entry = %+v, want prior value preserved", got)
+	}
+}
+
+func TestCIResumedRepairPartialSnapshotSkipsSelectedChecks(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Error("fix agent ran with only a subset of the selected checks present")
+		return nil, errors.New("unexpected fixer invocation")
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"},{"id":"ci-2","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"lint","check_id":"github-check-run:43"}]}`
+	host := &completionSnapshotHost{checks: []scm.Check{{Name: "test", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail}}}
+	step := &CIStep{}
+	outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil {
+		t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want none until all selected failures are confirmed", len(ag.calls))
+	}
+}
+
+func TestCIResumedRepairAdapterObservedStaleHeadWaitsInsteadOfRepairing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Error("fix agent ran against a snapshot of another head")
+		return nil, errors.New("unexpected fixer invocation")
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
+	host := &completionSnapshotHost{observedHead: "other-head", checks: []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}}
+	outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil {
+		t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want none", len(ag.calls))
+	}
+}
+
+func TestCIResumedRepairStaleHeadErrorWaitsInsteadOfFailing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
+	host := &completionSnapshotHost{err: scm.ErrHeadChanged}
+	outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil || len(ag.calls) != 0 {
+		t.Fatalf("repair = %#v, %v, agent calls %d; want a wait", outcome, err, len(ag.calls))
+	}
+}
+
+// A merge conflict is observed from mergeability, not from checks, so an empty
+// check snapshot must not stop its repair.
+func TestCIResumedRepairEmptySnapshotStillRepairsMergeConflict(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"summary":"no code change","code_change_needed":false}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"},{"id":"ci-2","severity":"error","description":"conflict","action":"auto-fix","category":"ci-merge-conflict"}]}`
+	host := &completionSnapshotHost{}
+	if _, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want the merge-conflict repair to run once", len(ag.calls))
+	}
+	if strings.Contains(ag.calls[0].Prompt, "failing checks: test") {
+		t.Fatalf("prompt still targets the unconfirmed check:\n%s", ag.calls[0].Prompt)
+	}
+}
+
 type completionSnapshotHost struct {
 	scm.Host
 	checks  []scm.Check
 	headSHA string
+	// observedHead, when set, is what the adapter reports it actually saw by
+	// overwriting pr.HeadSHA, the way the GitHub adapter does.
+	observedHead string
+	err          error
 }
 
 func (h *completionSnapshotHost) Capabilities() scm.Capabilities { return scm.Capabilities{} }
 func (h *completionSnapshotHost) GetChecks(_ context.Context, pr *scm.PR) ([]scm.Check, error) {
 	h.headSHA = pr.HeadSHA
+	if h.err != nil {
+		return nil, h.err
+	}
+	if h.observedHead != "" {
+		pr.HeadSHA = h.observedHead
+	}
 	return h.checks, nil
 }
 

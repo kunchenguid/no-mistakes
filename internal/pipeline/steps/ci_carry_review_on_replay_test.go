@@ -493,15 +493,15 @@ func TestCIStep_CarryReviewOnReplay_ACommitOnTopOfAPendingCarryRevalidatesFromRe
 	}
 }
 
-// A fix round whose fixer fails records nothing, and must not fall back to
-// monitoring the old published head while a carry is pending: green checks
-// there would complete the run with the carried head never published.
-func TestCIStep_CarryReviewOnReplay_AFailedFixRoundStillRestartsAtTest(t *testing.T) {
+// Stale checks from the old published head cannot authorize a fixer while a
+// carried head is pending; the step waits and restarts Test instead.
+func TestCIStep_CarryReviewOnReplay_StaleChecksOnPendingCarryRestartTest(t *testing.T) {
 	t.Parallel()
 	f := newReplayFixture(t, true, false)
 	f.carry(t)
 	f.sctx.Agent = &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-		return nil, errors.New("fixer unavailable")
+		t.Error("fixer called using stale checks from the old published head")
+		return nil, errors.New("unexpected fixer call")
 	}}
 	f.sctx.Fixing = true
 	f.sctx.PreviousFindings = ciGateFindingsJSON("test")
@@ -509,8 +509,6 @@ func TestCIStep_CarryReviewOnReplay_AFailedFixRoundStillRestartsAtTest(t *testin
 	defer cancel()
 	f.sctx.Ctx = ctx
 
-	// The live step already observed the checks it parked on, so the fix
-	// round does not snapshot them again.
 	outcome, err := (&CIStep{observedCompletedAt: map[string]checkFreshness{}, waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
 		cancel()
 		return ctx.Err()
@@ -526,10 +524,11 @@ func TestCIStep_CarryReviewOnReplay_AFailedFixRoundStillRestartsAtTest(t *testin
 	}
 }
 
-// A fixer that commits on top of a pending carried head and then fails must
-// not have that commit restart at Test under the carried approval: Test and
-// Push both accept a descendant, so the unreviewed commit would publish. It is
-// recorded like any other repair on a pending carry - approval revoked,
+// An independent merge-conflict finding legitimately invokes the fixer while
+// a carry is pending. A fixer that commits on top of that head and then fails
+// must not have that commit restart at Test under the carried approval: Test
+// and Push both accept a descendant, so the unreviewed commit would publish.
+// It is recorded like any other repair on a pending carry: approval revoked,
 // revalidation from Review.
 func TestCIStep_CarryReviewOnReplay_AFailedFixerCommitOnTopRevalidatesFromReview(t *testing.T) {
 	t.Parallel()
@@ -542,7 +541,16 @@ func TestCIStep_CarryReviewOnReplay_AFailedFixerCommitOnTopRevalidatesFromReview
 		return nil, errors.New("fixer crashed after committing")
 	}}
 	f.sctx.Fixing = true
-	f.sctx.PreviousFindings = ciGateFindingsJSON("test")
+	findings := Findings{Summary: "CI issues", Items: []Finding{{
+		ID: "ci-conflict", Severity: types.FindingSeverityError,
+		Action: types.ActionAutoFix, Category: types.FindingCategoryCIMergeConflict,
+		Description: "PR has merge conflicts with the base branch",
+	}}}
+	var err error
+	f.sctx.PreviousFindings, err = types.MarshalFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	f.sctx.Ctx = ctx

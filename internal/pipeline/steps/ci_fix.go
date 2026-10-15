@@ -76,7 +76,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
 		return nil, nil
 	}
-	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
+	if len(targets.Checks) > 0 {
 		expectedHeadSHA, err := stepGitHeadSHA(sctx)
 		if err != nil {
 			return nil, fmt.Errorf("resolve head before snapshotting selected CI checks: %w", err)
@@ -84,13 +84,37 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		snapshotPR := *pr
 		snapshotPR.HeadSHA = expectedHeadSHA
 		checks, err := host.GetChecks(sctx.Ctx, &snapshotPR)
-		if err != nil {
+		switch {
+		case errors.Is(err, scm.ErrHeadChanged):
+			// The checks describe another head, so they are not evidence
+			// for this one. Wait for the next poll instead of failing.
+			sctx.Log("selected CI checks are stale; waiting for current checks before repair")
+			targets.Checks = nil
+		case err != nil:
 			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
+		case snapshotPR.HeadSHA != expectedHeadSHA:
+			// Adapters that observe the PR head report it by overwriting
+			// HeadSHA. An unchanged input value proves nothing, so only a
+			// reported difference marks the snapshot stale.
+			sctx.Log("selected CI checks are stale; waiting for current checks before repair")
+			targets.Checks = nil
+		default:
+			// Every selected check must still fail in this snapshot. An empty
+			// or partial snapshot is not authority to repair from saved targets.
+			for _, target := range targets.Checks {
+				if !checkTargetFailedTerminally(checks, target) {
+					sctx.Log("selected CI checks are missing or no longer failing; waiting for current CI observation")
+					targets.Checks = nil
+					break
+				}
+			}
+			if len(targets.Checks) > 0 {
+				s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+			}
 		}
-		if snapshotPR.HeadSHA != expectedHeadSHA {
-			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", scm.ErrHeadChanged)
+		if len(targets.Checks) == 0 && !targets.MergeConflict && !targets.BehindBase {
+			return nil, nil
 		}
-		s.observedCompletedAt = terminalFailureCompletionTimes(checks)
 	}
 	issueDesc := targets.description()
 	sctx.Log(fmt.Sprintf("repairing: %s...", issueDesc))

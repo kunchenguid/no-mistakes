@@ -38,8 +38,9 @@ type State struct {
 	Unauthenticated bool `json:"unauthenticated,omitempty"`
 	// ProtocolVersion overrides the handshake's reported version when
 	// nonzero.
-	ProtocolVersion int `json:"protocol_version,omitempty"`
-	MaxPRBodyChars  int `json:"max_pr_body_chars,omitempty"`
+	ProtocolVersion int  `json:"protocol_version,omitempty"`
+	MaxPRBodyChars  int  `json:"max_pr_body_chars,omitempty"`
+	CheckHeadSHA    bool `json:"check_head_sha,omitempty"`
 	// HangOn makes the named subcommand (for example "pr view") sleep far
 	// past any test timeout, so the adapter's per-call deadline fires.
 	HangOn string `json:"hang_on,omitempty"`
@@ -68,10 +69,11 @@ type PR struct {
 
 // Check is one fake CI check.
 type Check struct {
-	Name   string `json:"name"`
-	Bucket string `json:"bucket"`
-	State  string `json:"state,omitempty"`
-	Link   string `json:"link,omitempty"`
+	Name    string `json:"name"`
+	HeadSHA string `json:"head_sha,omitempty"`
+	Bucket  string `json:"bucket"`
+	State   string `json:"state,omitempty"`
+	Link    string `json:"link,omitempty"`
 }
 
 // Call is one parsed invocation, as recorded in the request log.
@@ -289,6 +291,7 @@ func serve(state *State, call Call, body string) (any, bool, error) {
 				"failed_check_logs":  true,
 				"merged_proof":       true,
 				"set_pr_base_branch": true,
+				"check_head_sha":     state.CheckHeadSHA,
 			},
 			"max_pr_body_chars": state.MaxPRBodyChars,
 		}, false, nil

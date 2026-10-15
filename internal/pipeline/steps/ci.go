@@ -631,6 +631,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// the wait, and the readiness signal is cleared because the
 				// previous observation was for a different head.
 				consecutiveCheckErrs = 0
+				// Earlier failures describe a different head and cannot be
+				// carried into this head's idle-timeout finding.
+				timeoutFailingChecks = nil
 				lastMonitorLog = logCIMonitorStatus(sctx, fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err), lastMonitorLog)
 			} else {
 				clearCIMonitorReady(sctx)
