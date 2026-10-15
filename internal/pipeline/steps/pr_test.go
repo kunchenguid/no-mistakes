@@ -2718,7 +2718,7 @@ func TestPRStep_EmbeddedAttestationDoesNotShadowTheRealOne(t *testing.T) {
 		`{"head_sha":"` + foreignSHA + `","steps":[{"step":"review","status":"completed"}]}` +
 		pipelineAttestationCommentClosingToken
 	findings := `{"findings":[],"summary":"clean","testing_summary":"Captured the generated PR body as evidence.",` +
-		`"artifacts":[{"kind":"command-output","label":"generated PR body","content":"## Pipeline\n\n` +
+		`"artifacts":[{"kind":"text-quote","label":"generated PR body","content":"## Pipeline\n\n` +
 		strings.ReplaceAll(embedded, `"`, `\"`) + `"}]}`
 	insertCompletedStep(t, sctx, types.StepTest, findings, "")
 
@@ -2747,9 +2747,10 @@ func TestPRStep_EmbeddedAttestationDoesNotShadowTheRealOne(t *testing.T) {
 	if strings.Contains(content.Body, foreignSHA+`","steps"`) && !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) {
 		t.Fatalf("embedded attestation was neither neutralized nor removed:\n%s", content.Body)
 	}
-	// The evidence itself must survive; only the marker is altered.
-	if !strings.Contains(content.Body, foreignSHA) {
-		t.Fatalf("embedded evidence payload was dropped instead of neutralized:\n%s", content.Body)
+	// A quote carrying a marker's identifier-shaped payload never reaches the
+	// choke point at all: the typed evidence contract withholds it.
+	if strings.Contains(content.Body, foreignSHA) || !strings.Contains(content.Body, "- Evidence: Quote 1 (not shown in this PR: quote refused by the publication check)") {
+		t.Fatalf("expected the quoted attestation withheld by the evidence contract:\n%s", content.Body)
 	}
 }
 
@@ -2772,7 +2773,7 @@ func TestPRStep_EvidenceQuotingAnOwnedBodyStaysRestampable(t *testing.T) {
 
 	quoted := "Author text\n\n" + wrapPRAppendix("## Issues\n\nCloses #95\n\n"+
 		pipelineAttestationCommentPrefix+`{"head_sha":"`+strings.Repeat("f", 40)+`","steps":[]}`+pipelineAttestationCommentClosingToken)
-	artifact, err := json.Marshal(map[string]string{"kind": "command-output", "label": "templated PR body", "content": quoted})
+	artifact, err := json.Marshal(map[string]string{"kind": "text-quote", "label": "templated PR body", "content": quoted})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2783,8 +2784,11 @@ func TestPRStep_EvidenceQuotingAnOwnedBodyStaysRestampable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content.Body, "Closes #95") {
-		t.Fatalf("quoted evidence was dropped instead of neutralized:\n%s", content.Body)
+	// The typed evidence contract withholds a quote carrying the appendix's
+	// identifier-shaped markers, so none of them reach the body to confuse a
+	// later restamp.
+	if strings.Contains(content.Body, "Closes #95") || !strings.Contains(content.Body, "- Evidence: Quote 1 (not shown in this PR: quote refused by the publication check)") {
+		t.Fatalf("expected the quoted owned body withheld:\n%s", content.Body)
 	}
 
 	newHead := strings.Repeat("ab", 20)
@@ -2889,6 +2893,7 @@ func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 // The earlier guards each cover one component. This plants a foreign marker in
 // every agent-derived component at once - agent body, extracted intent, review
 // finding, risk rationale, testing summary, tested detail, and artifact content
+// (which the typed evidence contract now withholds before it gets that far)
 // - because the first attempt at this fix neutralized the marker inside
 // escapePipelineFoldMarkers, which runs per render path: it covered the
 // artifact fence and tested details, missed another path, and PR #831 still
@@ -2905,7 +2910,7 @@ func TestPRStep_ForeignAttestationsInEveryComponentDoNotShadowTheRealOne(t *test
 			`{"head_sha":"` + strings.Repeat(sha, 40) + `","steps":[{"step":"review","status":"completed"}]}` +
 			pipelineAttestationCommentClosingToken
 	}
-	planted := []string{"a", "b", "c", "d", "e", "f", "0"}
+	planted := []string{"a", "b", "c", "d", "e", "f"}
 
 	ag := &mockAgent{
 		name: "test",
@@ -2936,7 +2941,7 @@ func TestPRStep_ForeignAttestationsInEveryComponentDoNotShadowTheRealOne(t *test
 		TestingSummary: "Captured the published body: " + foreign("e"),
 		Tested:         []string{"diff prior-body.txt " + foreign("f")},
 		Artifacts: []types.TestArtifact{{
-			Kind:    "command-output",
+			Kind:    "text-quote",
 			Label:   "published PR body",
 			Content: "## Pipeline\n\n" + foreign("0"),
 		}},
@@ -2949,6 +2954,9 @@ func TestPRStep_ForeignAttestationsInEveryComponentDoNotShadowTheRealOne(t *test
 
 	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
 
+	if strings.Contains(content.Body, strings.Repeat("0", 40)) {
+		t.Errorf("the artifact quote carrying a marker was published instead of withheld:\n%s", content.Body)
+	}
 	// Neutralized, not dropped: the evidence has to stay readable.
 	for _, sha := range planted {
 		if !strings.Contains(content.Body, strings.Repeat(sha, 40)) {

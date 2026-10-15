@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testartifact"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -283,7 +284,10 @@ Evidence:
 - Include a concise "testing_summary" sentence describing what you exercised and the overall result.
 - The "testing_summary" must account for the complete test step: baseline commands that already ran, scenarios driven, manual or evidence-producing checks, artifacts gathered, and the overall result.
 - Record the exact tests, manual checks, and evidence-producing steps you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
-- Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use artifact path for file artifacts, artifact url for externally visible artifacts, and artifact content for short logs or command output that should be shown directly in the PR.
+- Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Give every artifact a kind:
+  - kind "log" for a log or command-output file: set its path. Its bytes are not shown in the pull request; the pull request shows only a line and byte summary. test.evidence.store_in_repo may still publish the whole evidence directory, including logs and withheld media, to the evidence branch.
+  - kind "text-quote" for a short excerpt to show inline: set content (at most 20 lines and 1024 bytes) and no path or url. It is refused if it contains a path, endpoint, process or run identifier, credential, private identifier, provider closing reference, code fence, PR fold heading, or no-mistakes attestation or appendix marker.
+  - kind "image" or "video" for media: set its path or url and "shows" to "ui", "chart", or "terminal". Only ui and chart media are shown in the pull request; a terminal capture is withheld from the PR. test.evidence.store_in_repo may still publish it on the evidence branch.
 - If a scenario fails, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and re-drive that scenario.
 
@@ -429,6 +433,7 @@ func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
 		}
 	}
 	findings.UnvalidatedSinceSHA = ""
+	findings.Artifacts = testartifact.CanonicalizeAll(findings.Artifacts)
 	return findings, nil
 }
 

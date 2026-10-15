@@ -105,7 +105,7 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 
 	// The PR body links the published artifacts by evidence commit.
 	steps, rounds := testStepWithArtifacts(fmt.Sprintf(
-		`{"kind":"screenshot","label":"Checkout screenshot","path":%q},{"kind":"log","label":"CLI run","path":%q}`,
+		`{"kind":"screenshot","shows":"ui","label":"Checkout screenshot","path":%q},{"kind":"log","label":"CLI run","path":%q}`,
 		filepath.Join(evidenceDir, "checkout.png"),
 		filepath.Join(evidenceDir, "cli-run.txt"),
 	))
@@ -116,8 +116,10 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 	if !strings.Contains(md, "- Evidence: [Checkout screenshot]("+wantLink+")") {
 		t.Fatalf("expected the PR body to link the evidence branch, got:\n%s", md)
 	}
-	if !strings.Contains(md, "https://github.com/example/widgets/blob/"+tip+"/.no-mistakes/evidence/feature/add-login/cli-run.txt") {
-		t.Fatalf("expected the log artifact to link the evidence branch, got:\n%s", md)
+	// A log stays a summary even when the directory holding it was published:
+	// the PR body never links or quotes it.
+	if strings.Contains(md, "cli-run.txt") || !strings.Contains(md, "- Evidence: Log 1 (not shown in this PR): ") {
+		t.Fatalf("expected the log artifact as a summary only, got:\n%s", md)
 	}
 	if strings.Contains(md, "local file:") {
 		t.Fatalf("published evidence must not render as a local path, got:\n%s", md)
@@ -149,7 +151,7 @@ func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T)
 	}
 	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
 	steps, rounds := testStepWithArtifacts(fmt.Sprintf(
-		`{"kind":"screenshot","label":"Encoded screenshot","path":%q}`,
+		`{"kind":"screenshot","shows":"ui","label":"Encoded screenshot","path":%q}`,
 		filepath.Join(evidenceDir, filepath.FromSlash(artifact)),
 	))
 	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), links)
@@ -258,7 +260,7 @@ func TestPublishRunEvidence_InvalidBranchNameFallsBackToLocalPaths(t *testing.T)
 	}
 
 	steps, rounds := testStepWithArtifacts(fmt.Sprintf(
-		`{"kind":"screenshot","label":"Checkout screenshot","path":%q}`,
+		`{"kind":"screenshot","shows":"ui","label":"Checkout screenshot","path":%q}`,
 		filepath.Join(evidenceDir, "checkout.png"),
 	))
 	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), nil)

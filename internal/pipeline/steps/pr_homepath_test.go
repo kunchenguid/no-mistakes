@@ -113,12 +113,13 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Captured the failing request/response pair.",
 				Artifacts: []types.TestArtifact{{
-					Kind:  "log",
-					Label: "pytest output",
-					Path:  filepath.Join(fixtureEvidenceDir, "pytest.log"),
+					Kind:  "image",
+					Shows: "ui",
+					Label: "pytest report",
+					Path:  filepath.Join(fixtureEvidenceDir, "pytest.png"),
 				}},
 			}),
-			wantVisible: []string{"pytest output", fixtureRedactedPath(".no-mistakes", "evidence", "run-1", "pytest.log")},
+			wantVisible: []string{"pytest report", fixtureRedactedPath(".no-mistakes", "evidence", "run-1", "pytest.png")},
 		},
 		{
 			name:        "pytest rootdir header in captured output",
@@ -126,12 +127,14 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Ran the targeted suite.",
 				Artifacts: []types.TestArtifact{{
-					Kind:    "command-output",
+					Kind:    "text-quote",
 					Label:   "pytest",
 					Content: "platform linux -- Python 3.12.3, pytest-8.2.0\nrootdir: " + fixtureWorktreePath + "\nconfigfile: pyproject.toml\n2 passed in 0.31s",
 				}},
 			}),
-			wantVisible: []string{"rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc", "2 passed in 0.31s"},
+			// A quote carrying a path is refused at the evidence boundary, so
+			// it never reaches the redaction at all.
+			wantVisible: []string{"- Evidence: Quote 1 (not shown in this PR: quote refused by the publication check)"},
 		},
 		{
 			name:        "worktree path assignment inside captured output",
@@ -139,12 +142,14 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Replayed the generator with the recorded settings.",
 				Artifacts: []types.TestArtifact{{
-					Kind:    "command-output",
+					Kind:    "text-quote",
 					Label:   "settings dump",
 					Content: `WORKTREE = "` + fixtureWorktreePath + `"` + "\nDEBUG = False",
 				}},
 			}),
-			wantVisible: []string{`WORKTREE = "~/.no-mistakes/worktrees/ab12cd/1/svc"`, "DEBUG = False"},
+			// A quote carrying a path is refused at the evidence boundary, so
+			// it never reaches the redaction at all.
+			wantVisible: []string{"- Evidence: Quote 1 (not shown in this PR: quote refused by the publication check)"},
 		},
 		{
 			name:        "the same path repeated many times",
@@ -152,7 +157,7 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Collected the full session header.",
 				Artifacts: []types.TestArtifact{{
-					Kind:  "command-output",
+					Kind:  "text-quote",
 					Label: "session header",
 					Content: "rootdir: " + fixtureWorktreePath + "\n" +
 						"cachedir: " + fixtureWorktreePath + "/.pytest_cache\n" +
@@ -161,10 +166,12 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 						"basetemp: " + fixtureHome + "/tmp/pytest-of-testuser",
 				}},
 			}),
-			wantVisible: []string{"cachedir: ~/.no-mistakes/worktrees/ab12cd/1/svc/.pytest_cache"},
+			// A quote carrying a path is refused at the evidence boundary, so
+			// it never reaches the redaction at all.
+			wantVisible: []string{"- Evidence: Quote 1 (not shown in this PR: quote refused by the publication check)"},
 		},
 		{
-			name: "captured output embedded from an evidence file on disk",
+			name: "a log file on disk publishes only its summary",
 			evidenceFiles: map[string]string{
 				"pytest.log": "============ test session starts ============\n" +
 					"rootdir: " + fixtureWorktreePath + "\n" +
@@ -179,7 +186,7 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 					Path:  "%EVIDENCEFILE%",
 				}},
 			}),
-			wantVisible: []string{"rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc", "1 passed in 0.10s"},
+			wantVisible: []string{"- Evidence: Log 1 (not shown in this PR): 4 lines, "},
 		},
 		{
 			name:        "macOS home root",
@@ -187,12 +194,12 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Captured the run header.",
 				Artifacts: []types.TestArtifact{{
-					Kind:    "command-output",
+					Kind:    "text-quote",
 					Label:   "pytest",
 					Content: "rootdir: /Users/testuser/.no-mistakes/worktrees/ab12cd/1/svc",
 				}},
 			}),
-			wantVisible: []string{"rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc"},
+			wantVisible: []string{"- Evidence: Quote 1 (not shown in this PR: quote refused by the publication check)"},
 		},
 		{
 			name:        "windows home root",
@@ -200,12 +207,14 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Captured the run header.",
 				Artifacts: []types.TestArtifact{{
-					Kind:    "command-output",
+					Kind:    "text-quote",
 					Label:   "pytest",
 					Content: `rootdir: C:\Users\testuser\.no-mistakes\worktrees\ab12cd\1\svc`,
 				}},
 			}),
-			wantVisible: []string{`rootdir: ~\.no-mistakes\worktrees\ab12cd\1\svc`},
+			// A quote carrying a path is refused at the evidence boundary, so
+			// it never reaches the redaction at all.
+			wantVisible: []string{"- Evidence: Quote 1 (not shown in this PR: quote refused by the publication check)"},
 		},
 		{
 			name:        "testing summary prose",
@@ -305,7 +314,7 @@ func TestPRStep_ExecuteRedactsAbsoluteHomePathsBeforePublishing(t *testing.T) {
 	testFindings := findingsJSON(t, types.Findings{
 		TestingSummary: "Captured the run header.",
 		Artifacts: []types.TestArtifact{{
-			Kind:    "command-output",
+			Kind:    "text-quote",
 			Label:   "pytest",
 			Content: "rootdir: " + fixtureWorktreePath,
 		}},
@@ -326,7 +335,7 @@ func TestPRStep_ExecuteRedactsAbsoluteHomePathsBeforePublishing(t *testing.T) {
 			t.Fatalf("published PR content leaked %q:\n%s", needle, published)
 		}
 	}
-	for _, want := range []string{"rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc", "evidence now lands under " + fixtureRedactedPath(".no-mistakes", "evidence", "run-1")} {
+	for _, want := range []string{"Quote 1 (not shown in this PR: quote refused by the publication check)", "evidence now lands under " + fixtureRedactedPath(".no-mistakes", "evidence", "run-1")} {
 		if !strings.Contains(published, want) {
 			t.Fatalf("expected %q in published PR content:\n%s", want, published)
 		}
@@ -562,14 +571,15 @@ func TestTestFindingsSchema_KeepsEvidenceDirectoryPathsReportable(t *testing.T) 
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Captured the failing request/response pair.",
 				Artifacts: []types.TestArtifact{{
-					Kind:  "log",
+					Kind:  "image",
+					Shows: "ui",
 					Label: "captured session",
-					Path:  filepath.Join(fixtureEvidenceDir, "session.log"),
+					Path:  filepath.Join(fixtureEvidenceDir, "session.png"),
 				}},
 			}),
 			wantVisible: []string{
 				"captured session",
-				fixtureRedactedPath(".no-mistakes", "evidence", "run-1", "session.log"),
+				fixtureRedactedPath(".no-mistakes", "evidence", "run-1", "session.png"),
 			},
 		}
 		content := buildHomePathLeakPRContent(t, tc)
@@ -583,15 +593,16 @@ func TestTestFindingsSchema_KeepsEvidenceDirectoryPathsReportable(t *testing.T) 
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Captured the failing request/response pair.",
 				Artifacts: []types.TestArtifact{{
-					Kind:  "log",
+					Kind:  "image",
+					Shows: "ui",
 					Label: "stray artifact",
-					Path:  "/var/tmp/elsewhere/session.log",
+					Path:  "/var/tmp/elsewhere/session.png",
 				}},
 			}),
 		}
 		content := buildHomePathLeakPRContent(t, tc)
 		assertNoHomePathLeak(t, tc, content)
-		for _, unwanted := range []string{"stray artifact", "/var/tmp/elsewhere/session.log"} {
+		for _, unwanted := range []string{"stray artifact", "/var/tmp/elsewhere/session.png"} {
 			if strings.Contains(content.Body, unwanted) {
 				t.Fatalf("expected %q to be dropped by the artifact path allowlist:\n%s", unwanted, content.Body)
 			}

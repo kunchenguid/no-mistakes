@@ -191,8 +191,8 @@ func fitCollapsed(prefix, risk, testing, pipeline string, limit int, units func(
 	if full := untruncated(testing); units(full) <= limit {
 		return full
 	}
-	// Testing is the section that inlines evidence logs. Drop it whole before
-	// cutting pipeline history, the same order the ordinary body uses.
+	// Testing is the section that carries agent-reported evidence. Drop it whole
+	// before cutting pipeline history, the same order the ordinary body uses.
 	if testing != "" {
 		if dropped := untruncated(""); units(dropped) <= limit {
 			return dropped

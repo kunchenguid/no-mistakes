@@ -66,7 +66,7 @@ func writeEvidenceFile(t *testing.T, dir, name string, content []byte) string {
 }
 
 func screenshotFindings(path string) string {
-	return fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, path)
+	return fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","shows":"ui","label":"Checkout screenshot","path":%q}]}`, path)
 }
 
 func renderPRWithScreenshot(t *testing.T, uploader userAssetUploader, configure func(sctx *testPRAttachCtx)) (body, logs string) {
@@ -146,7 +146,7 @@ func TestPRStep_DeduplicatesScreenshotUploadsByPath(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
-	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Desktop checkout","path":%q},{"kind":"screenshot","label":"Mobile checkout","path":%q}]}`, png, png)
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","shows":"ui","label":"Desktop checkout","path":%q},{"kind":"screenshot","shows":"ui","label":"Mobile checkout","path":%q}]}`, png, png)
 	insertCompletedStep(t, sctx, types.StepTest, findings, "")
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
 
@@ -272,8 +272,89 @@ func TestPRStep_TextArtifactIsNotUploaded(t *testing.T) {
 	if strings.Contains(content.Body, "user-attachments") {
 		t.Fatalf("text artifact must not become a user-attachment, got:\n%s", content.Body)
 	}
-	if !strings.Contains(content.Body, "it works") {
-		t.Fatalf("expected inlined text evidence, got:\n%s", content.Body)
+	if strings.Contains(content.Body, "it works") || !strings.Contains(content.Body, "- Evidence: Log 1 (not shown in this PR): 1 line, 9 bytes") {
+		t.Fatalf("expected the log summarized and never inlined, got:\n%s", content.Body)
+	}
+}
+
+func TestPRStep_BlankArtifactLabelsUseMachineLabels(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	logPath := writeEvidenceFile(t, sctx.EvidenceDir, "cli-run.txt", []byte("ready\n"))
+	imagePath := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[`+
+		`{"kind":"log","label":"","path":%q},`+
+		`{"kind":"image","shows":"ui","label":"","path":%q}]}`, logPath, imagePath)
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+
+	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uploader.calls) != 1 || filepath.Base(uploader.calls[0]) != "checkout.png" {
+		t.Fatalf("uploads = %v, want the blank-labelled image", uploader.calls)
+	}
+	for _, want := range []string{
+		"- Evidence: Log 1 (not shown in this PR): 1 line, 6 bytes",
+		"![Image 1](" + testAttachmentURL + ")",
+	} {
+		if !strings.Contains(content.Body, want) {
+			t.Fatalf("expected %q, got:\n%s", want, content.Body)
+		}
+	}
+}
+
+// Only media the typed evidence contract publishes is uploaded: a terminal
+// capture is a picture of a log, and media recorded before it had to declare
+// what it shows cannot be told apart from one, so neither ever leaves the
+// machine, while a declared chart in the same run still uploads.
+func TestPRStep_TerminalAndUndeclaredMediaAreNeverUploaded(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	terminal := writeEvidenceFile(t, sctx.EvidenceDir, "boot.png", []byte("png-bytes"))
+	legacy := writeEvidenceFile(t, sctx.EvidenceDir, "legacy.mp4", []byte("mp4-bytes"))
+	chart := writeEvidenceFile(t, sctx.EvidenceDir, "latency.png", []byte("png-bytes"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[`+
+		`{"kind":"image","shows":"terminal","label":"Boot log","path":%q},`+
+		`{"kind":"recording","label":"Old recording","path":%q},`+
+		`{"kind":"image","shows":"chart","label":"Latency chart","path":%q}]}`, terminal, legacy, chart)
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+	var logLines []string
+	sctx.Log = func(line string) { logLines = append(logLines, line) }
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"latency.png": testAttachmentURL}}
+
+	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(uploader.calls) != 1 || filepath.Base(uploader.calls[0]) != "latency.png" {
+		t.Fatalf("uploads = %v, want only the declared chart", uploader.calls)
+	}
+	for _, want := range []string{
+		"![Latency chart](" + testAttachmentURL + ")",
+		"- Evidence: Image 1 (not shown in this PR: terminal capture)",
+		"- Evidence: Video 1 (not shown in this PR: content not declared)",
+	} {
+		if !strings.Contains(content.Body, want) {
+			t.Fatalf("expected %q, got:\n%s", want, content.Body)
+		}
+	}
+	for _, leak := range []string{"boot.png", "legacy.mp4", "Boot log", "Old recording"} {
+		if strings.Contains(content.Body, leak) {
+			t.Fatalf("withheld media leaked %q:\n%s", leak, content.Body)
+		}
+	}
+	logs := strings.Join(logLines, "\n")
+	for _, want := range []string{"skipping GitHub media attachment for Image 1: terminal capture", "skipping GitHub media attachment for Video 1: content not declared"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("expected log %q, got:\n%s", want, logs)
+		}
 	}
 }
 
@@ -389,7 +470,7 @@ func TestPRStep_VideoAttachmentIsBareURL(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
 	video := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.mp4", []byte("ftyp"))
-	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"video","label":"Checkout recording","path":%q}]}`, video)
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"video","shows":"ui","label":"Checkout recording","path":%q}]}`, video)
 	insertCompletedStep(t, sctx, types.StepTest, findings, "")
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.mp4": testAttachmentURL}}
 	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)

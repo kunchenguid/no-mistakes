@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
+	"github.com/kunchenguid/no-mistakes/internal/testartifact"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -55,7 +56,7 @@ func (s *PRStep) resolveMediaUploader(sctx *pipeline.StepContext, provider scm.P
 	return u
 }
 
-func collectPRTestingArtifacts(sctx *pipeline.StepContext, steps []*db.StepResult, rounds map[string][]*db.StepRound) []types.TestArtifact {
+func collectPRTestingArtifacts(sctx *pipeline.StepContext, steps []*db.StepResult, rounds map[string][]*db.StepRound) []testartifact.Publication {
 	if sctx == nil || sctx.Repo == nil || sctx.Run == nil {
 		return nil
 	}
@@ -66,34 +67,46 @@ func collectPRTestingArtifacts(sctx *pipeline.StepContext, steps []*db.StepResul
 		if sr == nil || sr.StepName != types.StepTest {
 			continue
 		}
-		return collectTestingArtifacts(sr, rounds[sr.ID], opts)
+		return collectTestingMedia(sr, rounds[sr.ID], opts)
 	}
 	return nil
 }
 
+// mediaUpload is one declared ui or chart media file eligible for upload.
+type mediaUpload struct {
+	label string
+	path  string
+}
+
 // attachRunEvidenceMedia uploads image/video evidence at PR render time and
-// returns a map of local path -> user-attachments URL. Any failure for a file
-// leaves that file out of the map so the PR body keeps today's rendering
+// returns a map of local path -> user-attachments URL. Only media the typed
+// evidence contract publishes (declared ui or chart) is considered, so a
+// terminal capture or undeclared media is never uploaded. Any failure for a
+// file leaves that file out of the map so the PR body keeps today's rendering
 // rather than a dead link.
 func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm.Provider, steps []*db.StepResult, rounds map[string][]*db.StepRound) map[string]string {
-	artifacts := collectPRTestingArtifacts(sctx, steps, rounds)
-	var eligible []types.TestArtifact
+	publications := collectPRTestingArtifacts(sctx, steps, rounds)
+	var eligible []mediaUpload
 	var skipped []string
 	seenPaths := make(map[string]bool)
-	for _, artifact := range artifacts {
-		if reason := skipMediaAttach(artifact); reason != "" {
-			if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
-				skipped = append(skipped, fmt.Sprintf("%s: %s", artifactLabel(artifact), reason))
-			}
+	for _, pub := range publications {
+		if pub.Kind != testartifact.KindImage && pub.Kind != testartifact.KindVideo {
 			continue
 		}
-		path := filepath.Clean(artifact.Path)
+		if pub.Media == nil {
+			skipped = append(skipped, fmt.Sprintf("%s: %s", pub.Label, pub.Withheld))
+			continue
+		}
+		if reason := skipMediaAttach(*pub.Media); reason != "" {
+			skipped = append(skipped, fmt.Sprintf("%s: %s", pub.Label, reason))
+			continue
+		}
+		path := filepath.Clean(pub.Media.Path)
 		if seenPaths[path] {
 			continue
 		}
 		seenPaths[path] = true
-		artifact.Path = path
-		eligible = append(eligible, artifact)
+		eligible = append(eligible, mediaUpload{label: pub.Label, path: path})
 	}
 	ok, reason := mediaAttachEnabled(sctx, provider)
 	if !ok {
@@ -110,31 +123,31 @@ func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm
 	}
 	if len(eligible) > maxPRMediaAttachments {
 		for _, extra := range eligible[maxPRMediaAttachments:] {
-			sctx.Log(fmt.Sprintf("skipping GitHub media attachment for %s: more than %d files in one PR", artifactLabel(extra), maxPRMediaAttachments))
+			sctx.Log(fmt.Sprintf("skipping GitHub media attachment for %s: more than %d files in one PR", extra.label, maxPRMediaAttachments))
 		}
 		eligible = eligible[:maxPRMediaAttachments]
 	}
 
 	attached := make(map[string]string, len(eligible))
 	type pendingUpload struct {
-		artifact types.TestArtifact
+		artifact mediaUpload
 		digest   string
 	}
 	pending := make([]pendingUpload, 0, len(eligible))
 	for _, artifact := range eligible {
-		digest, err := mediaFileDigest(artifact.Path)
+		digest, err := mediaFileDigest(artifact.path)
 		if err != nil {
-			sctx.Log(fmt.Sprintf("GitHub media attachment failed for %s, keeping today's rendering: fingerprint file: %v", artifactLabel(artifact), err))
+			sctx.Log(fmt.Sprintf("GitHub media attachment failed for %s, keeping today's rendering: fingerprint file: %v", artifact.label, err))
 			continue
 		}
-		cached, found, err := sctx.DB.GetRunMediaAttachment(sctx.Run.ID, artifact.Path, digest)
+		cached, found, err := sctx.DB.GetRunMediaAttachment(sctx.Run.ID, artifact.path, digest)
 		if err != nil {
-			sctx.Log(fmt.Sprintf("GitHub media attachment cache failed for %s, keeping today's rendering: %v", artifactLabel(artifact), err))
+			sctx.Log(fmt.Sprintf("GitHub media attachment cache failed for %s, keeping today's rendering: %v", artifact.label, err))
 			continue
 		}
 		if found {
-			attached[artifact.Path] = cached.URL
-			sctx.Log(fmt.Sprintf("reused GitHub media attachment for %s", artifactLabel(artifact)))
+			attached[artifact.path] = cached.URL
+			sctx.Log(fmt.Sprintf("reused GitHub media attachment for %s", artifact.label))
 			continue
 		}
 		pending = append(pending, pendingUpload{artifact: artifact, digest: digest})
@@ -156,20 +169,20 @@ func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm
 	}
 	for _, item := range pending {
 		artifact := item.artifact
-		url, err := uploader.UploadUserAsset(sctx.Ctx, artifact.Path)
+		url, err := uploader.UploadUserAsset(sctx.Ctx, artifact.path)
 		if err != nil {
-			sctx.Log(fmt.Sprintf("GitHub media attachment failed for %s, keeping today's rendering: %v", artifactLabel(artifact), err))
+			sctx.Log(fmt.Sprintf("GitHub media attachment failed for %s, keeping today's rendering: %v", artifact.label, err))
 			continue
 		}
 		if strings.TrimSpace(url) == "" {
-			sctx.Log(fmt.Sprintf("GitHub media attachment returned no URL for %s, keeping today's rendering", artifactLabel(artifact)))
+			sctx.Log(fmt.Sprintf("GitHub media attachment returned no URL for %s, keeping today's rendering", artifact.label))
 			continue
 		}
-		if err := sctx.DB.UpsertRunMediaAttachment(sctx.Run.ID, db.RunMediaAttachment{Path: artifact.Path, Digest: item.digest, URL: url}); err != nil {
-			sctx.Log(fmt.Sprintf("warning: failed to cache GitHub media attachment for %s: %v", artifactLabel(artifact), err))
+		if err := sctx.DB.UpsertRunMediaAttachment(sctx.Run.ID, db.RunMediaAttachment{Path: artifact.path, Digest: item.digest, URL: url}); err != nil {
+			sctx.Log(fmt.Sprintf("warning: failed to cache GitHub media attachment for %s: %v", artifact.label, err))
 		}
-		attached[artifact.Path] = url
-		sctx.Log(fmt.Sprintf("uploaded GitHub media attachment for %s", artifactLabel(artifact)))
+		attached[artifact.path] = url
+		sctx.Log(fmt.Sprintf("uploaded GitHub media attachment for %s", artifact.label))
 	}
 	if len(attached) == 0 {
 		return nil
@@ -190,28 +203,18 @@ func mediaFileDigest(path string) (string, error) {
 	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
 }
 
-func skipMediaAttach(artifact types.TestArtifact) string {
-	if artifact.URL != "" {
+func skipMediaAttach(media testartifact.Media) string {
+	if media.URL != "" {
 		return "artifact already has a remote URL"
 	}
-	if artifact.Path == "" {
+	if media.Path == "" {
 		return "no local path"
 	}
-	if !isImageArtifact(artifact.Kind, artifact.Path) && !isVideoArtifact(artifact.Kind, artifact.Path) {
-		return "not an image or video"
-	}
-	if !filepath.IsAbs(artifact.Path) {
+	if !filepath.IsAbs(media.Path) {
 		return "path is not an absolute evidence file"
 	}
-	if _, err := github.ValidateUserAsset(artifact.Path); err != nil {
+	if _, err := github.ValidateUserAsset(media.Path); err != nil {
 		return err.Error()
 	}
 	return ""
-}
-
-func artifactLabel(artifact types.TestArtifact) string {
-	if label := strings.TrimSpace(artifact.Label); label != "" {
-		return label
-	}
-	return filepath.Base(artifact.Path)
 }

@@ -1285,7 +1285,7 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On GitHub.com/GHEC, supported image and video artifacts are also uploaded when the PR is rendered; see `attach_media` below.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On GitHub.com/GHEC, supported image and video artifacts declared as showing `ui` or `chart` are also uploaded when the PR is rendered; see `attach_media` below.
 
 |      |          |
 | ---- | -------- |
@@ -1294,7 +1294,7 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On 
 | Field                         | Type     | Default                  | Description                                                                |
 | ----------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
 | `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence artifacts to the repository's orphan evidence branch |
-| `test.evidence.attach_media`  | `bool`   | `true`                   | Upload image and video evidence to GitHub user-attachments when the PR is rendered |
+| `test.evidence.attach_media`  | `bool`   | `true`                   | Upload eligible `ui`/`chart` image and video evidence to GitHub user-attachments when the PR is rendered |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
 | `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
 | `test.evidence.commit_message` | `string` | `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})` | Subject template for evidence-branch commits |
@@ -1303,9 +1303,9 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On 
 | `test.evidence.max_runs`      | `int`    | `200`                    | How many run directories survive regardless of age; `0` disables the bound |
 
 The test step always collects evidence outside the worktree, so artifacts never enter the branch under validation.
-On GitHub.com and GitHub Enterprise Cloud, image and video artifacts that pass GitHub's attach rules (png, jpg, jpeg, gif, webp, svg, mp4, mov, webm; images at most 10 MiB and videos at most 100 MiB) are uploaded to GitHub user-attachments when the PR body is rendered, unless `attach_media` is false and `store_in_repo` is also false.
-The testing section embeds the returned image markdown or bare video URL so remote reviewers can open the media. Upload is fail-closed: any error, unsupported type, oversize file, GitHub Enterprise Server, non-GitHub forge, or GitHub App/Actions token keeps today's rendering (a commit-pinned evidence-branch link if `store_in_repo` published, otherwise a local path) rather than a dead attachment URL. Text artifacts stay inlined as they are today.
-When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
+On GitHub.com and GitHub Enterprise Cloud, image and video artifacts declared as showing `ui` or `chart` (see the Test step's [artifact kinds](/no-mistakes/reference/pipeline-steps/#test)) that pass GitHub's attach rules (png, jpg, jpeg, gif, webp, svg, mp4, mov, webm; images at most 10 MiB and videos at most 100 MiB) are uploaded to GitHub user-attachments when the PR body is rendered, unless `attach_media` is false and `store_in_repo` is also false.
+The testing section embeds the returned image markdown or bare video URL so remote reviewers can open the media. Upload is fail-closed: any error, unsupported type, oversize file, GitHub Enterprise Server, non-GitHub forge, or GitHub App/Actions token keeps today's rendering (a commit-pinned evidence-branch link if `store_in_repo` published, otherwise a local path) rather than a dead attachment URL. Terminal captures and media without a declared `shows` are never uploaded or shown in the PR. Log artifacts are never inlined or linked from the PR: it shows only a line and byte summary of each. When `store_in_repo` is false, those files remain local.
+When `store_in_repo` is true for a GitHub repository, the PR step copies the whole evidence directory, including logs and withheld media, onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links eligible artifacts from the pull request body.
 Published text files get the same home-directory redaction as the PR title and body, so a path under the operator's home is committed with that part rewritten to `~`. Binary and visual artifacts are published as written, and the local evidence files are never changed.
 When both `attach_media` and `store_in_repo` apply, the testing section carries the user-attachments embed in addition to the commit-pinned git link.
 The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.

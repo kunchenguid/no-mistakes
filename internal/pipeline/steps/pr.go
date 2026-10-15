@@ -412,8 +412,9 @@ func describePR(pr *scm.PR) string {
 // publication redaction boundary. New template bodies and author-preserving
 // updates use composeOwnedPRContent, which calls the same redactPRContent owner
 // before stamping its integrity guard. This covers every source: agent-authored
-// prose, extracted user intent, findings, fix summaries, step errors, artifact
-// paths, artifact captions, and captured output embedded from evidence files.
+// prose, extracted user intent, findings, fix summaries, step errors, media
+// artifact paths, and text-quote artifacts. Log artifacts never get this far:
+// internal/testartifact reduces them to a machine summary before rendering.
 //
 // The scrub deliberately sits here rather than at each of those sources. A
 // per-source scrub is a set of guards that has to be complete to work, and the
@@ -813,10 +814,9 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 
 // assemblePRBody composes the final PR body from its sections and keeps it
 // within bodyLimit (0 = unlimited). When the full body overruns the cap it
-// first drops the Testing section - the only one that embeds artifact and log
-// file contents and is therefore effectively unbounded - so the body sheds
-// log dumps while keeping its Intent, What Changed, Risk, and Pipeline
-// narrative intact. prependIntentSectionWithinLimit is the final backstop
+// first drops the Testing section - the one built from agent-reported
+// evidence (summaries, quotes, and media) - so the body sheds evidence while
+// keeping its Intent, What Changed, Risk, and Pipeline narrative intact. prependIntentSectionWithinLimit is the final backstop
 // when even that core overruns.
 func assemblePRBodyFull(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
 	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD, provider)
@@ -922,9 +922,9 @@ func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD st
 // decides which attestation comment a body consumer sees.
 //
 // pipelineMD carries the run's real attestation. Every other component -
-// what-changed, intent, risk, and above all the Testing section, which embeds
-// artifact captions, captured output, and whole files read from the evidence
-// directory - is agent-derived and can carry a foreign attestation comment. The
+// what-changed, intent, risk, and the Testing section's summary, tested
+// details, and text quotes - is agent-derived and can carry a foreign
+// attestation comment. The
 // compliance check (.github/actions/require-no-mistakes/verify.py) scans the raw
 // body and binds the FIRST marker it finds to the PR head, so a foreign copy
 // placed before pipelineMD fails a PR the pipeline did produce.

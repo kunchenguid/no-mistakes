@@ -7,6 +7,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testartifact"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -103,6 +104,10 @@ func unmarshalRequiredTestFindings(raw []byte, findings *Findings) error {
 			return fmt.Errorf("artifact %d missing label", i)
 		}
 	}
+	// What each artifact may publish is the typed evidence contract's call,
+	// held as strictly as the scenarios below: an unknown kind or a malformed
+	// posture goes back to the analyzer instead of being guessed at render.
+	issues := testartifact.Validate(findings.Artifacts)
 	// The scenario list and the verdict are the step's live-validation
 	// contract, held exactly as strictly as the evidence fields above: a turn
 	// that omits them has not answered the question the step was asked, and
@@ -114,7 +119,6 @@ func unmarshalRequiredTestFindings(raw []byte, findings *Findings) error {
 	if len(*payload.Scenarios) == 0 {
 		return fmt.Errorf("empty scenarios array - report at least one named scenario; if nothing could be driven, return it as untested with a reason")
 	}
-	var issues []string
 	for i, scenario := range *payload.Scenarios {
 		issues = append(issues, scenarioContractIssues(i, scenario)...)
 	}
@@ -263,13 +267,14 @@ var testFindingsSchema = json.RawMessage(`{
 			"items": {
 				"type": "object",
 				"properties": {
-					"kind": {"type": "string", "description": "artifact type such as screenshot, gif, image, video, log, command-output, or other"},
-					"label": {"type": "string"},
-					"path": {"type": "string", "description": "artifact file path: repository-relative for a file inside the repository, or the full path to the file in this run's evidence directory for an evidence file. Do not report a path from anywhere else on the machine."},
-					"url": {"type": "string", "description": "artifact URL when available"},
-					"content": {"type": "string", "description": "short log, command output, or textual artifact content to show inline"}
+					"kind": {"type": "string", "enum": ["log", "text-quote", "image", "video"], "description": "log: a local log or command-output file whose bytes are not shown in the pull request - the pull request shows only a line and byte summary of it; text-quote: a short excerpt shown inline, set in content; image or video: media, which must declare shows"},
+					"shows": {"type": "string", "enum": ["ui", "chart", "terminal"], "description": "image and video only: what the media shows. ui and chart media are shown in the pull request; terminal captures (a screenshot or recording of a terminal or log) are not shown in the pull request"},
+					"label": {"type": "string", "description": "short description of the evidence, without paths, endpoints, or identifiers"},
+					"path": {"type": "string", "description": "artifact file path for a log, image, or video: repository-relative for a file inside the repository, or the full path to the file in this run's evidence directory for an evidence file. Do not report a path from anywhere else on the machine."},
+					"url": {"type": "string", "description": "image or video URL when available"},
+					"content": {"type": "string", "description": "text-quote only: the short excerpt to show inline, at most 20 lines and 1024 bytes, with no paths, endpoints, identifiers, credentials, provider closing references, code fences, PR fold headings, or no-mistakes attestation or appendix markers"}
 				},
-				"required": ["label"]
+				"required": ["kind", "label"]
 			}
 		},
 		"scenarios": {

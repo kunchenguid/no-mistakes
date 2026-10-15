@@ -176,9 +176,9 @@ func TestPRAppendixModes_TemplatePublication(t *testing.T) {
 				}
 			}
 			insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{
-				TestingSummary: "inlined evidence log",
+				TestingSummary: "inlined evidence quote",
 				Artifacts: []types.TestArtifact{{
-					Kind:    "log",
+					Kind:    "text-quote",
 					Label:   "renderer log",
 					Content: strings.Repeat("evidence log line\n", 8),
 				}},

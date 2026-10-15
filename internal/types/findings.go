@@ -263,12 +263,17 @@ func NoLiveExercisableScenarios(scenarios []TestScenario) bool {
 }
 
 // TestArtifact describes evidence produced by the test step for human review.
+// internal/testartifact owns what each kind means and what it may publish;
+// this is only the stored record. Shows is additive, so a record written
+// before it existed decodes with it empty, which that package treats as an
+// undeclared image or video whose content is withheld from PR rendering.
 type TestArtifact struct {
 	Kind    string `json:"kind,omitempty"`
 	Label   string `json:"label"`
 	Path    string `json:"path,omitempty"`
 	URL     string `json:"url,omitempty"`
 	Content string `json:"content,omitempty"`
+	Shows   string `json:"shows,omitempty"`
 }
 
 type findingWire struct {
