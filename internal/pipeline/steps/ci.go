@@ -471,6 +471,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	behindBaseTip := ""
 	mergeabilityBlockedReason := ""
 	var timeoutFailingChecks []scm.CheckTarget
+	lastCheckHeadSHA := sctx.Run.HeadSHA
 	timeoutMergeConflict := false
 	lastMonitorLog := ""
 	consecutiveCheckErrs := 0
@@ -614,6 +615,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		// Check CI status - wait for all checks to complete before escalating
 		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, err := host.GetChecks(ctx, pr)
+		if pr.HeadSHA != lastCheckHeadSHA {
+			timeoutFailingChecks = nil
+			lastCheckHeadSHA = pr.HeadSHA
+		}
 		if err != nil && pluginPollFailsStep(err) {
 			clearCIMonitorReady(sctx)
 			return nil, err
@@ -631,8 +636,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// the wait, and the readiness signal is cleared because the
 				// previous observation was for a different head.
 				consecutiveCheckErrs = 0
-				// Earlier failures describe a different head and cannot be
-				// carried into this head's idle-timeout finding.
 				timeoutFailingChecks = nil
 				lastMonitorLog = logCIMonitorStatus(sctx, fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err), lastMonitorLog)
 			} else {

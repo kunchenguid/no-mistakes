@@ -572,23 +572,98 @@ func TestCIResumedRepairStaleHeadErrorWaitsInsteadOfFailing(t *testing.T) {
 
 // A merge conflict is observed from mergeability, not from checks, so an empty
 // check snapshot must not stop its repair.
-func TestCIResumedRepairEmptySnapshotStillRepairsMergeConflict(t *testing.T) {
+func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: json.RawMessage(`{"summary":"no code change","code_change_needed":false}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"},{"id":"ci-2","severity":"error","description":"conflict","action":"auto-fix","category":"ci-merge-conflict"}]}`
-	host := &completionSnapshotHost{}
-	if _, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"}); err != nil {
-		t.Fatal(err)
+	for _, category := range []string{types.FindingCategoryCIMergeConflict, types.FindingCategoryCIBehindBase} {
+		for _, snapshot := range []string{"empty", "partial", "stale-head", "head-error"} {
+			t.Run(category+"/"+snapshot, func(t *testing.T) {
+				t.Parallel()
+				dir, baseSHA, headSHA := setupGitRepo(t)
+				ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(`{"summary":"no code change","code_change_needed":false}`)}, nil
+				}}
+				sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				selected := Findings{Summary: "rejected-check-marker", Items: []Finding{
+					{ID: "check-1", Severity: types.FindingSeverityError, Category: types.FindingCategoryCICheck, Check: "test", Description: "rejected-check-marker"},
+					{ID: "check-2", Severity: types.FindingSeverityError, Category: types.FindingCategoryCICheck, Check: "lint", Description: "rejected-check-marker"},
+					{ID: "rebase", Severity: types.FindingSeverityError, Category: category, Description: "selected-rebase-marker"},
+				}}
+				encoded, err := json.Marshal(selected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sctx.PreviousFindings = string(encoded)
+				host := &completionSnapshotHost{}
+				switch snapshot {
+				case "partial":
+					host.checks = []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}
+				case "stale-head":
+					host.observedHead = "other-head"
+				case "head-error":
+					host.err = scm.ErrHeadChanged
+				}
+				outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(ag.calls) != 1 {
+					t.Fatalf("agent calls = %d, want one rebase repair", len(ag.calls))
+				}
+				prompt := ag.calls[0].Prompt
+				if strings.Contains(prompt, "rejected-check-marker") || strings.Contains(prompt, `"check":"test"`) || strings.Contains(prompt, `"check":"lint"`) {
+					t.Fatalf("prompt includes rejected check findings:\n%s", prompt)
+				}
+				if !strings.Contains(prompt, "Findings to address") || !strings.Contains(prompt, "selected-rebase-marker") {
+					t.Fatalf("prompt lost selected rebase finding:\n%s", prompt)
+				}
+				if outcome != nil && strings.Contains(outcome.Findings, "rejected-check-marker") {
+					t.Fatalf("repair outcome retained rejected check: %#v", outcome)
+				}
+			})
+		}
 	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("agent calls = %d, want the merge-conflict repair to run once", len(ag.calls))
-	}
-	if strings.Contains(ag.calls[0].Prompt, "failing checks: test") {
-		t.Fatalf("prompt still targets the unconfirmed check:\n%s", ag.calls[0].Prompt)
+}
+
+func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
+	t.Parallel()
+	for _, withRejectedCheck := range []bool{false, true} {
+		t.Run(fmt.Sprint(withRejectedCheck), func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(`{"summary":"human decision needed","code_change_needed":false}`)}, nil
+			}}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			checks := []scm.Check{{Name: "Greptile Review", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketPass, App: "greptile-apps"}}
+			selected := ciObservationFindings(ciIssues{provider: scm.ProviderGitHub, checks: checks, greenBots: true, botComments: []scm.ReviewComment{
+				{Author: "greptile-apps[bot]", Path: "feature.txt", Line: 1, Body: "selected-bot-comment"},
+			}})
+			if len(selected.Items) != 1 || selected.Items[0].CheckID != "github-check-run:42" {
+				t.Fatalf("green comment finding = %+v", selected.Items)
+			}
+			if withRejectedCheck {
+				selected.Items = append(selected.Items, Finding{ID: "failed", Category: types.FindingCategoryCICheck, Check: "test", Description: "rejected-check-marker"})
+			}
+			encoded, err := json.Marshal(selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sctx.PreviousFindings = string(encoded)
+			host := &completionSnapshotHost{checks: checks}
+			outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ag.calls) != 1 {
+				t.Fatalf("agent calls = %d, want selected green bot comment repaired", len(ag.calls))
+			}
+			if !strings.Contains(ag.calls[0].Prompt, "selected-bot-comment") || strings.Contains(ag.calls[0].Prompt, "rejected-check-marker") {
+				t.Fatalf("incorrect selected findings in prompt:\n%s", ag.calls[0].Prompt)
+			}
+			if outcome == nil || !outcome.NeedsApproval {
+				t.Fatalf("outcome = %#v, want no-change decision parked", outcome)
+			}
+		})
 	}
 }
 
