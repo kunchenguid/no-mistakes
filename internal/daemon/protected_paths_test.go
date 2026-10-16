@@ -24,7 +24,7 @@ type protectedPathPushRetryStep struct {
 }
 
 func TestProtectedPathRefusalCancellationCleanup(t *testing.T) {
-	for _, action := range []string{"new_push", "cancel_run", "abort_response"} {
+	for _, action := range []string{"new_push", "cancel_run", "abort_response", "abort_response_with_reason"} {
 		t.Run(action, func(t *testing.T) {
 			p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
 				return []pipeline.Step{protectedPathCommitStep{step: &steps.PushStep{}}}
@@ -71,6 +71,12 @@ func TestProtectedPathRefusalCancellationCleanup(t *testing.T) {
 				if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: result.RunID, Step: types.StepPush, Action: types.ActionAbort}, nil); err != nil {
 					t.Fatal(err)
 				}
+			case "abort_response_with_reason":
+				// The recorded reason follows the abort text on the step, which
+				// must still read as an explicit operator abort.
+				if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: result.RunID, Step: types.StepPush, Action: types.ActionAbort, ApprovalReason: "protected edit rejected"}, nil); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var run *db.Run
 			deadline = time.Now().Add(15 * time.Second)
@@ -86,6 +92,9 @@ func TestProtectedPathRefusalCancellationCleanup(t *testing.T) {
 					t.Fatalf("run did not become terminal: %+v", run)
 				}
 				time.Sleep(10 * time.Millisecond)
+			}
+			if action == "abort_response_with_reason" && (run.Error == nil || !strings.Contains(*run.Error, "protected edit rejected")) {
+				t.Fatalf("run error = %v, want the operator's reason recorded", run.Error)
 			}
 			workDir := p.WorktreeDir(repo.ID, result.RunID)
 			if action == "new_push" {

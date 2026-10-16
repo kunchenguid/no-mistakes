@@ -280,18 +280,19 @@ no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional g
 no-mistakes axi respond --action fix --findings F1,F2 --ignore F3
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
 no-mistakes axi respond --action skip
+no-mistakes axi respond --action abort --reason "why the gate is rejected"
 no-mistakes axi respond --run <id> --action approve
 ```
 
 | Flag             | Type     | Default       | Description                                                          |
 | ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
-| `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
+| `--action`       | `string` | (none)        | `approve`, `fix`, `skip`, or `abort`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
 | `--run`          | `string` | current-branch active run | Answer the gate of this run ID from any directory, without resolving the current branch or worktree |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix with `--action fix`               |
 | `--ignore`       | `string` | (none)        | Comma-separated finding IDs to decline with `--action fix`; see the accounting rules below |
 | `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`            |
-| `--reason`       | `string` | (none)        | Operator's exception explanation for Test approval only              |
+| `--reason`       | `string` | (none)        | Operator's reason: optional exception explanation for a Test approval, required with `--action abort` |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
 | `--wait`         | `duration` | `8m`        | Maximum time for pre-drive reads and post-response driving before the caller must reattach |
@@ -308,6 +309,16 @@ The step retains its findings and exit code, and the reason is durable local evi
 Revalidation, a new fix round, or skipping the step clears that current-step approval so a later result cannot inherit it.
 This is separate from the configured-command waiver and trusted repository opt-in used by [PR enforcement](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation); neither that policy nor approval authority changes.
 `--instructions` remains fix guidance, not an approval-reason input.
+
+`--action abort` rejects the parked gate and is the same gate-level abort the executor already has, now reachable from the agent surface.
+It requires `--reason`, so a rejection is never recorded without the operator's explanation.
+The gate's round is recorded as declined, the step fails with `aborted by user: <reason>`, and the run ends `failed` with that text in its error, so the reason is durable in the run and step records and shown by `axi status`.
+No fix round starts, and nothing is approved, skipped, pushed, or merged. Saved commits, findings, and evidence stay available, but the failed run removes its run worktree, so uncommitted edits in it (for example a refused protected-path edit) are lost: save anything you need before aborting.
+The output leads with a `rejected:` object naming the `run`, `step`, and `reason`, followed by the terminal run object and its `branch_sync` object; follow that object's `next_action` to return branch custody through the supported recovery path.
+It is refused, with nothing recorded, when the ID names no run, when the run is not parked at a gate, or when `--step` names a step other than the parked one.
+This is a human decision, not a way around a finding.
+It is not [`axi abort`](#no-mistakes-axi-abort), which cancels the active run wherever it is and records the run as `cancelled`.
+A running daemon older than this CLI only ever accepted a reason for a Test approval, so it refuses the abort reason and nothing is recorded; the CLI reports that the daemon is too old, and names reviewing active runs with `no-mistakes daemon status` and restarting with `no-mistakes daemon restart --force` before sending the abort again, because a plain restart refuses while pipeline runs are active and the parked gate's own run is one of them.
 
 Without `--run`, the response goes to the active run on the current branch, and `no active run to respond to` is the error when it has none. With `--run <id>`, the response goes to exactly that run, from any directory and without resolving a repository, branch, or worktree; every other flag behaves as it does in context. The call is refused with a nonzero exit when the ID names no run (`no run with id <id>`) or the run is not parked at a gate (`run <id> is not parked at a gate`), and it never answers a different run. [`axi status --run`](#no-mistakes-axi-status) stays inspection-only for bare commands and names `axi respond --run <id>` as the response command. An empty or whitespace-only `--run` value is refused with a nonzero exit and never selects the current branch's run. Every follow-up command a `--run` call prints carries `--run <id>`; a command with no `--run` form (`axi answer`, `axi run`, `axi sync`, `rerun`) is named as one that must run in the clone of that run.
 

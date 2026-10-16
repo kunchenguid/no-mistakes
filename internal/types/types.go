@@ -23,10 +23,30 @@ const (
 )
 
 const (
+	// StepErrorAbortedByUser is the error a step records when an operator
+	// aborts it at its approval gate. A reason, when given, follows it after
+	// ": " (see UserAbortStepError).
+	StepErrorAbortedByUser = "aborted by user"
+
 	RunCancelReasonAbortedByUser  = "cancelled: aborted by user"
 	RunCancelReasonSuperseded     = "cancelled: superseded by new push"
 	RunCIMonitorInterruptedReason = "ci monitor interrupted by daemon restart; PR remains open"
 )
+
+// UserAbortStepError returns the error recorded on a step an operator aborted
+// at its gate, with their reason when one was given.
+func UserAbortStepError(reason string) string {
+	if reason = strings.TrimSpace(reason); reason != "" {
+		return StepErrorAbortedByUser + ": " + reason
+	}
+	return StepErrorAbortedByUser
+}
+
+// IsUserAbortStepError reports whether a step error records an operator's gate
+// abort, with or without a reason.
+func IsUserAbortStepError(stepError string) bool {
+	return stepError == StepErrorAbortedByUser || strings.HasPrefix(stepError, StepErrorAbortedByUser+": ")
+}
 
 // Terminal reports whether the run has reached a final state the daemon will
 // never advance further. This is the single source of truth for "is this run

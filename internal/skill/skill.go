@@ -204,6 +204,9 @@ Run the pipeline and decide on its findings as they come up:
 
    # skip this step
    no-mistakes axi respond --action skip
+
+   # reject this gate (only when the user has decided it must fail)
+   no-mistakes axi respond --action abort --reason "<why the gate is rejected>"
    ` + "```" + `
    With ` + "`--action fix`" + `, declines are explicit: every finding the gate shows
    must be listed in ` + "`--findings`" + ` or ` + "`--ignore`" + `, and a response that
@@ -235,6 +238,9 @@ Run the pipeline and decide on its findings as they come up:
     - ` + "`--reason \"the operator's explanation\"`" + ` records an explicitly authorized Test exception with ` + "`--step test --action approve`" + `.
       This does not grant approval authority; escalate ask-user findings as before.
       Without a reason, Test approval remains effective; an approval past a failing command, ` + "`no-go`" + `, or ` + "`inconclusive`" + ` verdict is reported as an exception with no operator reason supplied.
+    - ` + "`--action abort --reason \"<why>\"`" + ` records the user's decision that the parked gate fails. The reason is required.
+      The round is recorded as declined, no fix round starts, nothing is approved, pushed or merged, and the run ends ` + "`failed`" + ` with the reason in the step and run errors. Saved commits, findings and evidence stay available, but the run's worktree is removed, so uncommitted edits in it are lost.
+      Follow the output's ` + "`branch_sync.next_action`" + ` to get the branch back. It is the user's call, never yours: do not send it to get past a finding, and it is not ` + "`axi abort`" + `, which cancels the run instead.
     - ` + "`--add-finding '<json>'`" + ` (with ` + "`--action fix`" + `) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in

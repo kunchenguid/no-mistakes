@@ -185,14 +185,14 @@ func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, fin
 // the fix agent runs; ignoreFindingIDs are the findings the response declines,
 // and a fix response must account for every finding the gate shows unless an
 // earlier round of this step already decided it (see splitFixResponse).
-// approvalReason is only accepted for Test approval and is never passed to a
-// fix agent.
+// approvalReason is only accepted for Test approval and for an abort, where it
+// is the operator's recorded reason; it is never passed to a fix agent.
 //
 // It returns the dispositions the response recorded, which the daemon echoes
 // to the caller.
 func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string) (RespondDispositions, error) {
-	if approvalReason != "" && (step != types.StepTest || action != types.ActionApprove) {
-		return RespondDispositions{}, fmt.Errorf("an approval reason applies only to Test approval")
+	if approvalReason != "" && action != types.ActionAbort && (step != types.StepTest || action != types.ActionApprove) {
+		return RespondDispositions{}, fmt.Errorf("a reason applies only to Test approval or an abort")
 	}
 	// The gate loop dispatches on the action, so an unknown one is refused
 	// here while the gate stays parked for a valid response, rather than
@@ -729,11 +729,12 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
 	case types.ActionAbort:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
-		if dbErr := e.db.FailStep(gate.stepResult.ID, "aborted by user", duration); dbErr != nil {
+		abortError := types.UserAbortStepError(response.approvalReason)
+		if dbErr := e.db.FailStep(gate.stepResult.ID, abortError, duration); dbErr != nil {
 			slog.Warn("failed to mark recovered step as aborted", "step", gate.step.Name(), "error", dbErr)
 		}
-		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "aborted by user", &duration)
-		return e.failRun(run, repo, fmt.Errorf("step %s: aborted by user", gate.step.Name()), ctx)
+		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", abortError, &duration)
+		return e.failRun(run, repo, fmt.Errorf("step %s: %s", gate.step.Name(), abortError), ctx)
 	// A fix round and an answered review question re-enter the same step the
 	// same way; only the bookkeeping before it and the state handed in differ.
 	// An answer is not a verdict, so it records no selection on the round -
@@ -1565,11 +1566,12 @@ rounds:
 
 			case types.ActionAbort:
 				e.recordDeclinedRound(currentRoundID, effectiveFindings, stepName, roundNum)
-				if dbErr := e.db.FailStep(sr.ID, "aborted by user", executionMS); dbErr != nil {
+				abortError := types.UserAbortStepError(response.approvalReason)
+				if dbErr := e.db.FailStep(sr.ID, abortError, executionMS); dbErr != nil {
 					slog.Warn("failed to mark step as aborted", "step", stepName, "error", dbErr)
 				}
-				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "aborted by user", &executionMS)
-				return false, "", fmt.Errorf("step %s: aborted by user", stepName)
+				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", abortError, &executionMS)
+				return false, "", fmt.Errorf("step %s: %s", stepName, abortError)
 
 			case types.ActionFix:
 				telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(effectiveFindings, response.findingIDs), 0))

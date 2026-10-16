@@ -1022,7 +1022,7 @@ func protectedPathCleanupReason(d *db.DB, run *db.Run) string {
 		if step.Status == types.StepStatusSkipped && (step.Error == nil || *step.Error != types.RunCIMonitorInterruptedReason) {
 			continue
 		}
-		if step.Error != nil && *step.Error == "aborted by user" {
+		if step.Error != nil && types.IsUserAbortStepError(*step.Error) {
 			continue
 		}
 		return fmt.Sprintf("run %s has an unresolved protected-path refusal; preserving index and worktree", run.ID)

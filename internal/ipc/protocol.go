@@ -268,7 +268,7 @@ type RespondParams struct {
 	IgnoreFindingIDs []string             `json:"ignore_finding_ids,omitempty"`
 	Instructions     map[string]string    `json:"instructions,omitempty"`
 	AddedFindings    []types.Finding      `json:"added_findings,omitempty"`
-	ApprovalReason   string               `json:"approval_reason,omitempty"` // Test approval only
+	ApprovalReason   string               `json:"approval_reason,omitempty"` // Test approval, or the reason recorded with an abort
 }
 
 // CancelRunParams cancels an active pipeline run.
