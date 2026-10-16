@@ -13,7 +13,9 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -148,7 +150,7 @@ func TestSyncHelpExposesGuardedModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
-		for _, want := range []string{"fast-forward", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves"} {
+		for _, want := range []string{"fast-forward", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves", "--prepare-rewritten"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%v help missing %q:\n%s", args, want, out)
 			}
@@ -1308,6 +1310,146 @@ func TestAxiSyncAdoptPublishedRefusesUnpublishedRebase(t *testing.T) {
 	}
 }
 
+// prepareUnpublishedRewrite builds the exact supported declaration shape: a
+// completed run has an exact successful push binding, the configured target
+// and private gate lane still equal that head, and a clean local rebase has
+// deliberately rewritten it without publishing the replacement.
+func prepareUnpublishedRewrite(t *testing.T) (cliSyncFixture, string, string) {
+	t.Helper()
+	f := newCLISyncFixture(t)
+	if out, err := executeCmd("axi", "sync"); err != nil {
+		t.Fatalf("synchronize published head: %v\n%s", err, out)
+	}
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos, err := database.GetRepos()
+	if err != nil || len(repos) != 1 {
+		t.Fatalf("load registered repo: count=%d err=%v", len(repos), err)
+	}
+	repo := repos[0]
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(repo.ID)
+	cliGit(t, filepath.Dir(gateDir), "init", "--bare", gateDir)
+	cliGit(t, f.local, "push", gateDir, "HEAD:refs/heads/feature/sync")
+
+	cliGit(t, f.local, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(f.local, "file.txt"), []byte("new base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "file.txt")
+	cliGit(t, f.local, "commit", "-m", "advance main")
+	cliGit(t, f.local, "checkout", "feature/sync")
+	if _, err := git.Run(context.Background(), f.local, "rebase", "main"); err == nil {
+		t.Fatal("fixture rebase unexpectedly needed no deliberate conflict resolution")
+	}
+	if err := os.WriteFile(filepath.Join(f.local, "file.txt"), []byte("resolved feature on new base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "file.txt")
+	cliGit(t, f.local, "-c", "core.editor=true", "rebase", "--continue")
+	rebased := cliGit(t, f.local, "rev-parse", "HEAD")
+	if rebased == f.pushed {
+		t.Fatal("fixture did not rewrite the published head")
+	}
+	return f, gateDir, rebased
+}
+
+func TestAxiSyncPrepareRewrittenSubmissionAnchorsOldLaneAndAdmitsRebasedHead(t *testing.T) {
+	f, gateDir, rebased := prepareUnpublishedRewrite(t)
+
+	if _, err := gate.ReconcileStaleBranch(context.Background(), gateDir, f.local, "feature/sync", rebased, ""); err == nil || !strings.Contains(err.Error(), "at-risk commit(s)") {
+		t.Fatalf("ordinary rewritten submission should refuse before the declaration, got %v", err)
+	}
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	for _, want := range []string{"safety: rewrite_preparation_required", "code: prepare_rewritten_submission", "command: no-mistakes axi sync --prepare-rewritten"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("rewrite status missing %q:\n%s", want, status)
+		}
+	}
+
+	out, err := executeCmd("axi", "sync", "--prepare-rewritten")
+	if err != nil {
+		t.Fatalf("prepare rewritten submission: %v\n%s", err, out)
+	}
+	for _, want := range []string{"safety: rewrite_prepared", "changed: true", "code: run_pipeline"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("preparation output missing %q:\n%s", want, out)
+		}
+	}
+	anchor := custody.RecoveryRef(f.runID)
+	if got := cliGit(t, gateDir, "rev-parse", anchor); got != f.pushed {
+		t.Fatalf("recovery anchor = %s, want exact published head %s", got, f.pushed)
+	}
+	if got := cliGit(t, gateDir, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("preparation moved gate lane to %s, want %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.remote, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("preparation moved configured target to %s, want %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != rebased {
+		t.Fatalf("preparation moved local HEAD to %s, want %s", got, rebased)
+	}
+
+	reconciliation, err := gate.ReconcileStaleBranch(context.Background(), gateDir, f.local, "feature/sync", rebased, "")
+	if err != nil {
+		t.Fatalf("prepared rewritten submission still refused: %v", err)
+	}
+	if !reconciliation.Reconciled || reconciliation.PreviousHead != f.pushed {
+		t.Fatalf("reconciliation = %#v, want archived published head %s", reconciliation, f.pushed)
+	}
+	if got := cliGit(t, gateDir, "rev-parse", reconciliation.ArchivedTag); got != f.pushed {
+		t.Fatalf("abandonment archive = %s, want %s", got, f.pushed)
+	}
+	cliGit(t, f.local, "push", gateDir, "HEAD:refs/heads/feature/sync")
+	if got := cliGit(t, gateDir, "rev-parse", "refs/heads/feature/sync"); got != rebased {
+		t.Fatalf("prepared fresh submission landed %s, want rebased head %s", got, rebased)
+	}
+}
+
+func TestAxiSyncPrepareRewrittenSubmissionRefusesChangedPublishedHead(t *testing.T) {
+	f, gateDir, rebased := prepareUnpublishedRewrite(t)
+	writer := filepath.Join(t.TempDir(), "writer")
+	cliGit(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.remote, writer)
+	cliGit(t, writer, "config", "user.name", "Writer")
+	cliGit(t, writer, "config", "user.email", "writer@example.com")
+	cliGit(t, writer, "checkout", "feature/sync")
+	cliGit(t, writer, "commit", "--allow-empty", "-m", "unexpected published head")
+	cliGit(t, writer, "push", "origin", "HEAD:refs/heads/feature/sync")
+	unexpected := cliGit(t, writer, "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "sync", "--prepare-rewritten")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("changed published head should refuse, got %#v\n%s", err, out)
+	}
+	if !strings.Contains(out, "safety: blocked_prepare_rewritten_published_head_mismatch") {
+		t.Fatalf("refusal did not name the changed target:\n%s", out)
+	}
+	if got := cliGit(t, f.remote, "rev-parse", "refs/heads/feature/sync"); got != unexpected {
+		t.Fatalf("refusal moved configured target to %s, want %s", got, unexpected)
+	}
+	if got := cliGit(t, gateDir, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("refusal moved gate lane to %s, want %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != rebased {
+		t.Fatalf("refusal moved local HEAD to %s, want %s", got, rebased)
+	}
+	if _, exists, err := git.DirectRefTarget(context.Background(), gateDir, custody.RecoveryRef(f.runID)); err != nil || exists {
+		t.Fatalf("refusal created recovery anchor: exists=%v err=%v", exists, err)
+	}
+}
+
 // TestAxiSyncAdoptPublishedIgnoresForeignWorktreeOrigin proves the published
 // head is verified against the registered push target and not against whatever
 // the invoking worktree calls origin. Here the rebase is published only to an
@@ -1556,13 +1698,17 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 	for _, args := range [][]string{
 		{"sync", "--check", "--recover"},
 		{"sync", "--check", "--adopt-published"},
+		{"sync", "--check", "--prepare-rewritten"},
 		{"sync", "--recover", "--adopt-published"},
+		{"sync", "--recover", "--prepare-rewritten"},
 		{"sync", "--keep-local"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--recover"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--yes"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--check", "--adopt-published"},
+		{"axi", "sync", "--check", "--prepare-rewritten"},
 		{"axi", "sync", "--recover", "--adopt-published"},
+		{"axi", "sync", "--recover", "--prepare-rewritten"},
 		{"axi", "sync", "--keep-local"},
 		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
 	} {
