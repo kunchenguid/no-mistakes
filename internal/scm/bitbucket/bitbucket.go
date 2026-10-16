@@ -159,8 +159,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		args = append(args, "--dest", base)
 	}
 	args = append(args, h.repoArgs()...)
-	args = append(args, "-o", "json")
-	out, err := h.cmd(ctx, "twg", args...).CombinedOutput()
+	out, err := h.runJSON(ctx, args)
 	if err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests query: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -197,6 +196,26 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	return items[0].toPR(h.repo), nil
 }
 
+// outputSummaryFlag turns off twg's default `--output-summary auto`, which
+// replaces any large result with a short YAML envelope pointing at a file.
+// That envelope has no JSON delimiter, so a large PR list or statuses payload
+// would otherwise fail every parse below with "invalid JSON output".
+const outputSummaryFlag = "--output-summary"
+
+// jsonArgs appends the flags every twg call whose stdout is parsed as JSON
+// needs: `-o json` plus `--output-summary none` so twg prints the raw
+// payload instead of a summary envelope.
+func jsonArgs(args []string) []string {
+	return append(args, "-o", "json", outputSummaryFlag, "none")
+}
+
+// runJSON runs a twg subcommand and returns its combined output. Every
+// JSON-parsed twg call goes through it so a new call cannot forget the
+// output flags; callers must not pass their own `-o` or `--output-summary`.
+func (h *Host) runJSON(ctx context.Context, args []string) ([]byte, error) {
+	return h.cmd(ctx, "twg", jsonArgs(args)...).CombinedOutput()
+}
+
 // runWithDescription runs a twg bb pull-requests command whose description is
 // supplied out-of-band through a temp file referenced by
 // `--description-file <path>`, and returns the command's combined output.
@@ -219,7 +238,7 @@ func (h *Host) runWithDescription(ctx context.Context, body string, buildArgs fu
 	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("close PR description temp file: %w", err)
 	}
-	out, err := h.cmd(ctx, "twg", buildArgs(path)...).CombinedOutput()
+	out, err := h.runJSON(ctx, buildArgs(path))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -240,7 +259,7 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 			args = append(args, "--draft")
 		}
 		args = append(args, h.repoArgs()...)
-		return append(args, "-o", "json")
+		return args
 	})
 	if err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests create: %w", err)
@@ -272,7 +291,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 			args = append(args, "--title", content.Title)
 		}
 		args = append(args, h.repoArgs()...)
-		return append(args, "-o", "json")
+		return args
 	})
 	if err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests update: %w", err)
@@ -291,8 +310,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 func (h *Host) getPR(ctx context.Context, number string, extraArgs ...string) (bitbucketPullRequest, []byte, error) {
 	args := append([]string{"bb", "pull-requests", "get", number}, extraArgs...)
 	args = append(args, h.repoArgs()...)
-	args = append(args, "-o", "json")
-	out, err := h.cmd(ctx, "twg", args...).CombinedOutput()
+	out, err := h.runJSON(ctx, args)
 	if err != nil {
 		return bitbucketPullRequest{}, nil, fmt.Errorf("twg bb pull-requests get: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -431,7 +449,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 // payload itself, sidestepping any dependency on undocumented JSON step
 // shapes for a value that is opaque text either way.
 func (h *Host) fetchPipelineLog(ctx context.Context, buildNumber string) (string, error) {
-	args := []string{"bb", "pipeline", "get", "--pipeline", buildNumber, "--logs", "--failed-steps", "--lines", "0"}
+	args := []string{"bb", "pipeline", "get", "--pipeline", buildNumber, "--logs", "--failed-steps", "--lines", "0", outputSummaryFlag, "none"}
 	args = append(args, h.repoArgs()...)
 	out, err := h.cmd(ctx, "twg", args...).CombinedOutput()
 	if err != nil {

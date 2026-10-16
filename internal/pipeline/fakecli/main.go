@@ -1326,6 +1326,14 @@ func fakeTWGHandler(args []string) {
 		fmt.Fprintln(os.Stderr, "unsupported twg argv:", strings.Join(args, " "))
 		os.Exit(1)
 	}
+	if !fakeTWGOutputSummaryNone(args) {
+		// Real twg defaults to `--output-summary auto` and wraps large
+		// results in a YAML envelope pointing at a file. Emit one whenever the
+		// caller did not opt out, so a call that forgets the flag fails.
+		fmt.Println("summary: output too large to print inline")
+		fmt.Println("file: /tmp/twg-output-summary-fake.json")
+		os.Exit(0)
+	}
 	switch args[1] {
 	case "pull-requests":
 		fakeTWGPullRequests(args[2:])
@@ -1335,6 +1343,13 @@ func fakeTWGHandler(args []string) {
 		fmt.Fprintln(os.Stderr, "unsupported twg bb argv:", strings.Join(args, " "))
 		os.Exit(1)
 	}
+}
+
+// fakeTWGOutputSummaryNone reports whether the invocation carries
+// `--output-summary none`.
+func fakeTWGOutputSummaryNone(args []string) bool {
+	v, ok := fakeCLIFlagValue(args, "--output-summary")
+	return ok && v == "none"
 }
 
 func fakeTWGPRJSON(state bbFakeState) string {

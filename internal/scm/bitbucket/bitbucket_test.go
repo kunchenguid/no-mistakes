@@ -89,7 +89,7 @@ func TestAvailableSucceedsWhenAuthenticated(t *testing.T) {
 
 func TestFindPRMatchesOpenPRForSourceBranch(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests query --source feature --state OPEN --dest main --workspace ws --repo repo -o json": {
+		"twg bb pull-requests query --source feature --state OPEN --dest main --workspace ws --repo repo -o json --output-summary none": {
 			stdout: `[{"id":42,"state":"OPEN","links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/42"}}}]`,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
@@ -105,7 +105,7 @@ func TestFindPRMatchesOpenPRForSourceBranch(t *testing.T) {
 
 func TestFindPRReturnsNilWhenNoneOpen(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json": {stdout: "[]"},
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {stdout: "[]"},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
 
 	pr, err := h.FindPR(context.Background(), "feature", "")
@@ -119,7 +119,7 @@ func TestFindPRReturnsNilWhenNoneOpen(t *testing.T) {
 
 func TestFindPRReturnsErrorOnNonJSONOutput(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json": {stdout: ""},
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {stdout: ""},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
 
 	if _, err := h.FindPR(context.Background(), "feature", ""); err == nil {
@@ -129,7 +129,7 @@ func TestFindPRReturnsErrorOnNonJSONOutput(t *testing.T) {
 
 func TestFindPRReturnsErrorOnMalformedJSON(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json": {stdout: `[{"id":`},
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {stdout: `[{"id":`},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
 
 	if _, err := h.FindPR(context.Background(), "feature", ""); err == nil {
@@ -142,7 +142,7 @@ func TestFindPRReturnsErrorOnNullListing(t *testing.T) {
 	// not be read as "no open PRs" - that reading would risk the PR step
 	// creating a duplicate PR.
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json": {stdout: "null"},
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {stdout: "null"},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
 
 	if _, err := h.FindPR(context.Background(), "feature", ""); err == nil {
@@ -152,7 +152,7 @@ func TestFindPRReturnsErrorOnNullListing(t *testing.T) {
 
 func TestFindPRReturnsCLIError(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json": {stderr: "boom", code: 1},
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {stderr: "boom", code: 1},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
 
 	if _, err := h.FindPR(context.Background(), "feature", ""); err == nil {
@@ -176,7 +176,7 @@ func TestCreatePRWritesDescriptionToFileAndParsesResult(t *testing.T) {
 	}
 	assertDescriptionRoundTrips(t, rec, body)
 	got := strings.Join(append([]string{rec[0].name}, rec[0].args...), " ")
-	if !strings.Contains(got, "--title T --source feature") || !strings.Contains(got, "--dest main") || !strings.Contains(got, "--workspace ws --repo repo -o json") {
+	if !strings.Contains(got, "--title T --source feature") || !strings.Contains(got, "--dest main") || !strings.Contains(got, "--workspace ws --repo repo -o json --output-summary none") {
 		t.Fatalf("command = %q, missing expected flags", got)
 	}
 	if strings.Contains(got, "--draft") {
@@ -230,7 +230,7 @@ func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 
 func TestGetPRStateNormalizesState(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 42 --workspace ws --repo repo -o json": {
+		"twg bb pull-requests get 42 --workspace ws --repo repo -o json --output-summary none": {
 			stdout: `{"id":42,"state":"MERGED","links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/42"}}}`,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
@@ -246,7 +246,7 @@ func TestGetPRStateNormalizesState(t *testing.T) {
 
 func TestGetChecksReadsHydratedStatuses(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json": {
+		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json --output-summary none": {
 			stdout: `{"id":42,"_statuses":[{"key":"build","state":"FAILED","url":"https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/42"}]}`,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
@@ -265,10 +265,10 @@ func TestGetChecksReadsHydratedStatuses(t *testing.T) {
 
 func TestFetchFailedCheckTargetLogsFetchesFailedStepsPerBuild(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json": {
+		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json --output-summary none": {
 			stdout: `{"id":42,"source":{"commit":{"hash":"abc123"}},"_statuses":[{"name":"build","state":"FAILED","url":"https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/1"}]}`,
 		},
-		"twg bb pipeline get --pipeline 1 --logs --failed-steps --lines 0 --workspace ws --repo repo": {
+		"twg bb pipeline get --pipeline 1 --logs --failed-steps --lines 0 --output-summary none --workspace ws --repo repo": {
 			stdout: "error log output\n",
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
@@ -284,7 +284,7 @@ func TestFetchFailedCheckTargetLogsFetchesFailedStepsPerBuild(t *testing.T) {
 
 func TestFetchFailedCheckTargetLogsRefusesWhenPRSourceCommitIsStale(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json": {
+		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json --output-summary none": {
 			stdout: `{"id":42,"source":{"commit":{"hash":"oldcommit"}},"_statuses":[{"name":"build","state":"FAILED","url":"https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/1"}]}`,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
@@ -336,7 +336,7 @@ func TestLatestStatusesPrefersCreatedOnOverUpdatedOnForOrdering(t *testing.T) {
 
 func TestGetChecksReportsTheNewerStatusRegardlessOfHydrationOrder(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json": {
+		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json --output-summary none": {
 			stdout: `{"id":42,"_statuses":[` +
 				`{"key":"build","state":"SUCCESSFUL","updated_on":"2026-01-01T00:00:00Z"},` +
 				`{"key":"build","state":"FAILED","updated_on":"2026-01-02T00:00:00Z"}` +
@@ -463,4 +463,95 @@ func TestBBHelperProcess(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestEveryJSONCallPassesOutputSummaryNone(t *testing.T) {
+	const flags = "-o json --output-summary none"
+	pr := &scm.PR{Number: "42"}
+	prJSON := `{"id":42,"title":"T","description":"D","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/42"}}}`
+	tests := []struct {
+		name string
+		resp string
+		run  func(h *Host) error
+		want string
+	}{
+		{"FindPR", "[" + prJSON + "]", func(h *Host) error { _, err := h.FindPR(context.Background(), "feature", "main"); return err },
+			"bb pull-requests query --source feature --state OPEN --dest main --workspace ws --repo repo " + flags},
+		{"CreatePR", prJSON, func(h *Host) error {
+			_, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: "B"})
+			return err
+		}, "--workspace ws --repo repo " + flags},
+		{"UpdatePR", prJSON, func(h *Host) error {
+			_, err := h.UpdatePR(context.Background(), pr, scm.PRContent{Title: "T", Body: "B"})
+			return err
+		}, "--workspace ws --repo repo " + flags},
+		{"GetPRState", prJSON, func(h *Host) error { _, err := h.GetPRState(context.Background(), pr); return err },
+			"bb pull-requests get 42 --workspace ws --repo repo " + flags},
+		{"GetChecks", prJSON, func(h *Host) error { _, err := h.GetChecks(context.Background(), pr); return err },
+			"bb pull-requests get 42 --statuses --workspace ws --repo repo " + flags},
+		{"GetPRContent", prJSON, func(h *Host) error { _, err := h.GetPRContent(context.Background(), pr); return err },
+			"bb pull-requests get 42 --workspace ws --repo repo " + flags},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var rec []capturedCmd
+			h := New(capturingCmdFactory(&rec, bbTestResponse{stdout: tt.resp}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+			if err := tt.run(h); err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
+			if len(rec) != 1 {
+				t.Fatalf("recorded %d commands, want 1", len(rec))
+			}
+			got := strings.Join(rec[0].args, " ")
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("args = %q, want to contain %q", got, tt.want)
+			}
+			if strings.Count(got, "--output-summary") != 1 {
+				t.Fatalf("args = %q, want exactly one --output-summary", got)
+			}
+		})
+	}
+}
+
+func TestFetchFailedLogsPassOutputSummaryNone(t *testing.T) {
+	var rec []capturedCmd
+	h := New(capturingCmdFactory(&rec, bbTestResponse{stdout: "log text"}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+	if _, err := h.fetchPipelineLog(context.Background(), "1"); err != nil {
+		t.Fatalf("fetchPipelineLog() error = %v", err)
+	}
+	got := strings.Join(rec[0].args, " ")
+	if !strings.Contains(got, "--output-summary none") {
+		t.Fatalf("args = %q, want --output-summary none", got)
+	}
+}
+
+func TestFindPRParsesLargePRList(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 1; i <= 200; i++ {
+		if i > 1 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":%d,"state":"OPEN","title":"PR %d","description":%q,"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/%d"}}}`,
+			i, i, strings.Repeat("long description ", 200), i)
+	}
+	b.WriteString("]")
+	if b.Len() < 500_000 {
+		t.Fatalf("fixture is only %d bytes; want a large payload", b.Len())
+	}
+	h := New(capturingCmdFactory(new([]capturedCmd), bbTestResponse{stdout: b.String()}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+	pr, err := h.FindPR(context.Background(), "feature", "")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "1" {
+		t.Fatalf("FindPR() = %+v, want first PR", pr)
+	}
+}
+
+func TestFindPRRejectsSummaryEnvelope(t *testing.T) {
+	h := New(capturingCmdFactory(new([]capturedCmd), bbTestResponse{stdout: "summary: output too large\nfile: /tmp/x.json\n"}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+	if _, err := h.FindPR(context.Background(), "feature", ""); err == nil {
+		t.Fatal("expected an error for a YAML summary envelope")
+	}
 }
