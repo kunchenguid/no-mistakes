@@ -182,14 +182,14 @@ Previous test findings to address:
 		}
 	}
 	if repairCut != nil {
-		return testAgentTimeoutOutcome(sctx, repairCut, startHead, baselineFindings, baselineSummary, baselineExitCode, 0), nil
+		return testAgentTimeoutOutcome(sctx, repairCut, startHead, baselineFindings, baselineSummary, baselineExitCode, ""), nil
 	}
 	evidenceBudget, err := evidenceTurnBudget(sctx, baseSHA)
 	if err != nil {
 		return nil, err
 	}
-	if evidenceBudget.bound > 0 {
-		sctx.Log(fmt.Sprintf("no runtime surface: all %d changed paths are documentation, tests, or CI workflows; bounding the evidence turn to %s (test_agent_timeout %s)", evidenceBudget.paths, evidenceBudget.bound, testAgentTimeout(sctx)))
+	if evidenceBudget.bounded() {
+		sctx.Log(fmt.Sprintf("no runtime surface: all %d changed paths are documentation, tests, or CI workflows; bounding the evidence turn's %s to %s", evidenceBudget.paths, evidenceBudget.shortenedSettings(), noSurfaceEvidenceBound))
 	}
 
 	evidenceDir := testEvidenceDir(sctx)
@@ -320,7 +320,7 @@ Rules:
 	findings, err := runTestAnalyzer(sctx, evidencePrompt, evidenceBudget.timeout, evidenceBudget.working)
 	if err != nil {
 		if errors.Is(err, errTestAgentTimeout) {
-			outcome := testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineSummary, baselineExitCode, evidenceBudget.bound)
+			outcome := testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineSummary, baselineExitCode, evidenceBudget.cutSetting(err))
 			outcome.FixSummary = fixSummary
 			return outcome, nil
 		}
@@ -639,17 +639,51 @@ const noSurfaceEvidenceBound = 15 * time.Minute
 type testEvidenceBudget struct {
 	timeout time.Duration
 	working time.Duration
-	// bound is noSurfaceEvidenceBound when it shortened the configured budget,
-	// else zero; paths is how many changed paths it was derived from.
-	bound time.Duration
-	paths int
+	// shortTimeout and shortWorking record which configured limit
+	// noSurfaceEvidenceBound shortened; paths is how many changed paths the
+	// bound was derived from.
+	shortTimeout bool
+	shortWorking bool
+	paths        int
+}
+
+func (b testEvidenceBudget) bounded() bool { return b.shortTimeout || b.shortWorking }
+
+// shortenedSettings names the configured limits the bound shortened.
+func (b testEvidenceBudget) shortenedSettings() string {
+	var names []string
+	if b.shortTimeout {
+		names = append(names, "test_agent_timeout")
+	}
+	if b.shortWorking {
+		names = append(names, "test_agent_working_timeout")
+	}
+	return strings.Join(names, " and ")
+}
+
+// cutSetting returns the configured setting whose shortened limit cut the
+// turn, or "" when the cut came from a limit the bound left alone - such as
+// the operator's own silent budget when only the still-working cap was
+// shortened - so that cut is reported as the ordinary budget cut it is.
+func (b testEvidenceBudget) cutSetting(err error) string {
+	switch {
+	case b.shortTimeout:
+		// The silent budget is the bound, and a cap shortened alongside it
+		// is no longer than it, so any cut is the bound.
+		return b.shortenedSettings()
+	case b.shortWorking && (b.working <= b.timeout || pipeline.AgentBudgetCutAtWorkingCap(err)):
+		// Either the bound removed the still-working extension outright, or
+		// the turn ran into the shortened cap.
+		return "test_agent_working_timeout"
+	}
+	return ""
 }
 
 func (b testEvidenceBudget) promptSection() string {
-	if b.bound == 0 {
+	if !b.bounded() {
 		return ""
 	}
-	return fmt.Sprintf("\nEvery changed path is documentation, a test, or a CI workflow, so this evidence turn is bounded to %s. If it does not finish in time, the step parks for a human decision; it never passes.\n", b.bound)
+	return fmt.Sprintf("\nEvery changed path is documentation, a test, or a CI workflow, so this evidence turn is bounded to at most %s. If it does not finish in time, the step parks for a human decision; it never passes.\n", noSurfaceEvidenceBound)
 }
 
 // evidenceTurnBudget returns the configured Test budget, shortened to
@@ -677,12 +711,13 @@ func evidenceTurnBudget(sctx *pipeline.StepContext, baseSHA string) (testEvidenc
 	if len(changed) == 0 || slices.ContainsFunc(changed, hasRuntimeSurface) {
 		return budget, nil
 	}
-	timeout := min(budget.timeout, noSurfaceEvidenceBound)
-	working := min(budget.working, noSurfaceEvidenceBound)
-	if timeout == budget.timeout && working == budget.working {
-		return budget, nil
-	}
-	return testEvidenceBudget{timeout: timeout, working: working, bound: noSurfaceEvidenceBound, paths: len(changed)}, nil
+	bounded := budget
+	bounded.timeout = min(budget.timeout, noSurfaceEvidenceBound)
+	bounded.working = min(budget.working, noSurfaceEvidenceBound)
+	bounded.shortTimeout = bounded.timeout < budget.timeout
+	bounded.shortWorking = bounded.working < budget.working
+	bounded.paths = len(changed)
+	return bounded, nil
 }
 
 // hasRuntimeSurface reports whether a changed path can alter the running
@@ -724,10 +759,11 @@ var errTestAgentTimeout = errors.New("test agent timeout")
 // turn is still not used as a successful result. The configured command's
 // result from this execution rides along with its exit code, so approving over
 // a failing command still needs the same waiver as any other Test gate, and a
-// fix round keeps the gate it was answering. A non-zero noSurfaceBound means
-// the cut turn ran under the no-runtime-surface evidence bound, which the
-// finding names together with how to get the full budget back.
-func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead string, baseline []Finding, baselineSummary string, exitCode int, noSurfaceBound time.Duration) *pipeline.StepOutcome {
+// fix round keeps the gate it was answering. A non-empty boundSetting names
+// the configured limit the no-runtime-surface evidence bound shortened and
+// that cut this turn; the finding then names the bound, that setting, and how
+// to get the full budget back. A cut by a limit the bound left alone passes "".
+func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead string, baseline []Finding, baselineSummary string, exitCode int, boundSetting string) *pipeline.StepOutcome {
 	park := answeredTestGate(sctx)
 	cause := "This is a budget or provider-slowness cut, not a code failure."
 	if exitCode != 0 || hasBlockingFindings(park.Items) || park.Verdict == types.TestVerdictNoGo || park.Verdict == types.TestVerdictInconclusive {
@@ -741,12 +777,12 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 			"If the turn was still producing output or running a child process, set or raise test_agent_working_timeout there instead: a turn runs past test_agent_timeout only up to that still-working cap. "+
 			"Respond with fix to spend another budget: a repair turn runs only for selected findings other than this budget cut, then validation re-runs. Or abort and retry after raising the budget.",
 		err, cause, config.DefaultTestAgentTimeout)
-	if noSurfaceBound > 0 {
+	if boundSetting != "" {
 		description = fmt.Sprintf(
-			"Evidence turn bounded: every changed path is documentation, a test, or a CI workflow (no runtime surface), so the Test agent's evidence turn was limited to %s instead of test_agent_timeout, and it did not finish within that bound. "+
+			"Evidence turn bounded: every changed path is documentation, a test, or a CI workflow (no runtime surface), so the Test agent's evidence turn had its %s limited to %s, and it did not finish within that bound. "+
 				"Reported: %v. %s "+
-				"Respond with fix to re-run validation with the full test_agent_timeout budget: a repair turn runs only for selected findings other than this budget cut. Or approve to proceed without that evidence, which records a Test exception, or abort.",
-			noSurfaceBound, err, cause)
+				"Respond with fix to re-run validation with the configured budget: a repair turn runs only for selected findings other than this budget cut. Or approve to proceed without that evidence, which records a Test exception, or abort.",
+			boundSetting, noSurfaceEvidenceBound, err, cause)
 	}
 	items := []Finding{{
 		ID:          types.FindingIDTestAgentTimeout,

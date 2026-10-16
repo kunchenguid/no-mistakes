@@ -453,6 +453,15 @@ func AgentBudgetBound(err error, timeout time.Duration) string {
 	return fmt.Sprintf("after %s", timeout)
 }
 
+// AgentBudgetCutAtWorkingCap reports whether a budget cut came from the
+// still-working cap rather than the silent or stall budget. A caller that
+// shortened only one of the two limits uses it to tell whether its own
+// shortening is what cut the turn.
+func AgentBudgetCutAtWorkingCap(err error) bool {
+	var inv *agentInvocationError
+	return errors.As(err, &inv) && inv.atWorkingCap
+}
+
 func bindAgentDeadline(parent context.Context, timeout, working time.Duration, cause error, activity *agentActivity) (context.Context, context.CancelFunc, *agentBudget) {
 	if parent == nil {
 		parent = context.Background()
@@ -540,18 +549,22 @@ func classifyAgentRun(ctx context.Context, budget *agentBudget, activity *agentA
 	// WithCancelCause, so ctx.Err() is Canceled while Cause is the budget's;
 	// still-working-cap cancels are DeadlineExceeded with that same cause.
 	if budget != nil && errors.Is(cause, budget.cause) {
-		bound := budget.bound(errors.Is(ctx.Err(), context.DeadlineExceeded))
+		deadlineExceeded := errors.Is(ctx.Err(), context.DeadlineExceeded)
+		bound := budget.bound(deadlineExceeded)
+		// Only an extended budget has a separate cap; without one the
+		// deadline that fired is the silent budget itself.
+		atWorkingCap := deadlineExceeded && budget.working > budget.timeout
 		if errors.Is(cause, ErrAgentTimeout) {
-			return diagnoseAgentTimeout("agent timed out "+bound, bound, activity, err, cause)
+			return diagnoseAgentTimeout("agent timed out "+bound, bound, atWorkingCap, activity, err, cause)
 		}
 		// The budget belongs to the caller (a Review or Test invocation).
 		// Keep its cause identity so the caller's own classifier still
 		// matches, and hand it the bound plus the measurement and whatever
 		// the adapter managed to say.
-		return diagnoseAgentTimeout("", bound, activity, err, cause)
+		return diagnoseAgentTimeout("", bound, atWorkingCap, activity, err, cause)
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return diagnoseAgentTimeout("", "", activity, err, cause)
+		return diagnoseAgentTimeout("", "", false, activity, err, cause)
 	}
 	return cause
 }
@@ -561,7 +574,7 @@ func classifyAgentRun(ctx context.Context, budget *agentBudget, activity *agentA
 // adapter reported - a killed native agent's stderr and exit status is the only
 // account of what the process was doing, and dropping it is what made this
 // failure mode undiagnosable in the first place.
-func diagnoseAgentTimeout(prefix, bound string, activity *agentActivity, adapterErr, cause error) error {
+func diagnoseAgentTimeout(prefix, bound string, atWorkingCap bool, activity *agentActivity, adapterErr, cause error) error {
 	parts := make([]string, 0, 3)
 	if prefix != "" {
 		parts = append(parts, prefix)
@@ -571,10 +584,11 @@ func diagnoseAgentTimeout(prefix, bound string, activity *agentActivity, adapter
 		parts = append(parts, clause)
 	}
 	return &agentInvocationError{
-		message: strings.Join(parts, "; "),
-		bound:   bound,
-		cause:   cause,
-		adapter: adapterErr,
+		message:      strings.Join(parts, "; "),
+		bound:        bound,
+		atWorkingCap: atWorkingCap,
+		cause:        cause,
+		adapter:      adapterErr,
 	}
 }
 
@@ -607,9 +621,11 @@ func agentReportClause(err error) string {
 type agentInvocationError struct {
 	message string
 	// bound is which applied budget limit cut the invocation, when one did.
-	bound   string
-	cause   error
-	adapter error
+	bound string
+	// atWorkingCap is set when that limit was the still-working cap.
+	atWorkingCap bool
+	cause        error
+	adapter      error
 }
 
 func (e *agentInvocationError) Error() string { return e.message }

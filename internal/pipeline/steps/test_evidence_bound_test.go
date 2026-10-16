@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -153,6 +155,112 @@ func TestTestStep_NoSurfaceBoundNeverShortensASmallerBudget(t *testing.T) {
 	}
 	if strings.Contains(findings.Items[0].Description, "no runtime surface") {
 		t.Fatalf("a configured budget below the bound was reported as the no-surface bound: %s", findings.Items[0].Description)
+	}
+}
+
+// TestEvidenceBudgetCutSettingNamesOnlyTheLimitThatCut covers the case where
+// the bound shortens only test_agent_working_timeout (for example a 10m silent
+// budget with a 30m still-working cap): a cut by the operator's own silent
+// budget must stay the ordinary budget cut, and only a cut at the shortened
+// cap may claim the no-surface bound. The errors come from the real agent-run
+// seam, so the classification reads the same typed cut the step receives.
+func TestEvidenceBudgetCutSettingNamesOnlyTheLimitThatCut(t *testing.T) {
+	t.Parallel()
+	const silent = 20 * time.Millisecond
+	const workingCap = 80 * time.Millisecond
+	cut := func(t *testing.T, streaming bool) error {
+		t.Helper()
+		ag := &mockAgent{name: "cut", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			tick := time.NewTicker(2 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-tick.C:
+					if streaming {
+						opts.OnChunk("working\n")
+					}
+				}
+			}
+		}}
+		sctx := &pipeline.StepContext{Ctx: context.Background(), Agent: ag}
+		_, err := sctx.RunAgentBudget(sctx.Ctx, silent, workingCap, errTestAgentTimeout, agent.RunOpts{OnChunk: func(string) {}})
+		if !errors.Is(err, errTestAgentTimeout) {
+			t.Fatalf("err = %v, want a Test budget cut", err)
+		}
+		return err
+	}
+	workingOnly := testEvidenceBudget{timeout: silent, working: workingCap, shortWorking: true}
+
+	if got := workingOnly.cutSetting(cut(t, false)); got != "" {
+		t.Fatalf("silent-budget cut with only the cap shortened = %q, want the ordinary budget cut", got)
+	}
+	if got := workingOnly.cutSetting(cut(t, true)); got != "test_agent_working_timeout" {
+		t.Fatalf("cut at the shortened cap = %q, want test_agent_working_timeout", got)
+	}
+	// A cap shortened down to the silent budget no longer extends the turn,
+	// so every cut is the bound's.
+	collapsed := testEvidenceBudget{timeout: silent, working: silent, shortWorking: true}
+	if got := collapsed.cutSetting(cut(t, false)); got != "test_agent_working_timeout" {
+		t.Fatalf("cut with the extension removed by the bound = %q, want test_agent_working_timeout", got)
+	}
+	both := testEvidenceBudget{timeout: silent, working: silent, shortTimeout: true, shortWorking: true}
+	if got := both.cutSetting(cut(t, false)); got != "test_agent_timeout and test_agent_working_timeout" {
+		t.Fatalf("cut with both limits bounded = %q", got)
+	}
+	if got := (testEvidenceBudget{timeout: silent, working: workingCap}).cutSetting(cut(t, true)); got != "" {
+		t.Fatalf("cut of an unbounded turn = %q, want none", got)
+	}
+}
+
+// TestTestAgentTimeoutOutcome_NoSurfaceBoundNamesTheBound checks the park a
+// bounded cut produces: still the ask-user budget-cut finding, but naming the
+// no-runtime-surface bound and the setting it shortened instead of advising a
+// higher test_agent_timeout, which would not help.
+func TestTestAgentTimeoutOutcome_NoSurfaceBoundNamesTheBound(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
+	cut := errors.New("agent run tests timed out at its 15m0s still-working cap")
+	for _, tc := range []struct {
+		setting string
+		want    []string
+		absent  []string
+	}{
+		{
+			setting: "test_agent_working_timeout",
+			want:    []string{"Evidence turn bounded", "no runtime surface", "test_agent_working_timeout limited to " + noSurfaceEvidenceBound.String(), cut.Error(), "Respond with fix to re-run validation with the configured budget"},
+			absent:  []string{"raise test_agent_timeout"},
+		},
+		{
+			setting: "",
+			want:    []string{"The Test agent did not finish within its invocation budget", "raise test_agent_timeout"},
+			absent:  []string{"no runtime surface"},
+		},
+	} {
+		outcome := testAgentTimeoutOutcome(sctx, cut, headSHA, nil, "", 0, tc.setting)
+		if !outcome.NeedsApproval {
+			t.Fatalf("setting %q: outcome does not park", tc.setting)
+		}
+		findings, err := types.ParseFindingsJSON(outcome.Findings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := findings.Items[0]
+		if item.ID != types.FindingIDTestAgentTimeout || item.Action != types.ActionAskUser {
+			t.Fatalf("setting %q: first finding = %+v, want the ask-user budget cut", tc.setting, item)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(item.Description, want) {
+				t.Errorf("setting %q: description missing %q:\n%s", tc.setting, want, item.Description)
+			}
+		}
+		for _, absent := range tc.absent {
+			if strings.Contains(item.Description, absent) {
+				t.Errorf("setting %q: description must not contain %q:\n%s", tc.setting, absent, item.Description)
+			}
+		}
 	}
 }
 
