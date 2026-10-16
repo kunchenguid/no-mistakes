@@ -401,6 +401,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 	}
 
 	s.classifyRelation(ctx, &state, bound, run.BaseSHA, true)
+	s.classifyRewrittenSubmission(ctx, &state, freshRun)
 	return state
 }
 
@@ -1719,6 +1720,17 @@ func (s *Service) PrepareRewrittenSubmission(ctx context.Context) State {
 		return blockedPlan(state, StateRemoteRewritten, "blocked_prepare_rewritten_published_head_mismatch", "the configured push target does not exactly match the recorded published head; no files or refs were changed")
 	}
 
+	liveCtx, cancel = context.WithTimeout(ctx, s.remoteTimeout())
+	live, err = s.runLsRemote(liveCtx, s.workDir(), pushURL, branchRef)
+	cancel()
+	if err != nil || live != published {
+		return blockedPlan(state, StateRemoteRewritten, "blocked_prepare_rewritten_published_head_mismatch", "the configured push target changed while the rewrite was being verified; no files or refs were changed")
+	}
+
+	// Re-read every mutable assumption after the final remote operation. The
+	// checkout, ownership, binding, or configured target may change while that
+	// operation consumes its full timeout; none may receive preparation credit
+	// from a decision made before that window.
 	recheck, recheckRun, recheckOK := s.inspect(ctx)
 	if !recheckOK || recheckRun == nil || recheckRun.ID != run.ID || recheckRun.Status != run.Status ||
 		recheck.State != StateDiverged || recheck.Relation != RelationDiverged ||
@@ -1730,14 +1742,9 @@ func (s *Service) PrepareRewrittenSubmission(ctx context.Context) State {
 		return blockedPlan(recheck, StateDiverged, "blocked_prepare_rewritten_assumptions_changed", "the branch, HEAD, run, or push binding changed while the rewrite was being verified; no files or refs were changed")
 	}
 	currentRepo, err := s.DB.GetRepo(s.Repo.ID)
-	if err != nil || currentRepo == nil || TargetFingerprint(currentRepo.PushURL()) != ptr(run.PushTargetFingerprint) || targetKind(currentRepo) != ptr(run.PushTargetKind) {
+	if err != nil || currentRepo == nil || TargetFingerprint(currentRepo.PushURL()) != ptr(run.PushTargetFingerprint) ||
+		targetKind(currentRepo) != ptr(run.PushTargetKind) || ptr(run.PushRef) != branchRef {
 		return blockedPlan(recheck, StateTargetChanged, "blocked_prepare_rewritten_target_changed", "the configured push target changed while the rewrite was being verified; no files or refs were changed")
-	}
-	liveCtx, cancel = context.WithTimeout(ctx, s.remoteTimeout())
-	live, err = s.runLsRemote(liveCtx, s.workDir(), pushURL, branchRef)
-	cancel()
-	if err != nil || live != published {
-		return blockedPlan(recheck, StateRemoteRewritten, "blocked_prepare_rewritten_published_head_mismatch", "the configured push target changed while the rewrite was being verified; no files or refs were changed")
 	}
 
 	anchorCommand := fmt.Sprintf("create %s %s\n", anchorRef, published)
@@ -1749,7 +1756,7 @@ func (s *Service) PrepareRewrittenSubmission(ctx context.Context) State {
 		return blockedPlan(recheck, StateDiverged, "blocked_prepare_rewritten_assumptions_changed", "the gate lane or create-only recovery anchor changed while the rewrite was being recorded; no files or refs were changed")
 	}
 	prepared, preparedRun, preparedOK := s.inspect(ctx)
-	if !preparedOK || preparedRun == nil || preparedRun.ID != run.ID || prepared.Safety != "rewrite_prepared" {
+	if !preparedOK || preparedRun == nil || preparedRun.ID != run.ID || prepared.Safety != "rewrite_prepared" || prepared.Local.Head != state.Local.Head {
 		prepared.Changed = !anchorExists
 		prepared.Safety = "blocked_prepare_rewritten_assumptions_changed"
 		prepared.Error = fmt.Sprintf("the exact old gate head was recorded at %s, but branch ownership changed before the fresh-run action could be reported; inspect current status before continuing", anchorRef)

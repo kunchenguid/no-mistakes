@@ -1417,6 +1417,27 @@ func TestAxiSyncPrepareRewrittenSubmissionAnchorsOldLaneAndAdmitsRebasedHead(t *
 	}
 }
 
+func TestAxiStatusAndSyncCheckAgreeOnRewrittenSubmissionNextAction(t *testing.T) {
+	prepareUnpublishedRewrite(t)
+
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	check, err := executeCmd("axi", "sync", "--check")
+	if err == nil {
+		t.Fatalf("sync check should report the required preparation as blocking:\n%s", check)
+	}
+	for _, want := range []string{"safety: rewrite_preparation_required", "code: prepare_rewritten_submission", "command: no-mistakes axi sync --prepare-rewritten"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status missing %q:\n%s", want, status)
+		}
+		if !strings.Contains(check, want) {
+			t.Errorf("sync check disagrees with status on %q:\n%s", want, check)
+		}
+	}
+}
+
 func TestAxiSyncPrepareRewrittenSubmissionRefusesChangedPublishedHead(t *testing.T) {
 	f, gateDir, rebased := prepareUnpublishedRewrite(t)
 	writer := filepath.Join(t.TempDir(), "writer")
