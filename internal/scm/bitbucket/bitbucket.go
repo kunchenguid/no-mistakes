@@ -433,12 +433,45 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 func (h *Host) fetchPipelineLog(ctx context.Context, buildNumber string) (string, error) {
 	args := []string{"bb", "pipeline", "get", "--pipeline", buildNumber, "--logs", "--failed-steps", "--lines", "0"}
 	args = append(args, h.repoArgs()...)
-	out, err := h.cmd(ctx, "twg", args...).CombinedOutput()
+	// Stream into a bounded tail instead of CombinedOutput so a huge failed
+	// build log never allocates its whole text in the daemon. The tail is what
+	// matters: the failure is at the end of a log.
+	tail := &tailBuffer{max: maxPipelineLogBytes}
+	cmd := h.cmd(ctx, "twg", args...)
+	cmd.Stdout = tail
+	cmd.Stderr = tail
+	err := cmd.Run()
+	out := strings.TrimSpace(tail.String())
 	if err != nil {
-		return "", fmt.Errorf("twg bb pipeline get --logs: %s: %w", strings.TrimSpace(string(out)), err)
+		return "", fmt.Errorf("twg bb pipeline get --logs: %s: %w", out, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return out, nil
 }
+
+// maxPipelineLogBytes bounds the memory held for one pipeline's failed-step
+// log, matching the 32 KiB budget the CI fixer applies to log evidence.
+const maxPipelineLogBytes = 32 * 1024
+
+// tailBuffer is an io.Writer that retains only the last max bytes written.
+type tailBuffer struct {
+	max int
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) >= t.max {
+		t.buf = append(t.buf[:0], p[len(p)-t.max:]...)
+		return n, nil
+	}
+	if over := len(t.buf) + len(p) - t.max; over > 0 {
+		t.buf = append(t.buf[:0], t.buf[over:]...)
+	}
+	t.buf = append(t.buf, p...)
+	return n, nil
+}
+
+func (t *tailBuffer) String() string { return string(t.buf) }
 
 func prURL(repo RepoRef, prID int, rawURL string) string {
 	if url := strings.TrimSpace(rawURL); url != "" {
