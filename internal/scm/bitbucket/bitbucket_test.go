@@ -282,6 +282,45 @@ func TestFetchFailedCheckTargetLogsFetchesFailedStepsPerBuild(t *testing.T) {
 	}
 }
 
+func TestFetchFailedCheckTargetLogsKeepsOnlyTheTailOfHugeOutput(t *testing.T) {
+	// ~100 KB of output, over twice maxPipelineLogBytes, ending in the failure.
+	huge := strings.Repeat("noise line\n", 9000) + "FINAL FAILURE\n"
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json": {
+			stdout: `{"id":42,"source":{"commit":{"hash":"abc123"}},"_statuses":[{"name":"build","state":"FAILED","url":"https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/1"}]}`,
+		},
+		"twg bb pipeline get --pipeline 1 --logs --failed-steps --lines 0 --workspace ws --repo repo": {
+			stdout: huge,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+
+	logs, err := h.FetchFailedCheckLogs(context.Background(), &scm.PR{Number: "42"}, "feature", "abc123def456", []string{"build"})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckLogs() error = %v", err)
+	}
+	if len(huge) <= 2*maxPipelineLogBytes {
+		t.Fatalf("fixture too small: %d bytes", len(huge))
+	}
+	if len(logs) > maxPipelineLogBytes {
+		t.Fatalf("len(logs) = %d, want <= %d", len(logs), maxPipelineLogBytes)
+	}
+	if !strings.HasSuffix(logs, "FINAL FAILURE") {
+		t.Fatalf("logs lost the tail of the output: ...%q", logs[max(0, len(logs)-40):])
+	}
+}
+
+func TestTailBufferRetainsOnlyTheLastBytes(t *testing.T) {
+	tail := &tailBuffer{max: 8}
+	for _, chunk := range []string{"abc", "defg", "hijklmnopqrstuv", "wx"} {
+		if n, err := tail.Write([]byte(chunk)); err != nil || n != len(chunk) {
+			t.Fatalf("Write(%q) = %d, %v", chunk, n, err)
+		}
+	}
+	if got := tail.String(); got != "qrstuvwx" {
+		t.Fatalf("tail = %q, want %q", got, "qrstuvwx")
+	}
+}
+
 func TestFetchFailedCheckTargetLogsRefusesWhenPRSourceCommitIsStale(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
 		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json": {
