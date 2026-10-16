@@ -598,6 +598,7 @@ no-mistakes sync --recover
 no-mistakes sync --recover --keep-local
 no-mistakes sync --bind-archive-ref refs/heads/archive/<name>
 no-mistakes sync --adopt-published
+no-mistakes sync --prepare-rewritten
 ```
 
 | Flag                 | Type     | Default | Description                                                     |
@@ -608,8 +609,9 @@ no-mistakes sync --adopt-published
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact keep-local recovery evidence without changing Git refs |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
+| `--prepare-rewritten` | `bool`  | `false` | Record an intentional unpublished rewrite by preserving the exact previously published gate head before a fresh run (see [`axi sync`](#no-mistakes-axi-sync)) |
 
-Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` and `--adopt-published` also prompt before their guarded changes. Rewritten-remote recovery confirms that it will anchor the superseded head and rebind the recorded push binding without moving the worktree. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`.
+Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover`, `--adopt-published`, and `--prepare-rewritten` also prompt before their guarded changes. Rewritten-remote recovery confirms that it will anchor the superseded head and rebind the recorded push binding without moving the worktree. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
