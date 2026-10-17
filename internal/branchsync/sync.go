@@ -2734,7 +2734,17 @@ func samePath(a, b string) bool {
 		}
 		return abs
 	}
-	return resolve(a) == resolve(b)
+	if resolve(a) == resolve(b) {
+		return true
+	}
+	// Spellings that differ only in letter case name one directory on a
+	// case-insensitive volume, and the filesystem is the authority on that.
+	infoA, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	infoB, err := os.Stat(b)
+	return err == nil && os.SameFile(infoA, infoB)
 }
 
 func targetKind(repo *db.Repo) string {
