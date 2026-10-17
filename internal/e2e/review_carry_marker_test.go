@@ -156,7 +156,7 @@ func TestReviewCarriedFindingsAreMarkedOnTheGateAndPRBody(t *testing.T) {
 		return ""
 	}
 	for needle, want := range map[string]string{
-		"Cache entry never expires":      "carried from round 1, not cleared: file not in reviewed_paths",
+		"Cache entry never expires":       "carried from round 1, not cleared: file not in reviewed_paths",
 		"Service leaks a file descriptor": "carried from round 1, not cleared: new finding in the same file",
 		"Notes typo the operator spotted": "added by the operator at round 1, not cleared: file not in reviewed_paths",
 	} {
