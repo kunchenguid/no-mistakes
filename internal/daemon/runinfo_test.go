@@ -57,6 +57,50 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	}
 }
 
+func TestRunToInfoCarriesReviewApprovedHead(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted-head", "base-head")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	run, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("reload run: %v", err)
+	}
+	info := runToInfo(d, run, nil)
+	if info.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("review-approved head = %#v, want omitted before Review records one", info.ReviewApprovedHeadSHA)
+	}
+
+	const approved = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, approved); err != nil {
+		t.Fatalf("record approval: %v", err)
+	}
+	if err := d.UpdateRunHeadSHA(run.ID, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"); err != nil {
+		t.Fatalf("advance head: %v", err)
+	}
+	run, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("reload approved run: %v", err)
+	}
+	info = runToInfo(d, run, nil)
+	if info.ReviewApprovedHeadSHA == nil || *info.ReviewApprovedHeadSHA != approved {
+		t.Fatalf("review-approved head = %#v, want %s", info.ReviewApprovedHeadSHA, approved)
+	}
+	if info.HeadSHA == approved {
+		t.Fatalf("head stayed at the approved commit after a later advance")
+	}
+}
+
 func TestRunToInfoKeepsCIOverrideReasonCISpecific(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

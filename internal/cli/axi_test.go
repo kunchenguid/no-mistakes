@@ -133,6 +133,71 @@ func TestWriteRunObjectShape(t *testing.T) {
 	}
 }
 
+func TestRunObjectRendersReviewedHead(t *testing.T) {
+	const (
+		approved = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		moved    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+
+	matched := runView{
+		ID:                    "run-1",
+		Branch:                "feature/x",
+		Status:                string(types.RunRunning),
+		HeadSHA:               approved,
+		ReviewApprovedHeadSHA: approved,
+	}
+	out := axiDoc(runObjectField(matched))
+	for _, want := range []string{
+		"  head_sha: " + approved + "\n",
+		"  reviewed_head_sha: " + approved + "\n",
+		"  head_reviewed: true\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("matching head missing %q in:\n%s", want, out)
+		}
+	}
+
+	unapproved := matched
+	unapproved.ReviewApprovedHeadSHA = "  "
+	out = axiDoc(runObjectFieldWithKey("other_branch_run", unapproved))
+	if strings.Contains(out, "reviewed_head_sha") || strings.Contains(out, "head_reviewed") {
+		t.Errorf("run with no recorded approval should omit both fields:\n%s", out)
+	}
+	if !strings.Contains(out, "other_branch_run:\n") {
+		t.Errorf("unapproved render should keep its object key:\n%s", out)
+	}
+
+	movedHead := matched
+	movedHead.HeadSHA = moved
+	approvedSHA := approved
+	fromIPC := runViewFromIPC(&ipc.RunInfo{
+		ID:                    matched.ID,
+		Branch:                matched.Branch,
+		Status:                types.RunRunning,
+		HeadSHA:               moved,
+		ReviewApprovedHeadSHA: &approvedSHA,
+	})
+	fromDB := runViewFromDB(&db.Run{
+		ID:                    matched.ID,
+		Branch:                matched.Branch,
+		Status:                types.RunRunning,
+		HeadSHA:               moved,
+		ReviewApprovedHeadSHA: &approvedSHA,
+	}, nil, nil)
+	for _, rv := range []runView{movedHead, fromIPC, fromDB} {
+		out = axiDoc(runObjectField(rv))
+		for _, want := range []string{
+			"  head_sha: " + moved + "\n",
+			"  reviewed_head_sha: " + approved + "\n",
+			"  head_reviewed: false\n",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("moved head missing %q in:\n%s", want, out)
+			}
+		}
+	}
+}
+
 func TestRunObjectRendersCombinedHousekeepingAttribution(t *testing.T) {
 	rv := runView{
 		ID:      "run-1",
