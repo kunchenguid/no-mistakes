@@ -182,6 +182,16 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 		return fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Count the actual JSON encoding, including its newline delimiter: Scanner
+	// needs that delimiter inside MaxFrameBytes, and escaping/duplicated guidance
+	// can make a request much larger than its source file.
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	if size := len(encoded) + 1; size > MaxFrameBytes {
+		return fmt.Errorf("send %s request: encoded IPC frame is %d bytes, exceeds the %d-byte limit", method, size, MaxFrameBytes)
+	}
 	if err := c.encoder.Encode(req); err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}

@@ -279,6 +279,8 @@ no-mistakes axi respond --action approve
 no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional guidance"
 no-mistakes axi respond --action fix --findings F1,F2 --ignore F3
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
+no-mistakes axi respond --action fix --findings F1 --instructions-file ./guidance.md
+no-mistakes axi respond --action fix --add-finding-file ./finding.json
 no-mistakes axi respond --action skip
 no-mistakes axi respond --step review --action complete-coverage
 no-mistakes axi respond --run <id> --action approve
@@ -291,11 +293,15 @@ no-mistakes axi respond --run <id> --action approve
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix with `--action fix`               |
 | `--ignore`       | `string` | (none)        | Comma-separated finding IDs to decline with `--action fix`; see the accounting rules below |
-| `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`            |
+| `--instructions` | `string` | (none)        | Fix guidance; `-` reads stdin to EOF; exclusive with `--instructions-file` |
+| `--instructions-file` | `string` | (none) | Read fix guidance from a file; exclusive with `--instructions` |
 | `--reason`       | `string` | (none)        | Operator's exception explanation for Test approval only              |
-| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
+| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix; `-` reads stdin to EOF; exclusive with `--add-finding-file` |
+| `--add-finding-file` | `string` | (none) | Read JSON finding object from a file; exclusive with `--add-finding` |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
 | `--wait`         | `duration` | `8m`        | Maximum time for pre-drive reads and post-response driving before the caller must reattach |
+
+Prefer the file flags for text containing backticks, quotes, or newlines: they bypass shell expansion and preserve the input bytes through the response, including trailing newlines. File paths are relative to the caller's working directory and literal (a file named `-` is not stdin). Only the inline form with value `-` reads stdin; at most one input can read stdin per response. Each file/stdin input must be nonempty, not whitespace-only, and valid UTF-8; files must be regular and readable. The file/stdin readers reuse the bounded intent transport (49,122 bytes). The complete encoded request, including JSON escaping, guidance repeated for selected findings, and the newline delimiter, must fit the 1 MiB IPC frame limit; larger requests are refused before sending with their encoded size and limit. Inline text other than `-` retains its existing behavior. Both file flags require `--action fix`.
 
 Declines are explicit. With `--action fix`, every finding the gate shows must appear in `--findings` or `--ignore`; a response that leaves one out is refused with the unaccounted IDs named and the gate stays parked, so a partial selection can never silently decline the findings it omitted. An ID in both lists, or an ID the gate does not show, is refused the same way. A finding a previous response for the same step already decided may be omitted to keep that decision, including when recovery parks the same round again. Naming a finding previously chosen to fix in `--ignore` is refused too, because reverting an applied fix is out of scope for a gate response. The validation fails closed on the state it reads: if the gate's findings or this step's earlier decisions cannot be read, the response is refused, the gate stays parked, and the refusal names what could not be read. See [Finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) for how these decisions are stored and carried into later rounds.
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -68,6 +69,41 @@ func readAxiIntent(r io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return validateAxiIntentSize(data)
+}
+
+// readAxiIntentContext keeps stdin-backed AXI inputs within the command's
+// cancellation and wait deadline. Closing a closable reader is what unblocks
+// an in-flight pipe read when the context ends.
+func readAxiIntentContext(ctx context.Context, r io.Reader) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	readDone := make(chan result, 1)
+	go func() {
+		data, err := readAxiIntent(r)
+		readDone <- result{data: data, err: err}
+	}()
+
+	select {
+	case res := <-readDone:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if res.err != nil {
+			return nil, res.err
+		}
+		return res.data, nil
+	case <-ctx.Done():
+		if closer, ok := r.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, ctx.Err()
+	}
+}
+
+func validateAxiIntentSize(data []byte) ([]byte, error) {
 	if len(data) > maxAxiRunIntentBytes {
 		return nil, fmt.Errorf("input exceeds the %d-byte intent transport limit", maxAxiRunIntentBytes)
 	}

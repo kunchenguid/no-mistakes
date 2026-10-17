@@ -252,6 +252,7 @@ Run the pipeline and decide on its findings as they come up:
     - `--reason "the operator's explanation"` records an explicitly authorized Test exception with `--step test --action approve`.
       This does not grant approval authority; escalate ask-user findings as before.
       Without a reason, Test approval remains effective; an approval past a failing command, `no-go`, or `inconclusive` verdict is reported as an exception with no operator reason supplied.
+    - Prefer `--instructions-file PATH` and `--add-finding-file PATH` for text containing backticks, quotes, or newlines. Write the exact text to a file and pass its path, without shell substitution. Alternatively `--instructions -` or `--add-finding -` reads stdin to EOF (only one stdin input per response). Each file flag is exclusive with its inline flag; empty or whitespace-only file/stdin input is rejected.
     - `--add-finding '<json>'` (with `--action fix`) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in

@@ -521,8 +521,11 @@ func hangSubscribe(ctx context.Context, _ json.RawMessage) (ipc.StreamFunc, erro
 
 func startIPCServer(t *testing.T, srv *ipc.Server, socketPath string) {
 	t.Helper()
+	if err := srv.Listen(socketPath); err != nil {
+		t.Fatalf("listen for fake daemon: %v", err)
+	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve(socketPath) }()
+	go func() { errCh <- srv.ServeReady() }()
 	t.Cleanup(func() {
 		srv.Close()
 		select {
@@ -531,7 +534,6 @@ func startIPCServer(t *testing.T, srv *ipc.Server, socketPath string) {
 			t.Error("fake daemon did not stop")
 		}
 	})
-	dialReady(t, socketPath).Close()
 }
 
 func dialReady(t *testing.T, socketPath string) *ipc.Client {
