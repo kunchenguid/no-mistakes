@@ -1137,7 +1137,7 @@ A per-repo [`commit.trailers`](/no-mistakes/reference/repo-config/#committrailer
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine add checks, lower command scheduling priority, add review and documentation guidance, or apply ticket conventions without adding settings to that repository.
+This lets one machine add checks, lower command scheduling priority, add review, documentation, and live-validation guidance, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -1180,9 +1180,9 @@ repository_overrides:
 For each field, a non-empty trusted repository value wins over the matching machine-local value. Leaving either unset retains existing behavior; an unset appendix defaults to `full`.
 These fields are available only under `repository_overrides`, not as machine-wide PR settings. `pr.publish_intent` remains trusted-repository-only.
 
-#### Machine-local review and documentation guidance
+#### Machine-local review, documentation, and test guidance
 
-A matching entry can add review rules and documentation policy for that one repository, without committing anything to it:
+A matching entry can add review rules, documentation policy, and a live-validation runbook for that one repository, without committing anything to it:
 
 ```yaml
 repository_overrides:
@@ -1195,14 +1195,19 @@ repository_overrides:
     document:
       instructions: |
         Configuration keys are owned by docs/reference/config.md.
+    test:
+      instructions: |
+        Never install, launch, or test on a physical device; drive the emulator only.
 ```
 
 `review.path_instructions` behaves like the [global list](#reviewpath_instructions): its rules render in their own labeled section after the global rules and before the repository's trusted rules, and they count toward the same combined limits.
 `document.instructions` is added to the document step's prompt in a labeled section before the repository's trusted [`document.instructions`](/no-mistakes/reference/repo-config/#documentinstructions), and like that field it augments the built-in placement policy and cannot weaken it.
-Both are additive only: the repository's trusted values still apply in full.
-Under `review` only `path_instructions` is accepted, and under `document` only `instructions`; settings that could weaken a gate, such as `no_ci`, `allow_repo_commands`, or `pr.base_branch`, are not accepted here.
+`test.instructions` is added to the Test step's repair and evidence prompts in a labeled section before the repository's trusted [`test.instructions`](/no-mistakes/reference/repo-config/#testinstructions) runbook.
+All three are additive only: the repository's trusted values still apply in full, and a pushed branch can supply none of them.
+Under `review` only `path_instructions` is accepted, under `document` only `instructions`, and under `test` only `instructions`; settings that could weaken a gate, such as `no_ci`, `allow_repo_commands`, or `pr.base_branch`, are not accepted here.
+Changes apply to the next run, and to a run recovered after a daemon restart, which re-reads this file.
 
-Eval replay cases store no remote URL, so a replay does not apply a matching entry's review or documentation guidance.
+Eval replay cases store no remote URL, so a replay does not apply a matching entry's review, documentation, or test guidance.
 
 #### Machine-local commands
 
