@@ -208,6 +208,22 @@ func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// stepGitRunEnv is stepGitRun with extra environment variables appended after
+// the step environment, for commands that read identity from GIT_* variables.
+func stepGitRunEnv(sctx *pipeline.StepContext, extraEnv []string, args ...string) (string, error) {
+	cmd := stepCmd(sctx, "git", args...)
+	cmd.Env = append(git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir), extraEnv...)
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func stepGitHeadSHA(sctx *pipeline.StepContext) (string, error) {
 	return stepGitRun(sctx, "rev-parse", "HEAD")
 }

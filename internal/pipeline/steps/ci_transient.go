@@ -582,6 +582,15 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 	return issued, nil
 }
 
+// publishedHeadBoundedContext returns a copy of sctx whose context ends after
+// defaultPublishedHeadResolveWindow, so a stalled remote read cannot block a step.
+func publishedHeadBoundedContext(sctx *pipeline.StepContext) (*pipeline.StepContext, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(sctx.Ctx, defaultPublishedHeadResolveWindow)
+	bounded := *sctx
+	bounded.Ctx = ctx
+	return &bounded, cancel
+}
+
 // publishedBranchHead returns the commit the run's branch points at on the push
 // target - the commit the provider's checks actually ran on. A branch that is
 // missing there is an error like any other unreadable remote, never a SHA the
@@ -594,11 +603,9 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 // status API stays healthy would otherwise defer timeout detection indefinitely.
 func publishedBranchHead(sctx *pipeline.StepContext) (string, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	ctx, cancel := context.WithTimeout(sctx.Ctx, defaultPublishedHeadResolveWindow)
+	bounded, cancel := publishedHeadBoundedContext(sctx)
 	defer cancel()
-	bounded := *sctx
-	bounded.Ctx = ctx
-	out, err := stepGitRun(&bounded, "ls-remote", resolvePushURL(sctx), ref)
+	out, err := stepGitRun(bounded, "ls-remote", resolvePushURL(sctx), ref)
 	if err != nil {
 		return "", err
 	}

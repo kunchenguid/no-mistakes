@@ -399,6 +399,12 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return false, err
 	}
+	render := func() (string, error) {
+		return renderFixCommitMessage(sctx, stepName, summary, fallbackSummary, producer)
+	}
+	if err := conformAgentCommits(sctx, stepName, render); err != nil {
+		return false, err
+	}
 	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check %s changes: %w", stepName, err)
@@ -411,19 +417,9 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 		}
 		return false, recordAgentFixHead(sctx, stepName, headSHA)
 	}
-	if summary == "" {
-		summary = fallbackSummary
-	}
-	if summary == "" {
-		summary = "apply fixes"
-	}
-	commitMessage, err := sctx.Config.Commit.RenderFixMessageForBranch(stepName, summary, sctx.Run.Branch)
+	commitMessage, err := render()
 	if err != nil {
-		return false, fmt.Errorf("render %s fix commit message: %w", stepName, err)
-	}
-	commitMessage, err = withCommitTrailers(sctx, commitMessage, producer)
-	if err != nil {
-		return false, fmt.Errorf("render %s fix commit trailers: %w", stepName, err)
+		return false, err
 	}
 	if err := stagePipelineChanges(sctx); err != nil {
 		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
@@ -450,6 +446,27 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 		return false, err
 	}
 	return headSHA != headBeforeCommit, nil
+}
+
+// renderFixCommitMessage renders the commit.fix_message subject and the
+// commit.trailers for producer, the single message every pipeline-published fix
+// commit carries whether the pipeline or the agent created it.
+func renderFixCommitMessage(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, producer *agent.Result) (string, error) {
+	if summary == "" {
+		summary = fallbackSummary
+	}
+	if summary == "" {
+		summary = "apply fixes"
+	}
+	message, err := sctx.Config.Commit.RenderFixMessageForBranch(stepName, summary, sctx.Run.Branch)
+	if err != nil {
+		return "", fmt.Errorf("render %s fix commit message: %w", stepName, err)
+	}
+	message, err = withCommitTrailers(sctx, message, producer)
+	if err != nil {
+		return "", fmt.Errorf("render %s fix commit trailers: %w", stepName, err)
+	}
+	return message, nil
 }
 
 func recordAgentFixHead(sctx *pipeline.StepContext, stepName types.StepName, headSHA string) error {

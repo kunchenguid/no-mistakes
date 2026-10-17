@@ -997,7 +997,7 @@ Override the trailers appended to agent-produced commits for this repository.
 The entries follow the [global `commit.trailers` placeholders and validation rules](/no-mistakes/reference/global-config/#committrailers).
 A list here replaces the inherited one rather than extending it, and `trailers: []` turns inherited trailers off for this repository.
 
-This non-executing field is read from the pushed branch without enabling `allow_repo_commands`, like `commit.fix_message`: it shapes only the messages of commits the pipeline makes on that branch.
+This non-executing field is read from the pushed branch without enabling `allow_repo_commands`, like `commit.fix_message`: it shapes the messages of fix commits on that branch, whether the pipeline makes them or rewrites them onto a fix agent's own `git commit` (see [fix commits](/no-mistakes/concepts/auto-fix/#fix-commits)).
 
 ### intent
 

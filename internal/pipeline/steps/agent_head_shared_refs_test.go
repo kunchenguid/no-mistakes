@@ -31,7 +31,15 @@ func TestAgentHeadRecordingPreservesSharedGateRefs(t *testing.T) {
 						t.Fatal(err)
 					}
 					gitCmd(t, dir, "add", name)
-					gitCmd(t, dir, "commit", "-m", name)
+					subject := name
+					if name == "agent.txt" {
+						// Already shaped by the commit settings, so recording keeps its SHA.
+						subject = "no-mistakes(review): record agent fixes"
+						if recorder == "ci" {
+							subject = "no-mistakes(ci): record CI repair"
+						}
+					}
+					gitCmd(t, dir, "commit", "-m", subject)
 					return gitCmd(t, dir, "rev-parse", "HEAD")
 				}
 				agentHead := writeCommit(workDir, "agent.txt", "agent fix\n")
@@ -144,7 +152,11 @@ func TestAgentHeadRecordingUpdatesNonSharedWorktreeRef(t *testing.T) {
 				t.Fatal(err)
 			}
 			gitCmd(t, dir, "add", "agent.txt")
-			gitCmd(t, dir, "commit", "-m", "agent fix")
+			subject := "no-mistakes(review): record agent fixes"
+			if recorder == "ci" {
+				subject = "no-mistakes(ci): record CI repair"
+			}
+			gitCmd(t, dir, "commit", "-m", subject)
 			agentHead := gitCmd(t, dir, "rev-parse", "HEAD")
 			if recorder == "review" {
 				if err := commitAgentFixes(sctx, types.StepReview, "record agent fixes", ""); err != nil {

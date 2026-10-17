@@ -478,12 +478,16 @@ func TestDocumentStep_AgentSelfCommittedChangesWithEmptySummaryStillFails(t *tes
 	if _, err := step.Execute(sctx); err == nil || !strings.Contains(err.Error(), "validate document analyzer findings: missing summary") {
 		t.Fatalf("Execute() error = %v, want missing summary after the agent committed its own edits", err)
 	}
-	// The agent's own commit must remain on the branch.
+	// The agent's own commit must remain on the branch, carrying the
+	// configured fix subject instead of the agent's own.
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got == headSHA {
 		t.Fatal("expected the agent's self-commit to remain on the branch")
 	}
-	if got := lastCommitMessage(t, dir); got != "docs: update README" {
-		t.Fatalf("last commit message = %q, want the agent's own commit", got)
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): update documentation and fix lint" {
+		t.Fatalf("last commit message = %q, want the configured fix subject", got)
+	}
+	if got := gitCmd(t, dir, "show", "HEAD:README.md"); got != "# Self committed" {
+		t.Fatalf("README.md = %q, want the agent's edit kept", got)
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree, got %q", status)

@@ -201,7 +201,7 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 
 	os.WriteFile(filepath.Join(dir, "resolved.txt"), []byte("resolved"), 0o644)
 	stepstest.GitCmd(t, dir, "add", "-A")
-	stepstest.GitCmd(t, dir, "commit", "-m", "resolve conflict")
+	stepstest.GitCmd(t, dir, "commit", "-m", "no-mistakes(ci): repair failing checks")
 	advancedHeadSHA := stepstest.GitCmd(t, dir, "rev-parse", "HEAD")
 	stepstest.GitCmd(t, dir, "push", "--force-with-lease", "origin", "HEAD:refs/heads/feature")
 
