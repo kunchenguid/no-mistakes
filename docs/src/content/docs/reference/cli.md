@@ -394,6 +394,7 @@ no-mistakes axi sync --recover
 no-mistakes axi sync --recover --keep-local
 no-mistakes axi sync --bind-archive-ref refs/heads/archive/<name>
 no-mistakes axi sync --adopt-published
+no-mistakes axi sync --prepare-rewritten
 ```
 
 | Flag                 | Type     | Default | Description                                                                  |
@@ -403,6 +404,7 @@ no-mistakes axi sync --adopt-published
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree   |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact evidence for a keep-local recovery; never creates or moves a Git ref |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
+| `--prepare-rewritten` | `bool`  | `false` | Record an intentional unpublished rewrite by preserving the exact previously published gate head before a fresh run |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -410,6 +412,7 @@ Exit code `0` means an eligible check, applied synchronization or recovery, alre
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing during ordinary synchronization. Its `next_action.command` is `git checkout --detach <pushed-sha>`, which needs no approval, moves no branch ref, and loses no work; the local branch stays where it was.
+One narrower divergent state reports `next_action.code: prepare_rewritten_submission`: a terminal run has an exact successful push binding, the configured target and direct gate lane still equal that published head, and the clean local branch deliberately rebased the unpublished replacement without publishing it. `axi sync --prepare-rewritten` re-verifies all of those facts, then creates the run's exact `refs/no-mistakes/recover/<run>` anchor for the old gate head. It changes neither the worktree, gate branch, configured target, nor push binding. The following `axi run` still archives the old lane before replacing it and performs the full pipeline; the anchor is preservation evidence only, never containment evidence or permission to force-push. A different or moving target head, active or newer run, moved or symbolic gate ref, dirty or moving local head, changed binding, or conflicting anchor refuses without mutation. If the replacement is already published, this unpublished-rewrite declaration refuses and the existing published-head recovery rules remain unchanged.
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks. The bound-archive exception described below never changes the worktree at all.
 A terminal run whose recorded head was never verified (for example a Review fix and a Test fix followed by a Document fetch failure) is verified by recovery itself only from fresh gate state: either the live gate branch is an equal-tree rewrite of the exact reviewed result, or the recorded head extends the live gate branch as the reviewed result plus the pipeline's own later commits while the clean local checkout already sits exactly at it. Recovery never moves a worktree onto an unverified head; a behind or dirty worktree, a rebased head, a missing review authority, or a moved gate branch stays `blocked_recover_unverified_head`.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
@@ -600,6 +603,7 @@ no-mistakes sync --recover
 no-mistakes sync --recover --keep-local
 no-mistakes sync --bind-archive-ref refs/heads/archive/<name>
 no-mistakes sync --adopt-published
+no-mistakes sync --prepare-rewritten
 ```
 
 | Flag                 | Type     | Default | Description                                                     |
@@ -610,8 +614,9 @@ no-mistakes sync --adopt-published
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact keep-local recovery evidence without changing Git refs |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
+| `--prepare-rewritten` | `bool`  | `false` | Record an intentional unpublished rewrite by preserving the exact previously published gate head before a fresh run (see [`axi sync`](#no-mistakes-axi-sync)) |
 
-Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` and `--adopt-published` also prompt before their guarded changes. Rewritten-remote recovery confirms that it will anchor the superseded head and rebind the recorded push binding without moving the worktree. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`.
+Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover`, `--adopt-published`, and `--prepare-rewritten` also prompt before their guarded changes. Rewritten-remote recovery confirms that it will anchor the superseded head and rebind the recorded push binding without moving the worktree. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
