@@ -591,3 +591,13 @@ func TestFindingCarryProvenanceRoundTrips(t *testing.T) {
 		t.Errorf("a finding its round reported has CarriedNote %q", got)
 	}
 }
+
+func TestFindingCarriedNoteNamesAnOperatorAddedFindingsGate(t *testing.T) {
+	parsed, err := ParseFindingsJSON(`{"findings":[{"id":"user-1","severity":"warning","file":"cache.go","description":"stale entry","action":"auto-fix","source":"user","carried_from_round":1,"carried_reason":"file not in reviewed_paths"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := parsed.Items[0].CarriedNote(), "added by the operator at round 1, not cleared: file not in reviewed_paths"; got != want {
+		t.Errorf("CarriedNote() = %q, want %q", got, want)
+	}
+}

@@ -217,7 +217,8 @@ type Finding struct {
 	// CarriedFromRound and CarriedReason are pipeline-written: a Review round
 	// keeps every outstanding finding it did not positively verify, so they
 	// tell a reader that this round's reviewer did not submit the finding, the
-	// last round that did, and why this round did not clear it. Both are empty
+	// last round that did (for an operator-added finding, the round at whose
+	// gate it was added), and why this round did not clear it. Both are empty
 	// on a finding the round itself reported.
 	CarriedFromRound int    `json:"carried_from_round,omitempty"`
 	CarriedReason    string `json:"carried_reason,omitempty"`
@@ -230,6 +231,9 @@ func (f Finding) CarriedNote() string {
 		return ""
 	}
 	note := "carried from round " + itoa(f.CarriedFromRound)
+	if f.Source == FindingSourceUser {
+		note = "added by the operator at round " + itoa(f.CarriedFromRound)
+	}
 	if f.CarriedReason != "" {
 		note += ", not cleared: " + f.CarriedReason
 	}

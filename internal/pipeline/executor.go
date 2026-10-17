@@ -1388,7 +1388,8 @@ rounds:
 			pendingVerificationIDs = retainFindingIDs(outstandingFindings, pendingVerificationIDs)
 			selectedOutstandingIDs = retainFindingIDs(outstandingFindings, selectedOutstandingIDs)
 			effectiveFindings = mergeOutstandingFindingsJSON(outstandingFindings, roundFindings, outcome.ReviewedPaths)
-			// The outstanding set is always the previous round's stored findings.
+			// The outstanding set is the previous round's stored findings plus any
+			// the operator added at its gate.
 			effectiveFindings = markCarriedFindingsJSON(effectiveFindings, roundFindings, carryReasons, roundNum-1)
 			outstandingFindings = effectiveFindings
 			effectiveFindings = recordWithdrawnFindingsJSON(effectiveFindings, withdrawn)
