@@ -37,6 +37,13 @@ var errClaudeIdleAfterSubmission = errors.New("claude went idle after its struct
 // discards the submission it did make. A variable so tests can shorten it.
 var claudeSubmittedIdleGrace = 10 * time.Minute
 
+// claudeIdleEndBeforeDeadline is how far ahead of the invocation's deadline an
+// idle session holding an accepted submission is ended when that deadline
+// comes before claudeSubmittedIdleGrace, leaving room to end the process
+// group and return before the deadline, since a return after it is a timeout
+// whatever it carries. A variable so tests can shorten it.
+var claudeIdleEndBeforeDeadline = time.Minute
+
 const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
 // claudeAPIErrorMessageMaxRunes bounds the CLI's API error text in a step
@@ -157,7 +164,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		stderrWG.Wait()
 		retErr := fmt.Errorf("claude parse events: %w", err)
 		emitAgentExited(opts, "claude", pid, retErr)
-		return resultFromUsage(usage), retErr
+		return claudeFailedResult(opts, usage, result), retErr
 	}
 
 	var waitErr error
@@ -166,13 +173,13 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		// the submission cannot be shown to cover completed work.
 		_ = started.waitAfterParseError(parseErr)
 		stderrWG.Wait()
-		retErr := fmt.Errorf("claude completion is unverified: %w and stayed quiet for %s, so its process group was ended before its owned work could be shown complete", parseErr, claudeSubmittedIdleGrace)
+		retErr := fmt.Errorf("claude completion is unverified: %w and stayed quiet, so its process group was ended before its owned work could be shown complete", parseErr)
 		emitAgentExited(opts, "claude", pid, retErr)
 		return resultFromUsage(usage), retErr
 	}
 	if idleAfterSubmission {
 		if opts.OnChunk != nil {
-			opts.OnChunk(fmt.Sprintf("claude stayed idle for %s after its accepted StructuredOutput submission without finishing its turn; ending the session and keeping that submission", claudeSubmittedIdleGrace))
+			opts.OnChunk("claude stayed idle after its accepted StructuredOutput submission without finishing its turn; ending the session and keeping that submission")
 		}
 		// The exit status is the termination this adapter just caused, not
 		// the agent's verdict, so it is not reported as a failure.
@@ -184,7 +191,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if waitErr != nil {
 		retErr := claudeExitError(waitErr, string(stderrBuf), result.terminalAPIError())
 		emitAgentExited(opts, "claude", pid, retErr)
-		return resultFromUsage(usage), retErr
+		return claudeFailedResult(opts, usage, result), retErr
 	}
 
 	if result == nil {
@@ -218,6 +225,25 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 }
 
 func (a *claudeAgent) Close() error { return nil }
+
+// claudeFailedResult is what a failed invocation returns: its usage, plus the
+// latest accepted submission so the failure never discards what was validly
+// submitted. A turn that requires completed children keeps nothing, since the
+// session did not end cleanly enough to show its owned work finished.
+func claudeFailedResult(opts RunOpts, usage TokenUsage, result *claudeResult) *Result {
+	res := resultFromUsage(usage)
+	if result == nil || len(result.StructuredOutput) == 0 || opts.RequireCompletedChildren {
+		return res
+	}
+	if res == nil {
+		res = &Result{}
+	}
+	res.Output = result.StructuredOutput
+	if opts.OnChunk != nil {
+		opts.OnChunk(fmt.Sprintf("claude failed after an accepted StructuredOutput submission; keeping that submission: %s", result.StructuredOutput))
+	}
+	return res
+}
 
 func claudeExitError(waitErr error, stderr string, apiErr *claudeAPIError) error {
 	if apiErr == nil {
@@ -447,11 +473,13 @@ const claudeStructuredOutputTool = "StructuredOutput"
 
 // parseClaudeEvents reads JSONL from the reader and dispatches events.
 // It accumulates token usage and captures the final result event. When the
-// stream stays quiet for claudeSubmittedIdleGrace after an accepted
-// StructuredOutput submission, with no main-thread tool call in flight and no
-// result event yet, it records that submission as the result and returns
-// errClaudeIdleAfterSubmission so the caller ends the session. Assistant prose
-// never stands in for a submission.
+// stream stays quiet after an accepted StructuredOutput submission, with no
+// main-thread tool call in flight and no result event yet, for
+// claudeSubmittedIdleGrace or until claudeIdleEndBeforeDeadline ahead of ctx's
+// deadline, whichever comes first, it returns errClaudeIdleAfterSubmission so
+// the caller ends the session. Whenever it returns without a result event, it
+// records the latest accepted submission as the result. Assistant prose never
+// stands in for a submission.
 func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
@@ -479,6 +507,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 		pendingSubmissions: make(map[string]json.RawMessage),
 		inFlightTools:      make(map[string]bool),
 	}
+	defer p.keepSubmissionAsResult()
 	idle := time.NewTimer(claudeSubmittedIdleGrace)
 	idle.Stop()
 	defer idle.Stop()
@@ -492,7 +521,6 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 		case err := <-scanDone:
 			return err
 		case <-idleC:
-			p.keepSubmissionAsResult()
 			return errClaudeIdleAfterSubmission
 		case line = <-lines:
 		}
@@ -507,7 +535,11 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 		idle.Stop()
 		idleC = nil
 		if p.awaitingOnlyItsResult() {
-			idle.Reset(claudeSubmittedIdleGrace)
+			wait := claudeSubmittedIdleGrace
+			if deadline, ok := ctx.Deadline(); ok {
+				wait = min(wait, time.Until(deadline)-claudeIdleEndBeforeDeadline)
+			}
+			idle.Reset(wait)
 			idleC = idle.C
 		}
 	}
@@ -543,7 +575,7 @@ func (p *claudeEventParser) awaitingOnlyItsResult() bool {
 }
 
 func (p *claudeEventParser) keepSubmissionAsResult() {
-	if p.result == nil {
+	if p.result == nil || p.sawResult || p.lastSubmission == nil {
 		return
 	}
 	*p.result = &claudeResult{

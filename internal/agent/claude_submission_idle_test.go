@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -131,19 +132,20 @@ func TestParseClaudeEvents_IdleAfterPartialSubmissionKeepsIt(t *testing.T) {
 
 func TestParseClaudeEvents_IdleProseVerdictWithoutSubmissionIsNotAResult(t *testing.T) {
 	withClaudeSubmittedIdleGrace(t, 20*time.Millisecond)
-	assertClaudeParseStillWaiting(t, claudeSubmitThenIdleStream(t, false))
+	assertClaudeParseStillWaiting(t, claudeSubmitThenIdleStream(t, false), "")
 }
 
 func TestParseClaudeEvents_InFlightToolHoldsOffIdleEnd(t *testing.T) {
 	withClaudeSubmittedIdleGrace(t, 20*time.Millisecond)
 	stream := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: claudeEarlyPartialSubmission}) +
 		`{"type":"assistant","parent_tool_use_id":null,"message":{"id":"msg_bash","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"make test"}}]}}` + "\n"
-	assertClaudeParseStillWaiting(t, stream)
+	assertClaudeParseStillWaiting(t, stream, claudeEarlyPartialSubmission)
 }
 
-// assertClaudeParseStillWaiting checks parse neither returns nor records a
-// result on its own well past the idle grace, and stops only on cancel.
-func assertClaudeParseStillWaiting(t *testing.T, stream string) {
+// assertClaudeParseStillWaiting checks parse does not return on its own well
+// past the idle grace, and that cancelling it records wantKept as the result
+// (none when wantKept is empty).
+func assertClaudeParseStillWaiting(t *testing.T, stream, wantKept string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -168,8 +170,14 @@ func assertClaudeParseStillWaiting(t *testing.T, stream string) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("parse did not stop on cancellation")
 	}
-	if result != nil {
-		t.Fatalf("recorded result %+v, want none", result)
+	if wantKept == "" {
+		if result != nil {
+			t.Fatalf("recorded result %+v, want none", result)
+		}
+		return
+	}
+	if result == nil || string(result.StructuredOutput) != wantKept {
+		t.Fatalf("recorded result %+v, want the kept submission %s", result, wantKept)
 	}
 }
 
@@ -241,5 +249,153 @@ func TestClaudeAgent_IdleAfterSubmissionWithRequiredChildCompletionFails(t *test
 	}
 	if res != nil && len(res.Output) != 0 {
 		t.Fatalf("output = %s, want none for an unverified completion", res.Output)
+	}
+}
+
+// A Claude session ends in one of four ways, read off parseClaudeEvents and
+// runOnce: its result event, the idle grace after an accepted submission, ctx
+// ending (the invocation deadline or any cancellation), or its stream closing
+// without a result event (the process exited or was killed). Only the result
+// event is a finished turn; each other end must keep the latest accepted
+// submission, except that a turn requiring completed children fails as
+// unverified and keeps nothing. The tests below cover the ends other than the
+// result event and the plain idle grace above.
+
+func withClaudeIdleEndBeforeDeadline(t *testing.T, margin time.Duration) {
+	t.Helper()
+	prev := claudeIdleEndBeforeDeadline
+	claudeIdleEndBeforeDeadline = margin
+	t.Cleanup(func() { claudeIdleEndBeforeDeadline = prev })
+}
+
+// runClaudeHelperUntil runs one helper invocation under ctx and reports
+// whether ctx had already ended when runOnce returned, since the shared
+// agent-run seam rejects any return after the deadline as a timeout.
+func runClaudeHelperUntil(t *testing.T, ctx context.Context, mode string, opts RunOpts) (*Result, error, bool) {
+	t.Helper()
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", mode)
+	a := newClaudeStdinHelperAgent(t)
+	opts.Prompt = "review"
+	opts.CWD = t.TempDir()
+	opts.JSONSchema = json.RawMessage(`{"type":"object"}`)
+	type outcome struct {
+		res      *Result
+		err      error
+		ctxEnded bool
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := a.runOnce(ctx, opts)
+		done <- outcome{res, err, ctx.Err() != nil}
+	}()
+	select {
+	case o := <-done:
+		return o.res, o.err, o.ctxEnded
+	case <-time.After(20 * time.Second):
+		t.Fatal("runOnce did not return")
+		return nil, nil, false
+	}
+}
+
+func TestClaudeAgent_DeadlineBeforeIdleGraceEndsTheSessionInTimeKeepingIt(t *testing.T) {
+	withClaudeSubmittedIdleGrace(t, time.Hour)
+	withClaudeIdleEndBeforeDeadline(t, 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	res, err, ctxEnded := runClaudeHelperUntil(t, ctx, "submit-then-idle", RunOpts{})
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if ctxEnded {
+		t.Fatal("runOnce returned after the deadline, where the submission counts as a timeout")
+	}
+	if string(res.Output) != claudeEarlyPartialSubmission {
+		t.Fatalf("output = %s, want the early partial submission", res.Output)
+	}
+}
+
+func TestClaudeAgent_DeadlineAfterIdleGraceEndsTheSessionAtTheGraceKeepingIt(t *testing.T) {
+	withClaudeSubmittedIdleGrace(t, 200*time.Millisecond)
+	withClaudeIdleEndBeforeDeadline(t, 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	start := time.Now()
+	res, err, ctxEnded := runClaudeHelperUntil(t, ctx, "submit-then-idle", RunOpts{})
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if ctxEnded || time.Since(start) > 30*time.Second {
+		t.Fatalf("runOnce returned after %s, want it at the idle grace well before the deadline", time.Since(start))
+	}
+	if string(res.Output) != claudeEarlyPartialSubmission {
+		t.Fatalf("output = %s, want the early partial submission", res.Output)
+	}
+}
+
+func TestClaudeAgent_DeadlineBeforeIdleGraceWithRequiredChildCompletionFails(t *testing.T) {
+	withClaudeSubmittedIdleGrace(t, time.Hour)
+	withClaudeIdleEndBeforeDeadline(t, 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	res, err, ctxEnded := runClaudeHelperUntil(t, ctx, "submit-then-idle", RunOpts{RequireCompletedChildren: true})
+	if ctxEnded {
+		t.Fatal("runOnce returned after the deadline, want the unverified failure before it")
+	}
+	if !errors.Is(err, errClaudeIdleAfterSubmission) || !strings.Contains(fmt.Sprint(err), "unverified") {
+		t.Fatalf("runOnce error = %v, want an unverified completion after the idle end", err)
+	}
+	if res != nil && len(res.Output) != 0 {
+		t.Fatalf("output = %s, want none for an unverified completion", res.Output)
+	}
+}
+
+func TestClaudeAgent_CancelAfterSubmissionFailsKeepingIt(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		requireCompletedChildren bool
+		wantOutput               string
+	}{
+		{name: "kept", wantOutput: claudeEarlyPartialSubmission},
+		{name: "required child completion keeps nothing", requireCompletedChildren: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withClaudeSubmittedIdleGrace(t, time.Hour)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// The stream's last chunk is the final prose verdict, read well
+			// after the submission was accepted.
+			chunks := 0
+			res, err, _ := runClaudeHelperUntil(t, ctx, "submit-then-idle", RunOpts{
+				RequireCompletedChildren: tc.requireCompletedChildren,
+				OnChunk: func(string) {
+					if chunks++; chunks == 7 {
+						cancel()
+					}
+				},
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("runOnce error = %v, want the cancellation", err)
+			}
+			var output string
+			if res != nil {
+				output = string(res.Output)
+			}
+			if output != tc.wantOutput {
+				t.Fatalf("output = %q, want %q", output, tc.wantOutput)
+			}
+		})
+	}
+}
+
+func TestClaudeAgent_ExitWithoutResultEventAfterSubmissionFailsKeepingIt(t *testing.T) {
+	res, err, _ := runClaudeHelperUntil(t, context.Background(), "submit-then-exit", RunOpts{})
+	if err == nil {
+		t.Fatal("runOnce succeeded, want the exit error")
+	}
+	if res == nil || string(res.Output) != claudeEarlyPartialSubmission {
+		t.Fatalf("result = %+v, want the early partial submission kept", res)
 	}
 }
