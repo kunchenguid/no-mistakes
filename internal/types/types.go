@@ -16,6 +16,13 @@ const (
 	RunCompleted RunStatus = "completed"
 	RunFailed    RunStatus = "failed"
 	RunCancelled RunStatus = "cancelled"
+	// RunChecksPassed means the run reached its validation verdict and finished
+	// with every CI check green (or a trusted no_ci declaration) while the PR
+	// was still open. It is a success, distinct from RunCompleted so a caller
+	// can tell "checks passed, waiting on a human merge decision" apart from
+	// "the PR merged or closed"; the merge itself is never observed by this
+	// run, because the gate does not own the merge decision.
+	RunChecksPassed RunStatus = "checks_passed"
 	// RunCIMonitorInterrupted means the daemon restarted while babysitting an
 	// already-created PR. The PR remains intact, so this is not a pipeline
 	// failure.
@@ -35,10 +42,12 @@ const (
 // through it so a newly added terminal status can never drift out of sync.
 // RunCIMonitorInterrupted is terminal - the daemon restarted mid-CI-monitor
 // and the run is never resumed (issue #361) - so it must classify exactly like
-// completed/failed/cancelled.
+// completed/failed/cancelled. RunChecksPassed is terminal for the same kind of
+// reason: the monitor stopped on a green head and the run is never resumed, so
+// the merge it stopped waiting for cannot move it again.
 func (s RunStatus) Terminal() bool {
 	switch s {
-	case RunCompleted, RunFailed, RunCancelled, RunCIMonitorInterrupted:
+	case RunCompleted, RunFailed, RunCancelled, RunChecksPassed, RunCIMonitorInterrupted:
 		return true
 	default:
 		return false

@@ -19,7 +19,7 @@ var (
 func runStatusStyle(status types.RunStatus) string {
 	s := string(status)
 	switch status {
-	case types.RunCompleted:
+	case types.RunCompleted, types.RunChecksPassed:
 		return sGreen.Render(s)
 	case types.RunFailed:
 		return sRed.Render(s)

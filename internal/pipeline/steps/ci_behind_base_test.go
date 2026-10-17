@@ -237,24 +237,20 @@ func TestCIStep_GreenPRThatIsNotBehindIsNeverRebased(t *testing.T) {
 				return &agent.Result{}, nil
 			}}
 			sctx, logs := behindBaseContext(t, ag, mergeable)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			sctx.Ctx = ctx
 			polls := 0
 			step := &CIStep{
 				baseBranchTip: func(context.Context) (string, bool) { return "base-tip-1", true },
 				waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
 					polls++
-					if polls >= 3 {
-						cancel()
-						return ctx.Err()
-					}
-					return nil
+					return context.Canceled
 				},
 			}
-			driveCI(t, step, sctx)
-			if countLogs(*logs, ciChecksPassedMsg) != 1 || countLogs(*logs, ciBehindBaseMsg) != 0 {
-				t.Fatalf("want checks passed and no behind-base wait; logs: %v", *logs)
+			outcome, err := driveCI(t, step, sctx)
+			if err != nil || outcome == nil || outcome.CIReadyNoCI == nil || *outcome.CIReadyNoCI {
+				t.Fatalf("want release with passing registered checks; outcome: %+v, err: %v", outcome, err)
+			}
+			if polls != 0 || countLogs(*logs, ciBehindBaseMsg) != 0 {
+				t.Fatalf("want immediate release without a behind-base wait; polls: %d, logs: %v", polls, *logs)
 			}
 		})
 	}
@@ -270,23 +266,19 @@ func TestCIStep_GreenBehindPRReportsChecksPassedWhenRebaseBehindIsOff(t *testing
 	}}
 	sctx, logs := behindBaseContext(t, ag, "MERGEABLE BEHIND")
 	sctx.Config.CI.RebaseBehind = false // the default when unset
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	sctx.Ctx = ctx
 	polls := 0
 	step := &CIStep{
 		baseBranchTip: func(context.Context) (string, bool) { return "base-tip-1", true },
 		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
 			polls++
-			if polls >= 3 {
-				cancel()
-				return ctx.Err()
-			}
-			return nil
+			return context.Canceled
 		},
 	}
-	driveCI(t, step, sctx)
-	if countLogs(*logs, ciChecksPassedMsg) != 1 || countLogs(*logs, ciBehindBaseMsg) != 0 {
-		t.Fatalf("want checks passed and no behind-base wait; logs: %v", *logs)
+	outcome, err := driveCI(t, step, sctx)
+	if err != nil || outcome == nil || outcome.CIReadyNoCI == nil || *outcome.CIReadyNoCI {
+		t.Fatalf("want release with passing registered checks; outcome: %+v, err: %v", outcome, err)
+	}
+	if polls != 0 || countLogs(*logs, ciBehindBaseMsg) != 0 {
+		t.Fatalf("want immediate release without a behind-base wait; polls: %d, logs: %v", polls, *logs)
 	}
 }

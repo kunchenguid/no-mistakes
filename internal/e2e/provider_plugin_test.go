@@ -32,7 +32,12 @@ func TestProviderPluginJourney(t *testing.T) {
 			"  ssm:\n" +
 			"    command: " + fakeplugin.ExecutableName + "\n" +
 			"    hosts: [" + pluginHost + "]\n" +
-			"    timeout: 30s\n",
+			"    timeout: 30s\n" +
+			// This journey asserts what the plugin reports for a PR that merges
+			// once its checks pass, so it opts into the watch that keeps
+			// observing the PR after checks are green. The default would release
+			// the run at the first green poll instead.
+			"ci_monitor_until_merged: true\n",
 	})
 
 	configureGitURLRewrite(t, h, remoteURL, h.UpstreamDir)

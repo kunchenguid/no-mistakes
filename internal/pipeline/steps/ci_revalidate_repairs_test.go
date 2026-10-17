@@ -83,6 +83,11 @@ func newCIRepairFixture(t *testing.T, revalidate bool, agentAction func(workDir 
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 	sctx.Config.CI.RevalidateRepairs = revalidate
+	// These tests drive the repair/publication machinery across the green
+	// observation - a retained repair must be published before the monitor
+	// reports checks-passed - so they run the opt-in watch rather than the
+	// default, which releases the run the moment the checks are green.
+	sctx.Config.CIMonitorUntilMerged = true
 
 	// The CI step only ever runs after Push succeeded, so a run always reaches
 	// it with a durable review approval and a recorded push binding.

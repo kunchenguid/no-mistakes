@@ -138,6 +138,30 @@ func TestOutcomeBanner_SuccessShowsCheckmark(t *testing.T) {
 	}
 }
 
+// TestOutcomeBanner_ChecksPassedAnnouncesTheRelease is the default green
+// verdict's banner. The run reached its validation verdict and released the
+// branch, so the banner must not read like an ordinary finished run: the merge
+// decision is the user's, and the run's outcome must stay distinguishable from
+// "the PR merged or closed".
+func TestOutcomeBanner_ChecksPassedAnnouncesTheRelease(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunChecksPassed
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepCI, Status: types.StepStatusCompleted},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	if !strings.Contains(banner, "✓") {
+		t.Error("expected ✓ in the checks-passed banner")
+	}
+	if !strings.Contains(banner, "Checks passed") || !strings.Contains(banner, "merge") {
+		t.Errorf("expected the banner to report checks passed and point at the merge, got: %s", banner)
+	}
+	if strings.Contains(banner, "Pipeline passed") {
+		t.Errorf("a released run must not read as an ordinary completed run: %s", banner)
+	}
+}
+
 // TestOutcomeBanner_CIOverrideShowsReason is the P1 regression from the
 // upstream review of PR 923 ("TUI hides persisted CI overrides"): a human
 // approving a still-unresolved CI gate is recorded on run.CIOverrideReason

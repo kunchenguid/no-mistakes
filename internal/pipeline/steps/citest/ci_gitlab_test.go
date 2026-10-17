@@ -56,6 +56,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
+	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -465,6 +466,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
+	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -588,6 +590,11 @@ func TestCIStep_GitLabDiscussionReadRequiresValidArray(t *testing.T) {
 			sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 			sctx.Run.PRURL = &prURL
 			sctx.Config.CI.ReviewBotComments = config.CIReviewBotCommentsAlways
+			// This case asserts the monitor's own behaviour: a valid empty
+			// discussion array keeps it polling, and an unreadable one parks it.
+			// That loop only exists under the opt-in watch now; the default
+			// releases the run at the green observation.
+			stepstest.MonitorUntilMerged(sctx)
 			var logs []string
 			sctx.Log = func(s string) { logs = append(logs, s) }
 			ctx, cancel := context.WithCancel(context.Background())

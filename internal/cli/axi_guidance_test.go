@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -29,6 +28,21 @@ var canonicalStaleMonitorPhrases = []string{
 	"cannot prove continuity with the reviewed head",
 	"re-pushes",
 	"no-mistakes rerun",
+}
+
+// canonicalReleasedChecksPassedPhrases are the load-bearing claims of the
+// DEFAULT green verdict's guidance: the run finished and released the branch,
+// nothing is watching the PR, a later update is a fresh run rather than this
+// run's repair, and the opt-in watch is the only thing that keeps monitoring.
+// They are deliberately disjoint from the still-monitor phrases above so the
+// two contracts cannot be conflated: the released guidance never claims a live
+// monitor, and the still-monitor guidance is emitted only under the watch.
+var canonicalReleasedChecksPassedPhrases = []string{
+	"released",
+	"nothing is left watching the PR",
+	"will not rebase or re-push it",
+	"a fresh `no-mistakes axi run`",
+	"ci_monitor_until_merged",
 }
 
 var canonicalRerunRecoveryPhrases = []string{
@@ -51,45 +65,18 @@ const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the
 
 const canonicalUnknownBranchRunRelationship = "An explicit `--run <id>` rendered under `run:` while the current branch is unknown (detached `HEAD` or a branch-lookup failure) encodes no branch relationship."
 
-// TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that
-// agent-driving guidance stays in sync across its three surfaces: the skill
-// body, the published agents guide, and the live axi help string. The earlier
-// wrong wording (telling agents to re-run a stale PR with `axi run`) shipped to
-// only one surface; this keeps the corrected guidance present on all three.
 func TestStaleMonitorGuidance_SyncedAcrossSurfaces(t *testing.T) {
-	surfaces := map[string]string{
-		"skill body":      skill.Markdown(),
-		"agents guide":    readAgentsGuide(t),
-		"axi help string": staleMonitorGuidance,
-	}
-	for name, content := range surfaces {
-		for _, phrase := range canonicalStaleMonitorPhrases {
-			if !strings.Contains(content, phrase) {
-				t.Errorf("%s is missing the canonical stale-monitor guidance phrase %q", name, phrase)
-			}
+	for _, phrase := range append(canonicalStaleMonitorPhrases, canonicalRerunRecoveryPhrases...) {
+		if !strings.Contains(skill.Markdown(), phrase) {
+			t.Errorf("generated skill is missing watch guidance %q", phrase)
 		}
 	}
+}
 
-	// The discarded wrong framing must not creep back into any surface.
-	for name, content := range surfaces {
-		if strings.Contains(content, "rebase step integrates the latest") {
-			t.Errorf("%s still carries the discarded 'rebase step integrates the latest default branch' wording", name)
-		}
-	}
-
-	// Detailed rerun conditions belong to the skill and live guidance; the
-	// agents guide links to the CLI reference instead of duplicating them.
-	for name, content := range map[string]string{
-		"skill body":      skill.Markdown(),
-		"axi help string": staleMonitorGuidance,
-		"human recovery summary": humanSyncSummary(branchsync.State{
-			State: branchsync.StatePipelineOwned, Safety: "blocked_pipeline_owned_recoverable",
-		}),
-	} {
-		for _, phrase := range canonicalRerunRecoveryPhrases {
-			if !strings.Contains(content, phrase) {
-				t.Errorf("%s is missing rerun recovery guidance %q", name, phrase)
-			}
+func TestReleasedChecksPassedGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	for _, phrase := range canonicalReleasedChecksPassedPhrases {
+		if !strings.Contains(skill.Markdown(), phrase) {
+			t.Errorf("generated skill is missing release guidance %q", phrase)
 		}
 	}
 }

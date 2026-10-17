@@ -75,6 +75,7 @@ func TestCIStep_ProviderPluginMergedPRExitsEarly(t *testing.T) {
 func TestCIStep_ProviderPluginPassingChecksKeepMonitoring(t *testing.T) {
 	t.Parallel()
 	sctx, _ := pluginCIContext(t, fakeplugin.State{Checks: []fakeplugin.Check{{Name: "build", Bucket: "pass"}, {Name: "lint", Bucket: "skipping"}}})
+	stepstest.MonitorUntilMerged(sctx)
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 	ctx, cancel := context.WithCancel(context.Background())
