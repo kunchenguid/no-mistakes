@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
@@ -35,7 +36,19 @@ var errClaudeIdleAfterSubmission = errors.New("claude went idle after its struct
 // a fuller submission once background work finishes and then never make it,
 // which otherwise idles until the invocation budget kills the session and
 // discards the submission it did make. A variable so tests can shorten it.
-var claudeSubmittedIdleGrace = 10 * time.Minute
+var claudeSubmittedIdleGrace = claudeSubmittedIdleGraceUnder(config.DefaultStepQuietWarning)
+
+// claudeSubmittedIdleGraceUnder derives the idle grace from the pipeline's
+// quiet stop, which cancels an invocation past its silent budget once it has
+// been quiet that long and so would otherwise discard the submission as a
+// timeout. The pipeline measures quiet from activity throttled to
+// nativeAgentActivityInterval, so it can count from up to that much before
+// the last line; ending the process group is allowed
+// claudeIdleEndBeforeDeadline, the same room left ahead of a deadline. The
+// grace is shorter than the quiet stop by both, so the idle end finishes first.
+func claudeSubmittedIdleGraceUnder(quietStop time.Duration) time.Duration {
+	return quietStop - nativeAgentActivityInterval - claudeIdleEndBeforeDeadline
+}
 
 // claudeIdleEndBeforeDeadline is how far ahead of the invocation's deadline an
 // idle session holding an accepted submission is ended when that deadline
