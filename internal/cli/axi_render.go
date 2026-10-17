@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,6 +68,17 @@ type findingRow struct {
 	File        string `toon:"file"`
 	Action      string `toon:"action"`
 	Description string `toon:"description"`
+}
+
+// carriedFindingRow is a findingRow plus the carry provenance, used only when
+// some finding on the gate is carried so ordinary gates keep their shape.
+type carriedFindingRow struct {
+	ID          string `toon:"id"`
+	Severity    string `toon:"severity"`
+	File        string `toon:"file"`
+	Action      string `toon:"action"`
+	Description string `toon:"description"`
+	Carried     string `toon:"carried"`
 }
 
 type runRow struct {
@@ -739,7 +751,22 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	}
 }
 
-func findingRows(items []types.Finding) []findingRow {
+func findingRows(items []types.Finding) any {
+	carried := slices.ContainsFunc(items, func(f types.Finding) bool { return f.CarriedNote() != "" })
+	if carried {
+		rows := make([]carriedFindingRow, 0, len(items))
+		for _, f := range items {
+			rows = append(rows, carriedFindingRow{
+				ID:          f.ID,
+				Severity:    f.Severity,
+				File:        f.File,
+				Action:      f.Action,
+				Description: f.Description,
+				Carried:     f.CarriedNote(),
+			})
+		}
+		return rows
+	}
 	rows := make([]findingRow, 0, len(items))
 	for _, f := range items {
 		rows = append(rows, findingRow{
