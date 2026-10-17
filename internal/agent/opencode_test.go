@@ -1053,6 +1053,180 @@ func TestOpencodeAgent_ForcedToolChoiceFromSSEFallsBackOnce(t *testing.T) {
 	t.Logf("SSE gateway only-auto rejection triggered one fallback; validated output=%s", result.Output)
 }
 
+// TestOpencodeAgent_ForcedToolChoiceFallbackSumsBothTurnsUsage proves the
+// one row this invocation records carries both model turns when forced
+// tool_choice is rejected. The native attempt burns its input before the
+// conflict and the prompt-only fallback burns its own; reporting only the
+// fallback would under-count the invocation.
+func TestOpencodeAgent_ForcedToolChoiceFallbackSumsBothTurnsUsage(t *testing.T) {
+	var sessions atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprintf(w, `{"id":"s%d"}`, sessions.Add(1))
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","tokens":{"input":100,"output":10,"cache":{"read":5,"write":2}},"error":{"name":"APIError","data":{"message":"only \"auto\" is supported for \"tool_choice\". \"none\", \"required\", and named function choices are not currently supported"}}}}`)
+
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant","tokens":{"input":200,"output":20,"cache":{"read":7,"write":3}}},"parts":[{"type":"text","text":"{\"summary\":\"all good\"}"}]}`)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Fatalf("sessions = %d, want the native attempt plus the fallback", got)
+	}
+	want := TokenUsage{
+		InputTokens: 317, OutputTokens: 30, CacheReadTokens: 12, CacheCreationTokens: 5,
+		Reported: true, CacheCreationReported: true,
+	}
+	if result.Usage != want {
+		t.Fatalf("usage = %+v, want both turns summed %+v", result.Usage, want)
+	}
+	if !result.UsageReported || !result.CacheCreationReported {
+		t.Fatalf("reported flags = %v/%v, want both true", result.UsageReported, result.CacheCreationReported)
+	}
+}
+
+func TestOpencodeAgent_ForcedToolChoicePreservesUsageOnConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","tokens":{"input":150,"output":25,"cache":{"read":10,"write":5}},"error":{"name":"APIError","data":{"message":"only \"auto\" is supported for \"tool_choice\". \"none\", \"required\", and named function choices are not currently supported"}}}}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.runOnceWithFormat(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	}, true)
+
+	if err == nil || !errors.Is(err, errOpencodeForcedToolChoiceUnsupported) {
+		t.Fatalf("err = %v, want errOpencodeForcedToolChoiceUnsupported", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil, want token usage preserved on forcedToolChoiceConflict")
+	}
+	want := TokenUsage{
+		InputTokens: 165, OutputTokens: 25, CacheReadTokens: 10, CacheCreationTokens: 5,
+		Reported: true, CacheCreationReported: true,
+	}
+	if result.Usage != want {
+		t.Fatalf("usage = %+v, want %+v", result.Usage, want)
+	}
+}
+
+func TestOpencodeAgent_ForcedToolChoiceFromSSEPreservesUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"s1\",\"info\":{\"id\":\"msg1\",\"role\":\"assistant\",\"tokens\":{\"input\":120,\"output\":15,\"cache\":{\"read\":8,\"write\":4}}}}}}\n\n")
+			fmt.Fprint(w, `data: {"payload":{"type":"session.error","properties":{"sessionID":"s1","error":{"name":"APIError","data":{"message":"only \"auto\" is supported for \"tool_choice\". \"none\", \"required\", and named function choices are not currently supported"}}}}}`+"\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant"}}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.runOnceWithFormat(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	}, true)
+
+	if err == nil || !errors.Is(err, errOpencodeForcedToolChoiceUnsupported) {
+		t.Fatalf("err = %v, want errOpencodeForcedToolChoiceUnsupported", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil, want token usage preserved on forcedToolChoiceConflict from SSE")
+	}
+	want := TokenUsage{
+		InputTokens: 132, OutputTokens: 15, CacheReadTokens: 8, CacheCreationTokens: 4,
+		Reported: true, CacheCreationReported: true,
+	}
+	if result.Usage != want {
+		t.Fatalf("usage = %+v, want %+v", result.Usage, want)
+	}
+}
+
+func TestOpencodeAgent_ForcedToolChoiceFromMessageErrorPreservesUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"s1\",\"info\":{\"id\":\"msg1\",\"role\":\"assistant\",\"tokens\":{\"input\":80,\"output\":10,\"cache\":{\"read\":4,\"write\":2}}}}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `only "auto" is supported for "tool_choice"`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.runOnceWithFormat(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	}, true)
+
+	if err == nil || !errors.Is(err, errOpencodeForcedToolChoiceUnsupported) {
+		t.Fatalf("err = %v, want errOpencodeForcedToolChoiceUnsupported", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil, want token usage preserved on forcedToolChoiceConflict from message error")
+	}
+	want := TokenUsage{
+		InputTokens: 86, OutputTokens: 10, CacheReadTokens: 4, CacheCreationTokens: 2,
+		Reported: true, CacheCreationReported: true,
+	}
+	if result.Usage != want {
+		t.Fatalf("usage = %+v, want %+v", result.Usage, want)
+	}
+}
+
 // TestToolChoiceDetectorsPartitionRejections pins the invariant the two
 // sentinels exist for: every tool_choice rejection reaches the prompt-only
 // fallback, exactly one detector claims it, and an unrelated provider error
