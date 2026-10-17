@@ -163,7 +163,33 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		merged.Items = append(merged.Items, item)
 		seen[findingKey(item)] = true
 	}
+additions:
 	for _, item := range additional.Items {
+		if item.Source == types.FindingSourceUser {
+			// A gate selection names the user's ID. Content deduplication must
+			// not discard that record (including its action and instructions).
+			for i, previous := range merged.Items {
+				matches := findingKey(previous) == findingKey(item) ||
+					(additionalCounts[findingFingerprint(item)] == 1 && existingCounts[findingFingerprint(item)] == 1 &&
+						findingFingerprint(previous) == findingFingerprint(item))
+				if !matches {
+					continue
+				}
+				if previous.Source == types.FindingSourceUser && previous.ID == item.ID {
+					continue additions
+				}
+				if previous.Source != types.FindingSourceUser && previous.Action == types.ActionNoOp {
+					merged.Items[i] = item
+					seen[findingKey(item)] = true
+					continue additions
+				}
+			}
+			// Keep independently selected user records and blocking findings
+			// alongside each other rather than losing either identity.
+			merged.Items = append(merged.Items, item)
+			seen[findingKey(item)] = true
+			continue
+		}
 		if hasFindingMatch(item, seen, additionalCounts, existingCounts) {
 			continue
 		}
@@ -463,18 +489,34 @@ func remapFindingIDsJSON(mergedRaw, selectedRaw string) string {
 	mergedCounts := countFindingFingerprints(merged.Items)
 	selectedCounts := countFindingFingerprints(selected.Items)
 	used := make(map[int]bool, len(selected.Items))
+	matched := make([]bool, len(selected.Items))
+	// Reserve every selected item's exact identity before content matching.
+	// Otherwise an earlier blocking item can consume the ID of a later user
+	// addition that has the same content, swapping their identities on recovery.
 	for i := range selected.Items {
-		matched := false
+		for j := range merged.Items {
+			if !used[j] && selected.Items[i].ID != "" && selected.Items[i].ID == merged.Items[j].ID && SameFinding(selected.Items[i], merged.Items[j]) {
+				used[j] = true
+				matched[i] = true
+				break
+			}
+		}
+	}
+	for i := range selected.Items {
+		if matched[i] {
+			continue
+		}
+		contentMatched := false
 		for j := range merged.Items {
 			if used[j] || findingKey(selected.Items[i]) != findingKey(merged.Items[j]) {
 				continue
 			}
 			selected.Items[i].ID = merged.Items[j].ID
 			used[j] = true
-			matched = true
+			contentMatched = true
 			break
 		}
-		if matched {
+		if contentMatched {
 			continue
 		}
 		fingerprint := findingFingerprint(selected.Items[i])
