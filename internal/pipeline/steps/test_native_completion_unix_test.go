@@ -5,10 +5,6 @@ package steps
 import (
 	"context"
 	"fmt"
-	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +13,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestTestNativeEarlyResultChildCompletion(t *testing.T) {
@@ -61,8 +62,14 @@ func TestTestNativeEarlyResultChildCompletion(t *testing.T) {
 			sctx.Ctx = ctx
 			sctx.Config.TestAgentTimeout = 5 * time.Second
 			if mode == "deadline" {
-				sctx.Config.TestAgentTimeout = 300 * time.Millisecond
-				sctx.Config.TestAgentWorkingTimeout = 300 * time.Millisecond
+				// The budget includes real Git preparation and native-process
+				// startup. 300ms can expire before this fixture's ready receipt
+				// under a full race-suite load, testing startup instead of the
+				// intended cancellation of an already-running required child.
+				// The child remains blocked and the independent 10s guard below
+				// still rejects a deadline that never cancels it.
+				sctx.Config.TestAgentTimeout = 3 * time.Second
+				sctx.Config.TestAgentWorkingTimeout = 3 * time.Second
 			}
 			// Logging goes through the result channel, so no test method races a late worker.
 			sctx.Log = func(string) {}
