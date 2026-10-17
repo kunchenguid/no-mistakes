@@ -540,6 +540,9 @@ func TestParseAddFinding(t *testing.T) {
 	if _, err := parseAddFinding(`not json`); err == nil {
 		t.Error("expected error for invalid JSON")
 	}
+	if _, err := parseAddFinding(`{"description":"add a nil check","driver_instructions":"only touch a.go"}`); err == nil {
+		t.Error("expected error for driver_instructions on an added finding")
+	}
 }
 
 func TestSplitCSV(t *testing.T) {

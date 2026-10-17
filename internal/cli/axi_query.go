@@ -394,6 +394,12 @@ func parseAddFinding(raw string) (types.Finding, error) {
 	if strings.TrimSpace(f.Description) == "" {
 		return types.Finding{}, fmt.Errorf("description is required")
 	}
+	// Driver guidance comes only from --instructions, which keys on gate
+	// finding IDs; an added finding has no such ID, so a driver note here
+	// would bypass every rule that carries and strips that guidance.
+	if f.DriverInstructions != "" {
+		return types.Finding{}, fmt.Errorf("driver_instructions cannot be set on an added finding")
+	}
 	return f, nil
 }
 
