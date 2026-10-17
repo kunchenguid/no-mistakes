@@ -873,12 +873,34 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 	// lineShiftedReword is a fix that moved the defect to a different line in
 	// the same file and a rereview that restated it under a different
 	// description - matching neither the exact file+line key nor the content
-	// fingerprint. This must never read as a clean pass: any finding reported
-	// in the same file is ambiguous evidence, not positive verification.
+	// fingerprint. This must never read as a clean pass: a finding reported
+	// within the line window of the pending finding is ambiguous evidence, not
+	// positive verification.
 	lineShiftedReword := `{"findings":[{"id":"review-9","severity":"info","file":"service.go","line":11,"description":"no remaining issue in this area","action":"no-op"}],"summary":"1 finding"}`
+
+	// distantDistinct is a genuinely different defect far from the pending
+	// finding's line in the same file. Verification of the fixed defect must
+	// not be vetoed by an unrelated report elsewhere in the file.
+	distantDistinct := `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","line":200,"description":"unrelated defect in another section of the file","action":"ask-user"}],"summary":"1 finding"}`
+
+	// nearRestatement is a different description a few lines away from the
+	// pending finding: close enough to be the same defect shifted by its fix
+	// and restated, so it stays ambiguous evidence like lineShiftedReword.
+	nearRestatement := `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","line":14,"description":"restated concern a few lines below the original","action":"ask-user"}],"summary":"1 finding"}`
+
+	// unpositionedSameFile is a same-file report the rereview gave no line at
+	// all, so nothing places it relative to the pending finding. It reads as
+	// nearby, keeping the conservative fail-closed direction.
+	unpositionedSameFile := `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","description":"same file, no line reported","action":"ask-user"}],"summary":"1 finding"}`
+
+	// Place the pending finding far enough from line 1 that both sides of the
+	// window use positive report lines and exercise proximity, not missing lines.
+	windowPending := strings.Replace(reviewCarryTwoFindings, `"line":10`, `"line":30`, 1)
+	unpositionedPending := strings.Replace(reviewCarryTwoFindings, `"line":10,`, "", 1)
 
 	cases := []struct {
 		name        string
+		outstanding string
 		thisRound   string
 		reviewed    []string
 		pending     []string
@@ -894,11 +916,23 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 		{name: "finding covered and no longer reported clears", thisRound: "", reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
 		{name: "an unwatched finding keeps its neighbour pending", thisRound: "", reviewed: []string{"cache.go"}, pending: []string{"review-1"}},
 		{name: "line-shifted reword in the same file is ambiguous, not resolution", thisRound: lineShiftedReword, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "distant distinct finding in the same file clears", thisRound: distantDistinct, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "near restatement in the same file stays outstanding", thisRound: nearRestatement, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "same-file report with no line stays outstanding", thisRound: unpositionedSameFile, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "same-file report at offset -10 stays outstanding", outstanding: windowPending, thisRound: `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","line":20,"description":"reworded concern above the pending finding","action":"ask-user"}]}`, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "same-file report at offset +10 stays outstanding", outstanding: windowPending, thisRound: `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","line":40,"description":"reworded concern below the pending finding","action":"ask-user"}]}`, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "same-file report at offset -11 clears", outstanding: windowPending, thisRound: `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","line":19,"description":"distinct concern above the pending finding","action":"ask-user"}]}`, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "same-file report at offset +11 clears", outstanding: windowPending, thisRound: `{"findings":[{"id":"review-9","severity":"warning","file":"service.go","line":41,"description":"distinct concern below the pending finding","action":"ask-user"}]}`, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
+		{name: "pending finding with no line against a positioned same-file report stays outstanding", outstanding: unpositionedPending, thisRound: distantDistinct, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveVerifiedFindingsJSON(reviewCarryTwoFindings, tc.pending, tc.reviewed, []string{"service.go", "cache.go"}, tc.thisRound)
+			outstanding := tc.outstanding
+			if outstanding == "" {
+				outstanding = reviewCarryTwoFindings
+			}
+			got := resolveVerifiedFindingsJSON(outstanding, tc.pending, tc.reviewed, []string{"service.go", "cache.go"}, tc.thisRound)
 			parsed, err := types.ParseFindingsJSON(got)
 			if err != nil {
 				t.Fatalf("parse result: %v", err)
@@ -1588,10 +1622,11 @@ func TestExecutor_ReviewCarryForward_AnEmptyOutstandingSetRecordsNoRetraction(t 
 	waitExecutorDone(t, done)
 }
 
-// waitForFindings blocks until the step's persisted findings carry marker. The
-// gate status alone cannot say a round landed when consecutive rounds park the
+// waitForFindings blocks until the step parks with findings carrying marker.
+// The gate status alone cannot say a round landed when consecutive rounds park the
 // same way, which is how an earlier version of these tests read a pre-round
-// snapshot and passed vacuously.
+// snapshot and passed vacuously. Findings alone arrive before the executor opens
+// the gate, so both must be observed before responding.
 func waitForFindings(t *testing.T, database *db.DB, runID, marker string) []*db.StepResult {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
@@ -1601,7 +1636,9 @@ func waitForFindings(t *testing.T, database *db.DB, runID, marker string) []*db.
 			t.Fatal(err)
 		}
 		if len(steps) > 0 && steps[0].FindingsJSON != nil && strings.Contains(*steps[0].FindingsJSON, marker) {
-			return steps
+			if steps[0].Status == types.StepStatusAwaitingApproval || steps[0].Status == types.StepStatusFixReview {
+				return steps
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the round carrying %q never landed", marker)
@@ -1610,9 +1647,10 @@ func waitForFindings(t *testing.T, database *db.DB, runID, marker string) []*db.
 	}
 }
 
-// waitForRounds blocks until the step has persisted at least want rounds. A
-// round that reports nothing changes no marker, so its row is the only place
-// its arrival is visible.
+// waitForRounds blocks until the step is parked after persisting at least want
+// rounds. A round that reports nothing changes no marker, so its row is the only
+// place its arrival is visible. That row precedes approval readiness, so the
+// parked status must also be observed before responding.
 func waitForRounds(t *testing.T, database *db.DB, stepResultID string, want int) []*db.StepRound {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
@@ -1622,7 +1660,13 @@ func waitForRounds(t *testing.T, database *db.DB, stepResultID string, want int)
 			t.Fatal(err)
 		}
 		if len(rounds) >= want {
-			return rounds
+			step, err := database.GetStepResult(stepResultID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if step != nil && (step.Status == types.StepStatusAwaitingApproval || step.Status == types.StepStatusFixReview) {
+				return rounds
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("only %d of %d rounds landed", len(rounds), want)

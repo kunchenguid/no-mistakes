@@ -17,9 +17,9 @@ import (
 // what told a later review round to undo work the same person had asked for.
 //
 // The gate shape is produced the way a real run produces it: the reviewer's
-// rereview reports two more findings and claims no coverage of the earlier
-// files, so the five round-1 findings stay outstanding and reappear in the
-// round-2 gate next to the new ones.
+// rereview covers the earlier files and reports two more findings near r1-r4,
+// so those four round-1 findings stay outstanding and reappear in the round-2
+// gate next to the new ones. The distant r5 finding verifies clear.
 func TestGateDeclineJourney_PartialSelectionKeepsEarlierFixes(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "agent.yaml")
 	// Actions are matched in order against the prompt, so the rereview (which
@@ -39,7 +39,7 @@ func TestGateDeclineJourney_PartialSelectionKeepsEarlierFixes(t *testing.T) {
         - id: r7
           severity: warning
           file: deploy.sh
-          line: 48
+          line: 8
           description: cleanup never runs when the deploy fails, leaving the staging directory behind
           action: auto-fix
           review_scope: source
@@ -160,7 +160,7 @@ git add snapshot.tar.gz
 	}
 	// The round-2 gate shows the carried findings next to the new ones, which
 	// is the shape that makes the partial response dangerous.
-	for _, want := range []string{"r1", "r5", "r6", "r7"} {
+	for _, want := range []string{"r1", "r2", "r3", "r4", "r6", "r7"} {
 		if !strings.Contains(round2, want) {
 			t.Fatalf("round 2 gate does not carry %s:\n%s", want, round2)
 		}
@@ -208,7 +208,7 @@ git add snapshot.tar.gz
 	}
 
 	// The echo reports the dispositions the response recorded: r6 and r7 fixed,
-	// the carried r1-r5 kept rather than declined.
+	// the carried r1-r4 kept rather than declined.
 	// The recorded: block is the evidence: the gate table above it also names r1,
 	// so a bare substring search would pass without the disposition being
 	// reported at all.
@@ -223,13 +223,13 @@ git add snapshot.tar.gz
 			break
 		}
 	}
-	for _, id := range []string{"r1", "r5"} {
+	for _, id := range []string{"r1", "r2", "r3", "r4"} {
 		if !strings.Contains(kept, id) {
 			t.Fatalf("recorded kept line %q does not report the carried %s:\n%s", kept, id, round3)
 		}
 	}
 
-	t.Logf("journey: %d agent turns; the round-2 gate carried r1-r5 and the partial response kept them", len(h.AgentInvocations()))
+	t.Logf("journey: %d agent turns; the round-2 gate carried r1-r4 and the partial response kept them", len(h.AgentInvocations()))
 }
 
 // recordedDispositionsBlock returns the echo's recorded: section - the part of
