@@ -122,6 +122,9 @@ type runView struct {
 	PRURL            string
 	CIReady          bool
 	CIReadyNoCI      bool
+	// PostReviewCommits counts the commits after the run's review-approved
+	// head (see postReviewCommitCount). 0 omits the field. Reporting only.
+	PostReviewCommits int
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -486,6 +489,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
+	if rv.PostReviewCommits > 0 {
+		fields = append(fields, toon.Field{Key: "post_review_commits", Value: rv.PostReviewCommits})
+	}
 	if rv.TestOverrideReason != "" {
 		fields = append(fields, toon.Field{Key: "test_override_reason", Value: rv.TestOverrideReason})
 	}

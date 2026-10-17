@@ -29,6 +29,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 	ctx := sctx.Ctx
 	newHeadSHA := ""
+	formatterOwnChange := false
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return nil, err
 	}
@@ -36,6 +37,14 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	// Run format command if configured (before committing, so changes are formatted).
 	if fmtCmd := sctx.Config.Commands.Format; fmtCmd != "" {
+		formatStartHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve head before formatter: %w", err)
+		}
+		formatStartStatus, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+		if err != nil {
+			return nil, fmt.Errorf("check worktree before formatter: %w", err)
+		}
 		if err := ensurePrepared(sctx, s.Name()); err != nil {
 			return nil, fmt.Errorf("prepare formatter dependencies: %w", err)
 		}
@@ -46,6 +55,16 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		} else if exitCode != 0 {
 			sctx.Log(fmt.Sprintf("warning: format command exited with code %d: %s", exitCode, output))
 		}
+		formatEndHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve head after formatter: %w", err)
+		}
+		formatEndStatus, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+		if err != nil {
+			return nil, fmt.Errorf("check worktree after formatter: %w", err)
+		}
+		formatterOwnChange = strings.TrimSpace(formatStartStatus) == "" &&
+			(formatStartHead != formatEndHead || strings.TrimSpace(formatEndStatus) != "")
 	}
 
 	// Commit any uncommitted changes from pipeline agents or the formatter. Test
@@ -83,6 +102,22 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	headBeingPushed, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
+	}
+	approvedHead, err := postReviewPassFrom(sctx, headBeingPushed, formatterOwnChange)
+	if err != nil {
+		return nil, err
+	}
+	if approvedHead != "" {
+		// Record the exact head the pass will review before re-entering Review.
+		// The formatter may have committed its own edits, so newHeadSHA is not
+		// the complete set of pipeline-owned head advances here.
+		if strings.TrimSpace(sctx.Run.HeadSHA) != headBeingPushed {
+			if err := recordAgentFixHead(sctx, s.Name(), headBeingPushed); err != nil {
+				return nil, err
+			}
+		}
+		sctx.Log(fmt.Sprintf("head %s has commits after review-approved head %s; reviewing them before publishing (review.post_review_pass)", shortObjectID(headBeingPushed), shortObjectID(approvedHead)))
+		return &pipeline.StepOutcome{PostReviewPass: true}, nil
 	}
 	// This run's own review/test/document have already completed by now (see
 	// AllSteps' fixed order), so these are honest statuses to attest for the
@@ -362,6 +397,105 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 		}
 	}
 	return nil
+}
+
+// postReviewPassFrom returns the review-approved head when review.post_review_pass
+// requires Review to cover the commits after it before headBeingPushed is
+// published, or "" when publication may proceed. The rule is deterministic: the
+// head moved past the durable approval, whichever step committed. A review step
+// that was skipped - by --skip, or by the operator at the pass's own gate - is a
+// person's explicit decision and asks for no pass; a missing approval is left
+// to assertReviewApprovedPushHead, which refuses the push.
+func postReviewPassFrom(sctx *pipeline.StepContext, headBeingPushed string, formatterOwnChange bool) (string, error) {
+	if sctx.Config == nil || !sctx.Config.Review.PostReviewPass {
+		return "", nil
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return "", fmt.Errorf("load durable review approval before push: %w", err)
+	}
+	if run == nil || run.ReviewApprovedHeadSHA == nil {
+		return "", nil
+	}
+	approvedHead := strings.TrimSpace(*run.ReviewApprovedHeadSHA)
+	if approvedHead == "" || strings.EqualFold(approvedHead, headBeingPushed) {
+		return "", nil
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return "", fmt.Errorf("load step results before push: %w", err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepReview && step.Status == types.StepStatusSkipped {
+			sctx.Log("review was skipped; publishing without a post-review pass")
+			return "", nil
+		}
+	}
+	postReviewPasses, err := completedPostReviewPasses(sctx, steps)
+	if err != nil {
+		return "", fmt.Errorf("load completed post-review pass before push: %w", err)
+	}
+	if postReviewPasses > 0 {
+		if postReviewPasses >= 2 || !formatterOwnChange {
+			return "", fmt.Errorf("refusing to request another post-review pass: completed pass approved head %s, but head to publish is %s", shortObjectID(approvedHead), shortObjectID(headBeingPushed))
+		}
+		onlyFormatterCommit, err := isSingleFormatterCommitAfter(sctx, approvedHead, headBeingPushed)
+		if err != nil {
+			return "", fmt.Errorf("verify Push formatter commit before post-review pass: %w", err)
+		}
+		if !onlyFormatterCommit {
+			return "", fmt.Errorf("refusing to request another post-review pass: head %s is not exactly one Push formatter commit after approved head %s", shortObjectID(headBeingPushed), shortObjectID(approvedHead))
+		}
+	}
+	return approvedHead, nil
+}
+
+// completedPostReviewPasses counts the completed post-review passes in the
+// Review row. Push may grant exactly one additional pass for its own formatter
+// commit, never a third pass or a pass for another kind of advancement.
+func completedPostReviewPasses(sctx *pipeline.StepContext, steps []*db.StepResult) (int, error) {
+	var review *db.StepResult
+	for _, step := range steps {
+		if step.StepName == types.StepReview {
+			review = step
+			break
+		}
+	}
+	if review == nil || review.Status != types.StepStatusCompleted {
+		return 0, nil
+	}
+	rounds, err := sctx.DB.GetRoundsByStep(review.ID)
+	if err != nil {
+		return 0, err
+	}
+	latestInitial := -1
+	for index, round := range rounds {
+		if round.Trigger == "initial" {
+			latestInitial = index
+		}
+	}
+	if latestInitial < 0 {
+		return 0, nil
+	}
+	passes := 0
+	for _, round := range rounds[latestInitial+1:] {
+		if round.Trigger == db.RoundTriggerPostReview {
+			passes++
+		}
+	}
+	return passes, nil
+}
+
+// isSingleFormatterCommitAfter proves that the only commit between the
+// approved head and the formatter-advanced head is the current Push commit.
+// A single-parent check rejects merges and any additional or unrelated commit.
+func isSingleFormatterCommitAfter(sctx *pipeline.StepContext, approvedHead, headBeingPushed string) (bool, error) {
+	parents, err := stepGitRun(sctx, "rev-list", "--parents", "-n", "1", headBeingPushed)
+	if err != nil {
+		return false, err
+	}
+	fields := strings.Fields(parents)
+	return len(fields) == 2 && strings.EqualFold(fields[1], approvedHead), nil
 }
 
 // assertReviewApprovedPushHead refuses to publish a head that is not the

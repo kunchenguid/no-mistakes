@@ -209,6 +209,41 @@ func TestCapturePreservesFixRoundStartingHead(t *testing.T) {
 	}
 }
 
+// A post-review pass reviewed only the commits after an approval; replaying
+// it from the run's base would score a full review it never was.
+func TestCaptureLeavesOutPostReviewPassRounds(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, repo, firstRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "README.md"), []byte("# Sample\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, ctx, repo.WorkingPath, "add", "README.md")
+	mustGit(t, ctx, repo.WorkingPath, "commit", "-m", "no-mistakes(document): describe sample")
+	mustGit(t, ctx, repo.WorkingPath, "push", "origin", "feature/eval")
+	documentSHA := mustGit(t, ctx, repo.WorkingPath, "rev-parse", "HEAD")
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, db.RoundTriggerPostReview, &clean, nil, documentSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || cases[0].SourceRoundID != firstRound.ID {
+		t.Fatalf("captured cases = %#v, want only the full review round", cases)
+	}
+}
+
 func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)

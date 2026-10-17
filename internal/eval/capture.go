@@ -171,6 +171,13 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	}
 	captured := make([]Case, 0, len(reviewRounds))
 	for _, round := range reviewRounds {
+		// A post-review pass reviews only the commits after an approval, a
+		// scope a case replayed from the run's base cannot reproduce. The pass
+		// and every round after it are left out rather than captured as a
+		// full review they never were.
+		if round.IsPostReviewPass() {
+			break
+		}
 		if round.FindingsJSON == nil || strings.TrimSpace(*round.FindingsJSON) == "" {
 			// An interrupted or cancelled later round is not a replayable
 			// pass. Skip it so a completed sibling of the same run can still
