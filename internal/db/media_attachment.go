@@ -5,8 +5,8 @@ import (
 	"errors"
 )
 
-// RunMediaAttachment is a GitHub user-attachment uploaded for one run's local
-// evidence file. Digest identifies the file contents, not merely its path.
+// RunMediaAttachment is the forge's upload URL for one run's local evidence
+// file. Digest identifies the file contents, not merely its path.
 type RunMediaAttachment struct {
 	Path   string
 	Digest string

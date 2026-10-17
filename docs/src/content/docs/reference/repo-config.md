@@ -1091,8 +1091,8 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `test.evidence.commit_message` | `string` | Inherits from global (default `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})`) |
 
 By default, test evidence is written to `<NM_HOME>/evidence/<run-id>`. Where it is stored locally and how long it is kept are global-only settings; see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence).
-On GitHub.com/GHEC, supported image and video artifacts are uploaded to GitHub user-attachments when the PR is rendered unless `attach_media` is false and `store_in_repo` is also false.
-For GitHub repositories, set `store_in_repo: true` to also publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
+On GitHub.com/GHEC and GitLab, supported image and video artifacts are uploaded when the PR or MR is rendered unless `attach_media` is false and `store_in_repo` is also false.
+For GitHub.com and GitLab repositories, set `store_in_repo: true` to also publish evidence to an orphan branch in the code branch's push-target repository and link the artifacts from the PR or MR body; evidence is never committed to the code branch, so it never reaches the default branch.
 `test.evidence.branch` is read ONLY from the trusted default-branch copy of this file, because it names a git ref the daemon pushes to; a pushed branch cannot redirect evidence commits.
 The other publication fields, including `test.evidence.commit_message`, are read from the pushed branch. The commit-message template shapes only the evidence commit subject and cannot select its target branch.
 See [global config](/no-mistakes/reference/global-config/#testevidence) for provider support, limits, validation, and fail-closed behavior.

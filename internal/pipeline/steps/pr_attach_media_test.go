@@ -26,7 +26,7 @@ type stubMediaUploader struct {
 	calls []string
 }
 
-func (s *stubMediaUploader) UploadUserAsset(_ context.Context, path string) (string, error) {
+func (s *stubMediaUploader) UploadMedia(_ context.Context, path, _ string) (string, error) {
 	s.calls = append(s.calls, path)
 	if s.err != nil {
 		return "", s.err
@@ -69,7 +69,7 @@ func screenshotFindings(path string) string {
 	return fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, path)
 }
 
-func renderPRWithScreenshot(t *testing.T, uploader userAssetUploader, configure func(sctx *testPRAttachCtx)) (body, logs string) {
+func renderPRWithScreenshot(t *testing.T, uploader scm.MediaUploader, configure func(sctx *testPRAttachCtx)) (body, logs string) {
 	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
@@ -232,24 +232,22 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	}
 }
 
-func TestPRStep_NonGitHubForgeLeavesScreenshotUnchanged(t *testing.T) {
+func TestPRStep_DefaultConfigEmbedsGitLabScreenshotAttachment(t *testing.T) {
 	t.Parallel()
-	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
-	body, logs := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
+	markdown := "![Checkout screenshot](/uploads/abcdef/checkout.png)"
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": "/uploads/abcdef/checkout.png"}}
+	body, _ := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 		ctx.provider = scm.ProviderGitLab
 		ctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
 	})
-	if strings.Contains(body, "user-attachments") {
-		t.Fatalf("GitLab PR must not embed GitHub attachments, got:\n%s", body)
+	if !strings.Contains(body, markdown) {
+		t.Fatalf("expected GitLab project upload embed, got:\n%s", body)
 	}
-	if !strings.Contains(body, "local file:") {
-		t.Fatalf("GitLab screenshot should keep local rendering, got:\n%s", body)
+	if strings.Contains(body, "local file:") {
+		t.Fatalf("uploaded screenshot must not cite a local path, got:\n%s", body)
 	}
-	if len(uploader.calls) != 0 {
-		t.Fatalf("GitLab must not upload, calls=%v", uploader.calls)
-	}
-	if !strings.Contains(logs, "GitHub-only") {
-		t.Fatalf("expected GitHub-only skip reason, got %q", logs)
+	if len(uploader.calls) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(uploader.calls))
 	}
 }
 

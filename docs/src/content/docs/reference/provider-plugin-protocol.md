@@ -306,7 +306,8 @@ version 1; with a plugin they behave as they do for providers that lack them:
   provider. It never opens a PR from the upstream repository to itself.
 - Review-bot findings and transient-check reruns at the CI gate.
 - `axi run --closes` closing references (refused, as on every provider that does
-  not declare the closing-reference capability) and GitHub media attachments.
+  not declare the closing-reference capability) and evidence media uploads
+  and evidence-branch links.
 
 PR bodies use the same GitHub-flavored Markdown (with `<details>` blocks) as
 GitHub, GitLab, and Gitea.

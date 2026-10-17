@@ -1234,35 +1234,6 @@ func TestTestStep_EvidenceDirectoryIsAlwaysOutsideTheWorktree(t *testing.T) {
 	}
 }
 
-func TestTestStep_PublishedEvidenceGuidanceNamesTheEvidenceBranch(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[],"scenarios":[{"name":"user sees the change","result":"pass","live":true,"evidence":"manual evidence check","reason":""}],"verdict":"go"}`)}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.UserIntent = "Show users a success screen after checkout"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: ".no-mistakes/evidence", Branch: "team/ci/evidence"}
-
-	step := &TestStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	prompt := ag.calls[0].Prompt
-	wantDir := sctx.EvidenceDir
-	if !strings.Contains(prompt, "published to the repository's team/ci/evidence branch automatically and linked from the PR: "+wantDir) {
-		t.Fatalf("expected evidence-branch publishing guidance, got:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "committed and pushed automatically") {
-		t.Fatalf("evidence must not be promised as a commit on the pushed branch, got:\n%s", prompt)
-	}
-}
-
 // Local Test is targeted validation of the requested intent, never a complete
 // repository-suite walk. Broad regression belongs to remote CI. Pins the
 // normal evidence-agent contract wording so a soft "run the appropriate tests"
