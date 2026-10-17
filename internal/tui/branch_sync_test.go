@@ -200,7 +200,7 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 	}
 
 	recoverCalls := 0
-	m.syncRecover = func(keepLocal bool) branchsync.State {
+	m.syncRecover = func(keepLocal bool, confirmed *branchsync.RecoveryEvidence) branchsync.State {
 		if keepLocal {
 			t.Fatal("ordinary recovery unexpectedly selected keep-local")
 		}
@@ -263,7 +263,7 @@ func TestArchiveRecoveryConfirmationUsesOnlyGuardedKeepLocalAction(t *testing.T)
 	}
 	m.branchSync = &stranded
 	called := false
-	m.syncRecover = func(keepLocal bool) branchsync.State {
+	m.syncRecover = func(keepLocal bool, confirmed *branchsync.RecoveryEvidence) branchsync.State {
 		called = true
 		if !keepLocal {
 			t.Fatal("archive recovery did not use keep-local")
@@ -315,7 +315,7 @@ func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
 		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
 		Pipeline: branchsync.PipelineState{RunID: "run-1", Status: "running", Phase: "pre_push"},
 	}
-	m.syncRecover = func(bool) branchsync.State {
+	m.syncRecover = func(bool, *branchsync.RecoveryEvidence) branchsync.State {
 		t.Fatal("recover service must not be reachable for an active run")
 		return branchsync.State{}
 	}
