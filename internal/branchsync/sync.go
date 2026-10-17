@@ -2668,9 +2668,20 @@ func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 		branchRef := "refs/heads/" + state.Local.Branch
 		if strings.TrimSpace(s.GateDir) != "" {
 			gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", branchRef+"^{commit}")
-			if err == nil && gateHead == state.Local.Head {
-				state.Safety = "gate_ready"
-				state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+			if err == nil {
+				if gateHead == state.Local.Head {
+					state.Safety = "gate_ready"
+					state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+					return
+				}
+				if gateHead == state.Pipeline.CurrentHead {
+					state.Safety = "recovery_required"
+					state.NextAction = &NextAction{Code: "adopt_published", Command: "no-mistakes axi sync --adopt-published"}
+					return
+				}
+				state.Safety = "blocked_recover_manual_reconciliation"
+				state.Error = "the local branch and gate lane have diverged from the recovered pipeline head; inspect and reconcile the heads manually"
+				state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 				return
 			}
 		}
