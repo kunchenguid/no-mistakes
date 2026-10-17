@@ -3,7 +3,9 @@
 package e2e
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -248,5 +250,54 @@ func TestDriverInstructionsJourney_SupersedingRunOmitsDriverGuidance(t *testing.
 	if strings.Contains(prompt, driverGuidance) {
 		at := strings.Index(prompt, driverGuidance)
 		t.Fatalf("the superseding run's reviewer was shown the driver's guidance:\n...%s...", prompt[max(0, at-600):at+len(driverGuidance)])
+	}
+}
+
+// An added finding cannot carry driver guidance: `--add-finding` JSON with a
+// driver_instructions key is refused before anything reaches the daemon, so
+// the gate stays parked on its own findings, and the same addition without
+// that key is accepted.
+func TestDriverInstructionsJourney_AddedFindingRefusesDriverInstructions(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: driverInstructionsScenario(t)})
+	branch := "feature/driver-instructions-add-finding"
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	h.CommitChange(branch, "feature.txt", "flag = true\n", "add the feature flag")
+	gate, err := h.Run("axi", "run", "--intent", "Add the feature flag")
+	if err != nil || !strings.Contains(gate, "r1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gate)
+	}
+	before := len(h.AgentInvocations())
+
+	refused, err := h.Run("axi", "respond", "--action", "fix", "--findings", "r1",
+		"--add-finding", `{"description":"also document the default","driver_instructions":"`+driverGuidance+`"}`)
+	t.Logf("axi respond --add-finding with driver_instructions (err=%v):\n%s", err, refused)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("expected exit 2, got %v", err)
+	}
+	if !strings.Contains(refused, "invalid --add-finding") || !strings.Contains(refused, "driver_instructions") {
+		t.Fatalf("refusal does not name the rejected key:\n%s", refused)
+	}
+	if n := len(h.AgentInvocations()); n != before {
+		t.Fatalf("the refused response still started %d agent turn(s)", n-before)
+	}
+	status, err := h.Run("axi", "status")
+	t.Logf("axi status after the refusal:\n%s", status)
+	if err != nil || !strings.Contains(status, "r1") {
+		t.Fatalf("gate no longer parked on r1 after the refusal: %v\n%s", err, status)
+	}
+
+	accepted, err := h.Run("axi", "respond", "--action", "fix", "--findings", "r1",
+		"--add-finding", `{"description":"also document the default","user_instructions":"mention it in the README"}`)
+	t.Logf("axi respond --add-finding without driver_instructions (err=%v):\n%s", err, accepted)
+	if err != nil || !strings.Contains(accepted, "r2") {
+		t.Fatalf("the same addition without driver_instructions was not accepted: %v\n%s", err, accepted)
+	}
+	for _, p := range promptsWith(h, "Investigate previous review findings") {
+		if strings.Contains(p, driverGuidance) {
+			t.Fatal("the refused driver guidance reached the fixer")
+		}
 	}
 }
