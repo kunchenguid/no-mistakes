@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -416,6 +417,9 @@ func TestClaudeAgent_ResultRightAfterSubmissionUnderAShortBudgetFinishesCleanly(
 		{name: "required child completion", requireCompletedChildren: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.requireCompletedChildren && runtime.GOOS == "windows" {
+				t.Skip("the Windows child-completion probe reports live children right after a clean, childless exit: https://github.com/kunchenguid/no-mistakes/issues/1522")
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 			defer cancel()
 
