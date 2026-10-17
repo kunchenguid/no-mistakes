@@ -879,6 +879,23 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	if git.IsZeroSHA(baseSHA) && gate.ArchivedHeadRecorded(ctx, m.paths.RepoDir(repo.ID), branch, params.ReconciledPreviousHead) {
 		baseSHA = strings.TrimSpace(params.ReconciledPreviousHead)
 	}
+
+	autoRun := true
+	if m.paths != nil {
+		if globalCfg, err := config.LoadGlobal(m.paths.ConfigFile()); err == nil && globalCfg != nil {
+			autoRun = globalCfg.AutoRun
+		}
+	}
+	if !autoRun {
+		hasRuns, err := m.db.HasRunsForBranch(repo.ID, branch)
+		if err != nil {
+			return "", fmt.Errorf("check branch ledger: %w", err)
+		}
+		if !hasRuns {
+			return "", fmt.Errorf("auto_run disabled: branch %q has no runs in this home's ledger", branch)
+		}
+	}
+
 	if params.LaunchNonce != "" {
 		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, params.PiProfile)
 		if err != nil {

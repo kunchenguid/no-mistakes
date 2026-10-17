@@ -846,3 +846,44 @@ func TestLoadGlobal_AutoFixPartial(t *testing.T) {
 		t.Errorf("test = %v, want nil", cfg.AutoFix.Test)
 	}
 }
+
+func TestLoadGlobal_AutoRun(t *testing.T) {
+	// 1. Defaults
+	cfgDefault := DefaultGlobalConfig()
+	if !cfgDefault.AutoRun {
+		t.Errorf("DefaultGlobalConfig().AutoRun = %v, want true", cfgDefault.AutoRun)
+	}
+
+	// 2. Explicit auto_run: false
+	cfg1, err := LoadGlobalFromBytes([]byte("auto_run: false\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg1.AutoRun {
+		t.Errorf("auto_run: false -> AutoRun = %v, want false", cfg1.AutoRun)
+	}
+
+	// 3. Explicit auto_run: true
+	cfg2, err := LoadGlobalFromBytes([]byte("auto_run: true\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg2.AutoRun {
+		t.Errorf("auto_run: true -> AutoRun = %v, want true", cfg2.AutoRun)
+	}
+
+	// 4. Mirror nested mirror.auto_run: false
+	cfg3, err := LoadGlobalFromBytes([]byte("mirror:\n  auto_run: false\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg3.AutoRun {
+		t.Errorf("mirror.auto_run: false -> AutoRun = %v, want false", cfg3.AutoRun)
+	}
+
+	// 5. Merge copies AutoRun
+	merged := Merge(cfg1, &RepoConfig{})
+	if merged.AutoRun {
+		t.Errorf("merged.AutoRun = %v, want false", merged.AutoRun)
+	}
+}

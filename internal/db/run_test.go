@@ -38,6 +38,43 @@ func TestRunInsertAndGet(t *testing.T) {
 	}
 }
 
+func TestHasRunsForBranch(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+
+	has, err := d.HasRunsForBranch(repo.ID, "feature")
+	if err != nil {
+		t.Fatalf("check runs for branch: %v", err)
+	}
+	if has {
+		t.Errorf("expected false for unlaunched branch, got true")
+	}
+
+	_, err = d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	has, err = d.HasRunsForBranch(repo.ID, "feature")
+	if err != nil {
+		t.Fatalf("check runs for branch: %v", err)
+	}
+	if !has {
+		t.Errorf("expected true for launched branch, got false")
+	}
+
+	hasOther, err := d.HasRunsForBranch(repo.ID, "other")
+	if err != nil {
+		t.Fatalf("check runs for other branch: %v", err)
+	}
+	if hasOther {
+		t.Errorf("expected false for other branch, got true")
+	}
+}
+
 func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
