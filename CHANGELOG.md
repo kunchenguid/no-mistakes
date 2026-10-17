@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.98.0](https://github.com/kunchenguid/no-mistakes/compare/v1.97.2...v1.98.0) (2026-10-17)
+
+
+### Features
+
+* **daemon:** add checkpoint retry for failed runs ([#1496](https://github.com/kunchenguid/no-mistakes/issues/1496)) ([59340fb](https://github.com/kunchenguid/no-mistakes/commit/59340fbae30bb34a05d8d2c68074f4f39563369a))
+* **pipeline:** continue incomplete Review coverage in the same run ([#1490](https://github.com/kunchenguid/no-mistakes/issues/1490)) ([fd8d6fa](https://github.com/kunchenguid/no-mistakes/commit/fd8d6fa8a1a423797405e18973298710ef648f59))
+* **pipeline:** record gate response origins ([#1514](https://github.com/kunchenguid/no-mistakes/issues/1514)) ([d39cd9e](https://github.com/kunchenguid/no-mistakes/commit/d39cd9e5e30d10effc511c86786dd9e30df35dbd))
+
+
+### Bug Fixes
+
+* **agent:** retry transient Pi invocation failures ([#1516](https://github.com/kunchenguid/no-mistakes/issues/1516)) ([b5f1c65](https://github.com/kunchenguid/no-mistakes/commit/b5f1c65f776ef2818b060b68d12a71bad6f85061))
+* **update:** restart the daemon through the newly installed binary ([#1493](https://github.com/kunchenguid/no-mistakes/issues/1493)) ([e3ce34e](https://github.com/kunchenguid/no-mistakes/commit/e3ce34e8c749e2fc2850b402a1069fcd55c90580)), closes [#1383](https://github.com/kunchenguid/no-mistakes/issues/1383)
+
 ## [1.97.2](https://github.com/kunchenguid/no-mistakes/compare/v1.97.1...v1.97.2) (2026-10-15)
 
 
