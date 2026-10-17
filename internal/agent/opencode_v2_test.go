@@ -150,7 +150,10 @@ data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantM
 	if string(result.Output) != `{"summary":"final only"}` {
 		t.Fatalf("wrong authoritative output: %s", result.Output)
 	}
-	if chunks.String() != "progress" {
+	// The streamed delta "progress" is buffered and replaced by the complete
+	// fetched text at final reconciliation, so displayed progress is complete
+	// rather than a stale fragment.
+	if chunks.String() != `{"summary":"final only"}` {
 		t.Fatalf("wrong streamed text: %q", chunks.String())
 	}
 	if result.Usage.InputTokens != 17 || result.Usage.OutputTokens != 5 || result.Usage.CacheReadTokens != 3 || result.Usage.CacheCreationTokens != 2 {
@@ -284,6 +287,60 @@ data: {"type":"session.text.ended","data":{"sessionID":"ses_fixture","assistantM
 	}
 	if chunks.String() != "hello world" {
 		t.Fatalf("streamed progress did not recover the missing first delta: %q", chunks.String())
+	}
+}
+
+func TestOpencodeV2_ReportsActivityWhileBufferingDeltas(t *testing.T) {
+	f := &opencodeV2Fixture{pages: []string{v2Page("hello world")}, events: `data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"delta":"hello"}}
+
+data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"delta":" world"}}
+
+data: {"type":"session.text.ended","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"text":"hello world"}}
+
+`}
+	a := v2Agent(f.server(t))
+	var chunks strings.Builder
+	var lifecycle []LifecycleEvent
+	_, err := a.Run(context.Background(), RunOpts{CWD: t.TempDir(), Prompt: "work", OnChunk: func(text string) { chunks.WriteString(text) }, OnLifecycle: func(event LifecycleEvent) { lifecycle = append(lifecycle, event) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The authoritative answer and displayed progress are complete.
+	if chunks.String() != "hello world" {
+		t.Fatalf("expected complete text after the end event: %q", chunks.String())
+	}
+	// Activity must be reported while deltas are buffered, before the end.
+	var sawActivity bool
+	for _, event := range lifecycle {
+		if event.Phase == LifecyclePhaseActivity {
+			sawActivity = true
+		}
+	}
+	if !sawActivity {
+		t.Fatal("expected LifecyclePhaseActivity while buffering deltas")
+	}
+}
+
+func TestOpencodeV2_EmitsUnfinishedPartsInOriginalOrderFromCompleteText(t *testing.T) {
+	// Two text parts stream without any session.text.ended, so the final
+	// flush must emit them in ordinal order from the complete fetched text
+	// rather than ranging over the unordered parts map.
+	f := &opencodeV2Fixture{pages: []string{`{"data":[{"id":"msg_final","type":"assistant","content":[{"type":"text","text":"hello "},{"type":"text","text":"world"}],"tokens":{"input":12,"output":5}}],"cursor":{"next":null}}`},
+		events: `data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"delta":"hello "}}
+
+data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":1,"delta":"world"}}
+
+`}
+	var chunks strings.Builder
+	result, err := v2Agent(f.server(t)).Run(context.Background(), RunOpts{CWD: t.TempDir(), Prompt: "work", OnChunk: func(text string) { chunks.WriteString(text) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "hello world" {
+		t.Fatalf("wrong authoritative answer: %q", result.Text)
+	}
+	if chunks.String() != "hello world" {
+		t.Fatalf("unfinished parts not emitted in original order from complete text: %q", chunks.String())
 	}
 }
 

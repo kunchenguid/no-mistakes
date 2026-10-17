@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,6 +131,7 @@ func (a *opencodeAgent) runV2(ctx context.Context, opts RunOpts, baseURL string)
 	evidence := opencodeToolsNone
 	text := ""
 	finalMessageID := ""
+	var finalParts []string // complete text of each text part of the final message, in order
 	var failure *opencodeV2Error
 	for _, message := range messages {
 		if message.Tokens != nil {
@@ -138,10 +141,12 @@ func (a *opencodeAgent) runV2(ctx context.Context, opts RunOpts, baseURL string)
 			continue
 		}
 		var current strings.Builder
+		var parts []string
 		for _, content := range message.Content {
 			switch content.Type {
 			case "text":
 				current.WriteString(content.Text)
+				parts = append(parts, content.Text)
 			case "reasoning":
 			case "tool":
 				evidence = opencodeToolsRan
@@ -156,6 +161,7 @@ func (a *opencodeAgent) runV2(ctx context.Context, opts RunOpts, baseURL string)
 		// tool-call steps must not substitute for an absent final response.
 		text = current.String()
 		finalMessageID = message.ID
+		finalParts = parts
 	}
 	total := accumulateUsage(usage)
 	if session.Data.Outcome != "succeeded" {
@@ -172,11 +178,26 @@ func (a *opencodeAgent) runV2(ctx context.Context, opts RunOpts, baseURL string)
 	// Completion and live events have independent delivery timing. The wait
 	// response may win even when final text is still buffered on the stream.
 	// Flush any buffered parts of the final message that never reached a
-	// definitive end so displayed progress reflects the complete streamed
-	// text, then reconcile the final projection without emitting a prefix
+	// definitive end, in their original (ordinal) order and using the complete
+	// fetched text for each part, so displayed progress is neither garbled nor
+	// stale. Then reconcile the final projection without emitting a prefix
 	// twice.
-	for key, partText := range state.parts {
+	var unfinished []string
+	for key := range state.parts {
 		if !strings.HasPrefix(key, finalMessageID+":") || state.flushed[key] {
+			continue
+		}
+		unfinished = append(unfinished, key)
+	}
+	slices.SortFunc(unfinished, func(a, b string) int {
+		return ordinalOf(a) - ordinalOf(b)
+	})
+	for _, key := range unfinished {
+		partText := state.parts[key]
+		if ordinal := ordinalOf(key); ordinal >= 0 && ordinal < len(finalParts) {
+			partText = finalParts[ordinal]
+		}
+		if partText == "" {
 			continue
 		}
 		state.emit(finalMessageID, partText, opts)
@@ -187,6 +208,20 @@ func (a *opencodeAgent) runV2(ctx context.Context, opts RunOpts, baseURL string)
 	}
 	result, err := finalizeTextResult("opencode", text, opts.JSONSchema, total)
 	return result, opencodeTurnFailure(evidence, err)
+}
+
+// ordinalOf returns the text-part ordinal embedded in a stream part key
+// ("messageID:ordinal"), or -1 when the key is malformed.
+func ordinalOf(key string) int {
+	i := strings.LastIndex(key, ":")
+	if i < 0 || i == len(key)-1 {
+		return -1
+	}
+	n, err := strconv.Atoi(key[i+1:])
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // The private server credential is sent only to the selected loopback server,
@@ -351,6 +386,16 @@ func (s *opencodeV2Stream) read(reader io.Reader, opts RunOpts) {
 			// that later turns out not to be a prefix of the complete text
 			// cannot be retracted from the append-only OnChunk interface.
 			s.parts[key] += data.Delta
+			// Report activity for accepted deltas even while their text stays
+			// buffered, so a still-generating response is not mistaken for an
+			// idle one and cancelled past the stall budget.
+			if data.Delta != "" {
+				emitLifecycle(opts, LifecycleEvent{
+					Agent:   "opencode",
+					Phase:   LifecyclePhaseActivity,
+					Message: "opencode producing output",
+				})
+			}
 		case "session.text.ended":
 			if !s.flushed[key] {
 				s.emit(data.MessageID, data.Text, opts)
