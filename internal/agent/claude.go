@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -22,6 +23,19 @@ const claudeMaxRetries = 3
 
 // errNoStructuredOutput is returned when Claude succeeds but omits structured output.
 var errNoStructuredOutput = errors.New("claude returned no structured output")
+
+// errClaudeIdleAfterSubmission is returned by parseClaudeEvents when the
+// session went quiet after an accepted StructuredOutput submission and never
+// wrote its result event.
+var errClaudeIdleAfterSubmission = errors.New("claude went idle after its structured submission")
+
+// claudeSubmittedIdleGrace is how long a session may stay quiet, with no
+// main-thread tool call in flight, after an accepted StructuredOutput
+// submission before it is ended with that submission kept. Claude can promise
+// a fuller submission once background work finishes and then never make it,
+// which otherwise idles until the invocation budget kills the session and
+// discards the submission it did make. A variable so tests can shorten it.
+var claudeSubmittedIdleGrace = 10 * time.Minute
 
 const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
@@ -136,15 +150,27 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
-		err = started.waitAfterParseError(err)
+	parseErr := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result)
+	idleAfterSubmission := errors.Is(parseErr, errClaudeIdleAfterSubmission)
+	if parseErr != nil && !idleAfterSubmission {
+		err := started.waitAfterParseError(parseErr)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("claude parse events: %w", err)
 		emitAgentExited(opts, "claude", pid, retErr)
 		return resultFromUsage(usage), retErr
 	}
 
-	waitErr := started.wait()
+	var waitErr error
+	if idleAfterSubmission {
+		if opts.OnChunk != nil {
+			opts.OnChunk(fmt.Sprintf("claude stayed idle for %s after its accepted StructuredOutput submission without finishing its turn; ending the session and keeping that submission", claudeSubmittedIdleGrace))
+		}
+		// The exit status is the termination this adapter just caused, not
+		// the agent's verdict, so it is not reported as a failure.
+		_ = started.waitAfterParseError(parseErr)
+	} else {
+		waitErr = started.wait()
+	}
 	stderrWG.Wait()
 	if waitErr != nil {
 		retErr := claudeExitError(waitErr, string(stderrBuf), result.terminalAPIError())
@@ -335,6 +361,8 @@ type claudeEvent struct {
 	Type      string          `json:"type"`
 	Message   json.RawMessage `json:"message,omitempty"`
 	SessionID string          `json:"session_id,omitempty"`
+	// ParentToolUseID is set on events from a subagent's own conversation.
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
 
 	// result fields
 	Subtype          string          `json:"subtype,omitempty"`
@@ -409,117 +437,211 @@ type claudeContent struct {
 const claudeStructuredOutputTool = "StructuredOutput"
 
 // parseClaudeEvents reads JSONL from the reader and dispatches events.
-// It accumulates token usage and captures the final result event.
+// It accumulates token usage and captures the final result event. When the
+// stream stays quiet for claudeSubmittedIdleGrace after an accepted
+// StructuredOutput submission, with no main-thread tool call in flight and no
+// result event yet, it records that submission as the result and returns
+// errClaudeIdleAfterSubmission so the caller ends the session. Assistant prose
+// never stands in for a submission.
 func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
-	var textBuf string
-	var lastSessionID string
-	var lastModel string
-	var usageLimitReached bool
-	usageByMsg := make(map[string]TokenUsage)
-	// A terminal result event can carry only prose after background work
-	// completes, so the latest accepted StructuredOutput submission is kept
-	// and used when the result event has no structured payload of its own.
-	pendingSubmissions := make(map[string]json.RawMessage)
-	var lastSubmission json.RawMessage
+	lines := make(chan []byte)
+	scanDone := make(chan error, 1)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			select {
+			case lines <- line:
+			case <-stop:
+				return
+			}
+		}
+		scanDone <- scanner.Err()
+	}()
 
-	for scanner.Scan() {
+	p := &claudeEventParser{
+		onChunk:            onChunk,
+		usage:              usage,
+		result:             result,
+		usageByMsg:         make(map[string]TokenUsage),
+		pendingSubmissions: make(map[string]json.RawMessage),
+		inFlightTools:      make(map[string]bool),
+	}
+	idle := time.NewTimer(claudeSubmittedIdleGrace)
+	idle.Stop()
+	defer idle.Stop()
+	var idleC <-chan time.Time
+
+	for {
+		var line []byte
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-scanDone:
+			return err
+		case <-idleC:
+			p.keepSubmissionAsResult()
+			return errClaudeIdleAfterSubmission
+		case line = <-lines:
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+		p.handle(line)
+
+		idle.Stop()
+		idleC = nil
+		if p.awaitingOnlyItsResult() {
+			idle.Reset(claudeSubmittedIdleGrace)
+			idleC = idle.C
+		}
+	}
+}
+
+// claudeEventParser holds the state parseClaudeEvents carries across lines.
+type claudeEventParser struct {
+	onChunk func(string)
+	usage   *TokenUsage
+	result  **claudeResult
+
+	textBuf           string
+	lastSessionID     string
+	lastModel         string
+	usageLimitReached bool
+	usageByMsg        map[string]TokenUsage
+	// A terminal result event can carry only prose after background work
+	// completes, so the latest accepted StructuredOutput submission is kept
+	// and used when the result event has no structured payload of its own.
+	pendingSubmissions map[string]json.RawMessage
+	lastSubmission     json.RawMessage
+	// A main-thread tool call still awaiting its result (a long test run, a
+	// foreground subagent) is work in progress however quiet the stream is.
+	inFlightTools map[string]bool
+	sawResult     bool
+}
+
+// awaitingOnlyItsResult reports whether the session has an accepted
+// submission and nothing left in flight, so continued quiet means it is not
+// going to finish its turn.
+func (p *claudeEventParser) awaitingOnlyItsResult() bool {
+	return p.lastSubmission != nil && len(p.inFlightTools) == 0 && !p.sawResult
+}
+
+func (p *claudeEventParser) keepSubmissionAsResult() {
+	if p.result == nil {
+		return
+	}
+	*p.result = &claudeResult{
+		Subtype:          "success",
+		StructuredOutput: p.lastSubmission,
+		text:             p.textBuf,
+		sessionID:        p.lastSessionID,
+		model:            p.lastModel,
+
+		usageLimitReached: p.usageLimitReached,
+	}
+}
+
+func (p *claudeEventParser) handle(line []byte) {
+	if len(line) == 0 {
+		return
+	}
+
+	var event claudeEvent
+	if err := json.Unmarshal(line, &event); err != nil {
+		return // skip malformed lines
+	}
+	if event.SessionID != "" {
+		p.lastSessionID = event.SessionID
+	}
+	mainThread := event.ParentToolUseID == ""
+
+	switch event.Type {
+	case "assistant":
+		var msg claudeMessage
+		if err := json.Unmarshal(event.Message, &msg); err != nil {
+			return
+		}
+		if msg.Model != "" {
+			p.lastModel = msg.Model
+		}
+		// Content blocks repeat cumulative usage for the same message.
+		p.usageByMsg[msg.ID] = msg.Usage.tokenUsage()
+		*p.usage = accumulateUsage(p.usageByMsg)
+		for _, c := range msg.Content {
+			if c.Type == "text" && c.Text != "" {
+				p.textBuf += c.Text
+				if p.onChunk != nil {
+					p.onChunk(c.Text)
+				}
+			}
+			if c.Type == "tool_use" && c.ID != "" && mainThread {
+				p.inFlightTools[c.ID] = true
+			}
+			if c.Type == "tool_use" && c.Name == claudeStructuredOutputTool && c.ID != "" && len(c.Input) > 0 {
+				p.pendingSubmissions[c.ID] = c.Input
+			}
 		}
 
-		var event claudeEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			continue // skip malformed lines
+	case "user":
+		var msg claudeMessage
+		if err := json.Unmarshal(event.Message, &msg); err != nil {
+			return
 		}
-		if event.SessionID != "" {
-			lastSessionID = event.SessionID
-		}
-
-		switch event.Type {
-		case "assistant":
-			var msg claudeMessage
-			if err := json.Unmarshal(event.Message, &msg); err != nil {
+		for _, c := range msg.Content {
+			if c.Type != "tool_result" {
 				continue
 			}
-			if msg.Model != "" {
-				lastModel = msg.Model
+			if mainThread {
+				delete(p.inFlightTools, c.ToolUseID)
 			}
-			// Content blocks repeat cumulative usage for the same message.
-			usageByMsg[msg.ID] = msg.Usage.tokenUsage()
-			*usage = accumulateUsage(usageByMsg)
-			for _, c := range msg.Content {
-				if c.Type == "text" && c.Text != "" {
-					textBuf += c.Text
-					if onChunk != nil {
-						onChunk(c.Text)
-					}
-				}
-				if c.Type == "tool_use" && c.Name == claudeStructuredOutputTool && c.ID != "" && len(c.Input) > 0 {
-					pendingSubmissions[c.ID] = c.Input
-				}
-			}
-
-		case "user":
-			var msg claudeMessage
-			if err := json.Unmarshal(event.Message, &msg); err != nil {
+			input, ok := p.pendingSubmissions[c.ToolUseID]
+			if !ok {
 				continue
 			}
-			for _, c := range msg.Content {
-				if c.Type != "tool_result" {
-					continue
-				}
-				input, ok := pendingSubmissions[c.ToolUseID]
-				if !ok {
-					continue
-				}
-				delete(pendingSubmissions, c.ToolUseID)
-				if !c.IsError {
-					lastSubmission = input
-				}
+			delete(p.pendingSubmissions, c.ToolUseID)
+			if !c.IsError {
+				p.lastSubmission = input
 			}
+		}
 
-		case "rate_limit_event":
-			if event.RateLimitInfo != nil {
-				usageLimitReached = event.RateLimitInfo.Status == "rejected"
+	case "rate_limit_event":
+		if event.RateLimitInfo != nil {
+			p.usageLimitReached = event.RateLimitInfo.Status == "rejected"
+		}
+
+	case "result":
+		p.sawResult = true
+		// The invocation total includes usage absent from assistant events.
+		if event.Usage != nil {
+			*p.usage = event.Usage.tokenUsage()
+		}
+		if p.result != nil {
+			raw := make(json.RawMessage, len(line))
+			copy(raw, line)
+			structured := event.StructuredOutput
+			if len(structured) == 0 || string(structured) == "null" {
+				structured = p.lastSubmission
+			} else {
+				p.lastSubmission = structured
 			}
+			*p.result = &claudeResult{
+				Subtype:          event.Subtype,
+				IsError:          event.IsError,
+				StructuredOutput: structured,
+				text:             p.textBuf,
+				rawEvent:         raw,
+				sessionID:        p.lastSessionID,
+				model:            p.lastModel,
 
-		case "result":
-			// The invocation total includes usage absent from assistant events.
-			if event.Usage != nil {
-				*usage = event.Usage.tokenUsage()
-			}
-			if result != nil {
-				raw := make(json.RawMessage, len(line))
-				copy(raw, line)
-				structured := event.StructuredOutput
-				if len(structured) == 0 || string(structured) == "null" {
-					structured = lastSubmission
-				} else {
-					lastSubmission = structured
-				}
-				*result = &claudeResult{
-					Subtype:          event.Subtype,
-					IsError:          event.IsError,
-					StructuredOutput: structured,
-					text:             textBuf,
-					rawEvent:         raw,
-					sessionID:        lastSessionID,
-					model:            lastModel,
-
-					usageLimitReached: usageLimitReached,
-				}
+				usageLimitReached: p.usageLimitReached,
 			}
 		}
 	}
-
-	return scanner.Err()
 }

@@ -851,6 +851,11 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "submit-then-idle":
+		_, _ = io.WriteString(os.Stdout, claudeSubmitThenIdleStream(t, true))
+		for {
+			time.Sleep(time.Second)
+		}
 	case "replay-then-fail":
 		if fixture := os.Getenv("NM_CLAUDE_STDIN_FIXTURE"); fixture != "" {
 			stream, err := os.ReadFile(fixture)
