@@ -478,6 +478,20 @@ func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 	return r, nil
 }
 
+// HasRunsForBranch reports whether the home's ledger has any recorded run
+// for the given repository and branch.
+func (d *DB) HasRunsForBranch(repoID, branch string) (bool, error) {
+	var exists int
+	err := d.sql.QueryRow(`SELECT 1 FROM runs WHERE repo_id = ? AND branch = ? LIMIT 1`, repoID, branch).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check runs for branch: %w", err)
+	}
+	return true, nil
+}
+
 // GetActiveRuns returns all pending or running runs across all repos, newest first.
 func (d *DB) GetActiveRuns() ([]*Run, error) {
 	rows, err := d.sql.Query(

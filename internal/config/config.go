@@ -222,7 +222,11 @@ type GlobalConfig struct {
 	// run session-free so the rereview never resumes the session whose
 	// findings prescribed the fixes it certifies. Default true; set
 	// session_reuse: false to force every invocation cold.
-	SessionReuse  bool          `yaml:"-"`
+	SessionReuse bool `yaml:"-"`
+	// AutoRun controls whether a push notification automatically launches
+	// a pipeline run for branches not already in this home's ledger.
+	// Default true; set auto_run: false or mirror.auto_run: false to opt out.
+	AutoRun       bool          `yaml:"-"`
 	ForgeProfiles ForgeProfiles `yaml:"forge_profiles"`
 	// ProviderPlugins are operator-installed PR/CI provider executables keyed
 	// by plugin name. Global-only: see ProviderPlugin.
@@ -284,6 +288,8 @@ type globalConfigRaw struct {
 	TestAgentWorkingTimeout   string                     `yaml:"test_agent_working_timeout"`
 	LogLevel                  string                     `yaml:"log_level"`
 	SessionReuse              *bool                      `yaml:"session_reuse"`
+	AutoRun                   *bool                      `yaml:"auto_run"`
+	Mirror                    MirrorRaw                  `yaml:"mirror"`
 	AutoFix                   AutoFixRaw                 `yaml:"auto_fix"`
 	CI                        CIRaw                      `yaml:"ci"`
 	Rebase                    RebaseRaw                  `yaml:"rebase"`
@@ -305,6 +311,11 @@ type globalConfigRaw struct {
 	ProviderPlugins     map[string]providerPluginRaw `yaml:"provider_plugins"`
 	RepositoryOverrides RepositoryOverrides          `yaml:"repository_overrides"`
 	Providers           ProvidersRaw                 `yaml:"providers"`
+}
+
+// MirrorRaw carries mirror-related daemon options in global config.
+type MirrorRaw struct {
+	AutoRun *bool `yaml:"auto_run"`
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
@@ -833,6 +844,7 @@ type Config struct {
 	GateReconcileTimeout      time.Duration
 	LogLevel                  string
 	SessionReuse              bool
+	AutoRun                   bool
 	Eval                      Eval
 	Worktree                  Worktree
 	Commands                  Commands
@@ -2337,6 +2349,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		GateReconcileTimeout:    DefaultGateReconcileTimeout,
 		LogLevel:                "info",
 		SessionReuse:            true,
+		AutoRun:                 true,
 		Eval:                    evalDefaults(),
 		Worktree:                worktreeDefaults(),
 	}
@@ -2673,6 +2686,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	}
 	if raw.SessionReuse != nil {
 		cfg.SessionReuse = *raw.SessionReuse
+	}
+	if raw.AutoRun != nil {
+		cfg.AutoRun = *raw.AutoRun
+	}
+	if raw.Mirror.AutoRun != nil {
+		cfg.AutoRun = *raw.Mirror.AutoRun
 	}
 	if raw.ForgeProfiles != nil {
 		profiles, err := normalizeForgeProfiles(raw.ForgeProfiles)
@@ -3759,6 +3778,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		GateReconcileTimeout:      global.GateReconcileTimeout,
 		LogLevel:                  global.LogLevel,
 		SessionReuse:              global.SessionReuse,
+		AutoRun:                   global.AutoRun,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step. Worktree
 		// is global-only for the same reason (see GlobalConfig.Worktree).

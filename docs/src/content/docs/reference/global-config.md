@@ -58,6 +58,8 @@ log_level: info
 
 session_reuse: true
 
+auto_run: true
+
 worktree_roots:
   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
 
@@ -819,6 +821,17 @@ When resume is unavailable or fails, the fix turn falls back to a cold run or a 
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts; Pi's own session directory retains its native transcript. Keep Pi's session directory private, and keep any `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` setting stable while a run is active so a daemon restart can find the fixer session.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
+
+### auto_run
+
+Whether push notifications automatically launch runs for branches not already in this home's ledger.
+
+|         |        |
+| ------- | ------ |
+| Type    | `bool` |
+| Default | `true` |
+
+By default, any push received on a gate automatically starts a pipeline run. In setups where multiple homes or machines mirror the same remote, setting `auto_run: false` (or `mirror.auto_run: false`) prevents the daemon from auto-launching unwanted runs on newly discovered branches, scoping push-triggered runs to only continue branches that already exist in this home's ledger.
 
 ### worktree_roots
 
