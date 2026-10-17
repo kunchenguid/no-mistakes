@@ -214,6 +214,26 @@ type Finding struct {
 	// every non-CI finding.
 	Check   string `json:"check,omitempty"`
 	CheckID string `json:"check_id,omitempty"`
+	// CarriedFromRound and CarriedReason are pipeline-written: a Review round
+	// keeps every outstanding finding it did not positively verify, so they
+	// tell a reader that this round's reviewer did not submit the finding, the
+	// last round that did, and why this round did not clear it. Both are empty
+	// on a finding the round itself reported.
+	CarriedFromRound int    `json:"carried_from_round,omitempty"`
+	CarriedReason    string `json:"carried_reason,omitempty"`
+}
+
+// CarriedNote renders the carry provenance for a human reader, or "" for a
+// finding its round reported.
+func (f Finding) CarriedNote() string {
+	if f.CarriedFromRound == 0 {
+		return ""
+	}
+	note := "carried from round " + itoa(f.CarriedFromRound)
+	if f.CarriedReason != "" {
+		note += ", not cleared: " + f.CarriedReason
+	}
+	return note
 }
 
 // TestScenario is one named end-to-end scenario the test step derived from the
@@ -284,6 +304,8 @@ type findingWire struct {
 	Category            string `json:"category,omitempty"`
 	Check               string `json:"check,omitempty"`
 	CheckID             string `json:"check_id,omitempty"`
+	CarriedFromRound    int    `json:"carried_from_round,omitempty"`
+	CarriedReason       string `json:"carried_reason,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -671,6 +693,8 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Category = wire.Category
 	f.Check = wire.Check
 	f.CheckID = wire.CheckID
+	f.CarriedFromRound = wire.CarriedFromRound
+	f.CarriedReason = wire.CarriedReason
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser
