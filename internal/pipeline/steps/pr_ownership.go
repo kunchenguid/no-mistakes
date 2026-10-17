@@ -125,6 +125,17 @@ func wrapPRAppendix(appendix string) string {
 // generated block. Model-authored copies of ownership markers in evidence are
 // escaped before the actual delimiters are inserted, like foreign attestations.
 func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit int) (prContent, error) {
+	content := renderOwnedPRContent(parts, title, appendix)
+	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
+		return prContent{}, err
+	}
+	if _, err := parsePROwnedBody(content.Body); err != nil {
+		return prContent{}, err
+	}
+	return content, nil
+}
+
+func renderOwnedPRContent(parts prOwnedBody, title, appendix string) prContent {
 	before := redactPRContent(prContent{Body: parts.before}).Body
 	after := redactPRContent(prContent{Body: parts.after}).Body
 	// Before the marker escape: removing a control byte must not be able to
@@ -135,14 +146,7 @@ func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit 
 	if !parts.managed && before != "" {
 		before += "\n\n"
 	}
-	content := prContent{Title: redactPRContent(prContent{Title: title}).Title, Body: before + wrapPRAppendix(appendix) + after}
-	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
-		return prContent{}, err
-	}
-	if _, err := parsePROwnedBody(content.Body); err != nil {
-		return prContent{}, err
-	}
-	return content, nil
+	return prContent{Title: redactPRContent(prContent{Title: title}).Title, Body: before + wrapPRAppendix(appendix) + after}
 }
 
 func validateOwnedPRBudget(body string, bodyLimit int) error {
@@ -150,6 +154,32 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 		return fmt.Errorf("PR body exceeds provider budget; refusing to drop author text, closing references or recorded evidence")
 	}
 	return nil
+}
+
+func findExistingPRForPublication(sctx *pipeline.StepContext, host scm.Host, branch string) (*scm.PR, scm.PRContent, error) {
+	existing, err := host.FindPR(sctx.Ctx, branch, "")
+	if err != nil {
+		return nil, scm.PRContent{}, err
+	}
+	existing, err = bindExistingPR(sctx, host, existing)
+	if err != nil {
+		return nil, scm.PRContent{}, err
+	}
+	if existing == nil {
+		return nil, scm.PRContent{}, nil
+	}
+	var live scm.PRContent
+	if reader, ok := host.(scm.PRContentReader); ok {
+		live, err = reader.GetPRContent(sctx.Ctx, existing)
+		if err != nil {
+			return nil, scm.PRContent{}, fmt.Errorf("read existing PR before publication: %w", err)
+		}
+	}
+	return existing, live, nil
+}
+
+func prBodyIsOwned(template string, existing *scm.PR, liveBody string) bool {
+	return template != "" || (existing != nil && hasPRAppendixMarkers(liveBody))
 }
 
 // updateOwnedPR re-reads before the full-body write and verifies afterwards.
