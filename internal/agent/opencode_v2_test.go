@@ -267,6 +267,26 @@ func TestOpencodeV2_BackfillsOnlyTheMissingFinalStreamSuffix(t *testing.T) {
 	}
 }
 
+func TestOpencodeV2_RecoversDisplayedProgressWhenTheFirstDeltaIsMissing(t *testing.T) {
+	f := &opencodeV2Fixture{pages: []string{v2Page("hello world")}, events: `data: {"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"delta":"world"}}
+
+data: {"type":"session.text.ended","data":{"sessionID":"ses_fixture","assistantMessageID":"msg_final","ordinal":0,"text":"hello world"}}
+
+`}
+	var chunks strings.Builder
+	result, err := v2Agent(f.server(t)).Run(context.Background(), RunOpts{CWD: t.TempDir(), Prompt: "work", OnChunk: func(text string) { chunks.WriteString(text) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The authoritative answer is unchanged by stream repair.
+	if result.Text != "hello world" {
+		t.Fatalf("wrong authoritative answer: %q", result.Text)
+	}
+	if chunks.String() != "hello world" {
+		t.Fatalf("streamed progress did not recover the missing first delta: %q", chunks.String())
+	}
+}
+
 func TestOpencodeV2_RedirectCannotReceiveThePrivateServerCredential(t *testing.T) {
 	var forwarded atomic.Bool
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded.Store(true) }))

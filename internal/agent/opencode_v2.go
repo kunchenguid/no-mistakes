@@ -81,7 +81,7 @@ func (a *opencodeAgent) runV2(ctx context.Context, opts RunOpts, baseURL string)
 	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
 		return nil, fmt.Errorf("opencode event stream: expected SSE response, got HTTP %d", response.StatusCode)
 	}
-	state := opencodeV2Stream{sessionID: created.Data.ID, parts: make(map[string]string), emitted: make(map[string]string), usage: make(map[string]TokenUsage)}
+	state := opencodeV2Stream{sessionID: created.Data.ID, parts: make(map[string]string), emitted: make(map[string]string), flushed: make(map[string]bool), usage: make(map[string]TokenUsage)}
 	streamDone := make(chan struct{})
 	go func() {
 		defer close(streamDone)
@@ -170,8 +170,18 @@ func (a *opencodeAgent) runV2(ctx context.Context, opts RunOpts, baseURL string)
 		return resultFromUsage(total), opencodeTurnFailure(opencodeToolsUnknown, fmt.Errorf("opencode projection: no messages after execution"))
 	}
 	// Completion and live events have independent delivery timing. The wait
-	// response may win even when final text is still buffered on the stream;
-	// reconcile the final projection without emitting a prefix twice.
+	// response may win even when final text is still buffered on the stream.
+	// Flush any buffered parts of the final message that never reached a
+	// definitive end so displayed progress reflects the complete streamed
+	// text, then reconcile the final projection without emitting a prefix
+	// twice.
+	for key, partText := range state.parts {
+		if !strings.HasPrefix(key, finalMessageID+":") || state.flushed[key] {
+			continue
+		}
+		state.emit(finalMessageID, partText, opts)
+		state.flushed[key] = true
+	}
 	if streamed := state.emitted[finalMessageID]; strings.HasPrefix(text, streamed) {
 		state.emit(finalMessageID, strings.TrimPrefix(text, streamed), opts)
 	}
@@ -298,6 +308,7 @@ type opencodeV2Stream struct {
 	sessionID     string
 	parts         map[string]string
 	emitted       map[string]string
+	flushed       map[string]bool
 	lastMessageID string
 	usage         map[string]TokenUsage
 }
@@ -336,12 +347,14 @@ func (s *opencodeV2Stream) read(reader io.Reader, opts RunOpts) {
 		key := fmt.Sprintf("%s:%d", data.MessageID, data.Ordinal)
 		switch value.Type {
 		case "session.text.delta":
+			// Buffer deltas per part instead of emitting them live: a partial
+			// that later turns out not to be a prefix of the complete text
+			// cannot be retracted from the append-only OnChunk interface.
 			s.parts[key] += data.Delta
-			s.emit(data.MessageID, data.Delta, opts)
 		case "session.text.ended":
-			previous := s.parts[key]
-			if strings.HasPrefix(data.Text, previous) {
-				s.emit(data.MessageID, strings.TrimPrefix(data.Text, previous), opts)
+			if !s.flushed[key] {
+				s.emit(data.MessageID, data.Text, opts)
+				s.flushed[key] = true
 			}
 			s.parts[key] = data.Text
 		case "session.step.ended", "session.step.failed":
