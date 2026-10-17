@@ -16,6 +16,9 @@ const (
 	RunCompleted RunStatus = "completed"
 	RunFailed    RunStatus = "failed"
 	RunCancelled RunStatus = "cancelled"
+	// RunHandedOff means the operator ended green CI monitoring for human review.
+	// The PR remains open; this does not imply that it was merged.
+	RunHandedOff RunStatus = "handed_off"
 	// RunCIMonitorInterrupted means the daemon restarted while babysitting an
 	// already-created PR. The PR remains intact, so this is not a pipeline
 	// failure.
@@ -35,10 +38,10 @@ const (
 // through it so a newly added terminal status can never drift out of sync.
 // RunCIMonitorInterrupted is terminal - the daemon restarted mid-CI-monitor
 // and the run is never resumed (issue #361) - so it must classify exactly like
-// completed/failed/cancelled.
+// completed/failed/cancelled/handed_off.
 func (s RunStatus) Terminal() bool {
 	switch s {
-	case RunCompleted, RunFailed, RunCancelled, RunCIMonitorInterrupted:
+	case RunCompleted, RunFailed, RunCancelled, RunCIMonitorInterrupted, RunHandedOff:
 		return true
 	default:
 		return false

@@ -94,6 +94,12 @@ type Executor struct {
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
 	onPRMerged            func(context.Context, string)
+	// ciObservationTransition wraps CI readiness and PR-state writes at a
+	// daemon-owned synchronization boundary. It is nil in standalone executor
+	// embeddings.
+	ciObservationTransition func(runID string, withdrawal, completes bool, reason string, persist func() error) error
+	ciMonitorLifecycle      func(runID string, active bool)
+	ciWake                  func(runID string) <-chan struct{}
 }
 
 // SetOnPRMerged registers a best-effort hook invoked after a merged PR state
@@ -103,6 +109,30 @@ func (e *Executor) SetOnPRMerged(fn func(context.Context, string)) {
 		return
 	}
 	e.onPRMerged = fn
+}
+
+// SetCIObservationTransition serializes CI observations with daemon
+// lifecycle decisions. The transition owns the persist callback's critical
+// section; standalone executors use the direct DB path instead.
+func (e *Executor) SetCIObservationTransition(fn func(runID string, withdrawal, completes bool, reason string, persist func() error) error) {
+	if e == nil {
+		return
+	}
+	e.ciObservationTransition = fn
+}
+
+func (e *Executor) SetCIMonitorLifecycle(fn func(runID string, active bool)) {
+	if e == nil {
+		return
+	}
+	e.ciMonitorLifecycle = fn
+}
+
+func (e *Executor) SetCIWake(fn func(runID string) <-chan struct{}) {
+	if e == nil {
+		return
+	}
+	e.ciWake = fn
 }
 
 // SetForgeContext configures the immutable provider context used by every
@@ -1303,6 +1333,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// and the recorded evidence name the same round.
 		stepAgent = &roundStampingAgent{inner: stepAgent, round: func() int { return roundNum + 1 }}
 	}
+	var ciWake <-chan struct{}
+	if e.ciWake != nil {
+		ciWake = e.ciWake(run.ID)
+	}
 	ciReady := run.CIReadyAt != nil
 	ciReadyNoCI := run.CIReadyNoCI
 	ciReadinessChanged := func(ready, declaredNoCI bool) {
@@ -1356,8 +1390,42 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			touchLogActivity(text, true)
 		},
 		CIReadinessChanged: ciReadinessChanged,
+		CIWake:             ciWake,
 		MarkRunning:        markRunning,
 		OnPRMerged:         e.onPRMerged,
+	}
+	sctx.SetCIReadiness = func(ready, declaredNoCI bool) error {
+		declaredNoCI = ready && declaredNoCI
+		persist := func() error {
+			if err := e.db.SetRunCIReadyWithReason(run.ID, ready, declaredNoCI); err != nil {
+				return err
+			}
+			if sctx.CIReadinessChanged != nil {
+				sctx.CIReadinessChanged(ready, declaredNoCI)
+			}
+			return nil
+		}
+		if e.ciObservationTransition != nil {
+			reason := ""
+			if !ready {
+				reason = "CI checks are not green"
+			}
+			return e.ciObservationTransition(run.ID, !ready, ready, reason, persist)
+		}
+		return persist()
+	}
+	sctx.SetPRState = func(state string) error {
+		persist := func() error {
+			return e.db.UpdateRunPRState(run.ID, state)
+		}
+		if e.ciObservationTransition != nil {
+			reason := ""
+			if state != "open" {
+				reason = fmt.Sprintf("PR is %s", state)
+			}
+			return e.ciObservationTransition(run.ID, state != "open", false, reason, persist)
+		}
+		return persist()
 	}
 	if stepName == types.StepReview {
 		BindUncertifiedPipelineRange(sctx)
@@ -1404,9 +1472,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// Execute with possible fix loop
 rounds:
 	for {
+		if stepName == types.StepCI && e.ciMonitorLifecycle != nil {
+			e.ciMonitorLifecycle(run.ID, true)
+		}
 		reviewStartingHeadSHA := run.HeadSHA
 		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
 		outcome, err := step.Execute(sctx)
+		if stepName == types.StepCI && e.ciMonitorLifecycle != nil {
+			e.ciMonitorLifecycle(run.ID, false)
+		}
 		sctx.CoverageContinuation = nil
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
@@ -1415,6 +1489,15 @@ rounds:
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
 			durationMS := executionMS + roundDuration
+			contextCause := context.Cause(ctx)
+			handoff := (errors.Is(err, ErrHandoff) || errors.Is(contextCause, ErrHandoff)) && (contextCause == nil || errors.Is(contextCause, ErrHandoff))
+			if stepName == types.StepCI && handoff {
+				if dbErr := e.db.CompleteStep(sr.ID, 0, durationMS, logPath); dbErr != nil {
+					return false, "", dbErr
+				}
+				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", &durationMS)
+				return false, "", ErrHandoff
+			}
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
@@ -2305,6 +2388,17 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	if errors.Is(err, ErrParkedAtShutdown) {
 		return err
 	}
+	causesHandoff := errors.Is(err, ErrHandoff)
+	for _, ctx := range ctxs {
+		if cause := context.Cause(ctx); cause != nil {
+			if !errors.Is(cause, ErrHandoff) {
+				causesHandoff = false
+			}
+		}
+	}
+	if causesHandoff {
+		return e.completeRunWithStatus(run, repo, types.RunHandedOff)
+	}
 	errMsg := err.Error()
 	for _, ctx := range ctxs {
 		if cause := context.Cause(ctx); cause != nil && cause != context.Canceled {
@@ -2335,12 +2429,16 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 }
 
 func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
+	return e.completeRunWithStatus(run, repo, types.RunCompleted)
+}
+
+func (e *Executor) completeRunWithStatus(run *db.Run, repo *db.Repo, status types.RunStatus) error {
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
 	var err error
 	if verified {
-		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead)
+		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, status, verifiedHead)
 	} else {
-		err = e.db.UpdateRunStatus(run.ID, types.RunCompleted)
+		err = e.db.UpdateRunStatus(run.ID, status)
 	}
 	if err != nil {
 		return err
@@ -2348,7 +2446,7 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 	if verified {
 		run.HeadSHA = verifiedHead
 	}
-	run.Status = types.RunCompleted
+	run.Status = status
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return nil
 }
@@ -2429,13 +2527,13 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 		Error:  run.Error,
 		PRURL:  run.PRURL,
 	}
-	// A completed run may have a Test exception or CI approval override; the TUI
+	// A successful terminal run may have a Test exception or CI approval override; the TUI
 	// banner reads the reason off the delta (like PRURL) so it never needs a
 	// snapshot to distinguish it from a genuinely green run. Derived from step
 	// rows so both ActionApprove sites (live wait and Resume) are covered.
-	// Gated on the terminal status, not the event type: errorRun emits the same
-	// event for failed/cancelled runs, whose banner never reads it.
-	if run.Status == types.RunCompleted {
+	// Gated on the successful terminal status, not the event type: errorRun emits
+	// the same event for failed/cancelled runs, whose banner never reads it.
+	if run.Status == types.RunCompleted || run.Status == types.RunHandedOff {
 		if steps, err := e.db.GetStepsByRun(run.ID); err == nil {
 			ciReason, testReason := completionOverrideReasons(steps)
 			if ciReason != "" {

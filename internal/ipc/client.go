@@ -177,19 +177,25 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 		return err
 	}
 
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+
 	req, err := NewRequest(method, params)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
+	req.DeadlineUnixNano = deadline.UnixNano()
 
 	if err := c.encoder.Encode(req); err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
 
-	if timeout <= 0 {
-		timeout = defaultCallTimeout
-	}
-	c.conn.SetReadDeadline(time.Now().Add(timeout))
+	c.conn.SetReadDeadline(deadline)
 	interruptDone := make(chan struct{})
 	stopInterrupt := context.AfterFunc(ctx, func() {
 		c.conn.SetReadDeadline(time.Now())

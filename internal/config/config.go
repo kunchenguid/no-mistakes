@@ -69,7 +69,7 @@ const (
 	// Global-config-only; a pushed branch cannot change it.
 	DefaultGateReconcileTimeout = 30 * time.Second
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
-	// merged, closed, or the run is aborted - never self-terminate".
+	// merged, closed, handed off, or aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
 	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)

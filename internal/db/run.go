@@ -502,7 +502,7 @@ func (d *DB) GetActiveRuns() ([]*Run, error) {
 
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status.Terminal(), now(), id)
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
@@ -598,12 +598,12 @@ func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
 			AND push_target_kind = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0
 			AND pr_state IS ? AND COALESCE(pr_state, '') NOT IN ('merged', 'closed')
 			AND NOT EXISTS (SELECT 1 FROM runs other WHERE other.repo_id = runs.repo_id AND other.branch = runs.branch AND other.id <> runs.id
-				AND other.status NOT IN (?, ?, ?, ?))
+				AND other.status NOT IN (?, ?, ?, ?, ?))
 			AND EXISTS (SELECT 1 FROM repos WHERE repos.id = runs.repo_id AND repos.upstream_url = ? AND COALESCE(repos.fork_url, '') = ?)`,
 		rebind.Head, rebind.Head, now(), id, string(rebind.Status), rebind.ExpectedPushed, rebind.ExpectedGeneration,
 		rebind.ExpectedHead, rebind.CustodyReturned,
 		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref, rebind.PRState,
-		string(types.RunCompleted), string(types.RunFailed), string(types.RunCancelled), string(types.RunCIMonitorInterrupted),
+		string(types.RunCompleted), string(types.RunFailed), string(types.RunCancelled), string(types.RunCIMonitorInterrupted), string(types.RunHandedOff),
 		rebind.UpstreamURL, rebind.ForkURL,
 	)
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// trackAxiSurface records a state-changing axi command (run, respond, abort)
+// trackAxiSurface records a state-changing axi command (run, respond, abort, handoff)
 // both as a pageview and as a command event. The pageview gives agent usage
 // parity with the human surfaces (the TUI emits /tui, the wizard /wizard) so
 // agent and human activity show up the same way in analytics; the command
