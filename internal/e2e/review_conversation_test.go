@@ -482,9 +482,17 @@ func TestReviewConversationNeverReachesTheEvidenceBranch(t *testing.T) {
 		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
 	}
 
-	// Read the published evidence branch out of the upstream repository the
-	// pipeline actually pushed to.
-	tree, err := h.runGit(t.Context(), h.UpstreamDir, "ls-tree", "-r", "--name-only", "no-mistakes/evidence")
+	// Read the published evidence history out of the upstream repository the
+	// pipeline actually pushed to. It lives outside refs/heads so a host's
+	// branch-triggered deploy integrations never see it.
+	const evidenceRef = "refs/no-mistakes/evidence/no-mistakes/evidence"
+	if heads, err := h.runGit(t.Context(), h.UpstreamDir, "for-each-ref", "--format=%(refname)", "refs/heads/no-mistakes/"); err != nil || strings.TrimSpace(string(heads)) != "" {
+		t.Fatalf("evidence was published as a branch under refs/heads: %q (err=%v)", heads, err)
+	}
+	if refs, err := h.runGit(t.Context(), h.UpstreamDir, "for-each-ref", "--format=%(objectname:short) %(refname)"); err == nil {
+		t.Logf("upstream refs after the run:\n%s", refs)
+	}
+	tree, err := h.runGit(t.Context(), h.UpstreamDir, "ls-tree", "-r", "--name-only", evidenceRef)
 	if err != nil {
 		t.Fatalf("evidence branch was not published: %v\n%s", err, tree)
 	}
@@ -525,7 +533,7 @@ func TestReviewConversationNeverReachesTheEvidenceBranch(t *testing.T) {
 
 	// And no blob on that branch carries the conversation's text, whatever it
 	// was named.
-	blobs, err := h.runGit(t.Context(), h.UpstreamDir, "grep", "-I", "-l", "-e", conversationAnswerText, "-e", conversationQuestionText, "-e", conversationAnsweredBy, "no-mistakes/evidence")
+	blobs, err := h.runGit(t.Context(), h.UpstreamDir, "grep", "-I", "-l", "-e", conversationAnswerText, "-e", conversationQuestionText, "-e", conversationAnsweredBy, evidenceRef)
 	if err == nil {
 		t.Errorf("the evidence branch carries the conversation's text:\n%s", blobs)
 	}

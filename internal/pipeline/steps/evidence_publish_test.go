@@ -92,7 +92,7 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 		t.Fatal("expected evidence to be published")
 	}
 
-	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
+	tip := gitCmd(t, remote, "rev-parse", "refs/no-mistakes/evidence/no-mistakes/evidence")
 	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", tip)
 	for _, want := range []string{
 		".no-mistakes/evidence/feature/add-login/checkout.png",
@@ -147,7 +147,7 @@ func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T)
 	if links == nil {
 		t.Fatal("expected evidence to be published")
 	}
-	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
+	tip := gitCmd(t, remote, "rev-parse", "refs/no-mistakes/evidence/no-mistakes/evidence")
 	steps, rounds := testStepWithArtifacts(fmt.Sprintf(
 		`{"kind":"screenshot","label":"Encoded screenshot","path":%q}`,
 		filepath.Join(evidenceDir, filepath.FromSlash(artifact)),
@@ -169,11 +169,11 @@ func TestPublishRunEvidence_UsesTheConfiguredBranchName(t *testing.T) {
 		t.Fatal("expected evidence to be published")
 	}
 
-	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", "refs/heads/team/ci/evidence")
+	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", "refs/no-mistakes/evidence/team/ci/evidence")
 	if !strings.Contains(tree, ".no-mistakes/evidence/feature/add-login/cli-run.txt") {
 		t.Errorf("configured evidence branch missing the artifact, has:\n%s", tree)
 	}
-	if refs := gitCmd(t, remote, "for-each-ref", "--format=%(refname)", "refs/heads/no-mistakes"); refs != "" {
+	if refs := gitCmd(t, remote, "for-each-ref", "--format=%(refname)", "refs/no-mistakes/evidence/no-mistakes"); refs != "" {
 		t.Errorf("the default evidence branch was created too: %q", refs)
 	}
 }
@@ -195,7 +195,7 @@ func TestPublishRunEvidence_CommitSubject(t *testing.T) {
 			if links := publishRunEvidence(sctx); links == nil {
 				t.Fatal("expected evidence to be published")
 			}
-			got := gitCmd(t, remote, "log", "-1", "--format=%s", "refs/heads/no-mistakes/evidence")
+			got := gitCmd(t, remote, "log", "-1", "--format=%s", "refs/no-mistakes/evidence/no-mistakes/evidence")
 			if want := fmt.Sprintf(tc.want, sctx.Run.ID); got != want {
 				t.Fatalf("evidence commit subject = %q, want %q", got, want)
 			}
@@ -320,7 +320,7 @@ func TestPublishRunEvidence_NeverPublishesTheReviewConversation(t *testing.T) {
 		t.Fatal("the real test evidence beside the conversation must still publish")
 	}
 
-	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence"))
+	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", gitCmd(t, remote, "rev-parse", "refs/no-mistakes/evidence/no-mistakes/evidence"))
 	if !strings.Contains(tree, "cli-run.txt") {
 		t.Fatalf("the real test evidence did not publish:\n%s", tree)
 	}
