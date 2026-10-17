@@ -535,14 +535,23 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 		idle.Stop()
 		idleC = nil
 		if p.awaitingOnlyItsResult() {
-			wait := claudeSubmittedIdleGrace
-			if deadline, ok := ctx.Deadline(); ok {
-				wait = min(wait, time.Until(deadline)-claudeIdleEndBeforeDeadline)
-			}
-			idle.Reset(wait)
+			idle.Reset(claudeSubmittedIdleWait(ctx))
 			idleC = idle.C
 		}
 	}
+}
+
+// claudeSubmittedIdleWait is the quiet period after an accepted submission
+// before the session is ended. The margin ahead of ctx's deadline never
+// exceeds half the remaining budget, so the wait stays positive and a result
+// event arriving right after the submission still finishes the turn.
+func claudeSubmittedIdleWait(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return claudeSubmittedIdleGrace
+	}
+	remaining := time.Until(deadline)
+	return min(claudeSubmittedIdleGrace, remaining-min(claudeIdleEndBeforeDeadline, remaining/2))
 }
 
 // claudeEventParser holds the state parseClaudeEvents carries across lines.

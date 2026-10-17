@@ -856,6 +856,11 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "submit-then-result":
+		_, _ = io.WriteString(os.Stdout, claudeSubmitThenIdleStream(t, true))
+		time.Sleep(200 * time.Millisecond)
+		emitClaudeHelperResult()
+		return
 	case "submit-then-exit":
 		_, _ = io.WriteString(os.Stdout, claudeSubmitThenIdleStream(t, true))
 		os.Exit(1)

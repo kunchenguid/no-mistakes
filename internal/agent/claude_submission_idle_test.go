@@ -399,3 +399,69 @@ func TestClaudeAgent_ExitWithoutResultEventAfterSubmissionFailsKeepingIt(t *test
 		t.Fatalf("result = %+v, want the early partial submission kept", res)
 	}
 }
+
+// The idle wait after a submission is computed in one place,
+// claudeSubmittedIdleWait, which parseClaudeEvents re-arms after every line;
+// runOnce adds no timer of its own and only reacts to the idle end. The tests
+// below keep the default grace and margin, so each 4s budget is both inside
+// the last minute and shorter than the grace: the margin must shrink to fit
+// the budget, and the wait must stay positive.
+
+func TestClaudeAgent_ResultRightAfterSubmissionUnderAShortBudgetFinishesCleanly(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		requireCompletedChildren bool
+	}{
+		{name: "review"},
+		{name: "required child completion", requireCompletedChildren: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			defer cancel()
+
+			res, err, ctxEnded := runClaudeHelperUntil(t, ctx, "submit-then-result", RunOpts{RequireCompletedChildren: tc.requireCompletedChildren})
+			if err != nil {
+				t.Fatalf("runOnce: %v, want the turn to finish on its result event", err)
+			}
+			if ctxEnded {
+				t.Fatal("runOnce returned after the deadline")
+			}
+			if string(res.Output) != `{"ok":true}` {
+				t.Fatalf("output = %s, want the result event's structured output", res.Output)
+			}
+		})
+	}
+}
+
+func TestClaudeAgent_SubmissionInTheLastMinuteThenSilenceEndsBeforeTheDeadline(t *testing.T) {
+	t.Run("kept", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+
+		res, err, ctxEnded := runClaudeHelperUntil(t, ctx, "submit-then-idle", RunOpts{})
+		if err != nil {
+			t.Fatalf("runOnce: %v", err)
+		}
+		if ctxEnded {
+			t.Fatal("runOnce returned after the deadline, where the submission counts as a timeout")
+		}
+		if string(res.Output) != claudeEarlyPartialSubmission {
+			t.Fatalf("output = %s, want the early partial submission", res.Output)
+		}
+	})
+	t.Run("required child completion fails as unverified", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+
+		res, err, ctxEnded := runClaudeHelperUntil(t, ctx, "submit-then-idle", RunOpts{RequireCompletedChildren: true})
+		if ctxEnded {
+			t.Fatal("runOnce returned after the deadline, want the unverified failure before it")
+		}
+		if !errors.Is(err, errClaudeIdleAfterSubmission) || !strings.Contains(fmt.Sprint(err), "unverified") {
+			t.Fatalf("runOnce error = %v, want an unverified completion after the idle end", err)
+		}
+		if res != nil && len(res.Output) != 0 {
+			t.Fatalf("output = %s, want none for an unverified completion", res.Output)
+		}
+	})
+}
