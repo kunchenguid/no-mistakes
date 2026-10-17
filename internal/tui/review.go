@@ -333,6 +333,10 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 			instr := wrapIndentedText("> "+item.UserInstructions, width, 8)
 			b.WriteString(blueStyle.Render(instr) + "\n")
 		}
+		if item.DriverInstructions != "" {
+			instr := wrapIndentedText("> driver: "+item.DriverInstructions, width, 8)
+			b.WriteString(blueStyle.Render(instr) + "\n")
+		}
 	}
 
 	// Scroll footer for the box border - combines up and down indicators.

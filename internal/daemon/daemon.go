@@ -1479,7 +1479,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason, pipeline.ResponseOptions{Origin: p.Origin, Coverage: p.Coverage})
+		dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, respondInstructions(p), p.AddedFindings, p.ApprovalReason, pipeline.ResponseOptions{Origin: p.Origin, Coverage: p.Coverage})
 		if err != nil {
 			// A refused fix response is the caller's input to fix, not a
 			// transport failure: the gate is still parked. Report it as a
@@ -1567,6 +1567,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 //
 // Sampling after the read would let a transition that landed in between be
 // skipped by the consumer's monotonic guard and never repaired.
+// respondInstructions carries a response's per-finding guidance with who wrote
+// it, so the executor can keep a driver's guidance apart from the user's.
+func respondInstructions(p ipc.RespondParams) *pipeline.FixInstructions {
+	if len(p.Instructions) == 0 {
+		return nil
+	}
+	return &pipeline.FixInstructions{ByFinding: p.Instructions, FromDriver: p.InstructionsFromDriver}
+}
+
 func runSnapshot(mgr *RunManager, runID string, read func(string) (*ipc.RunInfo, error)) (*ipc.RunInfo, error) {
 	stateRev := mgr.StateRev(runID)
 	info, err := read(runID)
