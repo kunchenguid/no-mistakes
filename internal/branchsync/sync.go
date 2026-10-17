@@ -2112,9 +2112,17 @@ func worktreeClean(ctx context.Context, dir string) (bool, string) {
 		{"MERGE_HEAD", "merge_in_progress"}, {"rebase-merge", "rebase_in_progress"}, {"rebase-apply", "rebase_in_progress"},
 		{"CHERRY_PICK_HEAD", "cherry_pick_in_progress"}, {"REVERT_HEAD", "revert_in_progress"}, {"BISECT_LOG", "bisect_in_progress"}, {"sequencer", "sequencer_in_progress"},
 	}
+	args := []string{"rev-parse"}
 	for _, marker := range markers {
-		path, err := git.Run(ctx, dir, "rev-parse", "--git-path", marker.path)
-		if err == nil {
+		args = append(args, "--git-path", marker.path)
+	}
+	if out, err := git.Run(ctx, dir, args...); err == nil {
+		paths := strings.Split(out, "\n")
+		if len(paths) != len(markers) {
+			return false, "status_unavailable"
+		}
+		for i, marker := range markers {
+			path := paths[i]
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(dir, path)
 			}
