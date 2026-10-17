@@ -161,6 +161,15 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	}
 
 	var waitErr error
+	if idleAfterSubmission && opts.RequireCompletedChildren {
+		// Ending the session kills whatever its process group still runs, so
+		// the submission cannot be shown to cover completed work.
+		_ = started.waitAfterParseError(parseErr)
+		stderrWG.Wait()
+		retErr := fmt.Errorf("claude completion is unverified: %w and stayed quiet for %s, so its process group was ended before its owned work could be shown complete", parseErr, claudeSubmittedIdleGrace)
+		emitAgentExited(opts, "claude", pid, retErr)
+		return resultFromUsage(usage), retErr
+	}
 	if idleAfterSubmission {
 		if opts.OnChunk != nil {
 			opts.OnChunk(fmt.Sprintf("claude stayed idle for %s after its accepted StructuredOutput submission without finishing its turn; ending the session and keeping that submission", claudeSubmittedIdleGrace))

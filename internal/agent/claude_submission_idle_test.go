@@ -210,3 +210,36 @@ func TestClaudeAgent_IdleAfterPartialSubmissionEndsTheSessionKeepingIt(t *testin
 		t.Fatalf("last chunk = %q, want the idle-end notice", last)
 	}
 }
+
+func TestClaudeAgent_IdleAfterSubmissionWithRequiredChildCompletionFails(t *testing.T) {
+	withClaudeSubmittedIdleGrace(t, 200*time.Millisecond)
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "submit-then-idle")
+	a := newClaudeStdinHelperAgent(t)
+
+	done := make(chan struct{})
+	var res *Result
+	var err error
+	go func() {
+		defer close(done)
+		res, err = a.runOnce(context.Background(), RunOpts{
+			Prompt:                   "fix the failing tests",
+			CWD:                      t.TempDir(),
+			JSONSchema:               json.RawMessage(`{"type":"object"}`),
+			RequireCompletedChildren: true,
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runOnce kept waiting on a session idle after its submission")
+	}
+	if err == nil {
+		t.Fatalf("runOnce succeeded with output %s, want an unverified-completion error", res.Output)
+	}
+	if !errors.Is(err, errClaudeIdleAfterSubmission) || !strings.Contains(err.Error(), "unverified") {
+		t.Fatalf("runOnce error = %v, want an unverified completion after the idle end", err)
+	}
+	if res != nil && len(res.Output) != 0 {
+		t.Fatalf("output = %s, want none for an unverified completion", res.Output)
+	}
+}
