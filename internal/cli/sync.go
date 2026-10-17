@@ -36,7 +36,9 @@ func newSyncCmd() *cobra.Command {
 			"cancelled before the pipeline changed anything releases the branch by itself\n" +
 			"(user_owned) and makes --recover a no-op. --recover --keep-local keeps the\n" +
 			"current local head and never touches the worktree; available preserved commits\n" +
-			"stay anchored, while genuinely missing preserved commits are discarded.\n" +
+			"stay anchored, while genuinely missing preserved commits are discarded. After\n" +
+			"custody was already returned, the same explicit flag can reconcile a stale\n" +
+			"private mirror only when exact run and recovery evidence proves the handoff.\n" +
 			"--bind-archive-ref records one exact existing refs/heads/archive/* commit as\n" +
 			"evidence for the narrow keep-local recovery that stays at a required head while\n" +
 			"a divergent later head remains archived; it never creates or moves a Git ref.\n" +
@@ -270,8 +272,11 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			return &exitError{code: 1}
 		}
 		if keepLocal {
-			fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
-			if state.Recovery != nil && state.Recovery.KeepLocal {
+			if state.State == branchsync.StateCustodyReturned {
+				fmt.Fprintln(cmd.OutOrStdout(), "  Custody is already returned. The possible Git change is archiving the exact")
+				fmt.Fprintln(cmd.OutOrStdout(), "  submitted mirror head and removing its stale private branch ref after the")
+				fmt.Fprintln(cmd.OutOrStdout(), "  run recovery proof passes; the worktree and external remote are untouched.")
+			} else if state.Recovery != nil && state.Recovery.KeepLocal {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible Git change is moving the local gate branch to the exact required")
 				fmt.Fprintln(cmd.OutOrStdout(), "  head; the worktree and verified divergent archive are never touched.")
 			} else {
@@ -313,6 +318,8 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Nothing to recover; cancellation already released this branch to you.")
 		} else if recovered.Recovery != nil && recovered.Recovery.Source == "remote_rewritten" {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Push binding rebound to the verified live remote head; the superseded pipeline head stays anchored.")
+		} else if recovered.Safety == "mirror_reconciled" {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Stale private mirror archived and reconciled; start a fresh run when ready.")
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; start a fresh run when ready.")
 		}
