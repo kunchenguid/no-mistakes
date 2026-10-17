@@ -2987,3 +2987,34 @@ func TestAdoptPublishedRefusesReplacedPushTarget(t *testing.T) {
 		}
 	})
 }
+
+func TestCustodyReturnedMovedGateLaneClassifiesManualReconciliation(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	_ = publishedRebaseAfterCustody(t, f)
+
+	// 1. Stale gate lane (equals CurrentHead / f.preserved).
+	staleState, _, ok := f.service.inspect(f.ctx)
+	if !ok || staleState.State != StateCustodyReturned || staleState.Relation != RelationDiverged ||
+		staleState.Safety != "recovery_required" || staleState.NextAction == nil || staleState.NextAction.Code != "adopt_published" {
+		t.Fatalf("stale lane inspection = %#v, want recovery_required / adopt_published", staleState)
+	}
+
+	// 2. Moved gate lane (points to main, neither CurrentHead nor Local.Head).
+	mustRun(t, f.local, "push", "--force", f.gate, "main:refs/heads/feature/recover")
+
+	movedState, _, ok := f.service.inspect(f.ctx)
+	if !ok || movedState.State != StateCustodyReturned || movedState.Relation != RelationDiverged ||
+		movedState.Safety != "blocked_recover_manual_reconciliation" || movedState.NextAction == nil ||
+		movedState.NextAction.Code != "inspect_and_reconcile_manually" || movedState.NextAction.Command != "no-mistakes axi status" {
+		t.Fatalf("moved lane inspection = %#v, want blocked_recover_manual_reconciliation / inspect_and_reconcile_manually", movedState)
+	}
+
+	// 3. Ready gate lane (equals Local.Head / rebased).
+	mustRun(t, f.local, "push", "--force", f.gate, "HEAD:refs/heads/feature/recover")
+
+	readyState, _, ok := f.service.inspect(f.ctx)
+	if !ok || readyState.State != StateCustodyReturned || readyState.Relation != RelationDiverged ||
+		readyState.Safety != "gate_ready" || readyState.NextAction == nil || readyState.NextAction.Code != "run_pipeline" {
+		t.Fatalf("ready lane inspection = %#v, want gate_ready / run_pipeline", readyState)
+	}
+}

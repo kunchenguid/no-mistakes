@@ -416,6 +416,9 @@ func humanSyncSummary(state branchsync.State) string {
 		if state.Safety == "gate_ready" {
 			return "the published rebased head is present in this gate lane; start a fresh run when ready"
 		}
+		if state.Safety == "blocked_recover_manual_reconciliation" {
+			return "the gate lane no longer matches the recovered pipeline head; manual reconciliation required"
+		}
 		return "custody returned; the branch is yours - start a fresh run when ready"
 	case branchsync.StateUserOwned:
 		return "run ended before the pipeline changed anything; the branch and head are yours and immediately usable"

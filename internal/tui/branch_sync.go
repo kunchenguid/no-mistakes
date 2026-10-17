@@ -63,7 +63,15 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		case branchsync.StateTargetChanged:
 			message = "The configured push target changed after the pipeline push. Synchronization is blocked."
 		case branchsync.StateCustodyReturned:
-			message = "Custody returned; the branch is yours. Start a fresh run when ready."
+			if state.Safety == "recovery_required" && state.NextAction != nil && state.NextAction.Code == "adopt_published" {
+				message = "A rebased local head needs guarded gate-lane adoption before starting a fresh run (`no-mistakes axi sync --adopt-published`)."
+			} else if state.Safety == "blocked_recover_manual_reconciliation" {
+				message = "Local branch and gate lane have diverged from the recovered pipeline head. Manual reconciliation required."
+			} else if state.Safety == "gate_ready" {
+				message = "The published rebased head is present in this gate lane. Start a fresh run when ready."
+			} else {
+				message = "Custody returned; the branch is yours. Start a fresh run when ready."
+			}
 		case branchsync.StateUserOwned:
 			message = "Run ended before the pipeline changed anything; the branch and head are yours and immediately usable."
 		default:

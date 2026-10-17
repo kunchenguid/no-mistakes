@@ -92,6 +92,36 @@ func TestLocalBranchStatusIsCompactAndOnlyOffersEligibleAction(t *testing.T) {
 	if !strings.Contains(view, "represented in the live pipeline head") || strings.Contains(view, "No automatic reconciliation") {
 		t.Fatalf("equivalent live view:\n%s", view)
 	}
+
+	state = branchsync.State{
+		State:      branchsync.StateCustodyReturned,
+		Safety:     "recovery_required",
+		NextAction: &branchsync.NextAction{Code: "adopt_published", Command: "no-mistakes axi sync --adopt-published"},
+	}
+	view = stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "guarded gate-lane adoption") || !strings.Contains(view, "no-mistakes axi sync --adopt-published") || strings.Contains(view, "u sync branch") {
+		t.Fatalf("custody_returned stale gate view:\n%s", view)
+	}
+
+	state.Safety = "blocked_recover_manual_reconciliation"
+	state.NextAction = &branchsync.NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+	view = stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "Manual reconciliation required") || strings.Contains(view, "u sync branch") {
+		t.Fatalf("custody_returned moved gate view:\n%s", view)
+	}
+
+	state.Safety = "gate_ready"
+	state.NextAction = &branchsync.NextAction{Code: "run_pipeline", Command: "no-mistakes axi run"}
+	view = stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "The published rebased head is present in this gate lane") {
+		t.Fatalf("custody_returned gate_ready view:\n%s", view)
+	}
+
+	state.Safety = "custody_returned"
+	view = stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "Custody returned; the branch is yours") {
+		t.Fatalf("custody_returned default view:\n%s", view)
+	}
 }
 
 func TestBranchSyncActionRefreshesEquivalentDivergedBeforeConfirmation(t *testing.T) {

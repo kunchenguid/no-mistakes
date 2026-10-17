@@ -1284,6 +1284,14 @@ func TestAxiSyncAdoptPublishedRebasedLane(t *testing.T) {
 	if err := git.Push(context.Background(), f.local, f.gate, "refs/heads/feature/recover", "", false); err != nil {
 		t.Fatalf("gate push after adoption: %v", err)
 	}
+
+	humanStatus, err := executeCmd("status")
+	if err != nil {
+		t.Fatalf("human status: %v\n%s", err, humanStatus)
+	}
+	if want := "the published rebased head is present in this gate lane; start a fresh run when ready"; !strings.Contains(humanStatus, want) {
+		t.Errorf("human status missing %q:\n%s", want, humanStatus)
+	}
 }
 
 func TestAxiSyncAdoptPublishedRefusesUnpublishedRebase(t *testing.T) {
@@ -1305,6 +1313,47 @@ func TestAxiSyncAdoptPublishedRefusesUnpublishedRebase(t *testing.T) {
 	}
 	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
 		t.Fatalf("refused recovery moved gate lane to %s, want %s", got, f.preserved)
+	}
+}
+
+func TestAxiSyncAdoptPublishedMovedGateLaneClassifiesManualReconciliation(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	_ = rebaseReturnedCustodyBranch(t, f, f.remote, true)
+
+	// Move the gate lane away from f.preserved to another commit (e.g. main).
+	cliGit(t, f.local, "push", "--force", f.gate, "main:refs/heads/feature/recover")
+
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	for _, want := range []string{
+		"state: custody_returned",
+		"relation: diverged",
+		"safety: blocked_recover_manual_reconciliation",
+		"code: inspect_and_reconcile_manually",
+		"command: no-mistakes axi status",
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("moved gate status missing %q:\n%s", want, status)
+		}
+	}
+
+	humanStatus, err := executeCmd("status")
+	if err != nil {
+		t.Fatalf("human status: %v\n%s", err, humanStatus)
+	}
+	if want := "the gate lane no longer matches the recovered pipeline head; manual reconciliation required"; !strings.Contains(humanStatus, want) {
+		t.Errorf("human status missing %q:\n%s", want, humanStatus)
+	}
+
+	out, err := executeCmd("axi", "sync", "--adopt-published")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("adopt_published on moved gate lane should refuse, got %#v\n%s", err, out)
+	}
+	if want := "safety: blocked_adopt_published_gate_changed"; !strings.Contains(out, want) {
+		t.Errorf("refusal missing %q:\n%s", want, out)
 	}
 }
 
