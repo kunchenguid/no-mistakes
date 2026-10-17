@@ -118,39 +118,6 @@ This is a command-child variable, not a daemon setting. no-mistakes creates a fr
 
 See the [gate contract](/no-mistakes/reference/repo-config/#structured-findings) for the report schema, limits, verdicts, and approval behavior.
 
-## `NO_MISTAKES_BITBUCKET_EMAIL`
-
-Bitbucket Cloud account email used for PR creation and CI monitoring.
-
-|         |                                               |
-| ------- | --------------------------------------------- |
-| Type    | `string`                                      |
-| Default | (none; Bitbucket PR/CI steps skip when unset) |
-
-Used alongside `NO_MISTAKES_BITBUCKET_API_TOKEN`. See [Provider Integration](/no-mistakes/guides/provider-integration/#bitbucket-cloud).
-
-## `NO_MISTAKES_BITBUCKET_API_TOKEN`
-
-Bitbucket Cloud API token.
-
-|         |          |
-| ------- | -------- |
-| Type    | `string` |
-| Default | (none)   |
-
-Get one from [Bitbucket account settings](https://bitbucket.org/account/settings/app-passwords/).
-
-## `NO_MISTAKES_BITBUCKET_API_BASE_URL`
-
-Override the Bitbucket Cloud API base URL.
-
-|         |                                 |
-| ------- | ------------------------------- |
-| Type    | `string`                        |
-| Default | `https://api.bitbucket.org/2.0` |
-
-Useful for mocking in tests or pointing at a proxy.
-
 ## `AZURE_DEVOPS_EXT_PAT`
 
 Azure DevOps Personal Access Token inherited by the daemon for non-interactive `az` CLI auth.
