@@ -267,7 +267,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 				return resultFromUsage(state.usage), thinkingConflict(evidence, mr.err)
 			}
 			if nativeFormat && isForcedToolChoiceUnsupportedText(mr.err.Error()) {
-				return nil, forcedToolChoiceConflict(evidence, mr.err)
+				return resultFromUsage(state.usage), forcedToolChoiceConflict(evidence, mr.err)
 			}
 			return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 		}
@@ -278,7 +278,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 			return resultFromUsage(state.usage), thinkingConflict(evidence, nil)
 		}
 		if nativeFormat && errors.Is(err, errOpencodeForcedToolChoiceUnsupported) {
-			return nil, forcedToolChoiceConflict(evidence, nil)
+			return resultFromUsage(state.usage), forcedToolChoiceConflict(evidence, nil)
 		}
 		return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode events: %w", err))
 	}
@@ -293,7 +293,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 			return resultFromUsage(state.usage), thinkingConflict(evidence, mr.err)
 		}
 		if nativeFormat && isForcedToolChoiceUnsupportedText(mr.err.Error()) {
-			return nil, forcedToolChoiceConflict(evidence, mr.err)
+			return resultFromUsage(state.usage), forcedToolChoiceConflict(evidence, mr.err)
 		}
 		return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 	}
@@ -370,7 +370,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 		return resultFromUsage(state.usage), thinkingConflict(evidence, nil)
 	}
 	if nativeFormat && mr.resp != nil && mr.resp.Info != nil && isForcedToolChoiceUnsupported(mr.resp.Info.Error) {
-		return nil, forcedToolChoiceConflict(evidence, nil)
+		return resultFromUsage(state.usage), forcedToolChoiceConflict(evidence, nil)
 	}
 
 	// A turn that failed reports its cause on info.error rather than on the
