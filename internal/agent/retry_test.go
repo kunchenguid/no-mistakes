@@ -86,6 +86,11 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			wantSub: "protocol residue",
 		},
 		{
+			name:    "protocol residue with provider-like output text",
+			errMsg:  `pi output parse: invalid character '<' after top-level value (output snippet: "{\"balance\":\"token\"}")`,
+			wantSub: "protocol residue",
+		},
+		{
 			name:    "pi missing output tool",
 			errMsg:  `pi did not finish by calling no_mistakes_output alone`,
 			wantSub: "missing output tool",
@@ -481,6 +486,9 @@ func TestRunWithRetry_ExhaustsRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}
+	if !IsTerminalProviderError(err) || !errors.Is(err, transientErr) || err.Error() != transientErr.Error() {
+		t.Fatalf("exhaustion must be terminal without losing the original error: %v", err)
+	}
 	if calls != 4 { // 1 initial + 3 retries
 		t.Errorf("expected 4 calls (1 + 3 retries), got %d", calls)
 	}
@@ -631,6 +639,9 @@ func TestRunWithRetry_SkipsRetryWhenFirstAttemptConsumedTheBudget(t *testing.T) 
 	if !strings.Contains(err.Error(), "retry skipped") || !strings.Contains(err.Error(), "step budget") {
 		t.Fatalf("err = %q, want a skipped-for-budget message", err)
 	}
+	if !IsTerminalProviderError(err) {
+		t.Fatal("budget-skipped adapter exhaustion must be terminal")
+	}
 }
 
 func TestRunWithRetry_SkipsRetryWhenBackoffConsumesTheRemainingBudget(t *testing.T) {
@@ -659,6 +670,9 @@ func TestRunWithRetry_SkipsRetryWhenBackoffConsumesTheRemainingBudget(t *testing
 	}
 	if !errors.Is(err, transientErr) || !strings.Contains(err.Error(), "retry skipped") {
 		t.Fatalf("err = %v, want a skipped-for-budget error wrapping the original", err)
+	}
+	if !IsTerminalProviderError(err) {
+		t.Fatal("backoff-budget-skipped adapter exhaustion must be terminal")
 	}
 }
 

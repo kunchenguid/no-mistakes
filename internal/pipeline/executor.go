@@ -73,6 +73,10 @@ type Executor struct {
 	shared   *RunShared
 	workDir  string
 
+	// Ephemeral proof only: recovered runs earn no retry credit.
+	crashRetryBaseSHA   string
+	crashRetryRecovered bool
+
 	mu                     sync.Mutex
 	approvalCh             chan approvalResponse // buffered channel for approval responses
 	waiting                bool                  // true when blocked on approval
@@ -576,6 +580,9 @@ func (e *Executor) prepareRestart(runID string, name types.StepName, currentInde
 	if err := e.db.ResetStepsFrom(runID, e.steps[index].Name().Order()); err != nil {
 		return 0, err
 	}
+	if name == types.StepReview {
+		e.crashRetryBaseSHA = ""
+	}
 	return index, nil
 }
 
@@ -583,6 +590,8 @@ func (e *Executor) initializeRunScopes(runID string) {
 	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
 	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
 	e.shared = &RunShared{}
+	e.crashRetryBaseSHA = ""
+	e.crashRetryRecovered = false
 }
 
 type stepExecutionState struct {
@@ -688,6 +697,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.failRun(run, repo, err)
 	}
 	e.initializeRunScopes(run.ID)
+	e.crashRetryRecovered = true
 
 	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
 	duration := recoveredStepDuration(gate.stepResult)
@@ -1401,12 +1411,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	var reviewApprovedHeadSHA string
 	var restartFrom types.StepName
 
+	// Crash retries have a separate per-step budget, never a fix-round credit.
+	// It is not replenished by approval/fix rounds in this live execution.
+	crashRetriesRemaining := 0
+	if e.config != nil && !e.crashRetryRecovered {
+		crashRetriesRemaining = min(max(e.config.AgentCrashRetries, 0), 3)
+	}
 	// Execute with possible fix loop
 rounds:
 	for {
 		reviewStartingHeadSHA := run.HeadSHA
 		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
-		outcome, err := step.Execute(sctx)
+		outcome, err := e.executeWithCrashRetry(step, sctx, &crashRetriesRemaining)
 		sctx.CoverageContinuation = nil
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil

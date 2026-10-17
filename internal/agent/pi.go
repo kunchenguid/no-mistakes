@@ -149,7 +149,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Resu
 			if stderr != "" {
 				retErr = fmt.Errorf("%w: %s", retErr, stderr)
 			}
-			retErr = rejectStructuredOutput(retErr)
+			retErr = RejectStructuredOutput(retErr)
 			emitAgentExited(opts, "pi", pid, retErr)
 			return failedResult(pp.usage, pp.sessionID), retErr
 		}

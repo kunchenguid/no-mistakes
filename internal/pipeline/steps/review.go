@@ -492,9 +492,9 @@ Risk assessment (after listing all findings):
 			validationErrors = append(validationErrors, err)
 			if attempt == reviewAnalyzerMaxAttempts {
 				if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
-					return nil, fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err)
+					return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err))
 				}
-				return nil, fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err)
+				return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err))
 			}
 			sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, reviewAnalyzerMaxAttempts))
 			opts.Prompt = turnPrompt + reviewRetryNote(err)

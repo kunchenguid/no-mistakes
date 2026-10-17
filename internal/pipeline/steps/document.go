@@ -171,9 +171,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// analyzer output.
 	var findings Findings
 	if result.Output == nil {
-		return nil, fmt.Errorf("document analyzer returned no structured findings")
+		return nil, agent.RejectStructuredOutput(fmt.Errorf("document analyzer returned no structured findings"))
 	} else if err := validateDocumentAnalyzerFindings(result.Output, &findings, changesApplied); err != nil {
-		return nil, fmt.Errorf("validate document analyzer findings: %w", err)
+		return nil, agent.RejectStructuredOutput(fmt.Errorf("validate document analyzer findings: %w", err))
 	}
 
 	docFindings := findings

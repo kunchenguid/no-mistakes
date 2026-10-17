@@ -360,11 +360,11 @@ func finalizeGrokResult(result *Result, schema json.RawMessage) (*Result, error)
 		return nil, fmt.Errorf("grok returned no result event")
 	}
 	if len(schema) > 0 && (len(result.Output) == 0 || string(result.Output) == "null") {
-		return resultFromUsage(result.Usage), rejectStructuredOutput(errGrokNoStructuredOutput)
+		return resultFromUsage(result.Usage), RejectStructuredOutput(errGrokNoStructuredOutput)
 	}
 	if len(schema) > 0 {
 		if err := validateStructuredOutput(result.Output, schema); err != nil {
-			return resultFromUsage(result.Usage), rejectStructuredOutput(fmt.Errorf("grok structured output: %w", err))
+			return resultFromUsage(result.Usage), RejectStructuredOutput(fmt.Errorf("grok structured output: %w", err))
 		}
 	}
 	return result, nil

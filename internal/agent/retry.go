@@ -50,6 +50,15 @@ func transientBackoffBaseDuration(attempt int, base time.Duration) time.Duration
 	return delay
 }
 
+// exhaustedTransientRetries preserves the final diagnostic and error chain,
+// while marking the adapter's completed retry decision as terminal to callers.
+// In particular, a process exit underneath it must not start crash retries.
+type exhaustedTransientRetries struct{ err error }
+
+func (e *exhaustedTransientRetries) Error() string               { return e.err.Error() }
+func (e *exhaustedTransientRetries) Unwrap() error               { return e.err }
+func (e *exhaustedTransientRetries) TerminalProviderError() bool { return true }
+
 // runWithRetry invokes runOnce up to maxRetries+1 times, retrying when the
 // classifier marks the error as retriable. Between retries it sleeps with
 // exponential backoff (via transientBackoff) and respects ctx cancellation.
@@ -83,14 +92,14 @@ func runWithRetry(
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			if err := budgetForRetry(); err != nil {
-				return lastResult, err
+				return lastResult, &exhaustedTransientRetries{err: err}
 			}
 			emitAgentRetry(opts, name, lastLabel, attempt+1, maxRetries+1)
 			if err := transientBackoff(ctx, attempt); err != nil {
 				return lastResult, err
 			}
 			if err := budgetForRetry(); err != nil {
-				return lastResult, err
+				return lastResult, &exhaustedTransientRetries{err: err}
 			}
 		}
 		startedAt := time.Now()
@@ -112,7 +121,7 @@ func runWithRetry(
 		lastErr = err
 		lastLabel = label
 	}
-	return lastResult, lastErr
+	return lastResult, &exhaustedTransientRetries{err: lastErr}
 }
 
 func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, startedAt, completedAt time.Time) {
