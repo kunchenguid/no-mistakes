@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.99.0](https://github.com/kunchenguid/no-mistakes/compare/v1.98.0...v1.99.0) (2026-10-17)
+
+
+### Features
+
+* **agent:** add OpenCode v2 session-based adapter ([#1521](https://github.com/kunchenguid/no-mistakes/issues/1521)) ([d228adb](https://github.com/kunchenguid/no-mistakes/commit/d228adbdddb1ddbb9e5bdc45423b646716b0b1ad))
+
 ## [1.98.0](https://github.com/kunchenguid/no-mistakes/compare/v1.97.2...v1.98.0) (2026-10-17)
 
 
