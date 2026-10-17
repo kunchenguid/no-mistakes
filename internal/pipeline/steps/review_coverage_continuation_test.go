@@ -31,10 +31,12 @@ func (*coverageContinuationTestGate) Execute(*pipeline.StepContext) (*pipeline.S
 // The reviewer here is the real ReviewStep. Only the agent boundary is
 // scripted, so starting a new full review cannot masquerade as continuation.
 func TestReviewStep_ParkedCoverageContinuationTargetsOnlyRetainedGap(t *testing.T) {
+	t.Parallel()
 	testRetainedCoverageContinuation(t, false)
 }
 
 func TestReviewStep_RecoveredCoverageContinuationTargetsOnlyRetainedGap(t *testing.T) {
+	t.Parallel()
 	testRetainedCoverageContinuation(t, true)
 }
 
@@ -43,18 +45,21 @@ func testRetainedCoverageContinuation(t *testing.T, recovered bool) {
 }
 
 func TestReviewStep_ContinuationDoesNotWaiveMissingCoverageOrNewFindings(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"partial", "new finding", "new question", "out-of-scope output"} {
 		t.Run(mode, func(t *testing.T) { testRetainedCoverageCase(t, false, mode) })
 	}
 }
 
 func TestReviewStep_ContinuationRefusesUnboundRecordsAndChangedSources(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"record:missing", "record:malformed", "record:version", "record:complete", "record:outside", "record:run", "record:step", "record:head", "record:base", "record:trusted", "record:scope", "trusted change", "scope change", "base change", "head change", "dirty worktree"} {
 		t.Run(mode, func(t *testing.T) { testRetainedCoverageCase(t, false, mode) })
 	}
 }
 
 func TestReviewStep_ContinuationCannotCertifySourceChangedDuringItsTurn(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"head changed during turn", "dirty during turn"} {
 		t.Run(mode, func(t *testing.T) { testRetainedCoverageCase(t, false, mode) })
 	}
