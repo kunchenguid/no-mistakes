@@ -82,7 +82,7 @@ func TestRoundHistory_ReusedIDDeclineSurvivesEarlierSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocks := renderRoundHistoryBlocks(rounds)
+	blocks := renderRoundHistoryBlocks(rounds, true)
 	if !strings.Contains(blocks[1], "user_chose_to_ignore:") {
 		t.Fatalf("new decline suppressed: %s", blocks[1])
 	}

@@ -203,7 +203,11 @@ type Finding struct {
 	Action           string `json:"action"`
 	Source           string `json:"source,omitempty"`
 	UserInstructions string `json:"user_instructions,omitempty"`
-	ReviewScope      string `json:"review_scope,omitempty"`
+	// DriverInstructions is fix guidance from an agent driving the run through
+	// `no-mistakes axi`. It is kept apart from UserInstructions because it
+	// scopes one fix round and is not a decision the user made.
+	DriverInstructions string `json:"driver_instructions,omitempty"`
+	ReviewScope        string `json:"review_scope,omitempty"`
 	// Category separates the combined document+lint housekeeping pass's
 	// findings into their owning gates and the CI step's findings by kind
 	// (see the FindingCategoryCI* constants). Empty everywhere else.
@@ -280,6 +284,7 @@ type findingWire struct {
 	Action              string `json:"action"`
 	Source              string `json:"source,omitempty"`
 	UserInstructions    string `json:"user_instructions,omitempty"`
+	DriverInstructions  string `json:"driver_instructions,omitempty"`
 	ReviewScope         string `json:"review_scope,omitempty"`
 	Category            string `json:"category,omitempty"`
 	Check               string `json:"check,omitempty"`
@@ -667,6 +672,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Action = wire.Action
 	f.Source = wire.Source
 	f.UserInstructions = wire.UserInstructions
+	f.DriverInstructions = wire.DriverInstructions
 	f.ReviewScope = wire.ReviewScope
 	f.Category = wire.Category
 	f.Check = wire.Check
