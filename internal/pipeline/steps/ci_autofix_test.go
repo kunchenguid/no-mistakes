@@ -749,6 +749,64 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	}
 }
 
+// A published conflict-only repair is verified by its head's checks starting.
+// A conflict still reported beside those pending checks must clear the repair
+// marker so a later observation can spend another repair attempt, rather than
+// waiting on "fix already attempted" until timeout. The poll that shows the
+// re-run starting is not itself allowed to start that repair.
+func TestCIStep_ConflictRepairClearsWhenRepairedChecksStartPending(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	checksSequence := []string{
+		`[{"name":"build","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+	}
+	env := fakeCIGHSequenceMergeable(t, "OPEN", checksSequence, "CONFLICTING")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		lastFixedChecks: encodeLastFixedChecks(nil, true),
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls > 3 {
+				cancel()
+			}
+			return ctx.Err()
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected a repairable conflict, got error: %v (logs: %v)", err, logs)
+	}
+	if outcome == nil || !outcome.NeedsApproval || !outcome.AutoFixable || !strings.Contains(outcome.Findings, "merge conflict") {
+		t.Fatalf("expected a repairable merge conflict after the repaired checks started, got %+v (logs: %v)", outcome, logs)
+	}
+	if polls != 1 {
+		t.Fatalf("expected the re-run poll to wait once before repairing again, waited %d times", polls)
+	}
+	if step.lastFixedChecks != "" {
+		t.Fatalf("lastFixedChecks = %q, want cleared once the repaired checks were seen pending", step.lastFixedChecks)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "fix already attempted") {
+			t.Fatalf("conflict repair stayed unverified after its checks re-ran: %v", logs)
+		}
+	}
+}
+
 func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

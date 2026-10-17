@@ -530,16 +530,27 @@ type giteaJob struct {
 	Conclusion  string `json:"conclusion"`
 	HeadSHA     string `json:"head_sha"`
 	HTMLURL     string `json:"html_url"`
+	StartedAt   string `json:"started_at"`
 	CompletedAt string `json:"completed_at"`
 }
 
 // completedAt parses the job's completed_at timestamp (RFC3339, GitHub-Actions-
 // schema style), returning the zero time when absent or unparseable.
 func (j giteaJob) completedAt() time.Time {
-	if strings.TrimSpace(j.CompletedAt) == "" {
+	return parseGiteaTime(j.CompletedAt)
+}
+
+// startedAt parses the job's started_at timestamp. Queued and running jobs share
+// the pending bucket, so this is the signal that a queued job began running.
+func (j giteaJob) startedAt() time.Time {
+	return parseGiteaTime(j.StartedAt)
+}
+
+func parseGiteaTime(raw string) time.Time {
+	if strings.TrimSpace(raw) == "" {
 		return time.Time{}
 	}
-	if parsed, err := time.Parse(time.RFC3339, j.CompletedAt); err == nil {
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
 		return parsed
 	}
 	return time.Time{}
@@ -676,6 +687,7 @@ func jobsToChecks(jobs []giteaJob) []scm.Check {
 			ProviderID:  providerID,
 			Bucket:      giteaStatusBucket(job.Status, job.Conclusion),
 			CompletedAt: job.completedAt(),
+			StartedAt:   job.startedAt(),
 			Link:        job.HTMLURL,
 		})
 	}
