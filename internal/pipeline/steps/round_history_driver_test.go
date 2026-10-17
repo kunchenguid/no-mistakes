@@ -45,3 +45,35 @@ func TestDriverInstructionsAreNeverPresentedAsTheUsersDecision(t *testing.T) {
 		t.Fatalf("a decision line carries the driver's guidance as the user's choice:\n%s", other)
 	}
 }
+
+// A later run sees an earlier run's rounds as history, not as its own fix
+// round, so the driver's guidance that scoped that round must not ride along
+// under user_chose_to_fix.
+func TestEarlierRunRoundsNeverCarryDriverInstructions(t *testing.T) {
+	t.Parallel()
+	const guidance = "only touch a.go"
+	findings := `{"findings":[{"id":"R1","severity":"error","file":"a.go","description":"stale comparison","action":"auto-fix"}]}`
+	selected := `["R1"]`
+	decided := `{"findings":[{"id":"R1","severity":"error","file":"a.go","description":"stale comparison","action":"auto-fix","driver_instructions":"` + guidance + `"}]}`
+	source := db.RoundSelectionSourceUser
+	rounds := []*db.StepRound{{
+		Round:              1,
+		Trigger:            "initial",
+		FindingsJSON:       &findings,
+		SelectedFindingIDs: &selected,
+		SelectionSource:    &source,
+		UserFindingsJSON:   &decided,
+	}}
+
+	for name, section := range map[string]string{
+		"superseded":  supersededReviewHistoryPromptSection(&pipeline.StepContext{PreviousRunReviewRounds: rounds}),
+		"uncertified": uncertifiedRoundHistoryPromptSection(&pipeline.StepContext{UncertifiedPriorRounds: rounds}),
+	} {
+		if !strings.Contains(section, "user_chose_to_fix:") || !strings.Contains(section, "stale comparison") {
+			t.Fatalf("%s: the user's selection itself must still be shown:\n%s", name, section)
+		}
+		if strings.Contains(section, guidance) || strings.Contains(section, "driver_instructions") {
+			t.Fatalf("%s: driver guidance is rendered inside the user's decision:\n%s", name, section)
+		}
+	}
+}

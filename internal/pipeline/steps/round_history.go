@@ -54,7 +54,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 	if err != nil || len(rounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(rounds)
+	blocks := renderRoundHistoryBlocks(rounds, true)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -74,12 +74,14 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 // human chose to fix forward so that a later round's declines can never name
 // one of them. A later round that omits a fixed finding keeps that fix, and a
 // gate response cannot decline one at all (splitFixResponse refuses it), so the
-// sticky set only ever grows.
-func renderRoundHistoryBlocks(rounds []*db.StepRound) []string {
+// sticky set only ever grows. Only the current step's own history keeps driver
+// guidance, under a note saying whose it is; anywhere else it would read as
+// part of the user's decision.
+func renderRoundHistoryBlocks(rounds []*db.StepRound, ownStep bool) []string {
 	var blocks []string
 	var earlierFixes map[string]bool
 	for _, r := range rounds {
-		if block := renderRoundHistoryEntry(r, earlierFixes); block != "" {
+		if block := renderRoundHistoryEntry(r, earlierFixes, ownStep); block != "" {
 			blocks = append(blocks, block)
 		}
 		earlierFixes = withChosenToFix(earlierFixes, r)
@@ -578,7 +580,7 @@ func uncertifiedRoundHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.UncertifiedPriorRounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(sctx.UncertifiedPriorRounds)
+	blocks := renderRoundHistoryBlocks(sctx.UncertifiedPriorRounds, false)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -591,7 +593,7 @@ func uncertifiedRoundHistoryPromptSection(sctx *pipeline.StepContext) string {
 // renderRoundHistoryEntry renders one round's block. earlierFixes names the
 // findings a human chose to fix in earlier rounds of the same step, so this
 // round's declines never re-declare one of them.
-func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool) string {
+func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool, ownStep bool) string {
 	if r == nil {
 		return ""
 	}
@@ -606,7 +608,11 @@ func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool) stri
 		}
 	}
 
-	selected, _ := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+	userFindings := r.UserFindingsJSON
+	if !ownStep {
+		userFindings = withoutDriverInstructions(userFindings)
+	}
+	selected, _ := partitionRoundFindings(r.FindingsJSON, userFindings, r.SelectedFindingIDs)
 
 	if r.FindingsJSON != nil && strings.TrimSpace(*r.FindingsJSON) != "" {
 		if items := renderRoundFindingLines(*r.FindingsJSON); len(items) > 0 {
@@ -829,7 +835,7 @@ func supersededReviewHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.PreviousRunReviewRounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(sctx.PreviousRunReviewRounds)
+	blocks := renderRoundHistoryBlocks(sctx.PreviousRunReviewRounds, false)
 	if len(blocks) == 0 {
 		return ""
 	}

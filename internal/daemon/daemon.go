@@ -1553,6 +1553,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	})
 }
 
+// respondInstructions carries a response's per-finding guidance with who wrote
+// it, so the executor can keep a driver's guidance apart from the user's.
+func respondInstructions(p ipc.RespondParams) *pipeline.FixInstructions {
+	if len(p.Instructions) == 0 {
+		return nil
+	}
+	return &pipeline.FixInstructions{ByFinding: p.Instructions, FromDriver: p.InstructionsFromDriver}
+}
+
 // runSnapshot reads an authoritative run snapshot and stamps it with the state
 // revision sampled BEFORE the read.
 //
@@ -1567,15 +1576,6 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 //
 // Sampling after the read would let a transition that landed in between be
 // skipped by the consumer's monotonic guard and never repaired.
-// respondInstructions carries a response's per-finding guidance with who wrote
-// it, so the executor can keep a driver's guidance apart from the user's.
-func respondInstructions(p ipc.RespondParams) *pipeline.FixInstructions {
-	if len(p.Instructions) == 0 {
-		return nil
-	}
-	return &pipeline.FixInstructions{ByFinding: p.Instructions, FromDriver: p.InstructionsFromDriver}
-}
-
 func runSnapshot(mgr *RunManager, runID string, read func(string) (*ipc.RunInfo, error)) (*ipc.RunInfo, error) {
 	stateRev := mgr.StateRev(runID)
 	info, err := read(runID)
