@@ -410,3 +410,16 @@ func TestModel_View_NoFindingsWhenNotAwaiting(t *testing.T) {
 		t.Error("findings should not appear when step is not awaiting approval")
 	}
 }
+
+func TestRenderFindings_MarksCarriedFinding(t *testing.T) {
+	raw := `{"findings":[` +
+		`{"id":"review-1","severity":"warning","file":"main.go","description":"leaks fd","carried_from_round":1,"carried_reason":"file not in reviewed_paths"},` +
+		`{"id":"review-2","severity":"warning","file":"util.go","description":"new defect"}],"summary":"2 issues"}`
+	plain := stripANSI(renderFindings(raw, 120))
+	if !strings.Contains(plain, "(carried from round 1, not cleared: file not in reviewed_paths)") {
+		t.Errorf("expected the carried finding to be marked, got:\n%s", plain)
+	}
+	if strings.Count(plain, "carried from round") != 1 {
+		t.Errorf("only the carried finding may be marked, got:\n%s", plain)
+	}
+}

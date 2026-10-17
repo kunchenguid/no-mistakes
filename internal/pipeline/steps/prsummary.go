@@ -1473,7 +1473,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		// A fix round that still has findings means the fix did not fully
 		// land; label what remained so the chain reads as fix -> still open.
 		if isFixRound {
-			inner.WriteString(fmt.Sprintf("%s still open:\n\n", countFindingsBySeverity(&findings)))
+			inner.WriteString(fmt.Sprintf("%s still open%s:\n\n", countFindingsBySeverity(&findings), carriedCountSuffix(&findings)))
 		}
 		writeFindingItems(&inner, sr, &findings, flavor)
 		inner.WriteString("\n")
@@ -1562,9 +1562,28 @@ func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Fi
 			}
 			loc += "` - "
 		}
-		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, escapePRText(f.Description, flavor)))
+		carried := ""
+		if note := f.CarriedNote(); note != "" {
+			carried = " _(" + escapePRText(note, flavor) + ")_"
+		}
+		b.WriteString(fmt.Sprintf("- %s %s%s%s\n", emoji, loc, escapePRText(f.Description, flavor), carried))
 	}
 	writeTestedDetails(b, sr, findings, flavor)
+}
+
+// carriedCountSuffix says how many of a round's open findings its reviewer did
+// not submit, so a count of open findings is not read as that round's verdict.
+func carriedCountSuffix(findings *types.Findings) string {
+	carried := 0
+	for _, f := range findings.Items {
+		if f.CarriedFromRound > 0 {
+			carried++
+		}
+	}
+	if carried == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d carried from an earlier round)", carried)
 }
 
 // writeTestedDetails lists what the test step exercised: its live-validation
