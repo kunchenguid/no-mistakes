@@ -160,12 +160,13 @@ a built-in provider's failure does; it is never read as an empty answer.
 ### Check
 
 ```json
-{ "name": "build", "id": "run-42", "bucket": "fail", "state": "FAILURE", "link": "https://ci/run/42", "started_at": "2026-01-02T03:04:05Z", "completed_at": "2026-01-02T03:09:00Z", "execution_id": "42" }
+{ "name": "build", "id": "run-42", "head_sha": "abc123", "bucket": "fail", "state": "FAILURE", "link": "https://ci/run/42", "started_at": "2026-01-02T03:04:05Z", "completed_at": "2026-01-02T03:09:00Z", "execution_id": "42" }
 ```
 
 | Field | Rules |
 | --- | --- |
 | `name` | Required, non-empty. Shown in findings and passed back to `pr check-logs`. |
+| `head_sha` | Optional commit the check was recorded for. When present and `--head-sha` is given, it must equal `--head-sha`; a different value marks the check snapshot stale, and the caller waits and polls again instead of acting on it. Omitting it keeps the check unbound unless the plugin opts into the [`check_head_sha` capability](#status-required). The adapter never fills it in. |
 | `bucket` | Required: `pass`, `fail`, `pending`, `cancel`, or `skipping`. Map your forge's states onto these; anything else fails the call. |
 | `id`, `state`, `link`, `execution_id` | Optional provider identifiers and raw state, surfaced for diagnostics. |
 | `started_at`, `completed_at` | Optional RFC 3339 timestamps. |
@@ -187,7 +188,7 @@ the plugin is not authenticated for the repository or cannot serve it.
 ```json
 {
   "protocol_version": 1,
-  "capabilities": { "mergeable_state": true, "failed_check_logs": true, "merged_proof": true, "set_pr_base_branch": false },
+  "capabilities": { "mergeable_state": true, "failed_check_logs": true, "merged_proof": true, "set_pr_base_branch": false, "check_head_sha": false },
   "max_pr_body_chars": 0
 }
 ```
@@ -198,6 +199,13 @@ is required: the forge's description limit counted in UTF-16 code units, or
 an explicit `0` for unlimited (a missing key fails the handshake rather than
 reading as unlimited). The PR step fits its body under it, and a body over it
 is refused before any write.
+
+`check_head_sha` is not a subcommand gate. Declaring it `true` promises that
+every check from `pr checks` carries `head_sha`; a check without one while
+`--head-sha` is given then fails the call with a protocol error naming the
+plugin and the check, instead of waiting silently.
+This is additive within protocol version `1`: omitting the capability or
+setting it to `false` preserves support for checks without `head_sha`.
 
 ### pr find (required)
 

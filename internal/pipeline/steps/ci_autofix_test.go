@@ -310,6 +310,8 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 
 	checksSequence := []string{
 		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		// The pre-repair refresh of the selected check.
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
 		`[{"name":"test","status":"IN_PROGRESS","bucket":"pending"}]`,
 		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
 		`[{"name":"test","status":"IN_PROGRESS","bucket":"pending"}]`,
@@ -329,7 +331,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_HEAD_SHA="+headSHA)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -553,6 +555,8 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	// so `failing` is never empty and the original "all pass" reset never fires.
 	checksSequence := []string{
 		`[{"name":"a","status":"COMPLETED","conclusion":"failure","bucket":"fail"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		// The pre-repair refresh of the selected checks.
+		`[{"name":"a","status":"COMPLETED","conclusion":"failure","bucket":"fail"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
 		`[{"name":"a","status":"IN_PROGRESS","bucket":"pending"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
 		`[{"name":"a","status":"COMPLETED","conclusion":"failure","bucket":"fail"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
 		`[{"name":"a","status":"IN_PROGRESS","bucket":"pending"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
@@ -572,7 +576,7 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
+	sctx.Env = append(env, "FAKE_CLI_PR_HEAD_SHA="+headSHA)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"

@@ -119,6 +119,7 @@ type statusResult struct {
 		FailedCheckLogs bool `json:"failed_check_logs"`
 		MergedProof     bool `json:"merged_proof"`
 		SetPRBaseBranch bool `json:"set_pr_base_branch"`
+		CheckHeadSHA    bool `json:"check_head_sha"`
 	} `json:"capabilities"`
 	// MaxPRBodyChars is required: a missing key must not decode to the zero
 	// that means "unlimited" and let publication skip the plugin's limit.
@@ -155,6 +156,7 @@ type viewResult struct {
 type wireCheck struct {
 	Name        string `json:"name"`
 	ID          string `json:"id"`
+	HeadSHA     string `json:"head_sha"`
 	Bucket      string `json:"bucket"`
 	State       string `json:"state"`
 	Link        string `json:"link"`

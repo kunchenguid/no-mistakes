@@ -83,6 +83,7 @@ type Host struct {
 	mu           sync.Mutex
 	capabilities scm.Capabilities
 	canRetarget  bool
+	checkHeadSHA bool
 	maxBodyChars int
 }
 
@@ -163,6 +164,7 @@ func (h *Host) Available(ctx context.Context) error {
 		MergedProof:     result.Capabilities.MergedProof,
 	}
 	h.canRetarget = result.Capabilities.SetPRBaseBranch
+	h.checkHeadSHA = result.Capabilities.CheckHeadSHA
 	h.maxBodyChars = *result.MaxPRBodyChars
 	return nil
 }
@@ -321,6 +323,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	pr.ObservedHeadSHA = ""
 	args := []string{number}
 	if headSHA := strings.TrimSpace(pr.HeadSHA); headSHA != "" {
 		args = append(args, flag("head-sha", headSHA))
@@ -339,6 +342,29 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			return nil, h.protocolf(CmdPRChecks, "check %d: %v", i, err)
 		}
 		checks = append(checks, check)
+	}
+	expectedHead := strings.TrimSpace(pr.HeadSHA)
+	if expectedHead != "" {
+		h.mu.Lock()
+		strictHead := h.checkHeadSHA
+		h.mu.Unlock()
+		// Validate every entry before reporting stale or missing head data, so
+		// a malformed check response cannot be hidden by an earlier mismatch.
+		for _, raw := range *result.Checks {
+			actualHead := strings.TrimSpace(raw.HeadSHA)
+			if actualHead == "" && strictHead {
+				return nil, h.protocolf(CmdPRChecks, "check %q did not include head_sha while capability check_head_sha is declared", raw.Name)
+			}
+		}
+		for i, raw := range *result.Checks {
+			actualHead := strings.TrimSpace(raw.HeadSHA)
+			if actualHead != "" {
+				pr.ObservedHeadSHA = actualHead
+			}
+			if actualHead != "" && actualHead != expectedHead {
+				return nil, fmt.Errorf("provider plugin %q %s check %d: %w: expected %s, got %q", h.opts.Name, CmdPRChecks, i, scm.ErrHeadChanged, expectedHead, actualHead)
+			}
+		}
 	}
 	return checks, nil
 }

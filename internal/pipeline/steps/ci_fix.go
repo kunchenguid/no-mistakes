@@ -76,21 +76,52 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
 		return nil, nil
 	}
-	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
+	var failingFindings Findings
+	for _, finding := range targets.Findings.Items {
+		if finding.Category == types.FindingCategoryCICheck {
+			failingFindings.Items = append(failingFindings.Items, finding)
+		}
+	}
+	failingTargets := ciFixTargetsFromFindings(failingFindings)
+	if len(failingTargets.Checks) > 0 {
 		expectedHeadSHA, err := stepGitHeadSHA(sctx)
 		if err != nil {
 			return nil, fmt.Errorf("resolve head before snapshotting selected CI checks: %w", err)
 		}
 		snapshotPR := *pr
 		snapshotPR.HeadSHA = expectedHeadSHA
-		checks, err := host.GetChecks(sctx.Ctx, &snapshotPR)
-		if err != nil {
+		checks, _, moved, err := getCIChecks(sctx.Ctx, host, &snapshotPR)
+		switch {
+		case moved && !pluginContractBroken(err):
+			sctx.Log("selected CI checks are stale; waiting for current checks before repair")
+			failingTargets.Checks = nil
+		case err != nil:
 			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
+		default:
+			for _, target := range failingTargets.Checks {
+				if !checkTargetFailedTerminally(checks, target) {
+					sctx.Log("selected CI checks are missing or no longer failing; waiting for current CI observation")
+					failingTargets.Checks = nil
+					break
+				}
+			}
+			if len(failingTargets.Checks) > 0 {
+				s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+			}
 		}
-		if snapshotPR.HeadSHA != expectedHeadSHA {
-			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", scm.ErrHeadChanged)
+		if len(failingTargets.Checks) == 0 {
+			remaining := types.FindingsMetadata(targets.Findings)
+			remaining.Summary = ""
+			for _, finding := range targets.Findings.Items {
+				if finding.Category != types.FindingCategoryCICheck {
+					remaining.Items = append(remaining.Items, finding)
+				}
+			}
+			targets = ciFixTargetsFromFindings(remaining)
+			if targets.empty() {
+				return nil, nil
+			}
 		}
-		s.observedCompletedAt = terminalFailureCompletionTimes(checks)
 	}
 	issueDesc := targets.description()
 	sctx.Log(fmt.Sprintf("repairing: %s...", issueDesc))

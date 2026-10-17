@@ -40,7 +40,7 @@ func pluginCIContext(t *testing.T, state fakeplugin.State) (*pipeline.StepContex
 		t.Fatal(err)
 	}
 
-	sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = stepstest.FakeCLIEnv(binDir, map[string]string{fakeplugin.EnvState: statePath})
 	sctx.Repo.UpstreamURL = "https://git.example.com/team/repo.git"
 	prURL := pluginPRURL
@@ -152,6 +152,59 @@ func TestCIStep_ProviderPluginFailingCheckNeedsApproval(t *testing.T) {
 	}
 }
 
+func TestCIStep_ProviderPluginRepairRequiresFreshSelectedCheckHead(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		capability    bool
+		checkHeadSHA  string
+		wantProtocol  bool
+		wantAgentCall bool
+	}{
+		{name: "mismatching head waits without repair", capability: true, checkHeadSHA: "old-head"},
+		{name: "legacy unbound check keeps existing behavior", wantAgentCall: true},
+		{name: "strict capability requires check head", capability: true, wantProtocol: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			agent := &stepstest.MockAgent{AgentName: "test"}
+			sctx, _ := pluginCIContext(t, fakeplugin.State{
+				CheckHeadSHA: tc.capability,
+				Checks:       []fakeplugin.Check{{Name: "unit-tests", Bucket: "fail", HeadSHA: tc.checkHeadSHA}},
+			})
+			sctx.Agent = agent
+			sctx.Fixing = true
+			sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"unit-tests"}]}`
+			step := &steps.CIStep{}
+			if !tc.wantProtocol && !tc.wantAgentCall {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				sctx.Ctx = ctx
+				step.SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+					cancel()
+					return ctx.Err()
+				})
+			}
+			pinCIMonitorClock(step)
+			outcome, err := step.Execute(sctx)
+			if tc.wantProtocol {
+				if err == nil || !errors.Is(err, plugin.ErrProtocol) {
+					t.Fatalf("Execute() = %#v, %v; want immediate protocol error", outcome, err)
+				}
+			} else if tc.wantAgentCall {
+				if err != nil || outcome == nil || !outcome.NeedsApproval {
+					t.Fatalf("Execute() = %#v, %v; want ordinary repair conclusion", outcome, err)
+				}
+			} else if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Execute() error = %v, want monitor to wait after stale check head", err)
+			}
+			if got := len(agent.Calls); (got > 0) != tc.wantAgentCall {
+				t.Fatalf("agent calls = %d, want called=%v", got, tc.wantAgentCall)
+			}
+		})
+	}
+}
+
 // A fork URL and an unauthenticated plugin skip the CI step with a reason,
 // exactly like a built-in provider; the executor persists it and axi reports
 // it under run.automatic_skips. A broken status handshake fails the step, and
@@ -205,5 +258,54 @@ func TestCIStep_ProviderPluginSkipsWithReasonAndFailsClosedOnProtocolViolation(t
 				t.Fatalf("outcome = %+v, want skip containing %q", outcome, tt.wantSkip)
 			}
 		})
+	}
+}
+
+// Failures remembered for the idle-timeout finding describe the head they were
+// seen on. Once the provider reports checks for another head, the timeout must
+// not blame the earlier failure on this one.
+func TestCIStep_ProviderPluginHeadChangeResetsRememberedTimeoutFailures(t *testing.T) {
+	t.Parallel()
+	sctx, statePath := pluginCIContext(t, fakeplugin.State{Checks: []fakeplugin.Check{
+		{Name: "unit-tests", Bucket: "fail"},
+		{Name: "slow-suite", Bucket: "pending"},
+	}})
+	sctx.Config.CITimeout = time.Minute
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	waits := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		waits++
+		switch waits {
+		case 1:
+			// The provider now answers with checks recorded for another head.
+			state, err := fakeplugin.Load(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range state.Checks {
+				state.Checks[i].HeadSHA = "another-head"
+			}
+			if err := fakeplugin.Save(statePath, state); err != nil {
+				t.Fatal(err)
+			}
+		case 2:
+			now = now.Add(2 * time.Minute)
+		default:
+			return errors.New("CI monitor kept polling past the idle timeout")
+		}
+		return nil
+	})
+	step.SetNow(func() time.Time { return now })
+	step.SetBaseBranchTip(func(context.Context) (string, bool) { return "base-tip-sha", true })
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want a parked timeout", outcome)
+	}
+	if strings.Contains(outcome.Findings, "unit-tests") || outcome.AutoFixable {
+		t.Fatalf("timeout findings = %s, want the stale-head failure forgotten", outcome.Findings)
 	}
 }
