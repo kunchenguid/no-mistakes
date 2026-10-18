@@ -337,6 +337,81 @@ func TestReportIncludesPlansWithoutAnyResults(t *testing.T) {
 	}
 }
 
+// The report's plan is the oracle: an unidentified stopped session must not
+// make either completed A/B variant incomplete or remove it from the frontier.
+func TestReportKeepsAmbiguousSessionsInAnUnknownVariant(t *testing.T) {
+	for _, fixture := range []struct {
+		name    string
+		prompts map[string]string
+		unique  bool
+	}{
+		{name: "stopped-before-first-result"},
+		{name: "result-without-prompt", prompts: map[string]string{"c1": ""}},
+		{name: "ambiguous-partial", prompts: map[string]string{"c1": "shared"}},
+		{name: "identified-partial", prompts: map[string]string{"c2": "variant-a"}, unique: true},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			store := openEvalStore(t)
+			cases := []string{"c1", "c2"}
+			for _, id := range []string{"partial", "a", "b"} {
+				writeSessionPlan(t, store, Session{ID: id, Candidate: "candidate", Repeats: 1, CaseIDs: cases, Cohort: "same"})
+				prompts := fixture.prompts
+				if id != "partial" {
+					prompts = map[string]string{"c1": "shared", "c2": "variant-" + id}
+				}
+				for _, caseID := range cases {
+					prompt, recorded := prompts[caseID]
+					if !recorded {
+						continue
+					}
+					persistSyntheticEvaluation(t, store, Evaluation{SessionID: id, CaseID: caseID, Candidate: "candidate", Cohort: "same",
+						Status: "completed", HasFindingGold: true, GoldCount: 1, TruePositive: 1, PromptFingerprint: prompt,
+						TokensReported: true, FreshInputTokens: 10})
+				}
+			}
+			reports, err := Report(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRows := 3
+			if fixture.unique {
+				wantRows = 2
+			}
+			if len(reports) != wantRows {
+				t.Fatalf("reports = %#v, want %d rows", reports, wantRows)
+			}
+			unknown, complete, incomplete := 0, 0, 0
+			for _, report := range reports {
+				if report.PromptFingerprint == "" {
+					unknown++
+					want := Completeness{PlansKnown: true, Sessions: 1, PlannedCases: 2, PlannedReplays: 2,
+						CompletedCases: len(fixture.prompts), RecordedReplays: len(fixture.prompts), CompletedReplays: len(fixture.prompts)}
+					if report.Completeness != want || !report.Incomplete || report.OnFrontier {
+						t.Fatalf("unknown variant = %#v, want incomplete stopped plan %+v", report, want)
+					}
+				} else if report.Incomplete {
+					incomplete++
+					if !fixture.unique || report.Completeness.Sessions != 2 || report.Completeness.CompletedReplays != 3 || report.Completeness.Missing() != 1 || report.OnFrontier {
+						t.Fatalf("identified variant = %#v, want only the uniquely matching partial session merged", report)
+					}
+				} else {
+					complete++
+					if report.Completeness.Sessions != 1 || report.Completeness.CompletedReplays != 2 || !report.OnFrontier {
+						t.Fatalf("completed variant = %#v, want its own complete plan on the frontier", report)
+					}
+				}
+			}
+			if fixture.unique {
+				if unknown != 0 || complete != 1 || incomplete != 1 {
+					t.Fatalf("unknown/complete/incomplete rows = %d/%d/%d, want 0/1/1", unknown, complete, incomplete)
+				}
+			} else if unknown != 1 || complete != 2 || incomplete != 0 {
+				t.Fatalf("unknown/complete/incomplete rows = %d/%d/%d, want 1/2/0", unknown, complete, incomplete)
+			}
+		})
+	}
+}
+
 func TestExecutableContentsSeparateReplayCohorts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "executable")
 	builds := make([]ReplayBuild, 0, 2)

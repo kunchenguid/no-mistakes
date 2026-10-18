@@ -89,9 +89,9 @@ func (c Completeness) Complete() bool {
 //
 // The cohort separates builds, while the prompt fingerprint also captures
 // the effective configuration and delivered prompt for each case.
-// Sessions of one cohort and candidate share a slice only while they agree
-// on the prompt fingerprint of every case both replayed; a session that
-// disagrees on any case starts its own slice.
+// Sessions of one cohort and candidate share a slice only when their recorded
+// prompts identify exactly one compatible variant. Sessions with no recorded
+// prompts or multiple compatible variants stay in an unknown-variant slice.
 func Report(store *Store) ([]CandidateReport, error) {
 	evaluations, err := store.evaluations()
 	if err != nil {
@@ -228,20 +228,20 @@ func (v promptVariant) fingerprint() string {
 	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
-// promptVariants partitions sessions, in first-recorded order, into variants.
-// A session joins the first variant it agrees with on every case both
-// replayed, so a partial session still aggregates with the full one it
-// matches, and starts a new variant otherwise.
+// promptVariants discovers variants before assigning sessions, so a partial
+// session cannot hide its ambiguity by joining before a second variant appears.
 func promptVariants(sessions []string, rows map[string][]Evaluation) []promptVariant {
 	var variants []promptVariant
 	for _, id := range sessions {
 		prompts := sessionPrompts(rows[id])
+		if len(prompts) == 0 {
+			continue
+		}
 		placed := false
 		for i := range variants {
 			if !promptsAgree(variants[i].prompts, prompts) {
 				continue
 			}
-			variants[i].sessions = append(variants[i].sessions, id)
 			for caseID, fingerprints := range prompts {
 				variants[i].prompts[caseID] = fingerprints
 			}
@@ -249,8 +249,29 @@ func promptVariants(sessions []string, rows map[string][]Evaluation) []promptVar
 			break
 		}
 		if !placed {
-			variants = append(variants, promptVariant{sessions: []string{id}, prompts: prompts})
+			variants = append(variants, promptVariant{prompts: prompts})
 		}
+	}
+	var unknown promptVariant
+	for _, id := range sessions {
+		prompts := sessionPrompts(rows[id])
+		match, matches := -1, 0
+		if len(prompts) > 0 {
+			for i := range variants {
+				if promptsAgree(variants[i].prompts, prompts) {
+					match = i
+					matches++
+				}
+			}
+		}
+		if matches == 1 {
+			variants[match].sessions = append(variants[match].sessions, id)
+		} else {
+			unknown.sessions = append(unknown.sessions, id)
+		}
+	}
+	if len(unknown.sessions) > 0 {
+		variants = append(variants, unknown)
 	}
 	return variants
 }
