@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+ "io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -64,6 +65,7 @@ type Session struct {
 type ReplayBuild struct {
 	Version string `json:"version,omitempty"`
 	Commit  string `json:"commit,omitempty"`
+ ExecutableSHA256 string `json:"executable_sha256,omitempty"`
 }
 
 // String renders the build in the `version (commit)` form `no-mistakes --version` uses.
@@ -71,18 +73,26 @@ func (b ReplayBuild) String() string {
 	if b == (ReplayBuild{}) {
 		return "not recorded"
 	}
-	return b.Version + " (" + b.Commit + ")"
+	label := b.Version + " (" + b.Commit + ")"
+ if b.ExecutableSHA256 != "" {
+ label += " sha256:" + b.ExecutableSHA256
+ }
+ return label
 }
 
-// currentReplayBuild prefers the release ldflags commit and falls back to the
-// VCS stamp Go embeds in a plain `go build`, so two local builds of different
-// commits do not both read "unknown". A build from a modified tree is marked
-// dirty; what it changed is caught by the per-replay prompt fingerprint.
-func currentReplayBuild() ReplayBuild {
+func currentReplayBuild() (ReplayBuild, error) {
 	build := ReplayBuild{Version: buildinfo.CurrentVersion(), Commit: buildinfo.Commit}
+	executable, err := os.Executable()
+	if err != nil {
+		return ReplayBuild{}, fmt.Errorf("locate replay executable: %w", err)
+	}
+	build.ExecutableSHA256, err = executableDigest(executable)
+	if err != nil {
+		return ReplayBuild{}, err
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return build
+		return build, nil
 	}
 	var revision string
 	var modified bool
@@ -100,7 +110,20 @@ func currentReplayBuild() ReplayBuild {
 	if modified {
 		build.Commit += "-dirty"
 	}
-	return build
+	return build, nil
+}
+
+func executableDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open replay executable: %w", err)
+	}
+	defer file.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", fmt.Errorf("hash replay executable: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 const (
@@ -176,7 +199,11 @@ func (s *Store) prepareReplay(ctx context.Context, opts ReplayOptions) ([]Case, 
 	if len(cases) == 0 {
 		return nil, Session{}, fmt.Errorf("case set %q is empty", opts.Set)
 	}
-	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats, Build: currentReplayBuild()}
+	build, err := currentReplayBuild()
+	if err != nil {
+		return nil, Session{}, err
+	}
+	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats, Build: build}
 	for _, c := range cases {
 		session.CaseIDs = append(session.CaseIDs, c.ID)
 	}
@@ -324,7 +351,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		return evaluation
 	}
 	defer baseAgent.Close()
-	observed := &observedAgent{inner: agent.WithSteering(baseAgent, isolatedPaths.EvidenceDir()), ownership: ownership}
+	observed := &observedAgent{inner: baseAgent, ownership: ownership}
 
 	replayDB, stepResultID, fixing, previousFindings, err := replayRoundContext(isolatedPaths, c, workDir)
 	if err != nil {
@@ -358,7 +385,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		Run:                   replayRun,
 		Repo:                  replayRepo,
 		WorkDir:               workDir,
-		Agent:                 observed,
+		Agent:                 agent.WithSteering(observed, isolatedPaths.EvidenceDir()),
 		Config:                cfg,
 		DB:                    replayDB,
 		StepResultID:          stepResultID,
@@ -681,7 +708,7 @@ func candidatePathPart(candidate string) string {
 func cohortID(caseIDs []string, repeats int, build ReplayBuild) string {
 	ids := append([]string(nil), caseIDs...)
 	sort.Strings(ids)
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s\x01%s\x00%s", repeats, strings.Join(ids, "\x00"), build.Version, build.Commit)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s\x01%s\x00%s\x00%s", repeats, strings.Join(ids, "\x00"), build.Version, build.Commit, build.ExecutableSHA256)))
 	return hex.EncodeToString(sum[:8])
 }
 

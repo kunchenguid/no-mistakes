@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
+ "github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -134,7 +135,7 @@ func TestReplaysOfDifferentBuildsNeverShareAReportRow(t *testing.T) {
 		t.Fatalf("second build row = %#v, want its single session under its own build", got)
 	}
 	output := RenderReport(reports)
-	for _, want := range []string{"(aaaaaaa); review prompt+config fingerprint: " + rows[first.Cohort].PromptFingerprint, "(bbbbbbb); review prompt+config fingerprint: "} {
+	for _, want := range []string{first.Build.String() + "; review prompt+config fingerprint: " + rows[first.Cohort].PromptFingerprint, other.Build.String() + "; review prompt+config fingerprint: "} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("report = %q, want %q", output, want)
 		}
@@ -296,4 +297,71 @@ func TestReportReadsSessionsRecordedBeforeBuildIdentity(t *testing.T) {
 			t.Fatalf("report = %q, want %q", output, want)
 		}
 	}
+}
+
+func TestReportIncludesPlansWithoutAnyResults(t *testing.T) {
+	for _, withCompleted := range []bool{false, true} {
+		t.Run(fmt.Sprint(withCompleted), func(t *testing.T) {
+			store := openEvalStore(t)
+			plan := Session{ID: "stopped", Candidate: "candidate", Repeats: 2, CaseIDs: []string{"c1", "c2"}, Cohort: "same"}
+			writeSessionPlan(t, store, plan)
+			want := Completeness{PlansKnown: true, Sessions: 1, PlannedCases: 2, PlannedReplays: 4}
+			if withCompleted {
+				plan.ID = "finished"
+				writeSessionPlan(t, store, plan)
+				for _, id := range plan.CaseIDs {
+					for repeat := 1; repeat <= 2; repeat++ {
+						persistSyntheticEvaluation(t, store, Evaluation{SessionID: plan.ID, CaseID: id, Repeat: repeat, Candidate: plan.Candidate, Cohort: plan.Cohort, Status: "completed"})
+					}
+				}
+				want.Sessions = 2
+				want.PlannedReplays = 8
+				want.RecordedReplays = 4
+				want.CompletedReplays = 4
+			}
+			reports, err := Report(store)
+			if err != nil { t.Fatal(err) }
+			if len(reports) != 1 { t.Fatalf("reports = %#v", reports) }
+			got := reports[0]
+			if got.Completeness != want || !got.Incomplete || got.OnFrontier || got.Summary.Candidate != plan.Candidate {
+				t.Fatalf("report = %#v, want incomplete candidate with %+v", got, want)
+			}
+			if !strings.Contains(RenderReport(reports), "candidate (cohort same) INCOMPLETE") {
+				t.Fatal("zero-result plan was not visibly incomplete")
+			}
+		})
+	}
+}
+
+func TestExecutableContentsSeparateReplayCohorts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "executable")
+	builds := make([]ReplayBuild, 0, 2)
+	for _, fixture := range []struct{ content, digest string }{
+		{"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+		{"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+	} {
+		if err := os.WriteFile(path, []byte(fixture.content), 0o600); err != nil { t.Fatal(err) }
+		digest, err := executableDigest(path)
+		if err != nil { t.Fatal(err) }
+		if digest != fixture.digest { t.Fatalf("SHA-256 = %s, want standard vector %s", digest, fixture.digest) }
+		builds = append(builds, ReplayBuild{Version: "dev", Commit: "same-dirty", ExecutableSHA256: digest})
+	}
+	if cohortID([]string{"case"}, 1, builds[0]) == cohortID([]string{"case"}, 1, builds[1]) {
+		t.Fatal("different executable contents shared a cohort")
+	}
+	if _, err := executableDigest(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("unreadable executable accepted")
+	}
+	current, err := currentReplayBuild()
+	if err != nil || len(current.ExecutableSHA256) != 64 { t.Fatalf("current build = %+v, %v", current, err) }
+}
+
+func TestObservedAgentCapturesSteeredFirstPrompt(t *testing.T) {
+	observed := &observedAgent{inner: &fixedResultAgent{}}
+	steered := agent.WithSteering(observed, "evidence")
+	if _, err := steered.Run(context.Background(), agent.RunOpts{Prompt: "review this change"}); err != nil { t.Fatal(err) }
+	want := agent.WorktreeSteering("evidence") + "review this change"
+	if observed.firstPrompt != want { t.Fatalf("observed prompt = %q, want delivered prompt %q", observed.firstPrompt, want) }
+	if _, err := steered.Run(context.Background(), agent.RunOpts{Prompt: "schema correction"}); err != nil { t.Fatal(err) }
+	if observed.firstPrompt != want { t.Fatal("a later turn replaced the first prompt") }
 }

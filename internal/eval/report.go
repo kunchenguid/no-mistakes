@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+ "os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -98,6 +99,7 @@ func Report(store *Store) ([]CandidateReport, error) {
 	}
 	type bucket struct {
 		cohort   string
+ candidate string
 		sessions []string
 		rows     map[string][]Evaluation
 	}
@@ -111,7 +113,7 @@ func Report(store *Store) ([]CandidateReport, error) {
 		key := cohort + "\x00" + evaluation.Candidate
 		b := buckets[key]
 		if b == nil {
-			b = &bucket{cohort: cohort, rows: make(map[string][]Evaluation)}
+			b = &bucket{cohort: cohort, candidate: evaluation.Candidate, rows: make(map[string][]Evaluation)}
 			buckets[key] = b
 			order = append(order, key)
 		}
@@ -128,6 +130,35 @@ func Report(store *Store) ([]CandidateReport, error) {
 		p := store.readSession(id)
 		plans[id] = p
 		return p
+	}
+	entries, err := os.ReadDir(filepath.Join(store.root, "sessions"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("list eval sessions: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		p := plan(id)
+		if p == nil {
+			continue
+		}
+		cohort := p.Cohort
+		if cohort == "" {
+			cohort = "legacy-unmatched"
+		}
+		key := cohort + "\x00" + p.Candidate
+		b := buckets[key]
+		if b == nil {
+			b = &bucket{cohort: cohort, candidate: p.Candidate, rows: make(map[string][]Evaluation)}
+			buckets[key] = b
+			order = append(order, key)
+		}
+		if _, seen := b.rows[id]; !seen {
+			b.sessions = append(b.sessions, id)
+			b.rows[id] = nil
+		}
 	}
 	var reports []CandidateReport
 	for _, key := range order {
@@ -151,6 +182,7 @@ func Report(store *Store) ([]CandidateReport, error) {
 				Confidence:        confidenceInterval("", rows),
 				AverageWallMS:     averageWallMS(rows),
 			}
+			report.Summary.Candidate = b.candidate
 			if total, cacheRead, cacheWrite, ok := averageTokens(rows); ok {
 				report.AverageTokens = &total
 				report.AverageCacheReadTokens = &cacheRead
