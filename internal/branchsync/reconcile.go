@@ -164,17 +164,11 @@ func (s *Service) Reconcile(ctx context.Context, keep, observed string) State {
 		return refuse(fmt.Errorf("the observation is missing or stale; inspect status again before choosing a head"))
 	}
 	chosen := map[string]string{"local": o.Local, "pipeline": o.Pipeline, "pushed": o.Pushed}[keep]
-	checkRemote := func() error {
-		readCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
-		defer cancel()
-		head, err := s.runLsRemote(readCtx, s.workDir(), s.resolvedPushURL(ctx, s.Repo), "refs/heads/"+o.Branch)
-		if err != nil || head != o.Pushed {
-			return fmt.Errorf("the live push target no longer equals the observed pushed head")
-		}
-		return nil
-	}
-	if err := checkRemote(); err != nil {
-		return refuse(err)
+	readCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	remote, err := s.runLsRemote(readCtx, s.workDir(), s.resolvedPushURL(ctx, s.Repo), "refs/heads/"+o.Branch)
+	cancel()
+	if err != nil || remote != o.Pushed {
+		return refuse(fmt.Errorf("the live push target no longer equals the observed pushed head"))
 	}
 	// Stage immutable objects using local fetches. No receive hook runs and no
 	// branch or durable recovery ref is changed by these imports.
@@ -199,9 +193,6 @@ func (s *Service) Reconcile(ctx context.Context, keep, observed string) State {
 		return refuse(fmt.Errorf("the observed heads or recovery evidence changed before reconciliation"))
 	}
 	err = s.DB.ReconcileCustody(run, s.Repo, o.BranchRuns, func() error {
-		if err := checkRemote(); err != nil {
-			return err
-		}
 		branch, err := git.CurrentBranch(ctx, s.workDir())
 		local, localErr := directCommitRef(ctx, s.workDir(), "refs/heads/"+o.Branch)
 		gate, gateErr := directCommitRef(ctx, s.GateDir, "refs/heads/"+o.Branch)
