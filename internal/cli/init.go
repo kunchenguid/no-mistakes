@@ -95,6 +95,10 @@ func newInitCmd() *cobra.Command {
 				if repo.ForkURL != "" {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork"), safeurl.Redact(repo.ForkURL))
 				}
+				if !created && cmd.Flags().Changed("fork-url") {
+					fmt.Fprintln(w, "  note    running executors keep their original publication target; this refresh does not rebind them.")
+					fmt.Fprintln(w, "          Inspect `no-mistakes axi status`; after the run ends, follow its custody action and start a fresh run for the new target.")
+				}
 				if skillErr != nil {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
 				} else {
