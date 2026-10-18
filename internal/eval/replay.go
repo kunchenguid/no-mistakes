@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
- "io"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -63,9 +63,9 @@ type Session struct {
 // prompt is compiled into it, so two builds are two subjects under test even
 // when they replay the same cases with the same candidate.
 type ReplayBuild struct {
-	Version string `json:"version,omitempty"`
-	Commit  string `json:"commit,omitempty"`
- ExecutableSHA256 string `json:"executable_sha256,omitempty"`
+	Version          string `json:"version,omitempty"`
+	Commit           string `json:"commit,omitempty"`
+	ExecutableSHA256 string `json:"executable_sha256,omitempty"`
 }
 
 // String renders the version and commit, followed by the executable digest
@@ -75,10 +75,10 @@ func (b ReplayBuild) String() string {
 		return "not recorded"
 	}
 	label := b.Version + " (" + b.Commit + ")"
- if b.ExecutableSHA256 != "" {
- label += " sha256:" + b.ExecutableSHA256
- }
- return label
+	if b.ExecutableSHA256 != "" {
+		label += " sha256:" + b.ExecutableSHA256
+	}
+	return label
 }
 
 func currentReplayBuild() (ReplayBuild, error) {

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
- "os"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -98,10 +98,10 @@ func Report(store *Store) ([]CandidateReport, error) {
 		return nil, err
 	}
 	type bucket struct {
-		cohort   string
- candidate string
-		sessions []string
-		rows     map[string][]Evaluation
+		cohort    string
+		candidate string
+		sessions  []string
+		rows      map[string][]Evaluation
 	}
 	var order []string
 	buckets := make(map[string]*bucket)

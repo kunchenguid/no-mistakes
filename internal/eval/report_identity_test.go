@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
- "github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -320,8 +320,12 @@ func TestReportIncludesPlansWithoutAnyResults(t *testing.T) {
 				want.CompletedReplays = 4
 			}
 			reports, err := Report(store)
-			if err != nil { t.Fatal(err) }
-			if len(reports) != 1 { t.Fatalf("reports = %#v", reports) }
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(reports) != 1 {
+				t.Fatalf("reports = %#v", reports)
+			}
 			got := reports[0]
 			if got.Completeness != want || !got.Incomplete || got.OnFrontier || got.Summary.Candidate != plan.Candidate {
 				t.Fatalf("report = %#v, want incomplete candidate with %+v", got, want)
@@ -340,10 +344,16 @@ func TestExecutableContentsSeparateReplayCohorts(t *testing.T) {
 		{"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
 		{"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
 	} {
-		if err := os.WriteFile(path, []byte(fixture.content), 0o600); err != nil { t.Fatal(err) }
+		if err := os.WriteFile(path, []byte(fixture.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		digest, err := executableDigest(path)
-		if err != nil { t.Fatal(err) }
-		if digest != fixture.digest { t.Fatalf("SHA-256 = %s, want standard vector %s", digest, fixture.digest) }
+		if err != nil {
+			t.Fatal(err)
+		}
+		if digest != fixture.digest {
+			t.Fatalf("SHA-256 = %s, want standard vector %s", digest, fixture.digest)
+		}
 		builds = append(builds, ReplayBuild{Version: "dev", Commit: "same-dirty", ExecutableSHA256: digest})
 	}
 	if cohortID([]string{"case"}, 1, builds[0]) == cohortID([]string{"case"}, 1, builds[1]) {
@@ -353,15 +363,25 @@ func TestExecutableContentsSeparateReplayCohorts(t *testing.T) {
 		t.Fatal("unreadable executable accepted")
 	}
 	current, err := currentReplayBuild()
-	if err != nil || len(current.ExecutableSHA256) != 64 { t.Fatalf("current build = %+v, %v", current, err) }
+	if err != nil || len(current.ExecutableSHA256) != 64 {
+		t.Fatalf("current build = %+v, %v", current, err)
+	}
 }
 
 func TestObservedAgentCapturesSteeredFirstPrompt(t *testing.T) {
 	observed := &observedAgent{inner: &fixedResultAgent{}}
 	steered := agent.WithSteering(observed, "evidence")
-	if _, err := steered.Run(context.Background(), agent.RunOpts{Prompt: "review this change"}); err != nil { t.Fatal(err) }
+	if _, err := steered.Run(context.Background(), agent.RunOpts{Prompt: "review this change"}); err != nil {
+		t.Fatal(err)
+	}
 	want := agent.WorktreeSteering("evidence") + "review this change"
-	if observed.firstPrompt != want { t.Fatalf("observed prompt = %q, want delivered prompt %q", observed.firstPrompt, want) }
-	if _, err := steered.Run(context.Background(), agent.RunOpts{Prompt: "schema correction"}); err != nil { t.Fatal(err) }
-	if observed.firstPrompt != want { t.Fatal("a later turn replaced the first prompt") }
+	if observed.firstPrompt != want {
+		t.Fatalf("observed prompt = %q, want delivered prompt %q", observed.firstPrompt, want)
+	}
+	if _, err := steered.Run(context.Background(), agent.RunOpts{Prompt: "schema correction"}); err != nil {
+		t.Fatal(err)
+	}
+	if observed.firstPrompt != want {
+		t.Fatal("a later turn replaced the first prompt")
+	}
 }
