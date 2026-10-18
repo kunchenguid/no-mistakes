@@ -1,6 +1,7 @@
 package branchsync
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -171,6 +172,30 @@ func TestReconcilePostPushRechecksAfterImport(t *testing.T) {
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
 		t.Fatal("gate moved after local race")
+	}
+}
+
+func TestReconcilePostPushCancellationCannotInterruptTheMove(t *testing.T) {
+	t.Parallel()
+	f, local, _ := newPostPushReconciliationFixture(t)
+	token := reconciliationToken(t, f)
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+	f.service.beforeReconcileMove = cancel
+	got := f.service.Reconcile(ctx, "pipeline", token)
+	if !got.Recovered || !f.custodyReturned() {
+		t.Fatalf("cancelled reconciliation did not finish: %#v", got)
+	}
+	for _, dir := range []string{f.local, f.gate} {
+		if head := mustRun(t, dir, "rev-parse", "refs/heads/feature/recover"); head != f.preserved {
+			t.Fatalf("branch = %s, want %s", head, f.preserved)
+		}
+	}
+	if status := mustRun(t, f.local, "status", "--porcelain"); status != "" {
+		t.Fatalf("worktree was not updated cleanly: %s", status)
+	}
+	if head := mustRun(t, f.local, "rev-parse", reconciliationRef(f.run.ID, local)); head != local {
+		t.Fatal("original local head was not preserved")
 	}
 }
 
