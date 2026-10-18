@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -210,7 +211,13 @@ func (s *Service) Reconcile(ctx context.Context, keep, observed string) State {
 		if s.beforeReconcileMove != nil {
 			s.beforeReconcileMove()
 		}
-		return s.moveReconciledHeads(ctx, o, chosen)
+		// Once a branch moves, caller cancellation must not abort the worktree
+		// update or its verification: that would roll back the custody stamp
+		// after the move, and the moved heads no longer match a retry's
+		// observation. Each step still fails closed, within a bound.
+		moveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileMoveTimeout)
+		defer cancel()
+		return s.moveReconciledHeads(moveCtx, o, chosen)
 	})
 	if err != nil {
 		return refuse(err)
@@ -221,6 +228,8 @@ func (s *Service) Reconcile(ctx context.Context, keep, observed string) State {
 	state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 	return state
 }
+
+const reconcileMoveTimeout = 2 * time.Minute
 
 func (s *Service) moveReconciledHeads(ctx context.Context, o reconciliationObservation, chosen string) error {
 	ref := "refs/heads/" + o.Branch
