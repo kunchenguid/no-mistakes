@@ -2116,19 +2116,26 @@ func worktreeClean(ctx context.Context, dir string) (bool, string) {
 	for _, marker := range markers {
 		args = append(args, "--git-path", marker.path)
 	}
+	var paths []string
 	if out, err := git.Run(ctx, dir, args...); err == nil {
-		paths := strings.Split(out, "\n")
-		if len(paths) != len(markers) {
-			return false, "status_unavailable"
+		if split := strings.Split(out, "\n"); len(split) == len(markers) {
+			paths = split
 		}
-		for i, marker := range markers {
-			path := paths[i]
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(dir, path)
-			}
-			if _, err := os.Stat(path); err == nil {
-				return false, marker.reason
-			}
+	}
+	for i, marker := range markers {
+		var path string
+		if paths != nil {
+			path = paths[i]
+		} else if out, err := git.Run(ctx, dir, "rev-parse", "--git-path", marker.path); err == nil {
+			path = out
+		} else {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if _, err := os.Stat(path); err == nil {
+			return false, marker.reason
 		}
 	}
 	dirty, err := git.HasUncommittedChanges(ctx, dir)

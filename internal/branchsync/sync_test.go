@@ -659,6 +659,31 @@ func TestOperationInProgressClassesRefuse(t *testing.T) {
 	}
 }
 
+func TestWorktreeCleanLinkedWorktreeOfNewlinePathRepository(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo\nwith newline")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Skipf("filesystem cannot create a path with a newline: %v", err)
+	}
+	mustRun(t, repo, "init", "-b", "main")
+	mustWrite(t, filepath.Join(repo, "file.txt"), "base\n")
+	mustRun(t, repo, "add", "file.txt")
+	mustRun(t, repo, "commit", "-m", "base")
+	linked := filepath.Join(root, "linked")
+	mustRun(t, repo, "worktree", "add", "-b", "linked", linked)
+
+	if clean, reason := worktreeClean(context.Background(), linked); !clean {
+		t.Fatalf("clean linked worktree reported %q", reason)
+	}
+	gitPath := mustRun(t, linked, "rev-parse", "--git-path", "MERGE_HEAD")
+	mustWrite(t, gitPath, "state\n")
+	if clean, reason := worktreeClean(context.Background(), linked); clean || reason != "merge_in_progress" {
+		t.Fatalf("worktreeClean = %v, %q", clean, reason)
+	}
+}
+
 func TestLocalAheadAndDivergedRefuse(t *testing.T) {
 	t.Parallel()
 
