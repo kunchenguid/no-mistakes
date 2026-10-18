@@ -119,6 +119,53 @@ func TestIngestPostPRMissWritesFalseNegativeGoldOnGreenReview(t *testing.T) {
 	}
 }
 
+// Capture excludes the post-review pass and every later round because their
+// incremental scope cannot be replayed from the run base. Miss gold must use
+// the last full green review, not one of those uncapturable rounds.
+func TestIngestPostPRMissUsesGreenRoundBeforePostReviewPass(t *testing.T) {
+	for _, laterTrigger := range []string{"", "auto_fix", "initial"} {
+		t.Run("later_trigger="+laterTrigger, func(t *testing.T) {
+			ctx := context.Background()
+			p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
+			defer sourceDB.Close()
+			steps, err := sourceDB.GetStepsByRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clean := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+			green, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "initial", &clean, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 3, db.RoundTriggerPostReview, &clean, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 20); err != nil {
+				t.Fatal(err)
+			}
+			if laterTrigger != "" {
+				blocking := `{"findings":[{"id":"incremental-bug","severity":"error","description":"outside the captured scope"}]}`
+				if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 4, laterTrigger, &blocking, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 20); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(p.EvalDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			miss := FindingGold{ID: "miss", Kind: GoldFalseNegative, Description: "full review missed a defect", Source: goldSourcePostPRMiss}
+			result, err := IngestPostPRMiss(ctx, store, p, sourceDB, run.ID, []FindingGold{miss})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.CaseID != run.ID+"-"+green.ID || result.Added != 1 || result.Total != 1 {
+				t.Fatalf("ingest = %#v, want one miss on the pre-pass green review %s", result, green.ID)
+			}
+		})
+	}
+}
+
 func TestIngestPostPRMissRefusesBlockingReview(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)

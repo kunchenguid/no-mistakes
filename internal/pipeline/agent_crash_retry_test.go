@@ -18,6 +18,82 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestExecutor_PostReviewPassAgentCrashRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		retries    int
+		failures   int
+		wantCalls  int
+		wantFailed bool
+	}{
+		{"disabled", 0, 1, 1, true},
+		{"retry succeeds", 1, 1, 2, false},
+		{"budget exhausted", 1, 2, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, p, _, repo := setupTest(t)
+			work := t.TempDir()
+			initGitRepo(t, work)
+			head, err := git.HeadSHA(context.Background(), work)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := database.InsertRun(repo.ID, "post-review-crash", head, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			ag := &hangingAgent{name: "post-review-crash", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				calls++
+				if calls <= tc.failures {
+					return nil, processExitError{"agent process exited: exit status 1"}
+				}
+				return &agent.Result{}, nil
+			}}
+			review := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+				if sctx.PostReviewPassFrom != "" {
+					if sctx.PostReviewPassFrom != head || sctx.Fixing {
+						t.Fatalf("retry changed post-review scope or became a fix: %+v", sctx)
+					}
+					if _, err := sctx.RunAgent(agent.RunOpts{}); err != nil {
+						return nil, err
+					}
+				}
+				return &StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
+			}}
+			documentCalls, pushCalls := 0, 0
+			document := &adaptiveCallStep{name: types.StepDocument, fn: func(sctx *StepContext) (*StepOutcome, error) {
+				documentCalls++
+				if _, err := git.Run(sctx.Ctx, work, "commit", "--allow-empty", "-m", "document"); err != nil {
+					return nil, err
+				}
+				changedHead, err := git.HeadSHA(sctx.Ctx, work)
+				if err != nil {
+					return nil, err
+				}
+				sctx.Run.HeadSHA = changedHead
+				return &StepOutcome{}, database.UpdateRunHeadSHA(run.ID, changedHead)
+			}}
+			executor := NewExecutor(database, p, &config.Config{AgentCrashRetries: tc.retries}, ag,
+				[]Step{review, document, pushUntilReviewed(&pushCalls)}, nil)
+			err = executor.Execute(context.Background(), run, repo, work)
+			if (err != nil) != tc.wantFailed || calls != tc.wantCalls {
+				t.Fatalf("Execute = %v, post-review calls = %d; want failed=%v calls=%d", err, calls, tc.wantFailed, tc.wantCalls)
+			}
+			if documentCalls != 1 || pushCalls != 1+boolInt(!tc.wantFailed) {
+				t.Fatalf("document/push calls = %d/%d", documentCalls, pushCalls)
+			}
+			triggers := roundTriggers(t, database, stepRecord(t, database, run.ID, types.StepReview).ID)
+			if len(triggers) != 1+boolInt(!tc.wantFailed) || triggers[0] != "initial" {
+				t.Fatalf("crash retry created extra review rounds: %v", triggers)
+			}
+			if !tc.wantFailed && triggers[1] != db.RoundTriggerPostReview {
+				t.Fatalf("successful retry lost the post-review trigger: %v", triggers)
+			}
+		})
+	}
+}
+
 func TestExecutor_AgentCrashRetryDoesNotRetryGitExit(t *testing.T) {
 	database, p, _, repo := setupTest(t)
 	work := t.TempDir()

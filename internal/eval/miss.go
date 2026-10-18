@@ -164,6 +164,11 @@ func lastGreenReviewRound(database *db.DB, runID string) (*db.StepRound, error) 
 	}
 	var last *db.StepRound
 	for _, round := range rounds {
+		// Match Capture's replay boundary: this pass and all subsequent
+		// rounds review an incremental scope, not the full captured change.
+		if round.IsPostReviewPass() {
+			break
+		}
 		if round.FindingsJSON == nil || strings.TrimSpace(*round.FindingsJSON) == "" {
 			continue
 		}
