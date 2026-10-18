@@ -87,9 +87,9 @@ func (c Completeness) Complete() bool {
 // review prompt variant. It never contacts a forge, agent provider, telemetry
 // endpoint, or remote case store.
 //
-// The cohort already separates builds, but two binaries that report the same
-// build (a dirty local tree, say) can still render different review prompts.
-// So sessions of one cohort and candidate share a slice only while they agree
+// The cohort separates builds, while the prompt fingerprint also captures
+// the effective configuration and delivered prompt for each case.
+// Sessions of one cohort and candidate share a slice only while they agree
 // on the prompt fingerprint of every case both replayed; a session that
 // disagrees on any case starts its own slice.
 func Report(store *Store) ([]CandidateReport, error) {

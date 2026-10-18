@@ -68,7 +68,8 @@ type ReplayBuild struct {
  ExecutableSHA256 string `json:"executable_sha256,omitempty"`
 }
 
-// String renders the build in the `version (commit)` form `no-mistakes --version` uses.
+// String renders the version and commit, followed by the executable digest
+// when recorded.
 func (b ReplayBuild) String() string {
 	if b == (ReplayBuild{}) {
 		return "not recorded"

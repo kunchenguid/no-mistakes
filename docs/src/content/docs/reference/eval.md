@@ -150,12 +150,14 @@ The command streams one scored progress line per replay as it completes, then re
 no-mistakes eval report
 ```
 
-The report groups local replays by candidate, cohort, and review prompt variant. A cohort pins the selected case IDs, the repeat count, and the build that ran the replay (its version and commit, with `-dirty` for a binary built from a modified tree), so frontier comparisons only compare candidates run over the same corpus and repeat plan by the same build. Because the review prompt is compiled into the binary, an A/B of two builds always reports two rows rather than pooling into one. Each replay also records a fingerprint of the review prompt it rendered and the effective configuration it ran under; sessions of one cohort and candidate share a row only while they agree on that fingerprint for every case both replayed, so two binaries that report the same build but render different prompts still split. Replays recorded before these fields existed are reported with the build and fingerprint as not recorded, under their original cohort.
+The report groups local replays by candidate, cohort, and review prompt variant. A cohort pins the selected case IDs, the repeat count, and the build that ran the replay: its version, commit (with `-dirty` when Go build metadata marks the tree modified), and SHA-256 of the executable. Different executable contents therefore remain separate even when version and commit are identical. Frontier comparisons only compare candidates run over the same corpus and repeat plan by the same build.
+
+Each prompted replay also records a fingerprint of the first review prompt delivered to the agent, including the steering preamble, and the effective configuration. Temporary replay-root paths are normalized so fresh worktrees do not split otherwise identical inputs; later schema-correction turns do not affect the fingerprint. Sessions of one cohort and candidate share a row only while their recorded fingerprints agree for every case both replayed. Replays recorded before these fields existed are reported with the build and fingerprint as not recorded, under their original cohort.
 
 It shows:
 
 - the build and review prompt+config fingerprint beside the cohort
-- completeness: planned cases and replays from the recorded session plans versus the ones that completed, counting missing and failed replays. A slice with any missing or failed replay, or a session plan that cannot be read, is marked `INCOMPLETE` on its heading line and its scores cover only the recorded replays; a case counts as completed only when every planned repeat of it completed
+- completeness: planned cases and replays from the recorded session plans versus the ones that completed, counting missing and failed replays. Saved plans count even when the session stopped before recording its first result. A slice with any missing or failed replay, or a recorded replay whose session plan cannot be read, is marked `INCOMPLETE` on its heading line and its scores cover only the recorded replays; a case counts as completed only when every planned repeat of it completed
 - finding-level true-positive, false-negative, false-positive, and pending counts
 - recall over gold issues, or unlabeled / pending when a case has no finding-level gold
 - precision bounds, and F1 only when false-positive gold exists
