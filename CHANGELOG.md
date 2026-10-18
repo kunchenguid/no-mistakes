@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.99.0](https://github.com/kunchenguid/no-mistakes/compare/v1.98.0...v1.99.0) (2026-10-18)
+
+
+### Features
+
+* add opt-in quota-aware agent routing ([#1530](https://github.com/kunchenguid/no-mistakes/issues/1530)) ([3991662](https://github.com/kunchenguid/no-mistakes/commit/3991662a3eb0bb00eeca0980f9723b4ff0a5ad16))
+* **agent:** add OpenCode v2 session-based adapter ([#1521](https://github.com/kunchenguid/no-mistakes/issues/1521)) ([d228adb](https://github.com/kunchenguid/no-mistakes/commit/d228adbdddb1ddbb9e5bdc45423b646716b0b1ad))
+* **pipeline:** add opt-in retries for crashed agent steps ([#1520](https://github.com/kunchenguid/no-mistakes/issues/1520)) ([5872783](https://github.com/kunchenguid/no-mistakes/commit/58727831845fb73d15dd36d6389a6397b72009b5))
+* **pipeline:** make finishing runs at checks-passed opt-in ([#1387](https://github.com/kunchenguid/no-mistakes/issues/1387)) ([42d7c79](https://github.com/kunchenguid/no-mistakes/commit/42d7c79d6e70840e93717c0f3582df3580922f34))
+
+
+### Bug Fixes
+
+* **scm/gitlab:** read the head pipeline's aggregate, trigger jobs, and external status checks ([#1525](https://github.com/kunchenguid/no-mistakes/issues/1525)) ([c7692c1](https://github.com/kunchenguid/no-mistakes/commit/c7692c1cb3a4ab58255c889b21c8e4a46e3a4913))
+
 ## [1.98.0](https://github.com/kunchenguid/no-mistakes/compare/v1.97.2...v1.98.0) (2026-10-17)
 
 
