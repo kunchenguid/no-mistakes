@@ -228,6 +228,7 @@ Updates matching documentation for code changes and reports only unresolved gaps
 
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
 - Asks the agent to find every documentation gap, update docs or doc comments for all gaps it can resolve, verify its edits, and commit any documentation changes under the placement policy
+- Leaves out of its commit every change already in the worktree before the agent ran that the agent did not touch (for example lockfile churn from an earlier step), logging the paths it left uncommitted; a pass that changes nothing makes no commit
 - The placement policy gives each fact one authoritative owner, prefers removing stale duplicates or replacing them with pointers, avoids new documentation surfaces for perceived gaps, and keeps durable incident lessons near their owner instead of in `AGENTS.md`
 - `document.instructions` can add trusted default-branch ownership rules for the repository, and a matching machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-and-documentation-guidance) entry can add the operator's own, in a separate labeled section
 - When `commands.lint` is empty, performs documentation and agent-driven lint in one combined housekeeping invocation, categorizing findings for the document or lint gate; if that pass is skipped, its structured output is unusable, or a daemon restart loses the in-memory result, lint runs its own agent pass instead

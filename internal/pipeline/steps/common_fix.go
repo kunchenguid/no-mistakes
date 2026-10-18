@@ -452,6 +452,13 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 // commitAgentFixesWithResult commits the worktree changes left by producer, the
 // agent invocation that made them. A nil producer commits without trailers.
 func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, producer *agent.Result) (bool, error) {
+	return commitAgentFixesExcept(sctx, stepName, summary, fallbackSummary, producer, nil)
+}
+
+// commitAgentFixesExcept is commitAgentFixesWithResult that also leaves out
+// every path still exactly as preexisting recorded it before producer ran. A
+// nil preexisting commits the whole worktree.
+func commitAgentFixesExcept(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, producer *agent.Result, preexisting worktreeDirt) (bool, error) {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return false, err
@@ -483,6 +490,9 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 		return false, fmt.Errorf("render %s fix commit trailers: %w", stepName, err)
 	}
 	if err := stagePipelineChanges(sctx); err != nil {
+		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
+	if err := unstageUntouchedDirt(sctx, stepName, preexisting); err != nil {
 		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
 	headBeforeCommit, err := git.HeadSHA(ctx, sctx.WorkDir)
