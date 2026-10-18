@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,10 @@ func handleFakeCLI(mode string) {
 		}
 	}
 	logFakeCLIStdinBody(args, logFile)
+
+	if strings.HasPrefix(mode, "ci-gh") && fakeGHPollSnapshot(args) {
+		return
+	}
 
 	switch mode {
 	case "gh":
@@ -430,6 +435,12 @@ func fakeGitRemoteErrorHandler(args []string) {
 }
 
 func fakePRHeadSHA() string {
+	// FAKE_CLI_PR_HEAD_SEQ_PATH answers successive head reads from its
+	// lines in order, repeating the last, so a test can move the head
+	// between two reads of the same poll.
+	if seqPath := os.Getenv("FAKE_CLI_PR_HEAD_SEQ_PATH"); seqPath != "" {
+		return nextFakeSequenceEntry(seqPath)
+	}
 	configured := os.Getenv("FAKE_CLI_PR_HEAD_SHA")
 	if os.Getenv("FAKE_CLI_HEAD_FROM_WORKTREE") != "1" || configured != "deadbeef" {
 		return configured
@@ -445,6 +456,30 @@ func fakePRHeadSHA() string {
 		os.Exit(1)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func nextFakeSequenceEntry(seqPath string) string {
+	data, err := os.ReadFile(seqPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+	indexPath := seqPath + ".index"
+	index := 0
+	if raw, err := os.ReadFile(indexPath); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+			index = parsed
+		}
+	}
+	if index >= len(entries) {
+		index = len(entries) - 1
+	}
+	if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return strings.TrimSpace(entries[index])
 }
 
 func fakeGitForward(args []string, realGit string) {
@@ -1395,4 +1430,57 @@ func fakeGraphQLRepo(args []string) string {
 		return ""
 	}
 	return owner + "/" + name
+}
+
+const fakeGHSnapshotFields = "state,mergeable,mergeStateStatus,headRefOid"
+
+// fakeGHPollSnapshot answers the CI poll's single
+// `gh pr view --json state,mergeable,mergeStateStatus,headRefOid` by asking this same fake for
+// each field through the per-field handlers the older tests already shape, so
+// every ci-gh mode keeps its own state, mergeable, and head behavior. The
+// child runs are not logged: one snapshot is one `pr view` in FAKE_CLI_LOG.
+// It reports false when args are not a snapshot request.
+func fakeGHPollSnapshot(args []string) bool {
+	if len(args) < 3 || args[0] != "pr" || args[1] != "view" {
+		return false
+	}
+	fieldsAt := -1
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--json" && args[i+1] == fakeGHSnapshotFields {
+			fieldsAt = i + 1
+		}
+	}
+	if fieldsAt < 0 {
+		return false
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	// mergeStateStatus has no per-field handler: a fake that wants the PR to
+	// read BEHIND folds it into its mergeable answer ("MERGEABLE BEHIND").
+	values := map[string]string{"mergeStateStatus": ""}
+	for _, field := range []string{"state", "mergeable", "headRefOid"} {
+		childArgs := append([]string{}, args...)
+		childArgs[fieldsAt] = field
+		childArgs = append(childArgs, "--jq", "."+field)
+		cmd := exec.Command(exe, childArgs...)
+		cmd.Args[0] = os.Args[0]
+		cmd.Env = append(os.Environ(), "FAKE_CLI_LOG=")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprint(os.Stderr, stderr.String())
+			os.Exit(1)
+		}
+		values[field] = strings.TrimSpace(stdout.String())
+	}
+	payload, err := json.Marshal(values)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(payload))
+	return true
 }

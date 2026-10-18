@@ -717,6 +717,10 @@ type CIRaw struct {
 	RebaseBehind *bool `yaml:"rebase_behind"`
 	// CarryReviewOnReplay is a pointer for the same reason as RevalidateRepairs.
 	CarryReviewOnReplay *bool `yaml:"carry_review_on_replay"`
+	// Instructions are repository-specific rules for the CI-fix agent, such
+	// as a check that only fails on one platform or a command that must not
+	// be run. Repository-only like test.instructions: see CI.Instructions.
+	Instructions string `yaml:"instructions"`
 	// ReleaseAfterChecksPass is a pointer for the same reason as
 	// RevalidateRepairs: a repository must be able to opt back out.
 	ReleaseAfterChecksPass *bool `yaml:"release_after_checks_pass"`
@@ -792,6 +796,13 @@ type CI struct {
 	// keeps meaning "every repair re-passes Review", or when the run has a
 	// review-anchored gate, which would otherwise be skipped for the new head.
 	CarryReviewOnReplay bool
+	// Instructions is the repository's guidance for the CI-fix agent, injected
+	// into the CI repair prompt only. It comes from the trusted default-branch
+	// copy (the whole ci block is trusted-only) and from the repository alone,
+	// never global config: like test.instructions it describes one
+	// repository's checks, which a machine-wide value has no repository to
+	// describe.
+	Instructions string
 
 	// ReleaseAfterChecksPass makes the CI step finish the run at its checks
 	// verdict instead of monitoring the pull request until it is merged or
@@ -3865,6 +3876,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	// word on how many workflow runs their project is billed for.
 	applyCIOverrides(&ci, &global.CI)
 	applyCIOverrides(&ci, &repo.CI)
+	ci.Instructions = strings.TrimSpace(repo.CI.Instructions)
 
 	// The repo value is trusted-only (EffectiveRepoConfig sourced it from the
 	// default branch), so a maintainer's chosen integration shape survives a

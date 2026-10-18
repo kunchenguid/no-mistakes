@@ -3,6 +3,8 @@ package citest
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -80,8 +82,61 @@ func TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge(t *testing.T) {
 		t.Fatalf("logs = %v, must not claim the monitor is still watching", logs)
 	}
 
-	if got := countGHStateReads(t, logFile); got != 1 {
-		t.Fatalf("PR state reads = %d, want the single observation the release is made on", got)
+	// One poll snapshot is the observation the release is made on; the second
+	// read only confirms the head discovery was scoped to is still current.
+	if got := countGHStateReads(t, logFile); got != 2 {
+		t.Fatalf("PR state reads = %d, want the observation plus the head confirmation", got)
+	}
+}
+
+// TestCIStep_GreenChecksDoNotReleaseWhenTheHeadMovedDuringDiscovery covers a
+// push landing while the poll discovers checks for the head its snapshot read:
+// those green checks belong to a commit the PR no longer points at, so the
+// release must wait for a poll whose head still holds afterwards.
+func TestCIStep_GreenChecksDoNotReleaseWhenTheHeadMovedDuringDiscovery(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	env, _ := stepstest.FakeCIGHLoggedSequence(t, "OPEN",
+		[]string{`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`}, "MERGEABLE", "")
+	headSeq := filepath.Join(t.TempDir(), "heads.txt")
+	if err := os.WriteFile(headSeq, []byte("deadbeef\ncafef00d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env = append(env, "FAKE_CLI_PR_HEAD_SEQ_PATH="+headSeq)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.CI.ReleaseAfterChecksPass = true
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	polls := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		polls++
+		if polls > 1 {
+			t.Fatal("the head settled after the first poll, so the second must release")
+		}
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("CI step returned error: %v", err)
+	}
+	if outcome == nil || outcome.NeedsApproval || outcome.AutoFixable || outcome.Findings != "" {
+		t.Fatalf("outcome = %#v, want a plain success verdict", outcome)
+	}
+	if polls != 1 {
+		t.Fatalf("polls waited = %d, want the moved head to cost exactly one more poll", polls)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "PR head changed during check discovery") {
+		t.Fatalf("logs = %v, want the moved head reported", logs)
 	}
 }
 

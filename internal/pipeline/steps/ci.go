@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"time"
@@ -504,7 +505,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	waitForPoll := func() error {
 		interval := s.pollIntervalOverride
 		if interval == 0 {
-			interval = pollInterval(now().Sub(started))
+			//nolint:gosec // non-cryptographic jitter is fine here.
+			interval = jitteredPollInterval(pollInterval(now().Sub(started)), rand.Float64())
 		}
 		if !unlimited {
 			remaining := timeout - now().Sub(timeoutAnchor)
@@ -565,7 +567,32 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 
 		// Check PR state (merged/closed -> exit)
 		prStateKnown := true
-		state, err := host.GetPRState(ctx, pr)
+		// One PR read per poll: hosts that implement PRPollSnapshotter answer
+		// state, mergeability, and head together, and GetChecks reuses that
+		// head. A failed snapshot is reported through the same two warnings
+		// the separate reads used, and leaves GetChecks to read the head
+		// itself.
+		var (
+			snapshot    scm.PRPollSnapshot
+			snapshotErr error
+			snapshotted bool
+		)
+		if snapshotter, ok := host.(scm.PRPollSnapshotter); ok {
+			snapshot, snapshotErr = snapshotter.GetPRPollSnapshot(ctx, pr)
+			if snapshotErr == nil {
+				snapshotted = true
+			}
+		}
+		var state scm.PRState
+		var err error
+		switch {
+		case snapshotted:
+			state = snapshot.State
+		case snapshotErr != nil:
+			err = snapshotErr
+		default:
+			state, err = host.GetPRState(ctx, pr)
+		}
 		if err != nil && pluginPollFailsStep(err) {
 			clearCIMonitorReady(sctx)
 			return nil, err
@@ -600,7 +627,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		mergeBehind := false
 		mergeabilityKnown := true
 		if host.Capabilities().MergeableState {
-			mergeState, mergeErr := host.GetMergeableState(ctx, pr)
+			var mergeState scm.MergeableState
+			var mergeErr error
+			switch {
+			case snapshotted:
+				mergeState = snapshot.Mergeable
+			case snapshotErr != nil:
+				mergeErr = snapshotErr
+			default:
+				mergeState, mergeErr = host.GetMergeableState(ctx, pr)
+			}
 			if mergeErr != nil && pluginPollFailsStep(mergeErr) {
 				clearCIMonitorReady(sctx)
 				return nil, mergeErr
@@ -627,7 +663,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 
 		// Check CI status - wait for all checks to complete before escalating
 		pr.HeadSHA = sctx.Run.HeadSHA
-		checks, err := host.GetChecks(ctx, pr)
+		// The polled head rides on a copy so it never outlives this poll: a
+		// later read of the same PR (a repair push moved the head) must not
+		// be scoped to it.
+		checksPR := *pr
+		checksPR.PollHeadSHA = snapshot.HeadSHA
+		checks, err := host.GetChecks(ctx, &checksPR)
+		pr.HeadSHA = checksPR.HeadSHA
 		if err != nil && pluginPollFailsStep(err) {
 			clearCIMonitorReady(sctx)
 			return nil, err
@@ -908,6 +950,23 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// instead, which records the checks verdict and releases the
 					// run's worktree and lane.
 					if releaseAfterChecksPass {
+						// GetChecks skipped its closing head re-read because
+						// it was handed the poll's head, and there is no next
+						// poll after this one to notice a push that landed
+						// during discovery, so confirm the head before ending.
+						if snapshotted && snapshot.HeadSHA != "" {
+							current, confirmErr := host.(scm.PRPollSnapshotter).GetPRPollSnapshot(ctx, pr)
+							if confirmErr != nil || current.HeadSHA != snapshot.HeadSHA {
+								clearCIMonitorReady(sctx)
+								lastMonitorLog = ""
+								if confirmErr != nil {
+									sctx.Log(fmt.Sprintf("warning: could not confirm the PR head before releasing: %v", confirmErr))
+								} else {
+									sctx.Log(fmt.Sprintf("PR head changed during check discovery from %s to %s, polling again", shortSHA(snapshot.HeadSHA), shortSHA(current.HeadSHA)))
+								}
+								break
+							}
+						}
 						completeMsg := ciChecksPassedCompleteMsg
 						if declaredNoCI {
 							completeMsg = ciNoChecksPassedCompleteMsg
