@@ -11,8 +11,9 @@ import (
 )
 
 type lastFixedIssues struct {
-	Checks        []scm.CheckTarget `json:"checks,omitempty"`
-	MergeConflict bool              `json:"mergeConflict,omitempty"`
+	Checks          []scm.CheckTarget `json:"checks,omitempty"`
+	MergeConflict   bool              `json:"mergeConflict,omitempty"`
+	ConflictBaseSHA string            `json:"conflictBaseSHA,omitempty"`
 }
 
 // pollInterval returns the polling interval based on elapsed time since CI monitoring started.
@@ -222,11 +223,11 @@ func pendingCheckMatchesLastFixed(checks []scm.Check, lastFixedChecks string) bo
 	return false
 }
 
-func encodeLastFixedChecks(checks []scm.CheckTarget, mergeConflict bool) string {
+func encodeLastFixedChecks(checks []scm.CheckTarget, mergeConflict bool, conflictBaseSHA string) string {
 	if len(checks) == 0 && !mergeConflict {
 		return ""
 	}
-	encoded, err := json.Marshal(lastFixedIssues{Checks: checks, MergeConflict: mergeConflict})
+	encoded, err := json.Marshal(lastFixedIssues{Checks: checks, MergeConflict: mergeConflict, ConflictBaseSHA: conflictBaseSHA})
 	if err != nil {
 		return ""
 	}
@@ -256,13 +257,18 @@ func decodeLastFixedChecks(raw string) (lastFixedIssues, bool) {
 // one whose targets are all still red as they were. A target that cleared, or
 // a conflict that resolved, is the provider acting on the repair and makes
 // the observation fresh.
-func (s *CIStep) lastRepairStillUnverified(checks []scm.Check, mergeConflict bool) bool {
+func (s *CIStep) lastRepairStillUnverified(checks []scm.Check, mergeConflict bool, conflictBaseSHA string) bool {
 	issues, ok := decodeLastFixedChecks(s.lastFixedChecks)
 	if !ok {
 		return false
 	}
-	if issues.MergeConflict && !mergeConflict {
-		return false
+	if issues.MergeConflict {
+		if !mergeConflict {
+			return false
+		}
+		if issues.ConflictBaseSHA != "" && conflictBaseSHA != "" && issues.ConflictBaseSHA != conflictBaseSHA {
+			return false
+		}
 	}
 	for _, target := range issues.Checks {
 		if !checkTargetFailedTerminally(checks, target) {
