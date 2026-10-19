@@ -486,18 +486,30 @@ type teaRun struct {
 	ID int64 `json:"id"`
 }
 
-func (h *Host) listRuns(ctx context.Context, branch string) ([]giteaRunSummary, error) {
+// listRuns lists the repository's most recent workflow runs for the caller
+// to match against a PR's head SHA (see runJobsMatchingHeadSHA). It
+// deliberately does not filter by branch name: Gitea Actions records a
+// pull_request-triggered run's branch as "#<PR number>" rather than the
+// source branch name (confirmed against a real Gitea 1.27.3 instance via its
+// raw API - the run's head_branch field literally holds "#8" for PR #8), and
+// tea's own --branch filter does not match that value either, so filtering
+// by the PR's source branch silently returns zero runs for every
+// pull_request-triggered run, forever - not a registration delay. The
+// unfiltered list relies entirely on the existing SHA-matching below, which
+// was already written defensively enough (ID-descending order, matched
+// against every candidate run) to make this safe.
+func (h *Host) listRuns(ctx context.Context) ([]giteaRunSummary, error) {
 	gen, account, err := h.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	label := "tea actions runs list"
 	args := append([]string{"actions", "runs", "list", "--repo", h.repoSlug}, account...)
-	args = append(args, "--branch", branch, "--output", "json")
+	args = append(args, "--output", "json")
 	if gen == tea1 {
 		label = "tea run list"
 		args = append([]string{"run", "list", "--repo", h.repoSlug}, account...)
-		args = append(args, "--branch", branch, "--json=id")
+		args = append(args, "--json=id")
 	}
 	out, err := h.cmd(ctx, "tea", args...).CombinedOutput()
 	if err != nil {
@@ -581,7 +593,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if strings.TrimSpace(view.Head) == "" {
 		return nil, nil
 	}
-	runs, err := h.listRuns(ctx, view.Head)
+	runs, err := h.listRuns(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -705,7 +717,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if strings.TrimSpace(view.Head) == "" {
 		return nil, errors.New("resolve Gitea pull request for selected logs: head branch is empty")
 	}
-	runs, err := h.listRuns(ctx, view.Head)
+	runs, err := h.listRuns(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list Gitea runs for selected logs: %w", err)
 	}
