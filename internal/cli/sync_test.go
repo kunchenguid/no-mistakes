@@ -1554,6 +1554,12 @@ func TestAxiBindRecoveryArchiveRejectsTagsAndRemoteTrackingRefs(t *testing.T) {
 func TestSyncRecoverFlagValidation(t *testing.T) {
 	newCLIRecoverFixture(t)
 	for _, args := range [][]string{
+		{"sync", "--recover", "--reworded-head", "abc"},
+		{"sync", "--observed-head", "abc"},
+		{"sync", "--recover", "--observed-head", "abc", "--reworded-head", "def", "--keep-local"},
+		{"axi", "sync", "--recover", "--reworded-head", "abc"},
+		{"axi", "sync", "--recover", "--observed-head", "abc", "--reworded-head", ""},
+		{"axi", "sync", "--recover", "--observed-head", "abc", "--reworded-head", "def", "--adopt-published"},
 		{"sync", "--check", "--recover"},
 		{"sync", "--check", "--adopt-published"},
 		{"sync", "--recover", "--adopt-published"},

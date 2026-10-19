@@ -402,6 +402,8 @@ no-mistakes axi sync --adopt-published
 | `--check`            | `bool`   | `false` | Verify the live target and exact plan without changing `HEAD`                |
 | `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or perform `recover_remote_rewritten` |
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| `--reworded-head` | `string` | (none) | With `--recover` and `--observed-head`: recover an explicitly named metadata-only rewrite after a failed unpublished run |
+| `--observed-head` | `string` | (none) | Full recorded pipeline commit ID from status; required with `--reworded-head` |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact evidence for a keep-local recovery; never creates or moves a Git ref |
 | `--adopt-published`  | `bool`   | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
 
@@ -412,11 +414,23 @@ The ordinary worktree mutation is either a strict fast-forward of the invoking c
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing during ordinary synchronization. Its `next_action.command` is `git checkout --detach <pushed-sha>`, which needs no approval, moves no branch ref, and loses no work; the local branch stays where it was.
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks. The bound-archive exception described below never changes the worktree at all.
-A terminal run whose recorded head was never verified (for example a Review fix and a Test fix followed by a Document fetch failure) is verified by recovery itself only from fresh gate state: either the live gate branch is an equal-tree rewrite of the exact reviewed result, or the recorded head extends the live gate branch as the reviewed result plus the pipeline's own later commits while the clean local checkout already sits exactly at it. Recovery never moves a worktree onto an unverified head; a behind or dirty worktree, a rebased head, a missing review authority, or a moved gate branch stays `blocked_recover_unverified_head`.
+Ordinary `--recover` verifies a terminal run whose recorded head was never verified (for example a Review fix and a Test fix followed by a Document fetch failure) only from fresh gate state: either the live gate branch is an equal-tree rewrite of the exact reviewed result, or the recorded head extends the live gate branch as the reviewed result plus the pipeline's own later commits while the clean local checkout already sits exactly at it. Recovery never moves a worktree onto an unverified head; a behind or dirty worktree, a rebased head, a missing review authority, or a moved gate branch stays `blocked_recover_unverified_head`.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
+
+### Recovering reworded pipeline fixes
+
+A failed Review fix round in an older build can leave the recorded and rewritten commits available in the gate, while ordinary recovery refuses because the rewritten head is no longer a descendant. After inspecting the full Review log and the recorded head in `axi status`, name both full commit IDs explicitly:
+
+```sh
+no-mistakes axi sync --recover --observed-head <recorded-sha> --reworded-head <rewritten-sha>
+```
+
+The same flags work on `no-mistakes sync`. They cannot be combined with other recovery modes. The run must be failed, unpublished, and without recorded review approval or terminal-head verification. Both the clean caller and the gate branch must still equal the submitted head. Both histories must be linear chains of 1–256 commits after that unchanged submitted commit, with the same number of commits and the same tree at every position. A squash, a merge, a rewrite of submitted work, changed intermediate content, missing objects, conflicting anchors, or changed observations refuses.
+
+Recovery preserves both histories at `refs/no-mistakes/reword/<run>/<sha>` in the gate and pins the rewritten head at the ordinary recovery ref before recording its preservation proof. Ordinary recovery then fast-forwards the caller and returns custody. An interruption after preservation can be continued with plain `--recover` once the proof is recorded. Recovery never approves Review or publishes anything; submit the recovered branch to a fresh validation run. No dangling-object scan or automatic selection of a rewritten head occurs.
 
 ### Rewritten push target recovery
 

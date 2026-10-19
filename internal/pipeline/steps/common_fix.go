@@ -248,7 +248,8 @@ func normalizeReviewedPath(value string) string {
 // is the *recorded* head the pipeline itself produced at its last commit - held
 // in the single daemon process's in-memory Run struct (one shared pointer per
 // run, never re-read from the DB mid-pipeline) and written only by no-mistakes
-// commit code (commit_fix / rebase / ci_fix / push). An out-of-band `git reset`
+// commit code (commit_fix / rebase / ci_fix / push), including the proven
+// metadata-only Review fixer handoff in acceptReviewReword. An out-of-band `git reset`
 // mutates the worktree HEAD on disk but cannot touch this field, so at the check
 // point the anchor still holds the reviewed head even after a clobber. The guard
 // deliberately compares the *recorded* head against the *live* worktree HEAD
@@ -506,6 +507,18 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if !sctx.Fixing {
 		return "", nil
 	}
+	var reviewHead string
+	if stepName == types.StepReview {
+		if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
+			return "", err
+		}
+		// Only the exact recorded head at invocation can authorize a rewrite.
+		var err error
+		reviewHead, err = git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+		if err != nil {
+			return "", err
+		}
+	}
 	if opts.RequirePreviousFindings && sctx.PreviousFindings == "" {
 		return "", errors.New(opts.MissingFindingsError)
 	}
@@ -549,11 +562,18 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		}
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
+	reworded := false
+	if stepName == types.StepReview {
+		reworded, err = acceptReviewReword(sctx, reviewHead)
+		if err != nil {
+			return "", err
+		}
+	}
 	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary, result)
 	if err != nil {
 		return "", err
 	}
-	return fixResultSummary(committed), nil
+	return fixResultSummary(committed || reworded), nil
 }
 
 func updateNonSharedBranchRef(sctx *pipeline.StepContext, headSHA string) error {
