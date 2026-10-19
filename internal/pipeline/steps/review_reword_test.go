@@ -44,7 +44,6 @@ func rewordFixRound(t *testing.T, rebase, recordRebased bool) (sctx *pipeline.St
 		if err := sctx.DB.RecordRunRebasedHead(sctx.Run.ID, rebased); err != nil {
 			t.Fatal(err)
 		}
-		sctx.Run.RebasedHeadSHA = &rebased
 	}
 	if err := sctx.DB.UpsertUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch, base, rebased, "earlier-run"); err != nil {
 		t.Fatal(err)

@@ -560,12 +560,11 @@ func (e *Executor) planRetry(run *db.Run) (*RetryCheckpoint, error) {
 			}
 			run.ReviewApprovedHeadSHA = &approved
 		}
-		if row.StepName == types.StepRebase && row.Status == types.StepStatusCompleted && source.RebasedHeadSHA != nil {
+		if row.StepName == types.StepRebase && source.RebasedHeadSHA != nil {
 			rebased := *source.RebasedHeadSHA
 			if err := e.db.RecordRunRebasedHead(run.ID, rebased); err != nil {
 				return nil, fmt.Errorf("retry run %s: carry the post-rebase head: %w", e.retrySource, err)
 			}
-			run.RebasedHeadSHA = &rebased
 		}
 	}
 	return checkpoint, nil

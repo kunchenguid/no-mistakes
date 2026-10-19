@@ -111,8 +111,9 @@ type Run struct {
 	// ClosingIssueRefsLockedAt is non-nil once a PR body composition has sampled
 	// ClosingIssueRefs, after which a reattach can no longer add to them.
 	ClosingIssueRefsLockedAt *int64
-	// RebasedHeadSHA is the head this run's own Rebase step recorded on
-	// completion. It is nil for runs recorded before the column existed.
+	// RebasedHeadSHA is the run's head when its own Rebase step completed or
+	// was skipped, or the source run's when a retry carried Rebase. It is nil
+	// for runs recorded before the column existed and their retries.
 	RebasedHeadSHA *string
 	CreatedAt      int64
 	UpdatedAt      int64
@@ -853,7 +854,7 @@ func (d *DB) UpdateRunHeadSHA(id, headSHA string) error {
 	return nil
 }
 
-// RecordRunRebasedHead records the head the run's Rebase step completed at.
+// RecordRunRebasedHead carries a retry source's post-rebase head.
 func (d *DB) RecordRunRebasedHead(id, headSHA string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET rebased_head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
 	if err != nil {

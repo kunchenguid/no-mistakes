@@ -31,10 +31,11 @@ func acceptReviewReword(sctx *pipeline.StepContext, before string) (bool, error)
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", before, head); err == nil {
 		return false, nil
 	}
-	if run.RebasedHeadSHA == nil {
+	recordedRun, err := sctx.DB.GetRun(run.ID)
+	if err != nil || recordedRun == nil || recordedRun.RebasedHeadSHA == nil {
 		return false, fmt.Errorf("refusing review fix rewrite: this run recorded no post-rebase head to anchor the proof; inspect the Review log and reconcile manually")
 	}
-	rebased := *run.RebasedHeadSHA
+	rebased := *recordedRun.RebasedHeadSHA
 	if err := custody.VerifyReword(sctx.Ctx, sctx.WorkDir, rebased, before, head); err != nil {
 		return false, fmt.Errorf("refusing review fix rewrite: %w", err)
 	}
