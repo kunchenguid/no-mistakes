@@ -388,13 +388,34 @@ func TestExecutor_RetryCarriesTheSourceRunsPostRebaseHead(t *testing.T) {
 	}
 }
 
+type headMovingRebaseStep struct{ head string }
+
+func (s *headMovingRebaseStep) Name() types.StepName { return types.StepRebase }
+
+func (s *headMovingRebaseStep) Execute(sctx *StepContext) (*StepOutcome, error) {
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, s.head); err != nil {
+		return nil, err
+	}
+	sctx.Run.HeadSHA = s.head
+	return &StepOutcome{}, nil
+}
+
 // Every way a Rebase step resolves leaves the run's head at that moment as the
-// anchor Review reads: running, a --skip, and an approved parked conflict.
+// anchor Review reads: a Rebase that moved the head, a --skip, and an approved
+// parked conflict. setupTest submits "abc123".
 func TestExecutor_EveryRebaseResolutionRecordsThePostRebaseHead(t *testing.T) {
-	for _, path := range []string{"ran", "skipped", "approved-conflict"} {
+	for _, tc := range []struct{ path, want string }{
+		{"moved", "rebased-head"},
+		{"skipped", "abc123"},
+		{"approved-conflict", "abc123"},
+	} {
+		path := tc.path
 		t.Run(path, func(t *testing.T) {
 			database, p, run, repo := setupTest(t)
-			rebase := newPassStep(types.StepRebase)
+			var rebase Step = newPassStep(types.StepRebase)
+			if path == "moved" {
+				rebase = &headMovingRebaseStep{head: "rebased-head"}
+			}
 			if path == "approved-conflict" {
 				rebase = newApprovalStep(types.StepRebase, `{"findings":[{"id":"r-1","severity":"warning","file":"a.go","description":"merge conflict rebasing onto origin/main","action":"ask-user"}],"summary":"conflict"}`)
 			}
@@ -414,8 +435,8 @@ func TestExecutor_EveryRebaseResolutionRecordsThePostRebaseHead(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatalf("execute: %v", err)
 			}
-			if !review.ran || review.seen == nil || *review.seen != run.HeadSHA {
-				t.Fatalf("review saw post-rebase head %v, want the run's head %s", review.seen, run.HeadSHA)
+			if !review.ran || review.seen == nil || *review.seen != tc.want {
+				t.Fatalf("review saw post-rebase head %v, want %s", review.seen, tc.want)
 			}
 		})
 	}

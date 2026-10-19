@@ -16,10 +16,11 @@ import (
 )
 
 // rewordFixRound builds a run at its post-rebase head (a replay onto a moved
-// base when rebase is set), records four Review fixer commits on top of an
-// uncertified range an earlier run left at base, then hands off a fixer turn
-// that rewords those four commits with every tree unchanged.
-func rewordFixRound(t *testing.T, rebase, recordRebased bool) (sctx *pipeline.StepContext, base, recorded, rewritten string, err error) {
+// base when rebase is set), resolves its Rebase row with resolve the way the
+// executor does (none when empty), records four Review fixer commits on top
+// of an uncertified range an earlier run left at base, then hands off a fixer
+// turn that rewords those four commits with every tree unchanged.
+func rewordFixRound(t *testing.T, rebase bool, resolve types.StepStatus) (sctx *pipeline.StepContext, base, recorded, rewritten string, err error) {
 	t.Helper()
 	dir, base, submitted := setupGitRepo(t)
 	sctx = newTestContextWithDBRecords(t, &mockAgent{name: "codex"}, dir, base, submitted, config.Commands{})
@@ -40,8 +41,12 @@ func rewordFixRound(t *testing.T, rebase, recordRebased bool) (sctx *pipeline.St
 		}
 		sctx.Run.HeadSHA = rebased
 	}
-	if recordRebased {
-		if err := sctx.DB.RecordRunRebasedHead(sctx.Run.ID, rebased); err != nil {
+	if resolve != "" {
+		sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepRebase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sctx.DB.CompleteStepWithStatus(sr.ID, resolve, 0, 0, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -78,10 +83,18 @@ func rewordFixRound(t *testing.T, rebase, recordRebased bool) (sctx *pipeline.St
 
 func TestReviewFixRewordsFourCommitsBeforeIndependentReview(t *testing.T) {
 	t.Parallel()
-	for _, rebase := range []bool{false, true} {
-		t.Run(fmt.Sprintf("rebased=%v", rebase), func(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rebase  bool
+		resolve types.StepStatus
+	}{
+		{"rebase-moved-head", true, types.StepStatusCompleted},
+		{"rebase-skipped", false, types.StepStatusSkipped},
+		{"conflict-approved", false, types.StepStatusCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			sctx, base, recorded, rewritten, err := rewordFixRound(t, rebase, true)
+			sctx, base, recorded, rewritten, err := rewordFixRound(t, tc.rebase, tc.resolve)
 			if err != nil {
 				t.Fatalf("fix handoff: %v", err)
 			}
@@ -114,7 +127,7 @@ func TestReviewFixRewordsFourCommitsBeforeIndependentReview(t *testing.T) {
 
 func TestReviewFixRewordRefusesARunWithoutARecordedPostRebaseHead(t *testing.T) {
 	t.Parallel()
-	sctx, _, recorded, _, err := rewordFixRound(t, true, false)
+	sctx, _, recorded, _, err := rewordFixRound(t, true, "")
 	if err == nil || !strings.Contains(err.Error(), "post-rebase head") {
 		t.Fatalf("err = %v, want post-rebase head refusal", err)
 	}

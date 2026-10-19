@@ -46,7 +46,14 @@ func rewordFixture(t *testing.T, rebase, recordRebased bool) (*recoverFixture, s
 		mustRun(t, f.gate, "fetch", pipeline, ref)
 	}
 	if recordRebased {
-		if err := f.db.RecordRunRebasedHead(f.run.ID, rebased); err != nil {
+		if err := f.db.UpdateRunHeadSHA(f.run.ID, rebased); err != nil {
+			t.Fatal(err)
+		}
+		sr, err := f.db.InsertStepResult(f.run.ID, types.StepRebase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.CompleteStepWithStatus(sr.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
