@@ -312,3 +312,61 @@ func TestExecutor_RetryFailsClosedWhenTheSourceNoLongerMatchesThePipeline(t *tes
 		t.Fatalf("refused continuation recorded %d steps", len(rows))
 	}
 }
+
+type rebasedHeadProbeStep struct {
+	name types.StepName
+	seen *string
+	ran  bool
+}
+
+func (s *rebasedHeadProbeStep) Name() types.StepName { return s.name }
+
+func (s *rebasedHeadProbeStep) Execute(sctx *StepContext) (*StepOutcome, error) {
+	s.ran = true
+	s.seen = sctx.Run.RebasedHeadSHA
+	return &StepOutcome{}, nil
+}
+
+// A retry that restarts Review never runs Rebase, so the Review fixer's
+// metadata-only reword proof needs the source run's own post-rebase head.
+func TestExecutor_RetryCarriesTheSourceRunsPostRebaseHead(t *testing.T) {
+	for _, recorded := range []bool{true, false} {
+		t.Run(fmt.Sprintf("source_recorded=%v", recorded), func(t *testing.T) {
+			database, p, _, repo := setupTest(t)
+			names := []types.StepName{types.StepRebase, types.StepReview, types.StepTest}
+			source := failedSourceRun(t, database, repo, names, types.StepReview)
+			if recorded {
+				if err := database.RecordRunRebasedHead(source.ID, "rebased"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			continuation, err := database.InsertRun(repo.ID, "feature", "abc123", "def456")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rebase := newPassStep(types.StepRebase)
+			review := &rebasedHeadProbeStep{name: types.StepReview}
+			exec := NewExecutor(database, p, &config.Config{}, nil, []Step{rebase, review, newPassStep(types.StepTest)}, nil)
+			exec.SetRetrySource(source.ID)
+			if err := exec.Execute(context.Background(), continuation, repo, t.TempDir()); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if rebase.callCount() != 0 || !review.ran {
+				t.Fatalf("rebase ran %d times, review ran %v; want Rebase carried and Review restarted", rebase.callCount(), review.ran)
+			}
+			got, err := database.GetRun(continuation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !recorded {
+				if review.seen != nil || got.RebasedHeadSHA != nil {
+					t.Fatalf("retry invented a post-rebase head: step saw %v, run has %v", review.seen, got.RebasedHeadSHA)
+				}
+				return
+			}
+			if review.seen == nil || *review.seen != "rebased" || got.RebasedHeadSHA == nil || *got.RebasedHeadSHA != "rebased" {
+				t.Fatalf("retry did not carry the source's post-rebase head: step saw %v, run has %v", review.seen, got.RebasedHeadSHA)
+			}
+		})
+	}
+}

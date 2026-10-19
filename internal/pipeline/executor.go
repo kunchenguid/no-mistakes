@@ -530,8 +530,8 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 // planRetry proves the retry source's checkpoint against this run's steps and
 // adopts what the source carries forward: its per-run skips of steps that never
-// ran, and the review approval of a carried Review step, which still names the
-// head that step approved.
+// ran, the review approval of a carried Review step, which still names the
+// head that step approved, and the post-rebase head of a carried Rebase step.
 func (e *Executor) planRetry(run *db.Run) (*RetryCheckpoint, error) {
 	source, err := e.db.GetRun(e.retrySource)
 	if err != nil {
@@ -559,6 +559,13 @@ func (e *Executor) planRetry(run *db.Run) (*RetryCheckpoint, error) {
 				return nil, fmt.Errorf("retry run %s: carry the review approval: %w", e.retrySource, err)
 			}
 			run.ReviewApprovedHeadSHA = &approved
+		}
+		if row.StepName == types.StepRebase && row.Status == types.StepStatusCompleted && source.RebasedHeadSHA != nil {
+			rebased := *source.RebasedHeadSHA
+			if err := e.db.RecordRunRebasedHead(run.ID, rebased); err != nil {
+				return nil, fmt.Errorf("retry run %s: carry the post-rebase head: %w", e.retrySource, err)
+			}
+			run.RebasedHeadSHA = &rebased
 		}
 	}
 	return checkpoint, nil
