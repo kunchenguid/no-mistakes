@@ -232,6 +232,60 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	}
 }
 
+func TestPRStep_TokenRefusalAsksOnceAndSkipsTheRemainingFiles(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	env, ghLog := fakeGH(t, "")
+	sctx.Env = env
+	var artifacts []string
+	for _, name := range []string{"one.png", "two.png", "three.png"} {
+		path := writeEvidenceFile(t, sctx.EvidenceDir, name, []byte("png-bytes-"+name))
+		artifacts = append(artifacts, fmt.Sprintf(`{"kind":"screenshot","label":%q,"path":%q}`, name, path))
+	}
+	insertCompletedStep(t, sctx, types.StepTest, `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[`+strings.Join(artifacts, ",")+`]}`, "")
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content.Body, "user-attachments") {
+		t.Fatalf("a refused token must keep today's rendering, got:\n%s", content.Body)
+	}
+
+	recorded, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenCalls := 0
+	for _, line := range strings.Split(string(recorded), "\n") {
+		if strings.HasPrefix(line, "auth token") {
+			tokenCalls++
+		}
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("gh auth token ran %d times for %d files, want 1:\n%s", tokenCalls, len(artifacts), recorded)
+	}
+	var skipLines, perFileLines []string
+	for _, line := range logs {
+		switch {
+		case strings.Contains(line, "skipping GitHub media attachments for 3 pending file(s)"):
+			skipLines = append(skipLines, line)
+		case strings.Contains(line, "GitHub media attachment failed for"), strings.Contains(line, "uploaded GitHub media attachment"):
+			perFileLines = append(perFileLines, line)
+		}
+	}
+	if len(skipLines) != 1 || !strings.Contains(skipLines[0], "gh auth token") {
+		t.Fatalf("want one skip line naming gh auth token, got %q in:\n%s", skipLines, strings.Join(logs, "\n"))
+	}
+	if len(perFileLines) != 0 {
+		t.Fatalf("a refused token must not report each file, got:\n%s", strings.Join(perFileLines, "\n"))
+	}
+}
+
 func TestPRStep_NonGitHubForgeLeavesScreenshotUnchanged(t *testing.T) {
 	t.Parallel()
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}

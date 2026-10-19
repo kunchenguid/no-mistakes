@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,10 +20,17 @@ import (
 const maxPRMediaAttachments = 50
 
 // userAssetUploader uploads one local image or video to GitHub user-attachments.
-// github.Host implements it. Tests inject a stub so unit tests never talk to
-// live GitHub.
+// github.UserAssetSession implements it. Tests inject a stub so unit tests
+// never talk to live GitHub.
 type userAssetUploader interface {
 	UploadUserAsset(ctx context.Context, path string) (string, error)
+}
+
+// userAssetSessionOpener is the part of github.Host that starts one upload
+// session per PR render, so every file in the render shares one token
+// resolution.
+type userAssetSessionOpener interface {
+	NewUserAssetSession() *github.UserAssetSession
 }
 
 func mediaAttachEnabled(sctx *pipeline.StepContext, provider scm.Provider) (bool, string) {
@@ -51,8 +59,11 @@ func (s *PRStep) resolveMediaUploader(sctx *pipeline.StepContext, provider scm.P
 		return s.mediaUploader
 	}
 	host, _ := buildHost(sctx, provider)
-	u, _ := host.(userAssetUploader)
-	return u
+	opener, ok := host.(userAssetSessionOpener)
+	if !ok {
+		return nil
+	}
+	return opener.NewUserAssetSession()
 }
 
 func collectPRTestingArtifacts(sctx *pipeline.StepContext, steps []*db.StepResult, rounds map[string][]*db.StepRound) []types.TestArtifact {
@@ -154,9 +165,13 @@ func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm
 		}
 		return attached
 	}
-	for _, item := range pending {
+	for i, item := range pending {
 		artifact := item.artifact
 		url, err := uploader.UploadUserAsset(sctx.Ctx, artifact.Path)
+		if errors.Is(err, github.ErrUserAssetTokenUnavailable) {
+			sctx.Log(fmt.Sprintf("skipping GitHub media attachments for %d pending file(s), keeping today's rendering: %v", len(pending)-i, err))
+			break
+		}
 		if err != nil {
 			sctx.Log(fmt.Sprintf("GitHub media attachment failed for %s, keeping today's rendering: %v", artifactLabel(artifact), err))
 			continue

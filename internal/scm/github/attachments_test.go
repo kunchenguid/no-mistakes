@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -308,6 +310,91 @@ func TestHostUploadUserAssetUploadsWithOAuthToken(t *testing.T) {
 	}
 	if !strings.Contains(url, "user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") {
 		t.Fatalf("url = %q", url)
+	}
+}
+
+func TestUserAssetSessionResolvesTheTokenOnce(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	var paths []string
+	for _, name := range []string{"one.png", "two.png", "three.png"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	var uploads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploads.Add(1)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"url":"https://github.com/user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var tokenCalls atomic.Int32
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
+		switch {
+		case key == "gh auth token --hostname github.com":
+			tokenCalls.Add(1)
+			return githubTestCmdFactory(map[string]githubTestResponse{key: {stdout: "gho_operator\n"}})(ctx, name, args...)
+		case strings.HasPrefix(key, "gh api --hostname github.com graphql"):
+			return githubTestCmdFactory(map[string]githubTestResponse{key: {stdout: `{"data":{"repository":{"databaseId":42,"viewerPermission":"WRITE"}}}`}})(ctx, name, args...)
+		default:
+			t.Errorf("unexpected command %q", key)
+			return exec.CommandContext(ctx, "false")
+		}
+	}, func() bool { return true }, "github.com", "test/repo")
+	host.assetHTTP = server.Client()
+	host.assetUploadPrefix = server.URL + "/"
+
+	session := host.NewUserAssetSession()
+	for _, path := range paths {
+		if _, err := session.UploadUserAsset(context.Background(), path); err != nil {
+			t.Fatalf("UploadUserAsset(%s): %v", path, err)
+		}
+	}
+	if got := uploads.Load(); got != int32(len(paths)) {
+		t.Fatalf("uploads = %d, want %d", got, len(paths))
+	}
+	if got := tokenCalls.Load(); got != 1 {
+		t.Fatalf("gh auth token ran %d times for %d files, want 1", got, len(paths))
+	}
+}
+
+func TestUserAssetSessionTokenFailureNeverAsksAgain(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	first := filepath.Join(dir, "one.png")
+	second := filepath.Join(dir, "two.png")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var tokenCalls atomic.Int32
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
+		if key != "gh auth token --hostname github.com" {
+			t.Errorf("unexpected command %q", key)
+			return exec.CommandContext(ctx, "false")
+		}
+		tokenCalls.Add(1)
+		return githubTestCmdFactory(map[string]githubTestResponse{key: {stderr: "credential vault refused the request", code: 1}})(ctx, name, args...)
+	}, func() bool { return true }, "github.com", "test/repo")
+
+	session := host.NewUserAssetSession()
+	_, err := session.UploadUserAsset(context.Background(), first)
+	if !errors.Is(err, ErrUserAssetTokenUnavailable) || !strings.Contains(err.Error(), "credential vault refused") {
+		t.Fatalf("first error = %v, want ErrUserAssetTokenUnavailable with the vault's reason", err)
+	}
+	_, err = session.UploadUserAsset(context.Background(), second)
+	if !errors.Is(err, ErrUserAssetTokenUnavailable) {
+		t.Fatalf("second error = %v, want ErrUserAssetTokenUnavailable", err)
+	}
+	if got := tokenCalls.Load(); got != 1 {
+		t.Fatalf("gh auth token ran %d times after a refusal, want 1", got)
 	}
 }
 

@@ -319,10 +319,43 @@ func userAttachmentHostOK(got, expected string) bool {
 	return got == expected || got == "github.com"
 }
 
+// ErrUserAssetTokenUnavailable wraps every upload error caused by the token
+// resolution of a UserAssetSession, so a caller with more files to upload can
+// stop after the first one instead of failing each file the same way.
+var ErrUserAssetTokenUnavailable = errors.New("no usable GitHub token for user-attachments")
+
+// UserAssetSession uploads the files of one PR render. It runs `gh auth token`
+// at most once and shares the result with every upload: on a machine where gh
+// sits behind a credential vault that asks a human before it discloses the raw
+// token, a per-file resolution asked once per screenshot and, after the first
+// refusal, kept asking for every remaining file. A failed resolution is kept
+// too, so later uploads return ErrUserAssetTokenUnavailable without a new
+// prompt. A session is not safe for concurrent use.
+type UserAssetSession struct {
+	host     *Host
+	resolved bool
+	token    string
+	tokenErr error
+}
+
+// NewUserAssetSession starts a token-sharing upload session for one PR render.
+func (h *Host) NewUserAssetSession() *UserAssetSession {
+	return &UserAssetSession{host: h}
+}
+
 // UploadUserAsset validates path and uploads it as a GitHub user-attachment
-// against this Host's repository. Callers must treat any error as fail-closed:
+// against this Host's repository, resolving the token for this call alone.
+// Callers with several files use NewUserAssetSession. Any error is fail-closed:
 // keep today's PR rendering rather than inventing a URL.
 func (h *Host) UploadUserAsset(ctx context.Context, path string) (string, error) {
+	return h.NewUserAssetSession().UploadUserAsset(ctx, path)
+}
+
+// UploadUserAsset validates path and uploads it with the session's token.
+// Callers must treat any error as fail-closed: keep today's PR rendering rather
+// than inventing a URL.
+func (s *UserAssetSession) UploadUserAsset(ctx context.Context, path string) (string, error) {
+	h := s.host
 	if h == nil {
 		return "", errors.New("GitHub host is not configured")
 	}
@@ -333,12 +366,9 @@ func (h *Host) UploadUserAsset(ctx context.Context, path string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	token, err := h.authToken(ctx)
+	token, err := s.resolveToken(ctx)
 	if err != nil {
 		return "", err
-	}
-	if class, reason := classifyGitHubToken(token); class != githubTokenAllowed {
-		return "", errors.New(reason)
 	}
 	repoID, permission, err := h.userAssetRepo(ctx)
 	if err != nil {
@@ -364,6 +394,25 @@ func (h *Host) UploadUserAsset(ctx context.Context, path string) (string, error)
 		client.HTTP = &http.Client{Timeout: userAssetUploadTimeout}
 	}
 	return client.UploadFile(ctx, asset)
+}
+
+func (s *UserAssetSession) resolveToken(ctx context.Context) (string, error) {
+	if s.resolved {
+		return s.token, s.tokenErr
+	}
+	s.resolved = true
+	token, err := s.host.authToken(ctx)
+	if err == nil {
+		if class, reason := classifyGitHubToken(token); class != githubTokenAllowed {
+			err = errors.New(reason)
+		}
+	}
+	if err != nil {
+		s.tokenErr = fmt.Errorf("%w: %v", ErrUserAssetTokenUnavailable, err)
+		return "", s.tokenErr
+	}
+	s.token = token
+	return token, nil
 }
 
 func (h *Host) authToken(ctx context.Context) (string, error) {

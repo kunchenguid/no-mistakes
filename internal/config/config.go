@@ -1766,7 +1766,10 @@ intent:
 # gathers to demonstrate the change works). By default they are kept on local
 # disk under <NM_HOME>/evidence. attach_media (default true) uploads image and
 # video artifacts to GitHub user-attachments when the PR is rendered so remote
-# reviewers can open them; text artifacts stay inlined. Opt in to
+# reviewers can open them; text artifacts stay inlined. Uploads need the raw
+# GitHub token from "gh auth token", read once per PR render; if your gh sits
+# behind a credential vault that prompts before it releases the token, set
+# attach_media and store_in_repo to false so the PR step never asks. Opt in to
 # store_in_repo to also publish the full directory to an orphan evidence branch
 # in the same repository and link it from the PR body. The evidence branch
 # shares no history with your code branches, so artifacts never enter the
