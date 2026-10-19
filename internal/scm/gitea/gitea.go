@@ -489,15 +489,19 @@ type teaRun struct {
 // listRuns lists the repository's most recent workflow runs for the caller
 // to match against a PR's head SHA (see runJobsMatchingHeadSHA). It
 // deliberately does not filter by branch name: Gitea Actions records a
-// pull_request-triggered run's branch as "#<PR number>" rather than the
-// source branch name (confirmed against a real Gitea 1.27.3 instance via its
-// raw API - the run's head_branch field literally holds "#8" for PR #8), and
-// tea's own --branch filter does not match that value either, so filtering
-// by the PR's source branch silently returns zero runs for every
-// pull_request-triggered run, forever - not a registration delay. The
-// unfiltered list relies entirely on the existing SHA-matching below, which
-// was already written defensively enough (ID-descending order, matched
-// against every candidate run) to make this safe.
+// pull_request-triggered run's branch as "#<PR number>" in its raw API
+// (confirmed against a real Gitea 1.27.3 instance), but tea's own `--output
+// json` surfaces that same run with an EMPTY "branch" field instead (see the
+// giteaRunSummary fixture in TestGetChecksFindsPullRequestTriggeredRunByHeadSHAOnly) -
+// tea does not expose a value this code could filter on for that run either
+// way, so filtering by the PR's source branch silently returns zero runs for
+// every pull_request-triggered run, forever - not a registration delay. The
+// unfiltered list relies on the existing SHA-matching below, further
+// pre-filtered by runJobsMatchingHeadSHA's own branch check for the runs that
+// do carry a trustworthy branch name. tea0's --limit raises the single page
+// fetched above its 30-item default (Gitea's own page cap is commonly ~50)
+// to reduce, though on a sufficiently busy repository not eliminate, the
+// chance that the matching run falls off the first page.
 func (h *Host) listRuns(ctx context.Context) ([]giteaRunSummary, error) {
 	gen, account, err := h.begin(ctx)
 	if err != nil {
@@ -505,7 +509,7 @@ func (h *Host) listRuns(ctx context.Context) ([]giteaRunSummary, error) {
 	}
 	label := "tea actions runs list"
 	args := append([]string{"actions", "runs", "list", "--repo", h.repoSlug}, account...)
-	args = append(args, "--output", "json")
+	args = append(args, "--limit", "50", "--output", "json")
 	if gen == tea1 {
 		label = "tea run list"
 		args = append([]string{"run", "list", "--repo", h.repoSlug}, account...)
@@ -600,7 +604,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if len(runs) == 0 {
 		return nil, nil
 	}
-	_, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, view.HeadSHA)
+	_, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, view.HeadSHA, view.Head)
 	if err != nil {
 		return nil, err
 	}
@@ -637,8 +641,20 @@ func runsByIDDesc(runs []giteaRunSummary) []giteaRunSummary {
 // run entirely. When headSHA is empty there is nothing to match against, so
 // only the highest-ID run is considered, preserving prior best-effort
 // behavior.
-func (h *Host) runJobsMatchingHeadSHA(ctx context.Context, runs []giteaRunSummary, headSHA string) (giteaRunSummary, []giteaJob, error) {
-	ordered := runsByIDDesc(runs)
+//
+// sourceBranch drops any candidate whose own Branch field names a real,
+// different branch before SHA-matching even starts: a push-triggered run
+// reports its true source branch there, so a push run on another branch (or
+// another PR's push-triggered run, however coincidentally it shares a head
+// SHA with this one - e.g. a stacked PR cut from this one before any new
+// commit) can never be selected. A pull_request-triggered run reports an
+// empty Branch (see listRuns) and so cannot be screened this way; those
+// still rely on SHA matching alone, exactly as before this fix.
+func (h *Host) runJobsMatchingHeadSHA(ctx context.Context, runs []giteaRunSummary, headSHA, sourceBranch string) (giteaRunSummary, []giteaJob, error) {
+	ordered := runsByIDDesc(filterRunsByBranch(runs, sourceBranch))
+	if len(ordered) == 0 {
+		return giteaRunSummary{}, nil, nil
+	}
 	headSHA = strings.TrimSpace(headSHA)
 	if headSHA == "" {
 		run := ordered[0]
@@ -657,6 +673,22 @@ func (h *Host) runJobsMatchingHeadSHA(ctx context.Context, runs []giteaRunSummar
 	// No run yet matches the PR's current head commit: CI has not caught up
 	// with the latest push, or only stale/unrelated runs exist so far.
 	return giteaRunSummary{}, nil, nil
+}
+
+// filterRunsByBranch drops any run whose Branch field names a real, known
+// branch other than sourceBranch. A run with an empty Branch (tea's rendering
+// of a pull_request-triggered run, which carries no branch name tea exposes)
+// is kept, since there is no known-different branch to rule it out by.
+func filterRunsByBranch(runs []giteaRunSummary, sourceBranch string) []giteaRunSummary {
+	sourceBranch = strings.TrimSpace(sourceBranch)
+	filtered := make([]giteaRunSummary, 0, len(runs))
+	for _, run := range runs {
+		if run.Branch != "" && run.Branch != sourceBranch {
+			continue
+		}
+		filtered = append(filtered, run)
+	}
+	return filtered
 }
 
 func parseGiteaRunID(id string) (int64, bool) {
@@ -728,7 +760,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if matchSHA == "" {
 		matchSHA = view.HeadSHA
 	}
-	run, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, matchSHA)
+	run, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, matchSHA, view.Head)
 	if err != nil {
 		return nil, fmt.Errorf("find Gitea run for selected logs: %w", err)
 	}
