@@ -202,6 +202,7 @@ type retryFixtureOptions struct {
 	beforeSource func(t *testing.T, f *retryFixture)
 	profile      *agentcfg.PiProfile
 	reviewer     *agentcfg.ReviewerProfile
+	claudeDir    string
 	plan         *verificationplan.Snapshot
 	failInTest   bool
 	twoHop       bool
@@ -236,7 +237,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.reviewer != nil {
 		profiles = append(profiles, opts.reviewer)
 	}
-	source, err := d.InsertRunWithPRText(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, profiles...)
+	source, err := d.InsertRunWithClaudeConfigDir(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, nil, opts.claudeDir, profiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,6 +698,23 @@ func TestRetryInheritsTheSuppliedPRText(t *testing.T) {
 	if run.PRTitle == nil || *run.PRTitle != text.Title || run.PRBody == nil || *run.PRBody != text.Body {
 		t.Fatalf("retried run PR text = %v / %v", run.PRTitle, run.PRBody)
 	}
+}
+
+func TestRetryKeepsTheSourceRunsClaudeConfigDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claude-profile")
+	f := newRetryFixture(t, retryFixtureOptions{claudeDir: dir})
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	run, err := f.d.GetRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ClaudeConfigDir == nil || *run.ClaudeConfigDir != dir {
+		t.Fatalf("continuation ClaudeConfigDir = %v, want %q", run.ClaudeConfigDir, dir)
+	}
+	waitForRunTerminalState(t, f.d, result.RunID)
 }
 
 func TestRunInfoReportsACarriedStepsWorkFromTheRunItWasCarriedFrom(t *testing.T) {
