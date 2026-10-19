@@ -75,11 +75,6 @@ func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallb
 	return sha
 }
 
-func resolveRunDefaultBranchTipSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) string {
-	sha, _ := resolveRunDefaultBranchTip(ctx, sctx, fallbackBaseSHA, defaultBranch)
-	return sha
-}
-
 func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, bool) {
 	if strings.TrimSpace(defaultBranch) != "" {
 		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {

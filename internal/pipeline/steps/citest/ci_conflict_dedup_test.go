@@ -21,11 +21,13 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 		name        string
 		advance     bool
 		unlimited   bool
+		lookupFails bool
 		budget      int
 		wantRepairs int
 	}{
 		{name: "new_base", advance: true, budget: 2, wantRepairs: 2},
 		{name: "new_base_unlimited_timeout", advance: true, unlimited: true, budget: 2, wantRepairs: 2},
+		{name: "base_lookup_failed_during_repair", advance: true, lookupFails: true, budget: 2, wantRepairs: 1},
 		{name: "same_base", budget: 2, wantRepairs: 1},
 		{name: "budget_exhausted", advance: true, budget: 1, wantRepairs: 1},
 	} {
@@ -55,8 +57,8 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 			}
 			tip := advanceBase("first base advance")
 			ag := &stepstest.MockAgent{AgentName: "test", RunFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-				stepstest.GitCmd(t, opts.CWD, "fetch", "origin", "main")
-				stepstest.GitCmd(t, opts.CWD, "rebase", "origin/main")
+				stepstest.GitCmd(t, opts.CWD, "fetch", upstream, "main")
+				stepstest.GitCmd(t, opts.CWD, "rebase", "FETCH_HEAD")
 				return &agent.Result{}, nil
 			}}
 			sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -71,10 +73,16 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 			}
 			sctx.Config.AutoFix = config.AutoFix{CI: tc.budget}
 			step := (&steps.CIStep{}).SetBaseBranchTip(func(context.Context) (string, bool) { return tip, true }).SetWaitForNextPoll(func(context.Context, time.Duration) error { return context.Canceled })
+			if tc.lookupFails {
+				sctx.EvalReplay = true
+				stepstest.GitCmd(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+			}
 			first, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 			if err != nil || first == nil || first.RestartFrom != types.StepReview || len(ag.Calls) != 1 {
 				t.Fatalf("first repair: outcome=%+v err=%v calls=%d", first, err, len(ag.Calls))
 			}
+			stepstest.GitCmd(t, dir, "remote", "set-url", "origin", upstream)
+			sctx.EvalReplay = false
 			if tc.advance {
 				tip = advanceBase("second base advance")
 			}
@@ -85,7 +93,7 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 				t.Fatalf("repairs=%d, want %d; outcome=%+v err=%v", len(ag.Calls), tc.wantRepairs, second, err)
 			}
 			switch {
-			case !tc.advance:
+			case !tc.advance || tc.lookupFails:
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("same-base conflict must keep waiting: outcome=%+v err=%v", second, err)
 				}

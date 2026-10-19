@@ -184,7 +184,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	if err != nil {
 		return ciRepairResult{}, err
 	}
-	rebaseBaseSHA := resolveRunDefaultBranchTipSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	rebaseBaseSHA, rebaseBaseResolved := resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	promptBaseSHA := baseSHA
 	if rebase {
 		promptBaseSHA = rebaseBaseSHA
@@ -287,7 +287,7 @@ CI logs:
 		defer func() { s.replayBase = "" }()
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
-	if mergeConflict {
+	if mergeConflict && rebaseBaseResolved {
 		repair.ConflictBaseSHA = rebaseBaseSHA
 	}
 	var refusal *pipeline.ProtectedPathError
