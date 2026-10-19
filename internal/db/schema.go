@@ -417,4 +417,7 @@ var migrationStatements = []string{
 	// The carried row has no rounds of its own; readers that render what the
 	// step did follow this to the source row's rounds.
 	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	// The head the run's own Rebase step left behind. It anchors the
+	// metadata-only Review reword proof; NULL for older runs, which refuse it.
+	`ALTER TABLE runs ADD COLUMN rebased_head_sha TEXT`,
 }

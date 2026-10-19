@@ -4,22 +4,25 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 )
 
 var commitID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
-// VerifyReword proves that only commit metadata changed after submitted: both
-// histories are linear, start at that exact commit, and have the same tree at
-// every position. Equal final trees alone would admit dropped intermediate work.
-// This proof grants neither review approval nor permission to publish.
-func VerifyReword(ctx context.Context, dir, submitted, recorded, rewritten string) error {
+// VerifyReword proves that only commit metadata changed after rebased, the
+// head the run's own Rebase step recorded: both histories are linear, start at
+// that exact commit, and have the same tree at every position. Equal final
+// trees alone would admit dropped intermediate work. This proof grants neither
+// review approval nor permission to publish.
+func VerifyReword(ctx context.Context, dir, rebased, recorded, rewritten string) error {
 	if recorded == rewritten {
 		return fmt.Errorf("the rewritten head must differ from the recorded head")
 	}
-	for _, head := range []string{submitted, recorded, rewritten} {
+	for _, head := range []string{rebased, recorded, rewritten} {
 		if !commitID.MatchString(head) {
 			return fmt.Errorf("reword proof requires full commit IDs")
 		}
@@ -28,11 +31,11 @@ func VerifyReword(ctx context.Context, dir, submitted, recorded, rewritten strin
 			return fmt.Errorf("reword commit %s is unavailable", head)
 		}
 	}
-	oldTrees, err := linearTrees(ctx, dir, submitted, recorded)
+	oldTrees, err := linearTrees(ctx, dir, rebased, recorded)
 	if err != nil {
 		return err
 	}
-	newTrees, err := linearTrees(ctx, dir, submitted, rewritten)
+	newTrees, err := linearTrees(ctx, dir, rebased, rewritten)
 	if err != nil {
 		return err
 	}
@@ -47,12 +50,12 @@ func VerifyReword(ctx context.Context, dir, submitted, recorded, rewritten strin
 	return nil
 }
 
-func linearTrees(ctx context.Context, dir, submitted, head string) ([]string, error) {
-	if _, err := git.Run(ctx, dir, "merge-base", "--is-ancestor", submitted, head); err != nil {
-		return nil, fmt.Errorf("reword must preserve the submitted commit as an ancestor")
+func linearTrees(ctx context.Context, dir, rebased, head string) ([]string, error) {
+	if !isAncestor(ctx, dir, rebased, head) {
+		return nil, fmt.Errorf("reword must preserve the recorded post-rebase head as an ancestor")
 	}
 	// Bound external output, refusing rather than certifying a truncated chain.
-	log, err := git.Run(ctx, dir, "log", "--reverse", "--max-count=257", "--format=%H %T %P", submitted+".."+head)
+	log, err := git.Run(ctx, dir, "log", "--reverse", "--max-count=257", "--format=%H %T %P", rebased+".."+head)
 	if err != nil {
 		return nil, err
 	}
@@ -60,12 +63,12 @@ func linearTrees(ctx context.Context, dir, submitted, head string) ([]string, er
 	if log == "" || len(lines) > 256 {
 		return nil, fmt.Errorf("reword requires between 1 and 256 linear commits")
 	}
-	parent := submitted
+	parent := rebased
 	trees := make([]string, 0, len(lines))
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) != 3 || fields[2] != parent {
-			return nil, fmt.Errorf("reword history is not a linear chain from the submitted head")
+			return nil, fmt.Errorf("reword history is not a linear chain from the recorded post-rebase head")
 		}
 		parent = fields[0]
 		trees = append(trees, fields[1])
@@ -86,4 +89,52 @@ func PreserveReword(ctx context.Context, dir, runID, recorded, rewritten string)
 		}
 	}
 	return nil
+}
+
+// RemapRewordedRange carries the branch's uncertified fixer range across a
+// proven reword: a commit after rebased maps to the rewritten commit at the
+// same position, anything at or below rebased or already in the rewritten
+// history is kept. A missing or unrelated range is the reworded span itself.
+func RemapRewordedRange(ctx context.Context, database *db.DB, dir, repoID, branch, runID, rebased, recorded, rewritten string) error {
+	rng, err := database.GetUncertifiedPipelineRange(repoID, branch)
+	if err != nil {
+		return err
+	}
+	from, to, source := rebased, recorded, runID
+	if rng != nil && (isAncestor(ctx, dir, rng.ToSHA, recorded) || isAncestor(ctx, dir, rng.ToSHA, rewritten)) {
+		from, to, source = rng.FromSHA, rng.ToSHA, rng.SourceRunID
+	}
+	if from, err = rewordPosition(ctx, dir, rebased, recorded, rewritten, from); err != nil {
+		return err
+	}
+	if to, err = rewordPosition(ctx, dir, rebased, recorded, rewritten, to); err != nil {
+		return err
+	}
+	return database.UpsertUncertifiedPipelineRange(repoID, branch, from, to, source)
+}
+
+func rewordPosition(ctx context.Context, dir, rebased, recorded, rewritten, sha string) (string, error) {
+	if isAncestor(ctx, dir, sha, rebased) || isAncestor(ctx, dir, sha, rewritten) {
+		return sha, nil
+	}
+	if !isAncestor(ctx, dir, sha, recorded) {
+		return "", fmt.Errorf("uncertified fixer commit %s is outside the reworded history", sha)
+	}
+	count, err := git.Run(ctx, dir, "rev-list", "--count", sha+".."+recorded)
+	if err != nil {
+		return "", err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(count))
+	if err != nil {
+		return "", err
+	}
+	return git.Run(ctx, dir, "rev-parse", "--verify", fmt.Sprintf("%s~%d^{commit}", rewritten, n))
+}
+
+func isAncestor(ctx context.Context, dir, ancestor, head string) bool {
+	if strings.TrimSpace(ancestor) == "" {
+		return false
+	}
+	_, err := git.Run(ctx, dir, "merge-base", "--is-ancestor", ancestor, head)
+	return err == nil
 }

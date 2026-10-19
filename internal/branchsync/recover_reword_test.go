@@ -10,13 +10,27 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func rewordFixture(t *testing.T) (*recoverFixture, string) {
+// rewordFixture leaves a failed run whose Rebase step recorded its post-rebase
+// head (a replay onto a moved base when rebase is set) and whose Review fixer
+// reworded four fix commits on top of it, as in the reported incident.
+func rewordFixture(t *testing.T, rebase, recordRebased bool) (*recoverFixture, string) {
 	t.Helper()
 	f := newRecoverFixtureAtSubmittedHead(t)
 	pipeline := filepath.Join(filepath.Dir(f.local), "rewrite-pipeline")
 	mustRun(t, f.gate, "clone", f.gate, pipeline)
+	mustRun(t, pipeline, "config", "user.name", "test")
+	mustRun(t, pipeline, "config", "user.email", "test@example.com")
 	mustRun(t, pipeline, "checkout", "--detach", f.submitted)
-	old, rewritten := f.submitted, f.submitted
+	rebased := f.submitted
+	if rebase {
+		mustRun(t, pipeline, "checkout", "--detach", f.base)
+		mustWrite(t, filepath.Join(pipeline, "upstream"), "moved base\n")
+		mustRun(t, pipeline, "add", "upstream")
+		mustRun(t, pipeline, "commit", "-m", "upstream moved")
+		mustRun(t, pipeline, "cherry-pick", f.base+".."+f.submitted)
+		rebased = mustRun(t, pipeline, "rev-parse", "HEAD")
+	}
+	old, rewritten := rebased, rebased
 	for i := range 4 {
 		mustWrite(t, filepath.Join(pipeline, fmt.Sprintf("fix-%d", i)), fmt.Sprintf("fix %d\n", i))
 		mustRun(t, pipeline, "add", ".")
@@ -31,6 +45,14 @@ func rewordFixture(t *testing.T) (*recoverFixture, string) {
 		mustRun(t, pipeline, "update-ref", ref, head)
 		mustRun(t, f.gate, "fetch", pipeline, ref)
 	}
+	if recordRebased {
+		if err := f.db.RecordRunRebasedHead(f.run.ID, rebased); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.db.UpsertUncertifiedPipelineRange(f.repo.ID, f.run.Branch, f.base, old, "earlier-run"); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.db.UpdateRunHeadSHA(f.run.ID, old); err != nil {
 		t.Fatal(err)
 	}
@@ -44,33 +66,42 @@ func rewordFixture(t *testing.T) (*recoverFixture, string) {
 
 func TestRecoverRewordedPreservesFourFixesAndBothHistories(t *testing.T) {
 	t.Parallel()
-	f, rewritten := rewordFixture(t)
-	state := f.service.RecoverReworded(f.ctx, f.preserved, rewritten)
-	if !state.Recovered || !state.Changed {
-		t.Fatalf("recovery: %+v", state)
-	}
-	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != rewritten {
-		t.Fatalf("HEAD = %s, want %s", got, rewritten)
-	}
-	for i := range 4 {
-		if got := mustRun(t, f.local, "show", fmt.Sprintf("HEAD:fix-%d", i)); got != fmt.Sprintf("fix %d", i) {
-			t.Fatalf("lost fix %d: %s", i, got)
-		}
-	}
-	for _, head := range []string{f.preserved, rewritten} {
-		if got := mustRun(t, f.gate, "rev-parse", custody.RewordRef(f.run.ID, head)); got != head {
-			t.Fatalf("lost history %s", head)
-		}
-	}
-	run, err := f.db.GetRun(f.run.ID)
-	if err != nil || run.CustodyReturnedAt == nil || run.ReviewApprovedHeadSHA != nil || run.HeadSHA != rewritten {
-		t.Fatalf("recovery must not approve review: %+v %v", run, err)
+	for _, rebase := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rebased=%v", rebase), func(t *testing.T) {
+			t.Parallel()
+			f, rewritten := rewordFixture(t, rebase, true)
+			state := f.service.RecoverReworded(f.ctx, f.preserved, rewritten)
+			if !state.Recovered || !state.Changed {
+				t.Fatalf("recovery: %+v", state)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != rewritten {
+				t.Fatalf("HEAD = %s, want %s", got, rewritten)
+			}
+			for i := range 4 {
+				if got := mustRun(t, f.local, "show", fmt.Sprintf("HEAD:fix-%d", i)); got != fmt.Sprintf("fix %d", i) {
+					t.Fatalf("lost fix %d: %s", i, got)
+				}
+			}
+			for _, head := range []string{f.preserved, rewritten} {
+				if got := mustRun(t, f.gate, "rev-parse", custody.RewordRef(f.run.ID, head)); got != head {
+					t.Fatalf("lost history %s", head)
+				}
+			}
+			run, err := f.db.GetRun(f.run.ID)
+			if err != nil || run.CustodyReturnedAt == nil || run.ReviewApprovedHeadSHA != nil || run.HeadSHA != rewritten {
+				t.Fatalf("recovery must not approve review: %+v %v", run, err)
+			}
+			rng, err := f.db.GetUncertifiedPipelineRange(f.repo.ID, f.run.Branch)
+			if err != nil || rng == nil || rng.FromSHA != f.base || rng.ToSHA != rewritten || rng.SourceRunID != "earlier-run" {
+				t.Fatalf("uncertified range = %+v %v, want %s..%s", rng, err, f.base, rewritten)
+			}
+		})
 	}
 }
 
 func TestRecoverRewordedDoesNotInventCustodyOnAnotherBranch(t *testing.T) {
 	t.Parallel()
-	f, rewritten := rewordFixture(t)
+	f, rewritten := rewordFixture(t, false, true)
 	mustRun(t, f.local, "checkout", "-b", "unrelated", f.submitted)
 	state := f.service.RecoverReworded(f.ctx, f.preserved, rewritten)
 	if state.Recovered || state.State == StatePipelineOwned || state.Error == "" {
@@ -80,10 +111,10 @@ func TestRecoverRewordedDoesNotInventCustodyOnAnotherBranch(t *testing.T) {
 
 func TestRecoverRewordedRefusesUnprovenOrMovedEvidence(t *testing.T) {
 	t.Parallel()
-	for _, change := range []string{"wrong-observation", "missing-object", "short-sha", "squash", "changed-intermediate-tree", "dirty", "moved-local", "moved-gate", "symbolic-gate", "conflicting-anchor", "symbolic-anchor", "approved", "active", "local-race", "gate-race", "database-race"} {
+	for _, change := range []string{"wrong-observation", "missing-object", "short-sha", "squash", "changed-intermediate-tree", "dirty", "moved-local", "moved-gate", "symbolic-gate", "conflicting-anchor", "symbolic-anchor", "approved", "active", "local-race", "gate-race", "database-race", "no-rebase-record"} {
 		t.Run(change, func(t *testing.T) {
 			t.Parallel()
-			f, rewritten := rewordFixture(t)
+			f, rewritten := rewordFixture(t, true, change != "no-rebase-record")
 			recorded := f.preserved
 			switch change {
 			case "wrong-observation":
@@ -94,14 +125,14 @@ func TestRecoverRewordedRefusesUnprovenOrMovedEvidence(t *testing.T) {
 				rewritten = rewritten[:8]
 			case "squash":
 				tree := mustRun(t, f.gate, "rev-parse", rewritten+"^{tree}")
-				rewritten = mustRun(t, f.gate, "commit-tree", tree, "-p", f.submitted, "-m", "squashed")
+				rewritten = mustRun(t, f.gate, "commit-tree", tree, "-p", *f.run.RebasedHeadSHA, "-m", "squashed")
 			case "changed-intermediate-tree":
-				commits := strings.Fields(mustRun(t, f.gate, "rev-list", "--reverse", f.submitted+".."+rewritten))
-				parent := f.submitted
+				commits := strings.Fields(mustRun(t, f.gate, "rev-list", "--reverse", *f.run.RebasedHeadSHA+".."+rewritten))
+				parent := *f.run.RebasedHeadSHA
 				for i, commit := range commits {
 					tree := mustRun(t, f.gate, "rev-parse", commit+"^{tree}")
 					if i == 0 {
-						tree = mustRun(t, f.gate, "rev-parse", f.submitted+"^{tree}")
+						tree = mustRun(t, f.gate, "rev-parse", parent+"^{tree}")
 					}
 					parent = mustRun(t, f.gate, "commit-tree", tree, "-p", parent, "-m", "changed intermediate")
 				}

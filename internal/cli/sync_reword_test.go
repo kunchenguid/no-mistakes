@@ -27,6 +27,9 @@ func TestSyncRewordedRecoversUnpublishedFixesOnBothSurfaces(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer d.Close()
+			if err := d.RecordRunRebasedHead(f.runID, f.submitted); err != nil {
+				t.Fatal(err)
+			}
 			if err := d.UpdateRunErrorStatus(f.runID, "review fixer reworded commits", types.RunFailed); err != nil {
 				t.Fatal(err)
 			}

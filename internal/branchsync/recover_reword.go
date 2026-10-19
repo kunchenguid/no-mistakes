@@ -12,8 +12,9 @@ import (
 
 // RecoverReworded accepts an operator-named rewrite left by a failed pre-push
 // Review round. It never discovers or chooses dangling objects. The submitted
-// head must still be the clean caller and gate head; every intervening tree
-// must match. Both histories are retained before ordinary recovery takes over.
+// head must still be the clean caller and gate head; every tree after the
+// run's recorded post-rebase head must match. Both histories are retained
+// before ordinary recovery takes over.
 func (s *Service) RecoverReworded(ctx context.Context, recorded, rewritten string) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -29,7 +30,10 @@ func (s *Service) RecoverReworded(ctx context.Context, recorded, rewritten strin
 		(run.LastPushedSHA != nil && *run.LastPushedSHA != "") {
 		return refuse("reword recovery requires the exact observed head of a failed, unpublished, unverified Review run; no files or refs were changed")
 	}
-	submitted := *run.SubmittedHeadSHA
+	if run.RebasedHeadSHA == nil {
+		return refuse("this run recorded no post-rebase head to anchor the reword proof; inspect the Review log and reconcile manually; no files or refs were changed")
+	}
+	submitted, rebased := *run.SubmittedHeadSHA, *run.RebasedHeadSHA
 	if !state.Local.Clean || state.Local.Head != submitted || strings.TrimSpace(s.GateDir) == "" {
 		return refuse("reword recovery requires the clean caller at the submitted head and an available local gate; no files or refs were changed")
 	}
@@ -41,7 +45,7 @@ func (s *Service) RecoverReworded(ctx context.Context, recorded, rewritten strin
 	if err != nil || !exists || gateHead != submitted {
 		return refuse("the gate branch no longer equals the submitted head; no files or refs were changed")
 	}
-	if err := custody.VerifyReword(ctx, s.GateDir, submitted, recorded, rewritten); err != nil {
+	if err := custody.VerifyReword(ctx, s.GateDir, rebased, recorded, rewritten); err != nil {
 		return refuse(err.Error() + "; no files or refs were changed")
 	}
 	// Preflight all anchors before writing any of them. The transaction also
@@ -81,7 +85,10 @@ func (s *Service) RecoverReworded(ctx context.Context, recorded, rewritten strin
 	if _, err := git.RunWithInput(ctx, s.GateDir, transaction+"prepare\ncommit\n", "update-ref", "--stdin", "--no-deref"); err != nil {
 		return refuse("the gate or recovery anchors changed during the reword proof; no files or refs were changed")
 	}
-	updated, err := s.DB.VerifyTerminalReword(run.ID, submitted, recorded, rewritten)
+	if err := custody.RemapRewordedRange(ctx, s.DB, s.GateDir, s.Repo.ID, run.Branch, run.ID, rebased, recorded, rewritten); err != nil {
+		return refuse("the uncertified fixer range could not be carried across the reword (" + err.Error() + "); both histories remain anchored and custody was not returned")
+	}
+	updated, err := s.DB.VerifyTerminalReword(run.ID, submitted, rebased, recorded, rewritten)
 	if err != nil || !updated {
 		return refuse("the run changed during the reword proof; both histories remain anchored and custody was not returned")
 	}

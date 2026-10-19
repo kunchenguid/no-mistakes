@@ -111,11 +111,14 @@ type Run struct {
 	// ClosingIssueRefsLockedAt is non-nil once a PR body composition has sampled
 	// ClosingIssueRefs, after which a reattach can no longer add to them.
 	ClosingIssueRefsLockedAt *int64
-	CreatedAt                int64
-	UpdatedAt                int64
+	// RebasedHeadSHA is the head this run's own Rebase step recorded on
+	// completion. It is nil for runs recorded before the column existed.
+	RebasedHeadSHA *string
+	CreatedAt      int64
+	UpdatedAt      int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, rebased_head_sha, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -130,7 +133,7 @@ func scanRun(row interface {
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
-		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
+		&storedClosingIssues, &r.ClosingIssueRefsLockedAt, &r.RebasedHeadSHA,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -846,6 +849,15 @@ func (d *DB) UpdateRunHeadSHA(id, headSHA string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run head sha: %w", err)
+	}
+	return nil
+}
+
+// RecordRunRebasedHead records the head the run's Rebase step completed at.
+func (d *DB) RecordRunRebasedHead(id, headSHA string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET rebased_head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
+	if err != nil {
+		return fmt.Errorf("record run rebased head: %w", err)
 	}
 	return nil
 }

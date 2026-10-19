@@ -818,6 +818,11 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		}
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
+	if err := sctx.DB.RecordRunRebasedHead(sctx.Run.ID, sctx.Run.HeadSHA); err != nil {
+		return nil, err
+	}
+	rebased := sctx.Run.HeadSHA
+	sctx.Run.RebasedHeadSHA = &rebased
 
 	// Check if the branch has any diff against the default branch.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.

@@ -544,6 +544,9 @@ func TestRebaseStep_RemapsUncertifiedRangeWhenHeadRewritten(t *testing.T) {
 	if newHead == toSHA {
 		t.Fatal("rebase did not rewrite the uncertified head")
 	}
+	if run, err := sctx.DB.GetRun(sctx.Run.ID); err != nil || run.RebasedHeadSHA == nil || *run.RebasedHeadSHA != newHead {
+		t.Fatalf("rebase step did not record its post-rebase head %s: %+v %v", newHead, run, err)
+	}
 
 	got, err := sctx.DB.GetUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch)
 	if err != nil {

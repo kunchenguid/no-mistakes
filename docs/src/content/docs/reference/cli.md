@@ -422,15 +422,15 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 ### Recovering reworded pipeline fixes
 
-A failed Review fix round in an older build can leave the recorded and rewritten commits available in the gate, while ordinary recovery refuses because the rewritten head is no longer a descendant. After inspecting the full Review log and the recorded head in `axi status`, name both full commit IDs explicitly:
+A failed Review fix round can leave the recorded and rewritten commits available in the gate, while ordinary recovery refuses because the rewritten head is no longer a descendant. After inspecting the full Review log and the recorded head in `axi status`, name both full commit IDs explicitly:
 
 ```sh
 no-mistakes axi sync --recover --observed-head <recorded-sha> --reworded-head <rewritten-sha>
 ```
 
-The same flags work on `no-mistakes sync`. They cannot be combined with other recovery modes. The run must be failed, unpublished, and without recorded review approval or terminal-head verification. Both the clean caller and the gate branch must still equal the submitted head. Both histories must be linear chains of 1–256 commits after that unchanged submitted commit, with the same number of commits and the same tree at every position. A squash, a merge, a rewrite of submitted work, changed intermediate content, missing objects, conflicting anchors, or changed observations refuses.
+The same flags work on `no-mistakes sync`. They cannot be combined with other recovery modes. The run must be failed, unpublished, and without recorded review approval or terminal-head verification. Both the clean caller and the gate branch must still equal the submitted head. Both histories must be linear chains of 1–256 commits after the head the run's own Rebase step recorded (the submitted head when Rebase moved nothing), with the same number of commits and the same tree at every position. A run without that record, which predates it, refuses with nothing changed; inspect the Review log and reconcile it manually. A squash, a merge, a rewrite of the post-rebase head or anything below it, changed intermediate content, missing objects, conflicting anchors, or changed observations refuses.
 
-Recovery preserves both histories at `refs/no-mistakes/reword/<run>/<sha>` in the gate and pins the rewritten head at the ordinary recovery ref before recording its preservation proof. Ordinary recovery then fast-forwards the caller and returns custody. An interruption after preservation can be continued with plain `--recover` once the proof is recorded. Recovery never approves Review or publishes anything; submit the recovered branch to a fresh validation run. No dangling-object scan or automatic selection of a rewritten head occurs.
+Recovery preserves both histories at `refs/no-mistakes/reword/<run>/<sha>` in the gate, pins the rewritten head at the ordinary recovery ref, and carries the branch's uncertified fixer range to the rewritten commits before recording its preservation proof. Ordinary recovery then moves the caller to the rewritten head (a fast-forward, or the proven adoption of a rebased head described above) and returns custody. An interruption after preservation can be continued with plain `--recover` once the proof is recorded. Recovery never approves Review or publishes anything; submit the recovered branch to a fresh validation run. No dangling-object scan or automatic selection of a rewritten head occurs.
 
 ### Rewritten push target recovery
 
