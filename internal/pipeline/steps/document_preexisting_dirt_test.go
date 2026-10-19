@@ -27,7 +27,7 @@ func dirtyBeforeDocument(t *testing.T, dir string) {
 func assertStillDirty(t *testing.T, dir string) {
 	t.Helper()
 	status := gitStatusPorcelain(t, dir)
-	for _, want := range []string{"M base.txt","?? package-lock.json"} {
+	for _, want := range []string{"M base.txt", "?? package-lock.json"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("pre-existing dirt %q must stay uncommitted in the worktree, status = %q", want, status)
 		}
