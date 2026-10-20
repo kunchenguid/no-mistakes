@@ -412,6 +412,39 @@ func TestReportKeepsAmbiguousSessionsInAnUnknownVariant(t *testing.T) {
 	}
 }
 
+// Merging s1 and s2 builds a {c1:x,c2:y} variant that both sessions then leave
+// for unknown because each also agrees with another variant; that emptied
+// variant is a prompt combination nobody ran and must not become a row.
+func TestPromptVariantsDropsAVariantEmptiedByAmbiguity(t *testing.T) {
+	rows := make(map[string][]Evaluation)
+	sessions := []string{"s1", "s2", "s3", "s4"}
+	for id, prompts := range map[string]map[string]string{
+		"s1": {"c1": "x"},
+		"s2": {"c2": "y"},
+		"s3": {"c1": "z", "c2": "y"},
+		"s4": {"c1": "x", "c2": "z"},
+	} {
+		for caseID, prompt := range prompts {
+			rows[id] = append(rows[id], Evaluation{SessionID: id, CaseID: caseID, PromptFingerprint: prompt})
+		}
+	}
+	got := make(map[string][]string)
+	for _, variant := range promptVariants(sessions, rows) {
+		if len(variant.sessions) == 0 {
+			t.Fatalf("variant %+v has no sessions", variant)
+		}
+		got[variant.fingerprint()] = variant.sessions
+	}
+	want := map[string][]string{
+		promptVariant{prompts: map[string]string{"c1": "z", "c2": "y"}}.fingerprint(): {"s3"},
+		promptVariant{prompts: map[string]string{"c1": "x", "c2": "z"}}.fingerprint(): {"s4"},
+		"": {"s1", "s2"},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("variants = %v, want %v", got, want)
+	}
+}
+
 func TestExecutableContentsSeparateReplayCohorts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "executable")
 	builds := make([]ReplayBuild, 0, 2)

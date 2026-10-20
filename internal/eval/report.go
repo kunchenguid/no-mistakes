@@ -270,10 +270,18 @@ func promptVariants(sessions []string, rows map[string][]Evaluation) []promptVar
 			unknown.sessions = append(unknown.sessions, id)
 		}
 	}
-	if len(unknown.sessions) > 0 {
-		variants = append(variants, unknown)
+	// A variant merged from sessions that all turned out ambiguous describes
+	// a prompt combination nobody ran, so it must not become a report row.
+	assigned := variants[:0]
+	for _, variant := range variants {
+		if len(variant.sessions) > 0 {
+			assigned = append(assigned, variant)
+		}
 	}
-	return variants
+	if len(unknown.sessions) > 0 {
+		assigned = append(assigned, unknown)
+	}
+	return assigned
 }
 
 func sessionPrompts(rows []Evaluation) map[string]string {
