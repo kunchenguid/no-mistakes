@@ -463,6 +463,9 @@ func commitAgentFixesExcept(sctx *pipeline.StepContext, stepName types.StepName,
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return false, err
 	}
+	if err := uncommitAgentCommittedDirt(sctx, stepName, preexisting); err != nil {
+		return false, err
+	}
 	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check %s changes: %w", stepName, err)
@@ -579,6 +582,11 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.LogMessage != "" {
 		sctx.Log(opts.LogMessage)
 	}
+	// Changes already in the worktree are not this fix's work (issue #762).
+	preexisting, err := snapshotWorktreeDirt(sctx)
+	if err != nil {
+		return "", err
+	}
 	purpose := opts.Purpose
 	if purpose == "" {
 		purpose = string(stepName) + "-fix"
@@ -598,7 +606,6 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	// The fixer may commit its own work and leave a clean worktree, which
 	// commitAgentFixesWithResult reports as "not committed". HEAD movement is
 	// what tells that round apart from one that made no edits.
-	var err error
 	headBeforeAgent := ""
 	if opts.ReportBlockedVerification {
 		headBeforeAgent, err = git.HeadSHA(sctx.Ctx, sctx.WorkDir)
@@ -630,7 +637,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		}
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
-	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary, result)
+	committed, err := commitAgentFixesExcept(sctx, stepName, summary, opts.FallbackSummary, result, preexisting)
 	if err != nil {
 		return "", err
 	}

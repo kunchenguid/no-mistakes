@@ -120,6 +120,11 @@ Rules:
 Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
+		// Changes already in the worktree are not this pass's work (issue #762).
+		preexisting, err := snapshotWorktreeDirt(sctx)
+		if err != nil {
+			return nil, err
+		}
 		result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 			Prompt:     fixerPrompt(prompt),
 			CWD:        sctx.WorkDir,
@@ -145,7 +150,7 @@ Previous lint findings to address:
 			}
 			sctx.Log(fmt.Sprintf("warning: could not parse lint summary: %v", err))
 		}
-		committed, err := commitAgentFixesWithResult(sctx, s.Name(), summary, "fix lint issues", result)
+		committed, err := commitAgentFixesExcept(sctx, s.Name(), summary, "fix lint issues", result, preexisting)
 		if err != nil {
 			return nil, err
 		}
