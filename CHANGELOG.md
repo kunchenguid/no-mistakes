@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.99.1](https://github.com/kunchenguid/no-mistakes/compare/v1.99.0...v1.99.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **pipeline:** repair merge conflicts against newer base commits ([#1547](https://github.com/kunchenguid/no-mistakes/issues/1547)) ([97f800e](https://github.com/kunchenguid/no-mistakes/commit/97f800ef40b60ff6a7efc35ca36d87cf862be312))
+* **pr:** resolve the GitHub token once per PR media render ([#1545](https://github.com/kunchenguid/no-mistakes/issues/1545)) ([1689ea2](https://github.com/kunchenguid/no-mistakes/commit/1689ea2558072e0d21a23fd9a0aebd6daefc3e8f))
+* **scm/gitlab:** treat a blocking manual job as a wait, not a skip ([#1526](https://github.com/kunchenguid/no-mistakes/issues/1526)) ([bd48db5](https://github.com/kunchenguid/no-mistakes/commit/bd48db525f62911935daf57e70277278bbccdac2))
+
 ## [1.99.0](https://github.com/kunchenguid/no-mistakes/compare/v1.98.0...v1.99.0) (2026-10-18)
 
 
