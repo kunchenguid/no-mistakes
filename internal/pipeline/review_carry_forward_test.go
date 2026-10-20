@@ -318,6 +318,89 @@ func TestExecutor_ReviewCarryForward_NoOpFixKeepsFindingParked(t *testing.T) {
 	waitExecutorDone(t, done)
 }
 
+// TestExecutor_ReviewCarryForward_VerbatimRestatementWithAMovedLineLeavesOneRow
+// pins what the round-history restatement instruction buys: a rereview that
+// restates a still-present finding with the same file and the identical
+// description text, at a line the fix moved, merges into the outstanding set
+// as ONE row instead of a second gate row with a fresh ID.
+func TestExecutor_ReviewCarryForward_VerbatimRestatementWithAMovedLineLeavesOneRow(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+
+	round := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			round++
+			if round == 1 {
+				return &StepOutcome{
+					NeedsApproval:   true,
+					Findings:        `{"findings":[{"id":"review-1","severity":"error","file":"service.go","line":10,"description":"nil deref on the error path","action":"ask-user"}],"summary":"1 finding"}`,
+					ReviewedPaths:   []string{"service.go"},
+					ReviewablePaths: []string{"service.go"},
+				}, nil
+			}
+			// The fixer writes a commit that does not fix the selected defect, so
+			// the rereview sees the same defect - now at a moved line - and, per
+			// the round-history instruction, restates it verbatim.
+			if err := os.WriteFile(filepath.Join(workDir, "unrelated.txt"), []byte("tidy\n"), 0o644); err != nil {
+				return nil, err
+			}
+			for _, args := range [][]string{{"add", "unrelated.txt"}, {"commit", "-m", "tidy unrelated code"}} {
+				cmd := gitexec.Command("git", args...)
+				cmd.Dir = workDir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					return nil, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+				}
+			}
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"id":"review-1","severity":"error","file":"service.go","line":30,"description":"nil deref on the error path","action":"ask-user"}],"summary":"1 finding"}`,
+
+				ReviewedPaths:   []string{"service.go"},
+				ReviewablePaths: []string{"service.go"},
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := respondFixPartial(t, exec, types.StepReview, "review-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The gate re-parks: the restatement says the finding is still present, so
+	// it stays outstanding for the operator.
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].FindingsJSON == nil {
+		t.Fatal("restated finding was dropped from the outstanding set")
+	}
+	parsed, err := types.ParseFindingsJSON(*steps[0].FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse outstanding findings: %v", err)
+	}
+	if len(parsed.Items) != 1 {
+		t.Fatalf("verbatim restatement with a moved line produced %d rows, want 1: %s", len(parsed.Items), *steps[0].FindingsJSON)
+	}
+	if parsed.Items[0].ID != "review-1" || parsed.Items[0].Description != "nil deref on the error path" {
+		t.Fatalf("surviving row = %s (%s), want the original finding", parsed.Items[0].ID, parsed.Items[0].Description)
+	}
+
+	// The operator closes what the restatement kept open.
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	waitExecutorDone(t, done)
+}
+
 // TestExecutor_ReviewCarryForward_PositiveCoverageClearsFinding is the other
 // half of the same contract: a selected finding does leave the outstanding set
 // once the rereview positively records that it covered the finding's file and

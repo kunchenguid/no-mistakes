@@ -154,7 +154,7 @@ After applying its fixes and before verifying, it re-traces each finding's faili
 It follows the shared removal-first rule described above; the Review-specific guard against reverting the author's intentional code protects only code the intent requires, while genuine doubt about whether the intent requires a path leaves it in place and reports the finding unresolved.
 It applies all selected fixes before running one focused verification limited to the changed area, and it is instructed not to run the complete repository test or lint suite during the fix round.
 The dedicated Test and Lint steps after review remain the authoritative gates, although their coverage may be focused when commands are unconfigured.
-Follow-up review passes use the history to avoid re-reporting user-ignored findings unless the code now has a materially different problem.
+Follow-up review passes use the history to avoid re-reporting user-ignored findings unless the code now has a materially different problem. A follow-up pass that still sees a finding reported earlier is instructed to restate it with the same file and the identical description text (the line may change) and to report a materially different problem as a new finding, so the content-derived restatement matching keeps one gate row instead of adding a second.
 
 **Default auto-fix limit:** `0`.
 

@@ -681,6 +681,30 @@ func TestOwnStepHistoryPromptCarriesNeverRevertClause(t *testing.T) {
 	}
 }
 
+// A still-present finding must be restated verbatim, so the content-derived
+// restatement matching merges it back into one outstanding row instead of
+// showing a second gate row with a fresh ID.
+func TestOwnStepHistoryPromptAsksForAVerbatimRestatementOfAStillPresentFinding(t *testing.T) {
+	t.Parallel()
+	f := newDecisionFixture(t)
+	findings := `{"findings":[` +
+		`{"id":"still-here","severity":"error","description":"nil deref on the error path","action":"ask-user"}]}`
+	if _, err := f.db.InsertStepRound(f.testSR.ID, 1, "initial", &findings, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stepRoundHistorySection(f.testStepContext())
+	if !strings.Contains(got, "report it again with the same file and the identical description text") {
+		t.Fatalf("missing the verbatim-restatement instruction for still-present findings:\n%s", got)
+	}
+	if !strings.Contains(got, "(the line may change)") {
+		t.Fatalf("missing the moved-line allowance:\n%s", got)
+	}
+	if !strings.Contains(got, "report a materially different problem as a new finding") {
+		t.Fatalf("missing the new-finding clause for a materially different problem:\n%s", got)
+	}
+}
+
 // threeFindingsRound is a gate that shows three findings, so a round can fix
 // one, decline one, and leave one for a later decision.
 const threeFindingsRound = `{"findings":[` +
