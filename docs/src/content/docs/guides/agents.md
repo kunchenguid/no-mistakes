@@ -34,7 +34,7 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 That last point matters: explicit repo commands make the baseline predictable, while the agent establishes whether the requested behavior works in the real product.
 That testing invocation is expected to leave only intentional source or test-file changes in the worktree, while preserving requested evidence files under the dedicated evidence directory.
-That directory is always outside the worktree and is reaped by no-mistakes on a bounded retention schedule; GitHub.com/GHEC PRs upload supported screenshots and recordings, and can also publish an orphan evidence branch with `test.evidence.store_in_repo`. See [`test.evidence`](/no-mistakes/reference/global-config/#testevidence) for its location, attachments, and cleanup.
+That directory is always outside the worktree and is reaped by no-mistakes on a bounded retention schedule. See [`test.evidence`](/no-mistakes/reference/global-config/#testevidence) for where it lives, how each forge receives image and video uploads, the orphan evidence branch, and cleanup.
 
 ## Supported agents
 

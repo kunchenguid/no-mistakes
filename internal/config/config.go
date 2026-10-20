@@ -945,6 +945,9 @@ type GitHubProviderRaw struct {
 // Pointer fields distinguish "not set" (nil) from an explicit false.
 type GitLabProviderRaw struct {
 	DraftPullRequests *bool `yaml:"draft_pull_requests"`
+	// EvidencePublication enables GitLab evidence uploads, orphan-branch
+	// publication and native artifact links. Default false.
+	EvidencePublication *bool `yaml:"evidence_publication"`
 }
 
 // BitbucketProviderRaw is the YAML representation of Bitbucket provider settings.
@@ -986,6 +989,9 @@ type GitLabProvider struct {
 	// DraftPullRequests opens created GitLab MRs as drafts
 	// (glab mr create --draft). Default false.
 	DraftPullRequests bool
+	// EvidencePublication opts this provider into evidence publication and
+	// native artifact rendering. Existing test.evidence settings alone do not.
+	EvidencePublication bool
 }
 
 // BitbucketProvider holds resolved Bitbucket provider settings.
@@ -1165,10 +1171,8 @@ type TestRaw struct {
 type EvidenceRaw struct {
 	StoreInRepo *bool `yaml:"store_in_repo"`
 	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// when the PR body is rendered. It defaults on so default-config PRs stop
-	// citing local disk paths for screenshots; set false to opt out. The
-	// orphan-branch store (store_in_repo) is independent: when both are on,
-	// the PR body carries both the commit-pinned link and the attachment.
+	// when the PR body is rendered. Default true. GitLab also requires the
+	// separate providers.gitlab.evidence_publication opt-in.
 	// Like store_in_repo, this is pushed-readable.
 	AttachMedia *bool   `yaml:"attach_media"`
 	Dir         *string `yaml:"dir"`
@@ -1207,14 +1211,14 @@ type Test struct {
 	AllowApproveOverFailure string
 }
 
-// Evidence is the resolved test-evidence config. When StoreInRepo is true, the
-// run publishes its evidence artifacts to the orphan Branch of the same
-// repository, under Dir, and links them from the pull request body. Evidence
-// never enters the pushed code branch, so it never reaches the default
-// branch's history. Otherwise evidence stays on local disk under LocalRoot.
-// AttachMedia (default true) additionally uploads image and video artifacts to
-// GitHub user-attachments at PR render time so remote reviewers can open them
-// without an evidence branch. Text artifacts stay inlined or locally cited.
+// Evidence is the resolved test-evidence config. Evidence is always written to
+// local disk under LocalRoot. When StoreInRepo is true for a GitHub.com or
+// GitLab repository, the run also publishes its artifacts to the orphan Branch
+// of the same repository, under Dir, and links them from the PR or MR body.
+// Evidence never enters the pushed code branch, so it never reaches the
+// default branch's history. AttachMedia (default true) uploads image and video
+// artifacts when the body is rendered. GitLab publication additionally requires
+// Providers.GitLab.EvidencePublication. Text artifacts stay inlined or locally cited.
 type Evidence struct {
 	StoreInRepo bool
 	AttachMedia bool
@@ -3417,9 +3421,8 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 }
 
 // testDefaults returns the default test-step settings. Orphan-branch evidence
-// publication is opt-in (off by default). GitHub image/video attachments at PR
-// render time are on by default so remote reviewers can open screenshots
-// without that branch.
+// publication is opt-in. GitHub image/video attachments remain on by default;
+// GitLab additionally requires its provider-specific evidence publication opt-in.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
@@ -3676,6 +3679,9 @@ func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
 	}
 	if src.GitLab.DraftPullRequests != nil {
 		dst.GitLab.DraftPullRequests = *src.GitLab.DraftPullRequests
+	}
+	if src.GitLab.EvidencePublication != nil {
+		dst.GitLab.EvidencePublication = *src.GitLab.EvidencePublication
 	}
 	if src.Bitbucket.DraftPullRequests != nil {
 		dst.Bitbucket.DraftPullRequests = *src.Bitbucket.DraftPullRequests

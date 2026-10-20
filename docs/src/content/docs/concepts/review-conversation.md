@@ -70,9 +70,10 @@ not a degraded one.
 
 The conversation stays LOCAL to the run. The files live in the run's evidence
 directory, but the conversation directory is excluded from the evidence-branch
-publication walk, so opting into
-[`test.evidence.store_in_repo`](/no-mistakes/reference/repo-config/) publishes
-the run's test evidence and never the conversation. The only published copy is
+publication walk. Evidence-branch publication on supported, opted-in providers
+publishes the run's test evidence and never the conversation; the
+[`test.evidence` reference](/no-mistakes/reference/global-config/#testevidence)
+owns that configuration. The only published copy of the conversation is
 the bounded rendering in the PR body, which goes through the home-path redaction
 every published body does. Publishing the raw files instead would put the full
 question text, the full answer text and who answered on an orphan branch

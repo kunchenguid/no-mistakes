@@ -124,6 +124,7 @@ providers:
     draft_pull_requests: false
   gitlab:
     draft_pull_requests: false
+    evidence_publication: false
   bitbucket:
     draft_pull_requests: false
   azuredevops:
@@ -1112,8 +1113,8 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `test.evidence.commit_message` | `string` | Inherits from global (default `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})`) |
 
 By default, test evidence is written to `<NM_HOME>/evidence/<run-id>`. Where it is stored locally and how long it is kept are global-only settings; see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence).
-On GitHub.com/GHEC, supported image and video artifacts are uploaded to GitHub user-attachments when the PR is rendered unless `attach_media` is false and `store_in_repo` is also false.
-For GitHub repositories, set `store_in_repo: true` to also publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
+On GitHub.com/GHEC, supported images and videos are uploaded by default when the PR is rendered. GitLab publication and native artifact links require the separate [`providers.gitlab.evidence_publication`](#providersgitlabevidence_publication) opt-in; existing `attach_media` or `store_in_repo` settings alone retain their previous GitHub-only meaning.
+For GitHub.com and opted-in GitLab repositories, `store_in_repo: true` publishes evidence to an orphan branch in the code branch's push-target repository and links the artifacts from the description. Evidence never enters the code branch or default branch. A repository's explicit publication settings override global values.
 `test.evidence.branch` is read ONLY from the trusted default-branch copy of this file, because it names a git ref the daemon pushes to; a pushed branch cannot redirect evidence commits.
 The other publication fields, including `test.evidence.commit_message`, are read from the pushed branch. The commit-message template shapes only the evidence commit subject and cannot select its target branch.
 See [global config](/no-mistakes/reference/global-config/#testevidence) for provider support, limits, validation, and fail-closed behavior.
@@ -1135,6 +1136,18 @@ Override the [global GitLab draft setting](/no-mistakes/reference/global-config/
 |---|---|
 | Type | `bool` |
 | Default | Inherits from global (default `false`) |
+
+### providers.gitlab.evidence_publication
+
+Override the [GitLab evidence publication setting](/no-mistakes/reference/global-config/#providersgitlabevidence_publication) for this repository.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits from global (default `false`) |
+
+Set `true` to enable GitLab evidence publication and native artifact links. An explicit `false` overrides a global opt-in. This field is pushed-readable, like the existing evidence publication settings; it does not change the trusted-only evidence branch selection.
+
 
 ### providers.bitbucket.draft_pull_requests
 
