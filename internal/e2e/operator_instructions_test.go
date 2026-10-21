@@ -17,14 +17,17 @@ const (
 	globalOperatorRule     = "Every exported Go identifier in this tree needs a doc comment."
 	repositoryOperatorRule = "Sync wording is always sync from upstream, never merge."
 	operatorDocumentPolicy = "Configuration keys are owned by docs/reference/config.md."
+	operatorTestRunbook    = "Never install on a physical device; drive the emulator only."
 	documentStepMarker     = "Analyze what the change made stale"
+	testStepMarker         = "You are validating a code change by driving the product itself."
 )
 
-// TestOperatorInstructionsJourney drives the real daemon with review and
-// documentation guidance that lives only in the operator's global config: a
-// global rule for every repository and a repository_overrides entry for this
-// one. Both reach their gate agents in labeled sections ahead of the
-// repository's own trusted rule, which still applies.
+// TestOperatorInstructionsJourney drives the real daemon with review,
+// documentation, and live-validation guidance that lives only in the
+// operator's global config: a global rule for every repository and a
+// repository_overrides entry for this one. Each reaches its gate agent in a
+// labeled section ahead of the repository's own trusted rule, which still
+// applies.
 func TestOperatorInstructionsJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude"})
 	pushMainRepoConfig(t, h, trustedRepoConfigWithPathInstructions)
@@ -44,6 +47,8 @@ func TestOperatorInstructionsJourney(t *testing.T) {
           instructions: `+repositoryOperatorRule+`
     document:
       instructions: `+operatorDocumentPolicy+`
+    test:
+      instructions: `+operatorTestRunbook+`
 `)
 
 	branch := "operator-instructions"
@@ -68,16 +73,22 @@ func TestOperatorInstructionsJourney(t *testing.T) {
 		}
 	}
 
-	var documentPrompt string
+	var documentPrompt, testPrompt string
 	for _, inv := range h.AgentInvocations() {
-		if strings.Contains(inv.Prompt, documentStepMarker) {
+		if documentPrompt == "" && strings.Contains(inv.Prompt, documentStepMarker) {
 			documentPrompt = inv.Prompt
-			break
+		}
+		if testPrompt == "" && strings.Contains(inv.Prompt, testStepMarker) {
+			testPrompt = inv.Prompt
 		}
 	}
 	if !strings.Contains(documentPrompt, "Machine-local documentation ownership policy for this repository") ||
 		!strings.Contains(documentPrompt, operatorDocumentPolicy) {
 		t.Fatalf("document prompt is missing the machine-local policy:\n%s", documentPrompt)
+	}
+	if !strings.Contains(testPrompt, "Machine-local live-validation runbook for this repository") ||
+		!strings.Contains(testPrompt, operatorTestRunbook) {
+		t.Fatalf("test prompt is missing the machine-local runbook:\n%s", testPrompt)
 	}
 
 	logs, err := h.Run("axi", "logs", "--run", run.ID, "--step", "review", "--full")

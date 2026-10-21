@@ -87,11 +87,12 @@ func TestLoadGlobal_OperatorInstructionsAllowOnlyAdditiveGuidance(t *testing.T) 
 		"override pr base_branch":       "repository_overrides:\n  https://github.com/acme/widget.git:\n    pr:\n      base_branch: develop\n",
 		"override ignore_patterns":      "repository_overrides:\n  https://github.com/acme/widget.git:\n    ignore_patterns: ['**']\n",
 		"override document other field": "repository_overrides:\n  https://github.com/acme/widget.git:\n    document:\n      skip: true\n",
+		"override test other field":     "repository_overrides:\n  https://github.com/acme/widget.git:\n    test:\n      prepare: true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := LoadGlobalFromBytes([]byte(source)); err == nil {
-				t.Fatalf("LoadGlobalFromBytes() accepted %q, want only review.path_instructions and document.instructions", source)
+				t.Fatalf("LoadGlobalFromBytes() accepted %q, want only review.path_instructions, document.instructions, and test.instructions", source)
 			}
 		})
 	}
