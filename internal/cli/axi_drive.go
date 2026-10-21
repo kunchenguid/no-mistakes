@@ -1275,8 +1275,11 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 		FindingIDs:       findingIDs,
 		IgnoreFindingIDs: ignoreFindingIDs,
 		Instructions:     instructions,
-		AddedFindings:    added,
-		ApprovalReason:   approvalReason,
+		// axi is the agent-driver surface: its --instructions are the
+		// driving agent's fix guidance, never the user's own decision.
+		InstructionsFromDriver: len(instructions) > 0,
+		AddedFindings:          added,
+		ApprovalReason:         approvalReason,
 	}
 	if len(coverage) == 1 {
 		params.Coverage = coverage[0]

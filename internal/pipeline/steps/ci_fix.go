@@ -489,7 +489,7 @@ func ciSelectedFindingsPrompt(findings Findings) string {
 	if err != nil {
 		return ""
 	}
-	section := "\n\nFindings to address (selected for this fix round, with any user instructions):\n" + sanitizedPreviousFindingsForPrompt(encoded)
+	section := "\n\nFindings to address (selected for this fix round, with any user or driver instructions):\n" + sanitizedPreviousFindingsForPrompt(encoded)
 	if len(external) == 0 {
 		return section
 	}

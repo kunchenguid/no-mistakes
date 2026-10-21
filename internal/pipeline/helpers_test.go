@@ -76,6 +76,15 @@ func respondFixPartial(t *testing.T, exec *Executor, step types.StepName, select
 	return respondFixPartialWithOverrides(t, exec, step, selected, nil, nil)
 }
 
+// userInstructions wraps per-finding notes as the user's own instructions, the
+// way a TUI response carries them.
+func userInstructions(notes map[string]string) *FixInstructions {
+	if notes == nil {
+		return nil
+	}
+	return &FixInstructions{ByFinding: notes}
+}
+
 // respondFixPartialWithOverrides is respondFixPartial plus the per-finding
 // instructions and user-authored findings a response may carry.
 func respondFixPartialWithOverrides(t *testing.T, exec *Executor, step types.StepName, selected []string, instructions map[string]string, added []types.Finding) error {
@@ -100,7 +109,7 @@ func respondFixPartialWithOverrides(t *testing.T, exec *Executor, step types.Ste
 		}
 		ignored = append(ignored, id)
 	}
-	_, err := exec.RespondWithOverrides(step, types.ActionFix, selected, ignored, instructions, added, "")
+	_, err := exec.RespondWithOverrides(step, types.ActionFix, selected, ignored, userInstructions(instructions), added, "")
 	return err
 }
 

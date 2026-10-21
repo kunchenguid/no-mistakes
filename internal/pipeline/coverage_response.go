@@ -112,11 +112,11 @@ func validCoverageRecordShape(findings types.Findings) bool {
 	return true
 }
 
-func validateCoverageResponse(step types.StepName, payload string, findingIDs, ignoredIDs []string, instructions map[string]string, added []types.Finding) error {
+func validateCoverageResponse(step types.StepName, payload string, findingIDs, ignoredIDs []string, instructions *FixInstructions, added []types.Finding) error {
 	if step != types.StepReview {
 		return fmt.Errorf("complete-coverage applies only to a parked Review")
 	}
-	if len(findingIDs)+len(ignoredIDs)+len(instructions)+len(added) != 0 {
+	if len(findingIDs)+len(ignoredIDs)+len(instructions.userNotes())+len(instructions.driverNotes())+len(added) != 0 {
 		return fmt.Errorf("complete-coverage cannot select, ignore, add or change findings")
 	}
 	var gate struct {

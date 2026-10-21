@@ -290,8 +290,11 @@ type RespondParams struct {
 	FindingIDs       []string             `json:"finding_ids,omitempty"`
 	IgnoreFindingIDs []string             `json:"ignore_finding_ids,omitempty"`
 	Instructions     map[string]string    `json:"instructions,omitempty"`
-	AddedFindings    []types.Finding      `json:"added_findings,omitempty"`
-	ApprovalReason   string               `json:"approval_reason,omitempty"` // Test approval only
+	// InstructionsFromDriver marks Instructions as an agent driver's fix
+	// guidance rather than the user's own words.
+	InstructionsFromDriver bool            `json:"instructions_from_driver,omitempty"`
+	AddedFindings          []types.Finding `json:"added_findings,omitempty"`
+	ApprovalReason         string          `json:"approval_reason,omitempty"` // Test approval only
 }
 
 type CoverageBinding struct {

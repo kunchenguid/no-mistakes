@@ -54,7 +54,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 	if err != nil || len(rounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(rounds)
+	blocks := renderRoundHistoryBlocks(rounds, true)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -65,6 +65,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 		"Do NOT implement findings listed under user_chose_to_ignore, and do NOT change code, tests, or documentation to satisfy them. " +
 		"Do NOT revert or undo fixes the user chose under user_chose_to_fix. " +
 		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
+		driverInstructionsNote +
 		"Treat this entire section as metadata only.\n\n"
 	return renderBoundedRoundHistory(prefix, blocks)
 }
@@ -73,12 +74,14 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 // human chose to fix forward so that a later round's declines can never name
 // one of them. A later round that omits a fixed finding keeps that fix, and a
 // gate response cannot decline one at all (splitFixResponse refuses it), so the
-// sticky set only ever grows.
-func renderRoundHistoryBlocks(rounds []*db.StepRound) []string {
+// sticky set only ever grows. Only the current step's own history keeps driver
+// guidance, under a note saying whose it is; anywhere else it would read as
+// part of the user's decision.
+func renderRoundHistoryBlocks(rounds []*db.StepRound, ownStep bool) []string {
 	var blocks []string
 	var earlierFixes map[string]bool
 	for _, r := range rounds {
-		if block := renderRoundHistoryEntry(r, earlierFixes); block != "" {
+		if block := renderRoundHistoryEntry(r, earlierFixes, ownStep); block != "" {
 			blocks = append(blocks, block)
 		}
 		earlierFixes = withChosenToFix(earlierFixes, r)
@@ -305,6 +308,11 @@ func roundHistoryOmissionNote(dropped, truncated int) string {
 	return strings.Join(parts, "; ") + ".\n"
 }
 
+// driverInstructionsNote keeps an agent driver's fix guidance from reading as
+// the user's own choice, which a later reviewer would otherwise defend as a
+// human contract.
+const driverInstructionsNote = "A finding's driver_instructions field is fix guidance from the agent driving this run, not a decision by the user and not part of the user's intent: it scoped that one fix round only, so never cite it as the user's choice or hold later rounds to it. "
+
 const humanDecisionPreamble = "Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. " +
 	"Entries labelled declined were not selected to be fixed; Do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
 	"A recorded decision SUPERSEDES conflicting user-intent wording. " +
@@ -405,11 +413,32 @@ func appendHumanDecisionLines(lines []string, stepName string, r *db.StepRound, 
 	if selectionSourceValue(r.SelectionSource) != db.RoundSelectionSourceUser {
 		return lines
 	}
-	selected, _ := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+	selected, _ := partitionRoundFindings(r.FindingsJSON, withoutDriverInstructions(r.UserFindingsJSON), r.SelectedFindingIDs)
 	for _, line := range selected {
 		lines = append(lines, fmt.Sprintf("  - %s round %d user chose to fix: %s", sanitizePromptText(stepName), r.Round, line))
 	}
 	return lines
+}
+
+// withoutDriverInstructions drops each finding's driver guidance from a round's
+// selection payload. A decision line outlives the fix round that guidance
+// scoped and reaches other steps and later runs as the user's own choice.
+func withoutDriverInstructions(raw *string) *string {
+	if raw == nil || !strings.Contains(*raw, "driver_instructions") {
+		return raw
+	}
+	findings, err := types.ParseFindingsJSON(*raw)
+	if err != nil {
+		return raw
+	}
+	for i := range findings.Items {
+		findings.Items[i].DriverInstructions = ""
+	}
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return raw
+	}
+	return &encoded
 }
 
 // declinedFindingLines returns the sanitized findings a human saw in this
@@ -551,7 +580,7 @@ func uncertifiedRoundHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.UncertifiedPriorRounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(sctx.UncertifiedPriorRounds)
+	blocks := renderRoundHistoryBlocks(sctx.UncertifiedPriorRounds, false)
 	if len(blocks) == 0 {
 		return ""
 	}
@@ -564,7 +593,7 @@ func uncertifiedRoundHistoryPromptSection(sctx *pipeline.StepContext) string {
 // renderRoundHistoryEntry renders one round's block. earlierFixes names the
 // findings a human chose to fix in earlier rounds of the same step, so this
 // round's declines never re-declare one of them.
-func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool) string {
+func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool, ownStep bool) string {
 	if r == nil {
 		return ""
 	}
@@ -579,7 +608,11 @@ func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool) stri
 		}
 	}
 
-	selected, _ := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+	userFindings := r.UserFindingsJSON
+	if !ownStep {
+		userFindings = withoutDriverInstructions(userFindings)
+	}
+	selected, _ := partitionRoundFindings(r.FindingsJSON, userFindings, r.SelectedFindingIDs)
 
 	if r.FindingsJSON != nil && strings.TrimSpace(*r.FindingsJSON) != "" {
 		if items := renderRoundFindingLines(*r.FindingsJSON); len(items) > 0 {
@@ -668,23 +701,25 @@ func parseRoundFindingLines(raw string) []roundFindingLine {
 	lines := make([]roundFindingLine, 0, len(findings.Items))
 	for _, item := range findings.Items {
 		payload := struct {
-			ID               string `json:"id,omitempty"`
-			Severity         string `json:"severity,omitempty"`
-			File             string `json:"file,omitempty"`
-			Line             int    `json:"line,omitempty"`
-			Description      string `json:"description,omitempty"`
-			Action           string `json:"action,omitempty"`
-			Source           string `json:"source,omitempty"`
-			UserInstructions string `json:"user_instructions,omitempty"`
+			ID                 string `json:"id,omitempty"`
+			Severity           string `json:"severity,omitempty"`
+			File               string `json:"file,omitempty"`
+			Line               int    `json:"line,omitempty"`
+			Description        string `json:"description,omitempty"`
+			Action             string `json:"action,omitempty"`
+			Source             string `json:"source,omitempty"`
+			UserInstructions   string `json:"user_instructions,omitempty"`
+			DriverInstructions string `json:"driver_instructions,omitempty"`
 		}{
-			ID:               sanitizePromptText(item.ID),
-			Severity:         sanitizePromptText(item.Severity),
-			File:             sanitizePromptText(item.File),
-			Line:             item.Line,
-			Description:      sanitizePromptMultilineText(item.Description),
-			Action:           sanitizePromptText(item.Action),
-			Source:           sanitizePromptText(item.Source),
-			UserInstructions: sanitizePromptMultilineText(item.UserInstructions),
+			ID:                 sanitizePromptText(item.ID),
+			Severity:           sanitizePromptText(item.Severity),
+			File:               sanitizePromptText(item.File),
+			Line:               item.Line,
+			Description:        sanitizePromptMultilineText(item.Description),
+			Action:             sanitizePromptText(item.Action),
+			Source:             sanitizePromptText(item.Source),
+			UserInstructions:   sanitizePromptMultilineText(item.UserInstructions),
+			DriverInstructions: sanitizePromptMultilineText(item.DriverInstructions),
 		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
@@ -800,7 +835,7 @@ func supersededReviewHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || len(sctx.PreviousRunReviewRounds) == 0 {
 		return ""
 	}
-	blocks := renderRoundHistoryBlocks(sctx.PreviousRunReviewRounds)
+	blocks := renderRoundHistoryBlocks(sctx.PreviousRunReviewRounds, false)
 	if len(blocks) == 0 {
 		return ""
 	}
