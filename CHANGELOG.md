@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.100.0](https://github.com/kunchenguid/no-mistakes/compare/v1.99.1...v1.100.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** expose the gate-level abort through axi respond ([#1478](https://github.com/kunchenguid/no-mistakes/issues/1478)) ([1cb1e7d](https://github.com/kunchenguid/no-mistakes/commit/1cb1e7dfa067babbf3afbbe054da38863e615eb7))
+* **config:** add trusted repository-level review.agent_timeout ([#1540](https://github.com/kunchenguid/no-mistakes/issues/1540)) ([aeba928](https://github.com/kunchenguid/no-mistakes/commit/aeba928caba574a7bef2dd311699936b0b3ef71b))
+
+
+### Bug Fixes
+
+* **pipeline:** keep fixer edits when a verification tool is missing ([#1539](https://github.com/kunchenguid/no-mistakes/issues/1539)) ([ea987ab](https://github.com/kunchenguid/no-mistakes/commit/ea987abe5922c10309efbc9111b559f2143c2779))
+* **scm/gitea:** match CI runs to the PR by number or source branch ([#1537](https://github.com/kunchenguid/no-mistakes/issues/1537)) ([7703126](https://github.com/kunchenguid/no-mistakes/commit/77031262be56388250b2b51b67bef24811204c1e))
+
 ## [1.99.1](https://github.com/kunchenguid/no-mistakes/compare/v1.99.0...v1.99.1) (2026-10-20)
 
 
