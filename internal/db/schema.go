@@ -417,4 +417,5 @@ var migrationStatements = []string{
 	// The carried row has no rounds of its own; readers that render what the
 	// step did follow this to the source row's rounds.
 	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	`ALTER TABLE runs ADD COLUMN skip_steps TEXT`,
 }

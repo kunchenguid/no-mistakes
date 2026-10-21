@@ -1486,28 +1486,44 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.PushReceivedResult{RunID: runID}, nil
 	})
 
-	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
-		if err := refuseNested(ctx, false); err != nil {
-			return nil, err
-		}
-		var p ipc.RespondParams
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("invalid params: %w", err)
-		}
-		dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason, pipeline.ResponseOptions{Origin: p.Origin, Coverage: p.Coverage})
-		if err != nil {
-			// A refused fix response is the caller's input to fix, not a
-			// transport failure: the gate is still parked. Report it as a
-			// structured result so the CLI can name the unaccounted findings
-			// and help, and the caller can send a corrected response.
-			var refusal *pipeline.RespondRefusal
-			if errors.As(err, &refusal) {
-				return &ipc.RespondResult{OK: false, Refusal: refusal.Message, Missing: refusal.Missing, DeclinedEarlierFix: refusal.DeclinedEarlierFix, Help: refusal.Help}, nil
+	respondHandler := func(scoped bool) ipc.HandlerFunc {
+		return func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+			if err := refuseNested(ctx, false); err != nil {
+				return nil, err
 			}
-			return nil, err
+			var p ipc.RespondParams
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, fmt.Errorf("invalid params: %w", err)
+			}
+			option := pipeline.ResponseOptions{Origin: p.Origin, Coverage: p.Coverage}
+			if scoped {
+				var scope ipc.ScopedRespondParams
+				if err := json.Unmarshal(params, &scope); err != nil {
+					return nil, err
+				}
+				if len(scope.RequiredSkips) == 0 || p.RunID == "" {
+					return nil, fmt.Errorf("scoped response requires run_id and nonempty required_skips")
+				}
+				option.RequiredSkips = scope.RequiredSkips
+				option.ScopedRunID = p.RunID
+			}
+			dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason, option)
+			if err != nil {
+				// A refused fix response is the caller's input to fix, not a
+				// transport failure: the gate is still parked. Report it as a
+				// structured result so the CLI can name the unaccounted findings
+				// and help, and the caller can send a corrected response.
+				var refusal *pipeline.RespondRefusal
+				if errors.As(err, &refusal) {
+					return &ipc.RespondResult{OK: false, Refusal: refusal.Message, Missing: refusal.Missing, DeclinedEarlierFix: refusal.DeclinedEarlierFix, Help: refusal.Help}, nil
+				}
+				return nil, err
+			}
+			return &ipc.RespondResult{OK: true, Fixed: dispositions.Fixed, Ignored: dispositions.Ignored, Kept: dispositions.Kept}, nil
 		}
-		return &ipc.RespondResult{OK: true, Fixed: dispositions.Fixed, Ignored: dispositions.Ignored, Kept: dispositions.Kept}, nil
-	})
+	}
+	srv.Handle(ipc.MethodRespond, respondHandler(false))
+	srv.Handle(ipc.MethodRespondScoped, respondHandler(true))
 
 	srv.Handle(ipc.MethodAnswerReview, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
@@ -1626,6 +1642,12 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
+	}
+	var err error
+	info.SkipSteps, err = r.RequestedSkips()
+	info.SkipPolicyKnown = r.SkipStepsJSON != nil && err == nil
+	if err != nil {
+		info.SkipPolicyError = err.Error()
 	}
 	if link, err := d.GetRunRetry(r.ID); err == nil && link != nil {
 		info.RetryOf = &ipc.RunRetryInfo{RunID: link.SourceRunID, Step: link.StepName, Round: link.SourceRound, Error: link.SourceError, CheckpointHeadSHA: link.CheckpointHeadSHA}

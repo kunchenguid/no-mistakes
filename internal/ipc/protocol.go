@@ -30,6 +30,7 @@ const (
 	MethodRetryRun                  = "retry_run"
 	MethodSubscribe                 = "subscribe"
 	MethodRespond                   = "respond"
+	MethodRespondScoped             = "respond_scoped"
 	MethodAnswerReview              = "answer_review_question"
 	MethodCancelRun                 = "cancel_run"
 	MethodGateContext               = "gate_context"
@@ -294,6 +295,12 @@ type RespondParams struct {
 	ApprovalReason   string               `json:"approval_reason,omitempty"` // Test approval, or the reason recorded with an abort
 }
 
+// ScopedRespondParams requires durable scope at the approval boundary.
+type ScopedRespondParams struct {
+	RespondParams
+	RequiredSkips []types.StepName `json:"required_skips"`
+}
+
 type CoverageBinding struct {
 	HeadSHA      string `json:"head_sha"`
 	StepResultID string `json:"step_result_id"`
@@ -496,6 +503,9 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
+	SkipSteps        []types.StepName           `json:"skip_steps"`
+	SkipPolicyKnown  bool                       `json:"skip_policy_known"`
+	SkipPolicyError  string                     `json:"skip_policy_error,omitempty"`
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 

@@ -455,6 +455,15 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			return emitError(cmd, 1, err.Error())
 		}
 	}
+	if len(skipSteps) > 0 {
+		selected, err := getRunInfo(driveCtx, env.p.Socket(), runID)
+		if err != nil {
+			return emitError(cmd, 2, fmt.Sprintf("verify run skip policy: %v", err))
+		}
+		if err := requireRunSkips(selected, skipSteps); err != nil {
+			return emitError(cmd, 2, err.Error())
+		}
+	}
 	if launchReceipt != nil {
 		emitLaunchReceipt(cmd, *launchReceipt)
 	}
@@ -470,7 +479,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			"Retry once the daemon is healthy; the PR will not include --closes unless this update succeeds.")
 	}
 
-	run, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes)
+	run, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes, skipSteps)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
 			return emitAxiWaitElapsed(cmd, wait, "no-mistakes axi run")
@@ -1074,24 +1083,24 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // monitoring in the background. Under the opt-in ci.release_after_checks_pass
 // the step finishes there instead and the run completes, so driveRun returns
 // the terminal checks-passed outcome.
-func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
-	return driveRunSelected(ctx, progress, client, socketPath, runID, autoApprove, false)
+func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool, required ...[]types.StepName) (run *ipc.RunInfo, ciReady bool, err error) {
+	return driveRunSelected(ctx, progress, client, socketPath, runID, autoApprove, false, required...)
 }
 
 // driveRunSelected is driveRun for a caller that may have selected its run by
 // id, whose progress lines then name the run's clone for commands without a
 // --run form.
-func driveRunSelected(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove, explicitRun bool) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRunSelected(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove, explicitRun bool, required ...[]types.StepName) (run *ipc.RunInfo, ciReady bool, err error) {
 	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
 	defer reconciler.Close()
-	return driveRunScoped(ctx, progress, client, reconciler, runID, autoApprove, explicitRun)
+	return driveRunScoped(ctx, progress, client, reconciler, runID, autoApprove, explicitRun, required...)
 }
 
 func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	return driveRunScoped(ctx, progress, client, reconciler, runID, autoApprove, false)
 }
 
-func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove, explicitRun bool) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove, explicitRun bool, required ...[]types.StepName) (run *ipc.RunInfo, ciReady bool, err error) {
 	pp := &progressPrinter{w: progress, seen: map[string]string{}}
 	fixedSteps := map[string]bool{}
 	pendingGate := ""
@@ -1102,6 +1111,9 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 		}
 		if run == nil {
 			return nil, false, fmt.Errorf("run %s not found", runID)
+		}
+		if err := requireRunSkips(run, firstRequiredSkips(required)); err != nil {
+			return nil, false, err
 		}
 		pp.update(run)
 
@@ -1161,7 +1173,7 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if _, err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, "", types.ResponseOriginAutoYes); err != nil {
+			if _, err := sendRespondWithScope(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, "", types.ResponseOriginAutoYes, firstRequiredSkips(required)); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -1267,6 +1279,10 @@ func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, er
 // *respondRefusalError - the gate is still parked and the response can be
 // corrected.
 func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string, origin types.ResponseOrigin, coverage ...*ipc.CoverageBinding) (ipc.RespondResult, error) {
+	return sendRespondWithScope(client, runID, step, action, findingIDs, ignoreFindingIDs, instructions, added, approvalReason, origin, nil, coverage...)
+}
+
+func sendRespondWithScope(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string, origin types.ResponseOrigin, required []types.StepName, coverage ...*ipc.CoverageBinding) (ipc.RespondResult, error) {
 	params := &ipc.RespondParams{
 		Origin:           origin,
 		RunID:            runID,
@@ -1282,7 +1298,13 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 		params.Coverage = coverage[0]
 	}
 	var result ipc.RespondResult
-	if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
+	method := ipc.MethodRespond
+	var payload interface{} = params
+	if len(required) > 0 {
+		method = ipc.MethodRespondScoped
+		payload = &ipc.ScopedRespondParams{RespondParams: *params, RequiredSkips: required}
+	}
+	if err := client.Call(method, payload, &result); err != nil {
 		return ipc.RespondResult{}, err
 	}
 	if !result.OK {
@@ -1531,7 +1553,7 @@ func successReportHelp(fixes []fixRow) []string {
 const legacyApprovalReasonRefusal = "an approval reason applies only to Test approval"
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, ignore, instructions, addFinding, reason, runID string
+	var action, step, findings, ignore, instructions, addFinding, reason, runID, requireSkip string
 	var autoYes bool
 	var wait time.Duration
 
@@ -1574,21 +1596,24 @@ func newAxiRespondCmd() *cobra.Command {
 				"auto_yes": autoYes,
 			}, func() error {
 				return runAxiRespond(cmd, respondArgs{
-					action:       action,
-					step:         step,
-					findings:     findings,
-					ignore:       ignore,
-					instructions: instructions,
-					addFinding:   addFinding,
-					reason:       reason,
-					runID:        strings.TrimSpace(runID),
-					runFlagSet:   cmd.Flags().Changed("run"),
-					autoYes:      autoYes,
-					wait:         wait,
+					action:         action,
+					step:           step,
+					findings:       findings,
+					ignore:         ignore,
+					instructions:   instructions,
+					addFinding:     addFinding,
+					reason:         reason,
+					requireSkip:    requireSkip,
+					requireSkipSet: cmd.Flags().Changed("require-skip"),
+					runID:          strings.TrimSpace(runID),
+					runFlagSet:     cmd.Flags().Changed("run"),
+					autoYes:        autoYes,
+					wait:           wait,
 				})
 			})
 		},
 	}
+	cmd.Flags().StringVar(&requireSkip, "require-skip", "", "require these comma-separated stages in the run durable skip policy before recording a response")
 	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip | abort | complete-coverage (required)")
 	cmd.Flags().StringVar(&runID, "run", "", "answer this run id directly, without resolving the current branch or worktree")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
@@ -1603,20 +1628,30 @@ func newAxiRespondCmd() *cobra.Command {
 }
 
 type respondArgs struct {
-	action       string
-	step         string
-	findings     string
-	ignore       string
-	instructions string
-	addFinding   string
-	reason       string
-	runID        string
-	runFlagSet   bool
-	autoYes      bool
-	wait         time.Duration
+	requireSkip    string
+	requireSkipSet bool
+	action         string
+	step           string
+	findings       string
+	ignore         string
+	instructions   string
+	addFinding     string
+	reason         string
+	runID          string
+	runFlagSet     bool
+	autoYes        bool
+	wait           time.Duration
 }
 
 func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
+	var required []types.StepName
+	if ra.requireSkipSet {
+		var err error
+		required, err = parseSkipSteps(ra.requireSkip)
+		if err != nil || len(required) == 0 {
+			return emitError(cmd, 2, "--require-skip requires a nonempty CSV of core stages")
+		}
+	}
 	if ra.runFlagSet && ra.runID == "" {
 		return emitError(cmd, 2, "--run requires a run id; an empty value would answer the current branch's run instead",
 			"Pass `--run <id>`, or omit --run to answer the active run of the current branch")
@@ -1768,7 +1803,10 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			return emitError(cmd, 1, "daemon did not provide a bound review round for coverage continuation")
 		}
 	}
-	result, err := sendRespond(env.client, runID, stepName, act, findingIDs, ignoreIDs, instructions, added, reason, types.ResponseOriginInteractive, coverage)
+	if err := requireRunSkips(run, required); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
+	result, err := sendRespondWithScope(env.client, runID, stepName, act, findingIDs, ignoreIDs, instructions, added, reason, types.ResponseOriginInteractive, required, coverage)
 	if err != nil {
 		var refusal *respondRefusalError
 		if errors.As(err, &refusal) {
@@ -1802,7 +1840,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	final, ciReady, err := driveRunSelected(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, ra.runID != "")
+	final, ciReady, err := driveRunSelected(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, ra.runID != "", required)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
 			return emitAxiWaitElapsedForRun(cmd, ra.wait, ra.runID, "no-mistakes axi run", lead...)

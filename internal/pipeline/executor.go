@@ -202,8 +202,10 @@ func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, fin
 // complete-coverage binding. An omitted origin is unknown, including direct
 // executor responses that did not come from an IPC client.
 type ResponseOptions struct {
-	Origin   types.ResponseOrigin
-	Coverage *ipc.CoverageBinding
+	RequiredSkips []types.StepName
+	ScopedRunID   string
+	Origin        types.ResponseOrigin
+	Coverage      *ipc.CoverageBinding
 }
 
 // RespondWithOverrides is like Respond but also carries explicit declines,
@@ -257,6 +259,12 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	if step != e.waitingStep {
 		e.mu.Unlock()
 		return RespondDispositions{}, fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
+	}
+	if len(option.RequiredSkips) > 0 || option.ScopedRunID != "" {
+		if err := e.requireGateSkipPolicy(option.ScopedRunID, option.RequiredSkips); err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, err
+		}
 	}
 	var coverageRound *db.StepRound
 	if action == types.ActionCompleteCoverage {
@@ -408,6 +416,9 @@ func (e *Executor) roundsForFixValidation() ([]*db.StepRound, *RespondRefusal) {
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
+	if err := e.loadSkipPolicy(run, true); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("load run skip policy: %w", err), ctx)
+	}
 	ctx = e.runContext(ctx)
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
@@ -667,11 +678,27 @@ type recoveredGate struct {
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
+	var skips []types.StepName
+	if run != nil {
+		var err error
+		skips, err = run.RequestedSkips()
+		if err != nil {
+			return err
+		}
+	}
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil {
 		return fmt.Errorf("run is not a recoverable parked run")
 	}
-	_, err := (&Executor{db: database, steps: steps}).recoveredGate(run.ID)
-	return err
+	gate, err := (&Executor{db: database, steps: steps}).recoveredGate(run.ID)
+	if err != nil {
+		return err
+	}
+	for _, skip := range skips {
+		if skip == gate.step.Name() {
+			return fmt.Errorf("recovered approval gate %s contradicts skip policy", skip)
+		}
+	}
+	return nil
 }
 
 // Resume restores a run that was durably parked at an approval gate when the
@@ -679,6 +706,9 @@ func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
 // an error so startup recovery can fail the run rather than guessing.
 func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
+	if err := e.loadSkipPolicy(run, false); err != nil {
+		return err
+	}
 	ctx = e.runContext(ctx)
 	if repo == nil {
 		return fmt.Errorf("recovered run has no repository")
@@ -1037,6 +1067,12 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		}
 		if index >= len(results) || results[index].StepName != e.steps[index].Name() || (!revalidating && results[index].Status != types.StepStatusPending && results[index].Status != types.StepStatusSkipped) {
 			return e.failRun(run, repo, fmt.Errorf("recovered step plan changed at %d", index), ctx)
+		}
+		if e.skips[e.steps[index].Name()] {
+			if err := e.db.CompleteStepWithStatus(results[index].ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+			continue
 		}
 		if results[index].Status == types.StepStatusSkipped {
 			continue

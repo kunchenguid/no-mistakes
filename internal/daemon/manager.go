@@ -1562,6 +1562,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
+	if err := m.db.SetRunSkippedSteps(run.ID, skipSteps); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("persist skip policy: %s", err))
+		return "", err
+	}
 	if inherited := strings.TrimSpace(inheritedPRURL); inherited != "" {
 		if err := m.db.UpdateRunPRURL(run.ID, inherited); err != nil {
 			m.db.UpdateRunError(run.ID, fmt.Sprintf("inherit PR URL: %s", err))
