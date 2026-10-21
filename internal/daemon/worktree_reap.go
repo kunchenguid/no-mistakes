@@ -89,7 +89,7 @@ func reapWorktrees(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time
 
 	removed := 0
 	for _, wt := range toRemove {
-		if removeOrphanWorktree(context.Background(), wt) {
+		if removeOrphanWorktree(context.Background(), d, wt) {
 			removed++
 		}
 	}

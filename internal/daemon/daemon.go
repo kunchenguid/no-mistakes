@@ -838,7 +838,7 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree)
 	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_cleanup")
 
 	for _, wt := range removable {
-		removeOrphanWorktree(ctx, wt)
+		removeOrphanWorktree(ctx, d, wt)
 	}
 	for _, dir := range repoDirs {
 		os.Remove(dir)
@@ -935,6 +935,10 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
+	if reason := runWorktreeEditsCleanupReason(context.Background(), d, run, wt.dir); reason != "" {
+		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
+		return false
+	}
 	return true
 }
 
@@ -942,8 +946,21 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 // already decided on and swept (see cleanupOrphanWorktrees). It reports
 // whether the directory was actually removed, since git worktree remove and
 // its os.RemoveAll fallback can both fail and merely log a warning.
-func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) bool {
+func removeOrphanWorktree(ctx context.Context, d *db.DB, wt orphanWorktree) bool {
 	gateDir, wtPath := wt.gateDir, wt.dir
+	var run *db.Run
+	if d != nil {
+		var err error
+		run, err = d.GetRun(wt.runID)
+		if err != nil {
+			slog.Warn("preserving run worktree: cannot read run", "run_id", wt.runID, "error", err)
+			return false
+		}
+	}
+	if reason := runWorktreeEditsCleanupReason(ctx, d, run, wtPath); reason != "" {
+		slog.Warn("preserving run worktree", "run_id", wt.runID, "path", wtPath, "reason", reason)
+		return false
+	}
 	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 		if err := os.RemoveAll(wtPath); err != nil {
