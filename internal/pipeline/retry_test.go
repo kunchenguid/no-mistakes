@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -310,5 +312,132 @@ func TestExecutor_RetryFailsClosedWhenTheSourceNoLongerMatchesThePipeline(t *tes
 	}
 	if rows, _ := database.GetStepsByRun(continuation.ID); len(rows) != 0 {
 		t.Fatalf("refused continuation recorded %d steps", len(rows))
+	}
+}
+
+type rebasedHeadProbeStep struct {
+	name types.StepName
+	seen *string
+	ran  bool
+}
+
+func (s *rebasedHeadProbeStep) Name() types.StepName { return s.name }
+
+func (s *rebasedHeadProbeStep) Execute(sctx *StepContext) (*StepOutcome, error) {
+	s.ran = true
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.seen = run.RebasedHeadSHA
+	return &StepOutcome{}, nil
+}
+
+func clearRebasedHead(t *testing.T, p *paths.Paths, runID string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", p.DB()+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`UPDATE runs SET rebased_head_sha = NULL WHERE id = ?`, runID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A retry that restarts Review never runs Rebase, so the Review fixer's
+// metadata-only reword proof needs the source run's own post-rebase head; a
+// source from an older build has none, and the retry must not invent one.
+func TestExecutor_RetryCarriesTheSourceRunsPostRebaseHead(t *testing.T) {
+	for _, recorded := range []bool{true, false} {
+		t.Run(fmt.Sprintf("source_recorded=%v", recorded), func(t *testing.T) {
+			database, p, _, repo := setupTest(t)
+			names := []types.StepName{types.StepRebase, types.StepReview, types.StepTest}
+			source := failedSourceRun(t, database, repo, names, types.StepReview)
+			if recorded {
+				if err := database.RecordRunRebasedHead(source.ID, "rebased"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				clearRebasedHead(t, p, source.ID)
+			}
+			continuation, err := database.InsertRun(repo.ID, "feature", "fixed", "def456")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rebase := newPassStep(types.StepRebase)
+			review := &rebasedHeadProbeStep{name: types.StepReview}
+			exec := NewExecutor(database, p, &config.Config{}, nil, []Step{rebase, review, newPassStep(types.StepTest)}, nil)
+			exec.SetRetrySource(source.ID)
+			if err := exec.Execute(context.Background(), continuation, repo, t.TempDir()); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if rebase.callCount() != 0 || !review.ran {
+				t.Fatalf("rebase ran %d times, review ran %v; want Rebase carried and Review restarted", rebase.callCount(), review.ran)
+			}
+			if !recorded {
+				if review.seen != nil {
+					t.Fatalf("retry invented a post-rebase head %q", *review.seen)
+				}
+				return
+			}
+			if review.seen == nil || *review.seen != "rebased" {
+				t.Fatalf("retry did not carry the source's post-rebase head: review saw %v", review.seen)
+			}
+		})
+	}
+}
+
+type headMovingRebaseStep struct{ head string }
+
+func (s *headMovingRebaseStep) Name() types.StepName { return types.StepRebase }
+
+func (s *headMovingRebaseStep) Execute(sctx *StepContext) (*StepOutcome, error) {
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, s.head); err != nil {
+		return nil, err
+	}
+	sctx.Run.HeadSHA = s.head
+	return &StepOutcome{}, nil
+}
+
+// Every way a Rebase step resolves leaves the run's head at that moment as the
+// anchor Review reads: a Rebase that moved the head, a --skip, and an approved
+// parked conflict. setupTest submits "abc123".
+func TestExecutor_EveryRebaseResolutionRecordsThePostRebaseHead(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"moved", "rebased-head"},
+		{"skipped", "abc123"},
+		{"approved-conflict", "abc123"},
+	} {
+		path := tc.path
+		t.Run(path, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			var rebase Step = newPassStep(types.StepRebase)
+			if path == "moved" {
+				rebase = &headMovingRebaseStep{head: "rebased-head"}
+			}
+			if path == "approved-conflict" {
+				rebase = newApprovalStep(types.StepRebase, `{"findings":[{"id":"r-1","severity":"warning","file":"a.go","description":"merge conflict rebasing onto origin/main","action":"ask-user"}],"summary":"conflict"}`)
+			}
+			review := &rebasedHeadProbeStep{name: types.StepReview}
+			exec := NewExecutor(database, p, &config.Config{}, nil, []Step{rebase, review}, nil)
+			if path == "skipped" {
+				exec.SetSkippedSteps([]types.StepName{types.StepRebase})
+			}
+			done := make(chan error, 1)
+			go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+			if path == "approved-conflict" {
+				waitForStepStatus(t, database, run.ID, types.StepRebase, types.StepStatusAwaitingApproval)
+				if err := exec.Respond(types.StepRebase, types.ActionApprove, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if !review.ran || review.seen == nil || *review.seen != tc.want {
+				t.Fatalf("review saw post-rebase head %v, want %s", review.seen, tc.want)
+			}
+		})
 	}
 }

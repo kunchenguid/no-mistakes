@@ -18,7 +18,7 @@ var syncInteractive = terminalInteractive
 
 func newSyncCmd() *cobra.Command {
 	var check, yes, recover, keepLocal, adoptPublished bool
-	var bindArchiveRef string
+	var bindArchiveRef, rewordedHead, observedHead string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Safely move the current branch to an exact pipeline-pushed head",
@@ -45,6 +45,11 @@ func newSyncCmd() *cobra.Command {
 			"published there.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("reworded-head") || cmd.Flags().Changed("observed-head") {
+				if !recover || check || keepLocal || adoptPublished || bindArchiveRef != "" || rewordedHead == "" || observedHead == "" {
+					return emitError(cmd, 2, "--reworded-head and --observed-head require --recover, both full commit IDs, and no other recovery mode")
+				}
+			}
 			if check && yes {
 				return &exitError{code: 2, err: fmt.Errorf("--check and --yes cannot be used together")}
 			}
@@ -59,6 +64,9 @@ func newSyncCmd() *cobra.Command {
 			}
 			if bindArchiveRef != "" {
 				return runHumanBindRecoveryArchive(cmd, bindArchiveRef)
+			}
+			if recover && rewordedHead != "" {
+				return runRewordRecovery(cmd, observedHead, rewordedHead)
 			}
 			if recover {
 				return runHumanRecover(cmd, keepLocal, yes)
@@ -75,12 +83,14 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
+	cmd.Flags().StringVar(&rewordedHead, "reworded-head", "", "with --recover and --observed-head: recover an explicitly named metadata-only rewrite from a failed pre-push Review round")
+	cmd.Flags().StringVar(&observedHead, "observed-head", "", "exact recorded pipeline head from status, required with --reworded-head")
 	return cmd
 }
 
 func newAxiSyncCmd() *cobra.Command {
 	var check, recover, keepLocal, adoptPublished bool
-	var bindArchiveRef string
+	var bindArchiveRef, rewordedHead, observedHead string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -103,6 +113,11 @@ func newAxiSyncCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("reworded-head") || cmd.Flags().Changed("observed-head") {
+				if !recover || check || keepLocal || adoptPublished || bindArchiveRef != "" || rewordedHead == "" || observedHead == "" {
+					return emitError(cmd, 2, "--reworded-head and --observed-head require --recover, both full commit IDs, and no other recovery mode")
+				}
+			}
 			if (check && recover) || (check && adoptPublished) || (recover && adoptPublished) {
 				return emitError(cmd, 2, "choose only one of --check, --recover, and --adopt-published")
 			}
@@ -120,6 +135,8 @@ func newAxiSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
+	cmd.Flags().StringVar(&rewordedHead, "reworded-head", "", "with --recover and --observed-head: recover an explicitly named metadata-only rewrite from a failed pre-push Review round")
+	cmd.Flags().StringVar(&observedHead, "observed-head", "", "exact recorded pipeline head from status, required with --reworded-head")
 	return cmd
 }
 
@@ -448,6 +465,11 @@ func humanSyncSummary(state branchsync.State) string {
 }
 
 func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bool, bindArchiveRef string) error {
+	reworded, _ := cmd.Flags().GetString("reworded-head")
+	observed, _ := cmd.Flags().GetString("observed-head")
+	if reworded != "" {
+		return runRewordRecovery(cmd, observed, reworded)
+	}
 	started := time.Now()
 	mode := "apply"
 	switch {

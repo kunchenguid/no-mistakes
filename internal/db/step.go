@@ -403,13 +403,31 @@ func (d *DB) CompleteSkippedStep(id string, exitCode int, durationMS int64, logP
 	return d.completeStep(id, types.StepStatusSkipped, exitCode, durationMS, logPath, reason)
 }
 
+// completeStep also records the run's head as its post-rebase anchor whenever
+// a Rebase row completes or is skipped, by whatever path resolved it.
 func (d *DB) completeStep(id string, status types.StepStatus, exitCode int, durationMS int64, logPath, skipReason string) error {
-	_, err := d.sql.Exec(
-		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, skip_reason = NULLIF(?, ''), override_reason = CASE WHEN ? THEN NULL ELSE override_reason END, approval_reason = CASE WHEN ? THEN NULL ELSE approval_reason END WHERE id = ?`,
-		status, exitCode, durationMS, logPath, now(), now(), fmt.Sprintf("status: %s", status), skipReason, status == types.StepStatusSkipped, status == types.StepStatusSkipped, id,
-	)
+	tx, err := d.sql.Begin()
 	if err != nil {
+		return fmt.Errorf("begin complete step: %w", err)
+	}
+	defer tx.Rollback()
+	ts := now()
+	if _, err := tx.Exec(
+		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, skip_reason = NULLIF(?, ''), override_reason = CASE WHEN ? THEN NULL ELSE override_reason END, approval_reason = CASE WHEN ? THEN NULL ELSE approval_reason END WHERE id = ?`,
+		status, exitCode, durationMS, logPath, ts, ts, fmt.Sprintf("status: %s", status), skipReason, status == types.StepStatusSkipped, status == types.StepStatusSkipped, id,
+	); err != nil {
 		return fmt.Errorf("complete step: %w", err)
+	}
+	if status == types.StepStatusCompleted || status == types.StepStatusSkipped {
+		if _, err := tx.Exec(
+			`UPDATE runs SET rebased_head_sha = head_sha, updated_at = ? WHERE id = (SELECT run_id FROM step_results WHERE id = ? AND step_name = ?)`,
+			ts, id, types.StepRebase,
+		); err != nil {
+			return fmt.Errorf("record post-rebase head: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit complete step: %w", err)
 	}
 	return nil
 }
