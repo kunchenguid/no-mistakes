@@ -107,7 +107,7 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 			m.afterRetryProof()
 		}
 		source := launch.source
-		skips, err := source.RequestedSkips()
+		skips, err := launch.checkpoint.SkippedSteps(source)
 		if err != nil {
 			return "", err
 		}

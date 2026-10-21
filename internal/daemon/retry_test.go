@@ -651,6 +651,34 @@ func TestRetryStartsWhenEveryProofHolds(t *testing.T) {
 	}
 }
 
+func TestRetryPinsLegacyCheckpointSkipsBeforeLaunching(t *testing.T) {
+	f := newRetryFixture(t, retryFixtureOptions{})
+	if f.source.SkipStepsJSON != nil {
+		t.Fatal("fixture must have an unknown legacy policy")
+	}
+	skipped := []types.StepName{types.StepRebase, types.StepTest}
+	for _, name := range skipped {
+		if err := f.d.CompleteStepWithStatus(f.stepRow(t, name).ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, f.d, result.RunID)
+	skips, err := run.RequestedSkips()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := types.RequireSkippedSteps(skips, run.SkipStepsJSON != nil, skipped); err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != types.RunCompleted || f.executions.Load() != 1 {
+		t.Fatalf("retry status=%s executions=%d, want only Review", run.Status, f.executions.Load())
+	}
+}
+
 func TestRunInfoReportsACarriedStepsWorkFromTheRunItWasCarriedFrom(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {

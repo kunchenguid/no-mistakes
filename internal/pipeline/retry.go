@@ -74,6 +74,33 @@ type RetryCheckpoint struct {
 // Failed is the failed step's record.
 func (c *RetryCheckpoint) Failed() *db.StepResult { return c.Steps[c.Index] }
 
+// SkippedSteps derives the continuation's effective policy before it is pinned.
+// Legacy runs have no policy, but their proven checkpoint records skipped steps
+// both before and after the failure. Never replace malformed policy with rows.
+func (c *RetryCheckpoint) SkippedSteps(source *db.Run) ([]types.StepName, error) {
+	skips, err := source.RequestedSkips()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[types.StepName]bool)
+	for _, step := range skips {
+		seen[step] = true
+	}
+	for _, row := range c.Steps {
+		if row.Status != types.StepStatusSkipped {
+			continue
+		}
+		if !types.IsCoreStepName(row.StepName) {
+			return nil, fmt.Errorf("cannot persist retry skip for non-core step %q", row.StepName)
+		}
+		if !seen[row.StepName] {
+			skips = append(skips, row.StepName)
+			seen[row.StepName] = true
+		}
+	}
+	return skips, nil
+}
+
 // Retry proofs PlanRetryCheckpoint can fail.
 const (
 	RetryProofCheckpoint = "durable checkpoint"

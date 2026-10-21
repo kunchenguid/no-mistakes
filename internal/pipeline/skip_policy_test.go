@@ -153,3 +153,26 @@ func TestExecutorValidationRestartRetainsDurableSkips(t *testing.T) {
 		t.Fatalf("review calls=%d restart calls=%d", reviewCalls, restarts)
 	}
 }
+
+func TestExecutorRetryRefusesAnIncompletePinnedPolicy(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	names := []types.StepName{types.StepReview, types.StepPush}
+	source := failedSourceRun(t, database, repo, names, types.StepReview, types.StepPush)
+	if err := database.SetRunSkippedSteps(run.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	review, push := newPassStep(types.StepReview), newPassStep(types.StepPush)
+	executor := NewExecutor(database, p, nil, nil, []Step{review, push}, nil)
+	executor.SetRetrySource(source.ID)
+	err := executor.Execute(context.Background(), run, repo, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "required skip") {
+		t.Fatalf("incomplete pinned policy was accepted: %v", err)
+	}
+	if review.callCount() != 0 || push.callCount() != 0 {
+		t.Fatal("a step ran before the pinned policy was checked")
+	}
+	stored, err := database.GetRun(run.ID)
+	if err != nil || stored.SkipStepsJSON == nil || *stored.SkipStepsJSON != "[]" {
+		t.Fatalf("pinned policy changed: %+v %v", stored, err)
+	}
+}

@@ -25,7 +25,11 @@ func (e *Executor) loadSkipPolicy(run *db.Run, starting bool) error {
 			if source == nil {
 				return fmt.Errorf("retry source %s is not recorded", e.retrySource)
 			}
-			requested, err = source.RequestedSkips()
+			checkpoint, err := PlanRetryCheckpoint(e.db, source, e.steps)
+			if err != nil {
+				return fmt.Errorf("retry run %s: %w", e.retrySource, err)
+			}
+			requested, err = checkpoint.SkippedSteps(source)
 			if err != nil {
 				return err
 			}

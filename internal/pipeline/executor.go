@@ -540,9 +540,8 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 }
 
 // planRetry proves the retry source's checkpoint against this run's steps and
-// adopts what the source carries forward: its per-run skips of steps that never
-// ran, and the review approval of a carried Review step, which still names the
-// head that step approved.
+// checks that its skips were pinned before execution, and adopts the review
+// approval of a carried Review step, which still names the head it approved.
 func (e *Executor) planRetry(run *db.Run) (*RetryCheckpoint, error) {
 	source, err := e.db.GetRun(e.retrySource)
 	if err != nil {
@@ -555,13 +554,16 @@ func (e *Executor) planRetry(run *db.Run) (*RetryCheckpoint, error) {
 	if err != nil {
 		return nil, fmt.Errorf("retry run %s: %w", e.retrySource, err)
 	}
-	for _, row := range checkpoint.Steps[checkpoint.Index+1:] {
-		if row.Status == types.StepStatusSkipped {
-			if e.skips == nil {
-				e.skips = make(map[types.StepName]bool)
-			}
-			e.skips[row.StepName] = true
-		}
+	required, err := checkpoint.SkippedSteps(source)
+	if err != nil {
+		return nil, err
+	}
+	persisted, err := run.RequestedSkips()
+	if err != nil {
+		return nil, err
+	}
+	if err := types.RequireSkippedSteps(persisted, run.SkipStepsJSON != nil, required); err != nil {
+		return nil, fmt.Errorf("retry run %s: %w", e.retrySource, err)
 	}
 	for _, row := range checkpoint.Steps[:checkpoint.Index] {
 		if row.StepName == types.StepReview && row.Status == types.StepStatusCompleted && source.ReviewApprovedHeadSHA != nil {
