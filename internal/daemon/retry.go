@@ -115,7 +115,7 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 		if source.PiProfile != nil {
 			profiles = append(profiles, source.PiProfile)
 		}
-		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, launch, profiles...)
+		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, launch, source.RequestedAgent, profiles...)
 		link = launch.link
 		link.RunID = continuation
 		return continuation, err
@@ -266,6 +266,9 @@ func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo,
 // the configuration the continuation run actually loaded, so a change between
 // the proof and the launch cannot carry a Review approval.
 func (m *RunManager) proveConfigurationMatches(ctx context.Context, source *db.Run, globalCfg *config.GlobalConfig, cfg *config.Config, currentRepoCfg *config.RepoConfig, pinned []config.Gate, checkpoint *pipeline.RetryCheckpoint) error {
+	if err := cfg.ApplyRunAgent(source.RequestedAgent, source.PiProfile); err != nil {
+		return err
+	}
 	current, err := config.MarshalGates(cfg.Gates)
 	if err != nil {
 		return fmt.Errorf("resolve the repository's gates: %w", err)

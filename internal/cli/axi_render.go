@@ -115,6 +115,7 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
+	RequestedAgent   types.AgentName
 	PiProfile        *agentcfg.PiProfile
 	VerificationPlan *verificationplan.Snapshot
 	// QuotaRouting is the run's parsed quota-aware ordering record, nil when
@@ -154,6 +155,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		CIOverrideReason:   r.CIOverrideReason,
 		TestOverrideReason: r.TestOverrideReason,
 		PiProfile:          r.PiProfile,
+		RequestedAgent:     r.RequestedAgent,
 		VerificationPlan:   r.VerificationPlan,
 		RetryOf:            r.RetryOf,
 		RetriedBy:          r.RetriedBy,
@@ -200,6 +202,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 	rv := runView{
 		PiProfile:          r.PiProfile,
+		RequestedAgent:     r.RequestedAgent,
 		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
 		Branch:             r.Branch,
@@ -528,6 +531,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		)})
 	} else {
 		fields = append(fields, toon.Field{Key: "verification_plan", Value: "none"})
+	}
+	if rv.RequestedAgent != "" {
+		fields = append(fields, toon.Field{Key: "requested_agent", Value: string(rv.RequestedAgent)})
 	}
 	if rv.PiProfile != nil {
 		fields = append(fields, toon.Field{Key: "pi_profile", Value: toon.NewObject(

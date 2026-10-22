@@ -139,7 +139,7 @@ providers:
 
 ### agent
 
-Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
+Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo or explicitly for one run with [`--agent`](/no-mistakes/reference/cli/#per-run-backend-selection).
 
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |

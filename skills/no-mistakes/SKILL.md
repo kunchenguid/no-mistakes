@@ -35,6 +35,18 @@ asks for something specific, translate that request into the matching `axi run`
 flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
 `no-mistakes axi run --help` to see the available flags.
 
+## Pipeline engine
+
+When starting a new validation, pass your own backend explicitly: `--agent codex`
+from Codex, `--agent claude` from Claude Code, or the matching supported
+backend for another harness. A user-requested backend takes precedence. This
+launches a separate pipeline agent and keeps the workstation's global default
+unchanged. Model and effort still come from that backend's configured profile.
+The selected backend stays fixed through recovery and never falls back to a
+different engine. On ordinary reattachment, omit `--agent` to keep the
+existing run's selection. If the binary or daemon refuses the flag, report the
+required update; never work around it by rewriting global configuration.
+
 ## Two ways to invoke
 
 `/no-mistakes` works in two modes, depending on whether the user hands you a

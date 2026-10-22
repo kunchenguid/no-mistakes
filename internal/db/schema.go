@@ -417,4 +417,6 @@ var migrationStatements = []string{
 	// The carried row has no rounds of its own; readers that render what the
 	// step did follow this to the source row's rounds.
 	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	`ALTER TABLE runs ADD COLUMN requested_agent TEXT NOT NULL DEFAULT ''`,
+	`CREATE TRIGGER IF NOT EXISTS runs_requested_agent_immutable BEFORE UPDATE OF requested_agent ON runs WHEN NEW.requested_agent IS NOT OLD.requested_agent BEGIN SELECT RAISE(ABORT, 'run agent is immutable'); END`,
 }

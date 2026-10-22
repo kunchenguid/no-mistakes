@@ -180,7 +180,7 @@ func TestPiProfileTrustedAgentReplacementSemantics(t *testing.T) {
 			if *resolved != *pin {
 				t.Fatalf("resolved profile = %+v, want %+v", resolved, pin)
 			}
-			err = NewRunManager(d, p, nil).validatePiProfileAgentsBeforeCancel(context.Background(), repo, head, global)
+			err = NewRunManager(d, p, nil).validatePiProfileAgentsBeforeCancel(context.Background(), repo, head, global, "")
 			if tc.wantErr && err == nil {
 				t.Fatal("non-Pi effective selection accepted")
 			}
@@ -219,7 +219,7 @@ func TestPiProfileFeatureBranchOnlyPiCannotAuthorize(t *testing.T) {
 	if _, err := global.ResolvePiProfile(pin); err != nil {
 		t.Fatalf("resolve profile values: %v", err)
 	}
-	if err := NewRunManager(d, p, nil).validatePiProfileAgentsBeforeCancel(context.Background(), repo, head, global); err == nil {
+	if err := NewRunManager(d, p, nil).validatePiProfileAgentsBeforeCancel(context.Background(), repo, head, global, ""); err == nil {
 		t.Fatal("feature-branch-only Pi selection authorized the profile")
 	} else if !strings.Contains(err.Error(), "Pi run profile requires agent: pi") {
 		t.Fatalf("unexpected refusal: %v", err)
@@ -277,7 +277,7 @@ func TestPiProfileConfigFailuresDoNotSupersedeActiveRun(t *testing.T) {
 			cancelled := false
 			m.cancels[active.ID] = func(error) { cancelled = true }
 			pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortXHigh}
-			if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "pin", "", false, "", nil, pin); err == nil {
+			if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "pin", "", false, "", nil, "", pin); err == nil {
 				t.Fatal("invalid configuration accepted")
 			} else if !strings.Contains(err.Error(), tc.diagnostic) {
 				t.Fatalf("error %q does not contain useful diagnostic %q", err, tc.diagnostic)
@@ -324,7 +324,7 @@ func TestPiProfileInvalidLaunchDoesNotSupersedeActiveRun(t *testing.T) {
 			cancelled := false
 			m.cancels[active.ID] = func(error) { cancelled = true }
 			pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
-			if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "pin", "", false, "", nil, pin); err == nil {
+			if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "pin", "", false, "", nil, "", pin); err == nil {
 				t.Fatal("invalid pin accepted")
 			}
 			runs, err := d.GetRunsByRepo(repo.ID)
@@ -368,7 +368,7 @@ func TestPiProfileTrustedRepoAgentOverrideDoesNotSupersedeActiveRun(t *testing.T
 			cancelled := false
 			m.cancels[active.ID] = func(error) { cancelled = true }
 			pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
-			if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "pin", "", false, "", nil, pin); err == nil {
+			if _, err := m.startRun(context.Background(), repo, "feature", head, head, "test", nil, "pin", "", false, "", nil, "", pin); err == nil {
 				t.Fatal("trusted-repo override accepted")
 			}
 			runs, err := d.GetRunsByRepo(repo.ID)
@@ -394,7 +394,7 @@ func TestPiProfileRecoveryUsesPersistedPinAndLegacyUsesLiveConfig(t *testing.T) 
 	defer d.Close()
 	repo, head := setupTestGitRepo(t, p, d, "recovery-profile")
 	pin := &agentcfg.PiProfile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
-	pinned, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "pinned", head, head, nil, "", "", "", "", false, nil, pin)
+	pinned, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "pinned", head, head, nil, "", "", "", "", false, nil, "", pin)
 	if err != nil {
 		t.Fatal(err)
 	}

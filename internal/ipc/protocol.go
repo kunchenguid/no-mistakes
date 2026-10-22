@@ -15,6 +15,7 @@ const MaxFrameBytes = 1024 * 1024
 // JSON-RPC 2.0 method names.
 const (
 	MethodPushReceived              = "push_received"
+	MethodProbeRunAgent             = "probe_run_agent"
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
@@ -82,6 +83,7 @@ func (e *RPCError) Error() string { return e.Message }
 // opt into a nonce-bound launch proof.
 type PushReceivedParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
+	RequestedAgent     types.AgentName     `json:"requested_agent,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
@@ -112,6 +114,7 @@ type PushReceivedParams struct {
 // caller never receives a proof for a drifting creation context.
 type StartFreshRunParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
+	RequestedAgent     types.AgentName     `json:"requested_agent,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
@@ -159,7 +162,8 @@ type ProbeOmitIntentResult struct {
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
-	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	RequestedAgent types.AgentName     `json:"requested_agent,omitempty"`
+	PiProfile      *agentcfg.PiProfile `json:"pi_profile,omitempty"`
 
 	RepoID               string `json:"repo_id"`
 	Branch               string `json:"branch"`
@@ -223,6 +227,7 @@ type GetActiveRunParams struct {
 // ClosingIssueRefs are merged with the selected run's persisted references.
 type RerunParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
+	RequestedAgent     types.AgentName     `json:"requested_agent,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
@@ -357,7 +362,8 @@ type PushReceivedResult struct {
 // selected one durable run before the caller drives it. The validation
 // generation and intent digest are persisted; raw intent is never included.
 type LaunchReceipt struct {
-	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	RequestedAgent types.AgentName     `json:"requested_agent,omitempty"`
+	PiProfile      *agentcfg.PiProfile `json:"pi_profile,omitempty"`
 
 	RunID                string `json:"run_id"`
 	Disposition          string `json:"disposition"`
@@ -497,6 +503,7 @@ type ShutdownResult struct {
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
+	RequestedAgent   types.AgentName            `json:"requested_agent,omitempty"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 
 	ID               string          `json:"id"`

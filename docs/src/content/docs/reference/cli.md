@@ -137,11 +137,20 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
+| `--agent` | `string` | (none) | Backend for this run only; see [Per-run backend selection](#per-run-backend-selection) |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
 | `--launch-nonce` | `string` | (none) | Non-secret correlation identifier for a durable pre-drive receipt; requires `--validation-generation` |
 | `--validation-generation` | `string` | (none) | Caller-selected validation generation bound to `--launch-nonce`; requires that flag |
+
+### Per-run backend selection
+
+`axi run --agent codex --intent "the user's goal"` selects a separate Codex pipeline agent even when the configured default is Claude. The flag accepts one built-in backend name; `auto`, lists, executable paths, and arbitrary `acp:<target>` commands are refused. Without it, configured routing applies.
+
+The choice is immutable for the run, appears as `requested_agent` in AXI output and launch receipts, and survives daemon recovery and `axi retry`. Reattachment may omit the flag or repeat the same choice; another choice is refused. A fresh `rerun --agent <name>` chooses for the new run; a rerun without it uses configured routing.
+
+An explicit backend overrides primary, fallback, quota, and review-role routing for that run. Its executable path, arguments, model, effort, credentials, and trusted project-instruction suppression keep their existing owners. Global and repository configuration files are unchanged. `--model` and `--effort` remain Pi-only and conflict with `--agent` selecting another backend. An unavailable or invalid requested backend is refused before superseding an active validation. An older daemon is refused before a launch rather than silently ignoring the choice.
 
 Explicit intent is the user's goal or request, not a description of the diff.
 no-mistakes uses the supplied text instead of transcript inference; see [Intent input](#intent-input) for transports and whitespace handling.
