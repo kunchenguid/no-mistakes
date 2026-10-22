@@ -452,8 +452,18 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 // commitAgentFixesWithResult commits the worktree changes left by producer, the
 // agent invocation that made them. A nil producer commits without trailers.
 func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, producer *agent.Result) (bool, error) {
+	return commitAgentFixesExcept(sctx, stepName, summary, fallbackSummary, producer, nil)
+}
+
+// commitAgentFixesExcept is commitAgentFixesWithResult that also leaves out
+// every path still exactly as preexisting recorded it before producer ran. A
+// nil preexisting commits the whole worktree.
+func commitAgentFixesExcept(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, producer *agent.Result, preexisting *worktreeDirt) (bool, error) {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
+		return false, err
+	}
+	if err := uncommitAgentCommittedDirt(sctx, stepName, preexisting); err != nil {
 		return false, err
 	}
 	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
@@ -483,6 +493,9 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 		return false, fmt.Errorf("render %s fix commit trailers: %w", stepName, err)
 	}
 	if err := stagePipelineChanges(sctx); err != nil {
+		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
+	if err := unstageUntouchedDirt(sctx, stepName, preexisting); err != nil {
 		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
 	headBeforeCommit, err := git.HeadSHA(ctx, sctx.WorkDir)
@@ -569,6 +582,11 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.LogMessage != "" {
 		sctx.Log(opts.LogMessage)
 	}
+	// Changes already in the worktree are not this fix's work (issue #762).
+	preexisting, err := snapshotWorktreeDirt(sctx)
+	if err != nil {
+		return "", err
+	}
 	purpose := opts.Purpose
 	if purpose == "" {
 		purpose = string(stepName) + "-fix"
@@ -588,7 +606,6 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	// The fixer may commit its own work and leave a clean worktree, which
 	// commitAgentFixesWithResult reports as "not committed". HEAD movement is
 	// what tells that round apart from one that made no edits.
-	var err error
 	headBeforeAgent := ""
 	if opts.ReportBlockedVerification {
 		headBeforeAgent, err = git.HeadSHA(sctx.Ctx, sctx.WorkDir)
@@ -620,7 +637,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		}
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
-	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary, result)
+	committed, err := commitAgentFixesExcept(sctx, stepName, summary, opts.FallbackSummary, result, preexisting)
 	if err != nil {
 		return "", err
 	}

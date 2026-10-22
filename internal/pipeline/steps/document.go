@@ -135,11 +135,15 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		purpose = "housekeeping"
 	}
 
-	// The head before the agent runs. The agent may commit its own edits
-	// instead of leaving them in the worktree; commitAgentFixesWithResult
-	// keeps sctx.Run.HeadSHA in sync with the worktree head either way, so
-	// comparing it after the pass detects changes a clean status would hide.
-	headBefore := sctx.Run.HeadSHA
+	// Changes already in the worktree are not this pass's work, so its commit
+	// leaves out every one the agent does not touch (issue #762).
+	preexisting, err := snapshotWorktreeDirt(sctx)
+	if err != nil {
+		return nil, err
+	}
+	// Compare against the live pre-agent head, not a run head that can lag
+	// earlier steps. This also detects agent commits leaving a clean worktree.
+	headBefore := preexisting.headSHA
 
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
@@ -159,7 +163,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if combinedLint {
 		fallbackSummary = "update documentation and fix lint"
 	}
-	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary, result)
+	committed, err := commitAgentFixesExcept(sctx, s.Name(), commitSummary, fallbackSummary, result, preexisting)
 	if err != nil {
 		return nil, err
 	}
