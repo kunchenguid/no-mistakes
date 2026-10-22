@@ -37,51 +37,23 @@ func assertStillDirty(t *testing.T, dir string) {
 func TestDocumentStep_DoesNotCommitPreexistingDirtyFiles(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	// Run a no-op document pass first in the same fixture repo: it exercises the
+	// no-changes path without paying a second setupGitRepo + SQLite open.
 	dirtyBeforeDocument(t, dir)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Documented\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"document feature"}`)}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	outcome, err := (&DocumentStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if outcome.FixSummary != changesAppliedSummary {
-		t.Fatalf("FixSummary = %q, want %q", outcome.FixSummary, changesAppliedSummary)
-	}
-	if got := gitCmd(t, dir, "show", "--name-only", "--pretty=format:", "HEAD"); got != "README.md" {
-		t.Fatalf("document commit files = %q, want only README.md", got)
-	}
-	assertStillDirty(t, dir)
-}
-
-func TestDocumentStep_NothingToDocumentMakesNoCommitOverPreexistingDirt(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	dirtyBeforeDocument(t, dir)
-
-	ag := &mockAgent{
+	noopAgent := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs already in sync; no lint tooling configured in repo"}`)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
+	sctx := newTestContextWithDBRecords(t, noopAgent, dir, baseSHA, headSHA, config.Commands{})
 	outcome, err := (&DocumentStep{}).Execute(sctx)
 	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+		t.Fatalf("no-op Execute() error = %v", err)
 	}
 	if outcome.FixSummary != NoChangesAppliedSummary {
-		t.Fatalf("FixSummary = %q, want %q", outcome.FixSummary, NoChangesAppliedSummary)
+		t.Fatalf("no-op FixSummary = %q, want %q", outcome.FixSummary, NoChangesAppliedSummary)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("HEAD = %s, want no document commit over %s", got, headSHA)
@@ -90,32 +62,26 @@ func TestDocumentStep_NothingToDocumentMakesNoCommitOverPreexistingDirt(t *testi
 		t.Fatalf("run head = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
 	}
 	assertStillDirty(t, dir)
-}
 
-// `git commit` takes the whole index, so churn an earlier step already staged
-// must be unstaged, not merely left out of the catch-all add.
-func TestDocumentStep_DoesNotCommitPreexistingStagedFiles(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	dirtyBeforeDocument(t, dir)
+	// Now stage the untracked lockfile as well: `git commit` takes the whole
+	// index, so both unstaged modified tracked files and pre-staged files must
+	// be excluded from the step's commit.
 	gitCmd(t, dir, "add", "package-lock.json")
-
-	ag := &mockAgent{
+	sctx.Agent = &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Documented\n"), 0o644)
 			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"document feature"}`)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+	outcome, err = (&DocumentStep{}).Execute(sctx)
+	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if got := gitCmd(t, dir, "show", "--name-only", "--pretty=format:", "HEAD"); got != "README.md" {
-		t.Fatalf("document commit files = %q, want only README.md", got)
+	if outcome.FixSummary != changesAppliedSummary {
+		t.Fatalf("FixSummary = %q, want %q", outcome.FixSummary, changesAppliedSummary)
 	}
+	assertOneCommitWithOnly(t, dir, headSHA, "README.md")
 	assertStillDirty(t, dir)
 }
 
@@ -124,7 +90,6 @@ func TestDocumentStep_DoesNotCommitPreexistingStagedFiles(t *testing.T) {
 func TestDocumentStep_CommitsAgentEditToAnAlreadyDirtyFile(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
 	dirtyBeforeDocument(t, dir)
 
 	ag := &mockAgent{

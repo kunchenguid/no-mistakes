@@ -37,165 +37,83 @@ func TestAgentCommitRecovery_PreservesCommitsBeforePass(t *testing.T) {
 		{name: "lint", step: &LintStep{}},
 		{name: "lint-fix", step: &LintStep{}, commands: config.Commands{Lint: "true"}, fixing: true},
 	} {
-		for _, action := range []string{"no-op", "commit-dirt", "commit-dirt-and-edit"} {
-			t.Run(step.name+"/"+action, func(t *testing.T) {
-				t.Parallel()
-				dir, baseSHA, headSHA := setupGitRepo(t)
-				gitCmd(t, dir, "checkout", "--detach", headSHA)
-				if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("committed by Test\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				gitCmd(t, dir, "commit", "-q", "-a", "-m", "test: earlier work")
-				passHead := gitCmd(t, dir, "rev-parse", "HEAD")
-				dirtyBeforeDocument(t, dir)
+		step := step
+		t.Run(step.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("committed by Test\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "commit", "-q", "-a", "-m", "test: earlier work")
+			passHead := gitCmd(t, dir, "rev-parse", "HEAD")
 
-				ag := &mockAgent{
-					name: "test",
-					runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-						if action == "commit-dirt-and-edit" {
-							if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Documented\n"), 0o644); err != nil {
-								t.Fatal(err)
-							}
-							gitCmd(t, dir, "add", "README.md")
+			var currentAction string
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					if currentAction == "commit-dirt-and-edit" {
+						if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Documented\n"), 0o644); err != nil {
+							t.Fatal(err)
 						}
-						if action != "no-op" {
-							gitCmd(t, dir, "commit", "-q", "-a", "-m", "agent commit")
-						}
-						return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"housekeeping"}`)}, nil
-					},
-				}
+						gitCmd(t, dir, "add", "README.md")
+					}
+					if currentAction != "no-op" {
+						gitCmd(t, dir, "commit", "-q", "-a", "-m", "agent commit")
+					}
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"housekeeping"}`)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, step.commands)
+			sctx.Fixing = step.fixing
+
+			for _, action := range []string{"no-op", "commit-dirt", "commit-dirt-and-edit"} {
+				currentAction = action
 				// Deliberately leave the recorded run head behind the live worktree.
-				sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, step.commands)
-				sctx.Fixing = step.fixing
+				sctx.Run.HeadSHA = headSHA
+				dirtyBeforeDocument(t, dir)
+				// Also stage package-lock.json on commit-dirt-and-edit to cover
+				// pre-staged untracked files alongside modified tracked files.
+				if action == "commit-dirt-and-edit" {
+					gitCmd(t, dir, "add", "package-lock.json")
+				}
+
 				outcome, err := step.step.Execute(sctx)
 				if err != nil {
-					t.Fatalf("Execute() error = %v", err)
+					t.Fatalf("%s: Execute() error = %v", action, err)
 				}
 				if action == "commit-dirt-and-edit" {
 					assertOneCommitWithOnly(t, dir, passHead, "README.md")
 				} else if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != passHead {
-					t.Fatalf("HEAD = %s, want earlier commit %s preserved", got, passHead)
+					t.Fatalf("%s: HEAD = %s, want earlier commit %s preserved", action, got, passHead)
 				}
 				wantSummary := NoChangesAppliedSummary
 				if action == "commit-dirt-and-edit" {
 					wantSummary = changesAppliedSummary
 				}
 				if outcome.FixSummary != wantSummary {
-					t.Fatalf("FixSummary = %q, want %q", outcome.FixSummary, wantSummary)
+					t.Fatalf("%s: FixSummary = %q, want %q", action, outcome.FixSummary, wantSummary)
 				}
 				if got := gitCmd(t, dir, "show", "HEAD:base.txt"); got != "committed by Test" {
-					t.Fatalf("committed base.txt = %q, want earlier Test work", got)
+					t.Fatalf("%s: committed base.txt = %q, want earlier Test work", action, got)
 				}
 				if got, err := os.ReadFile(filepath.Join(dir, "base.txt")); err != nil || string(got) != "churned by an earlier step\n" {
-					t.Fatalf("worktree base.txt = %q, %v; want inherited edits preserved", got, err)
+					t.Fatalf("%s: worktree base.txt = %q, %v; want inherited edits preserved", action, got, err)
 				}
 				if sctx.Run.HeadSHA != gitCmd(t, dir, "rev-parse", "HEAD") {
-					t.Fatalf("run head = %s, want current worktree head", sctx.Run.HeadSHA)
+					t.Fatalf("%s: run head = %s, want current worktree head", action, sctx.Run.HeadSHA)
 				}
 				assertStillDirty(t, dir)
-			})
-		}
+			}
+		})
 	}
-}
-
-// The document agent commits for itself while an earlier step's lockfile is
-// already staged. `git commit` takes the whole index, so the agent's commit
-// carries the lockfile and leaves a clean worktree (issue #762, Greptile P1).
-func TestDocumentStep_AgentCommitDoesNotKeepPreexistingStagedFile(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	dirtyBeforeDocument(t, dir)
-	gitCmd(t, dir, "add", "package-lock.json")
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Documented\n"), 0o644)
-			gitCmd(t, dir, "add", "README.md")
-			gitCmd(t, dir, "commit", "-q", "-m", "docs: agent's own commit")
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"document feature"}`)}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	outcome, err := (&DocumentStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if outcome.FixSummary != changesAppliedSummary {
-		t.Fatalf("FixSummary = %q, want %q", outcome.FixSummary, changesAppliedSummary)
-	}
-	assertOneCommitWithOnly(t, dir, headSHA, "README.md")
-	if sctx.Run.HeadSHA != gitCmd(t, dir, "rev-parse", "HEAD") {
-		t.Fatalf("run head = %s, want the worktree head", sctx.Run.HeadSHA)
-	}
-	assertStillDirty(t, dir)
-}
-
-// `git commit -a` sweeps in a tracked file an earlier step modified.
-func TestDocumentStep_AgentCommitAllDoesNotKeepPreexistingModifiedFile(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	dirtyBeforeDocument(t, dir)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Documented\n"), 0o644)
-			gitCmd(t, dir, "add", "README.md")
-			gitCmd(t, dir, "commit", "-q", "-a", "-m", "docs: agent's own commit")
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"document feature"}`)}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	assertOneCommitWithOnly(t, dir, headSHA, "README.md")
-	assertStillDirty(t, dir)
-}
-
-// An agent commit holding nothing but inherited changes is not document work.
-func TestDocumentStep_AgentCommitOfOnlyPreexistingDirtMakesNoCommit(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	dirtyBeforeDocument(t, dir)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			gitCmd(t, dir, "commit", "-q", "-a", "-m", "docs: nothing of mine")
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs already in sync"}`)}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	outcome, err := (&DocumentStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if outcome.FixSummary != NoChangesAppliedSummary {
-		t.Fatalf("FixSummary = %q, want %q", outcome.FixSummary, NoChangesAppliedSummary)
-	}
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
-		t.Fatalf("HEAD = %s, want no commit over %s", got, headSHA)
-	}
-	if sctx.Run.HeadSHA != headSHA {
-		t.Fatalf("run head = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
-	}
-	assertStillDirty(t, dir)
 }
 
 // Lint runs right after Document. Without its own snapshot the same untouched
-// lockfile would be committed as "fix lint issues".
-func TestLintStep_AgentLintDoesNotCommitPreexistingDirtyFiles(t *testing.T) {
+// lockfile would be committed as "fix lint issues", both in the agent-driven
+// lint pass and in a configured lint fix round (executeFixMode).
+func TestLintStep_DoesNotCommitPreexistingDirtyFiles(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
 	dirtyBeforeDocument(t, dir)
 
 	ag := &mockAgent{
@@ -208,33 +126,24 @@ func TestLintStep_AgentLintDoesNotCommitPreexistingDirtyFiles(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	if _, err := (&LintStep{}).Execute(sctx); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+		t.Fatalf("agent lint Execute() error = %v", err)
 	}
 	assertOneCommitWithOnly(t, dir, headSHA, "formatted.go")
 	assertStillDirty(t, dir)
-}
 
-// With commands.lint configured, a fix round commits through executeFixMode,
-// the path Review and Test fix rounds share.
-func TestLintStep_ConfiguredFixRoundDoesNotCommitPreexistingDirtyFiles(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	dirtyBeforeDocument(t, dir)
-
-	ag := &mockAgent{
+	afterAgentLint := sctx.Run.HeadSHA
+	sctx.Config.Commands.Lint = "true"
+	sctx.Fixing = true
+	sctx.Agent = &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "formatted.go"), []byte("package main\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"format code"}`)}, nil
+			os.WriteFile(filepath.Join(dir, "fixed.go"), []byte("package main\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint"}`)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
-	sctx.Fixing = true
-
 	if _, err := (&LintStep{}).Execute(sctx); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+		t.Fatalf("configured fix Execute() error = %v", err)
 	}
-	assertOneCommitWithOnly(t, dir, headSHA, "formatted.go")
+	assertOneCommitWithOnly(t, dir, afterAgentLint, "fixed.go")
 	assertStillDirty(t, dir)
 }
