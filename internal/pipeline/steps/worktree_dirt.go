@@ -15,15 +15,23 @@ import (
 // worktreeDirt fingerprints the paths that were already dirty before an agent
 // ran, so the step's commit can leave out every one the agent never touched:
 // an earlier step's lockfile churn is not this step's work, and committing it
-// under this step's message misdescribes it (issue #762).
-type worktreeDirt map[string]string
+// under this step's message misdescribes it (issue #762). The live head binds
+// recovery to this agent pass; Run.HeadSHA can lag commits from earlier steps.
+type worktreeDirt struct {
+	headSHA string
+	paths   map[string]string
+}
 
-func snapshotWorktreeDirt(sctx *pipeline.StepContext) (worktreeDirt, error) {
+func snapshotWorktreeDirt(sctx *pipeline.StepContext) (*worktreeDirt, error) {
+	head, err := stepGitRun(sctx, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("snapshot pre-agent head: %w", err)
+	}
 	status, err := stepGitRunRaw(sctx, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=none")
 	if err != nil {
 		return nil, fmt.Errorf("snapshot pre-existing changes: %w", err)
 	}
-	dirt := worktreeDirt{}
+	dirt := &worktreeDirt{headSHA: head, paths: make(map[string]string)}
 	for _, entry := range strings.Split(strings.TrimSuffix(status, "\x00"), "\x00") {
 		if entry == "" {
 			continue
@@ -32,7 +40,7 @@ func snapshotWorktreeDirt(sctx *pipeline.StepContext) (worktreeDirt, error) {
 			return nil, fmt.Errorf("snapshot pre-existing changes: invalid git status entry %q", entry)
 		}
 		file := entry[3:]
-		dirt[file] = fingerprintWorktreePath(sctx.WorkDir, file)
+		dirt.paths[file] = fingerprintWorktreePath(sctx.WorkDir, file)
 	}
 	return dirt, nil
 }
@@ -60,9 +68,12 @@ func fingerprintWorktreePath(workDir, file string) string {
 }
 
 // untouched returns the snapshotted paths whose state has not changed since.
-func (d worktreeDirt) untouched(workDir string) []string {
+func (d *worktreeDirt) untouched(workDir string) []string {
+	if d == nil {
+		return nil
+	}
 	var paths []string
-	for file, fingerprint := range d {
+	for file, fingerprint := range d.paths {
 		if fingerprintWorktreePath(workDir, file) == fingerprint {
 			paths = append(paths, file)
 		}
@@ -74,7 +85,7 @@ func (d worktreeDirt) untouched(workDir string) []string {
 // unstageUntouchedDirt runs after catch-all staging and returns every path the
 // agent left exactly as the snapshot found it to its HEAD index entry. The
 // worktree keeps those changes; only this step's commit leaves them out.
-func unstageUntouchedDirt(sctx *pipeline.StepContext, stepName types.StepName, dirt worktreeDirt) error {
+func unstageUntouchedDirt(sctx *pipeline.StepContext, stepName types.StepName, dirt *worktreeDirt) error {
 	untouched := dirt.untouched(sctx.WorkDir)
 	if len(untouched) == 0 {
 		return nil
@@ -90,14 +101,14 @@ func unstageUntouchedDirt(sctx *pipeline.StepContext, stepName types.StepName, d
 // commit leaves a clean worktree, so the catch-all staging never sees the
 // pre-existing changes it swept in (a lockfile already staged, or picked up by
 // git commit -a). When any untouched pre-existing path differs between the
-// recorded head and the agent's head, the agent's commits are folded back into
+// snapshotted head and the agent's head, the agent's commits are folded back into
 // the index; the normal staging then leaves those paths out and commits the
 // agent's own edits under this step's message.
-func uncommitAgentCommittedDirt(sctx *pipeline.StepContext, stepName types.StepName, dirt worktreeDirt) error {
-	recorded := strings.TrimSpace(sctx.Run.HeadSHA)
-	if recorded == "" || len(dirt) == 0 {
+func uncommitAgentCommittedDirt(sctx *pipeline.StepContext, stepName types.StepName, dirt *worktreeDirt) error {
+	if dirt == nil || dirt.headSHA == "" || len(dirt.paths) == 0 {
 		return nil
 	}
+	recorded := dirt.headSHA
 	untouched := dirt.untouched(sctx.WorkDir)
 	if len(untouched) == 0 {
 		return nil
