@@ -46,6 +46,7 @@ review_agents:
 		if err != nil {
 			t.Fatalf("launch %s: %v\n%s", name, err, out)
 		}
+		t.Logf("axi run --agent %s:\n%s", name, out)
 		run := waitForStepStatus(t, h, branch, types.StepReview, types.StepStatusAwaitingApproval, 90*time.Second)
 		if string(run.RequestedAgent) != name {
 			t.Fatalf("selection not persisted: %+v", run)
@@ -61,6 +62,8 @@ review_agents:
 	}
 	if out, err := h.Run("axi", "run", "--agent", "codex"); err == nil || !strings.Contains(out, "different agent") {
 		t.Fatalf("conflicting reattachment was not refused: %v\n%s", err, out)
+	} else {
+		t.Logf("conflicting reattachment refused:\n%s", out)
 	}
 
 	h.agentName = "grok"
@@ -74,6 +77,7 @@ review_agents:
 		if finished.Status != types.RunCompleted || string(finished.RequestedAgent) != run.agent {
 			t.Fatalf("run changed engine or did not complete: %+v", finished)
 		}
+		t.Logf("after daemon recovery: branch=%s run=%s requested_agent=%s status=%s", run.branch, finished.ID, finished.RequestedAgent, finished.Status)
 		sawReview, sawFix, sawRereview, sawDefault := false, false, false, false
 		for _, invocation := range h.AgentInvocations() {
 			if canonicalForCompare(t, invocation.CWD) != run.dir {
@@ -115,6 +119,7 @@ review_agents:
 			if !foundModel || !foundEffort {
 				t.Fatalf("%s lost profile %s/%s: %v", run.branch, model, effort, invocation.Args)
 			}
+			t.Logf("captured subprocess: branch=%s agent=%s model=%s effort=%s", run.branch, invocation.Agent, model, effort)
 		}
 		if !sawReview || !sawFix || !sawRereview || !sawDefault {
 			t.Fatalf("%s missing duties: review=%v fix=%v rereview=%v default=%v", run.branch, sawReview, sawFix, sawRereview, sawDefault)

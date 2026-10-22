@@ -1370,10 +1370,11 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 // validatePiProfileAgentsBeforeCancel loads the effective trusted repo agent
 // selection (and, when allow_repo_commands is set, the pushed copy) from the
 // gate and runs the same check ValidatePiProfileAgents will run after merge.
-// A trusted default-branch Claude or mixed fallback list must fail here, not
-// after cancelActiveRuns has already stopped a healthy validation. This is also
-// the first point where a trusted repository Pi override can replace a global
-// auto or non-Pi selection, so profile resolution must not reject it earlier.
+// Without an explicit run backend, a trusted default-branch Claude or mixed
+// fallback list must fail here, before cancelActiveRuns stops a healthy validation.
+// An explicit Pi backend replaces that routing before eligibility is checked.
+// A trusted repository Pi override can also replace a global auto or non-Pi
+// selection, so profile resolution must not reject it before loading that policy.
 func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig, requestedAgent types.AgentName) error {
 	cfg, _, err := m.effectiveConfigBeforeRun(ctx, repo, headSHA, globalCfg, "Pi run profile")
 	if err != nil {

@@ -137,6 +137,7 @@ providers:
 ### agent
 
 Override the default agent for this repo and its setup-wizard suggestions.
+An explicit [per-run backend selection](/no-mistakes/reference/cli/#per-run-backend-selection) takes precedence.
 
 | | |
 | --- | --- |

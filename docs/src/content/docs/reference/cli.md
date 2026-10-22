@@ -144,19 +144,19 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | `--launch-nonce` | `string` | (none) | Non-secret correlation identifier for a durable pre-drive receipt; requires `--validation-generation` |
 | `--validation-generation` | `string` | (none) | Caller-selected validation generation bound to `--launch-nonce`; requires that flag |
 
-### Per-run backend selection
-
-`axi run --agent codex --intent "the user's goal"` selects a separate Codex pipeline agent even when the configured default is Claude. The flag accepts one built-in backend name; `auto`, lists, executable paths, and arbitrary `acp:<target>` commands are refused. Without it, configured routing applies.
-
-The choice is immutable for the run, appears as `requested_agent` in AXI output and launch receipts, and survives daemon recovery and `axi retry`. Reattachment may omit the flag or repeat the same choice; another choice is refused. A fresh `rerun --agent <name>` chooses for the new run; a rerun without it uses configured routing.
-
-An explicit backend overrides primary, fallback, quota, and review-role backend routing for that run. Matching `review_agents` profiles keep their model, effort, and later-round takeover settings; roles and overlays selecting another backend are suppressed. Its executable path, arguments, credentials, and trusted project-instruction suppression keep their existing owners. Model and effort use the backend's configured defaults unless an applicable role profile overrides them. Global and repository configuration files are unchanged. `--model` and `--effort` remain Pi-only and conflict with `--agent` selecting another backend. An unavailable or invalid requested backend is refused before superseding an active validation. An older daemon is refused before a launch rather than silently ignoring the choice.
-
 Explicit intent is the user's goal or request, not a description of the diff.
 no-mistakes uses the supplied text instead of transcript inference; see [Intent input](#intent-input) for transports and whitespace handling.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Ordinary reattachment to an in-flight run does not require intent input and never replaces that run's intent, even if new text is supplied. [Strict launch receipts](#strict-launch-receipts) require the original intent bytes on every retry, using any of the input transports below.
+
+### Per-run backend selection
+
+`axi run --agent codex --intent "the user's goal"` selects a separate Codex pipeline agent even when the configured default is Claude. The flag accepts exactly one of `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, or `devin`. Empty or repeated flags, `auto`, lists, executable paths, and `acp:<target>` names are refused. Without it, configured routing applies, including for historical runs without a selection.
+
+The choice is immutable for the run, appears as `requested_agent` in AXI output and launch receipts, and survives daemon recovery and `axi retry`. Reattachment may omit the flag or repeat the same choice; another choice is refused. A fresh `rerun --agent <name>` chooses for the new run; a rerun without it uses configured routing.
+
+An explicit backend overrides primary, fallback, quota, and review-role backend routing for every pipeline duty in that run, with no fallback to another engine. Each `review_agents` entry is retained only when its `agent` exactly matches the requested name, preserving its model, effort, and later-round takeover settings. This comparison does not equate `cursor` with `acp:cursor` or `devin` with `acp:devin`. Other role entries and overlays are suppressed. Executable paths, arguments, credentials, and trusted project-instruction suppression keep their existing owners; [model/effort precedence](/no-mistakes/reference/global-config/#agent_config) still applies. Global and repository configuration files are unchanged, so simultaneous runs can select different backends. `--model` and `--effort` remain [Pi-only](/no-mistakes/reference/global-config/#per-run-pi-profiles) and conflict with `--agent` selecting another backend. An unavailable or invalid requested backend is refused before superseding an active validation. An older daemon is refused before a launch rather than silently ignoring the choice.
 
 ### Intent input
 
@@ -265,7 +265,7 @@ no-mistakes axi run --intent "the user's goal" \
 
 After durable creation or claim, AXI writes a TOON `launch_receipt` object to stdout **before** driving the run.
 The receipt remains available to a caller that captures stdout even if driving later stops at a gate or fails.
-It contains `run_id`, `disposition` (`created` or `reused`), `launch_nonce`, `validation_generation`, `branch`, `head_sha`, `submitted_head_sha`, and `intent_digest`.
+It contains `run_id`, `disposition` (`created` or `reused`), `launch_nonce`, `validation_generation`, `branch`, `head_sha`, `submitted_head_sha`, and `intent_digest`, plus the [backend selection](#per-run-backend-selection) as `requested_agent` (empty when no backend was selected).
 Both head fields contain the full, immutable submitted commit SHA; `intent_digest` is the lowercase SHA-256 digest of the exact persisted intent bytes, including whitespace.
 Raw intent is not included in receipts, and generic run/status output does not expose the nonce binding or intent digest.
 
@@ -624,7 +624,8 @@ no-mistakes rerun --no-publish-intent
 no-mistakes rerun --closes 95
 ```
 
-`--model` and `--effort` opt this new run into a [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles), with the same precedence and validation as `axi run`. Omitting both retains current global-config behavior; a prior run's model pin is not inherited.
+`--agent` accepts the same [per-run backend selection](#per-run-backend-selection) as `axi run`.
+`--model` and `--effort` opt this new run into a [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles), with the same precedence and validation as `axi run`. Omitting both uses current model/effort configuration; a prior run's model pin is not inherited.
 
 Starts a new pipeline run from the current gate branch, except when the latest
 terminal run has a verified unpublished head whose custody has not been
@@ -661,6 +662,7 @@ failed step instead of repeating every completed step.
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
+| `--agent` | `string` | (none) | Backend for the new run; see [Per-run backend selection](#per-run-backend-selection) |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 

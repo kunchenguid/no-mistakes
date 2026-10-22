@@ -326,7 +326,9 @@ responsibility. For optional quota evidence at run start, see
 
 A pin applies to **every pipeline duty**, including reviewer and fixer roles.
 The effective agent selection must be Pi-only (no `auto`, non-Pi fallbacks, or
-non-Pi `review_agents`). Under the default trust policy, a nonempty `agent` in
+non-Pi `review_agents`). An explicit [`--agent pi`](/no-mistakes/reference/cli/#per-run-backend-selection)
+establishes that selection before this check. Without an explicit backend,
+the configured routing applies: under the default trust policy, a nonempty `agent` in
 the freshly fetched, trusted default-branch `.no-mistakes.yaml` replaces the
 global scalar or fallback list for this check, just as it does for an ordinary
 run. This lets one project opt into Pi profiles with trusted `agent: pi` while
@@ -355,9 +357,9 @@ contents, or other agent settings; credentials are never stored in it.
 Reattaching with omitted flags preserves the existing pin. Explicit fields must
 match it; a different profile requires a new run. The same rule binds nonce
 replays and receipt claims. `rerun --model ... --effort ...` selects a profile
-for a **new** run; without those flags a rerun uses current global configuration,
-not its predecessor's pin. Existing runs and all callers omitting both flags
-remain unpinned and keep the previous global-config behavior. Concurrent runs
+for a **new** run; without those flags a rerun uses current model/effort configuration,
+not its predecessor's pin. Omitting both flags leaves model and effort unpinned,
+independently of any per-run backend selection. Concurrent runs
 hold independent pins without modifying shared configuration.
 
 Structured AXI status and daemon run/receipt responses expose `pi_profile:
@@ -372,6 +374,8 @@ submission, so an older daemon cannot silently launch it without a pin.
 Optional, **global-only** harness and model/effort overrides for the review loop.
 Repository `.no-mistakes.yaml` cannot set these profiles. Omitted roles keep the
 normal `agent` selection and fallback chain; other pipeline steps are unchanged.
+For a run with an explicit backend, the [per-run selection rules](/no-mistakes/reference/cli/#per-run-backend-selection)
+determine which role profiles remain applicable.
 
 ```yaml
 review_agents:
@@ -851,6 +855,8 @@ Set `false` to force every agent invocation cold.
 ### quota_routing
 
 Opt-in, quota-aware agent ordering at run start.
+Runs with an [explicit backend selection](/no-mistakes/reference/cli/#per-run-backend-selection)
+do not use quota routing.
 
 |         |                                          |
 | ------- | ---------------------------------------- |
