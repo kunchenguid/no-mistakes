@@ -14,10 +14,19 @@ import (
 )
 
 func TestCallerSelectedAgentsStayIndependentAcrossRecovery(t *testing.T) {
+	const profiles = `agent_config:
+  codex: {model: codex-default, effort: low}
+  claude: {model: claude-default, effort: low}
+review_agents:
+  reviewer: {agent: codex, model: strong-reviewer, effort: high}
+  fixer: {agent: codex, model: strong-fixer, effort: high}
+  reviewer_after_round: {agent: codex, model: late-reviewer, effort: high}
+  fixer_after_round: {agent: claude, model: late-fixer, effort: high}
+`
 	h := NewHarness(t, SetupOpts{
 		Agent:             "claude",
 		Scenario:          writeReviewAgentsRoutingScenario(t),
-		GlobalConfigExtra: "review_agents:\n  reviewer: {agent: claude}\n  fixer: {agent: claude}\n",
+		GlobalConfigExtra: profiles,
 	})
 	if out, err := h.Run("init"); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
@@ -54,10 +63,7 @@ func TestCallerSelectedAgentsStayIndependentAcrossRecovery(t *testing.T) {
 		t.Fatalf("conflicting reattachment was not refused: %v\n%s", err, out)
 	}
 
-	// Recovery must use each run's persisted backend, even after the default
-	// and independent review-role configuration change.
 	h.agentName = "grok"
-	h.globalConfigExtra = "review_agents:\n  reviewer: {agent: grok}\n  fixer: {agent: grok}\n"
 	h.writeGlobalConfig()
 	if out, err := h.Run("daemon", "restart", "--force"); err != nil {
 		t.Fatalf("restart: %v\n%s", err, out)
@@ -68,21 +74,50 @@ func TestCallerSelectedAgentsStayIndependentAcrossRecovery(t *testing.T) {
 		if finished.Status != types.RunCompleted || string(finished.RequestedAgent) != run.agent {
 			t.Fatalf("run changed engine or did not complete: %+v", finished)
 		}
-		count := 0
+		sawReview, sawFix, sawRereview, sawDefault := false, false, false, false
 		for _, invocation := range h.AgentInvocations() {
 			if canonicalForCompare(t, invocation.CWD) != run.dir {
 				continue
 			}
-			count++
 			if invocation.Agent != run.agent {
 				t.Fatalf("%s used %s: %+v", run.branch, invocation.Agent, invocation)
 			}
-		}
-		if count < 4 {
-			for _, invocation := range h.AgentInvocations() {
-				t.Logf("recorded backend=%s cwd=%q; expected=%q", invocation.Agent, invocation.CWD, run.dir)
+			model, effort := run.agent+"-default", "low"
+			switch {
+			case strings.Contains(invocation.Prompt, reviewTurnMarker):
+				rereview := strings.Contains(invocation.Prompt, rereviewTurnMarker)
+				sawReview = sawReview || !rereview
+				sawRereview = sawRereview || rereview
+				if run.agent == "codex" {
+					model, effort = "strong-reviewer", "high"
+					if rereview {
+						model = "late-reviewer"
+					}
+				}
+			case strings.Contains(invocation.Prompt, fixTurnMarker):
+				sawFix = true
+				model, effort = "strong-fixer", "high"
+				if run.agent == "claude" {
+					model = "late-fixer"
+				}
+			default:
+				sawDefault = true
 			}
-			t.Fatalf("%s exercised only %d invocations", run.branch, count)
+			modelFlag, effortFlag, effortValue := "--model", "--effort", effort
+			if run.agent == "codex" {
+				modelFlag, effortFlag, effortValue = "-m", "-c", `model_reasoning_effort="`+effort+`"`
+			}
+			foundModel, foundEffort := false, false
+			for i := 0; i+1 < len(invocation.Args); i++ {
+				foundModel = foundModel || invocation.Args[i] == modelFlag && invocation.Args[i+1] == model
+				foundEffort = foundEffort || invocation.Args[i] == effortFlag && invocation.Args[i+1] == effortValue
+			}
+			if !foundModel || !foundEffort {
+				t.Fatalf("%s lost profile %s/%s: %v", run.branch, model, effort, invocation.Args)
+			}
+		}
+		if !sawReview || !sawFix || !sawRereview || !sawDefault {
+			t.Fatalf("%s missing duties: review=%v fix=%v rereview=%v default=%v", run.branch, sawReview, sawFix, sawRereview, sawDefault)
 		}
 	}
 }

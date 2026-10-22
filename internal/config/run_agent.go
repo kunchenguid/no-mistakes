@@ -21,7 +21,18 @@ func (c *Config) ApplyRunAgent(name types.AgentName, pi *agentcfg.PiProfile) err
 	}
 	c.Agent = name
 	c.Agents = []types.AgentName{name}
-	c.ReviewAgents = nil
+	roles := make(map[string]ReviewAgent)
+	for role, entry := range c.ReviewAgents {
+		if entry.Agent != name {
+			continue
+		}
+		if entry.AfterRound != nil {
+			afterRound := *entry.AfterRound
+			entry.AfterRound = &afterRound
+		}
+		roles[role] = entry
+	}
+	c.ReviewAgents = roles
 	c.QuotaRouting.Enabled = false
 	return nil
 }
