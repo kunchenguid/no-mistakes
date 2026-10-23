@@ -126,6 +126,21 @@ func encodeProjectPath(projectPath string) string {
 	return strings.Join(segments, "%2F")
 }
 
+// pipelineRouteArgs returns the glab invocation for a paginated pipeline REST
+// route ("trigger_jobs", "bridges"). It is only used with a known project path;
+// callers fall back to the job-only read when the path is unknown, because the
+// route cannot address the project any other way.
+func (h *Host) pipelineRouteArgs(pipelineID int, route string) []string {
+	return []string{"api", "--paginate", fmt.Sprintf("projects/%s/pipelines/%d/%s", encodeProjectPath(h.projectPath), pipelineID, route)}
+}
+
+// mergeRequestStatusChecksArgs returns the glab invocation that lists a merge
+// request's external status checks. Like the pipeline routes it needs a known
+// project path.
+func (h *Host) mergeRequestStatusChecksArgs(mrIID string) []string {
+	return []string{"api", "--paginate", fmt.Sprintf("projects/%s/merge_requests/%s/status_checks", encodeProjectPath(h.projectPath), url.PathEscape(mrIID))}
+}
+
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitLab }
 
 // Capabilities declares review comments as well: the discussions API exposes
@@ -258,11 +273,40 @@ type mrDiffRefs struct {
 
 // gitlabHeadPipeline is the subset of the pipeline entity that
 // `glab mr view --output json` exposes as head_pipeline: the commit the
-// pipeline ran at and the ref it ran for, next to its identifier.
+// pipeline ran at, the ref it ran for, and the aggregate result the check
+// reader reports next to the pipeline's jobs.
 type gitlabHeadPipeline struct {
-	ID  int    `json:"id"`
-	SHA string `json:"sha"`
-	Ref string `json:"ref"`
+	ID         int    `json:"id"`
+	SHA        string `json:"sha"`
+	Ref        string `json:"ref"`
+	Status     string `json:"status"`
+	WebURL     string `json:"web_url"`
+	FinishedAt string `json:"finished_at"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+// completedAt is the pipeline's own completion time, used for the same re-run
+// freshness detection job completions feed. updated_at is the fallback: a
+// pipeline is re-created for a new head rather than re-run in place, so the
+// update time moves whenever its reported result could have changed.
+func (p gitlabHeadPipeline) completedAt() time.Time {
+	for _, raw := range []string{p.FinishedAt, p.UpdatedAt} {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
+// awaitingManualJob reports whether the pipeline's own status says a person
+// must act before it can finish: GitLab reports `manual` for a pipeline stopped
+// at a blocking manual job. It is the aggregate form of the job-level rule, for
+// when no job or trigger-job row carries the wait itself.
+func (p gitlabHeadPipeline) awaitingManualJob() bool {
+	return strings.EqualFold(strings.TrimSpace(p.Status), "manual")
 }
 
 // sourceRevision is the source-branch commit the merge request currently points
@@ -527,26 +571,110 @@ func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
 	return mr, nil
 }
 
+// GetChecks reads the merge request's head pipeline the way the GitLab UI
+// presents it, not just its job list: a pipeline's result is an aggregate of
+// ordinary jobs, trigger jobs (GitLab's bridge jobs, which carry a downstream
+// pipeline's result) and, on instances that license the feature, external
+// status checks. Reading only `/jobs` lets a nonempty list of green ordinary
+// jobs hide a failed or pending pipeline - a trigger stage that failed, or a
+// pipeline that failed before it created any job at all.
+//
+// An instance that does not serve a feature (external status checks are
+// Ultimate) reports that as an unavailable route and is read as having none,
+// never as an unreadable check; any other failure is a read failure and stays
+// one, because "unreadable" must not look green either.
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if headSHA := strings.TrimSpace(pr.HeadSHA); headSHA != "" {
 		return h.getChecksForHead(ctx, pr, headSHA)
 	}
 	// Without a named source commit there is nothing to bind a read to, so the
-	// legacy paths stay: glab ci status --mr <id> --output json lists jobs for
-	// the MR's latest pipeline, and versions that do not support --mr fall back
-	// to listing the head pipeline's jobs through mr view.
-	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", pr.Number, "--output", "json")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	// pipeline is taken as the merge request reports it. The observation is
+	// still composed the same way: a head without a bound commit must not hide
+	// a failed or pending pipeline either.
+	mr, err := h.viewMR(ctx, pr.Number)
 	if err != nil {
-		diagnostic := append(out, stderr.Bytes()...)
-		if !isUnsupportedMRFlagError(diagnostic) {
-			return nil, fmt.Errorf("glab ci status: %s: %w", strings.TrimSpace(string(diagnostic)), err)
-		}
-		return h.getChecksFallback(ctx, pr)
+		return nil, err
 	}
-	return parseGitlabJobs(out)
+	pipeline, err := mr.headPipeline()
+	if err != nil {
+		return nil, fmt.Errorf("glab mr view: %w", err)
+	}
+	return h.pipelineChecks(ctx, pr, pipeline, nil)
+}
+
+// pipelineChecks composes the checks of a head pipeline: its ordinary jobs, its
+// trigger jobs, the pipeline's own aggregate status when no job or trigger job
+// already carries it, and the merge request's external status checks. A nil
+// pipeline means the merge request has no pipeline at all; external status
+// checks are keyed on the merge request rather than the pipeline, so they are
+// read even then.
+//
+// afterReads runs once every provider read is done, when the caller has to
+// re-establish that the whole observation still describes the same commit (the
+// bound path's stability check); its error is returned before any checks are,
+// so no part of a moved observation is graded.
+func (h *Host) pipelineChecks(ctx context.Context, pr *scm.PR, pipeline *gitlabHeadPipeline, afterReads func() error) ([]scm.Check, error) {
+	var checks []scm.Check
+	if pipeline != nil {
+		jobsOut, err := h.readPipelineJobs(ctx, pipeline.ID)
+		if err != nil {
+			return nil, err
+		}
+		jobs, err := parseGitlabJobs(jobsOut)
+		if err != nil {
+			return nil, err
+		}
+		checks = jobs
+		if h.projectPath != "" {
+			// A trigger job is not a `/jobs` row: GitLab exposes it only on its
+			// own route, and its status is where a downstream pipeline's result
+			// reaches the head pipeline's aggregate.
+			triggerJobs, err := h.pipelineTriggerJobs(ctx, pipeline.ID)
+			if err != nil {
+				return nil, err
+			}
+			checks = append(checks, triggerJobsToChecks(triggerJobs)...)
+		}
+		// The aggregate is compared against the pipeline's own rows only: a
+		// failed external status check is a separate requirement, so letting it
+		// stand in for the pipeline's state would hide a pipeline failure no job
+		// row explains (a rejected configuration, most often).
+		if aggregate, ok := pipelineAggregateCheck(*pipeline, checks); ok {
+			checks = append(checks, aggregate)
+		}
+	}
+	if h.projectPath != "" {
+		external, err := h.mergeRequestStatusChecks(ctx, pr.Number)
+		if err != nil {
+			return nil, err
+		}
+		if pipeline != nil || hasNonPassingCheck(external) {
+			checks = append(checks, external...)
+		}
+	}
+	if afterReads != nil {
+		if err := afterReads(); err != nil {
+			return nil, err
+		}
+	}
+	return checks, nil
+}
+
+// hasNonPassingCheck reports whether any check is not a plain pass. It decides
+// whether a merge request with no head pipeline has an external requirement
+// worth reporting: passing checks alone must not read as an all-green head,
+// because the monitor would stop there and tell the user to merge while the
+// pipeline that has not registered yet could still fail. With nothing but
+// passes (or nothing at all) the caller returns no checks, and the CI step's
+// zero-check rule decides - wait for registration, or pass under a trusted
+// `no_ci: true`.
+func hasNonPassingCheck(checks []scm.Check) bool {
+	for _, check := range checks {
+		if check.Bucket != scm.CheckBucketPass {
+			return true
+		}
+	}
+	return false
 }
 
 // getChecksForHead reads the merge request's checks bound to headSHA, the exact
@@ -561,9 +689,12 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 // headSHA and that its head pipeline is the pipeline for headSHA - either it
 // ran at that commit, or it is a merged-results/merge-train pipeline whose
 // temporary commit includes it (mirroring GitLab's own head-pipeline check; see
-// mergeResultIncludes). It then re-reads the merge request after the job read
-// and rejects a source revision that moved mid-observation, exactly as the
-// GitHub adapter does.
+// mergeResultIncludes). It then re-reads the merge request once every provider
+// read is done and rejects a source revision that moved mid-observation,
+// exactly as the GitHub adapter does. Everything the observation carries -
+// jobs, trigger jobs, aggregate, external status checks - is built from this
+// proven pipeline and merge request, so no part of it can describe another
+// commit.
 func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string) ([]scm.Check, error) {
 	mr, err := h.viewMR(ctx, pr.Number)
 	if err != nil {
@@ -573,30 +704,27 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	if err != nil {
 		return nil, err
 	}
-	if pipeline == nil {
-		// No head pipeline at all: no check has registered for this commit yet,
-		// so the caller gets an empty observation and keeps waiting rather than
-		// a verdict it cannot support.
-		return nil, nil
+	// Everything the observation carries - the job list, the trigger jobs, the
+	// merge request's external status checks and the pipeline's aggregate - is
+	// read from this proven pipeline and merge request. The stability re-read
+	// runs after every provider read, so a source revision that moved
+	// mid-observation rejects the whole set.
+	after := func() error {
+		afterMR, err := h.viewMR(ctx, pr.Number)
+		if err != nil {
+			return err
+		}
+		if revision := afterMR.sourceRevision(); revision == "" {
+			return fmt.Errorf("merge request %s reported no source commit", pr.Number)
+		} else if !sameCommitSHA(revision, headSHA) {
+			return fmt.Errorf("%w: merge request %s source commit changed during check discovery from %s to %s", scm.ErrHeadChanged, pr.Number, headSHA, revision)
+		}
+		return nil
 	}
-	jobsOut, err := h.readPipelineJobs(ctx, pipeline.ID)
-	if err != nil {
-		return nil, err
-	}
-	checks, err := parseGitlabJobs(jobsOut)
-	if err != nil {
-		return nil, err
-	}
-	after, err := h.viewMR(ctx, pr.Number)
-	if err != nil {
-		return nil, err
-	}
-	if revision := after.sourceRevision(); revision == "" {
-		return nil, fmt.Errorf("merge request %s reported no source commit", pr.Number)
-	} else if !sameCommitSHA(revision, headSHA) {
-		return nil, fmt.Errorf("%w: merge request %s source commit changed during check discovery from %s to %s", scm.ErrHeadChanged, pr.Number, headSHA, revision)
-	}
-	return checks, nil
+	// A nil pipeline means no job has registered for this commit; the merge
+	// request's external status checks are still read (and still bound: the
+	// source revision above already proved the merge request is at headSHA).
+	return h.pipelineChecks(ctx, pr, pipeline, after)
 }
 
 // headPipelineBoundTo resolves the merge request's head pipeline and proves it
@@ -731,53 +859,6 @@ func isHexCommitSHA(value string) bool {
 	return true
 }
 
-func isUnsupportedMRFlagError(out []byte) bool {
-	msg := strings.ToLower(strings.TrimSpace(string(out)))
-	if !strings.Contains(msg, "--mr") {
-		return false
-	}
-	for _, marker := range []string{
-		"unknown flag",
-		"unknown option",
-		"unsupported flag",
-		"unsupported option",
-		"unrecognized argument",
-		"unrecognized arguments",
-		"unrecognized option",
-		"unknown argument",
-		"unexpected argument",
-		"flag provided but not defined",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
-	// Try fetching the MR's pipeline and listing its jobs.
-	mr, err := h.viewMR(ctx, pr.Number)
-	if err != nil {
-		return nil, err
-	}
-	pipeline, err := mr.headPipeline()
-	if err != nil {
-		return nil, fmt.Errorf("glab mr view: %w", err)
-	}
-	if pipeline == nil {
-		// The MR reports "head_pipeline": null, meaning it has no pipeline.
-		// That is the only shape that reads as no checks; headPipeline
-		// rejects the rest.
-		return nil, nil
-	}
-	jobsOut, err := h.readPipelineJobs(ctx, pipeline.ID)
-	if err != nil {
-		return nil, err
-	}
-	return parseGitlabJobs(jobsOut)
-}
-
 // readPipelineJobs lists every job of a pipeline. With a known project path it
 // goes through `glab api --paginate` (branch-independent); otherwise it falls
 // back to `glab ci get`, which needs a current branch.
@@ -794,6 +875,63 @@ func (h *Host) readPipelineJobs(ctx context.Context, pipelineID int) ([]byte, er
 		return nil, fmt.Errorf("glab pipeline jobs: %s: %w", strings.TrimSpace(string(append(jobsOut, stderr.Bytes()...))), err)
 	}
 	return jobsOut, nil
+}
+
+// pipelineTriggerJobs lists a pipeline's trigger jobs. GitLab 19.2 renamed the
+// route from "bridges" to "trigger_jobs" and deprecated the old name; neither
+// is removed. The current name is read first, and an instance that predates it
+// answers with GitLab's route-not-found response, so the deprecated name is
+// retried once for that instance rather than failing a read it can still serve.
+// glabStdout runs glab and returns stdout alone for the JSON decoder, plus
+// stdout and stderr together for failure classification and messages: glab
+// prints notices on stderr, which must not reach a successful read's decoder.
+func (h *Host) glabStdout(ctx context.Context, args []string) (stdout, combined []byte, err error) {
+	cmd := h.cmd(ctx, "glab", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err = cmd.Output()
+	return stdout, append(append([]byte{}, stdout...), stderr.Bytes()...), err
+}
+
+func (h *Host) pipelineTriggerJobs(ctx context.Context, pipelineID int) ([]gitlabTriggerJob, error) {
+	out, combined, err := h.glabStdout(ctx, h.pipelineRouteArgs(pipelineID, "trigger_jobs"))
+	if err != nil && gitlabRouteUnavailable(combined) {
+		out, combined, err = h.glabStdout(ctx, h.pipelineRouteArgs(pipelineID, "bridges"))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("glab pipeline trigger jobs: %s: %w", strings.TrimSpace(string(combined)), err)
+	}
+	triggerJobs, decodeErr := decodeGitlabTriggerJobs(out)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	return triggerJobs, nil
+}
+
+// mergeRequestStatusChecks lists the external status check services that apply
+// to the merge request and their current state. External status checks are a
+// GitLab Ultimate capability: Community Edition does not mount the route at
+// all, and an Enterprise Edition instance without the license answers 401 from
+// the route's license guard. Those two mean "this instance has no external
+// status checks to report" and read as none - treating them as unreadable
+// would park every harness run on an instance where the feature simply was not
+// sold. Every other failure is a read failure, including 403: the license
+// guard answers 401 before a 403 is possible, so a 403 is a project that does
+// have the feature refusing this token, and reading it as "no checks" would
+// hide one.
+func (h *Host) mergeRequestStatusChecks(ctx context.Context, mrIID string) ([]scm.Check, error) {
+	out, combined, err := h.glabStdout(ctx, h.mergeRequestStatusChecksArgs(mrIID))
+	if err != nil {
+		if gitlabExternalStatusChecksUnavailable(combined) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("glab merge request status checks: %s: %w", strings.TrimSpace(string(combined)), err)
+	}
+	checks, decodeErr := decodeGitlabExternalStatusChecks(out)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	return externalStatusChecksToChecks(checks), nil
 }
 
 func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
@@ -921,6 +1059,7 @@ type gitlabJob struct {
 	Status     string `json:"status"`
 	Stage      string `json:"stage"`
 	FinishedAt string `json:"finished_at"`
+	WebURL     string `json:"web_url"`
 	// AllowFailure marks a job GitLab lets fail without failing the pipeline
 	// (`allow_failure: true`). Such a job reports status "failed" but does not
 	// block the merge request.
@@ -931,11 +1070,37 @@ type gitlabJob struct {
 // is non-blocking in GitLab (the pipeline is green, shown as "passed with
 // warnings"), so it maps to CheckBucketSkip like other non-blocking outcomes
 // instead of CheckBucketFail.
+//
+// A manual job's bucket depends on the same flag, and the two readings are
+// opposites. A blocking manual job (`allow_failure: false`, the default for
+// `when: manual` inside `rules`) stops the pipeline at its stage until a person
+// runs it, and GitLab's own merge rules treat that pipeline as
+// unfinished; mapping it to a skip lets a merge request read as ready while
+// GitLab would refuse to merge it. It maps to CheckBucketPending instead - the
+// job is waiting on a person, not finished - and jobsToChecks marks it
+// AwaitingManualJob so the CI step names the wait and keeps it away from the
+// fix agent. An optional manual job (`allow_failure: true`, the default outside
+// `rules`) is one GitLab does not wait for - the pipeline can succeed without
+// it - so it stays a skip.
 func (j gitlabJob) bucket() scm.CheckBucket {
-	if j.AllowFailure && strings.EqualFold(strings.TrimSpace(j.Status), "failed") {
+	status := strings.ToLower(strings.TrimSpace(j.Status))
+	switch {
+	case status == "manual":
+		if j.AllowFailure {
+			return scm.CheckBucketSkip
+		}
+		return scm.CheckBucketPending
+	case j.AllowFailure && status == "failed":
 		return scm.CheckBucketSkip
 	}
 	return gitlabStatusBucket(j.Status)
+}
+
+// awaitingManualJob reports whether the job is a blocking manual job: GitLab
+// holds the pipeline at it until a person runs it. It is the one
+// pending check that cannot progress on its own and that no rerun can clear.
+func (j gitlabJob) awaitingManualJob() bool {
+	return strings.EqualFold(strings.TrimSpace(j.Status), "manual") && !j.AllowFailure
 }
 
 // completedAt parses the job's finished_at timestamp, returning the zero time
@@ -949,6 +1114,30 @@ func (j gitlabJob) completedAt() time.Time {
 		return parsed
 	}
 	return time.Time{}
+}
+
+// gitlabTriggerJob is a pipeline trigger job (historically "bridge"): the job
+// that starts a downstream pipeline. It carries an ordinary job's fields plus
+// the downstream pipeline it created, whose result GitLab mirrors into the
+// trigger job's own status when the trigger asks for it (trigger:strategy).
+type gitlabTriggerJob struct {
+	gitlabJob
+	DownstreamPipeline *gitlabDownstreamPipeline `json:"downstream_pipeline"`
+}
+
+type gitlabDownstreamPipeline struct {
+	ID     int    `json:"id"`
+	Status string `json:"status"`
+	WebURL string `json:"web_url"`
+}
+
+// gitlabExternalStatusCheck is one external status check service's verdict on
+// a merge request (GitLab Ultimate).
+type gitlabExternalStatusCheck struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	ExternalURL string `json:"external_url"`
+	Status      string `json:"status"`
 }
 
 // decodeGitlabJobs reads every job from glab output. The output may contain a
@@ -1048,6 +1237,89 @@ func decodeGitlabJobPage(raw json.RawMessage) ([]gitlabJob, error) {
 	return jobs, nil
 }
 
+// decodeGitlabPages streams the top-level JSON documents of glab output, one
+// per paginated page, and hands each to decodePage. Output with no JSON at all
+// is unreadable rather than an empty listing: GitLab answers a route it serves
+// with at least one document, so reading silence as "nothing to report" would
+// hide a failed check. io.EOF ends the stream cleanly; a document that does not
+// decode returns the values collected so far with the error.
+func decodeGitlabPages(what string, out []byte, decodePage func(json.RawMessage) error) error {
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 {
+		return fmt.Errorf("decode gitlab %s: response contained no JSON", what)
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	for {
+		var raw json.RawMessage
+		err := dec.Decode(&raw)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("decode gitlab %s: %w", what, err)
+		}
+		if err := decodePage(raw); err != nil {
+			return err
+		}
+	}
+}
+
+// decodeGitlabTriggerJobs reads every trigger job from the paginated REST
+// route, which emits one bare array per page. An entry without a name or status
+// is not a trigger job and fails the read, for the same reason the job decoder
+// refuses one: silently skipping it would hide the row that reports a failed
+// downstream pipeline.
+func decodeGitlabTriggerJobs(out []byte) ([]gitlabTriggerJob, error) {
+	var jobs []gitlabTriggerJob
+	err := decodeGitlabPages("trigger jobs", out, func(raw json.RawMessage) error {
+		var page []gitlabTriggerJob
+		if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+			return fmt.Errorf("decode gitlab trigger jobs: page is not an array")
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return fmt.Errorf("decode gitlab trigger jobs: %w", err)
+		}
+		for _, job := range page {
+			if strings.TrimSpace(job.Name) == "" {
+				return errors.New("decode gitlab trigger jobs: entry has no name")
+			}
+			if strings.TrimSpace(job.Status) == "" {
+				return fmt.Errorf("decode gitlab trigger jobs: %q has no status", job.Name)
+			}
+		}
+		jobs = append(jobs, page...)
+		return nil
+	})
+	return jobs, err
+}
+
+// decodeGitlabExternalStatusChecks reads every external status check from the
+// paginated REST route, which emits one bare array per page. The same
+// strictness applies: an entry without a name or status is not a status check.
+func decodeGitlabExternalStatusChecks(out []byte) ([]gitlabExternalStatusCheck, error) {
+	var checks []gitlabExternalStatusCheck
+	err := decodeGitlabPages("external status checks", out, func(raw json.RawMessage) error {
+		var page []gitlabExternalStatusCheck
+		if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+			return fmt.Errorf("decode gitlab external status checks: page is not an array")
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return fmt.Errorf("decode gitlab external status checks: %w", err)
+		}
+		for _, check := range page {
+			if strings.TrimSpace(check.Name) == "" {
+				return errors.New("decode gitlab external status checks: entry has no name")
+			}
+			if strings.TrimSpace(check.Status) == "" {
+				return fmt.Errorf("decode gitlab external status checks: %q has no status", check.Name)
+			}
+		}
+		checks = append(checks, page...)
+		return nil
+	})
+	return checks, err
+}
+
 func parseGitlabJobs(out []byte) ([]scm.Check, error) {
 	jobs, err := decodeGitlabJobs(out)
 	if len(jobs) == 0 {
@@ -1063,18 +1335,124 @@ func parseGitlabJobs(out []byte) ([]scm.Check, error) {
 func jobsToChecks(jobs []gitlabJob) []scm.Check {
 	checks := make([]scm.Check, 0, len(jobs))
 	for _, job := range jobs {
-		providerID := ""
-		if job.ID != 0 {
-			providerID = fmt.Sprintf("gitlab-job:%d", job.ID)
-		}
 		checks = append(checks, scm.Check{
-			Name:        job.Name,
-			ProviderID:  providerID,
-			Bucket:      job.bucket(),
-			CompletedAt: job.completedAt(),
+			Name:              job.Name,
+			ProviderID:        gitlabJobProviderID("gitlab-job", job.ID),
+			Bucket:            job.bucket(),
+			Kind:              scm.CheckKindRun,
+			State:             gitlabCheckState(job.Status),
+			CompletedAt:       job.completedAt(),
+			Link:              strings.TrimSpace(job.WebURL),
+			AwaitingManualJob: job.awaitingManualJob(),
 		})
 	}
 	return checks
+}
+
+// triggerJobsToChecks maps trigger jobs to checks. The status is the trigger
+// job's own - GitLab computes it from whether the downstream pipeline was
+// created, or, when the trigger asks for it, from the downstream pipeline's
+// result - so it is exactly the part of the downstream tree that the head
+// pipeline's aggregate reflects. The details link prefers the downstream
+// pipeline because that is where a failure has to be read.
+func triggerJobsToChecks(jobs []gitlabTriggerJob) []scm.Check {
+	checks := make([]scm.Check, 0, len(jobs))
+	for _, job := range jobs {
+		link := strings.TrimSpace(job.WebURL)
+		if job.DownstreamPipeline != nil {
+			if url := strings.TrimSpace(job.DownstreamPipeline.WebURL); url != "" {
+				link = url
+			}
+		}
+		checks = append(checks, scm.Check{
+			Name:              job.Name,
+			ProviderID:        gitlabJobProviderID("gitlab-trigger-job", job.ID),
+			Bucket:            job.bucket(),
+			Kind:              scm.CheckKindRun,
+			State:             gitlabCheckState(job.Status),
+			CompletedAt:       job.completedAt(),
+			Link:              link,
+			AwaitingManualJob: job.awaitingManualJob(),
+		})
+	}
+	return checks
+}
+
+// externalStatusChecksToChecks maps external status checks to checks. GitLab
+// reports one of passed, pending, or failed for each service that applies to
+// the merge request; a state this version does not recognize stays pending so
+// readiness waits instead of certifying a state it cannot classify.
+func externalStatusChecksToChecks(statusChecks []gitlabExternalStatusCheck) []scm.Check {
+	checks := make([]scm.Check, 0, len(statusChecks))
+	for _, status := range statusChecks {
+		id := ""
+		if status.ID != 0 {
+			id = "gitlab-status-check:" + strconv.Itoa(status.ID)
+		}
+		checks = append(checks, scm.Check{
+			Name:       status.Name,
+			ProviderID: id,
+			Bucket:     gitlabExternalStatusCheckBucket(status.Status),
+			Kind:       scm.CheckKindStatus,
+			State:      gitlabCheckState(status.Status),
+			Link:       strings.TrimSpace(status.ExternalURL),
+		})
+	}
+	return checks
+}
+
+// pipelineAggregateCheck returns the head pipeline's own status as a check when
+// no job or trigger job row already carries it, and no check when one does. The aggregate
+// is what the merge gate reads, so it must never be hidden by a job list that
+// happens to look green - a failed pipeline that created no job at all, or one
+// still running after its last job finished, has no row in the job list to
+// carry the state. A terminal pass or skip needs no row of its own: every row
+// that reports one already says the pipeline is not blocking.
+func pipelineAggregateCheck(pipeline gitlabHeadPipeline, checks []scm.Check) (scm.Check, bool) {
+	bucket := gitlabStatusBucket(pipeline.Status)
+	if bucket == "" {
+		// An unrecognized or incomplete pipeline state must not certify the
+		// commit as green; keep monitoring until GitLab reports a state that can
+		// be classified.
+		bucket = scm.CheckBucketPending
+	}
+	switch bucket {
+	case scm.CheckBucketFail, scm.CheckBucketCancel, scm.CheckBucketPending:
+	default:
+		return scm.Check{}, false
+	}
+	for _, check := range checks {
+		if check.Bucket == bucket {
+			return scm.Check{}, false
+		}
+	}
+	return scm.Check{
+		Name:              fmt.Sprintf("Pipeline #%d", pipeline.ID),
+		ProviderID:        "gitlab-pipeline:" + strconv.Itoa(pipeline.ID),
+		Bucket:            bucket,
+		Kind:              scm.CheckKindRun,
+		State:             gitlabCheckState(pipeline.Status),
+		CompletedAt:       pipeline.completedAt(),
+		Link:              strings.TrimSpace(pipeline.WebURL),
+		AwaitingManualJob: pipeline.awaitingManualJob(),
+	}, true
+}
+
+// gitlabJobProviderID renders the provider identity of a job or trigger job,
+// empty when GitLab reported no id (an unidentified row must not collide with
+// another unnamed row in the fix-target bookkeeping).
+func gitlabJobProviderID(prefix string, id int) string {
+	if id == 0 {
+		return ""
+	}
+	return prefix + ":" + strconv.Itoa(id)
+}
+
+// gitlabCheckState renders the provider's own status string the way the other
+// adapters do: uppercased and otherwise untouched, so a finding can say what
+// the provider reported without this package inventing vocabulary.
+func gitlabCheckState(state string) string {
+	return strings.ToUpper(strings.TrimSpace(state))
 }
 
 func findFailedJobTargetIDs(out []byte, checkTargets []scm.CheckTarget) []int {
@@ -1104,6 +1482,14 @@ func findFailedJobTargetIDs(out []byte, checkTargets []scm.CheckTarget) []int {
 	return matched
 }
 
+// gitlabStatusBucket maps a raw provider state - a job's or a pipeline's -
+// onto the shared bucket, ignoring job-level policy; gitlabJob.bucket applies
+// allow_failure on top for the jobs it maps. `manual` is a wait on a person,
+// not a finished state: a pipeline's own status is `manual` while it is
+// stopped at a blocking manual job, and reporting that as a skip would let a
+// blocked pipeline read green. Job-level manual states never reach this case -
+// gitlabJob.bucket splits them by allow_failure first - so this mapping serves
+// the pipeline-status reading, not the job reader.
 func gitlabStatusBucket(state string) scm.CheckBucket {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "success":
@@ -1114,13 +1500,67 @@ func gitlabStatusBucket(state string) scm.CheckBucket {
 		return scm.CheckBucketCancel
 	case "skipped":
 		return scm.CheckBucketSkip
-	case "manual":
-		return scm.CheckBucketSkip
-	case "pending", "running", "created", "waiting_for_resource", "preparing", "scheduled":
+	case "manual", "pending", "running", "created", "waiting_for_resource", "preparing", "scheduled":
 		return scm.CheckBucketPending
 	default:
 		return ""
 	}
+}
+
+// gitlabExternalStatusCheckBucket maps an external status check's state. GitLab
+// reports passed, pending, or failed; anything else is a state this version
+// cannot classify, and waiting is the safe reading of an unknown state (a
+// failed external status check blocks merges, so it must never be missed, and
+// an unrecognized one must not be optimistically read as passed). Unlike a job,
+// it has no skipped or cancelled state to map.
+func gitlabExternalStatusCheckBucket(state string) scm.CheckBucket {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "passed":
+		return scm.CheckBucketPass
+	case "failed":
+		return scm.CheckBucketFail
+	default:
+		return scm.CheckBucketPending
+	}
+}
+
+// gitlabRouteUnavailable reports whether a failed glab call means the instance
+// does not serve the requested REST route at all, rather than answering it with
+// an error: GitLab responses to an unmounted route are a bare
+// `{"error":"404 Not Found"}`, which glab prints as `glab: HTTP 404`.
+// Distinguishing the two matters for routes that were added or renamed between
+// GitLab versions - a missing route is a version difference to work around,
+// while an answered error is a failed read. A resource-level 404 ("Project Not
+// Found") does not match: glab prints `glab: 404 Project Not Found (HTTP 404)`
+// for it, which is neither pattern, so it fails the read instead of being
+// mistaken for a version difference.
+func gitlabRouteUnavailable(out []byte) bool {
+	text := string(out)
+	return strings.Contains(text, `"error":"404 Not Found"`) || strings.Contains(text, "glab: HTTP 404")
+}
+
+// gitlabExternalStatusChecksUnavailable reports whether a failed status-checks
+// read means the instance does not serve external status checks rather than the
+// read failing. GitLab mounts the route only on Enterprise Edition with an
+// Ultimate license: Community Edition answers 404 with the unmounted-route body
+// (live-observed), and an unlicensed Enterprise Edition instance answers 401
+// from the route's own license guard (`unauthorized!`). A 403 is deliberately
+// not in this set: the license guard answers 401 first, so a 403 comes from a
+// project that does have the feature and refused this token (or from a
+// granular token without the read permission) - a failed read, not an absent
+// feature. A network error, 5xx, or malformed answer matches none of these and
+// must surface as well.
+func gitlabExternalStatusChecksUnavailable(out []byte) bool {
+	text := string(out)
+	if strings.Contains(text, `"error":"404 Not Found"`) {
+		return true
+	}
+	for _, refusal := range []string{"HTTP 401", `"message":"401 Unauthorized"`} {
+		if strings.Contains(text, refusal) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizePRState(raw string) scm.PRState {

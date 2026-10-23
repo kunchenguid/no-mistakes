@@ -472,7 +472,7 @@ func TestTestStep_RepeatedCutKeepsRefusingUnvalidatedWork(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
 	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
-	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+	sctx.Config.TestAgentTimeout = 250 * time.Millisecond
 
 	first, err := (&TestStep{}).Execute(sctx)
 	if err != nil {

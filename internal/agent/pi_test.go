@@ -617,6 +617,73 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"
 	}
 }
 
+func TestPiAgent_RunRetriesRealFetchFailure(t *testing.T) {
+	previous := transientBackoff
+	transientBackoff = func(ctx context.Context, _ int) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	t.Cleanup(func() { transientBackoff = previous })
+
+	cwd := t.TempDir()
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+set -eu
+cat > /dev/null
+printf '%s\n' attempt >> pi-attempts.txt
+if [ ! -f pi-first-attempt ]; then
+	: > pi-first-attempt
+	printf '%s\n' 'fetch failed' >&2
+	exit 1
+fi
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}'
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"echo attempt>> pi-attempts.txt",
+		"if exist pi-first-attempt goto success",
+		"echo.> pi-first-attempt",
+		"echo fetch failed 1>&2",
+		"exit /b 1",
+		":success",
+		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}]}",
+	}, "\r\n"))
+
+	var attempts []Attempt
+	result, err := (&piAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt: "review",
+		CWD:    cwd,
+		OnAttempt: func(attempt Attempt) {
+			attempts = append(attempts, attempt)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result == nil || result.Text != "ok" {
+		t.Fatalf("result = %+v, want successful second invocation", result)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want first failure and second success", len(attempts))
+	}
+	if attempts[0].Err == nil || !strings.Contains(attempts[0].Err.Error(), "pi exited: ") || !strings.Contains(attempts[0].Err.Error(), "fetch failed") {
+		t.Fatalf("first attempt error = %v, want Pi's wrapped fetch failure", attempts[0].Err)
+	}
+	if attempts[1].Err != nil {
+		t.Fatalf("second attempt error = %v", attempts[1].Err)
+	}
+	data, err := os.ReadFile(filepath.Join(cwd, "pi-attempts.txt"))
+	if err != nil {
+		t.Fatalf("read attempt marker: %v", err)
+	}
+	if got := len(strings.Fields(string(data))); got != 2 {
+		t.Fatalf("Pi invocations = %d, want 2", got)
+	}
+}
+
 func TestPiAgent_RunSurfacesNonZeroExit(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakePi(t, dir, `#!/bin/sh

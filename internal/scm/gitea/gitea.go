@@ -44,6 +44,7 @@
 package gitea
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -473,54 +474,83 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	return "", scm.ErrUnsupported
 }
 
+type giteaRunPullRequest struct {
+	Number int `json:"number"`
+}
+
 type giteaRunSummary struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Branch string `json:"branch"`
-	Event  string `json:"event"`
+	ID           giteaRunID            `json:"id"`
+	Status       string                `json:"status"`
+	HeadBranch   string                `json:"head_branch"`
+	Event        string                `json:"event"`
+	PullRequests []giteaRunPullRequest `json:"pull_requests"`
 }
 
-// teaRun is one element of tea 1.0's `tea run list --json`, whose id is an
-// integer (tea 0.x renders it as a string, see giteaRunSummary).
-type teaRun struct {
-	ID int64 `json:"id"`
+// giteaRunID unmarshals a workflow run's id from either a bare JSON number
+// (the raw REST `/actions/runs` endpoint's own type, confirmed against a
+// live Gitea 1.27.3 instance) or a JSON string, storing it as a decimal
+// string: every call site here uses a run id as a tea/REST path segment,
+// never for arithmetic.
+type giteaRunID string
+
+func (id *giteaRunID) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) >= 2 && data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		*id = giteaRunID(s)
+		return nil
+	}
+	*id = giteaRunID(data)
+	return nil
 }
 
-func (h *Host) listRuns(ctx context.Context, branch string) ([]giteaRunSummary, error) {
-	gen, account, err := h.begin(ctx)
+// listRuns lists the repository's most recent workflow runs for the caller
+// to match against a PR (see runJobsMatchingHeadSHA). It calls the raw
+// `/actions/runs` REST endpoint directly through `tea api` - the same
+// generation-agnostic passthrough runJobs already uses for job details -
+// instead of tea's own dedicated `actions runs list`/`run list` commands,
+// because those commands' own JSON output drops two fields this code needs:
+// a pull_request-triggered run's real branch name (Gitea's REST response
+// names it in `head_branch` as the literal "#<PR number>", which tea's
+// dedicated commands either blank out or never request at all) and the
+// run's own `pull_requests` array, which names the exact PR number Gitea
+// itself associated with that run. Confirmed directly against a live Gitea
+// 1.27.3 instance. Matching on pull_requests[].number (see
+// runJobsMatchingHeadSHA) makes a cross-PR or cross-branch collision
+// structurally impossible rather than merely unlikely, which a branch-name
+// or bare head-SHA match alone cannot guarantee. `limit=50` raises the
+// single page fetched above the default page size to reduce, though on a
+// sufficiently busy repository not eliminate, the chance that the matching
+// run falls off the first page.
+func (h *Host) listRuns(ctx context.Context) ([]giteaRunSummary, error) {
+	owner, repo, ok := splitOwnerRepo(h.repoSlug)
+	if !ok {
+		return nil, fmt.Errorf("gitea: invalid repo slug %q", h.repoSlug)
+	}
+	_, account, err := h.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	label := "tea actions runs list"
-	args := append([]string{"actions", "runs", "list", "--repo", h.repoSlug}, account...)
-	args = append(args, "--branch", branch, "--output", "json")
-	if gen == tea1 {
-		label = "tea run list"
-		args = append([]string{"run", "list", "--repo", h.repoSlug}, account...)
-		args = append(args, "--branch", branch, "--json=id")
-	}
-	out, err := h.cmd(ctx, "tea", args...).CombinedOutput()
+	endpoint := fmt.Sprintf("/repos/%s/%s/actions/runs?limit=50", owner, repo)
+	args := append([]string{"api"}, account...)
+	out, err := h.cmd(ctx, "tea", append(args, endpoint)...).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %s: %w", label, strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("tea api actions runs: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
 		return nil, nil
 	}
-	var runs []giteaRunSummary
-	if gen == tea1 {
-		var items []teaRun
-		err = json.Unmarshal(trimmed, &items)
-		for _, item := range items {
-			runs = append(runs, giteaRunSummary{ID: strconv.FormatInt(item.ID, 10)})
-		}
-	} else {
-		err = json.Unmarshal(trimmed, &runs)
+	var resp struct {
+		WorkflowRuns []giteaRunSummary `json:"workflow_runs"`
 	}
-	if err != nil {
-		return nil, fmt.Errorf("%s: invalid JSON output: %s", label, strings.TrimSpace(string(out)))
+	if err := json.Unmarshal(trimmed, &resp); err != nil {
+		return nil, fmt.Errorf("tea api actions runs: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
-	return runs, nil
+	return resp.WorkflowRuns, nil
 }
 
 type giteaJob struct {
@@ -581,14 +611,14 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if strings.TrimSpace(view.Head) == "" {
 		return nil, nil
 	}
-	runs, err := h.listRuns(ctx, view.Head)
+	runs, err := h.listRuns(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if len(runs) == 0 {
 		return nil, nil
 	}
-	_, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, view.HeadSHA)
+	_, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, view.HeadSHA, view.Head, view.Index)
 	if err != nil {
 		return nil, err
 	}
@@ -606,8 +636,8 @@ func runsByIDDesc(runs []giteaRunSummary) []giteaRunSummary {
 	ordered := make([]giteaRunSummary, len(runs))
 	copy(ordered, runs)
 	sort.SliceStable(ordered, func(i, j int) bool {
-		idI, okI := parseGiteaRunID(ordered[i].ID)
-		idJ, okJ := parseGiteaRunID(ordered[j].ID)
+		idI, okI := parseGiteaRunID(string(ordered[i].ID))
+		idJ, okJ := parseGiteaRunID(string(ordered[j].ID))
 		if okI && okJ {
 			return idI > idJ
 		}
@@ -617,24 +647,35 @@ func runsByIDDesc(runs []giteaRunSummary) []giteaRunSummary {
 }
 
 // runJobsMatchingHeadSHA finds the run (and its jobs) whose jobs belong to
-// headSHA, searching candidate runs from highest ID to lowest. A branch can
-// have more than one run - e.g. a manual re-run of an older commit can land a
-// higher run ID than a newer commit's own run - so trusting the highest-ID
-// run alone (or list order) could silently attribute a stale or unrelated
-// commit's checks/logs to the PR's current head, or miss a matching lower-ID
-// run entirely. When headSHA is empty there is nothing to match against, so
-// only the highest-ID run is considered, preserving prior best-effort
-// behavior.
-func (h *Host) runJobsMatchingHeadSHA(ctx context.Context, runs []giteaRunSummary, headSHA string) (giteaRunSummary, []giteaJob, error) {
-	ordered := runsByIDDesc(runs)
+// headSHA, searching candidate runs from highest ID to lowest. A PR can have
+// more than one matching run - e.g. a manual re-run of an older commit can
+// land a higher run ID than a newer commit's own run - so trusting the
+// highest-ID run alone (or list order) could silently attribute a stale
+// commit's checks/logs to the PR's current head, or miss a matching
+// lower-ID run entirely.
+//
+// prNumber and sourceBranch scope the candidate list to runs that can
+// actually belong to this PR before any SHA matching starts (see
+// filterRunsForPR): a pull_request-triggered run is kept only when its own
+// pull_requests array names this exact PR number, and a push-triggered run
+// (e.g. from a plain push to the PR's own branch before or after the PR
+// opened) is kept only when its head branch equals sourceBranch. Because
+// that scoping is exact rather than best-effort, it is safe for the
+// empty-headSHA case to fall back to the newest (highest-ID) run in the
+// already-scoped list: no run outside this PR can ever reach that fallback.
+func (h *Host) runJobsMatchingHeadSHA(ctx context.Context, runs []giteaRunSummary, headSHA, sourceBranch string, prNumber int) (giteaRunSummary, []giteaJob, error) {
+	ordered := runsByIDDesc(filterRunsForPR(runs, sourceBranch, prNumber))
+	if len(ordered) == 0 {
+		return giteaRunSummary{}, nil, nil
+	}
 	headSHA = strings.TrimSpace(headSHA)
 	if headSHA == "" {
 		run := ordered[0]
-		jobs, err := h.runJobs(ctx, run.ID)
+		jobs, err := h.runJobs(ctx, string(run.ID))
 		return run, jobs, err
 	}
 	for _, run := range ordered {
-		jobs, err := h.runJobs(ctx, run.ID)
+		jobs, err := h.runJobs(ctx, string(run.ID))
 		if err != nil {
 			return giteaRunSummary{}, nil, err
 		}
@@ -645,6 +686,46 @@ func (h *Host) runJobsMatchingHeadSHA(ctx context.Context, runs []giteaRunSummar
 	// No run yet matches the PR's current head commit: CI has not caught up
 	// with the latest push, or only stale/unrelated runs exist so far.
 	return giteaRunSummary{}, nil, nil
+}
+
+// filterRunsForPR keeps only runs that can plausibly belong to this PR. A
+// pull_request-triggered run is kept only when its own pull_requests array
+// names prNumber - the one signal Gitea's API provides for that case, since
+// such a run's head branch is either absent or the literal "#<PR number>"
+// rather than a real branch name (see listRuns). Any other run (in
+// practice, a push-triggered run) is kept only when its HeadBranch equals
+// sourceBranch. A run whose event is "pull_request" but whose pull_requests
+// array does not name prNumber is dropped outright rather than falling
+// through to the branch check, since such a run's HeadBranch is never a
+// usable branch name either.
+func filterRunsForPR(runs []giteaRunSummary, sourceBranch string, prNumber int) []giteaRunSummary {
+	sourceBranch = strings.TrimSpace(sourceBranch)
+	filtered := make([]giteaRunSummary, 0, len(runs))
+	for _, run := range runs {
+		if run.Event == "pull_request" {
+			if runNamesPR(run, prNumber) {
+				filtered = append(filtered, run)
+			}
+			continue
+		}
+		if run.HeadBranch == sourceBranch {
+			filtered = append(filtered, run)
+		}
+	}
+	return filtered
+}
+
+// runNamesPR reports whether run's own pull_requests array names prNumber.
+func runNamesPR(run giteaRunSummary, prNumber int) bool {
+	if prNumber <= 0 {
+		return false
+	}
+	for _, pr := range run.PullRequests {
+		if pr.Number == prNumber {
+			return true
+		}
+	}
+	return false
 }
 
 func parseGiteaRunID(id string) (int64, bool) {
@@ -705,7 +786,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if strings.TrimSpace(view.Head) == "" {
 		return nil, errors.New("resolve Gitea pull request for selected logs: head branch is empty")
 	}
-	runs, err := h.listRuns(ctx, view.Head)
+	runs, err := h.listRuns(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list Gitea runs for selected logs: %w", err)
 	}
@@ -716,7 +797,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if matchSHA == "" {
 		matchSHA = view.HeadSHA
 	}
-	run, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, matchSHA)
+	run, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, matchSHA, view.Head, view.Index)
 	if err != nil {
 		return nil, fmt.Errorf("find Gitea run for selected logs: %w", err)
 	}
@@ -739,9 +820,9 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 		var outputs []string
 		var errs []error
 		for _, jobID := range jobIDs {
-			verb := []string{"actions", "runs", "logs", run.ID}
+			verb := []string{"actions", "runs", "logs", string(run.ID)}
 			if gen == tea1 {
-				verb = []string{"run", "logs", run.ID}
+				verb = []string{"run", "logs", string(run.ID)}
 			}
 			args := append(verb, "--job", strconv.Itoa(jobID), "--repo", h.repoSlug)
 			out, err := h.cmd(ctx, "tea", append(args, account...)...).Output()

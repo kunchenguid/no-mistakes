@@ -26,16 +26,28 @@ const (
 // checks that are still running. The canonical strings live in cimonitor so all
 // producers and consumers agree on them.
 const (
-	ciChecksPassedMsg           = cimonitor.ChecksPassedMsg
-	ciNoChecksPassedMsg         = cimonitor.NoChecksPassedMsg
-	ciChecksRunningMsg          = cimonitor.ChecksRunningMsg
-	ciChecksAwaitingApprovalMsg = cimonitor.ChecksAwaitingApprovalMsg
-	ciBehindBaseMsg             = cimonitor.BehindBaseMsg
+	ciChecksPassedMsg            = cimonitor.ChecksPassedMsg
+	ciChecksPassedCompleteMsg    = cimonitor.ChecksPassedCompleteMsg
+	ciNoChecksPassedMsg          = cimonitor.NoChecksPassedMsg
+	ciNoChecksPassedCompleteMsg  = cimonitor.NoChecksPassedCompleteMsg
+	ciChecksRunningMsg           = cimonitor.ChecksRunningMsg
+	ciChecksAwaitingApprovalMsg  = cimonitor.ChecksAwaitingApprovalMsg
+	ciChecksAwaitingManualJobMsg = cimonitor.ChecksAwaitingManualJobMsg
+	ciBehindBaseMsg              = cimonitor.BehindBaseMsg
 )
 
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
 // timeout elapses, and repairs CI failures through the executor's shared
-// findings machinery.
+// findings machinery. With ci.release_after_checks_pass it instead finishes the
+// run at the checks verdict.
+//
+// By default the green observation only clears the failure signal: the monitor
+// keeps watching the PR, so the run stays open and a later base-branch advance
+// is still repaired on its own. That is also why the recorded step duration
+// includes merge-waiting time. The opt-in release finishes the step there
+// instead, recording readiness and completing the run with the terminal
+// checks_passed status, which releases its worktree and lane and leaves the
+// merge decision to a human.
 //
 // Execute has the same shape as the review step's: when the executor
 // re-executes it as a fix round (sctx.Fixing), it first repairs the findings
@@ -438,7 +450,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		timeout = config.DefaultCITimeout
 	}
 
-	if unlimited {
+	releaseAfterChecksPass := ciReleaseAfterChecksPass(sctx)
+	if releaseAfterChecksPass {
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s until every check is green...", prNumber))
+	} else if unlimited {
 		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (no timeout, until merged or closed)...", prNumber))
 	} else {
 		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
@@ -516,6 +531,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		pollBaseTip := ""
 		botCommentReadFailed := false
 		behindObserved := false
 
@@ -535,6 +551,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			tip, resolved := baseBranchTip(tipCtx)
 			cancel()
 			if resolved && tip != "" {
+				pollBaseTip = tip
 				if lastBaseTip == "" {
 					lastBaseTip = tip
 				} else if tip != lastBaseTip {
@@ -769,7 +786,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
 				lastMonitorLog = ""
-				if s.lastRepairStillUnverified(checks, mergeConflict) {
+				if mergeConflict && unlimited {
+					tipCtx, cancel := context.WithTimeout(ctx, defaultBaseBranchTipResolveWindow)
+					if tip, resolved := baseBranchTip(tipCtx); resolved {
+						pollBaseTip = tip
+					}
+					cancel()
+				}
+				if s.lastRepairStillUnverified(checks, mergeConflict, pollBaseTip) {
 					// The provider has not re-run the checks the last
 					// published repair targeted: the failures on screen are
 					// the ones that repair was for, not a verdict on it.
@@ -800,8 +824,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						botComments:         reviewBotComments(sctx, host, pr, checks),
 						greenBots:           reviewBotCommentsAlways(sctx),
 					})
-					if hasAwaitingApprovalChecks(checks) {
-						sctx.Log(ciChecksAwaitingApprovalMsg)
+					if hold := humanHoldMessage(checks); hold != "" {
+						sctx.Log(hold)
 					}
 					sctx.Log(fmt.Sprintf("issues detected: %s", findings.Summary))
 					return ciObservationOutcome(findings), nil
@@ -886,8 +910,24 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						return ciObservationOutcome(findings), nil
 					}
 					sctx.DeferredFindings = ""
+					declaredNoCI := len(checks) == 0
+					// The default keeps watching: the green observation only
+					// clears the failure signal, as it always has, so the run
+					// stays open until the PR is merged, closed, or declined.
+					// ci.release_after_checks_pass opts into finishing here
+					// instead, which records the checks verdict and releases the
+					// run's worktree and lane.
+					if releaseAfterChecksPass {
+						completeMsg := ciChecksPassedCompleteMsg
+						if declaredNoCI {
+							completeMsg = ciNoChecksPassedCompleteMsg
+						}
+						sctx.Log(completeMsg)
+						sctx.Log("validation complete: releasing the run now; the PR is ready for a human to merge")
+						return &pipeline.StepOutcome{CIReadyNoCI: &declaredNoCI}, nil
+					}
 					passedMsg := ciChecksPassedMsg
-					if len(checks) == 0 {
+					if declaredNoCI {
 						passedMsg = ciNoChecksPassedMsg
 					}
 					lastMonitorLog = logCIMonitorStatus(sctx, passedMsg, lastMonitorLog)
@@ -910,28 +950,61 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	}
 }
 
+// humanHoldMessage names the hold a check set is under, or "" when every
+// pending check can still finish on its own. The two holds read differently to
+// the person they wait on - approve a workflow versus run a job - so
+// each keeps its own wording instead of one hold's message describing the
+// other's.
+func humanHoldMessage(checks []scm.Check) string {
+	if hasAwaitingApprovalChecks(checks) {
+		return ciChecksAwaitingApprovalMsg
+	}
+	if hasAwaitingManualJobChecks(checks) {
+		return ciChecksAwaitingManualJobMsg
+	}
+	return ""
+}
+
 // ciWaitingMessage names what the monitor is waiting for when no check has
-// failed. A workflow the provider is holding for approval has run nothing and
-// will run nothing until a maintainer acts, so calling that "checks running"
+// failed. A check the provider is holding for a person - a workflow awaiting
+// maintainer approval, or a blocking manual job - has run nothing more and
+// will run nothing until that person acts, so calling it "checks running"
 // describes work that does not exist and hides the one thing that would move
 // the run along. Anything else is an ordinary wait on checks in flight.
 func ciWaitingMessage(checks []scm.Check) string {
-	if hasAwaitingApprovalChecks(checks) {
-		return ciChecksAwaitingApprovalMsg
+	if hold := humanHoldMessage(checks); hold != "" {
+		return hold
 	}
 	return ciChecksRunningMsg
 }
 
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {
 	if message != previous {
-		ready := message == ciChecksPassedMsg || message == ciNoChecksPassedMsg
-		declaredNoCI := message == ciNoChecksPassedMsg
+		ready, declaredNoCI := ciReadyMessage(message)
 		if err := setCIMonitorReadiness(sctx, ready, declaredNoCI); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not persist CI readiness: %v", err))
 		}
 		sctx.Log(message)
 	}
 	return message
+}
+
+func ciReadyMessage(message string) (ready, declaredNoCI bool) {
+	switch message {
+	case ciChecksPassedMsg:
+		return true, false
+	case ciNoChecksPassedMsg:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// ciReleaseAfterChecksPass reports whether the operator opted into finishing the
+// run at the checks verdict. The default is off: the monitor keeps watching the
+// PR until it is merged or closed, exactly as it always has.
+func ciReleaseAfterChecksPass(sctx *pipeline.StepContext) bool {
+	return sctx != nil && sctx.Config != nil && sctx.Config.CI.ReleaseAfterChecksPass
 }
 
 func clearCIMonitorReady(sctx *pipeline.StepContext) {

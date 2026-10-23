@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -48,6 +49,9 @@ func newStatsCmd() *cobra.Command {
 				}
 
 				fmt.Fprintln(cmd.OutOrStdout(), renderStatsDashboard(stats))
+				for _, routing := range stats.QuotaRouting {
+					fmt.Fprintf(cmd.OutOrStdout(), "run %s\n%s", routing.RunID, axiDoc(quotaRoutingField(routing.Record)))
+				}
 				return nil
 			})
 		},
@@ -124,6 +128,13 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 	fmt.Fprintf(w, "run %s (%s), parked at gates %s total\n", run.ID, run.Status, formatMS(run.ParkedMS))
 	if run.PiProfile != nil {
 		fmt.Fprintf(w, "pinned Pi profile: model=%s effort=%s (requested for every invocation; MODEL below is served evidence)\n", run.PiProfile.Model, run.PiProfile.Effort)
+	}
+	record, err := quotarouting.ParseRecord(run.QuotaRouting)
+	if err != nil {
+		return fmt.Errorf("quota routing for run %s: %w", run.ID, err)
+	}
+	if record != nil {
+		fmt.Fprint(w, axiDoc(quotaRoutingField(record)))
 	}
 	if len(invocations) == 0 {
 		fmt.Fprintln(w, "no agent invocations recorded for this run")

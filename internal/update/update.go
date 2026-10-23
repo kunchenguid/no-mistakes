@@ -34,6 +34,7 @@ var daemonIsRunning = daemon.IsRunning
 var daemonExecutablePath = runningDaemonExecutablePath
 var daemonStop = daemon.Stop
 var daemonStart = daemon.Start
+var daemonStartExecutable = runDaemonStart
 var windowsExecutablePathForPID = defaultWindowsExecutablePathForPID
 var nixStoreDir = "/nix/store"
 
@@ -139,7 +140,7 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		paths:           p,
 		spawnBackground: defaultSpawnBackground,
 		resetDaemon: func(daemonExpected bool) error {
-			return defaultResetDaemon(p, daemonExpected)
+			return defaultResetDaemon(p, daemonExpected, execPath)
 		},
 	}, nil
 }

@@ -202,6 +202,15 @@ type Check struct {
 	// check is reported pending, never failing, so the CI step waits for the
 	// approval instead of spending auto-fix rounds on work that never ran.
 	AwaitingApproval bool
+	// AwaitingManualJob marks a check the provider is holding on a manual job
+	// a person must run before the pipeline can finish - GitLab's
+	// blocking manual job (`when: manual` with `allow_failure: false`), which
+	// stops the pipeline at its stage. Like AwaitingApproval it is a wait on a
+	// human rather than a verdict on the commit, so it is reported pending and
+	// never sent to the fix agent; unlike a skipped job, it keeps the pipeline
+	// from reading green while the pipeline is still stopped, and no rerun can
+	// clear it.
+	AwaitingManualJob bool
 	// App identifies the provider application that published the check, when
 	// the provider reports one: on GitHub it is the check suite's app slug
 	// ("github-actions" for every Actions job, "greptile-apps" for Greptile's
@@ -282,6 +291,12 @@ func IsReviewBotLogin(provider Provider, login string) bool {
 
 // Pending reports whether the check is still running or queued.
 func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
+
+// HeldForHuman reports whether the provider is holding the check on a person -
+// a maintainer approval or a manual job - so it will not progress on its own
+// no matter how long the monitor waits. Such a check is pending, but it never
+// defers escalation of the other checks' failures.
+func (c Check) HeldForHuman() bool { return c.AwaitingApproval || c.AwaitingManualJob }
 
 // Capabilities declares which optional Host methods return meaningful data.
 // Callers must consult Capabilities before invoking optional methods.

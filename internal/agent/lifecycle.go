@@ -16,6 +16,13 @@ const (
 	// LifecyclePhaseFallback marks any fallback before a fresh agent attempt,
 	// including provider, session-resume, and structured-output fallbacks.
 	LifecyclePhaseFallback = "fallback"
+	// LifecyclePhaseQuotaSwitch marks the quota-aware mid-run switch: the
+	// active agent failed on a recognised quota exhaustion and the run moves
+	// to the next agent in the chosen order with a fresh session. The
+	// executor records it on the run's quota-routing record; it is not a
+	// plain fallback because it does not prove the next agent can start, only
+	// that this one spent its quota.
+	LifecyclePhaseQuotaSwitch = "quota_switch"
 	// LifecyclePhaseActivity marks observed liveness of a running native
 	// subprocess: bytes arrived on its stdout or stderr.
 	//
@@ -99,6 +106,15 @@ func emitAgentFallback(opts RunOpts, current, next string, err error) {
 		Agent:   current,
 		Phase:   LifecyclePhaseFallback,
 		Message: fmt.Sprintf("agent %s failed (%s); falling back to %s", current, fallbackReason(err), next),
+	})
+}
+
+func emitAgentQuotaSwitch(opts RunOpts, current, next string, err error) {
+	emitAgentControl(opts, LifecycleEvent{
+		Agent:     current,
+		Phase:     LifecyclePhaseQuotaSwitch,
+		NextAgent: next,
+		Message:   fmt.Sprintf("agent %s exhausted its quota (%s); switching to %s with a fresh session", current, fallbackReason(err), next),
 	})
 }
 

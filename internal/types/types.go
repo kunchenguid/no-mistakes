@@ -16,6 +16,13 @@ const (
 	RunCompleted RunStatus = "completed"
 	RunFailed    RunStatus = "failed"
 	RunCancelled RunStatus = "cancelled"
+	// RunChecksPassed means the run reached its validation verdict and finished
+	// with every CI check green (or a trusted no_ci declaration) while the PR
+	// was still open. It is a success, distinct from RunCompleted so a caller
+	// can tell "checks passed, waiting on a human merge decision" apart from
+	// "the PR merged or closed"; the merge itself is never observed by this
+	// run, because the gate does not own the merge decision.
+	RunChecksPassed RunStatus = "checks_passed"
 	// RunCIMonitorInterrupted means the daemon restarted while babysitting an
 	// already-created PR. The PR remains intact, so this is not a pipeline
 	// failure.
@@ -23,10 +30,30 @@ const (
 )
 
 const (
+	// StepErrorAbortedByUser is the error a step records when an operator
+	// aborts it at its approval gate. A reason, when given, follows it after
+	// ": " (see UserAbortStepError).
+	StepErrorAbortedByUser = "aborted by user"
+
 	RunCancelReasonAbortedByUser  = "cancelled: aborted by user"
 	RunCancelReasonSuperseded     = "cancelled: superseded by new push"
 	RunCIMonitorInterruptedReason = "ci monitor interrupted by daemon restart; PR remains open"
 )
+
+// UserAbortStepError returns the error recorded on a step an operator aborted
+// at its gate, with their reason when one was given.
+func UserAbortStepError(reason string) string {
+	if reason = strings.TrimSpace(reason); reason != "" {
+		return StepErrorAbortedByUser + ": " + reason
+	}
+	return StepErrorAbortedByUser
+}
+
+// IsUserAbortStepError reports whether a step error records an operator's gate
+// abort, with or without a reason.
+func IsUserAbortStepError(stepError string) bool {
+	return stepError == StepErrorAbortedByUser || strings.HasPrefix(stepError, StepErrorAbortedByUser+": ")
+}
 
 // Terminal reports whether the run has reached a final state the daemon will
 // never advance further. This is the single source of truth for "is this run
@@ -35,10 +62,12 @@ const (
 // through it so a newly added terminal status can never drift out of sync.
 // RunCIMonitorInterrupted is terminal - the daemon restarted mid-CI-monitor
 // and the run is never resumed (issue #361) - so it must classify exactly like
-// completed/failed/cancelled.
+// completed/failed/cancelled. RunChecksPassed is terminal for the same kind of
+// reason: the monitor stopped on a green head and the run is never resumed, so
+// the merge it stopped waiting for cannot move it again.
 func (s RunStatus) Terminal() bool {
 	switch s {
-	case RunCompleted, RunFailed, RunCancelled, RunCIMonitorInterrupted:
+	case RunCompleted, RunFailed, RunCancelled, RunChecksPassed, RunCIMonitorInterrupted:
 		return true
 	default:
 		return false
@@ -271,10 +300,11 @@ const (
 type ApprovalAction string
 
 const (
-	ActionApprove ApprovalAction = "approve"
-	ActionFix     ApprovalAction = "fix"
-	ActionSkip    ApprovalAction = "skip"
-	ActionAbort   ApprovalAction = "abort"
+	ActionApprove          ApprovalAction = "approve"
+	ActionFix              ApprovalAction = "fix"
+	ActionSkip             ApprovalAction = "skip"
+	ActionAbort            ApprovalAction = "abort"
+	ActionCompleteCoverage ApprovalAction = "complete-coverage"
 	// ActionAnswer releases a review gate that parked on the reviewer's own
 	// open questions, once every one of them is answered. It is neither a
 	// verdict on the round nor a request to fix anything: the same reviewer
@@ -366,6 +396,13 @@ func ACPTargetFor(name AgentName) (string, bool) {
 		return "", false
 	}
 	return target, true
+}
+
+func CanonicalAgentName(name AgentName) AgentName {
+	if target, ok := ACPTargetFor(name); ok {
+		return AgentName("acp:" + target)
+	}
+	return name
 }
 
 // ACPRawCommand resolves the raw command acpx runs for an ACP target: a

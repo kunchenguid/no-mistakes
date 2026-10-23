@@ -47,7 +47,6 @@ func newStrandedTestFixFixture(t *testing.T, opts strandedTestFixOptions) (*reco
 		mustRun(t, f.local, "checkout", "feature/recover")
 	}
 	mustRun(t, f.gate, "worktree", "add", "--detach", runWorktree, start)
-	configureIdentity(t, runWorktree)
 	if opts.rebased {
 		mustRun(t, runWorktree, "cherry-pick", f.submitted)
 	}
@@ -93,26 +92,11 @@ func newStrandedTestFixFixture(t *testing.T, opts strandedTestFixOptions) (*reco
 // the run row for that submission; the pipeline's work is added by the caller.
 func newRecoverFixtureAtSubmittedHead(t *testing.T) *recoverFixture {
 	t.Helper()
-	root := t.TempDir()
+	root, heads := copyGitFixture(t, "recover-at-submitted-head", buildRecoverRepositoriesAtSubmittedHead)
 	remote := filepath.Join(root, "upstream.git")
-	mustRun(t, root, "init", "--bare", remote)
-
 	local := filepath.Join(root, "operator")
-	mustRun(t, root, "init", "-b", "main", local)
-	configureIdentity(t, local)
-	mustWrite(t, filepath.Join(local, "file.txt"), "base\n")
-	mustRun(t, local, "add", "file.txt")
-	mustRun(t, local, "commit", "-m", "base")
-	base := mustRun(t, local, "rev-parse", "HEAD")
-	mustRun(t, local, "checkout", "-b", "feature/recover")
-	mustWrite(t, filepath.Join(local, "feature.txt"), "feature\n")
-	mustRun(t, local, "add", "feature.txt")
-	mustRun(t, local, "commit", "-m", "feature")
-	submitted := mustRun(t, local, "rev-parse", "HEAD")
-
 	gate := filepath.Join(root, "gate.git")
-	mustRun(t, root, "init", "--bare", gate)
-	mustRun(t, local, "push", gate, "refs/heads/main:refs/heads/main", "refs/heads/feature/recover:refs/heads/feature/recover")
+	base, submitted := heads.base, heads.submitted
 
 	database, err := db.Open(filepath.Join(root, "state.sqlite"))
 	if err != nil {
@@ -135,13 +119,35 @@ func newRecoverFixtureAtSubmittedHead(t *testing.T) *recoverFixture {
 	}
 }
 
+func buildRecoverRepositoriesAtSubmittedHead(t *testing.T, root string) recoverHeads {
+	t.Helper()
+	remote := filepath.Join(root, "upstream.git")
+	mustRun(t, root, "init", "--bare", remote)
+
+	local := filepath.Join(root, "operator")
+	mustRun(t, root, "init", "-b", "main", local)
+	mustWrite(t, filepath.Join(local, "file.txt"), "base\n")
+	mustRun(t, local, "add", "file.txt")
+	mustRun(t, local, "commit", "-m", "base")
+	base := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "checkout", "-b", "feature/recover")
+	mustWrite(t, filepath.Join(local, "feature.txt"), "feature\n")
+	mustRun(t, local, "add", "feature.txt")
+	mustRun(t, local, "commit", "-m", "feature")
+	submitted := mustRun(t, local, "rev-parse", "HEAD")
+
+	gate := filepath.Join(root, "gate.git")
+	mustRun(t, root, "init", "--bare", gate)
+	mustRun(t, local, "push", gate, "refs/heads/main:refs/heads/main", "refs/heads/feature/recover:refs/heads/feature/recover")
+	return recoverHeads{base: base, submitted: submitted}
+}
+
 // commitOutsidePreservedHistory adds one commit on top of the submitted head in
 // the gate that the recorded head does not contain, and returns it.
 func commitOutsidePreservedHistory(t *testing.T, f *recoverFixture) string {
 	t.Helper()
 	side := filepath.Join(filepath.Dir(f.local), "side-worktree")
 	mustRun(t, f.gate, "worktree", "add", "--detach", side, f.submitted)
-	configureIdentity(t, side)
 	mustWrite(t, filepath.Join(side, "side.txt"), "outside the preserved history\n")
 	mustRun(t, side, "add", "side.txt")
 	mustRun(t, side, "commit", "-m", "outside the preserved history")
@@ -233,6 +239,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	t.Run("worktree behind at the submitted head", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		mustRun(t, f.local, "reset", "--hard", f.submitted)
 		if state := assertUnverifiedRecoveryRefusalNoMutation(t, f); state.Safety != "blocked_recover_unverified_head" {
@@ -243,6 +250,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("dirty worktree", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		mustWrite(t, filepath.Join(f.local, "feature.txt"), "dirty local edit\n")
 		if state := assertUnverifiedRecoveryRefusalNoMutation(t, f); state.Safety != "blocked_recover_unverified_head" {
@@ -253,6 +261,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("no review authority", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{withoutReviewAuthority: true})
 		if f.run.ReviewApprovedHeadSHA != nil {
 			t.Fatal("fixture recorded a review authority")
@@ -262,6 +271,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("review authority outside the preserved history", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		outside := commitOutsidePreservedHistory(t, f)
 		if err := f.db.UpdateRunReviewApprovedHeadSHA(f.run.ID, outside); err != nil {
@@ -272,6 +282,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("review authority before the submitted head", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		if err := f.db.UpdateRunReviewApprovedHeadSHA(f.run.ID, f.base); err != nil {
 			t.Fatal(err)
@@ -281,6 +292,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("gate branch moved outside the preserved history", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		outside := commitOutsidePreservedHistory(t, f)
 		mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", outside)
@@ -292,6 +304,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("rebased preserved head", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{rebased: true})
 		if isAncestor(f.ctx, f.gate, f.submitted, f.preserved) {
 			t.Fatal("fixture recorded head still descends from the submitted head")
@@ -301,6 +314,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("preserved head pruned from the gate", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		mustRun(t, f.gate, "prune", "--expire=now")
 		if objectExists(f.ctx, f.gate, f.preserved) {
@@ -311,6 +325,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("conflicting create-only anchor", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
 		if state := assertUnverifiedRecoveryRefusalNoMutation(t, f); state.Safety != "blocked_recover_anchor_mismatch" {
@@ -318,6 +333,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("racing local branch", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		f.service.beforeRecoverTerminalHeadPreserve = func() {
 			mustRun(t, f.local, "checkout", "-b", "racing-branch", f.submitted)
@@ -330,6 +346,7 @@ func TestRecoverRecordedHeadExtendingTheGateBranchFailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("review authority changed under the proof", func(t *testing.T) {
+		t.Parallel()
 		f, _ := newStrandedTestFixFixture(t, strandedTestFixOptions{})
 		outside := commitOutsidePreservedHistory(t, f)
 		f.service.beforeRecoverTerminalHeadPreserve = func() {

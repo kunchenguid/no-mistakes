@@ -315,6 +315,11 @@ Rules:
 			outcome.FixSummary = fixSummary
 			return outcome, nil
 		}
+		// Keep a known command failure terminal even when the evidence agent
+		// also crashed. Retrying that step would replay a verdict failure.
+		if baselineExitCode != 0 && sctx.Config.AgentCrashRetries > 0 {
+			return &pipeline.StepOutcome{ExitCode: baselineExitCode}, err
+		}
 		return nil, err
 	}
 	if len(tested) > 0 {
@@ -412,7 +417,7 @@ func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error
 		}
 		current = testAnalyzerCorrectionPrompt(valErr, rejected)
 	}
-	return Findings{}, fmt.Errorf("validate test analyzer findings after %d attempts: %w", testAnalyzerMaxAttempts, lastErr)
+	return Findings{}, agent.RejectStructuredOutput(fmt.Errorf("validate test analyzer findings after %d attempts: %w", testAnalyzerMaxAttempts, lastErr))
 }
 
 func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {

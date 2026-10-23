@@ -156,6 +156,7 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	}
 	return func() tea.Msg {
 		params := &ipc.RespondParams{
+			Origin: types.ResponseOriginInteractive,
 			RunID:  m.runID,
 			Step:   step.StepName,
 			Action: action,

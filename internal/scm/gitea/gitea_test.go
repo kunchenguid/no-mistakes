@@ -480,8 +480,8 @@ func TestGetChecksFetchesJobsForMatchingHeadRun(t *testing.T) {
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
 			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123","html_url":"http://gitea.example.com/owner/repo/actions/runs/10/jobs/10","completed_at":"2026-08-20T06:34:50Z"},` +
@@ -515,6 +515,117 @@ func TestGetChecksFetchesJobsForMatchingHeadRun(t *testing.T) {
 	}
 }
 
+// TestGetChecksIgnoresAnotherBranchsRunThatSharesTheHeadSHA guards against
+// cross-branch/cross-PR misattribution: a higher-ID push-triggered run on an
+// unrelated branch must never be treated as a match candidate for this PR,
+// even though runJobsMatchingHeadSHA would otherwise try it first (highest
+// ID first). The unrelated run's jobs endpoint is deliberately left
+// unstubbed, so if the branch pre-filter in runJobsMatchingHeadSHA failed to
+// drop it, this test would fail on the resulting "unexpected command" error
+// instead of just picking the wrong result.
+func TestGetChecksIgnoresAnotherBranchsRunThatSharesTheHeadSHA(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","head_branch":"other-branch","event":"push"}]}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"success","head_sha":"abc123"}]}`,
+		},
+	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1: %+v", len(checks), checks)
+	}
+	if checks[0].Name != "build" {
+		t.Fatalf("checks[0].Name = %q, want build (run 10, this PR's branch)", checks[0].Name)
+	}
+}
+
+// TestGetChecksWithMissingHeadSHANeverMatchesAnotherPRsRun guards the one
+// case highest-ID-first search cannot disambiguate by commit at all: the
+// PR's own head SHA is unavailable (view.HeadSHA empty), so
+// runJobsMatchingHeadSHA falls back to the newest run in its already-scoped
+// candidate list. Before matching scoped on pull_requests[].number, that
+// candidate list was every pull_request-triggered run in the repo (branch
+// name cannot screen them - see listRuns), so a higher-ID run belonging to a
+// completely different PR (11) could be selected and reported as PR 7's own
+// checks, including a green PR 11 did not earn for PR 7. PR 11's run is the
+// higher id and is listed first, and its jobs endpoint is deliberately left
+// unstubbed: if PR-number scoping ever regressed back to a bare highest-ID
+// search, this test fails on an "unexpected command" error rather than
+// silently reporting the wrong PR's result.
+func TestGetChecksWithMissingHeadSHANeverMatchesAnotherPRsRun(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":""}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"25","status":"completed","event":"pull_request","pull_requests":[{"number":11}]},` +
+				`{"id":"10","status":"completed","event":"pull_request","pull_requests":[{"number":7}]}]}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"success","head_sha":"abc123"}]}`,
+		},
+	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" {
+		t.Fatalf("GetChecks() = %+v, want PR 7's own run (id 10), never PR 11's (id 25)", checks)
+	}
+}
+
+// TestGetChecksFindsPullRequestTriggeredRunByPRNumber reproduces a real
+// Gitea instance's behavior for a pull_request-triggered Actions run: the
+// run carries no usable branch name of its own (Gitea's run-list endpoints
+// either report head_branch as the literal "#<PR number>" or omit it
+// entirely - confirmed against a live Gitea 1.27.3 server), so the one
+// authoritative signal Gitea provides for this case is the run's own
+// pull_requests[].number. Before listRuns started reading that field, such a
+// run was invisible to GetChecks no matter how long the PR's checks ran,
+// which read as "no CI checks reported yet" forever rather than a passing or
+// failing result.
+func TestGetChecksFindsPullRequestTriggeredRunByPRNumber(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","event":"pull_request","pull_requests":[{"number":7}]}]}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"check","status":"completed","conclusion":"success","head_sha":"abc123"}]}`,
+		},
+	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1: %+v", len(checks), checks)
+	}
+	if checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("check bucket = %q, want pass", checks[0].Bucket)
+	}
+}
+
 func TestGetChecksReturnsNilWhenLatestRunPredatesTheCurrentHeadSHA(t *testing.T) {
 	t.Parallel()
 
@@ -525,8 +636,8 @@ func TestGetChecksReturnsNilWhenLatestRunPredatesTheCurrentHeadSHA(t *testing.T)
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"newsha"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
 			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"success","head_sha":"oldsha"}]}`,
@@ -549,8 +660,8 @@ func TestGetChecksReturnsNilWhenNoRunsExistYet(t *testing.T) {
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[]}`,
 		},
 	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
 
@@ -573,9 +684,9 @@ func TestGetChecksSelectsHighestIDRunWhenListOrderIsNotNewestFirst(t *testing.T)
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
-				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
 			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
@@ -606,9 +717,9 @@ func TestGetChecksSearchesPastAHigherIDRunForAnotherCommit(t *testing.T) {
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
-				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/25/jobs": {
 			stdout: `{"jobs":[{"id":25,"name":"build","status":"completed","conclusion":"success","head_sha":"zzz999"}]}`,
@@ -634,8 +745,8 @@ func TestFetchFailedCheckLogsStripsHeaderAndTargetsFailedJob(t *testing.T) {
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
 			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
@@ -661,8 +772,8 @@ func TestFetchFailedCheckTargetLogsAggregatesEverySelectedJob(t *testing.T) {
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
 			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"},{"id":11,"name":"lint","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
@@ -684,11 +795,11 @@ func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testi
 	t.Parallel()
 
 	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
-		"tea pulls 7 --repo owner/repo --login work --output json":                              {stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {stdout: `[{"id":"10"}]`},
-		"tea api --login work /repos/owner/repo/actions/runs/10/jobs":                           {stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"},{"id":11,"name":"lint","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`},
-		"tea actions runs logs 10 --job 10 --repo owner/repo --login work":                      {stdout: "Logs for job 10:\n---\nbuild failed\n"},
-		"tea actions runs logs 10 --job 11 --repo owner/repo --login work":                      {stderr: "expired", code: 1},
+		"tea pulls 7 --repo owner/repo --login work --output json":         {stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`},
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50":     {stdout: `{"workflow_runs":[{"id":"10","head_branch":"feature/x","event":"push"}]}`},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs":      {stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"},{"id":11,"name":"lint","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`},
+		"tea actions runs logs 10 --job 10 --repo owner/repo --login work": {stdout: "Logs for job 10:\n---\nbuild failed\n"},
+		"tea actions runs logs 10 --job 11 --repo owner/repo --login work": {stderr: "expired", code: 1},
 	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "7"}, "", "abc123", []scm.CheckTarget{{ProviderID: "gitea-job:10"}, {ProviderID: "gitea-job:11"}})
@@ -701,9 +812,9 @@ func TestFetchFailedCheckTargetLogsReportsMissingSelectedJob(t *testing.T) {
 	t.Parallel()
 
 	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
-		"tea pulls 7 --repo owner/repo --login work --output json":                              {stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {stdout: `[{"id":"10"}]`},
-		"tea api --login work /repos/owner/repo/actions/runs/10/jobs":                           {stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`},
+		"tea pulls 7 --repo owner/repo --login work --output json":     {stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`},
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {stdout: `{"workflow_runs":[{"id":"10","head_branch":"feature/x","event":"push"}]}`},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs":  {stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`},
 	}), nil, "gitea.example.com", scm.TeaAccount{Login: "work"}, "owner/repo")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "7"}, "", "abc123", []scm.CheckTarget{{ProviderID: "gitea-job:999"}})
@@ -719,9 +830,9 @@ func TestFetchFailedCheckLogsSelectsHighestIDRunWhenListOrderIsNotNewestFirst(t 
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
-				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/25/jobs": {
 			stdout: `{"jobs":[{"id":25,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
@@ -751,9 +862,9 @@ func TestFetchFailedCheckLogsSearchesPastAHigherIDRunForAnotherCommit(t *testing
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
-				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"completed","head_branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/25/jobs": {
 			stdout: `{"jobs":[{"id":25,"name":"build","status":"completed","conclusion":"failure","head_sha":"zzz999"}]}`,
@@ -1051,8 +1162,8 @@ func TestTea1ChecksAndLogsUseTheHighestMatchingRun(t *testing.T) {
 		"tea pr view 7 --repo owner/repo --host " + tea1Instance + " --json=number,state,url,head,base,head_sha,merged": {
 			stdout: `{"number":7,"state":"open","head":"feature/x","head_sha":"abc123","merged":false}`,
 		},
-		"tea run list --repo owner/repo --host " + tea1Instance + " --branch feature/x --json=id": {
-			stdout: `[{"id":10},{"id":25},{"id":9}]`,
+		"tea api --host " + tea1Instance + " /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":10,"event":"push","head_branch":"feature/x"},{"id":25,"event":"push","head_branch":"feature/x"},{"id":9,"event":"push","head_branch":"feature/x"}]}`,
 		},
 		"tea api --host " + tea1Instance + " /repos/owner/repo/actions/runs/25/jobs": {
 			stdout: `{"jobs":[{"id":250,"name":"build","status":"completed","conclusion":"success","head_sha":"zzz999"}]}`,

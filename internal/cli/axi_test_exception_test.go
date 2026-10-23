@@ -22,6 +22,7 @@ func TestAxiTestExceptionOutput(t *testing.T) {
 	}{
 		{"completed", "passed-with-override", types.RunCompleted, false},
 		{"checks-ready", "checks-passed", types.RunRunning, true},
+		{"released", "passed-with-override", types.RunChecksPassed, false},
 		{"failed", "failed", types.RunFailed, false},
 		{"cancelled", "cancelled", types.RunCancelled, false},
 	} {

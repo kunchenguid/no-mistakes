@@ -6,7 +6,7 @@ import (
 )
 
 func TestRunStatusTerminal(t *testing.T) {
-	terminal := []RunStatus{RunCompleted, RunFailed, RunCancelled, RunCIMonitorInterrupted}
+	terminal := []RunStatus{RunCompleted, RunFailed, RunCancelled, RunChecksPassed, RunCIMonitorInterrupted}
 	for _, s := range terminal {
 		if !s.Terminal() {
 			t.Errorf("status %q: Terminal() = false, want true", s)
@@ -163,5 +163,29 @@ func TestACPRawCommand(t *testing.T) {
 				t.Fatalf("ACPRawCommand(%q, %v) = %q, want %q", tt.target, tt.overrides, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestUserAbortStepError(t *testing.T) {
+	for _, tc := range []struct {
+		reason, want string
+	}{
+		{"", "aborted by user"},
+		{"   ", "aborted by user"},
+		{"unsafe to land", "aborted by user: unsafe to land"},
+		{"  padded  ", "aborted by user: padded"},
+	} {
+		got := UserAbortStepError(tc.reason)
+		if got != tc.want {
+			t.Errorf("UserAbortStepError(%q) = %q, want %q", tc.reason, got, tc.want)
+		}
+		if !IsUserAbortStepError(got) {
+			t.Errorf("IsUserAbortStepError(%q) = false", got)
+		}
+	}
+	for _, other := range []string{"", "aborted by users", "step review: aborted by user", "agent failed", "aborted by user:"} {
+		if IsUserAbortStepError(other) {
+			t.Errorf("IsUserAbortStepError(%q) = true", other)
+		}
 	}
 }

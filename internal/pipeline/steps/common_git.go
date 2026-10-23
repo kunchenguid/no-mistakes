@@ -60,19 +60,18 @@ func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallb
 			return "", fmt.Errorf("fetch default branch %q to resolve branch base: %w", defaultBranch, err)
 		}
 	}
-	if mb := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch); mb != "" {
-		return mb, nil
+	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	if baseSHA == "" {
+		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch)
 	}
-	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), nil
+	if err := sctx.CheckAgentCrashRetryBase(baseSHA); err != nil {
+		return "", err
+	}
+	return baseSHA, nil
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
 	sha, _ := resolveDefaultBranchTip(ctx, workDir, upstreamURL, fallbackBaseSHA, defaultBranch)
-	return sha
-}
-
-func resolveRunDefaultBranchTipSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) string {
-	sha, _ := resolveRunDefaultBranchTip(ctx, sctx, fallbackBaseSHA, defaultBranch)
 	return sha
 }
 

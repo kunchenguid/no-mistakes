@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -221,15 +223,151 @@ func forceKillShellCommand(cmd *exec.Cmd) error {
 	return nil
 }
 
+// ShellCommandGroupActive reports whether the command's job still holds a
+// process that makes the leader's exit unverified. It lists the job's processes
+// and inspects each one: a stale listing of a process that has exited, and the
+// operating system's console host that the leader itself started, are not
+// children. Everything else, including a process that cannot be inspected, is
+// reported. The job's TotalProcesses counter is read before the list and again
+// after the last inspection, and the job is reported active if it moved, so a
+// process started while the list was being inspected cannot slip past. The
+// answer is taken at once and never waits for a child to finish, so it is as
+// strict as the process-group probe on other platforms.
 func ShellCommandGroupActive(cmd *exec.Cmd) (bool, error) {
 	job, ok := shellCommandJob(cmd)
-	if !ok || !job.assigned.Load() {
+	if !ok || !job.assigned.Load() || cmd.Process == nil {
 		return false, errors.New("command has no assigned job")
 	}
+	totalBefore, err := jobTotalProcesses(job.handle)
+	if err != nil {
+		return false, err
+	}
+	procs, err := inspectJobProcesses(job.handle)
+	if err != nil {
+		return false, err
+	}
+	totalAfter, err := jobTotalProcesses(job.handle)
+	if err != nil {
+		return false, err
+	}
+	return jobHasLiveProcesses(totalBefore, totalAfter, procs, uint32(cmd.Process.Pid)), nil
+}
+
+// jobTotalProcesses returns how many processes have ever been assigned to the
+// job, including those that have exited.
+func jobTotalProcesses(job windows.Handle) (uint32, error) {
 	var info jobObjectBasicAccountingInformation
-	err := windows.QueryInformationJobObject(job.handle, windows.JobObjectBasicAccountingInformation,
+	err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation,
 		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
-	return info.ActiveProcesses > 0, err
+	if err != nil {
+		return 0, fmt.Errorf("read job accounting: %w", err)
+	}
+	return info.TotalProcesses, nil
+}
+
+// stillActiveExitCode is the exit code GetExitCodeProcess reports for a process
+// that has not exited.
+const stillActiveExitCode = 259
+
+// maxJobProcessList bounds the buffer used to list a job's processes.
+const maxJobProcessList = 1 << 16
+
+var procIsProcessInJob = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+
+// jobObjectBasicProcessIDList mirrors JOBOBJECT_BASIC_PROCESS_ID_LIST.
+type jobObjectBasicProcessIDList struct {
+	NumberOfAssignedProcesses uint32
+	NumberOfProcessIdsInList  uint32
+	ProcessIdList             [1]uintptr
+}
+
+// jobProcessIDs returns the ids of the processes the job lists.
+func jobProcessIDs(job windows.Handle) ([]uint32, error) {
+	for capacity := 16; capacity <= maxJobProcessList; capacity *= 4 {
+		size := int(unsafe.Offsetof(jobObjectBasicProcessIDList{}.ProcessIdList)) + capacity*int(unsafe.Sizeof(uintptr(0)))
+		// uint64 elements keep the buffer aligned for the struct header.
+		buf := make([]uint64, (size+7)/8)
+		list := (*jobObjectBasicProcessIDList)(unsafe.Pointer(&buf[0]))
+		err := windows.QueryInformationJobObject(job, windows.JobObjectBasicProcessIdList,
+			uintptr(unsafe.Pointer(list)), uint32(len(buf)*8), nil)
+		if errors.Is(err, windows.ERROR_MORE_DATA) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list job processes: %w", err)
+		}
+		first := unsafe.Add(unsafe.Pointer(list), unsafe.Offsetof(list.ProcessIdList))
+		ids := make([]uint32, 0, list.NumberOfProcessIdsInList)
+		for i := uintptr(0); i < uintptr(list.NumberOfProcessIdsInList); i++ {
+			ids = append(ids, uint32(*(*uintptr)(unsafe.Add(first, i*unsafe.Sizeof(uintptr(0))))))
+		}
+		return ids, nil
+	}
+	return nil, errors.New("list job processes: the job holds too many processes to inspect")
+}
+
+// inspectJobProcesses lists the job's processes and records, for each, whether
+// it is still running inside the job, which process started it, and whether it
+// is the operating system's console host.
+func inspectJobProcesses(job windows.Handle) ([]jobProcess, error) {
+	ids, err := jobProcessIDs(job)
+	if err != nil {
+		return nil, err
+	}
+	systemDir, err := windows.GetSystemDirectory()
+	if err != nil {
+		return nil, fmt.Errorf("resolve system directory: %w", err)
+	}
+	consoleHost := filepath.Join(systemDir, "conhost.exe")
+	procs := make([]jobProcess, 0, len(ids))
+	for _, pid := range ids {
+		procs = append(procs, inspectJobProcess(job, pid, consoleHost))
+	}
+	return procs, nil
+}
+
+func inspectJobProcess(job windows.Handle, pid uint32, consoleHost string) jobProcess {
+	proc := jobProcess{pid: pid, state: jobProcessUnknown}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			// No process has this id any more.
+			proc.state = jobProcessExited
+		}
+		return proc
+	}
+	defer windows.CloseHandle(handle)
+
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return proc
+	}
+	if exitCode != stillActiveExitCode {
+		proc.state = jobProcessExited
+		return proc
+	}
+	// The id may have been reused by a process that is not in the job.
+	var inJob int32
+	if ret, _, _ := procIsProcessInJob.Call(uintptr(handle), uintptr(job), uintptr(unsafe.Pointer(&inJob))); ret == 0 {
+		return proc
+	}
+	if inJob == 0 {
+		proc.state = jobProcessExited
+		return proc
+	}
+	proc.state = jobProcessRunning
+
+	var basic windows.PROCESS_BASIC_INFORMATION
+	if err := windows.NtQueryInformationProcess(handle, windows.ProcessBasicInformation,
+		unsafe.Pointer(&basic), uint32(unsafe.Sizeof(basic)), nil); err == nil {
+		proc.parentPID = uint32(basic.InheritedFromUniqueProcessId)
+	}
+	var path [windows.MAX_LONG_PATH]uint16
+	size := uint32(len(path))
+	if err := windows.QueryFullProcessImageName(handle, 0, &path[0], &size); err == nil {
+		proc.systemConsoleHost = strings.EqualFold(windows.UTF16ToString(path[:size]), consoleHost)
+	}
+	return proc
 }
 
 func waitForWindowsJobExit(job windows.Handle, window time.Duration) {

@@ -239,7 +239,7 @@ func (m *Model) applySnapshot(run *ipc.RunInfo) bool {
 			m.requestStepDiff(s.StepName, true)
 		}
 	}
-	if run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled {
+	if run.Status == types.RunCompleted || run.Status == types.RunChecksPassed || run.Status == types.RunFailed || run.Status == types.RunCancelled {
 		m.flushPartialLog()
 		m.done = true
 	}
@@ -354,7 +354,7 @@ func (m Model) hasStep(name types.StepName) bool {
 }
 
 func (m Model) stepInFixReview(name types.StepName) bool {
-	if m.done || m.run == nil || m.run.Status == types.RunCompleted || m.run.Status == types.RunFailed || m.run.Status == types.RunCancelled {
+	if m.done || m.run == nil || m.run.Status == types.RunCompleted || m.run.Status == types.RunChecksPassed || m.run.Status == types.RunFailed || m.run.Status == types.RunCancelled {
 		return false
 	}
 	for i := range m.steps {

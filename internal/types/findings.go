@@ -294,6 +294,20 @@ type WithdrawnFinding struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// ReviewCoverageScope is pipeline-written provenance for retained coverage.
+// Agent output never supplies authority for this record.
+type ReviewCoverageScope struct {
+	Version          int      `json:"version"`
+	RunID            string   `json:"run_id"`
+	StepResultID     string   `json:"step_result_id"`
+	HeadSHA          string   `json:"head_sha"`
+	RunBaseSHA       string   `json:"run_base_sha"`
+	BaseSHA          string   `json:"base_sha"`
+	TrustedConfigSHA string   `json:"trusted_config_sha"`
+	Paths            []string `json:"paths"`
+	SourceRoundID    string   `json:"source_round_id,omitempty"`
+}
+
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
 //
 // Scenarios and Verdict are the test step's live-validation contract. Both are
@@ -309,7 +323,8 @@ type Findings struct {
 	// outstanding set (see pipeline.resolveVerifiedFindingsJSON). A review turn
 	// that does not list a path has not proven anything about it, so silence is
 	// never read as resolution. Empty on every non-review payload.
-	ReviewedPaths []string `json:"reviewed_paths,omitempty"`
+	ReviewedPaths       []string             `json:"reviewed_paths,omitempty"`
+	ReviewCoverageScope *ReviewCoverageScope `json:"review_coverage_scope,omitempty"`
 	// WithdrawnFindings is an answer round's explicit re-adjudication: the
 	// carried findings the reviewer now says no longer hold, each with its
 	// reason. On an answer round a carried finding leaves the outstanding set
@@ -332,21 +347,22 @@ type Findings struct {
 }
 
 type findingsWire struct {
-	Items               []Finding          `json:"findings"`
-	Legacy              []Finding          `json:"items"`
-	Summary             string             `json:"summary"`
-	ReviewedPaths       []string           `json:"reviewed_paths"`
-	WithdrawnFindings   []WithdrawnFinding `json:"withdrawn_findings"`
-	Tested              []string           `json:"tested"`
-	TestingSummary      string             `json:"testing_summary"`
-	Artifacts           []TestArtifact     `json:"artifacts"`
-	Scenarios           []TestScenario     `json:"scenarios"`
-	Verdict             string             `json:"verdict"`
-	TestedHeadSHA       string             `json:"tested_head_sha"`
-	UnvalidatedSinceSHA string             `json:"unvalidated_since_sha"`
-	RiskLevel           string             `json:"risk_level"`
-	RiskRationale       string             `json:"risk_rationale"`
-	RiskScope           string             `json:"risk_scope"`
+	Items               []Finding            `json:"findings"`
+	Legacy              []Finding            `json:"items"`
+	Summary             string               `json:"summary"`
+	ReviewedPaths       []string             `json:"reviewed_paths"`
+	ReviewCoverageScope *ReviewCoverageScope `json:"review_coverage_scope"`
+	WithdrawnFindings   []WithdrawnFinding   `json:"withdrawn_findings"`
+	Tested              []string             `json:"tested"`
+	TestingSummary      string               `json:"testing_summary"`
+	Artifacts           []TestArtifact       `json:"artifacts"`
+	Scenarios           []TestScenario       `json:"scenarios"`
+	Verdict             string               `json:"verdict"`
+	TestedHeadSHA       string               `json:"tested_head_sha"`
+	UnvalidatedSinceSHA string               `json:"unvalidated_since_sha"`
+	RiskLevel           string               `json:"risk_level"`
+	RiskRationale       string               `json:"risk_rationale"`
+	RiskScope           string               `json:"risk_scope"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -364,6 +380,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		Items:               items,
 		Summary:             wire.Summary,
 		ReviewedPaths:       wire.ReviewedPaths,
+		ReviewCoverageScope: wire.ReviewCoverageScope,
 		WithdrawnFindings:   wire.WithdrawnFindings,
 		Tested:              wire.Tested,
 		TestingSummary:      wire.TestingSummary,

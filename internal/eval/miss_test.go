@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -235,5 +236,45 @@ func TestParsePostPRMissFindingValidatesSeverityAndAction(t *testing.T) {
 	}
 	if got.Severity != "error" || got.Action != "" {
 		t.Fatalf("parsed = %+v, want the default error severity and no action", got)
+	}
+}
+
+func TestCaptureOfACarriedReviewKeepsTheOriginalReviewCost(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, repo, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sourceDB.InsertAgentInvocation(db.AgentInvocation{RunID: run.ID, StepName: string(types.StepReview), Round: 1, Purpose: "review", Agent: "claude", SessionMode: "fresh", StartedAt: 1, CompletedAt: 2, DurationMS: 777, ExitStatus: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := sourceDB.InsertRun(repo.ID, run.Branch, run.HeadSHA, run.BaseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := sourceDB.GetStepResult(steps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sourceDB.InsertCarriedStepResult(continuation.ID, completed); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, continuation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || cases[0].Baseline.DurationMS != 777 {
+		t.Fatalf("captured = %#v, want one case with the original review's 777ms", cases)
 	}
 }

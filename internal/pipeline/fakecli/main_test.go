@@ -28,3 +28,25 @@ func TestIsFakeProviderPlugin(t *testing.T) {
 		}
 	}
 }
+
+func TestFakePipelineStatusDerivesGitlabsAggregate(t *testing.T) {
+	t.Setenv("FAKE_CLI_PIPELINE_STATUS", "")
+	for _, tc := range []struct {
+		jobs string
+		want string
+	}{
+		{`[{"status":"success"},{"status":"failed","allow_failure":true}]`, "success"},
+		{`[{"status":"failed","allow_failure":true},{"status":"failed"}]`, "failed"},
+		{`[{"status":"failed"}]`, "failed"},
+		// A blocking manual job stops the pipeline, and GitLab reads it before
+		// a failure; an optional manual job does not hold the pipeline at all.
+		{`[{"status":"success"},{"status":"manual","allow_failure":false}]`, "manual"},
+		{`[{"status":"manual","allow_failure":true}]`, "success"},
+		{`[{"status":"failed"},{"status":"manual","allow_failure":false}]`, "manual"},
+		{`[{"status":"running"},{"status":"manual","allow_failure":false}]`, "running"},
+	} {
+		if got := fakePipelineStatus(tc.jobs); got != tc.want {
+			t.Errorf("fakePipelineStatus(%s) = %q, want %q", tc.jobs, got, tc.want)
+		}
+	}
+}

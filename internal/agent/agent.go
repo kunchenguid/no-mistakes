@@ -90,13 +90,32 @@ func IsStructuredOutputRejected(err error) bool {
 	return errors.As(err, &rejection) && rejection.StructuredOutputRejected()
 }
 
+// IsUsageLimitReached reports the adapter's terminal usage-limit signal. The
+// signal remains matchable through pipeline error wrappers, even when a
+// timeout diagnostic bounds the adapter's displayed error text.
+func IsUsageLimitReached(err error) bool {
+	var limit interface {
+		UsageLimitReached() bool
+	}
+	return errors.As(err, &limit) && limit.UsageLimitReached()
+}
+
+func IsTerminalProviderError(err error) bool {
+	var terminal interface {
+		TerminalProviderError() bool
+	}
+	return errors.As(err, &terminal) && terminal.TerminalProviderError()
+}
+
 type structuredOutputRejection struct{ err error }
 
 func (e *structuredOutputRejection) Error() string                { return e.err.Error() }
 func (e *structuredOutputRejection) Unwrap() error                { return e.err }
 func (*structuredOutputRejection) StructuredOutputRejected() bool { return true }
 
-func rejectStructuredOutput(err error) error {
+// RejectStructuredOutput marks absent, malformed, or schema-rejected final
+// output without changing its diagnostic or underlying error chain.
+func RejectStructuredOutput(err error) error {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return err
 	}
@@ -228,6 +247,10 @@ type LifecycleEvent struct {
 	Phase   string
 	PID     int
 	Message string
+	// NextAgent names the agent a LifecyclePhaseQuotaSwitch event moves the
+	// run to, so the executor can record the switch on the run's quota-routing
+	// record without parsing the prose. Empty on every other phase.
+	NextAgent string
 }
 
 // Result holds the output of an agent invocation.
@@ -245,7 +268,8 @@ type Result struct {
 	// when the adapter reports one. Callers persist it to resume later.
 	SessionID string
 	// Resumed reports whether this invocation resumed opts.Session.ID.
-	Resumed bool
+	Resumed         bool
+	ResumeRetryable *bool
 	// Model is the model the adapter reported serving this invocation, when
 	// available. Instrumentation records it, and eval replay validates it
 	// against the requested candidate.
@@ -364,7 +388,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 	if text == "" {
 		err := fmt.Errorf("%s returned no text output", agentName)
 		if len(schema) > 0 {
-			return resultFromUsage(usage), rejectStructuredOutput(err)
+			return resultFromUsage(usage), RejectStructuredOutput(err)
 		}
 		return resultFromUsage(usage), err
 	}
@@ -374,7 +398,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return resultFromUsage(usage), rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		return resultFromUsage(usage), RejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
 	}
 
 	res := textResult(text, usage)

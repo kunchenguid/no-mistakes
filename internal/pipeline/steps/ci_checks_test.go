@@ -60,7 +60,7 @@ func TestCITimeoutFindingsPreserveSameNamedCheckIdentity(t *testing.T) {
 func TestPendingCheckMatchesLastFixed_SpecialCheckNames(t *testing.T) {
 	t.Parallel()
 
-	lastFixedChecks := encodeLastFixedChecks([]scm.CheckTarget{{Name: "lint,unit"}, {Name: "deploy+conflict"}}, true)
+	lastFixedChecks := encodeLastFixedChecks([]scm.CheckTarget{{Name: "lint,unit"}, {Name: "deploy+conflict"}}, true, "base-1")
 	checks := []scm.Check{
 		{Name: "lint,unit", Bucket: "pending"},
 	}
@@ -83,11 +83,11 @@ func TestLastFixedTrackingUsesProviderIdentityForSameNamedChecks(t *testing.T) {
 	code := scm.Check{Name: "build", ProviderID: "github-check-run:41", Bucket: scm.CheckBucketFail, CompletedAt: completed}
 	bot := scm.Check{Name: "build", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail, CompletedAt: completed}
 	step := &CIStep{
-		lastFixedChecks:      encodeLastFixedChecks([]scm.CheckTarget{{Name: code.Name, ProviderID: code.ProviderID}}, false),
+		lastFixedChecks:      encodeLastFixedChecks([]scm.CheckTarget{{Name: code.Name, ProviderID: code.ProviderID}}, false, ""),
 		lastFixedCompletedAt: terminalFailureCompletionTimes([]scm.Check{code, bot}),
 	}
 
-	if step.lastRepairStillUnverified([]scm.Check{bot}, false) {
+	if step.lastRepairStillUnverified([]scm.Check{bot}, false, "") {
 		t.Fatal("same-named bot failure must not stand in for the repaired check")
 	}
 	bot.Bucket = scm.CheckBucketPending
@@ -170,5 +170,29 @@ func TestTerminalFailureCompletionTimesStillCoverFailingChecks(t *testing.T) {
 	})
 	if quiet != nil {
 		t.Fatalf("completion times = %v, want nothing recorded for non-failures", quiet)
+	}
+}
+
+func TestLastRepairConflictBaseCompatibility(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		key      string
+		base     string
+		conflict bool
+		want     bool
+	}{
+		{name: "legacy", key: `{"mergeConflict":true}`, base: "new-base", conflict: true, want: true},
+		{name: "legacy_resolved", key: `{"mergeConflict":true}`, base: "new-base"},
+		{name: "same_base", key: encodeLastFixedChecks(nil, true, "base"), base: "base", conflict: true, want: true},
+		{name: "new_base", key: encodeLastFixedChecks(nil, true, "base"), base: "new-base", conflict: true},
+		{name: "unresolved_base", key: encodeLastFixedChecks(nil, true, "base"), conflict: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			step := &CIStep{lastFixedChecks: tc.key}
+			if got := step.lastRepairStillUnverified(nil, tc.conflict, tc.base); got != tc.want {
+				t.Fatalf("lastRepairStillUnverified() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

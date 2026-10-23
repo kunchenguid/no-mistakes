@@ -803,8 +803,7 @@ func FakeCIGHNoChecks(t *testing.T) []string {
 
 // FakeCIGlab creates a fake glab binary that serves the CI monitoring
 // endpoints. state is the MR state ("opened", "merged", "closed"); checksJSON
-// is a JSON array of jobs served for `glab ci status`, `glab ci get`, and the
-// pipeline jobs read. headSHA is the run's head: the CI step names it on every
+// is a JSON array of jobs served for `glab ci get` and the pipeline jobs read. headSHA is the run's head: the CI step names it on every
 // poll, so the fake merge request reports it as its source revision and runs
 // its head pipeline at it too.
 func FakeCIGlab(t *testing.T, state, checksJSON, headSHA string) []string {

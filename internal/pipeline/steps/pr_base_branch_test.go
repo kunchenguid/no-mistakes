@@ -254,10 +254,10 @@ func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
 		t.Fatal(readErr)
 	}
 	ghLog := string(logData)
-	if strings.Contains(ghLog, "pr edit 99") {
+	if strings.Contains(ghLog, "pulls/99") {
 		t.Fatalf("sibling FindPR hit must not be mutated, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "pr edit 42") {
+	if !strings.Contains(ghLog, "pulls/42") {
 		t.Fatalf("expected persisted PR #42 to be updated, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "pr create") {

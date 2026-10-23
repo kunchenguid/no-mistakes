@@ -112,6 +112,12 @@ func outcomeFor(status string) string {
 	switch types.RunStatus(status) {
 	case types.RunCompleted:
 		return "passed"
+	case types.RunChecksPassed:
+		// The run reached its validation verdict and stopped observing the PR,
+		// so this is the same word the still-monitoring acknowledgement uses:
+		// checks passed, the PR is ready for a human to merge. It stays
+		// checks-passed for good, because the merge is never observed here.
+		return "checks-passed"
 	case types.RunFailed:
 		return "failed"
 	case types.RunCancelled:
@@ -127,8 +133,11 @@ func outcomeFor(status string) string {
 // or whose publication/verification automatically skipped. Explicit per-run
 // skips carry no automatic cause and retain their existing outcome.
 func outcomeForRun(rv runView) string {
-	word := outcomeFor(rv.Status)
-	if word == "passed" && (rv.CIOverrideReason != "" || rv.TestOverrideReason != "") {
+	return qualifyOutcome(outcomeFor(rv.Status), rv)
+}
+
+func qualifyOutcome(word string, rv runView) string {
+	if (word == "passed" || word == "checks-passed") && (rv.CIOverrideReason != "" || rv.TestOverrideReason != "") {
 		return "passed-with-override"
 	}
 	if word == "passed" && len(rv.automaticSkips()) > 0 {
@@ -1057,11 +1066,14 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // does a gate holding an open review question or an unreadable question history
 // (pipeline.HasUnansweredReviewQuestion / HasUnreadableReviewQuestionHistory).
 //
-// The CI step monitors an open PR until a human merges or closes it (a live
-// status the TUI shows), so it never reaches a terminal state on its own. An
-// agent driving the run must not block on that human action, so once CI checks
-// pass driveRun returns with ciReady=true: the change is validated and the PR is
-// ready for a human to merge. The daemon keeps monitoring in the background.
+// The CI step keeps monitoring an open PR until a human merges or closes it (a
+// live status the TUI shows), so it never reaches a terminal state on its own
+// by default. An agent driving the run must not block on that human action, so
+// once CI checks pass driveRun returns with ciReady=true: the change is
+// validated and the PR is ready for a human to merge. The daemon keeps
+// monitoring in the background. Under the opt-in ci.release_after_checks_pass
+// the step finishes there instead and the run completes, so driveRun returns
+// the terminal checks-passed outcome.
 func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	return driveRunSelected(ctx, progress, client, socketPath, runID, autoApprove, false)
 }
@@ -1149,7 +1161,7 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if _, err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, ""); err != nil {
+			if _, err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, "", types.ResponseOriginAutoYes); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -1254,8 +1266,9 @@ func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, er
 // what it recorded. A response the daemon refused is returned as a
 // *respondRefusalError - the gate is still parked and the response can be
 // corrected.
-func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) (ipc.RespondResult, error) {
+func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string, origin types.ResponseOrigin, coverage ...*ipc.CoverageBinding) (ipc.RespondResult, error) {
 	params := &ipc.RespondParams{
+		Origin:           origin,
 		RunID:            runID,
 		Step:             step,
 		Action:           action,
@@ -1264,6 +1277,9 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 		Instructions:     instructions,
 		AddedFindings:    added,
 		ApprovalReason:   approvalReason,
+	}
+	if len(coverage) == 1 {
+		params.Coverage = coverage[0]
 	}
 	var result ipc.RespondResult
 	if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
@@ -1392,6 +1408,31 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		return nil
 	}
 
+	// The opt-in release verdict: only ci.release_after_checks_pass ends the run
+	// at its checks verdict and releases the branch, so this shape reports the
+	// same outcome word with the released contract instead of the
+	// still-monitoring one.
+	if rv.Status == string(types.RunChecksPassed) {
+		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
+		fields = append(fields, toon.Field{Key: "outcome", Value: qualifyOutcome("checks-passed", rv)})
+		fixes := rv.fixRows()
+		fields = appendFixesField(fields, fixes)
+		help := append([]string{checksPassedMergeLine(rv, activity)}, successReportHelp(fixes)...)
+		if rv.CIOverrideReason != "" {
+			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
+		}
+		if rv.TestOverrideReason != "" {
+			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
+		}
+		if hasBranchSync {
+			help = append(help, branchSyncAgentGuidance)
+		}
+		help = cloneScopedNote(append(help, releasedChecksPassedGuidance))
+		fields = append(fields, toon.Field{Key: "help", Value: help})
+		emitDoc(cmd, fields...)
+		return nil
+	}
+
 	if gate, ok := rv.awaitingStep(); ok {
 		fields = append(fields, gateFieldsForRun(gate, runID)...)
 		emitDoc(cmd, fields...)
@@ -1450,6 +1491,20 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 	return &exitError{code: 1}
 }
 
+// checksPassedMergeLine is the shared "checks passed, the PR is ready for a
+// human to merge" sentence, used both at the opt-in monitor's stopping point
+// and by a run that reached its validation verdict and released the lane.
+func checksPassedMergeLine(rv runView, activity cimonitor.Activity) string {
+	merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
+	if activity.DeclaredNoCI {
+		merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
+	}
+	if rv.PRURL != "" {
+		merge = fmt.Sprintf("%s: %s", strings.TrimSuffix(merge, "."), rv.PRURL)
+	}
+	return merge
+}
+
 // appendFixesField adds a fixes table when the pipeline applied any fixes.
 func appendFixesField(fields []toon.Field, fixes []fixRow) []toon.Field {
 	if len(fixes) == 0 {
@@ -1470,6 +1525,11 @@ func successReportHelp(fixes []fixRow) []string {
 	return help
 }
 
+// legacyApprovalReasonRefusal is what a daemon that predates `--action abort`
+// answers to the reason an abort carries: it only accepted one for a Test
+// approval. It refused before recording anything, so the gate stays parked.
+const legacyApprovalReasonRefusal = "an approval reason applies only to Test approval"
+
 func newAxiRespondCmd() *cobra.Command {
 	var action, step, findings, ignore, instructions, addFinding, reason, runID string
 	var autoYes bool
@@ -1478,7 +1538,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "respond",
 		Short: "Answer the current approval gate and continue the run",
-		Long: "Sends approve/fix/skip for the step currently awaiting approval, then\n" +
+		Long: "Sends approve/fix/skip/abort/complete-coverage for the step currently awaiting approval, then\n" +
 			"blocks until the next gate, CI-ready decision point, or final outcome.\n" +
 			"With no flags it answers the active run on the current branch. Pass\n" +
 			"--run <id> to answer a specific run by its id from anywhere - including\n" +
@@ -1491,6 +1551,15 @@ func newAxiRespondCmd() *cobra.Command {
 			"--ignore is refused too: reverting an applied fix is out of scope for a gate\n" +
 			"response. The recorded dispositions (fixed, ignored, kept) are echoed in the\n" +
 			"output.\n\n" +
+			"With --action abort, the operator rejects the parked gate: the round is\n" +
+			"recorded as declined, the step fails as \"aborted by user: <reason>\", and the\n" +
+			"run ends failed. --reason is required and is kept in the step error and the\n" +
+			"run error. No fix round starts and nothing is approved or pushed. Saved\n" +
+			"commits, findings and evidence stay available, but the failed run removes its\n" +
+			"worktree, so save any uncommitted edits first. Return branch custody through\n" +
+			"the structured branch_sync next_action in the output. Unlike `axi abort`,\n" +
+			"which cancels whatever the run is doing, this records a rejection at one\n" +
+			"gate and is refused unless the run is parked there.\n\n" +
 			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
 			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
 			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
@@ -1520,13 +1589,13 @@ func newAxiRespondCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip (required)")
+	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip | abort | complete-coverage (required)")
 	cmd.Flags().StringVar(&runID, "run", "", "answer this run id directly, without resolving the current branch or worktree")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&ignore, "ignore", "", "comma-separated finding IDs to decline (with --action fix); every finding the gate shows must be in --findings or --ignore unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
-	cmd.Flags().StringVar(&reason, "reason", "", "exception reason preserved with Test approval (with --action approve)")
+	cmd.Flags().StringVar(&reason, "reason", "", "reason preserved with a Test approval exception (--step test --action approve), and required with --action abort")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve subsequent eligible gates until a decision point or outcome; protected-path and Test unvalidated-work refusals require an explicit response, and an open review question requires `axi answer`")
 	bindAxiWaitFlag(cmd, &wait)
@@ -1565,13 +1634,16 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	respondCmd := "no-mistakes axi respond" + runFlag(ra.runID)
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
 	switch act {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip:
+	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionCompleteCoverage:
 	case "":
 		return emitError(cmd, 2, "--action is required",
-			"Run `"+respondCmd+" --action approve|fix|skip`")
+			"Run `"+respondCmd+" --action approve|fix|skip|abort`")
 	default:
 		return emitError(cmd, 2, fmt.Sprintf("unknown action %q", ra.action),
-			"Valid actions: approve, fix, skip")
+			"Valid actions: approve, fix, skip, abort, complete-coverage")
+	}
+	if act == types.ActionCompleteCoverage && (ra.autoYes || ra.findings != "" || ra.ignore != "" || ra.instructions != "" || ra.addFinding != "" || ra.reason != "") {
+		return emitError(cmd, 2, "complete-coverage cannot approve subsequent gates or change findings")
 	}
 
 	var env *axiEnv
@@ -1643,8 +1715,18 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		stepName = types.StepName(gate.Name)
 	}
 
-	if ra.reason != "" && (act != types.ActionApprove || stepName != types.StepTest) {
-		return emitError(cmd, 2, "--reason applies only to --action approve on the Test step")
+	reason := ra.reason
+	if act == types.ActionAbort {
+		reason = strings.TrimSpace(reason)
+		if reason == "" {
+			return emitError(cmd, 2, "--action abort requires --reason <text>: the rejection is recorded with the operator's reason",
+				"Run `"+respondCmd+" --action abort --reason \"why this gate is rejected\"`")
+		}
+	} else if ra.reason != "" && (act != types.ActionApprove || stepName != types.StepTest) {
+		return emitError(cmd, 2, "--reason applies only to --action approve on the Test step, or to --action abort")
+	}
+	if act == types.ActionCompleteCoverage && stepName != types.StepReview {
+		return emitError(cmd, 2, "complete-coverage applies only to a parked Review")
 	}
 
 	findingIDs := splitCSV(ra.findings)
@@ -1675,11 +1757,26 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 2, "--findings and --ignore apply only to --action fix")
 	}
 
-	result, err := sendRespond(env.client, runID, stepName, act, findingIDs, ignoreIDs, instructions, added, ra.reason)
+	var coverage *ipc.CoverageBinding
+	if act == types.ActionCompleteCoverage {
+		for _, s := range run.Steps {
+			if s.StepName == stepName {
+				coverage = &ipc.CoverageBinding{HeadSHA: run.HeadSHA, StepResultID: s.ID, RoundID: s.LatestRoundID}
+			}
+		}
+		if coverage == nil || coverage.RoundID == "" {
+			return emitError(cmd, 1, "daemon did not provide a bound review round for coverage continuation")
+		}
+	}
+	result, err := sendRespond(env.client, runID, stepName, act, findingIDs, ignoreIDs, instructions, added, reason, types.ResponseOriginInteractive, coverage)
 	if err != nil {
 		var refusal *respondRefusalError
 		if errors.As(err, &refusal) {
 			return emitError(cmd, 2, refusal.refusal, refusal.helpLines(ra.runID)...)
+		}
+		if act == types.ActionAbort && strings.Contains(err.Error(), legacyApprovalReasonRefusal) {
+			return emitError(cmd, 1, "the running daemon is too old to record an abort reason; nothing was recorded",
+				"A plain `no-mistakes daemon restart` refuses while runs are active and lists every run, in all repositories, that a restart would interrupt: read that list, then run `no-mistakes daemon restart --force` so the current binary serves it, and send the abort again")
 		}
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
@@ -1688,6 +1785,13 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	// outcome, or the bounded wait elapsing - so a driver always sees the
 	// dispositions of the decision it just made.
 	lead := respondDispositionFields(result)
+	if act == types.ActionAbort {
+		lead = append(lead, toon.Field{Key: "rejected", Value: toon.NewObject(
+			toon.Field{Key: "run", Value: runID},
+			toon.Field{Key: "step", Value: string(stepName)},
+			toon.Field{Key: "reason", Value: reason},
+		)})
+	}
 
 	// Let the executor consume the response before we re-read state, so we
 	// don't immediately observe the same gate we just answered.

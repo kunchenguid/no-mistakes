@@ -37,13 +37,18 @@ type Run struct {
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
-	ReviewApprovedHeadSHA  *string
-	Status                 types.RunStatus
-	PRURL                  *string
-	PRState                *string
-	PRStateObservedAt      *int64
-	CIReadyAt              *int64
-	CIReadyNoCI            bool
+	ReviewApprovedHeadSHA *string
+	Status                types.RunStatus
+	PRURL                 *string
+	PRState               *string
+	PRStateObservedAt     *int64
+	CIReadyAt             *int64
+	CIReadyNoCI           bool
+	// CIReleasedAt is non-nil once the CI step finished at its checks-passed
+	// verdict under ci.release_after_checks_pass, releasing the run there. It
+	// is the durable record of that opt-in path, so the run's terminal status
+	// never reads as checks_passed for a run that only monitored the PR.
+	CIReleasedAt           *int64
 	LastPushedSHA          *string
 	PushTargetKind         *string
 	PushTargetFingerprint  *string
@@ -93,7 +98,12 @@ type Run struct {
 	// by the PR step.
 	OmitIntent bool
 	// PiProfile is immutable launch selection; nil retains legacy live config.
-	PiProfile        *agentcfg.PiProfile
+	PiProfile *agentcfg.PiProfile
+	// QuotaRouting is the run's quota-aware agent ordering record (the
+	// quotarouting.Record JSON), written at run setup when the feature is on
+	// and appended to when a mid-run quota switch moves the run. Empty for
+	// runs from before the feature and whenever it is off. It is local-only.
+	QuotaRouting     string
 	VerificationPlan *verificationplan.Snapshot
 	// ClosingIssueRefs are the explicit issues (axi run --closes) the generated
 	// PR should close, canonicalized by internal/closingissues.
@@ -105,7 +115,7 @@ type Run struct {
 	UpdatedAt                int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -113,13 +123,13 @@ func scanRun(row interface {
 	var storedClosingIssues sql.NullString
 	err := row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
-		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
+		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI, &r.CIReleasedAt,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
-		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.VerificationPlan,
+		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -502,7 +512,11 @@ func (d *DB) GetActiveRuns() ([]*Run, error) {
 
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status, now(), id)
+	// push_active is cleared for a terminal status: a run that can no longer
+	// push (or repair and re-push) must not keep the marker that makes
+	// concurrent sync refuse. ci_monitor_interrupted is marked by the daemon's
+	// own recovery statement, which leaves the marker as it is.
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled', 'checks_passed') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
@@ -598,12 +612,12 @@ func (d *DB) RebindRunPushedHead(id string, rebind PushRebind) (bool, error) {
 			AND push_target_kind = ? AND push_target_fingerprint = ? AND push_ref = ? AND COALESCE(push_active, 0) = 0
 			AND pr_state IS ? AND COALESCE(pr_state, '') NOT IN ('merged', 'closed')
 			AND NOT EXISTS (SELECT 1 FROM runs other WHERE other.repo_id = runs.repo_id AND other.branch = runs.branch AND other.id <> runs.id
-				AND other.status NOT IN (?, ?, ?, ?))
+				AND other.status NOT IN (?, ?, ?, ?, ?))
 			AND EXISTS (SELECT 1 FROM repos WHERE repos.id = runs.repo_id AND repos.upstream_url = ? AND COALESCE(repos.fork_url, '') = ?)`,
 		rebind.Head, rebind.Head, now(), id, string(rebind.Status), rebind.ExpectedPushed, rebind.ExpectedGeneration,
 		rebind.ExpectedHead, rebind.CustodyReturned,
 		rebind.TargetKind, rebind.TargetFingerprint, rebind.Ref, rebind.PRState,
-		string(types.RunCompleted), string(types.RunFailed), string(types.RunCancelled), string(types.RunCIMonitorInterrupted),
+		string(types.RunCompleted), string(types.RunFailed), string(types.RunCancelled), string(types.RunChecksPassed), string(types.RunCIMonitorInterrupted),
 		rebind.UpstreamURL, rebind.ForkURL,
 	)
 	if err != nil {
@@ -1226,6 +1240,27 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 
 	placeholders, args := recoveryExclusionClause(preserved)
 
+	readyArgs := []any{types.RunChecksPassed, ts, types.RunPending, types.RunRunning, types.StepCI, types.StepStatusCompleted}
+	readyArgs = append(readyArgs, args...)
+	readyResult, err := tx.Exec(
+		`UPDATE runs SET status = ?, error = NULL, push_active = 0,
+		 awaiting_agent_since = NULL, updated_at = ?
+		 WHERE status IN (?, ?) AND ci_ready_at IS NOT NULL AND ci_released_at IS NOT NULL
+		   AND lower(trim(pr_state)) = 'open'
+		   AND EXISTS (
+		       SELECT 1 FROM step_results ci
+		       WHERE ci.run_id = runs.id AND ci.step_name = ? AND ci.status = ?
+		   )`+placeholders,
+		readyArgs...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover completed CI runs: %w", err)
+	}
+	readyCount, err := readyResult.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("completed CI rows affected: %w", err)
+	}
+
 	// A daemon restart during the long-lived CI monitor should not turn an
 	// already-pushed PR into a failed run. Recover those runs before the broad
 	// failure update below so the hard-fail path keeps handling mid-pipeline
@@ -1337,7 +1372,7 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
-	return int(ciCount + count), nil
+	return int(readyCount + ciCount + count), nil
 }
 
 func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
@@ -1380,6 +1415,33 @@ func (d *DB) SetRunGates(id, gates string) error {
 		return fmt.Errorf("set run gates: %w", err)
 	}
 	return nil
+}
+
+// SetRunQuotaRouting records (or amends) one run's quota-aware agent
+// ordering payload. The daemon owns the read-modify-write: it reads the run's
+// record, appends a mid-run switch, and writes the whole record back, so the
+// database stores an opaque JSON blob exactly as it does for the CI rerun
+// state.
+func (d *DB) SetRunQuotaRouting(id, payload string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET quota_routing = ?, updated_at = ? WHERE id = ?`, payload, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run quota routing: %w", err)
+	}
+	return nil
+}
+
+// GetRunQuotaRouting returns the run's stored quota-routing payload, or the
+// empty string when the run has none (feature off, or a pre-feature run).
+func (d *DB) GetRunQuotaRouting(id string) (string, error) {
+	var payload sql.NullString
+	err := d.sql.QueryRow(`SELECT quota_routing FROM runs WHERE id = ?`, id).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get run quota routing: %w", err)
+	}
+	return payload.String, nil
 }
 
 // GetRunCIRerunState returns the CI step's persisted rerun budget for a run, or

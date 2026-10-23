@@ -45,6 +45,8 @@ func newOpencodeMessageFailure(e *opencodeMessageError, toolActivity bool) error
 
 func (e *opencodeMessageFailure) StructuredOutputRejected() bool { return e.structured }
 
+func (e *opencodeMessageFailure) TerminalProviderError() bool { return e.terminal }
+
 func (e *opencodeMessageFailure) Error() string {
 	// StructuredOutputError keeps its own wording: the actionable fact is
 	// that opencode already spent its internal retries trying to make the

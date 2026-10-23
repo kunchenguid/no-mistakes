@@ -28,15 +28,14 @@ type syncFixture struct {
 	pushed  string
 }
 
-func newSyncFixture(t *testing.T) *syncFixture {
+type syncHeads struct{ base, old, pushed string }
+
+func buildSyncRepositories(t *testing.T, root string) syncHeads {
 	t.Helper()
-	ctx := context.Background()
-	root := t.TempDir()
 	remote := filepath.Join(root, "upstream.git")
 	mustRun(t, root, "init", "--bare", remote)
 	local := filepath.Join(root, "operator")
 	mustRun(t, root, "init", "-b", "main", local)
-	configureIdentity(t, local)
 	mustWrite(t, filepath.Join(local, "file.txt"), "base\n")
 	mustRun(t, local, "add", "file.txt")
 	mustRun(t, local, "commit", "-m", "base")
@@ -48,13 +47,23 @@ func newSyncFixture(t *testing.T) *syncFixture {
 
 	pipeline := filepath.Join(root, "pipeline")
 	mustRun(t, root, "-c", "core.autocrlf=false", "clone", local, pipeline)
-	configureIdentity(t, pipeline)
 	mustRun(t, pipeline, "checkout", "feature/sync")
 	mustWrite(t, filepath.Join(pipeline, "fix.txt"), "pipeline fix\n")
 	mustRun(t, pipeline, "add", "fix.txt")
 	mustRun(t, pipeline, "commit", "-m", "pipeline fix")
 	pushed := mustRun(t, pipeline, "rev-parse", "HEAD")
 	mustRun(t, pipeline, "push", remote, "HEAD:refs/heads/feature/sync")
+	removeScratchClone(t, pipeline)
+	return syncHeads{base: base, old: old, pushed: pushed}
+}
+
+func newSyncFixture(t *testing.T) *syncFixture {
+	t.Helper()
+	ctx := context.Background()
+	root, heads := copyGitFixture(t, "sync", buildSyncRepositories)
+	remote := filepath.Join(root, "upstream.git")
+	local := filepath.Join(root, "operator")
+	base, old, pushed := heads.base, heads.old, heads.pushed
 
 	database, err := db.Open(filepath.Join(root, "state.sqlite"))
 	if err != nil {
@@ -104,7 +113,6 @@ func rebuildPipelineHead(t *testing.T, f *syncFixture, commits []pipelineCommit)
 	root := filepath.Dir(f.local)
 	pipeline := filepath.Join(root, "pipeline-rebuild")
 	mustRun(t, root, "-c", "core.autocrlf=false", "clone", f.local, pipeline)
-	configureIdentity(t, pipeline)
 	mustRun(t, pipeline, "checkout", "-B", "feature/sync", f.base)
 	for _, commit := range commits {
 		for name, contents := range commit.files {
@@ -329,6 +337,7 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newSplitLocalSyncFixture(t)
 			rebuildPipelineHead(t, f, tc.commits)
 
@@ -514,6 +523,7 @@ func TestEquivalentDivergenceRefusesUnrepresentedEdgeDeletion(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newSyncFixture(t)
 			mustWrite(t, filepath.Join(f.local, "edge.txt"), tc.base)
 			mustRun(t, f.local, "add", "edge.txt")
@@ -634,6 +644,7 @@ func TestOperationInProgressClassesRefuse(t *testing.T) {
 		{"rebase-merge/head-name", "blocked_rebase_in_progress"},
 	} {
 		t.Run(tc.marker, func(t *testing.T) {
+			t.Parallel()
 			f := newSyncFixture(t)
 			gitPath := mustRun(t, f.local, "rev-parse", "--git-path", tc.marker)
 			if !filepath.IsAbs(gitPath) {
@@ -648,10 +659,36 @@ func TestOperationInProgressClassesRefuse(t *testing.T) {
 	}
 }
 
+func TestWorktreeCleanLinkedWorktreeOfNewlinePathRepository(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo\nwith newline")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Skipf("filesystem cannot create a path with a newline: %v", err)
+	}
+	mustRun(t, repo, "init", "-b", "main")
+	mustWrite(t, filepath.Join(repo, "file.txt"), "base\n")
+	mustRun(t, repo, "add", "file.txt")
+	mustRun(t, repo, "commit", "-m", "base")
+	linked := filepath.Join(root, "linked")
+	mustRun(t, repo, "worktree", "add", "-b", "linked", linked)
+
+	if clean, reason := worktreeClean(context.Background(), linked); !clean {
+		t.Fatalf("clean linked worktree reported %q", reason)
+	}
+	gitPath := mustRun(t, linked, "rev-parse", "--git-path", "MERGE_HEAD")
+	mustWrite(t, gitPath, "state\n")
+	if clean, reason := worktreeClean(context.Background(), linked); clean || reason != "merge_in_progress" {
+		t.Fatalf("worktreeClean = %v, %q", clean, reason)
+	}
+}
+
 func TestLocalAheadAndDivergedRefuse(t *testing.T) {
 	t.Parallel()
 
 	t.Run("ahead", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		if state := f.service.Apply(f.ctx); !state.Changed {
 			t.Fatal("setup sync failed")
@@ -665,6 +702,7 @@ func TestLocalAheadAndDivergedRefuse(t *testing.T) {
 		}
 	})
 	t.Run("diverged", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		mustWrite(t, filepath.Join(f.local, "followup.txt"), "diverged\n")
 		mustRun(t, f.local, "add", "followup.txt")
@@ -680,6 +718,7 @@ func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
 	t.Parallel()
 
 	t.Run("advanced", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		writer := cloneRemoteBranch(t, f.remote)
 		mustWrite(t, filepath.Join(writer, "advanced.txt"), "advanced\n")
@@ -691,6 +730,7 @@ func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
 		}
 	})
 	t.Run("rewritten", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		writer := cloneRemoteBranch(t, f.remote)
 		mustRun(t, writer, "checkout", "--orphan", "rewrite")
@@ -704,6 +744,7 @@ func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
 		}
 	})
 	t.Run("missing open", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		if err := f.db.UpdateRunPRState(f.run.ID, "open"); err != nil {
 			t.Fatal(err)
@@ -714,6 +755,7 @@ func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
 		}
 	})
 	t.Run("missing merged noop", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		if err := f.db.UpdateRunPRState(f.run.ID, "merged"); err != nil {
 			t.Fatal(err)
@@ -728,6 +770,7 @@ func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
 		}
 	})
 	t.Run("offline", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		if err := os.Rename(f.remote, f.remote+".offline"); err != nil {
 			t.Fatal(err)
@@ -745,6 +788,7 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 	t.Parallel()
 
 	t.Run("target changed", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		other := filepath.Join(t.TempDir(), "other.git")
 		mustRun(t, filepath.Dir(other), "init", "--bare", other)
@@ -758,6 +802,7 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 		}
 	})
 	t.Run("active run without push provenance", func(t *testing.T) {
+		t.Parallel()
 		// A newer active run with no push binding owns the branch: the refusal
 		// names pipeline custody (not a legacy-unbound misclassification) and
 		// points at the active run.
@@ -778,6 +823,7 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 		}
 	})
 	t.Run("detached", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		mustRun(t, f.local, "checkout", "--detach", f.old)
 		if state := f.service.Apply(f.ctx); state.State != StateAmbiguousContext {
@@ -785,6 +831,7 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 		}
 	})
 	t.Run("generation race", func(t *testing.T) {
+		t.Parallel()
 		f := newSyncFixture(t)
 		f.service.beforeApply = func() {
 			if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/sync"}); err != nil {
@@ -1043,16 +1090,8 @@ func cloneRemoteBranch(t *testing.T, remote string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "writer")
 	mustRun(t, filepath.Dir(dir), "-c", "core.autocrlf=false", "clone", remote, dir)
-	configureIdentity(t, dir)
 	mustRun(t, dir, "checkout", "feature/sync")
 	return dir
-}
-
-func configureIdentity(t *testing.T, dir string) {
-	t.Helper()
-	mustRun(t, dir, "config", "core.autocrlf", "false")
-	mustRun(t, dir, "config", "user.email", "test@example.com")
-	mustRun(t, dir, "config", "user.name", "Test User")
 }
 
 func mustRun(t *testing.T, dir string, args ...string) string {

@@ -232,3 +232,40 @@ func assertOrder(t *testing.T, value string, ordered ...string) {
 		last = idx
 	}
 }
+
+func TestStatsCommandsShowPersistedQuotaEvidenceWithoutInvocations(t *testing.T) {
+	root := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", root)
+	p := paths.WithRoot(root)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepo(t.TempDir(), "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"version":1,"enabled":true,"configured":["claude","codex"],"order":["codex","claude"],"choice":"codex","reason":"ranked by quota evidence","candidates":[{"agent":"codex","provider":"codex","account":"codex-home","scope":"all_models","remaining":80,"spend_priority":90,"eligible":true,"rankable":true,"reason":"healthy subscription"}],"switches":[{"from":"codex","to":"claude","reason":"quota exceeded","at":123}]}`
+	if err := database.SetRunQuotaRouting(run.ID, payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"stats"}, {"stats", "--run", run.ID}} {
+		out, err := executeCmd(args...)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		for _, want := range []string{run.ID, "quota_routing:", "choice: codex", "codex-home", "all_models", "80%", "90.00", "healthy subscription", "quota exceeded"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("%v missing %q in output:\n%s", args, want, out)
+			}
+		}
+	}
+}

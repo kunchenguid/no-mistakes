@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -48,6 +49,7 @@ func newAxiCmd() *cobra.Command {
 	cmd.AddCommand(newAxiSyncCmd())
 	cmd.AddCommand(newAxiLogsCmd())
 	cmd.AddCommand(newAxiAbortCmd())
+	cmd.AddCommand(newAxiRetryCmd())
 	return cmd
 }
 
@@ -203,6 +205,7 @@ func runAxiHome(cmd *cobra.Command) error {
 
 	gated := false
 	gatedOnAnswers := false
+	gatedOnCoverage := false
 	hasBranchSync := false
 	if currentActive != nil {
 		steps, _ := env.d.GetStepsByRun(currentActive.ID)
@@ -216,6 +219,7 @@ func runAxiHome(cmd *cobra.Command) error {
 		if gate, ok := rv.awaitingStep(); ok {
 			gated = true
 			gatedOnAnswers = pipeline.HasUnansweredReviewQuestion(gate.FindingsJSON)
+			gatedOnCoverage = pipeline.CanContinueReviewCoverage(types.StepName(gate.Name), gate.FindingsJSON)
 			fields = append(fields, gateFields(gate)...)
 		}
 	} else if otherActive != nil {
@@ -245,6 +249,8 @@ func runAxiHome(cmd *cobra.Command) error {
 		// A review parked on its reviewer's own questions wants an answer, not
 		// a verdict: approving would discard the pass it paused.
 		help = append(help, "Run `no-mistakes axi answer --question <id> --answer \"<one of its options>\"` for each question in the gate; the reviewer resumes when none are open, and the answer that closes the last one follows the run to its next gate or outcome")
+	case gatedOnCoverage:
+		help = append(help, "Run `no-mistakes axi respond --action complete-coverage` to review only the remaining paths using stored coverage")
 	case gated:
 		help = append(help, "Run `no-mistakes axi respond --action approve` to clear the current gate")
 	default:

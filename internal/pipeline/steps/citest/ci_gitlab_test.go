@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -622,5 +623,240 @@ func TestCIStep_GitLabDiscussionReadRequiresValidArray(t *testing.T) {
 				t.Fatalf("finding = %+v, want ask-user read failure", item)
 			}
 		})
+	}
+}
+
+// gitlabCIFindings unmarshals the findings a GitLab CI outcome carries.
+func gitlabCIFindings(t *testing.T, outcome *pipeline.StepOutcome) types.Findings {
+	t.Helper()
+	var findings types.Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	return findings
+}
+
+func TestCIStep_GitLabFailedPipelineWithNoJobsEscalates(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// The reported case: GitLab reports the head pipeline failed with an empty
+	// job list (the configuration was rejected, so no job ever existed). Read
+	// through the job list alone it looked like "no checks registered", and the
+	// monitor waited for checks that would never arrive instead of escalating
+	// the failure it was looking at.
+	env := stepstest.FakeCIGlab(t, "opened", "[]", headSHA)
+	env = append(env, "FAKE_CLI_PIPELINE_STATUS=failed")
+
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(failOnExtraPoll)
+	pinCIMonitorClock(step)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a failed head pipeline with no jobs to require approval")
+	}
+	findings := gitlabCIFindings(t, outcome)
+	found := false
+	for _, finding := range findings.Items {
+		if finding.Check == "Pipeline #7" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a finding for the failed pipeline, got %+v", findings.Items)
+	}
+}
+
+func TestCIStep_GitLabFailedTriggerJobEscalates(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// A failed trigger job leaves every ordinary job green, so the job list
+	// alone reads as an all-green head even though the pipeline failed.
+	env := stepstest.FakeCIGlab(t, "opened", `[{"id":1,"name":"build","status":"success"}]`, headSHA)
+	env = append(env,
+		"FAKE_CLI_PIPELINE_STATUS=failed",
+		`FAKE_CLI_TRIGGER_JOBS=[{"id":5,"name":"deploy-child","status":"failed","downstream_pipeline":{"id":9,"status":"failed"}}]`,
+	)
+
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(failOnExtraPoll)
+	pinCIMonitorClock(step)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a failed trigger job to require approval")
+	}
+	findings := gitlabCIFindings(t, outcome)
+	found := false
+	for _, finding := range findings.Items {
+		if finding.Check == "deploy-child" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a finding for the failed trigger job, got %+v", findings.Items)
+	}
+}
+
+func TestCIStep_GitLabPendingPipelineIsNotReady(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// Every ordinary job has finished green while the pipeline itself is still
+	// running. Readiness must keep waiting, not report checks-passed.
+	env := stepstest.FakeCIGlab(t, "opened", `[{"id":1,"name":"build","status":"success"}]`, headSHA)
+	env = append(env, "FAKE_CLI_PIPELINE_STATUS=running")
+
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		cancel()
+		return ctx.Err()
+	})
+	pinCIMonitorClock(step)
+	_, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected a pending pipeline to keep monitoring while the MR is open, got %v", err)
+	}
+	for _, line := range logs {
+		if strings.Contains(line, "all CI checks passed") {
+			t.Fatalf("a still-running pipeline was reported as all checks passed: %v", logs)
+		}
+	}
+	found := false
+	for _, line := range logs {
+		if strings.Contains(line, "CI checks running") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected the monitor to report the pipeline as running, got: %v", logs)
+	}
+}
+
+func TestCIStep_GitLabFailedExternalStatusCheckEscalates(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// An external status check is a merge requirement like any other; a failing
+	// one must not read as an all-green head just because the jobs are green.
+	env := stepstest.FakeCIGlab(t, "opened", `[{"id":1,"name":"build","status":"success"}]`, headSHA)
+	env = append(env,
+		`FAKE_CLI_STATUS_CHECKS=[{"id":3,"name":"Compliance","external_url":"https://compliance.example.com/mr/42","status":"failed"}]`,
+	)
+
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(failOnExtraPoll)
+	pinCIMonitorClock(step)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a failed external status check to require approval")
+	}
+	findings := gitlabCIFindings(t, outcome)
+	found := false
+	for _, finding := range findings.Items {
+		if finding.Check == "Compliance" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a finding for the failed external status check, got %+v", findings.Items)
+	}
+}
+
+func TestCIStep_GitLabExternalStatusCheckRouteAbsentStillPasses(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// A Community Edition instance does not mount the external status check
+	// route at all (an Ultimate capability); it must read as having none, not
+	// as an unreadable check that parks the run, and not as a pending one that
+	// never resolves.
+	env := stepstest.FakeCIGlab(t, "opened", `[{"id":1,"name":"build","status":"success"}]`, headSHA)
+	env = append(env, "FAKE_CLI_GLAB_STATUS_CHECKS_ROUTE=absent")
+
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		cancel()
+		return ctx.Err()
+	})
+	pinCIMonitorClock(step)
+	_, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the green head to keep monitoring while the MR is open, got %v", err)
+	}
+	found := false
+	for _, line := range logs {
+		if strings.Contains(line, "all CI checks passed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected checks-passed on an instance without external status checks, got: %v", logs)
 	}
 }

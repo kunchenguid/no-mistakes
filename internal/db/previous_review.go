@@ -43,7 +43,7 @@ type PreviousReviewRounds struct {
 func (d *DB) GetPreviousRunReviewRounds(repoID, branch, excludeRunID string) (*PreviousReviewRounds, error) {
 	var runID, stepResultID string
 	err := d.sql.QueryRow(
-		`SELECT res.run_id, res.id
+		`SELECT res.run_id, COALESCE(res.carried_from, res.id)
 		   FROM step_results res
 		   JOIN runs r ON r.id = res.run_id
 		  WHERE r.repo_id = ? AND r.branch = ? AND r.id != ? AND res.step_name = ?

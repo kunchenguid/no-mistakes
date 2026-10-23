@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -447,6 +447,27 @@ review:
 **Off (the default)**, the review step is the monologue it has always been: the reviewer is told nothing about a channel, no conversation files are written, no question findings are produced, and the PR body grows no conversation group. A repository that never opted in cannot have a conversation on disk, so for it every review turn also runs session-free and `no-mistakes axi answer` refuses and names this setting. A question asked while the setting was on stays answerable if you turn it off mid-run - see [Turning the setting off does not strand a question already asked](/no-mistakes/concepts/review-conversation/). Upgrading no-mistakes never starts a conversation under a repository that did not ask for one.
 
 The trade-off is latency against precision. A question costs the run a park - tens of minutes to hours of wall clock, waiting on you - and buys a review that decided the point instead of handing you a finding to rule on. Repositories whose changes rarely turn on product intent will not get much for that wait; repositories where the reviewer regularly cannot tell deliberate from accidental will.
+
+### review.agent_timeout
+
+A shorter stall budget for each Review-step agent invocation in this repository, so small, low-risk changes can be bounded more tightly than the machine-wide default.
+
+| | |
+|---|---|
+| Type | `string` (Go duration, positive) |
+| Default | unset (the global [`review_agent_timeout`](/no-mistakes/reference/global-config/#review_agent_timeout) applies) |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+review:
+  agent_timeout: "10m"
+```
+
+**Precedence.** The effective budget is the smaller of this value and the global `review_agent_timeout`. A repository can only tighten the machine policy: a longer value is accepted but has no effect, and the global limit stays in force. An unset key keeps the global limit, so the setting is opt-in.
+
+**Trust boundary.** Commit it to your **default branch**, the same copy the daemon reads `review.conversation` and `review.path_instructions` from. A pushed branch cannot set, change, or remove it, because the timeout gates that branch's own review. A value that is not a positive duration fails the config closed, on the pushed copy too, so an invalid block is caught before it merges.
+
+**What it does not change.** It sets the same per-invocation budget as `review_agent_timeout`: the reviewer, the fixer, and each fresh rereviewer get it independently, and an expiry fails the Review step exactly as before. It never skips Review or counts a timeout as a pass. It does not change [`review_agent_working_timeout`](/no-mistakes/reference/global-config/#review_agent_working_timeout), which stays global and still bounds how long a still-working invocation may continue past the budget. Because a tightened budget is a configured timeout, a Review invocation cut by it is not retried by `agent_crash_retries`, as with a configured global value. Only Review is affected: Document, Lint, and Test keep the crash retry their own, unchanged budgets earn. It is not an aggregate limit on the whole Review step.
 
 ### review.path_instructions
 
@@ -912,6 +933,27 @@ The restart at Test is recorded with the carried approval, in the same write, an
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot let its own rebases skip Review.
 A value set here wins over the operator's own [`ci.carry_review_on_replay`](/no-mistakes/reference/global-config/#cicarry_review_on_replay) in both directions.
 
+### ci.release_after_checks_pass
+
+Whether the CI step finishes the run at its checks verdict instead of monitoring the pull request until it is merged or closed.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  release_after_checks_pass: true
+```
+
+- **`false` (default)** is what the step has always done: once every check is green the run records readiness and keeps watching the PR until it is merged, closed, or declined, and a later base-branch advance or conflict is still repaired on its own.
+- **`true`** finishes the step at that point. The run completes with the `checks_passed` status, releases its worktree, and reports `outcome: checks-passed`; whether and when the PR is merged is then the user's decision, and nothing observes the merge afterwards, so the recorded CI duration stops at the checks verdict instead of including the wait for a merge.
+
+This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot opt itself into the shorter run, or out of it.
+A value set here wins over the operator's own [`ci.release_after_checks_pass`](/no-mistakes/reference/global-config/#cirelease_after_checks_pass) in both directions.
+
 ### rebase.strategy
 
 How the [Rebase step](/no-mistakes/reference/pipeline-steps/#rebase) integrates a base branch that moved under the gated branch.
@@ -1092,6 +1134,7 @@ Fields not set here inherit from global config and then the built-in defaults.
 
 By default, test evidence is written to `<NM_HOME>/evidence/<run-id>`. Where it is stored locally and how long it is kept are global-only settings; see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence).
 On GitHub.com/GHEC, supported image and video artifacts are uploaded to GitHub user-attachments when the PR is rendered unless `attach_media` is false and `store_in_repo` is also false.
+Uploads need the raw GitHub token from `gh auth token`, read once per PR render; if your `gh` sits behind a credential vault that prompts before it releases the token, set both to false so the PR step never asks for it.
 For GitHub repositories, set `store_in_repo: true` to also publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
 `test.evidence.branch` is read ONLY from the trusted default-branch copy of this file, because it names a git ref the daemon pushes to; a pushed branch cannot redirect evidence commits.
 The other publication fields, including `test.evidence.commit_message`, are read from the pushed branch. The commit-message template shapes only the evidence commit subject and cannot select its target branch.

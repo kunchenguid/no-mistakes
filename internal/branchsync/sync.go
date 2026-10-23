@@ -2112,15 +2112,30 @@ func worktreeClean(ctx context.Context, dir string) (bool, string) {
 		{"MERGE_HEAD", "merge_in_progress"}, {"rebase-merge", "rebase_in_progress"}, {"rebase-apply", "rebase_in_progress"},
 		{"CHERRY_PICK_HEAD", "cherry_pick_in_progress"}, {"REVERT_HEAD", "revert_in_progress"}, {"BISECT_LOG", "bisect_in_progress"}, {"sequencer", "sequencer_in_progress"},
 	}
+	args := []string{"rev-parse"}
 	for _, marker := range markers {
-		path, err := git.Run(ctx, dir, "rev-parse", "--git-path", marker.path)
-		if err == nil {
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(dir, path)
-			}
-			if _, err := os.Stat(path); err == nil {
-				return false, marker.reason
-			}
+		args = append(args, "--git-path", marker.path)
+	}
+	var paths []string
+	if out, err := git.Run(ctx, dir, args...); err == nil {
+		if split := strings.Split(out, "\n"); len(split) == len(markers) {
+			paths = split
+		}
+	}
+	for i, marker := range markers {
+		var path string
+		if paths != nil {
+			path = paths[i]
+		} else if out, err := git.Run(ctx, dir, "rev-parse", "--git-path", marker.path); err == nil {
+			path = out
+		} else {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if _, err := os.Stat(path); err == nil {
+			return false, marker.reason
 		}
 	}
 	dirty, err := git.HasUncommittedChanges(ctx, dir)

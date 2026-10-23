@@ -648,6 +648,12 @@ func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPat
 		return encoded
 	}
 	mergedRaw := mergeFindingsJSON(existingRaw, additionalRaw)
+	current, currentErr := types.ParseFindingsJSON(additionalRaw)
+	if mergedRaw == "" && currentErr == nil {
+		// Empty finding sets still carry the current round's positive coverage
+		// and provenance or an explicit refusal. Preserve the current envelope.
+		mergedRaw = additionalRaw
+	}
 	if mergedRaw == "" {
 		return ""
 	}
@@ -656,6 +662,9 @@ func mergeOutstandingFindingsJSON(existingRaw, additionalRaw string, reviewedPat
 		return mergedRaw
 	}
 	merged.ReviewedPaths = append([]string(nil), reviewedPaths...)
+	if currentErr == nil {
+		merged.ReviewCoverageScope = current.ReviewCoverageScope
+	}
 	merged.WithdrawnFindings = nil
 	seen := make(map[string]bool, len(merged.Items))
 	for i := range merged.Items {

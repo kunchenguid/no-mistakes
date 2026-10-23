@@ -875,21 +875,26 @@ func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
+// A token limited to the repo and workflow scopes cannot run `gh pr edit`: its
+// GraphQL lookup selects Team.organization through reviewRequests, which needs
+// read:org. UpdatePR therefore sends the content as a REST PATCH, streamed on
+// stdin, and must never fall back to `gh pr edit`.
+func TestUpdatePRPatchesPullRequestOverREST(t *testing.T) {
 	t.Parallel()
 
-	const body = "## What Changed\n\n- update existing pull request bodies without long argv"
+	const body = "## What Changed\n\n- <b>update</b> & \"quote\" existing pull request bodies without long argv"
+	want, err := json.Marshal(map[string]string{"title": "fix: cap body", "body": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// githubTestCmdFactory rejects every command it was not given, so a
+	// `gh pr edit` call fails this test.
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr edit 42 --repo test/repo --title fix: cap body --body-file -": {
-			wantStdin: body,
-		},
+		"gh api --method PATCH repos/test/repo/pulls/42 --input -": {wantStdin: string(want)},
 	}), nil, "", "test/repo")
 
 	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
-	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{
-		Title: "fix: cap body",
-		Body:  body,
-	})
+	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "fix: cap body", Body: body})
 	if err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)
 	}
@@ -901,65 +906,81 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 func TestUpdatePROmitsTitleWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	var recorded [][]string
-	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
-	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{
-		Body: "marker only",
-	}); err != nil {
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/42 --input -": {wantStdin: `{"body":"marker only"}`},
+	}), nil, "", "test/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "marker only"}); err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)
 	}
-	if len(recorded) != 1 {
-		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+}
+
+func TestUpdatePRScopesRESTCallToEnterpriseHost(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --hostname ghe.example.com --method PATCH repos/org/repo/pulls/7 --input -": {wantStdin: `{"body":"b"}`},
+	}), nil, "ghe.example.com", "ghe.example.com/org/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "7"}, scm.PRContent{Body: "b"}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
 	}
-	got := strings.Join(recorded[0], " ")
-	if strings.Contains(got, "--title") {
-		t.Fatalf("body-only UpdatePR must not pass --title, got %v", recorded[0])
-	}
-	if !strings.Contains(got, "--body-file") {
-		t.Fatalf("body-only UpdatePR must still pass --body-file, got %v", recorded[0])
+}
+
+func TestUpdatePRReportsRESTFailure(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/42 --input -": {stderr: "HTTP 403: Resource not accessible", code: 1},
+	}), nil, "", "test/repo")
+	_, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "b"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403: Resource not accessible") {
+		t.Fatalf("UpdatePR() error = %v, want the gh stderr in the error", err)
 	}
 }
 
 // UpdatePR shares the same explicit-PR selector boundary as the read methods:
-// when the number is absent it must target the canonical PR URL, never an empty
-// positional that makes `gh pr edit` resolve the cwd branch (main) from the
+// when the number is absent it must target the number in the canonical PR URL,
+// never an empty selector that makes gh resolve the cwd branch (main) from the
 // detached bare gate repo and edit the wrong PR.
 func TestUpdatePRTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
 	t.Parallel()
 
-	var recorded [][]string
-	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
-
-	prURL := "https://github.com/test/repo/pull/123"
-	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: prURL}, scm.PRContent{
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/123 --input -": {wantStdin: `{"body":"body","title":"fix: cap body"}`},
+	}), nil, "", "test/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: "https://github.com/test/repo/pull/123"}, scm.PRContent{
 		Title: "fix: cap body",
 		Body:  "body",
 	}); err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)
 	}
-	if len(recorded) != 1 {
-		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
-	}
-	got := recorded[0]
-	// argv is: gh pr edit <selector> --repo ...
-	if len(got) < 4 || got[1] != "pr" || got[2] != "edit" {
-		t.Fatalf("unexpected argv: %v", got)
-	}
-	if selector := got[3]; selector != prURL {
-		t.Fatalf("edit selector = %q, want the known PR URL %q (empty selector makes gh resolve the cwd branch)", selector, prURL)
+}
+
+// With no configured repository the PR URL names it; the cwd is never consulted.
+func TestUpdatePRTakesRepositoryFromURLWhenHostHasNone(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/123 --input -": {wantStdin: `{"body":"body"}`},
+	}), nil, "", "")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: "https://github.com/test/repo/pull/123"}, scm.PRContent{Body: "body"}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
 	}
 }
 
-// UpdatePR must fail closed exactly like the read methods: with neither number
-// nor URL it refuses to shell out rather than running an argument-less
-// `gh pr edit` that would edit the inferred cwd branch's PR.
+// UpdatePR must fail closed exactly like the read methods: with neither a PR
+// identity nor a repository it refuses to shell out rather than letting gh
+// expand {owner}/{repo} from the cwd and edit the inferred PR.
 func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 	t.Parallel()
 
 	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
-
 	if _, err := host.UpdatePR(context.Background(), &scm.PR{}, scm.PRContent{Title: "t", Body: "b"}); err == nil {
 		t.Fatal("UpdatePR() with no PR identity: expected error, got nil")
+	}
+
+	noRepo := New(failIfInvokedCmdFactory(t), nil, "", "")
+	if _, err := noRepo.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "b"}); err == nil {
+		t.Fatal("UpdatePR() with no repository: expected error, got nil")
 	}
 }
 

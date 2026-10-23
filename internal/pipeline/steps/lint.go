@@ -133,15 +133,15 @@ Previous lint findings to address:
 
 		var findings Findings
 		if result.Output == nil {
-			return nil, errors.New("lint analyzer returned no structured findings")
+			return nil, agent.RejectStructuredOutput(errors.New("lint analyzer returned no structured findings"))
 		}
 		if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
-			return nil, fmt.Errorf("validate lint analyzer findings: %w", err)
+			return nil, agent.RejectStructuredOutput(fmt.Errorf("validate lint analyzer findings: %w", err))
 		}
 		summary, err := extractCommitSummary(result)
 		if err != nil {
 			if errors.Is(err, errRejectedCommitSummary) {
-				return nil, fmt.Errorf("validate lint summary: %w", err)
+				return nil, agent.RejectStructuredOutput(fmt.Errorf("validate lint summary: %w", err))
 			}
 			sctx.Log(fmt.Sprintf("warning: could not parse lint summary: %v", err))
 		}

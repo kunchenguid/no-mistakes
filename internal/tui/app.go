@@ -428,6 +428,8 @@ func (m Model) terminalTitle() string {
 			return "○ Pending" + suffix
 		case m.run.Status == types.RunCompleted:
 			return "✓ Completed" + suffix
+		case m.run.Status == types.RunChecksPassed:
+			return "✓ Checks passed - PR ready to merge" + suffix
 		case m.run.Status == types.RunFailed:
 			return "✗ Failed" + suffix
 		case m.run.Status == types.RunCancelled:

@@ -141,7 +141,7 @@ type knob struct {
 	// pinned reports whether raw agent_args_override args already set this
 	// knob through the mechanism this harness actually uses. Nil means a raw
 	// override can never reach the knob, so there is nothing to defer to.
-	pinned func(rawArgs []string) bool
+	pinned func(rawArgs []string) (string, bool)
 	// validate rejects a value this harness structurally cannot accept.
 	validate func(value string) error
 }
@@ -157,16 +157,23 @@ func flagArgs(flag string) func(string) []string {
 
 // flagPinned matches a flag in both its `--flag value` and `--flag=value`
 // spellings, across every alias the harness accepts for the same knob.
-func flagPinned(flags ...string) func([]string) bool {
-	return func(rawArgs []string) bool {
-		for _, arg := range rawArgs {
+func flagPinned(flags ...string) func([]string) (string, bool) {
+	return func(rawArgs []string) (string, bool) {
+		for i := len(rawArgs) - 1; i >= 0; i-- {
+			arg := rawArgs[i]
 			for _, flag := range flags {
-				if arg == flag || strings.HasPrefix(arg, flag+"=") {
-					return true
+				if arg == flag {
+					if i+1 < len(rawArgs) {
+						return rawArgs[i+1], true
+					}
+					return "", true
+				}
+				if value, found := strings.CutPrefix(arg, flag+"="); found {
+					return value, true
 				}
 			}
 		}
-		return false
+		return "", false
 	}
 }
 
@@ -180,27 +187,35 @@ func codexConfigArgs(key string) func(string) []string {
 // codexConfigPinned reports whether a raw override already sets a codex config
 // key, in either the split `-c key=value` form or a single token containing the
 // config flag and assignment.
-func codexConfigPinned(key string, flags ...string) func([]string) bool {
+func codexConfigPinned(key string, flags ...string) func([]string) (string, bool) {
 	flagMatch := flagPinned(flags...)
-	assignmentMatches := func(arg string) bool {
-		assignmentKey, _, ok := strings.Cut(strings.TrimSpace(arg), "=")
-		return ok && strings.TrimSpace(assignmentKey) == key
-	}
-	return func(rawArgs []string) bool {
-		if len(flags) > 0 && flagMatch(rawArgs) {
-			return true
+	assignmentValue := func(arg string) (string, bool) {
+		assignmentKey, value, ok := strings.Cut(strings.TrimSpace(arg), "=")
+		if !ok || strings.TrimSpace(assignmentKey) != key {
+			return "", false
 		}
-		for i, arg := range rawArgs {
-			if (arg == "-c" || arg == "--config") && i+1 < len(rawArgs) && assignmentMatches(rawArgs[i+1]) {
-				return true
+		return strings.Trim(strings.TrimSpace(value), "\"'"), true
+	}
+	return func(rawArgs []string) (string, bool) {
+		if value, found := flagMatch(rawArgs); len(flags) > 0 && found {
+			return value, true
+		}
+		for i := len(rawArgs) - 1; i >= 0; i-- {
+			arg := rawArgs[i]
+			if (arg == "-c" || arg == "--config") && i+1 < len(rawArgs) {
+				if value, found := assignmentValue(rawArgs[i+1]); found {
+					return value, true
+				}
 			}
 			for _, prefix := range []string{"-c ", "--config ", "-c=", "--config="} {
-				if strings.HasPrefix(arg, prefix) && assignmentMatches(strings.TrimPrefix(arg, prefix)) {
-					return true
+				if assignment, found := strings.CutPrefix(arg, prefix); found {
+					if value, found := assignmentValue(assignment); found {
+						return value, true
+					}
 				}
 			}
 		}
-		return false
+		return "", false
 	}
 }
 
@@ -416,10 +431,22 @@ func NativeArgs(name types.AgentName, p Profile, rawArgs []string) []string {
 		if entry.value == "" || entry.knob.mechanism != MechanismArgs || entry.knob.args == nil {
 			continue
 		}
-		if entry.knob.pinned != nil && entry.knob.pinned(rawArgs) {
-			continue
+		if entry.knob.pinned != nil {
+			if _, pinned := entry.knob.pinned(rawArgs); pinned {
+				continue
+			}
 		}
 		out = append(out, entry.knob.args(entry.value)...)
 	}
 	return out
+}
+
+func EffectiveModel(name types.AgentName, p Profile, rawArgs []string) string {
+	h, ok := lookup(name)
+	if ok && h.model.mechanism == MechanismArgs && h.model.pinned != nil {
+		if value, pinned := h.model.pinned(rawArgs); pinned {
+			return value
+		}
+	}
+	return p.Model
 }

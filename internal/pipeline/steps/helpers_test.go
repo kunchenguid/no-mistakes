@@ -668,7 +668,8 @@ func fakeCIGHNoChecks(t *testing.T) []string {
 
 // fakeCIGlab creates a fake glab binary that serves the CI monitoring endpoints.
 // state is the MR state ("opened", "merged", "closed"); checksJSON is a JSON
-// array of jobs for `glab ci status` / `glab ci get`.
+// array of pipeline jobs the checks read reports (`glab ci get` or the
+// paginated REST jobs route, depending on whether the project path is known).
 func fakeCIGlab(t *testing.T, state, checksJSON string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)

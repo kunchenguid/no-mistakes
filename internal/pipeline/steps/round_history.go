@@ -328,7 +328,7 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 		if step == nil || step.ID == "" || step.ID == sctx.StepResultID {
 			continue
 		}
-		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
+		rounds, err := sctx.DB.GetRoundsByStep(step.RoundsStepID())
 		if err != nil {
 			continue
 		}

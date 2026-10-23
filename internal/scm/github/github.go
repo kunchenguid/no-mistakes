@@ -366,20 +366,48 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	return pr, nil
 }
 
+// UpdatePR rewrites the PR title (when non-empty) and body with a REST PATCH
+// instead of `gh pr edit`. `gh pr edit` first runs a GraphQL lookup that selects
+// reviewRequests, including Team.organization, which a token limited to the
+// repo and workflow scopes cannot read (it needs read:org), so a pure content
+// rewrite failed for those tokens. The PATCH sends only the fields it changes.
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
 		return nil, err
 	}
-	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
-	if strings.TrimSpace(content.Title) != "" {
-		args = append(args, "--title", content.Title)
+	number := selector
+	if _, convErr := strconv.Atoi(number); convErr != nil {
+		if number, err = scm.ExtractPRNumber(selector); err != nil {
+			return nil, err
+		}
 	}
-	args = append(args, "--body-file", "-")
+	// Fail closed like prSelector: without a known repository `gh api` would
+	// expand {owner}/{repo} from the cwd, which is the detached gate repo.
+	slug := h.repoSlug()
+	if slug == "" {
+		slug = RepoSlug(pr.URL)
+	}
+	if slug == "" {
+		return nil, errors.New("no repository known for PR update; refusing to let gh infer one from the cwd")
+	}
+	fields := map[string]string{"body": content.Body}
+	if strings.TrimSpace(content.Title) != "" {
+		fields["title"] = content.Title
+	}
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode PR update: %w", err)
+	}
+	args := []string{"api"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, "--method", "PATCH", "repos/"+slug+"/pulls/"+number, "--input", "-")
 	cmd := h.cmd(ctx, "gh", args...)
-	cmd.Stdin = strings.NewReader(content.Body)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("gh pr edit: %s: %w", strings.TrimSpace(string(out)), err)
+	cmd.Stdin = bytes.NewReader(payload)
+	if _, detail, err := stdoutOnly(cmd); err != nil {
+		return nil, fmt.Errorf("gh api PATCH pull request: %s: %w", detail, err)
 	}
 	return pr, nil
 }

@@ -112,11 +112,13 @@ type opencodeAgent struct {
 	// profile is the harness-neutral model/effort selection resolved by
 	// internal/agentcfg. `opencode serve` rejects model and variant flags
 	// outright, so unlike every other native adapter these two knobs cannot ride
-	// argv: they belong to the session-message body (see sendMessage).
+	// argv: V1 uses the session-message body; V2 uses the session model reference.
 	profile agentcfg.Profile
 	subprocessContext
 	mu     sync.Mutex
 	server *managedServer
+	v2     bool   // protected by mu; selected before starting the managed server
+	v2Auth string // private per-server credential, never persisted or passed in argv
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }
@@ -194,6 +196,12 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	baseURL, err := a.ensureServer(ctx, opts.CWD, opts.Env)
 	if err != nil {
 		return nil, err
+	}
+	a.mu.Lock()
+	v2 := a.v2
+	a.mu.Unlock()
+	if v2 {
+		return a.runV2(ctx, opts, baseURL)
 	}
 
 	// Create session with blanket permissions

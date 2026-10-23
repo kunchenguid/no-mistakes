@@ -37,7 +37,8 @@ func assertRoleNeutralHostSearchBoundary(t *testing.T, prompt string) {
 		// Role-neutral missing-tool fallback.
 		"not on PATH and no repository-local path is supplied",
 		"report the missing tool and the work it blocked in your normal result",
-		"with the concrete reason, and stop there",
+		"with the concrete reason, and stop searching there",
+		"including any edits you were asked to make",
 	} {
 		if !strings.Contains(normalized, want) {
 			t.Errorf("emitted pipeline prompt missing role-neutral host-search boundary %q:\n%s", want, prompt)

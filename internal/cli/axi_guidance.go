@@ -15,6 +15,14 @@ package cli
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards that contract.
 const staleMonitorGuidance = "If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes it through Push automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) use `no-mistakes rerun` to validate the selected gate or preserved head; it refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits."
 
+// releasedChecksPassedGuidance is the canonical, point-of-use guidance an agent
+// reads when `axi run` returns the terminal `checks-passed` outcome: the run
+// reached its validation verdict and released the branch, so no monitor is left
+// watching the PR and the merge is entirely the user's decision. Only the
+// opt-in `ci.release_after_checks_pass` produces this shape; the default
+// behaviour keeps monitoring and carries staleMonitorGuidance instead.
+const releasedChecksPassedGuidance = "This run is finished: it validated the head and released the branch, so nothing is left watching the PR and the merge decision is the user's. If the PR later falls behind the default branch or conflicts before it is merged, this run will not rebase or re-push it - update the branch and start a fresh `no-mistakes axi run` on the updated head instead. This shape only exists when the operator enabled `ci.release_after_checks_pass`; without it the run keeps watching a green PR until it is merged."
+
 // preserveGateFixCommitsGuidance is the canonical, point-of-use guidance an
 // agent reads when it needs to make another fix after a gate round already
 // produced fix commits: keep those commits on the same branch and start a fresh

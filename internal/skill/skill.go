@@ -204,7 +204,18 @@ Run the pipeline and decide on its findings as they come up:
 
    # skip this step
    no-mistakes axi respond --action skip
+
+   # continue static review when coverage is incomplete and findings are empty
+   no-mistakes axi respond --step review --action complete-coverage
+
+   # reject this gate (only when the user has decided it must fail)
+   no-mistakes axi respond --action abort --reason "<why the gate is rejected>"
    ` + "```" + `
+   ` + "`complete-coverage`" + ` runs a fresh reviewer over only the missing paths.
+   It reuses stored coverage only for the same run, step, round, head, base, and trusted scope.
+   Missing or invalid provenance keeps Review gated. Source changes during the turn also keep it gated.
+   It never approves incomplete coverage, runs a code fixer, or answers a question.
+   It refuses outstanding findings, finding overrides, and ` + "`--yes`" + `.
    With ` + "`--action fix`" + `, declines are explicit: every finding the gate shows
    must be listed in ` + "`--findings`" + ` or ` + "`--ignore`" + `, and a response that
    leaves one out is refused with the missing ids named while the gate stays
@@ -235,6 +246,9 @@ Run the pipeline and decide on its findings as they come up:
     - ` + "`--reason \"the operator's explanation\"`" + ` records an explicitly authorized Test exception with ` + "`--step test --action approve`" + `.
       This does not grant approval authority; escalate ask-user findings as before.
       Without a reason, Test approval remains effective; an approval past a failing command, ` + "`no-go`" + `, or ` + "`inconclusive`" + ` verdict is reported as an exception with no operator reason supplied.
+    - ` + "`--action abort --reason \"<why>\"`" + ` records the user's decision that the parked gate fails. The reason is required.
+      The round is recorded as declined, no fix round starts, nothing is approved, pushed or merged, and the run ends ` + "`failed`" + ` with the reason in the step and run errors. Saved commits, findings and evidence stay available, but the run's worktree is removed, so uncommitted edits in it are lost.
+      Follow the output's ` + "`branch_sync.next_action`" + ` to get the branch back. It is the user's call, never yours: do not send it to get past a finding, and it is not ` + "`axi abort`" + `, which cancels the run instead.
     - ` + "`--add-finding '<json>'`" + ` (with ` + "`--action fix`" + `) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in
@@ -258,6 +272,11 @@ Run the pipeline and decide on its findings as they come up:
      check list without that declaration is not ready. no-mistakes keeps
      monitoring the PR in the background until it is merged, closed, or its
      configured idle timeout elapses, so a human can watch it in the TUI.
+     Under the opt-in ` + "`ci.release_after_checks_pass`" + ` the run instead finishes at
+     the verdict: ` + "`run.status`" + ` is ` + "`checks_passed`" + `, the run released its worktree,
+     and nothing is left watching the PR.
+     An update it needs later is a fresh ` + "`no-mistakes axi run`" + ` on the updated head;
+     this run will not rebase or re-push it.
    - ` + "`passed`" + ` - the pipeline completed under the requested steps, including any
      explicit per-run skips. This alone is not evidence that a PR was merged.
    - ` + "`passed-with-override`" + ` - the pipeline completed with an explicitly approved Test exception or CI failure.
@@ -285,6 +304,21 @@ On refusal, inspect ` + "`no-mistakes axi status`" + ` and follow the custody gu
 below. Dirty callers and callers without clean-head evidence retain existing
 selection behavior.
 
+When a ` + "`failed`" + ` outcome came from the agent invocation itself - a provider
+processing error, a usage or quota limit, a transport failure, or the agent
+process exiting - in Test or an earlier step, and the run never pushed,
+` + "`no-mistakes axi retry --run <id>`" + ` continues that run instead of repeating it:
+a new run starts at the preserved head, carries the steps before the failed
+one, and restarts the failed step from the beginning, so a failed Review
+reviews the resulting head in full before Test. First adopt the preserved head
+with the reported ` + "`no-mistakes axi sync --recover`" + ` so your clean ` + "`HEAD`" + ` is
+exactly that head. Retry refuses, changing nothing, and names the failed proof
+whenever continuing is not provably safe - a failure about the change itself,
+a moved or dirty branch, another run, or changed configuration (repository
+settings, the agent, or its model since the carried Review ran); then use
+` + "`rerun`" + ` or address the failure. Like ` + "`respond`" + `, it blocks until the next
+` + "`gate:`" + ` or outcome.
+
 Before any post-pipeline local commit or fresh run, read the structured ` + "`branch_sync`" + ` object returned by AXI home, status, or a drive result.
 Only when its ` + "`next_action.code`" + ` is ` + "`sync`" + `, run ` + "`no-mistakes axi sync`" + ` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked and names ` + "`git checkout --detach <pushed-sha>`" + `, which moves no branch ref.
@@ -305,9 +339,11 @@ The CI step deliberately keeps watching the PR after checks pass, so
 ` + "`axi run`" + ` returns ` + "`checks-passed`" + ` the moment checks are green (or a trusted
 ` + "`no_ci: true`" + ` declaration covers a zero-check repository) rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
+That monitor is live by default; only the opt-in
+` + "`ci.release_after_checks_pass`" + ` finishes the run at the verdict instead.
 Never treat "no CI checks reported" alone as green.
 
-Because that monitor stays live, a PR that falls behind the default branch or
+Because that monitor stays live by default, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged
 first - needs **no command from you**: never hand-rebase. When the CI monitor
 sees an actual conflict it **rebases onto the base, resolves it, revalidates from Review
@@ -323,7 +359,8 @@ idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
 with ` + "`no-mistakes rerun`" + `, subject to the clean-head check above. An accepted
 rerun cancels the stale monitor and re-runs the full pipeline including a
 deterministic rebase step. Do **not** reach for
-` + "`no-mistakes axi run`" + ` to refresh a still-active PR: after ` + "`checks-passed`" + ` it
+` + "`no-mistakes axi run`" + ` to refresh a still-active PR: with the default
+monitor, after ` + "`checks-passed`" + ` it
 reattaches to the running monitor (HEAD unchanged) and returns its output
 without rebasing.
 

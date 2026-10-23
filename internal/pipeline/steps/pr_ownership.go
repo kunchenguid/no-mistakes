@@ -60,7 +60,7 @@ func parsePROwnedBody(body string) (prOwnedBody, error) {
 		return prOwnedBody{}, fmt.Errorf("malformed PR appendix ownership markers")
 	}
 	parts := prOwnedBody{before: body[:start], appendix: body[contentStart : end-1], after: body[afterEnd:], managed: true}
-	if markdownFenceOpen(parts.appendix) || fmt.Sprintf("%x", sha256.Sum256([]byte(parts.appendix))) != body[digestStart:digestStart+64] {
+	if markdownFenceOpen(parts.appendix) || !appendixDigestMatches(parts.appendix, body[digestStart:digestStart+64]) {
 		return prOwnedBody{}, fmt.Errorf("PR appendix was edited or is malformed; refusing to overwrite possible author content")
 	}
 	if strings.Contains(parts.before+parts.after, pipelineAttestationCommentPrefix) || strings.Count(parts.appendix, pipelineAttestationCommentPrefix) != 1 {
@@ -127,6 +127,9 @@ func wrapPRAppendix(appendix string) string {
 func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit int) (prContent, error) {
 	before := redactPRContent(prContent{Body: parts.before}).Body
 	after := redactPRContent(prContent{Body: parts.after}).Body
+	// Before the marker escape: removing a control byte must not be able to
+	// splice a marker together after the escape has looked for one.
+	appendix = neutralizePRControls(appendix)
 	appendix = escapePRAppendixMarkers(appendix)
 	appendix = redactPRContent(prContent{Body: appendix}).Body
 	if !parts.managed && before != "" {

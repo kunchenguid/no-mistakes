@@ -156,7 +156,8 @@ Rules:
 - After applying the fixes and before verification, re-trace for each finding the concrete failing sequence it describes through the code as it now is, and trace the ordinary successful path through every function you changed, including each of its callers. Remove any alias, branch, parameter, or helper your fix made unreachable. A fix that makes the reported sequence pass while breaking the ordinary path, a caller's assumption, or a sibling site is a regression the next review will report.
 - After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.
 - Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps after review that are the authoritative test and lint gates; their coverage may itself be focused on the changed area when the repository has no configured test or lint commands.
-- Return JSON with a single "summary" field when you are done.
+- If the tool needed for that verification is missing, still apply every fix you intended and skip the unavailable verification. Never make fewer edits, or none, because verification is unavailable.
+- Return JSON with a "summary" field when you are done. Add a "verification_blocked" field, naming the missing tool and why verification could not run, only when the verification you intended could not run; otherwise omit it.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s
 
@@ -175,15 +176,16 @@ Previous review findings to address:
 		// the step parent for synchronous preparation and commit work, so the
 		// independent rereviewer cannot inherit its spent deadline.
 		summary, err := s.executeReviewFixWithTimeout(sctx, s.Name(), fixExecutionOptions{
-			RequirePreviousFindings: true,
-			MissingFindingsError:    "review fix requires previous review findings",
-			LogMessage:              "asking agent to fix identified issues...",
-			Prompt:                  fixPrompt,
-			ErrorPrefix:             "agent fix",
-			FallbackSummary:         "address review findings",
-			SessionRole:             pipeline.SessionRoleFixer,
-			Purpose:                 "review-fix",
-			Workload:                workload,
+			RequirePreviousFindings:   true,
+			MissingFindingsError:      "review fix requires previous review findings",
+			LogMessage:                "asking agent to fix identified issues...",
+			Prompt:                    fixPrompt,
+			ErrorPrefix:               "agent fix",
+			FallbackSummary:           "address review findings",
+			SessionRole:               pipeline.SessionRoleFixer,
+			Purpose:                   "review-fix",
+			Workload:                  workload,
+			ReportBlockedVerification: true,
 		})
 		if err != nil {
 			return nil, err
@@ -209,6 +211,14 @@ Previous review findings to address:
 	changed := changedPathList(changedFiles)
 
 	reviewable := reviewablePaths(changed, sctx.Config.IgnorePatterns)
+	var retained *Findings
+	if sctx.CoverageContinuation != nil {
+		prior, err := retainedCoverageForReview(sctx, baseSHA, reviewTargetSHA, reviewable)
+		if err != nil {
+			return refusedCoverageContinuation(sctx, err)
+		}
+		retained = &prior
+	}
 	if len(reviewable) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
@@ -462,25 +472,35 @@ Risk assessment (after listing all findings):
 	}
 	var findings Findings
 	var validationErrors []error
-	for attempt := 1; ; attempt++ {
-		result, err := s.runReviewAgent(sctx, "agent review", sessionRole, opts)
-		if err == nil {
-			findings, err = parseReviewAnalyzerOutput(result)
-			if err == nil {
-				break
-			}
-		} else if !agent.IsStructuredOutputRejected(err) || sctx.Ctx.Err() != nil || errors.Is(err, errReviewAgentTimeout) {
+	if retained != nil {
+		findings, err = s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, *retained, reviewable, askDir)
+		if err != nil {
 			return nil, err
 		}
-		validationErrors = append(validationErrors, err)
-		if attempt == reviewAnalyzerMaxAttempts {
-			if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
-				return nil, fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err)
-			}
-			return nil, fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err)
+		if _, err := retainedCoverageForReview(sctx, baseSHA, reviewTargetSHA, reviewable); err != nil {
+			return refusedCoverageContinuation(sctx, err)
 		}
-		sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, reviewAnalyzerMaxAttempts))
-		opts.Prompt = turnPrompt + reviewRetryNote(err)
+	} else {
+		for attempt := 1; ; attempt++ {
+			result, err := s.runReviewAgent(sctx, "agent review", sessionRole, opts)
+			if err == nil {
+				findings, err = parseReviewAnalyzerOutput(result)
+				if err == nil {
+					break
+				}
+			} else if !agent.IsStructuredOutputRejected(err) || sctx.Ctx.Err() != nil || errors.Is(err, errReviewAgentTimeout) {
+				return nil, err
+			}
+			validationErrors = append(validationErrors, err)
+			if attempt == reviewAnalyzerMaxAttempts {
+				if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
+					return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err))
+				}
+				return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err))
+			}
+			sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, reviewAnalyzerMaxAttempts))
+			opts.Prompt = turnPrompt + reviewRetryNote(err)
+		}
 	}
 
 	// Phase ownership boundary: drop findings that only claim later pipeline-
@@ -503,8 +523,10 @@ Risk assessment (after listing all findings):
 	// must not have a fresh review inherit questions an earlier run asked.
 	// Delivering an answer to a finalize turn is the read-side case and is
 	// handled above; this is the ask-side one.
-	if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
-		return nil, err
+	if retained == nil {
+		if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
+			return nil, err
+		}
 	}
 	needsApproval := hasBlockingFindings(findings.Items)
 	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
@@ -524,7 +546,10 @@ Risk assessment (after listing all findings):
 		// nothing to fix. The completion turn keeps the operator out of that
 		// loop; whatever is still uncovered after it parks with the explicit
 		// remainder named, so a partial or fabricated record never approves.
-		completed, err := s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
+		completed := findings
+		if retained == nil {
+			completed, err = s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -535,6 +560,7 @@ Risk assessment (after listing all findings):
 			needsApproval = true
 		}
 	}
+	findings.ReviewCoverageScope = currentReviewCoverageScope(sctx, baseSHA, reviewTargetSHA, reviewable)
 	findingsJSON, _ := json.Marshal(findings)
 
 	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
@@ -619,7 +645,7 @@ func reviewCoverageCompletionSection(missing []string) string {
 }
 
 // completeCoverageGaps runs at most one focused review turn over exactly the
-// reviewable files the just-finished pass did not cover, and merges its
+// reviewable files the current or retained pass did not cover, and merges its
 // findings and coverage record into the round's. It runs only on a round that
 // would otherwise park SOLELY on a coverage gap (zero blocking findings), so
 // a healthy full-coverage review costs nothing extra and a round with
