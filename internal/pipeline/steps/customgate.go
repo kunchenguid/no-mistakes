@@ -123,7 +123,7 @@ func (s *CustomGateStep) executeCommand(sctx *pipeline.StepContext, fixSummary s
 	commandContext := *sctx
 	commandContext.Env = append(append([]string(nil), sctx.Env...), "NO_MISTAKES_FINDINGS_FILE="+path)
 	sctx.Log(fmt.Sprintf("running gate %q: %s", s.Gate.Name, command))
-	output, exitCode, err := runStepShellCommand(&commandContext, command)
+	output, exitCode, err := runCustomGateCommand(&commandContext, command, dir)
 	if err != nil {
 		logConfiguredCommandOutput(sctx, output, s.Name())
 		return nil, fmt.Errorf("run gate %q command: %w", s.Gate.Name, err)

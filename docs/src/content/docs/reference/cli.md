@@ -361,6 +361,61 @@ Every answered question is recorded per branch, so a later cold reviewer receive
 
 Answering requires an active run, because only its executor can resume the reviewer.
 
+## no-mistakes axi context
+
+Identify the active custom gate that encloses this process.
+
+```sh
+no-mistakes axi context
+no-mistakes axi context --json
+```
+
+The default output is TOON. `--json` provides a script-readable schema:
+
+```json
+{
+  "schema_version": 1,
+  "available": true,
+  "run_id": "01EXAMPLE",
+  "repo_id": "registered-repository-id",
+  "worktree": "/absolute/canonical/isolated-copy",
+  "phase": "gate.test.local-ci"
+}
+```
+
+Exit code 0 means the daemon verified this context at query time.
+The four identity fields identify the run, registered repository, canonical isolated-copy root, and exact custom-gate step.
+The context remains the same when that gate retries after a fix in the same run.
+A new run has a different `run_id`.
+
+The daemon requires unique authenticated process ancestry AND matching canonical Git ownership and recorded run worktree.
+Custom-gate shells and their descendants can query from that worktree or its subdirectories.
+An ordinary caller in the same directory cannot obtain context from topology alone.
+Changing to another copy or repository refuses context, even for a gate descendant.
+The ambient `NO_MISTAKES_GATE` marker does not authenticate a caller.
+There is no `--run` selector or mutation option.
+
+No verified context returns exit code 1 and no identity fields:
+
+```json
+{"schema_version":1,"available":false,"reason":"no_enclosing_custom_gate"}
+```
+
+This includes non-gate callers, missing ownership, ambiguous ancestry, inactive steps, terminal runs, and mismatched copies.
+If classification or daemon communication fails, the reason is `context_unavailable`.
+The command never starts or repairs a daemon, migrates a database, or falls back to branch-selected run records.
+Both the CLI and daemon must support this contract.
+An older daemon that omits verified provenance yields unavailable context; a daemon without the classification RPC also yields unavailable context.
+An older CLI does not recognize the command.
+
+Scripts must execute checks fresh on nonzero exit, unavailable or malformed output, an unknown schema version, or any uncertainty.
+For receipt reuse, compare all four identity fields AND independently verify unchanged job inputs, tools, and environment.
+This command neither implements caching nor certifies those inputs.
+The output contains a local absolute path; do not publish it as an artifact.
+It contains no credentials, intent, or transcripts and emits no remote telemetry.
+It conveys provenance, not permission to control the pipeline or protection against arbitrary code under the same OS user.
+Nested pipeline-control refusals remain unchanged.
+
 ## no-mistakes axi status
 
 When `--run` is omitted, show this branch's run: its active run, else its most recent one.
