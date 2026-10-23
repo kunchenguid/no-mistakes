@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.100.1](https://github.com/kunchenguid/no-mistakes/compare/v1.100.0...v1.100.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **pipeline:** apply commit settings to a fix agent's own commits ([#1472](https://github.com/kunchenguid/no-mistakes/issues/1472)) ([fb278c2](https://github.com/kunchenguid/no-mistakes/commit/fb278c27db66bbabc5db3e308e6a9c33a4bbb66f))
+* **shellenv:** accept a clean childless Windows exit in the child-completion check ([#1541](https://github.com/kunchenguid/no-mistakes/issues/1541)) ([cc062e8](https://github.com/kunchenguid/no-mistakes/commit/cc062e897cd2db842b238aacc640d0731daeb6d5))
+
 ## [1.100.0](https://github.com/kunchenguid/no-mistakes/compare/v1.99.1...v1.100.0) (2026-10-21)
 
 
