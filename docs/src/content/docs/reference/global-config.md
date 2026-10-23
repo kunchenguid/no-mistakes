@@ -1396,7 +1396,7 @@ Branch slashes become nested directories, unsafe branch characters are replaced,
 The publisher never force-pushes. It appends to the fetched evidence-branch tip with a fast-forward push, retries one lost race, and refuses to use the run branch, default branch, or an existing branch whose tip lacks the `.no-mistakes-evidence` marker.
 Publication is also refused when the remote cannot be read or pushed, an artifact exceeds 64 MiB, a run exceeds 500 files or 256 MiB, or another writer wins the retry. The PR body then keeps its local rendering instead of adding links that would not resolve.
 Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
-Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
+Enabling this pushes a ref under `refs/no-mistakes/evidence/` to your remote; it is not a branch, so CI workflows and deploy integrations that trigger on branch pushes do not build it.
 
 #### Local storage and cleanup
 
