@@ -723,6 +723,9 @@ func TestRecoverStaleRunsMarksCIMonitorInterrupted(t *testing.T) {
 	if err := d.StartStep(ciStep.ID); err != nil {
 		t.Fatalf("start ci step: %v", err)
 	}
+	if err := d.SetRunPushActive(run.ID, true); err != nil {
+		t.Fatal(err)
+	}
 
 	count, err := d.RecoverStaleRuns("daemon crashed")
 	if err != nil {
@@ -738,6 +741,9 @@ func TestRecoverStaleRunsMarksCIMonitorInterrupted(t *testing.T) {
 	}
 	if got.Status != types.RunCIMonitorInterrupted {
 		t.Fatalf("run status = %q, want %q", got.Status, types.RunCIMonitorInterrupted)
+	}
+	if got.PushActive {
+		t.Fatal("interrupted CI monitor still owns a push")
 	}
 	if got.Error == nil || *got.Error != types.RunCIMonitorInterruptedReason {
 		t.Fatalf("run error = %v, want ci monitor interrupted message", got.Error)
