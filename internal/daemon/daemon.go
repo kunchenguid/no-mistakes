@@ -838,7 +838,7 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree)
 	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_cleanup")
 
 	for _, wt := range removable {
-		removeOrphanWorktree(ctx, wt)
+		removeOrphanWorktree(ctx, d, wt)
 	}
 	for _, dir := range repoDirs {
 		os.Remove(dir)
@@ -935,6 +935,10 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
+	if reason := runWorktreeEditsCleanupReason(context.Background(), d, run, wt.dir); reason != "" {
+		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
+		return false
+	}
 	return true
 }
 
@@ -942,8 +946,21 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 // already decided on and swept (see cleanupOrphanWorktrees). It reports
 // whether the directory was actually removed, since git worktree remove and
 // its os.RemoveAll fallback can both fail and merely log a warning.
-func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) bool {
+func removeOrphanWorktree(ctx context.Context, d *db.DB, wt orphanWorktree) bool {
 	gateDir, wtPath := wt.gateDir, wt.dir
+	var run *db.Run
+	if d != nil {
+		var err error
+		run, err = d.GetRun(wt.runID)
+		if err != nil {
+			slog.Warn("preserving run worktree: cannot read run", "run_id", wt.runID, "error", err)
+			return false
+		}
+	}
+	if reason := runWorktreeEditsCleanupReason(ctx, d, run, wtPath); reason != "" {
+		slog.Warn("preserving run worktree", "run_id", wt.runID, "path", wtPath, "reason", reason)
+		return false
+	}
 	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 		if err := os.RemoveAll(wtPath); err != nil {
@@ -1486,28 +1503,44 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.PushReceivedResult{RunID: runID}, nil
 	})
 
-	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
-		if err := refuseNested(ctx, false); err != nil {
-			return nil, err
-		}
-		var p ipc.RespondParams
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("invalid params: %w", err)
-		}
-		dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason, pipeline.ResponseOptions{Origin: p.Origin, Coverage: p.Coverage})
-		if err != nil {
-			// A refused fix response is the caller's input to fix, not a
-			// transport failure: the gate is still parked. Report it as a
-			// structured result so the CLI can name the unaccounted findings
-			// and help, and the caller can send a corrected response.
-			var refusal *pipeline.RespondRefusal
-			if errors.As(err, &refusal) {
-				return &ipc.RespondResult{OK: false, Refusal: refusal.Message, Missing: refusal.Missing, DeclinedEarlierFix: refusal.DeclinedEarlierFix, Help: refusal.Help}, nil
+	respondHandler := func(scoped bool) ipc.HandlerFunc {
+		return func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+			if err := refuseNested(ctx, false); err != nil {
+				return nil, err
 			}
-			return nil, err
+			var p ipc.RespondParams
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, fmt.Errorf("invalid params: %w", err)
+			}
+			option := pipeline.ResponseOptions{Origin: p.Origin, Coverage: p.Coverage}
+			if scoped {
+				var scope ipc.ScopedRespondParams
+				if err := json.Unmarshal(params, &scope); err != nil {
+					return nil, err
+				}
+				if len(scope.RequiredSkips) == 0 || p.RunID == "" {
+					return nil, fmt.Errorf("scoped response requires run_id and nonempty required_skips")
+				}
+				option.RequiredSkips = scope.RequiredSkips
+				option.ScopedRunID = p.RunID
+			}
+			dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason, option)
+			if err != nil {
+				// A refused fix response is the caller's input to fix, not a
+				// transport failure: the gate is still parked. Report it as a
+				// structured result so the CLI can name the unaccounted findings
+				// and help, and the caller can send a corrected response.
+				var refusal *pipeline.RespondRefusal
+				if errors.As(err, &refusal) {
+					return &ipc.RespondResult{OK: false, Refusal: refusal.Message, Missing: refusal.Missing, DeclinedEarlierFix: refusal.DeclinedEarlierFix, Help: refusal.Help}, nil
+				}
+				return nil, err
+			}
+			return &ipc.RespondResult{OK: true, Fixed: dispositions.Fixed, Ignored: dispositions.Ignored, Kept: dispositions.Kept}, nil
 		}
-		return &ipc.RespondResult{OK: true, Fixed: dispositions.Fixed, Ignored: dispositions.Ignored, Kept: dispositions.Kept}, nil
-	})
+	}
+	srv.Handle(ipc.MethodRespond, respondHandler(false))
+	srv.Handle(ipc.MethodRespondScoped, respondHandler(true))
 
 	srv.Handle(ipc.MethodAnswerReview, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
@@ -1626,6 +1659,12 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
+	}
+	var err error
+	info.SkipSteps, err = r.RequestedSkips()
+	info.SkipPolicyKnown = r.SkipStepsJSON != nil && err == nil
+	if err != nil {
+		info.SkipPolicyError = err.Error()
 	}
 	if link, err := d.GetRunRetry(r.ID); err == nil && link != nil {
 		info.RetryOf = &ipc.RunRetryInfo{RunID: link.SourceRunID, Step: link.StepName, Round: link.SourceRound, Error: link.SourceError, CheckpointHeadSHA: link.CheckpointHeadSHA}

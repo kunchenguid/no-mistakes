@@ -89,11 +89,13 @@ func TestExecutorSkipRecoveryProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := types.StepName(os.Getenv("NM_SKIP_FIXTURE_GATE"))
-	executor := NewExecutor(database, p, nil, nil, skipRecoverySteps(t, filepath.Join(root, "calls"), gate), func(e ipc.Event) {
+	steps := skipRecoverySteps(t, filepath.Join(root, "calls"), gate)
+	executor := NewExecutor(database, p, nil, nil, steps, func(e ipc.Event) {
 		if e.StepName != nil && *e.StepName == gate && e.Status != nil && *e.Status == string(types.StepStatusAwaitingApproval) {
 			os.Exit(0)
 		}
 	})
+	executor.SetRetrySource(os.Getenv("NM_SKIP_FIXTURE_RETRY"))
 	if os.Getenv("NM_SKIP_FIXTURE_SKIPS") == "push" {
 		executor.SetSkippedSteps([]types.StepName{types.StepPush})
 	}
@@ -104,6 +106,89 @@ func TestExecutorSkipRecoveryProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Fatal("fixture completed without its required gate")
+}
+
+func TestExecutor_LegacyRetryRestartNeverExpandsScope(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	work := filepath.Join(p.Root(), "checkout")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, work)
+	head, err := git.HeadSHA(context.Background(), work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	names := types.AllSteps()
+	skips := []types.StepName{types.StepRebase, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	source := failedSourceRun(t, database, repo, names, types.StepReview, skips...)
+	if source.SkipStepsJSON != nil {
+		t.Fatal("fixture must be a legacy source")
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestExecutorSkipRecoveryProcess$")
+	cmd.Env = append(os.Environ(), "NM_SKIP_FIXTURE_ROOT="+p.Root(), "NM_SKIP_FIXTURE_RUN="+run.ID, "NM_SKIP_FIXTURE_GATE=review", "NM_SKIP_FIXTURE_RETRY="+source.ID)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("retry process: %v\n%s", err, out)
+	}
+	database, err = db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := skipRecoverySteps(t, filepath.Join(p.Root(), "calls"), "")
+	executor := NewExecutor(database, p, nil, nil, steps, nil)
+	done := make(chan error, 1)
+	go func() { done <- executor.Resume(ctx, run, repo, work) }()
+	finished := false
+	defer func() {
+		cancel()
+		if !finished {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("recovered retry did not stop")
+			}
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := executor.RespondWithOverrides(types.StepReview, types.ActionApprove, nil, nil, nil, nil, "", ResponseOptions{ScopedRunID: run.ID, RequiredSkips: skips})
+		if err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("approve recovered gate: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitExecutorDone(t, done)
+	finished = true
+	calls, err := os.ReadFile(filepath.Join(p.Root(), "calls"))
+	if err != nil || string(calls) != "review\n" {
+		t.Fatalf("retry/restart executions = %q, error %v; only Review may run", calls, err)
+	}
+	persisted, err := run.RequestedSkips()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := types.RequireSkippedSteps(persisted, run.SkipStepsJSON != nil, skips); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := database.GetRun(run.ID)
+	if err != nil || completed.Status != types.RunCompleted {
+		t.Fatalf("retry did not complete: %+v %v", completed, err)
+	}
 }
 
 func TestExecutor_RequestedSkipsSurviveParkAndRecovery(t *testing.T) {

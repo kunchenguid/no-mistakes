@@ -718,9 +718,20 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(orphanDir, "test.txt"), []byte("orphan"), 0o644)
+	// An empty setup leftover is safe without Git metadata. A populated one
+	// cannot prove it is clean and must survive even after retention expires.
+	unknownDir := p.WorktreeDir("some-repo", "unknown-run")
+	if err := os.MkdirAll(unknownDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unknownDir, "test.txt"), []byte("recoverable edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	old := time.Now().Add(-2 * config.DefaultWorktreeRetention)
 	if err := os.Chtimes(orphanDir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(unknownDir, old, old); err != nil {
 		t.Fatal(err)
 	}
 
@@ -737,6 +748,9 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 	// Orphaned worktree directory should be removed.
 	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
 		t.Errorf("orphaned worktree dir still exists: %s", orphanDir)
+	}
+	if got, err := os.ReadFile(filepath.Join(unknownDir, "test.txt")); err != nil || string(got) != "recoverable edit" {
+		t.Fatalf("orphan with unknown dirtiness lost edits: %q, %v", got, err)
 	}
 }
 

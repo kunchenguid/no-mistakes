@@ -115,6 +115,9 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
+	SkipSteps        []types.StepName
+	SkipPolicyKnown  bool
+	SkipPolicyError  string
 	PiProfile        *agentcfg.PiProfile
 	VerificationPlan *verificationplan.Snapshot
 	// QuotaRouting is the run's parsed quota-aware ordering record, nil when
@@ -144,6 +147,7 @@ type runView struct {
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
+		SkipSteps: r.SkipSteps, SkipPolicyKnown: r.SkipPolicyKnown, SkipPolicyError: r.SkipPolicyError,
 		ID:                 r.ID,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
@@ -198,7 +202,9 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 }
 
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
+	skips, skipErr := r.RequestedSkips()
 	rv := runView{
+		SkipSteps: skips, SkipPolicyKnown: r.SkipStepsJSON != nil && skipErr == nil,
 		PiProfile:          r.PiProfile,
 		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
@@ -206,6 +212,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
+	}
+	if skipErr != nil {
+		rv.SkipPolicyError = skipErr.Error()
 	}
 	if payload, err := quotarouting.ParseRecord(r.QuotaRouting); err != nil {
 		slog.Warn("run carries an unreadable quota routing record", "run", r.ID, "error", err)
@@ -534,6 +543,10 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 			toon.Field{Key: "model", Value: rv.PiProfile.Model},
 			toon.Field{Key: "effort", Value: string(rv.PiProfile.Effort)},
 		)})
+	}
+	fields = append(fields, toon.Field{Key: "skip_policy_known", Value: rv.SkipPolicyKnown}, toon.Field{Key: "skip_steps", Value: rv.SkipSteps})
+	if rv.SkipPolicyError != "" {
+		fields = append(fields, toon.Field{Key: "skip_policy_error", Value: rv.SkipPolicyError})
 	}
 	if rv.QuotaRouting != nil {
 		fields = append(fields, quotaRoutingField(rv.QuotaRouting))
