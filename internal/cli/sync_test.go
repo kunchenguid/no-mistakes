@@ -1558,14 +1558,22 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"sync", "--check", "--recover"},
 		{"sync", "--check", "--adopt-published"},
 		{"sync", "--recover", "--adopt-published"},
+		{"sync", "--check", "--adopt-pushed-head"},
+		{"sync", "--recover", "--adopt-pushed-head"},
+		{"sync", "--adopt-published", "--adopt-pushed-head"},
 		{"sync", "--keep-local"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--recover"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--yes"},
+		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--adopt-pushed-head"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--check", "--adopt-published"},
 		{"axi", "sync", "--recover", "--adopt-published"},
+		{"axi", "sync", "--check", "--adopt-pushed-head"},
+		{"axi", "sync", "--recover", "--adopt-pushed-head"},
+		{"axi", "sync", "--adopt-published", "--adopt-pushed-head"},
 		{"axi", "sync", "--keep-local"},
 		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
+		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--adopt-pushed-head"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError
