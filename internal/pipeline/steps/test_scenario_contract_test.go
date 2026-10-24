@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 )
 
 // TestTestStep_PromptDerivesScenariosAndMarksLive pins the live-validation
@@ -400,6 +401,121 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 				t.Fatalf("verdict finding action = %q, want %q", matched.Action, tc.wantAction)
 			}
 		})
+	}
+}
+
+func TestTestStep_AfterDeployCoverageWarningDoesNotPark(t *testing.T) {
+	t.Parallel()
+	for _, withPlan := range []bool{false, true} {
+		for _, tc := range []struct {
+			name		string
+			reasonClass	string
+			verdict		string
+			liveResult	string
+			blocking	*types.Finding
+			command		string
+			wantApproval	bool
+			wantNote	bool
+		}{
+			{name: "production only", reasonClass: "needs-production", wantNote: true},
+			{name: "deploy only", reasonClass: "needs-deploy", wantNote: true},
+			{name: "third party only", reasonClass: "needs-third-party", wantNote: true},
+			{name: "partly driven", reasonClass: "needs-production", liveResult: "pass", wantNote: true},
+			{name: "reachable untested", reasonClass: "other", wantApproval: true},
+			{name: "unclassified untested", wantApproval: true},
+			{name: "failed scenario", reasonClass: "needs-production", liveResult: "fail", verdict: "no-go", wantApproval: true},
+			{name: "missing evidence", reasonClass: "needs-production", blocking: &types.Finding{Severity: "warning", Action: "ask-user", Description: "The checkout check ran but its transcript is missing."}, wantApproval: true, wantNote: true},
+			{name: "unrelated warning", reasonClass: "needs-production", blocking: &types.Finding{Severity: "warning", Action: "ask-user", Description: "The evidence run wrote to shared customer data."}, wantApproval: true, wantNote: true},
+			{name: "configured failure", reasonClass: "needs-production", command: "exit 1", wantApproval: true, wantNote: true},
+		} {
+			t.Run(fmt.Sprintf("%s/plan=%v", tc.name, withPlan), func(t *testing.T) {
+				t.Parallel()
+				dir, base, head := setupGitRepo(t)
+				verdict := tc.verdict
+				if verdict == "" {
+					verdict = "inconclusive"
+				}
+				coverageWarning := types.Finding{Severity: "warning", Action: "ask-user", Category: "test-verdict", Description: "Production access prevents demonstrating the intent; decide whether to proceed."}
+				payload := types.Findings{
+					Items:          []types.Finding{coverageWarning},
+					Tested:         []string{"attempted isolated checkout against the available sandbox"},
+					TestingSummary: "The sandbox cannot exercise production settlement.",
+					Scenarios:      []types.TestScenario{{Name: "payment settles", Result: "untested", Reason: "The sandbox was tried but cannot settle real payments; provide the production account after deploy.", ReasonClass: tc.reasonClass}},
+					Verdict:        verdict,
+				}
+				if tc.liveResult != "" {
+					payload.Scenarios = append(payload.Scenarios, types.TestScenario{Name: "checkout", Result: tc.liveResult, Live: true, Evidence: "checkout transcript"})
+				}
+				if tc.blocking != nil {
+					payload.Items = append(payload.Items, *tc.blocking)
+				}
+				output, err := json.Marshal(struct {
+					types.Findings
+					Artifacts []types.TestArtifact `json:"artifacts"`
+				}{Findings: payload, Artifacts: []types.TestArtifact{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: output}, nil
+				}}
+				sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{Test: tc.command})
+				if withPlan {
+					root := t.TempDir()
+					source := filepath.Join(root, "plan.txt")
+					if err := os.WriteFile(source, []byte("Observe payment settlement."), 0600); err != nil {
+						t.Fatal(err)
+					}
+					plan, err := verificationplan.Capture(filepath.Join(root, "inputs"), source, sctx.Run.RepoID, sctx.Run.Branch, head)
+					if err != nil {
+						t.Fatal(err)
+					}
+					sctx.Run.VerificationPlan = plan
+				}
+				outcome, err := (&TestStep{}).Execute(sctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if outcome.NeedsApproval != tc.wantApproval {
+					t.Fatalf("NeedsApproval = %v, want %v; %s", outcome.NeedsApproval, tc.wantApproval, outcome.Findings)
+				}
+				got, err := types.ParseFindingsJSON(outcome.Findings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Verdict != verdict || len(got.Scenarios) != len(payload.Scenarios) {
+					t.Fatalf("verdict or scenario record lost: %+v", got)
+				}
+				if tc.wantNote {
+					verdictNotes := 0
+					for _, item := range got.Items {
+						if item.Category == "test-verdict" {
+							verdictNotes++
+							if item.Severity != "info" || item.Action != "no-op" || item.Description == coverageWarning.Description {
+								t.Fatalf("coverage gap still asks for approval: %+v", item)
+							}
+						}
+					}
+					if verdictNotes != 1 {
+						t.Fatalf("got %d verdict notes, want one", verdictNotes)
+					}
+				}
+				if tc.blocking != nil {
+					found := false
+					for _, item := range got.Items {
+						if item.Description == tc.blocking.Description && item.Severity == tc.blocking.Severity && item.Action == tc.blocking.Action {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("unrelated blocker lost: %s", outcome.Findings)
+					}
+				}
+				if !strings.Contains(ag.calls[0].Prompt, "Do not request approval for that same insufficiency") {
+					t.Fatal("delivered evidence prompt omits the after-deploy exception")
+				}
+			})
+		}
 	}
 }
 

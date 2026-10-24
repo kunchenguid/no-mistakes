@@ -228,8 +228,8 @@ Previous test findings to address:
 		configuredTestCommand += fmt.Sprintf("Baseline ran with %s. Declare these overrides in testing_summary.\n", declaration)
 	}
 	trustedRunbook := trustedTestInstructionsSection(sctx) + budgetCutGuidanceSection(sctx)
-	fallbackGuidance := `- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible.
-- If sufficient evidence is not possible, report a warning finding explaining what evidence is missing and why the user needs to decide what to do. When the blocker is a host capability or OS permission the agent's own process lacks (for example, the Screen Recording permission macOS requires to capture a native GUI application), name the specific capability or permission and how to grant it so the user can enable it and re-run, instead of retrying blindly or failing opaquely.`
+	fallbackGuidance := `- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible, unless the after-deploy exception below applies.
+- If sufficient evidence is not possible and the after-deploy exception below does not apply, report a warning finding explaining what evidence is missing and why the user needs to decide what to do. When the blocker is a host capability or OS permission the agent's own process lacks (for example, the Screen Recording permission macOS requires to capture a native GUI application), name the specific capability or permission and how to grant it so the user can enable it and re-run, instead of retrying blindly or failing opaquely.`
 	if sctx.Run.VerificationPlan != nil {
 		fallbackGuidance = `- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, perform repeatable product verification and retain its artifact, or report the scenario untested with the missing capability and how to provide it.
 - Follow repository testing rules before changing permanent tests. A missing-test finding must name the observable failure, why existing checks and product evidence do not cover it, and the independent expected result.`
@@ -266,7 +266,8 @@ Drive each scenario:
 - If any required check is still running, has an unknown result, or lacks evidence, do not report "go". Use "no-go" for a known failure or unsafe change, and "inconclusive" when completion or evidence cannot be established. Record the outstanding check and the missing result.
 - Return a "verdict": "go" when every scenario you could drive passed and nothing untested puts the intent in doubt, "no-go" when a scenario failed or the change is not safe to ship, "inconclusive" when the change has a live-exercisable product surface but too little could be driven live to judge, "no-surface" when this change has no runtime product surface no-mistakes can drive live (a CI-workflow-only change, a docs-only change, a pure non-runtime refactor, or anything else with no live-exercisable scenario).
 - A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" after exhausting your workarounds costs nothing and a guessed "pass" costs everything.
-- A single scenario you could not drive live is reported as an untested scenario with its reason, NOT as a finding. Report a finding only when the step as a whole cannot demonstrate the user intent.
+- A single scenario you could not drive live is reported as an untested scenario with its reason, NOT as a finding. Report a finding only when the step as a whole cannot demonstrate the user intent, subject to the after-deploy exception.
+- After-deploy exception: when the verdict is "inconclusive", no scenario failed, and every untested scenario has reason_class "needs-production", "needs-deploy", or "needs-third-party", leave that coverage gap for after deploy. This applies even when no scenario could be driven live. Do not request approval for that same insufficiency: the step emits a non-blocking verdict note. If you report a finding solely about that coverage gap, set its category to "test-verdict" so the step replaces it with the note. Keep all unrelated findings, including missing evidence for checks you ran, failures, and local setup problems; never give those findings the "test-verdict" category.
 
 Evidence:
 - Decide what evidence or artifacts would clearly demonstrate each scenario's result. Unit tests passing is not sufficient evidence by itself.
@@ -327,6 +328,11 @@ Rules:
 		findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 	}
 	findings.TestedHeadSHA = sctx.Run.HeadSHA
+	if findings.Verdict == types.TestVerdictInconclusive && types.ScenariosLeftForAfterDeploy(findings.Scenarios) {
+		findings.Items = slices.DeleteFunc(findings.Items, func(item Finding) bool {
+			return item.Category == types.FindingCategoryTestVerdict
+		})
+	}
 	findings.Items = append(baselineFindings, findings.Items...)
 	if baselineSummary != "" {
 		findings.Summary = strings.TrimSpace(strings.Join([]string{baselineSummary, findings.Summary}, "\n"))

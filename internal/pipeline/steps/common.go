@@ -248,6 +248,7 @@ var testFindingsSchema = json.RawMessage(`{
 				"type": "object",
 				"properties": {
 					"id": {"type": "string"},
+					"category": {"type": "string", "description": "test-verdict only for a finding solely about the inconclusive after-deploy coverage gap; leave empty for unrelated findings, missing evidence for checks that ran, failures, and local setup problems"},
 					"severity": {"type": "string", "enum": ["error", "warning", "info"]},
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
