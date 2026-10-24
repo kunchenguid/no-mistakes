@@ -96,9 +96,9 @@ func cacheStale(entry *checkCache, currentVersion string, now time.Time) bool {
 	if now.Sub(entry.CheckedAt) > cacheTTL {
 		return true
 	}
-	cmp, err := compareVersions(currentVersion, entry.LatestVersion)
-	if err != nil {
-		return true
+	if entry.StableVersion != "" {
+		return false
 	}
-	return cmp < 0
+	cmp, err := compareVersions(currentVersion, entry.LatestVersion)
+	return err != nil || cmp < 0
 }

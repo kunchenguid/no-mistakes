@@ -21,17 +21,18 @@ func TestBackgroundCacheFreshness(t *testing.T) {
 	t.Setenv(noUpdateCheckEnv, "")
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
-		name, current, latest string
-		age                   time.Duration
-		invocations, fetches  int
-		notice                bool
+		name, current, latest, stable string
+		age                           time.Duration
+		invocations, fetches, notices int
 	}{
-		{"prerelease ahead of legacy stable", "v1.97.2", "v1.84.0", time.Hour, 2, 0, false},
-		{"semver prerelease ahead of legacy stable", "v1.98.0-beta.1", "v1.84.0", time.Hour, 2, 0, false},
-		{"installed equals answer", "v1.84.0", "v1.84.0", time.Hour, 2, 0, false},
-		{"pending update is noticed and refreshed", "v1.83.0", "v1.84.0", time.Hour, 1, 1, true},
-		{"expired answer refreshes once", "v1.84.0", "v1.84.0", cacheTTL + time.Second, 2, 1, false},
-		{"expired prerelease answer refreshes once", "v1.100.2", "v1.84.0", cacheTTL + time.Second, 2, 1, false},
+		{"prerelease ahead of legacy stable", "v1.97.2", "v1.84.0", "", time.Hour, 2, 0, 0},
+		{"semver prerelease ahead of legacy stable", "v1.98.0-beta.1", "v1.84.0", "", time.Hour, 2, 0, 0},
+		{"installed equals answer", "v1.84.0", "v1.84.0", "v1.84.0", time.Hour, 2, 0, 0},
+		{"pending update is noticed without refetching", "v1.83.0", "v1.84.0", "v1.84.0", time.Hour, 2, 0, 2},
+		{"legacy pending update refreshes once", "v1.83.0", "v1.84.0", "", time.Hour, 2, 1, 2},
+		{"legacy beta answer heals once then goes quiet", "v1.84.0", "v1.100.2", "", time.Hour, 2, 1, 1},
+		{"expired answer refreshes once", "v1.84.0", "v1.84.0", "v1.84.0", cacheTTL + time.Second, 2, 1, 0},
+		{"expired prerelease answer refreshes once", "v1.100.2", "v1.84.0", "v1.84.0", cacheTTL + time.Second, 2, 1, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fetches := 0
@@ -41,7 +42,7 @@ func TestBackgroundCacheFreshness(t *testing.T) {
 			}))
 			defer server.Close()
 			cachePath := filepath.Join(t.TempDir(), "update-check.json")
-			if err := writeCache(cachePath, &checkCache{CheckedAt: now.Add(-tt.age), LatestVersion: tt.latest}); err != nil {
+			if err := writeCache(cachePath, &checkCache{CheckedAt: now.Add(-tt.age), LatestVersion: tt.latest, StableVersion: tt.stable}); err != nil {
 				t.Fatal(err)
 			}
 			stderr := new(bytes.Buffer)
@@ -67,10 +68,7 @@ func TestBackgroundCacheFreshness(t *testing.T) {
 			if fetches != tt.fetches {
 				t.Errorf("manifest fetches = %d, want %d", fetches, tt.fetches)
 			}
-			wantNotice := ""
-			if tt.notice {
-				wantNotice = fmt.Sprintf("A new version of no-mistakes is available: %s -> %s\nRun \"no-mistakes update\" to update\n", tt.current, tt.latest)
-			}
+			wantNotice := strings.Repeat(fmt.Sprintf("A new version of no-mistakes is available: %s -> %s\nRun \"no-mistakes update\" to update\n", tt.current, tt.latest), tt.notices)
 			if stderr.String() != wantNotice {
 				t.Errorf("notice = %q, want %q", stderr.String(), wantNotice)
 			}

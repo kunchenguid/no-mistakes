@@ -28,7 +28,14 @@ func TestCacheRoundTripAndStaleness(t *testing.T) {
 	}
 
 	if !cacheStale(loaded, "v1.2.2", now.Add(23*time.Hour)) {
-		t.Fatal("a pending update should trigger a refresh immediately")
+		t.Fatal("a legacy pending answer should be refreshed immediately")
+	}
+	channelAware := &checkCache{CheckedAt: now, LatestVersion: "v1.2.3", StableVersion: "v1.2.3"}
+	if cacheStale(channelAware, "v1.2.2", now.Add(23*time.Hour)) {
+		t.Fatal("a pending update should stay fresh before ttl")
+	}
+	if !cacheStale(channelAware, "v1.2.2", now.Add(25*time.Hour)) {
+		t.Fatal("a pending update should be stale after ttl")
 	}
 	if !cacheStale(loaded, "v1.2.2", now.Add(25*time.Hour)) {
 		t.Fatal("cache should be stale after ttl")
