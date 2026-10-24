@@ -334,7 +334,9 @@ func (d *DB) SetTestApprovalReason(id, reason string) error {
 // TestOverrideReason qualifies completed Test exceptions on both snapshot and
 // event paths. Only an approval past a failing configured command, a no-go
 // or inconclusive verdict, or a Test-agent invocation-budget cut is an
-// exception; approving a no-surface park keeps its recorded reason but
+// exception; an inconclusive verdict that completed as an after-deploy note
+// without a park qualifies too, since the condition is read from the recorded
+// verdict. Approving a no-surface park keeps its recorded reason but
 // completes normally. Older command overrides still qualify without a
 // recorded reason.
 func (s *StepResult) TestOverrideReason() string {

@@ -159,6 +159,10 @@ type testScenarioContractFields struct {
 	Live     *bool   `json:"live"`
 	Evidence *string `json:"evidence"`
 	Reason   *string `json:"reason"`
+	// ReasonClass is optional: an untested scenario without one keeps an
+	// inconclusive verdict parked, so only a value outside the vocabulary is
+	// a contract violation.
+	ReasonClass *string `json:"reason_class"`
 }
 
 func scenarioContractIssues(i int, scenario testScenarioContractFields) []string {
@@ -181,6 +185,9 @@ func scenarioContractIssues(i int, scenario testScenarioContractFields) []string
 	}
 	if scenario.Reason == nil {
 		issues = append(issues, fmt.Sprintf("scenario %d: missing reason", n))
+	}
+	if scenario.ReasonClass != nil && *scenario.ReasonClass != "" && !types.IsKnownScenarioReasonClass(*scenario.ReasonClass) {
+		issues = append(issues, fmt.Sprintf("scenario %d: reason_class %q is not one of %s", n, *scenario.ReasonClass, strings.Join(types.KnownScenarioReasonClasses(), ", ")))
 	}
 	if !knownResult {
 		return issues
@@ -241,6 +248,7 @@ var testFindingsSchema = json.RawMessage(`{
 				"type": "object",
 				"properties": {
 					"id": {"type": "string"},
+					"category": {"type": "string", "description": "test-verdict only for a finding solely about the inconclusive after-deploy coverage gap; leave empty for unrelated findings, missing evidence for checks that ran, failures, and local setup problems"},
 					"severity": {"type": "string", "enum": ["error", "warning", "info"]},
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
@@ -282,7 +290,8 @@ var testFindingsSchema = json.RawMessage(`{
 					"result": {"type": "string", "enum": ["pass", "fail", "untested"]},
 					"live": {"type": "boolean", "description": "true ONLY when this scenario was driven against the real running product in this run; a unit test, stub, recorded fixture, or code reading is not live"},
 					"evidence": {"type": "string", "description": "the command, artifact label, or evidence file that shows this result"},
-					"reason": {"type": "string", "description": "required for untested: what was tried to drive this scenario live and why live validation is impossible, naming the specific tool, credential, permission, or authority out of reach and how to provide it; under no-surface, why there is no live-validatable surface"}
+					"reason": {"type": "string", "description": "required for untested: what was tried to drive this scenario live and why live validation is impossible, naming the specific tool, credential, permission, or authority out of reach and how to provide it; under no-surface, why there is no live-validatable surface"},
+					"reason_class": {"type": "string", "enum": ["needs-production", "needs-deploy", "needs-third-party", "other"], "description": "for untested: needs-production when only the real production environment or its credentials can drive it, needs-deploy when it needs this change deployed, needs-third-party when it needs a real third-party service or billing account no sandbox or stand-in can replace; other for anything else, including a reachable scenario you could not drive, a missing local tool or permission, an unfinished check, missing evidence, or a timeout"}
 				},
 				"required": ["name", "result", "live", "evidence", "reason"]
 			}

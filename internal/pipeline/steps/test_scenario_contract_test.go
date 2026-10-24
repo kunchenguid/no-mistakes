@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 )
 
 // TestTestStep_PromptDerivesScenariosAndMarksLive pins the live-validation
@@ -71,6 +72,13 @@ func TestTestStep_PromptDerivesScenariosAndMarksLive(t *testing.T) {
 		"Never guess a pass",
 		"an honest \"untested\" after exhausting your workarounds costs nothing and a guessed \"pass\" costs everything",
 		"reported as an untested scenario with its reason, NOT as a finding",
+		// The reason class is what can turn an inconclusive park into a note,
+		// so anything the pipeline could reach must stay "other".
+		`Give every untested scenario a "reason_class"`,
+		`"needs-production" when only the real production environment or its credentials can drive it`,
+		`"needs-deploy" when it can only be observed once this change is deployed`,
+		`"needs-third-party" when it needs a real third-party service or billing account that no sandbox, test mode, or local stand-in can replace`,
+		`A scenario you could reach but did not drive, a missing local tool or permission, an unfinished check, missing evidence, and a timeout are always "other"`,
 		// The verdict and what it does.
 		`Return a "verdict"`,
 		`A "no-go" verdict parks this step for a decision`,
@@ -224,6 +232,8 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 		wantDescription   string
 		wantAction        string
 		wantScenarioCount int
+		// wantNote expects the verdict finding as a non-blocking info note.
+		wantNote bool
 	}{
 		{
 			name:              "go passes through",
@@ -260,6 +270,67 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 			wantDescription:   "live validation verdict: inconclusive",
 			wantAction:        types.ActionAskUser,
 			wantScenarioCount: 1,
+		},
+		{
+			name: "inconclusive with every untested scenario needing production, a deploy, or a third party is a note",
+			output: `{"findings":[],"summary":"","tested":["npm run e2e -- checkout"],"testing_summary":"local checkout driven; live payment needs production","artifacts":[],
+				"scenarios":[
+					{"name":"user reaches the success screen","result":"pass","live":true,"evidence":"checkout.png","reason":""},
+					{"name":"live card charge settles","result":"untested","live":false,"evidence":"","reason":"needs the production payment account","reason_class":"needs-production"},
+					{"name":"CDN serves the new receipt page","result":"untested","live":false,"evidence":"","reason":"only observable once deployed","reason_class":"needs-deploy"},
+					{"name":"tax provider accepts the invoice","result":"untested","live":false,"evidence":"","reason":"tax provider has no sandbox","reason_class":"needs-third-party"}
+				],"verdict":"inconclusive"}`,
+			wantApproval:      false,
+			wantDescription:   "live validation verdict: inconclusive (1 of 4 scenarios were driven live against the product); every untested scenario needs production, a deploy, or a third party, so it is left for after deploy; check after deploy: live card charge settles (needs-production), CDN serves the new receipt page (needs-deploy), tax provider accepts the invoice (needs-third-party)",
+			wantAction:        types.ActionNoOp,
+			wantScenarioCount: 4,
+			wantNote:          true,
+		},
+		{
+			name: "inconclusive mixing an after-deploy scenario with a reachable untested one still parks",
+			output: `{"findings":[],"summary":"","tested":["read the diff"],"testing_summary":"partly driven","artifacts":[],
+				"scenarios":[
+					{"name":"live card charge settles","result":"untested","live":false,"evidence":"","reason":"needs the production payment account","reason_class":"needs-production"},
+					{"name":"user reaches the success screen","result":"untested","live":false,"evidence":"","reason":"no browser on this machine","reason_class":"other"}
+				],"verdict":"inconclusive"}`,
+			wantApproval:      true,
+			wantDescription:   "live validation verdict: inconclusive",
+			wantAction:        types.ActionAskUser,
+			wantScenarioCount: 2,
+		},
+		{
+			name: "inconclusive with an unclassified untested scenario still parks",
+			output: `{"findings":[],"summary":"","tested":["read the diff"],"testing_summary":"partly driven","artifacts":[],
+				"scenarios":[
+					{"name":"live card charge settles","result":"untested","live":false,"evidence":"","reason":"needs the production payment account","reason_class":"needs-production"},
+					{"name":"user reaches the success screen","result":"untested","live":false,"evidence":"","reason":"no browser on this machine"}
+				],"verdict":"inconclusive"}`,
+			wantApproval:      true,
+			wantDescription:   "live validation verdict: inconclusive",
+			wantAction:        types.ActionAskUser,
+			wantScenarioCount: 2,
+		},
+		{
+			name: "inconclusive with nothing untested still parks",
+			output: `{"findings":[],"summary":"","tested":["npm run e2e -- checkout"],"testing_summary":"the e2e run never reported its exit status","artifacts":[],
+				"scenarios":[{"name":"user reaches the success screen","result":"pass","live":true,"evidence":"checkout.png","reason":""}],
+				"verdict":"inconclusive"}`,
+			wantApproval:      true,
+			wantDescription:   "live validation verdict: inconclusive",
+			wantAction:        types.ActionAskUser,
+			wantScenarioCount: 1,
+		},
+		{
+			name: "after-deploy scenarios beside a failed one keep no-go",
+			output: `{"findings":[],"summary":"","tested":["npm run e2e -- checkout"],"testing_summary":"checkout broke","artifacts":[],
+				"scenarios":[
+					{"name":"user reaches the success screen","result":"fail","live":true,"evidence":"checkout.png","reason":""},
+					{"name":"live card charge settles","result":"untested","live":false,"evidence":"","reason":"needs the production payment account","reason_class":"needs-production"}
+				],"verdict":"no-go"}`,
+			wantApproval:      true,
+			wantDescription:   "live validation verdict: no-go",
+			wantAction:        types.ActionAutoFix,
+			wantScenarioCount: 2,
 		},
 		{
 			name: "no-surface parks as ask-user",
@@ -316,13 +387,135 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 			if matched == nil {
 				t.Fatalf("no finding carrying %q in %s", tc.wantDescription, outcome.Findings)
 			}
-			if matched.Severity == types.FindingSeverityInfo {
+			if tc.wantNote {
+				if matched.Severity != types.FindingSeverityInfo || matched.Category != types.FindingCategoryTestVerdict {
+					t.Fatalf("verdict note = severity %q category %q, want an info %s note", matched.Severity, matched.Category, types.FindingCategoryTestVerdict)
+				}
+				if findings.Verdict != types.TestVerdictInconclusive {
+					t.Fatalf("recorded verdict = %q, want the inconclusive verdict kept for the PR and attestation", findings.Verdict)
+				}
+			} else if matched.Severity == types.FindingSeverityInfo {
 				t.Fatalf("verdict finding must block, got severity %q", matched.Severity)
 			}
 			if tc.wantAction != "" && matched.Action != tc.wantAction {
 				t.Fatalf("verdict finding action = %q, want %q", matched.Action, tc.wantAction)
 			}
 		})
+	}
+}
+
+func TestTestStep_AfterDeployCoverageWarningDoesNotPark(t *testing.T) {
+	t.Parallel()
+	for _, withPlan := range []bool{false, true} {
+		for _, tc := range []struct {
+			name         string
+			reasonClass  string
+			verdict      string
+			liveResult   string
+			blocking     *types.Finding
+			command      string
+			wantApproval bool
+			wantNote     bool
+		}{
+			{name: "production only", reasonClass: "needs-production", wantNote: true},
+			{name: "deploy only", reasonClass: "needs-deploy", wantNote: true},
+			{name: "third party only", reasonClass: "needs-third-party", wantNote: true},
+			{name: "partly driven", reasonClass: "needs-production", liveResult: "pass", wantNote: true},
+			{name: "reachable untested", reasonClass: "other", wantApproval: true},
+			{name: "unclassified untested", wantApproval: true},
+			{name: "failed scenario", reasonClass: "needs-production", liveResult: "fail", verdict: "no-go", wantApproval: true},
+			{name: "missing evidence", reasonClass: "needs-production", blocking: &types.Finding{Severity: "warning", Action: "ask-user", Description: "The checkout check ran but its transcript is missing."}, wantApproval: true, wantNote: true},
+			{name: "unrelated warning", reasonClass: "needs-production", blocking: &types.Finding{Severity: "warning", Action: "ask-user", Description: "The evidence run wrote to shared customer data."}, wantApproval: true, wantNote: true},
+			{name: "configured failure", reasonClass: "needs-production", command: "exit 1", wantApproval: true, wantNote: true},
+		} {
+			t.Run(fmt.Sprintf("%s/plan=%v", tc.name, withPlan), func(t *testing.T) {
+				t.Parallel()
+				dir, base, head := setupGitRepo(t)
+				verdict := tc.verdict
+				if verdict == "" {
+					verdict = "inconclusive"
+				}
+				coverageWarning := types.Finding{Severity: "warning", Action: "ask-user", Category: "test-verdict", Description: "Production access prevents demonstrating the intent; decide whether to proceed."}
+				payload := types.Findings{
+					Items:          []types.Finding{coverageWarning},
+					Tested:         []string{"attempted isolated checkout against the available sandbox"},
+					TestingSummary: "The sandbox cannot exercise production settlement.",
+					Scenarios:      []types.TestScenario{{Name: "payment settles", Result: "untested", Reason: "The sandbox was tried but cannot settle real payments; provide the production account after deploy.", ReasonClass: tc.reasonClass}},
+					Verdict:        verdict,
+				}
+				if tc.liveResult != "" {
+					payload.Scenarios = append(payload.Scenarios, types.TestScenario{Name: "checkout", Result: tc.liveResult, Live: true, Evidence: "checkout transcript"})
+				}
+				if tc.blocking != nil {
+					payload.Items = append(payload.Items, *tc.blocking)
+				}
+				output, err := json.Marshal(struct {
+					types.Findings
+					Artifacts []types.TestArtifact `json:"artifacts"`
+				}{Findings: payload, Artifacts: []types.TestArtifact{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: output}, nil
+				}}
+				sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{Test: tc.command})
+				if withPlan {
+					root := t.TempDir()
+					source := filepath.Join(root, "plan.txt")
+					if err := os.WriteFile(source, []byte("Observe payment settlement."), 0600); err != nil {
+						t.Fatal(err)
+					}
+					plan, err := verificationplan.Capture(filepath.Join(root, "inputs"), source, sctx.Run.RepoID, sctx.Run.Branch, head)
+					if err != nil {
+						t.Fatal(err)
+					}
+					sctx.Run.VerificationPlan = plan
+				}
+				outcome, err := (&TestStep{}).Execute(sctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if outcome.NeedsApproval != tc.wantApproval {
+					t.Fatalf("NeedsApproval = %v, want %v; %s", outcome.NeedsApproval, tc.wantApproval, outcome.Findings)
+				}
+				got, err := types.ParseFindingsJSON(outcome.Findings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Verdict != verdict || len(got.Scenarios) != len(payload.Scenarios) {
+					t.Fatalf("verdict or scenario record lost: %+v", got)
+				}
+				if tc.wantNote {
+					verdictNotes := 0
+					for _, item := range got.Items {
+						if item.Category == "test-verdict" {
+							verdictNotes++
+							if item.Severity != "info" || item.Action != "no-op" || item.Description == coverageWarning.Description {
+								t.Fatalf("coverage gap still asks for approval: %+v", item)
+							}
+						}
+					}
+					if verdictNotes != 1 {
+						t.Fatalf("got %d verdict notes, want one", verdictNotes)
+					}
+				}
+				if tc.blocking != nil {
+					found := false
+					for _, item := range got.Items {
+						if item.Description == tc.blocking.Description && item.Severity == tc.blocking.Severity && item.Action == tc.blocking.Action {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("unrelated blocker lost: %s", outcome.Findings)
+					}
+				}
+				if !strings.Contains(ag.calls[0].Prompt, "Do not request approval for that same insufficiency") {
+					t.Fatal("delivered evidence prompt omits the after-deploy exception")
+				}
+			})
+		}
 	}
 }
 
@@ -416,6 +609,11 @@ func TestTestStep_MissingScenarioContractFails(t *testing.T) {
 			name:    "no-surface cannot cover a claimed pass without live",
 			output:  `{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"x","result":"pass","live":false,"evidence":"ok","reason":""}],"verdict":"no-surface"}`,
 			wantErr: `result "pass" but live=false`,
+		},
+		{
+			name:    "reason class outside the vocabulary",
+			output:  `{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"x","result":"untested","live":false,"evidence":"","reason":"needs prod","reason_class":"production"}],"verdict":"inconclusive"}`,
+			wantErr: `reason_class "production" is not one of`,
 		},
 		{
 			name:    "protocol vocabulary is exact",

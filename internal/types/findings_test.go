@@ -572,3 +572,48 @@ func TestNormalizeFindingsAvoidsIDCollisions(t *testing.T) {
 		})
 	}
 }
+
+func TestScenariosLeftForAfterDeploy(t *testing.T) {
+	afterDeploy := func(name, class string) TestScenario {
+		return TestScenario{Name: name, Result: ScenarioResultUntested, Reason: "out of reach", ReasonClass: class}
+	}
+	pass := TestScenario{Name: "local flow", Result: ScenarioResultPass, Live: true, Evidence: "transcript"}
+	for _, tc := range []struct {
+		name      string
+		scenarios []TestScenario
+		want      bool
+	}{
+		{"every untested needs production, a deploy, or a third party", []TestScenario{pass, afterDeploy("charge", ScenarioReasonClassNeedsProduction), afterDeploy("cdn", ScenarioReasonClassNeedsDeploy), afterDeploy("tax", ScenarioReasonClassNeedsThirdParty)}, true},
+		{"all untested and after deploy", []TestScenario{afterDeploy("charge", ScenarioReasonClassNeedsProduction)}, true},
+		{"one untested is other", []TestScenario{afterDeploy("charge", ScenarioReasonClassNeedsProduction), afterDeploy("ui", ScenarioReasonClassOther)}, false},
+		{"one untested is unclassified", []TestScenario{afterDeploy("charge", ScenarioReasonClassNeedsDeploy), afterDeploy("ui", "")}, false},
+		{"one untested is outside the vocabulary", []TestScenario{afterDeploy("charge", "production")}, false},
+		{"a failed scenario", []TestScenario{{Name: "ui", Result: ScenarioResultFail, Live: true, Evidence: "x"}, afterDeploy("charge", ScenarioReasonClassNeedsProduction)}, false},
+		{"nothing untested", []TestScenario{pass}, false},
+		{"no scenarios", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ScenariosLeftForAfterDeploy(tc.scenarios); got != tc.want {
+				t.Fatalf("ScenariosLeftForAfterDeploy = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseFindingsJSONKeepsScenarioReasonClass(t *testing.T) {
+	raw := `{"findings":[],"summary":"","verdict":"inconclusive","scenarios":[{"name":"charge","result":"untested","live":false,"evidence":"","reason":"needs prod","reason_class":"needs-production"}]}`
+	parsed, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Scenarios) != 1 || parsed.Scenarios[0].ReasonClass != ScenarioReasonClassNeedsProduction {
+		t.Fatalf("parsed scenarios = %+v, want the reason class kept", parsed.Scenarios)
+	}
+	encoded, err := MarshalFindingsJSON(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(encoded, `"reason_class":"needs-production"`) {
+		t.Fatalf("re-encoded findings dropped the reason class: %s", encoded)
+	}
+}
