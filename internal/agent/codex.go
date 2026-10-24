@@ -53,7 +53,13 @@ func (a *codexAgent) NeutralizesGateInstructions() bool {
 }
 
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
+	classify := func(err error) (string, bool) {
+		if IsTerminalProviderError(err) {
+			return "", false
+		}
+		return classifyTransient(err)
+	}
+	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classify, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
 }
@@ -139,6 +145,18 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 
 	waitErr := started.wait()
 	stderrWG.Wait()
+	// Stderr can retain a recovered request's diagnostic after a successful
+	// turn. Only a failed exit makes it authoritative; JSONL error events are
+	// still failures even if Codex exits zero.
+	if schemaPath != "" && (codexRejectsOutputSchema(codexErr) || waitErr != nil && codexRejectsOutputSchema(string(stderrBuf))) {
+		cause := waitErr
+		if cause == nil {
+			cause = fmt.Errorf("provider rejected output schema")
+		}
+		retErr := &codexSchemaIncompatibility{err: fmt.Errorf("%w: %s", cause, strings.TrimSpace(codexErr+"\n"+string(stderrBuf)))}
+		emitAgentExited(opts, "codex", pid, retErr)
+		return partialResult(), retErr
+	}
 	if waitErr != nil {
 		detail := strings.TrimSpace(codexErr)
 		stderr := strings.TrimSpace(string(stderrBuf))
@@ -316,6 +334,9 @@ type codexEvent struct {
 	Usage    *codexUsage `json:"usage,omitempty"`
 	Message  string      `json:"message,omitempty"`
 	ThreadID string      `json:"thread_id,omitempty"`
+	Error    *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
 }
 
 type codexItem struct {
@@ -364,6 +385,10 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		case "error":
 			if event.Message != "" && codexErr != nil {
 				*codexErr = event.Message
+			}
+		case "turn.failed":
+			if event.Error != nil && event.Error.Message != "" && codexErr != nil {
+				*codexErr = event.Error.Message
 			}
 
 		case "thread.started":

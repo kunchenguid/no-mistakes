@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -101,7 +102,13 @@ func (a *fallbackAgent) NeutralizesGateInstructions() bool {
 	return true
 }
 
-func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (result *Result, err error) {
+	var schemaErr error
+	defer func() {
+		if err != nil && schemaErr != nil && !errors.Is(err, schemaErr) {
+			err = errors.Join(schemaErr, err)
+		}
+	}()
 	start := int(a.position.Load())
 	candidates := a.agents[start:]
 	var sessionAgent Agent
@@ -170,6 +177,10 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			return result, nil
 		}
 		lastErr = err
+		var inc *codexSchemaIncompatibility
+		if schemaErr == nil && errors.As(err, &inc) {
+			schemaErr = err
+		}
 		// A fallback is another attempt inside this invocation's existing
 		// bounded context, not a fresh timeout policy. Once that context has
 		// expired or been cancelled, the next candidate cannot start
@@ -220,6 +231,10 @@ func (a *fallbackAgent) Close() error {
 func isAgentUnavailableError(err error) bool {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return false
+	}
+	var incompatibility *codexSchemaIncompatibility
+	if errors.As(err, &incompatibility) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	unavailable := []string{
