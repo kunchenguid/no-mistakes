@@ -11,6 +11,44 @@ import (
 type checkCache struct {
 	CheckedAt     time.Time `json:"checked_at"`
 	LatestVersion string    `json:"latest_version"`
+	StableVersion string    `json:"stable_version,omitempty"`
+}
+
+func (u *updater) channelCachePath(includePrereleases bool) string {
+	if !includePrereleases || u.cachePath == "" {
+		return u.cachePath
+	}
+	ext := filepath.Ext(u.cachePath)
+	return u.cachePath[:len(u.cachePath)-len(ext)] + "-beta" + ext
+}
+
+// GitHub prereleases can have plain semver tags. A build ahead of the stable
+// channel belongs to beta even without a semver prerelease suffix.
+func runningBeta(currentVersion, stableVersion string) bool {
+	version, err := parseVersion(currentVersion)
+	if err == nil && len(version.prerelease) > 0 {
+		return true
+	}
+	cmp, err := compareVersions(currentVersion, stableVersion)
+	return err == nil && cmp > 0
+}
+
+func (u *updater) notificationCache() *checkCache {
+	stable := readCache(u.channelCachePath(false))
+	beta := readCache(u.channelCachePath(true))
+	stableVersion := ""
+	if stable != nil {
+		stableVersion = stable.LatestVersion
+	}
+	if beta != nil && beta.StableVersion != "" && (stable == nil || beta.CheckedAt.After(stable.CheckedAt)) {
+		stableVersion = beta.StableVersion
+	}
+	if runningBeta(u.currentVersion, stableVersion) && beta != nil {
+		return beta
+	}
+	// Honour a recent legacy stable answer until its TTL expires, including
+	// when this build is ahead of it and has no beta cache yet.
+	return stable
 }
 
 func writeCache(path string, entry *checkCache) error {
@@ -62,5 +100,5 @@ func cacheStale(entry *checkCache, currentVersion string, now time.Time) bool {
 	if err != nil {
 		return true
 	}
-	return cmp >= 0
+	return cmp < 0
 }

@@ -194,7 +194,7 @@ Disable background update checks.
 | Type    | `1` to disable, anything else to leave enabled |
 | Default | unset (checks enabled)                         |
 
-Update checks run on every CLI invocation except `update` itself and version queries (`--version` / `-v`, which stay side-effect-free), fetch the GitHub release-asset channel manifest, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) and binaries that resolve into `/nix/store` suppress the check automatically.
+Update checks consult a local cache on every CLI invocation except `update` itself, the background refresh child, and version queries (`--version` / `-v`, which stay side-effect-free). A cached newer version prints the update notification to stderr immediately and triggers a background refresh. Otherwise, an answer stays fresh for 24 hours, even when the installed version equals or leads it. Refreshes fetch the GitHub release-asset channel manifest. Stable answers are cached in `$NM_HOME/update-check.json` and beta answers in `$NM_HOME/update-check-beta.json`; the background check selects beta for a semver prerelease or a build ahead of the manifest's stable version. Dev builds (non-semver versions) and binaries that resolve into `/nix/store` suppress the check automatically.
 
 ## `XDG_DATA_HOME`
 
