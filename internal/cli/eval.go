@@ -182,8 +182,8 @@ func newEvalRunCmd() *cobra.Command {
 				Repeats:   repeats,
 				OnPlan: func(session eval.Session, planned []eval.Case) {
 					caseCount = len(planned)
-					fmt.Fprintf(out, "replaying %d case(s) x %d repeat(s) with %s on %s (cohort %s)\n\n",
-						len(planned), session.Repeats, session.Candidate, session.Set, session.Cohort)
+					fmt.Fprintf(out, "replaying %d case(s) x %d repeat(s) with %s on %s (cohort %s, build %s)\n\n",
+						len(planned), session.Repeats, session.Candidate, session.Set, session.Cohort, session.Build)
 				},
 				OnResult: func(evaluation eval.Evaluation, completed, total int) {
 					evalRunProgress(out, evaluation, completed, total)

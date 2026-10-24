@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
@@ -39,7 +43,9 @@ type ReplayOptions struct {
 	OnResult  func(evaluation Evaluation, completed, total int)
 }
 
-// Session records the immutable local plan used for one replay batch.
+// Session records the immutable local plan used for one replay batch. The
+// report reads it back to tell a finished plan from one that stopped early, so
+// CaseIDs and Repeats are the intended replay count, not the recorded one.
 type Session struct {
 	ID        string    `json:"id"`
 	StartedAt time.Time `json:"started_at"`
@@ -48,6 +54,77 @@ type Session struct {
 	Repeats   int       `json:"repeats"`
 	CaseIDs   []string  `json:"case_ids"`
 	Cohort    string    `json:"cohort"`
+	// Build is the binary that ran the replay. Sessions recorded before it
+	// existed decode to the zero value and are reported as not recorded.
+	Build ReplayBuild `json:"build"`
+}
+
+// ReplayBuild identifies the no-mistakes binary that ran a replay. The review
+// prompt is compiled into it, so two builds are two subjects under test even
+// when they replay the same cases with the same candidate.
+type ReplayBuild struct {
+	Version          string `json:"version,omitempty"`
+	Commit           string `json:"commit,omitempty"`
+	ExecutableSHA256 string `json:"executable_sha256,omitempty"`
+}
+
+// String renders the version and commit, followed by the executable digest
+// when recorded.
+func (b ReplayBuild) String() string {
+	if b == (ReplayBuild{}) {
+		return "not recorded"
+	}
+	label := b.Version + " (" + b.Commit + ")"
+	if b.ExecutableSHA256 != "" {
+		label += " sha256:" + b.ExecutableSHA256
+	}
+	return label
+}
+
+func currentReplayBuild() (ReplayBuild, error) {
+	build := ReplayBuild{Version: buildinfo.CurrentVersion(), Commit: buildinfo.Commit}
+	executable, err := os.Executable()
+	if err != nil {
+		return ReplayBuild{}, fmt.Errorf("locate replay executable: %w", err)
+	}
+	build.ExecutableSHA256, err = executableDigest(executable)
+	if err != nil {
+		return ReplayBuild{}, err
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return build, nil
+	}
+	var revision string
+	var modified bool
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if (build.Commit == "" || build.Commit == "unknown") && revision != "" {
+		build.Commit = revision
+	}
+	if modified {
+		build.Commit += "-dirty"
+	}
+	return build, nil
+}
+
+func executableDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open replay executable: %w", err)
+	}
+	defer file.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", fmt.Errorf("hash replay executable: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 const (
@@ -123,11 +200,15 @@ func (s *Store) prepareReplay(ctx context.Context, opts ReplayOptions) ([]Case, 
 	if len(cases) == 0 {
 		return nil, Session{}, fmt.Errorf("case set %q is empty", opts.Set)
 	}
-	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats}
+	build, err := currentReplayBuild()
+	if err != nil {
+		return nil, Session{}, err
+	}
+	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats, Build: build}
 	for _, c := range cases {
 		session.CaseIDs = append(session.CaseIDs, c.ID)
 	}
-	session.Cohort = cohortID(session.CaseIDs, session.Repeats)
+	session.Cohort = cohortID(session.CaseIDs, session.Repeats, session.Build)
 	sessionsDir := filepath.Join(s.root, "sessions")
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		return nil, Session{}, fmt.Errorf("create eval sessions directory: %w", err)
@@ -271,7 +352,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		return evaluation
 	}
 	defer baseAgent.Close()
-	observed := &observedAgent{inner: agent.WithSteering(baseAgent, isolatedPaths.EvidenceDir()), ownership: ownership}
+	observed := &observedAgent{inner: baseAgent, ownership: ownership}
 
 	replayDB, stepResultID, fixing, previousFindings, err := replayRoundContext(isolatedPaths, c, workDir)
 	if err != nil {
@@ -305,7 +386,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		Run:                   replayRun,
 		Repo:                  replayRepo,
 		WorkDir:               workDir,
-		Agent:                 observed,
+		Agent:                 agent.WithSteering(observed, isolatedPaths.EvidenceDir()),
 		Config:                cfg,
 		DB:                    replayDB,
 		StepResultID:          stepResultID,
@@ -326,6 +407,9 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		UserIntent:   c.Intent,
 		IntentSource: c.IntentSource,
 	})
+	if observed.prompted {
+		evaluation.PromptFingerprint = promptFingerprint(observed.firstPrompt, root, cfg)
+	}
 	// Candidate wall time is the actual review invocations, every rerun
 	// included, matching the local agent-invocation metric rather than
 	// charging case restoration setup.
@@ -496,13 +580,22 @@ type observedAgent struct {
 	usage            agent.TokenUsage
 	freshInputTokens int
 	usageMissing     bool
-	ownershipErr     error
-	mu               sync.Mutex
+	// firstPrompt is the review prompt the candidate received on its first
+	// turn. Later turns are schema reruns whose prompts depend on what the
+	// candidate answered, so they would make the fingerprint nondeterministic.
+	firstPrompt  string
+	prompted     bool
+	ownershipErr error
+	mu           sync.Mutex
 }
 
 func (a *observedAgent) Name() string { return a.inner.Name() }
 func (a *observedAgent) Close() error { return a.inner.Close() }
 func (a *observedAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	if !a.prompted {
+		a.firstPrompt = opts.Prompt
+		a.prompted = true
+	}
 	previousLifecycle := opts.OnLifecycle
 	opts.OnLifecycle = func(event agent.LifecycleEvent) {
 		if event.Phase == "start" && event.PID > 0 {
@@ -609,11 +702,36 @@ func candidatePathPart(candidate string) string {
 	return b.String()
 }
 
-func cohortID(caseIDs []string, repeats int) string {
+// cohortID is the comparison group of one replay plan: the case set, the
+// repeat count, and the build that ran it. The build is part of it because the
+// review prompt is compiled in, so an A/B of two builds over the same cases
+// must never aggregate into one report row or share a frontier.
+func cohortID(caseIDs []string, repeats int, build ReplayBuild) string {
 	ids := append([]string(nil), caseIDs...)
 	sort.Strings(ids)
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", repeats, strings.Join(ids, "\x00"))))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s\x01%s\x00%s\x00%s", repeats, strings.Join(ids, "\x00"), build.Version, build.Commit, build.ExecutableSHA256)))
 	return hex.EncodeToString(sum[:8])
+}
+
+// promptFingerprint digests what the replayed review was actually given: the
+// rendered first-turn prompt and the effective configuration. The throwaway
+// replay root is replaced first because the prompt names the worktree's
+// absolute path, which is fresh for every replay. An unmarshalable config
+// yields no fingerprint rather than one that silently ignores the config.
+func promptFingerprint(prompt, replayRoot string, cfg *config.Config) string {
+	configJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	normalized := prompt
+	if replayRoot != "" {
+		normalized = strings.ReplaceAll(prompt, replayRoot, "<replay-root>")
+	}
+	h := sha256.New()
+	h.Write([]byte(normalized))
+	h.Write([]byte{0})
+	h.Write(configJSON)
+	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
 func newSessionID() string {

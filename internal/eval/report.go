@@ -1,9 +1,13 @@
 package eval
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -16,9 +20,22 @@ type Interval struct {
 	Cases int
 }
 
-// CandidateReport is one locally observed candidate slice.
+// CandidateReport is one locally observed candidate slice: one candidate, one
+// cohort, and one review prompt variant (see Report).
 type CandidateReport struct {
-	Cohort      string
+	Cohort string
+	// Build names the binary or binaries that ran this slice's sessions, or
+	// "not recorded" for sessions that predate the field.
+	Build string
+	// PromptFingerprint digests the per-case review prompt and config
+	// fingerprints this slice's replays ran under. It is empty when none was
+	// recorded.
+	PromptFingerprint string
+	Completeness      Completeness
+	// Incomplete marks a slice whose replays do not cover its recorded plans:
+	// a replay is missing or failed, or a plan could not be read. Such a slice
+	// never joins the recall-vs-cost frontier.
+	Incomplete  bool
 	Summary     EvaluationSummary
 	RepeatCount int
 	Confidence  *Interval
@@ -34,49 +51,332 @@ type CandidateReport struct {
 	OnFrontier              bool
 }
 
-// Report loads every local evaluation result grouped by candidate. It never
-// contacts a forge, agent provider, telemetry endpoint, or remote case store.
+// Completeness compares the replays a slice's sessions planned with the ones
+// that were recorded and completed. A session that stopped early leaves
+// planned replays unrecorded; without this the report would score only the
+// cases that ran and look finished.
+type Completeness struct {
+	// PlansKnown is false when any session's plan file is missing or
+	// unreadable, so the planned counts below are a lower bound.
+	PlansKnown       bool
+	Sessions         int
+	PlannedCases     int
+	CompletedCases   int
+	PlannedReplays   int
+	RecordedReplays  int
+	CompletedReplays int
+}
+
+// Missing is the number of planned replays that were never recorded.
+func (c Completeness) Missing() int {
+	if c.RecordedReplays >= c.PlannedReplays {
+		return 0
+	}
+	return c.PlannedReplays - c.RecordedReplays
+}
+
+// Failed is the number of recorded replays that did not complete.
+func (c Completeness) Failed() int { return c.RecordedReplays - c.CompletedReplays }
+
+// Complete reports whether every planned replay was recorded and completed.
+func (c Completeness) Complete() bool {
+	return c.PlansKnown && c.Missing() == 0 && c.Failed() == 0
+}
+
+// Report loads every local evaluation result grouped by cohort, candidate, and
+// review prompt variant. It never contacts a forge, agent provider, telemetry
+// endpoint, or remote case store.
+//
+// The cohort separates builds, while the prompt fingerprint also captures
+// the effective configuration and delivered prompt for each case.
+// Sessions of one cohort and candidate share a slice only when their recorded
+// prompts identify exactly one compatible variant. Sessions with no recorded
+// prompts or multiple compatible variants stay in an unknown-variant slice.
 func Report(store *Store) ([]CandidateReport, error) {
 	evaluations, err := store.evaluations()
 	if err != nil {
 		return nil, err
 	}
-	byCandidateCohort := make(map[string][]Evaluation)
+	type bucket struct {
+		cohort    string
+		candidate string
+		sessions  []string
+		rows      map[string][]Evaluation
+	}
+	var order []string
+	buckets := make(map[string]*bucket)
 	for _, evaluation := range evaluations {
 		cohort := evaluation.Cohort
 		if cohort == "" {
 			cohort = "legacy-unmatched"
 		}
 		key := cohort + "\x00" + evaluation.Candidate
-		byCandidateCohort[key] = append(byCandidateCohort[key], evaluation)
-	}
-	reports := make([]CandidateReport, 0, len(byCandidateCohort))
-	for key, rows := range byCandidateCohort {
-		cohort, candidate, _ := strings.Cut(key, "\x00")
-		summary := SummarizeEvaluations(rows)
-		repeats := repeatCount(rows)
-		report := CandidateReport{
-			Cohort:        cohort,
-			Summary:       summary,
-			RepeatCount:   repeats,
-			Confidence:    confidenceInterval(candidate, rows),
-			AverageWallMS: averageWallMS(rows),
+		b := buckets[key]
+		if b == nil {
+			b = &bucket{cohort: cohort, candidate: evaluation.Candidate, rows: make(map[string][]Evaluation)}
+			buckets[key] = b
+			order = append(order, key)
 		}
-		if total, cacheRead, cacheWrite, ok := averageTokens(rows); ok {
-			report.AverageTokens = &total
-			report.AverageCacheReadTokens = &cacheRead
-			report.AverageCacheWriteTokens = &cacheWrite
+		if _, seen := b.rows[evaluation.SessionID]; !seen {
+			b.sessions = append(b.sessions, evaluation.SessionID)
 		}
-		reports = append(reports, report)
+		b.rows[evaluation.SessionID] = append(b.rows[evaluation.SessionID], evaluation)
 	}
-	sort.Slice(reports, func(i, j int) bool {
+	plans := make(map[string]*Session)
+	plan := func(id string) *Session {
+		if p, ok := plans[id]; ok {
+			return p
+		}
+		p := store.readSession(id)
+		plans[id] = p
+		return p
+	}
+	entries, err := os.ReadDir(filepath.Join(store.root, "sessions"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("list eval sessions: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		p := plan(id)
+		if p == nil {
+			continue
+		}
+		cohort := p.Cohort
+		if cohort == "" {
+			cohort = "legacy-unmatched"
+		}
+		key := cohort + "\x00" + p.Candidate
+		b := buckets[key]
+		if b == nil {
+			b = &bucket{cohort: cohort, candidate: p.Candidate, rows: make(map[string][]Evaluation)}
+			buckets[key] = b
+			order = append(order, key)
+		}
+		if _, seen := b.rows[id]; !seen {
+			b.sessions = append(b.sessions, id)
+			b.rows[id] = nil
+		}
+	}
+	var reports []CandidateReport
+	for _, key := range order {
+		b := buckets[key]
+		for _, variant := range promptVariants(b.sessions, b.rows) {
+			var rows []Evaluation
+			sessionPlans := make([]*Session, 0, len(variant.sessions))
+			for _, id := range variant.sessions {
+				rows = append(rows, b.rows[id]...)
+				sessionPlans = append(sessionPlans, plan(id))
+			}
+			completeness := sliceCompleteness(sessionPlans, rows)
+			report := CandidateReport{
+				Cohort:            b.cohort,
+				Build:             sliceBuild(sessionPlans),
+				PromptFingerprint: variant.fingerprint(),
+				Completeness:      completeness,
+				Incomplete:        !completeness.Complete(),
+				Summary:           SummarizeEvaluations(rows),
+				RepeatCount:       repeatCount(rows),
+				Confidence:        confidenceInterval("", rows),
+				AverageWallMS:     averageWallMS(rows),
+			}
+			report.Summary.Candidate = b.candidate
+			if total, cacheRead, cacheWrite, ok := averageTokens(rows); ok {
+				report.AverageTokens = &total
+				report.AverageCacheReadTokens = &cacheRead
+				report.AverageCacheWriteTokens = &cacheWrite
+			}
+			reports = append(reports, report)
+		}
+	}
+	sort.SliceStable(reports, func(i, j int) bool {
 		if reports[i].Cohort != reports[j].Cohort {
 			return reports[i].Cohort < reports[j].Cohort
 		}
-		return reports[i].Summary.Candidate < reports[j].Summary.Candidate
+		if reports[i].Summary.Candidate != reports[j].Summary.Candidate {
+			return reports[i].Summary.Candidate < reports[j].Summary.Candidate
+		}
+		return reports[i].PromptFingerprint < reports[j].PromptFingerprint
 	})
 	markFrontier(reports)
 	return reports, nil
+}
+
+// promptVariant is a set of sessions that agree on every shared case's prompt
+// fingerprints. prompts maps a case to its sorted, comma-joined fingerprints;
+// a case with none recorded is absent and conflicts with nothing.
+type promptVariant struct {
+	sessions []string
+	prompts  map[string]string
+}
+
+func (v promptVariant) fingerprint() string {
+	if len(v.prompts) == 0 {
+		return ""
+	}
+	caseIDs := make([]string, 0, len(v.prompts))
+	for caseID := range v.prompts {
+		caseIDs = append(caseIDs, caseID)
+	}
+	sort.Strings(caseIDs)
+	h := sha256.New()
+	for _, caseID := range caseIDs {
+		fmt.Fprintf(h, "%s\x00%s\x00", caseID, v.prompts[caseID])
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// promptVariants discovers variants before assigning sessions, so a partial
+// session cannot hide its ambiguity by joining before a second variant appears.
+func promptVariants(sessions []string, rows map[string][]Evaluation) []promptVariant {
+	var variants []promptVariant
+	for _, id := range sessions {
+		prompts := sessionPrompts(rows[id])
+		if len(prompts) == 0 {
+			continue
+		}
+		placed := false
+		for i := range variants {
+			if !promptsAgree(variants[i].prompts, prompts) {
+				continue
+			}
+			for caseID, fingerprints := range prompts {
+				variants[i].prompts[caseID] = fingerprints
+			}
+			placed = true
+			break
+		}
+		if !placed {
+			variants = append(variants, promptVariant{prompts: prompts})
+		}
+	}
+	var unknown promptVariant
+	for _, id := range sessions {
+		prompts := sessionPrompts(rows[id])
+		match, matches := -1, 0
+		if len(prompts) > 0 {
+			for i := range variants {
+				if promptsAgree(variants[i].prompts, prompts) {
+					match = i
+					matches++
+				}
+			}
+		}
+		if matches == 1 {
+			variants[match].sessions = append(variants[match].sessions, id)
+		} else {
+			unknown.sessions = append(unknown.sessions, id)
+		}
+	}
+	// A variant merged from sessions that all turned out ambiguous describes
+	// a prompt combination nobody ran, so it must not become a report row.
+	assigned := variants[:0]
+	for _, variant := range variants {
+		if len(variant.sessions) > 0 {
+			assigned = append(assigned, variant)
+		}
+	}
+	if len(unknown.sessions) > 0 {
+		assigned = append(assigned, unknown)
+	}
+	return assigned
+}
+
+func sessionPrompts(rows []Evaluation) map[string]string {
+	byCase := make(map[string]map[string]bool)
+	for _, row := range rows {
+		if row.PromptFingerprint == "" {
+			continue
+		}
+		if byCase[row.CaseID] == nil {
+			byCase[row.CaseID] = make(map[string]bool)
+		}
+		byCase[row.CaseID][row.PromptFingerprint] = true
+	}
+	prompts := make(map[string]string, len(byCase))
+	for caseID, set := range byCase {
+		fingerprints := make([]string, 0, len(set))
+		for fingerprint := range set {
+			fingerprints = append(fingerprints, fingerprint)
+		}
+		sort.Strings(fingerprints)
+		prompts[caseID] = strings.Join(fingerprints, ",")
+	}
+	return prompts
+}
+
+func promptsAgree(a, b map[string]string) bool {
+	for caseID, fingerprints := range b {
+		if existing, ok := a[caseID]; ok && existing != fingerprints {
+			return false
+		}
+	}
+	return true
+}
+
+// sliceCompleteness counts a case as completed only when every replay any of
+// the slice's sessions planned for it completed.
+func sliceCompleteness(plans []*Session, rows []Evaluation) Completeness {
+	c := Completeness{PlansKnown: true, Sessions: len(plans)}
+	planned := make(map[string]int)
+	for _, plan := range plans {
+		if plan == nil {
+			c.PlansKnown = false
+			continue
+		}
+		for _, caseID := range plan.CaseIDs {
+			planned[caseID] += plan.Repeats
+			c.PlannedReplays += plan.Repeats
+		}
+	}
+	completed := make(map[string]int)
+	for _, row := range rows {
+		c.RecordedReplays++
+		if row.Status == "completed" {
+			c.CompletedReplays++
+			completed[row.CaseID]++
+		}
+	}
+	c.PlannedCases = len(planned)
+	for caseID, want := range planned {
+		if completed[caseID] >= want {
+			c.CompletedCases++
+		}
+	}
+	return c
+}
+
+func sliceBuild(plans []*Session) string {
+	seen := make(map[string]bool)
+	var builds []string
+	for _, plan := range plans {
+		build := ReplayBuild{}.String()
+		if plan != nil {
+			build = plan.Build.String()
+		}
+		if !seen[build] {
+			seen[build] = true
+			builds = append(builds, build)
+		}
+	}
+	sort.Strings(builds)
+	return strings.Join(builds, ", ")
+}
+
+// readSession loads a replay plan written by prepareReplay, or nil when it is
+// missing or unreadable; the report then calls the plan unknown instead of
+// failing.
+func (s *Store) readSession(id string) *Session {
+	if id == "" || id != filepath.Base(id) {
+		return nil
+	}
+	var session Session
+	if err := readJSON(filepath.Join(s.root, "sessions", id+".json"), &session); err != nil {
+		return nil
+	}
+	return &session
 }
 
 func (s *Store) evaluations() ([]Evaluation, error) {
@@ -195,12 +495,12 @@ func confidenceInterval(_ string, rows []Evaluation) *Interval {
 
 func markFrontier(reports []CandidateReport) {
 	for i := range reports {
-		if reports[i].AverageTokens == nil || reports[i].Summary.Labeled == 0 || reports[i].Summary.Failures > 0 {
+		if !frontierEligible(reports[i]) {
 			continue
 		}
 		dominated := false
 		for j := range reports {
-			if i == j || reports[i].Cohort != reports[j].Cohort || reports[j].AverageTokens == nil || reports[j].Summary.Labeled == 0 || reports[j].Summary.Failures > 0 {
+			if i == j || reports[i].Cohort != reports[j].Cohort || !frontierEligible(reports[j]) {
 				continue
 			}
 			betterRecall := reports[j].Summary.Recall() >= reports[i].Summary.Recall()
@@ -213,6 +513,10 @@ func markFrontier(reports []CandidateReport) {
 		}
 		reports[i].OnFrontier = !dominated
 	}
+}
+
+func frontierEligible(report CandidateReport) bool {
+	return report.AverageTokens != nil && report.Summary.Labeled > 0 && report.Summary.Failures == 0 && !report.Incomplete
 }
 
 // SetSummary lets users inspect corpus coverage before an eval consumes tokens.
@@ -401,6 +705,19 @@ func shortFingerprint(value string) string {
 	return value[:12]
 }
 
+func renderCompleteness(c Completeness) string {
+	plan := fmt.Sprintf("%d of %d planned case(s) and %d of %d planned replay(s) completed across %d session(s)",
+		c.CompletedCases, c.PlannedCases, c.CompletedReplays, c.PlannedReplays, c.Sessions)
+	switch {
+	case !c.PlansKnown:
+		return fmt.Sprintf("  completeness: unknown - a session plan was not recorded; %d of %d recorded replay(s) completed\n", c.CompletedReplays, c.RecordedReplays)
+	case c.Complete():
+		return "  completeness: complete - " + plan + "\n"
+	default:
+		return fmt.Sprintf("  completeness: incomplete - %s (%d missing, %d failed); scores cover only the recorded replays\n", plan, c.Missing(), c.Failed())
+	}
+}
+
 // RenderReport is a stable human-readable local comparison. Scores are
 // finding-level. Unmatched candidate findings stay pending and are never
 // called false positives. A replay with no gold is unlabeled, not a pass.
@@ -412,7 +729,21 @@ func RenderReport(reports []CandidateReport) string {
 	b.WriteString("LOCAL-ONLY EVAL REPORT\n")
 	for _, report := range reports {
 		s := report.Summary
-		fmt.Fprintf(&b, "\n%s (cohort %s)\n", s.Candidate, report.Cohort)
+		marker := ""
+		if report.Incomplete {
+			marker = " INCOMPLETE"
+		}
+		fmt.Fprintf(&b, "\n%s (cohort %s)%s\n", s.Candidate, report.Cohort, marker)
+		prompt := report.PromptFingerprint
+		if prompt == "" {
+			prompt = "not recorded"
+		}
+		build := report.Build
+		if build == "" {
+			build = ReplayBuild{}.String()
+		}
+		fmt.Fprintf(&b, "  build: %s; review prompt+config fingerprint: %s\n", build, prompt)
+		b.WriteString(renderCompleteness(report.Completeness))
 		fmt.Fprintf(&b, "  replays: %d across %d repeat(s); labeled: %d; failures: %d\n", s.Total, report.RepeatCount, s.Labeled, s.Failures)
 		if s.Labeled == 0 {
 			b.WriteString("  finding scores: unlabeled / pending (no finding-level gold yet)\n")
