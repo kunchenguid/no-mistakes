@@ -113,7 +113,7 @@ func TestAdoptPushedHeadRefusesEachBrokenCondition(t *testing.T) {
 		mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
 
 		refused := f.service.AdoptPushedHead(f.ctx)
-		assertAdoptionRefused(t, f, refused, "blocked_adopt_pushed_head_dirty", head)
+		assertAdoptionRefused(t, f, refused, "blocked_dirty", head)
 	})
 
 	t.Run("live remote is not the pushed head", func(t *testing.T) {
@@ -204,6 +204,38 @@ func TestAdoptPushedHeadRefusesAnActiveRun(t *testing.T) {
 	}
 	refused := f.service.AdoptPushedHead(f.ctx)
 	assertAdoptionRefused(t, f, refused, "blocked_adopt_pushed_head_not_applicable", head)
+}
+
+func TestAdoptPushedHeadRefusesWithTheRealSafetyCode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("custody returned is neither offered nor adopted", func(t *testing.T) {
+		t.Parallel()
+		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+		if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+			t.Fatal(err)
+		}
+		head := mustRun(t, f.local, "rev-parse", "HEAD")
+		state := f.service.Refresh(f.ctx)
+		if state.NextAction != nil && state.NextAction.Code == "adopt_pushed_head" {
+			t.Fatalf("refresh offered adoption: %#v", state)
+		}
+		refused := f.service.AdoptPushedHead(f.ctx)
+		if refused.Changed || mustRun(t, f.local, "rev-parse", "HEAD") != head || syncAnchorExists(t, f) {
+			t.Fatalf("adoption moved or anchored: %#v", refused)
+		}
+	})
+
+	t.Run("merged PR", func(t *testing.T) {
+		t.Parallel()
+		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+		if err := f.db.UpdateRunPRState(f.run.ID, "merged"); err != nil {
+			t.Fatal(err)
+		}
+		head := mustRun(t, f.local, "rev-parse", "HEAD")
+		refused := f.service.AdoptPushedHead(f.ctx)
+		assertAdoptionRefused(t, f, refused, "blocked_merged", head)
+	})
 }
 
 func newPublishedDivergenceFixture(t *testing.T, commits []pipelineCommit) *syncFixture {

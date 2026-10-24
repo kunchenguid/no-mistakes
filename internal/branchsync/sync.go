@@ -407,7 +407,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 		return state
 	}
 
-	s.classifyRelation(ctx, &state, bound, run.BaseSHA, true)
+	s.classifyRelation(ctx, &state, run, bound, true)
 	return state
 }
 
@@ -1883,13 +1883,19 @@ func (s *Service) AdoptPushedHead(ctx context.Context) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
 	}
-	state, run, _ := s.inspect(ctx)
+	state, run, ok := s.inspect(ctx)
 	if run == nil {
 		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "adopting the published head requires the checked-out branch's published run; no files or refs were changed")
 	}
+	if !ok || (state.Safety != "blocked_diverged" && state.State != StateBehind) {
+		if !ok || strings.HasPrefix(state.Safety, "blocked_") {
+			return state
+		}
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "ordinary synchronization applies to this branch; no files or refs were changed")
+	}
 	pushed := ptr(run.LastPushedSHA)
 	submitted := ptr(run.SubmittedHeadSHA)
-	if pushed == "" || submitted == "" || run.PushRef == nil || run.PushGeneration == nil || !terminalRunStatus(run.Status) || run.CustodyReturnedAt != nil {
+	if !publishedSubmittedHeadAdoptionRun(run) {
 		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "adopting the published head requires a terminal published run whose branch is still at the submitted head; no files or refs were changed")
 	}
 	if state.Local.Head != submitted {
@@ -2213,11 +2219,12 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		return state, run, false
 	}
 
-	s.classifyRelation(ctx, &state, ptr(run.LastPushedSHA), run.BaseSHA, false)
+	s.classifyRelation(ctx, &state, run, ptr(run.LastPushedSHA), false)
 	return state, run, true
 }
 
-func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, base string, live bool) {
+func (s *Service) classifyRelation(ctx context.Context, state *State, run *db.Run, pushed string, live bool) {
+	base := run.BaseSHA
 	if state.Local.Head == pushed {
 		state.State = StateSynchronized
 		state.Relation = RelationEqual
@@ -2252,7 +2259,7 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 			state.State = StateDiverged
 			state.Relation = RelationDiverged
 			state.Safety = "blocked_diverged"
-			state.NextAction = blockedDivergenceNextAction(state, pushed)
+			state.NextAction = blockedDivergenceNextAction(state, run, pushed)
 			state.Error = "local and pipeline-pushed histories have diverged; no files or refs were changed"
 			return
 		}
@@ -2284,15 +2291,21 @@ const adoptPushedHeadCommand = "no-mistakes axi sync --adopt-pushed-head"
 // blockedDivergenceNextAction offers the explicit published-head adoption when
 // the clean branch is still the terminal run's submitted head. Every other
 // divergence keeps the detached checkout, which moves no branch ref.
-func blockedDivergenceNextAction(state *State, pushed string) *NextAction {
-	if state != nil && publishedSubmittedHeadAdoption(*state) {
+func blockedDivergenceNextAction(state *State, run *db.Run, pushed string) *NextAction {
+	if state != nil && publishedSubmittedHeadAdoption(*state, run) {
 		return &NextAction{Code: "adopt_pushed_head", Command: adoptPushedHeadCommand}
 	}
 	return &NextAction{Code: "inspect_and_reconcile_manually", Command: "git checkout --detach " + pushed}
 }
 
-func publishedSubmittedHeadAdoption(state State) bool {
-	return state.Local.Clean &&
+func publishedSubmittedHeadAdoptionRun(run *db.Run) bool {
+	return run != nil && ptr(run.LastPushedSHA) != "" && ptr(run.SubmittedHeadSHA) != "" &&
+		run.PushRef != nil && run.PushGeneration != nil && terminalRunStatus(run.Status) && run.CustodyReturnedAt == nil
+}
+
+func publishedSubmittedHeadAdoption(state State, run *db.Run) bool {
+	return publishedSubmittedHeadAdoptionRun(run) &&
+		state.Local.Clean &&
 		state.Pipeline.SubmittedHead != "" &&
 		state.Local.Head == state.Pipeline.SubmittedHead &&
 		state.Pipeline.PushedHead != "" &&
