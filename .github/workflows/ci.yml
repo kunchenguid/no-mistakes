@@ -50,17 +50,31 @@ jobs:
             name: test (windows-git)
             shard: git
           - os: windows-latest
-            name: test (windows-steps)
-            shard: steps
+            name: test (windows-steps-a)
+            shard: steps-a
+          - os: windows-latest
+            name: test (windows-steps-b)
+            shard: steps-b
     runs-on: ${{ matrix.os }}
+    env:
+      # Splits internal/pipeline/steps across the steps-a and steps-b shards:
+      # steps-a runs the top-level tests this regexp matches (-run) and steps-b
+      # runs every other one (-skip), so each test runs exactly once by
+      # construction. One package needed ~650-875 s of its 900 s go test
+      # -timeout on the 4-core runner, and about half of PR runs timed out
+      # (#1580); its serial tests t.Setenv process-wide state, so more
+      # t.Parallel() could not recover it (#1365/#1372 already did that).
+      # Rebalance by moving the letter boundary when one half nears its limit.
+      NM_CI_WINDOWS_STEPS_SPLIT: '^Test[A-O]'
     # Sized for each Windows shard, which still sets the floor: git.exe plus
     # Defender tax makes git-backed packages ~10x their Linux time (see the
     # Defender note below). A single Windows `./...` job compiled every binary
     # and then ran those packages sequentially, so total wall could exceed
     # timeout-minutes with no package hitting go test -timeout - an
     # evidence-free cancellation. Git-heavy packages are split from the core
-    # remainder, and pipeline/steps is its own shard so it no longer serializes
-    # behind the other git-heavy packages on a 4-core GitHub-hosted runner.
+    # remainder, and pipeline/steps has its own two shards so it no longer
+    # serializes behind the other git-heavy packages on a 4-core GitHub-hosted
+    # runner.
     # Each shard's wall stays below this cap so a real hang dumps goroutines.
     # 40 is a runaway guard, not a target - Linux and macOS finish far inside
     # it, and it still keeps a wedged runner well short of the six-hour default.
@@ -108,16 +122,29 @@ jobs:
       # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
       # on the core shard is the union of the git and steps shards; the workflow
       # tests resolve every shard through `go list` and fail if they drift or
-      # overlap. pipeline/steps is its own shard (~10 min) so it runs in
-      # parallel with the remaining git-heavy packages instead of setting a
-      # ~21 min serial floor.
+      # overlap. pipeline/steps runs on its own two shards, in parallel with the
+      # remaining git-heavy packages instead of setting a ~21 min serial floor.
+      # Each Windows step runs one go test so a failing invocation can never be
+      # masked by a later one: pwsh reports only the last exit code.
       - name: Test on Windows (git-heavy)
         if: runner.os == 'Windows' && matrix.shard == 'git'
         run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
 
-      - name: Test on Windows (pipeline/steps)
-        if: runner.os == 'Windows' && matrix.shard == 'steps'
-        run: go test -v -timeout=15m ./internal/pipeline/steps/...
+      - name: Test on Windows (pipeline/steps, tests matching the split)
+        if: runner.os == 'Windows' && matrix.shard == 'steps-a'
+        shell: pwsh
+        run: go test -v -timeout=15m -run $env:NM_CI_WINDOWS_STEPS_SPLIT ./internal/pipeline/steps
+
+      # Every package under pipeline/steps except steps itself, unfiltered: the
+      # split regexp would otherwise also select (and drop) their tests.
+      - name: Test on Windows (pipeline/steps subpackages)
+        if: runner.os == 'Windows' && matrix.shard == 'steps-a'
+        run: go test -v -timeout=15m ./internal/pipeline/steps/citest ./internal/pipeline/steps/internal/...
+
+      - name: Test on Windows (pipeline/steps, tests outside the split)
+        if: runner.os == 'Windows' && matrix.shard == 'steps-b'
+        shell: pwsh
+        run: go test -v -timeout=15m -skip $env:NM_CI_WINDOWS_STEPS_SPLIT ./internal/pipeline/steps
 
       - name: Test on Windows (core)
         if: runner.os == 'Windows' && matrix.shard == 'core'

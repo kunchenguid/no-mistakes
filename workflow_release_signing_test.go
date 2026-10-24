@@ -58,9 +58,10 @@ type wfJob struct {
 	Permissions    struct {
 		Contents string `yaml:"contents"`
 	} `yaml:"permissions"`
-	Uses     string     `yaml:"uses"`
-	Strategy wfStrategy `yaml:"strategy"`
-	Steps    []wfStep   `yaml:"steps"`
+	Uses     string            `yaml:"uses"`
+	Strategy wfStrategy        `yaml:"strategy"`
+	Env      map[string]string `yaml:"env"`
+	Steps    []wfStep          `yaml:"steps"`
 }
 
 type wfStrategy struct {

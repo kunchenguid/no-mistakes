@@ -18,10 +18,11 @@ import (
 // one. Untuned, a single ./... job compiled every binary and then ran those
 // packages sequentially until timeout-minutes cancelled it with no verdict.
 // These tests pin the properties that keep that from silently coming back - the
-// scan-exclusion step, a three-way shard split (core remainder, git-heavy
-// packages without pipeline/steps, and pipeline/steps alone) so each job's wall
-// stays inside the cap, and a per-binary Go timeout well inside that cap so a
-// genuine hang lands as a goroutine dump instead of an opaque job cancellation.
+// scan-exclusion step, a four-way shard split (core remainder, git-heavy
+// packages without pipeline/steps, and pipeline/steps divided across two
+// shards by a complementary -run/-skip pair) so each job's wall stays inside
+// the cap, and a per-binary Go timeout well inside that cap so a genuine hang
+// lands as a goroutine dump instead of an opaque job cancellation.
 //
 // The workflow cannot be exercised from `go test` (it needs a Windows runner),
 // so it is asserted through a typed workflow, `go list` package sets, and a
@@ -119,7 +120,13 @@ func goListPackages(t *testing.T, patterns ...string) []string {
 
 func goTestPackagePatterns(command workflowCommand) []string {
 	var patterns []string
-	for _, arg := range command.args[1:] {
+	args := command.args[1:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-run" || arg == "-skip" || arg == "-timeout" {
+			i++ // the flag's value is the next field, not a package pattern
+			continue
+		}
 		if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "@") {
 			continue
 		}
@@ -210,7 +217,7 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 		t.Fatalf("test job timeout-minutes = %d, want 40 so a wedged runner cannot burn a full six-hour budget", job.TimeoutMinutes)
 	}
 
-	wantWindowsShards := []string{"core", "git", "steps"}
+	wantWindowsShards := []string{"core", "git", "steps-a", "steps-b"}
 	var matrixShards []string
 	for _, row := range job.Strategy.Matrix.Include {
 		if row["os"] != "windows-latest" {
@@ -224,88 +231,34 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 	}
 	slices.Sort(matrixShards)
 	if !slices.Equal(matrixShards, wantWindowsShards) {
-		t.Fatalf("windows matrix shards %v, want %v so pipeline/steps runs in parallel with the other git-heavy packages", matrixShards, wantWindowsShards)
+		t.Fatalf("windows matrix shards %v, want %v so pipeline/steps runs on two shards in parallel with the other git-heavy packages", matrixShards, wantWindowsShards)
 	}
 
-	tests := windowsGoTestCommands(t)
-	if len(tests) < 3 {
-		t.Fatalf("Windows tests must be split across core, git, and steps shards so one ./... job cannot exceed the cap without a binary hitting -timeout, got %d go test invocations", len(tests))
-	}
+	shards := classifyWindowsTestShards(t, job)
 
-	jobTimeout := time.Duration(job.TimeoutMinutes) * time.Minute
-	var explicit []workflowCommand
-	var coreCommand workflowCommand
-	stepShards := map[string]struct{}{}
-	for _, command := range tests {
-		goTimeout := goTestTimeout(t, command)
-		if goTimeout >= jobTimeout {
-			t.Fatalf("go test -timeout is %s and the job cap is %s; the Go timeout must fire first so a hang produces a goroutine dump instead of an evidence-free cancellation", goTimeout, jobTimeout)
-		}
-		shard := matrixShardCondition(job.Steps[command.step].If)
-		if shard == "" {
-			t.Fatalf("Windows test step %q is not gated on matrix.shard", job.Steps[command.step].Name)
-		}
-		stepShards[shard] = struct{}{}
-		patterns := goTestPackagePatterns(command)
-		switch {
-		case slices.Contains(patterns, "./..."):
-			t.Fatalf("Windows shard at step %d still runs ./...; a hang in a late package would cancel the job before go test -timeout fires", command.step)
-		case len(patterns) > 0:
-			explicit = append(explicit, command)
-		default:
-			if coreCommand.name != "" {
-				t.Fatalf("multiple Windows remainder shards; want one go-list remainder")
+	// Every package runs on exactly one shard, except internal/pipeline/steps,
+	// which runs on the two complementary split shards (see
+	// TestCIWorkflow_WindowsStepsSplitRunsEveryTestOnce).
+	stepsPkg := goListPackages(t, "./internal/pipeline/steps")
+	citestPkg := goListPackages(t, "./internal/pipeline/steps/citest")
+	var stepsFromArgs []string
+	for _, command := range []workflowCommand{shards.splitRun.command, shards.splitSkip.command, shards.stepsRest} {
+		for _, pkg := range goListPackages(t, goTestPackagePatterns(command)...) {
+			if !slices.Contains(stepsFromArgs, pkg) {
+				stepsFromArgs = append(stepsFromArgs, pkg)
 			}
-			coreCommand = command
 		}
 	}
-	if coreCommand.name == "" {
-		t.Fatal("Windows tests must keep a go-list remainder shard")
+	slices.Sort(stepsFromArgs)
+	if !slices.Equal(stepsFromArgs, goListPackages(t, "./internal/pipeline/steps/...")) {
+		t.Fatalf("steps shards run %v, want every package under internal/pipeline/steps", stepsFromArgs)
 	}
-	if len(explicit) != 2 {
-		t.Fatalf("Windows tests must list exactly two explicit package shards (git-heavy remainder and pipeline/steps), got %d", len(explicit))
-	}
-	for _, shard := range wantWindowsShards {
-		if _, ok := stepShards[shard]; !ok {
-			t.Errorf("windows matrix shard %q has no matching test step", shard)
-		}
-	}
-	for shard := range stepShards {
-		if !slices.Contains(wantWindowsShards, shard) {
-			t.Errorf("Windows test step shard %q is not in the matrix", shard)
-		}
-	}
-
-	stepsWant := goListPackages(t, "./internal/pipeline/steps/...")
-	var stepsCommand, gitCommand workflowCommand
-	var stepsFromArgs, gitFromArgs []string
-	for _, command := range explicit {
-		pkgs := goListPackages(t, goTestPackagePatterns(command)...)
-		if slices.Equal(pkgs, stepsWant) {
-			if stepsCommand.name != "" {
-				t.Fatal("multiple Windows shards list only pipeline/steps packages")
-			}
-			stepsCommand = command
-			stepsFromArgs = pkgs
-			continue
-		}
-		if gitCommand.name != "" {
-			t.Fatalf("extra explicit Windows shard packages %v; want one git-heavy remainder besides pipeline/steps", pkgs)
-		}
-		gitCommand = command
-		gitFromArgs = pkgs
-	}
-	if stepsCommand.name == "" {
-		t.Fatal("Windows tests must run ./internal/pipeline/steps/... on its own shard")
-	}
-	if gitCommand.name == "" {
-		t.Fatal("Windows tests must keep a git-heavy remainder shard besides pipeline/steps")
-	}
+	gitFromArgs := goListPackages(t, goTestPackagePatterns(shards.git)...)
 	if overlap := packagesOverlap(stepsFromArgs, gitFromArgs); len(overlap) > 0 {
 		t.Fatalf("git and steps shards must not overlap, also ran %v", overlap)
 	}
 
-	exclude := windowsGitExcludePattern(t, job.Steps[coreCommand.step])
+	exclude := windowsGitExcludePattern(t, job.Steps[shards.core.step])
 	all := goListPackages(t, "./...")
 	gitHeavyFromFilter := filterPackages(all, exclude, true)
 	coreFromFilter := filterPackages(all, exclude, false)
@@ -315,16 +268,15 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 		t.Fatalf("git+steps shard packages %v do not match NM_CI_WINDOWS_GIT_EXCLUDE %q -> %v", gitHeavyFromArgs, exclude, gitHeavyFromFilter)
 	}
 
-	requiredSteps := []string{
-		"github.com/kunchenguid/no-mistakes/internal/pipeline/steps",
-		"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/citest",
+	stepsShard := func(command workflowCommand) string {
+		return matrixShardCondition(job.Steps[command.step].If)
 	}
-	for _, pkg := range requiredSteps {
-		if !slices.Contains(stepsFromArgs, pkg) {
-			t.Errorf("steps shard must include %s so CI-monitor tests stay with pipeline/steps", pkg)
-		}
+	if shard := stepsShard(shards.stepsRest); shard != "steps-a" && shard != "steps-b" {
+		t.Errorf("internal/pipeline/steps subpackages (including citest) run on shard %q; CI-monitor tests stay with pipeline/steps", shard)
+	}
+	for _, pkg := range append(append([]string{}, stepsPkg...), citestPkg...) {
 		if slices.Contains(gitFromArgs, pkg) {
-			t.Errorf("git-heavy remainder must not include %s; that package belongs on the steps shard", pkg)
+			t.Errorf("git-heavy remainder must not include %s; that package belongs on the steps shards", pkg)
 		}
 		if slices.Contains(coreFromFilter, pkg) {
 			t.Errorf("core shard must not include git-heavy package %s", pkg)
@@ -339,7 +291,7 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 			t.Errorf("git-heavy remainder must include %s, the documented Windows wall floor", pkg)
 		}
 		if slices.Contains(stepsFromArgs, pkg) {
-			t.Errorf("steps shard must not include %s; that package belongs on the git-heavy remainder", pkg)
+			t.Errorf("steps shards must not include %s; that package belongs on the git-heavy remainder", pkg)
 		}
 		if slices.Contains(coreFromFilter, pkg) {
 			t.Errorf("core shard must not include git-heavy package %s", pkg)
@@ -354,6 +306,213 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 	if !slices.Equal(union, all) {
 		t.Fatalf("Windows shards must cover every package exactly once: union %v, go list ./... %v", union, all)
 	}
+}
+
+// TestCIWorkflow_WindowsStepsSplitRunsEveryTestOnce pins how
+// internal/pipeline/steps is divided between two Windows shards (#1580). Go
+// documents -skip as the inverse of -run, so one shard running `-run R` and the
+// other `-skip R` over the same package, with the same R and no other filter,
+// runs each top-level test on exactly one shard: a renamed or new test can move
+// between shards but can never fall out of CI.
+func TestCIWorkflow_WindowsStepsSplitRunsEveryTestOnce(t *testing.T) {
+	t.Parallel()
+
+	job := ciTestJob(t)
+	shards := classifyWindowsTestShards(t, job)
+
+	runPattern := shards.splitRun.value
+	skipPattern := shards.splitSkip.value
+	if runPattern != skipPattern {
+		t.Fatalf("steps split shards use -run %q and -skip %q; they must use the same pattern or some tests run twice or never", runPattern, skipPattern)
+	}
+	if strings.TrimSpace(runPattern) == "" {
+		t.Fatal("steps split pattern is empty; -run would select every test and -skip none")
+	}
+	if strings.Contains(runPattern, "/") {
+		t.Fatalf("steps split pattern %q contains '/', which filters subtests; split on top-level test names only", runPattern)
+	}
+	if _, err := regexp.Compile(runPattern); err != nil {
+		t.Fatalf("steps split pattern %q does not compile: %v", runPattern, err)
+	}
+
+	runShard := matrixShardCondition(job.Steps[shards.splitRun.command.step].If)
+	skipShard := matrixShardCondition(job.Steps[shards.splitSkip.command.step].If)
+	if runShard == skipShard {
+		t.Fatalf("both halves of the steps split run on shard %q; the split only helps when the halves run on separate runners", runShard)
+	}
+}
+
+type windowsTestFilter struct {
+	command workflowCommand
+	kind    string // "run" or "skip"
+	value   string
+}
+
+type windowsTestShards struct {
+	core      workflowCommand
+	git       workflowCommand
+	stepsRest workflowCommand // every package under pipeline/steps except steps itself
+	splitRun  windowsTestFilter
+	splitSkip windowsTestFilter
+}
+
+// classifyWindowsTestShards checks the properties every Windows go test
+// invocation shares and sorts the invocations into the shard roles.
+func classifyWindowsTestShards(t *testing.T, job *wfJob) windowsTestShards {
+	t.Helper()
+	tests := windowsGoTestCommands(t)
+	jobTimeout := time.Duration(job.TimeoutMinutes) * time.Minute
+	stepsPkg := goListPackages(t, "./internal/pipeline/steps")
+	var stepsRestPkgs []string
+	for _, pkg := range goListPackages(t, "./internal/pipeline/steps/...") {
+		if !slices.Contains(stepsPkg, pkg) {
+			stepsRestPkgs = append(stepsRestPkgs, pkg)
+		}
+	}
+
+	var shards windowsTestShards
+	perStep := map[int]int{}
+	stepShards := map[string]struct{}{}
+	for _, command := range tests {
+		step := job.Steps[command.step]
+		goTimeout := goTestTimeout(t, command)
+		if goTimeout >= jobTimeout {
+			t.Fatalf("go test -timeout is %s and the job cap is %s; the Go timeout must fire first so a hang produces a goroutine dump instead of an evidence-free cancellation", goTimeout, jobTimeout)
+		}
+		perStep[command.step]++
+		if perStep[command.step] > 1 {
+			t.Fatalf("Windows step %q runs more than one go test; pwsh reports only the last exit code, so an earlier failure would be masked", step.Name)
+		}
+		shard := matrixShardCondition(step.If)
+		if shard == "" {
+			t.Fatalf("Windows test step %q is not gated on matrix.shard", step.Name)
+		}
+		stepShards[shard] = struct{}{}
+
+		patterns := goTestPackagePatterns(command)
+		if slices.Contains(patterns, "./...") {
+			t.Fatalf("Windows shard at step %d still runs ./...; a hang in a late package would cancel the job before go test -timeout fires", command.step)
+		}
+		filter, hasFilter := goTestFilter(t, job, step, command)
+		if len(patterns) == 0 {
+			if hasFilter {
+				t.Fatalf("Windows remainder shard %q must not filter tests", step.Name)
+			}
+			if shards.core.name != "" {
+				t.Fatal("multiple Windows remainder shards; want one go-list remainder")
+			}
+			shards.core = command
+			continue
+		}
+
+		pkgs := goListPackages(t, patterns...)
+		switch {
+		case hasFilter:
+			if !slices.Equal(pkgs, stepsPkg) {
+				t.Fatalf("Windows step %q filters tests with -%s over %v; only internal/pipeline/steps is split, and a filter over another package would also drop that package's tests", step.Name, filter.kind, pkgs)
+			}
+			target := &shards.splitRun
+			if filter.kind == "skip" {
+				target = &shards.splitSkip
+			}
+			if target.kind != "" {
+				t.Fatalf("multiple Windows steps split internal/pipeline/steps with -%s", filter.kind)
+			}
+			*target = filter
+		case slices.Equal(pkgs, stepsRestPkgs):
+			if shards.stepsRest.name != "" {
+				t.Fatal("multiple Windows steps run the internal/pipeline/steps subpackages")
+			}
+			shards.stepsRest = command
+		case slices.Equal(pkgs, stepsPkg):
+			t.Fatalf("Windows step %q runs all of internal/pipeline/steps unfiltered; it must be split with -run/-skip across the steps shards", step.Name)
+		default:
+			if shards.git.name != "" {
+				t.Fatalf("extra explicit Windows shard packages %v; want one git-heavy remainder besides pipeline/steps", pkgs)
+			}
+			shards.git = command
+		}
+	}
+
+	if shards.core.name == "" {
+		t.Fatal("Windows tests must keep a go-list remainder shard")
+	}
+	if shards.git.name == "" {
+		t.Fatal("Windows tests must keep a git-heavy remainder shard besides pipeline/steps")
+	}
+	if shards.stepsRest.name == "" {
+		t.Fatalf("Windows tests must run every package under internal/pipeline/steps except steps itself (%v) in one unfiltered step", stepsRestPkgs)
+	}
+	if shards.splitRun.kind == "" || shards.splitSkip.kind == "" {
+		t.Fatal("Windows tests must split internal/pipeline/steps into a -run half and a -skip half")
+	}
+	wantShards := []string{"core", "git", "steps-a", "steps-b"}
+	for _, shard := range wantShards {
+		if _, ok := stepShards[shard]; !ok {
+			t.Errorf("windows matrix shard %q has no matching test step", shard)
+		}
+	}
+	for shard := range stepShards {
+		if !slices.Contains(wantShards, shard) {
+			t.Errorf("Windows test step shard %q is not in the matrix", shard)
+		}
+	}
+	return shards
+}
+
+// goTestFilter returns the command's -run or -skip filter with any
+// $env:NAME reference resolved from the step's, then the job's, env. A
+// command may carry at most one filter.
+func goTestFilter(t *testing.T, job *wfJob, step wfStep, command workflowCommand) (windowsTestFilter, bool) {
+	t.Helper()
+	var found []windowsTestFilter
+	args := command.args[1:]
+	for i := 0; i < len(args); i++ {
+		for _, kind := range []string{"run", "skip"} {
+			var value string
+			switch {
+			case strings.HasPrefix(args[i], "-"+kind+"="):
+				value = strings.TrimPrefix(args[i], "-"+kind+"=")
+			case args[i] == "-"+kind && i+1 < len(args):
+				i++
+				value = args[i]
+			default:
+				continue
+			}
+			found = append(found, windowsTestFilter{command: command, kind: kind, value: resolveWorkflowValue(t, job, step, value)})
+		}
+	}
+	switch len(found) {
+	case 0:
+		return windowsTestFilter{}, false
+	case 1:
+		return found[0], true
+	default:
+		t.Fatalf("Windows step %q combines test filters %v; the steps split needs exactly one -run or -skip", step.Name, found)
+		return windowsTestFilter{}, false
+	}
+}
+
+func resolveWorkflowValue(t *testing.T, job *wfJob, step wfStep, value string) string {
+	t.Helper()
+	if len(value) >= 2 && (value[0] == '\'' && value[len(value)-1] == '\'' || value[0] == '"' && value[len(value)-1] == '"') {
+		value = value[1 : len(value)-1]
+	}
+	name, ok := strings.CutPrefix(value, "$env:")
+	if !ok {
+		return value
+	}
+	if step.Shell != "pwsh" {
+		t.Fatalf("Windows step %q reads $env:%s, which only pwsh expands; set shell: pwsh", step.Name, name)
+	}
+	if resolved, ok := step.Env[name]; ok {
+		return resolved
+	}
+	if resolved, ok := job.Env[name]; ok {
+		return resolved
+	}
+	t.Fatalf("Windows step %q reads $env:%s, which neither the step nor the job defines", step.Name, name)
+	return ""
 }
 
 func windowsGitExcludePattern(t *testing.T, step wfStep) *regexp.Regexp {
