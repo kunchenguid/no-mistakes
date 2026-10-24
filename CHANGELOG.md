@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.100.2](https://github.com/kunchenguid/no-mistakes/compare/v1.100.1...v1.100.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* **agent:** report evidence on blank Claude exit and keep finished results ([#1566](https://github.com/kunchenguid/no-mistakes/issues/1566)) ([764432a](https://github.com/kunchenguid/no-mistakes/commit/764432a3a1f688e093bee86c519e052b426ed3df))
+* **daemon:** scope Windows logon task trigger to the installing user ([#1578](https://github.com/kunchenguid/no-mistakes/issues/1578)) ([9b0da79](https://github.com/kunchenguid/no-mistakes/commit/9b0da79e98475642b63fdc81e698e826e8fd2659))
+* **pipeline:** fit fix-agent commit summaries to the subject budget ([#1574](https://github.com/kunchenguid/no-mistakes/issues/1574)) ([69143e7](https://github.com/kunchenguid/no-mistakes/commit/69143e74d877e284321d5edcd224f02dc57a4f90))
+
 ## [1.100.1](https://github.com/kunchenguid/no-mistakes/compare/v1.100.0...v1.100.1) (2026-10-23)
 
 
