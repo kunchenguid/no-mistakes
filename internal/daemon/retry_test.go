@@ -201,6 +201,7 @@ type retryFixture struct {
 type retryFixtureOptions struct {
 	beforeSource func(t *testing.T, f *retryFixture)
 	profile      *agentcfg.PiProfile
+	claudeDir    string
 	plan         *verificationplan.Snapshot
 	failInTest   bool
 	twoHop       bool
@@ -229,7 +230,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.profile != nil {
 		profiles = append(profiles, opts.profile)
 	}
-	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, profiles...)
+	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.claudeDir, profiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +293,7 @@ func (f *retryFixture) continuationOf(t *testing.T, source *db.Run) *db.Run {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil)
+	next, err := f.d.InsertRunWithIntentAndLaunchNonce(f.repo.ID, "main", f.submitted, f.submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,6 +650,23 @@ func TestRetryStartsWhenEveryProofHolds(t *testing.T) {
 	if got := f.executions.Load(); got != 2 {
 		t.Fatalf("executed %d steps, want review and test only", got)
 	}
+}
+
+func TestRetryKeepsTheSourceRunsClaudeConfigDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claude-profile")
+	f := newRetryFixture(t, retryFixtureOptions{claudeDir: dir})
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	run, err := f.d.GetRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ClaudeConfigDir == nil || *run.ClaudeConfigDir != dir {
+		t.Fatalf("continuation ClaudeConfigDir = %v, want %q", run.ClaudeConfigDir, dir)
+	}
+	waitForRunTerminalState(t, f.d, result.RunID)
 }
 
 func TestRunInfoReportsACarriedStepsWorkFromTheRunItWasCarriedFrom(t *testing.T) {

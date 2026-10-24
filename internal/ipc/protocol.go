@@ -83,6 +83,9 @@ func (e *RPCError) Error() string { return e.Message }
 type PushReceivedParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	// ClaudeConfigDir is the caller's absolute CLAUDE_CONFIG_DIR, empty when
+	// unset. The run keeps it so retries and recovery use the same profile.
+	ClaudeConfigDir string `json:"claude_config_dir,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -113,6 +116,7 @@ type PushReceivedParams struct {
 type StartFreshRunParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	ClaudeConfigDir    string              `json:"claude_config_dir,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -224,6 +228,7 @@ type GetActiveRunParams struct {
 type RerunParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	ClaudeConfigDir    string              `json:"claude_config_dir,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -498,6 +503,7 @@ type ShutdownResult struct {
 type RunInfo struct {
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	ClaudeConfigDir  string                     `json:"claude_config_dir,omitempty"`
 
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`
