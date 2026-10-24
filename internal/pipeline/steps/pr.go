@@ -438,7 +438,7 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		}
 		narrative := neutralizeAttestationMarkers(provider, content.Body)
 		appendix = appendIssuesSection(appendix, issuesSection(sctx, narrative))
-		return composeOwnedPRContent(prOwnedBody{before: narrative}, content.Title, appendix, bodyLimit)
+		return composeOwnedPRContentWithArchive(sctx, prOwnedBody{before: narrative}, content.Title, appendix, bodyLimit)
 	}
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
