@@ -1098,6 +1098,7 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 	}
 	const attempts = 3
 	var lastErr error
+	sawMarker := false
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
@@ -1112,22 +1113,30 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 					return err
 				}
 			}
-			if !rebound {
+			if !rebound && sawMarker {
+				err = errors.New("pull request body lost its attestation marker after an earlier attempt found one")
+			} else if !rebound {
 				if logfn != nil {
 					logfn("skipping attestation rebind: pull request body carries no attestation marker")
 				}
 				return nil
 			}
-			if updated == content.Body {
+			if err == nil && updated == content.Body {
 				return nil
 			}
+			sawMarker = sawMarker || rebound
 
 			// UpdatePR replaces the complete body; this is not an atomic
 			// marker-only edit. Confirm that the body is still the version we
 			// prepared before writing it. If someone edited it meanwhile, retry
 			// from their version instead of overwriting their changes.
-			latest, readErr := reader.GetPRContent(ctx, pr)
+			var latest scm.PRContent
+			var readErr error
+			if err == nil {
+				latest, readErr = reader.GetPRContent(ctx, pr)
+			}
 			switch {
+			case err != nil:
 			case readErr != nil:
 				err = readErr
 			case latest.Body != content.Body:

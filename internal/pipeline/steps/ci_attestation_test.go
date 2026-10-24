@@ -1048,3 +1048,24 @@ func TestPushStep_SkipsGhOnBaseBranch(t *testing.T) {
 		t.Fatalf("expected no gh invocation at all for a direct push to the base branch:\n%s", logData)
 	}
 }
+
+type markerDroppingHost struct{ attestationTestHost }
+
+func (h *markerDroppingHost) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
+	h.updates++
+	h.body = "body edited by someone else, no pipeline section"
+	return pr, nil
+}
+
+func TestRestampPRAttestation_MarkerLostAfterWriteStaysUnsettled(t *testing.T) {
+	t.Parallel()
+	host := &markerDroppingHost{attestationTestHost{body: compliantPipelineBody(t, testPipelineHeadSHA)}}
+
+	err := restampPRAttestation(context.Background(), host, &scm.PR{Number: "42"}, strings.Repeat("cd", 20), nil)
+	if err == nil {
+		t.Fatal("restamp reported success although the marker vanished after the write")
+	}
+	if host.updates != 1 {
+		t.Fatalf("UpdatePR calls = %d, want 1 (later attempts must not skip as marker-less)", host.updates)
+	}
+}
