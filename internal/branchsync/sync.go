@@ -606,6 +606,10 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 //	P contains                                          gate reset to it (CAS)
 //	all local
 //	work
+//	diverged,  clean     anchor P; return custody at    custody at local head;
+//	local      (P is anchored, nothing moves)   the local head;
+//	carries                                     gate reset to it (CAS)
+//	all P work
 //	diverged   any       refuse (anchor named, manual   custody at local head;
 //	                     reconcile / guarded rerun)     gate reset to it (CAS)
 //	P missing  any       refuse                         custody at local head;
@@ -621,6 +625,15 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 // rewrote the operator's lines - falls through to the plain diverged refusal.
 // No-data-loss outranks convenience here: when nothing can distinguish a
 // deliberate pipeline fix from a dropped change, the operator decides.
+//
+// The "local carries all P work" row is the same proof with the roles swapped
+// (localCarriesPreservedWork): a repair committed only in the worktree can
+// already hold everything the preserved head changed. Nothing moves, so the
+// preserved commits are not what the branch ends at, but they stay anchored and
+// their net change is proven present. It applies after P is anchored in the
+// worktree, so the relationship is decided where both objects exist. Inspection
+// reaches the same verdict without importing anything
+// (crossRepositoryRelationProven) when neither repository holds both heads.
 //
 // Fail-safe rules, in the same spirit as Refresh/Apply:
 //   - An active run always refuses: only terminal runs are recoverable.
@@ -878,6 +891,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	default:
 		if keepLocal {
 			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA})
+		}
+		if state.Local.Clean && localCarriesPreservedWork(ctx, wd, local, preserved) {
+			// The preserved head is anchored in the worktree and every net change
+			// it made is already in the local head, so returning custody at the
+			// local head discards nothing. The worktree and branch do not move.
+			return s.finishRecover(ctx, run, false)
 		}
 		if trustedEqualTreeRewrite || preservedContainsLocalWork(ctx, wd, local, preserved) {
 			if !state.Local.Clean {
@@ -1294,6 +1313,82 @@ func preservedContainsLocalWork(ctx context.Context, dir, local, preserved strin
 		return false
 	}
 	return mergeTreePreservesFinalHead(ctx, dir, base, local, preserved)
+}
+
+// localCarriesPreservedWork is the mirror of preservedContainsLocalWork: it
+// proves the local head already holds every change the preserved head made, so
+// returning custody at the local head loses no pipeline work. It is the same
+// executable three-way merge on the merge-base, with the roles swapped, and the
+// same narrow contract: every unreadable, unrelated, conflicting, or ambiguous
+// case returns false. The preserved commits stay anchored; only their content
+// is claimed to be represented.
+func localCarriesPreservedWork(ctx context.Context, dir, local, preserved string) bool {
+	if local == "" || preserved == "" || local == preserved {
+		return false
+	}
+	base, err := git.Run(ctx, dir, "merge-base", local, preserved)
+	if err != nil || base == "" {
+		return false
+	}
+	return mergeTreePreservesFinalHead(ctx, dir, base, preserved, local)
+}
+
+// crossRepositoryRelationProven answers, without writing to the worktree, the
+// gate, or any ref, whether explicit recovery of this pair can succeed: the
+// preserved head is already in the local head's history, or one of the two
+// content-containment proofs holds. Objects are read through a union of the
+// worktree's and the gate's object stores, and the merge proofs' scratch tree
+// objects land in a quarantine directory that is removed afterwards. A failure
+// to build the union is "not proven", never a guess.
+func (s *Service) crossRepositoryRelationProven(ctx context.Context, gateDir, local, preserved string) bool {
+	wd := s.workDir()
+	worktreeObjects, err := git.Run(ctx, wd, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+	if err != nil || worktreeObjects == "" {
+		return false
+	}
+	gateObjects := filepath.Join(gateDir, "objects")
+	if info, err := os.Stat(gateObjects); err != nil || !info.IsDir() {
+		return false
+	}
+	quarantine, err := os.MkdirTemp("", "no-mistakes-union-objects-")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(quarantine)
+	env := []string{
+		"GIT_OBJECT_DIRECTORY=" + quarantine,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + worktreeObjects + string(os.PathListSeparator) + gateObjects,
+	}
+	if _, err := git.RunWithEnv(ctx, wd, env, "cat-file", "-e", preserved+"^{commit}"); err != nil {
+		return false
+	}
+	if _, err := git.RunWithEnv(ctx, wd, env, "cat-file", "-e", local+"^{commit}"); err != nil {
+		return false
+	}
+	if _, err := git.RunWithEnv(ctx, wd, env, "merge-base", "--is-ancestor", preserved, local); err == nil {
+		return true
+	}
+	if _, err := git.RunWithEnv(ctx, wd, env, "merge-base", "--is-ancestor", local, preserved); err == nil {
+		return true
+	}
+	base, err := git.RunWithEnv(ctx, wd, env, "merge-base", local, preserved)
+	if err != nil || base == "" {
+		return false
+	}
+	return mergeTreeMatchesWithEnv(ctx, wd, env, base, local, preserved, preserved) ||
+		mergeTreeMatchesWithEnv(ctx, wd, env, base, preserved, local, local)
+}
+
+// mergeTreeMatchesWithEnv is mergeTreePreservesFinalHead evaluated under an
+// object-store overlay: merging ours into theirs on base must yield wantTip's
+// tree exactly.
+func mergeTreeMatchesWithEnv(ctx context.Context, dir string, env []string, base, ours, theirs, wantTip string) bool {
+	merged, err := git.RunWithEnv(ctx, dir, env, "merge-tree", "--write-tree", "--merge-base", base, theirs, ours)
+	if err != nil {
+		return false
+	}
+	want, err := git.RunWithEnv(ctx, dir, env, "rev-parse", wantTip+"^{tree}")
+	return err == nil && merged == want
 }
 
 func reviewedHeadProvesEquivalentTarget(ctx context.Context, dir, local, reviewed, target string) bool {
@@ -2432,9 +2527,21 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 		}
 	}
 
-	ordinaryAvailable := localEligible
+	ordinaryAvailable := localEligible || (gateAvailable && objectExists(ctx, gateDir, preserved) && state.Local.Clean &&
+		localCarriesPreservedWork(ctx, s.workDir(), local, preserved))
 	if !ordinaryAvailable && gateAvailable && objectExists(ctx, gateDir, preserved) && state.Local.Clean && objectExists(ctx, gateDir, local) {
-		ordinaryAvailable = isAncestor(ctx, gateDir, local, preserved) || preservedContainsLocalWork(ctx, gateDir, local, preserved)
+		ordinaryAvailable = isAncestor(ctx, gateDir, local, preserved) || preservedContainsLocalWork(ctx, gateDir, local, preserved) ||
+			localCarriesPreservedWork(ctx, gateDir, local, preserved)
+	}
+	if !ordinaryAvailable && gateAvailable && state.Local.Clean && objectExists(ctx, gateDir, preserved) && objectExists(ctx, s.workDir(), local) &&
+		(!objectExists(ctx, gateDir, local) || !objectExists(ctx, s.workDir(), preserved)) {
+		// Neither repository holds both heads (for example a repair committed
+		// only in the worktree while the preserved pipeline head exists only in
+		// the gate), so no single-repository proof above can run. Explicit
+		// recovery imports the preserved head into the worktree anchor before
+		// it compares anything; inspection must agree with the verdict that
+		// import will reach without performing it.
+		ordinaryAvailable = s.crossRepositoryRelationProven(ctx, gateDir, local, preserved)
 	}
 	if ordinaryAvailable {
 		return recoverySourceProof{
