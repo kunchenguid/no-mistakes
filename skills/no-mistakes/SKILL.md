@@ -289,7 +289,11 @@ Run the pipeline and decide on its findings as they come up:
      this run will not rebase or re-push it.
    - `passed` - the pipeline completed under the requested steps, including any
      explicit per-run skips. This alone is not evidence that a PR was merged.
-   - `passed-with-override` - the pipeline completed with an explicitly approved Test exception or CI failure.
+   - `passed-with-override` - the pipeline completed with a Test exception or an explicitly approved CI failure.
+     An inconclusive Test verdict with no failed scenarios and at least one untested
+     scenario, all classified as needing production, a deploy, or a third party,
+     completes automatically as a non-blocking after-deploy note and still reports
+     this outcome. Unrelated blocking findings still require resolution.
      Report the exception, not a clean pass.
      Test evidence is in `run.test_override_reason`, including when CI readiness returns `checks-passed`; do not omit it from the summary.
    - `passed-with-skips` - publication or CI verification automatically skipped.
