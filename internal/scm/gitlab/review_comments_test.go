@@ -42,6 +42,8 @@ func TestGetReviewCommentsReadsUnresolvedBotDiscussions(t *testing.T) {
 				{"id":"d3","notes":[
 					{"id":1133,"body":"GitHub bot spelling","resolvable":true,"resolved":false,"author":{"username":"greptile-apps[bot]"}},
 					{"id":1134,"body":"GitHub app spelling","resolvable":true,"resolved":false,"author":{"username":"greptile-apps"}},
+					{"id":1135,"body":"cubic has no GitLab login","resolvable":true,"resolved":false,"author":{"username":"cubic-dev-ai[bot]"},"position":{"new_path":"internal/app.go","new_line":46}},
+					{"id":1136,"body":"cubic bare login","resolvable":true,"resolved":false,"author":{"username":"cubic-dev-ai"},"position":{"new_path":"internal/app.go","new_line":47}},
 					{"id":1129,"body":"A human review comment","resolvable":true,"resolved":false,"author":{"username":"octocat"},"position":{"new_path":"internal/app.go","new_line":45}}
 				]},
 				{"id":"d4","notes":[

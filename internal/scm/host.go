@@ -232,6 +232,10 @@ type ReviewBot struct {
 	// AppSlug is the provider app slug the bot publishes its check under.
 	AppSlug string
 	// Logins are the account logins the bot posts review comments as.
+	// Both forms are listed because GitHub's GraphQL review-thread query
+	// (reviewThreadsQuery, author{login}) reports a Bot actor's bare login
+	// such as "cubic-dev-ai", while the REST endpoints report the "[bot]"
+	// form such as "cubic-dev-ai[bot]".
 	Logins       []string
 	GitLabLogins []string
 }
@@ -241,6 +245,7 @@ type ReviewBot struct {
 // bot is one entry here.
 var ReviewBots = []ReviewBot{
 	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}, GitLabLogins: []string{"greptileai"}},
+	{AppSlug: "cubic-dev-ai", Logins: []string{"cubic-dev-ai[bot]", "cubic-dev-ai"}},
 }
 
 // ReviewBotForApp returns the registered review bot that publishes checks

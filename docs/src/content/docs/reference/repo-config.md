@@ -829,7 +829,7 @@ With no trusted copy of this file, the operator's global value applies, then the
 
 ### ci.review_bot_comments
 
-When the CI step reads a supported review bot's (currently Greptile's) unresolved review comments.
+When the CI step reads a supported review bot's (currently Greptile's or cubic's) unresolved review comments.
 
 | | |
 |---|---|
@@ -847,7 +847,7 @@ ci:
 
 A review bot can conclude its check `success` while leaving an unresolved comment. The comment most likely to be missed that way is the one on the pipeline's own CI repair commit, which no human has reviewed yet.
 
-Where the comments come from, and how the bot is identified, is provider-specific. On GitHub they are the bot's unresolved review-thread comments, and the bot is identified by the check suite's app slug. On GitLab they are the merge request's unresolved discussion notes, and the bot is identified by the login it comments as (Greptile posts there as `greptileai`); a GitLab job names no publishing application, so no GitLab check can be attributed to a bot.
+Where the comments come from, and how the bot is identified, is provider-specific. On GitHub they are the bot's unresolved review-thread comments, and the bot is identified by the check suite's app slug. On GitLab they are the merge request's unresolved discussion notes, and the bot is identified by the login it comments as (Greptile posts there as `greptileai`; cubic has no registered GitLab login, so its notes are not read there); a GitLab job names no publishing application, so no GitLab check can be attributed to a bot.
 
 Under `always`:
 

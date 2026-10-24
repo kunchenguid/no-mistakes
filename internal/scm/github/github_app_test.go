@@ -20,6 +20,7 @@ func TestGetChecksCarriesCheckSuiteAppSlug(t *testing.T) {
 			stdout: githubCommitChecksResponse(`[
 				{"__typename":"CheckRun","databaseId":2,"name":"test","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/test/repo/actions/runs/1/job/2","checkSuite":{"app":{"slug":"github-actions"}}},
 				{"__typename":"CheckRun","databaseId":3,"name":"Greptile Review","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://greptile.com/","checkSuite":{"app":{"slug":"greptile-apps"}}},
+				{"__typename":"CheckRun","databaseId":6,"name":"cubic","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://cubic.dev/","checkSuite":{"app":{"slug":"cubic-dev-ai"}}},
 				{"__typename":"CheckRun","databaseId":4,"name":"orphan","status":"COMPLETED","conclusion":"SUCCESS"},
 				{"__typename":"StatusContext","id":"status-5","context":"ci/external","state":"SUCCESS","targetUrl":"https://ci.example/1"}
 			]`),
@@ -36,6 +37,7 @@ func TestGetChecksCarriesCheckSuiteAppSlug(t *testing.T) {
 	want := map[string]struct{ app, id string }{
 		"test":            {app: "github-actions", id: "github-check-run:2"},
 		"Greptile Review": {app: "greptile-apps", id: "github-check-run:3"},
+		"cubic":           {app: "cubic-dev-ai", id: "github-check-run:6"},
 		"orphan":          {id: "github-check-run:4"},
 		"ci/external":     {id: "github-status:status-5"},
 	}

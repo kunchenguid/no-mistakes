@@ -1708,11 +1708,11 @@ ci:
   # repository that sets ci.revalidate_repairs on its own default branch
   # overrides this value.
   revalidate_repairs: false
-  # When the CI step reads a registered review bot's (Greptile's) unresolved
-  # review comments. "on_failure" (default) reads them only when the bot's
-  # check failed. "always" also reads them when the bot's check completed green
-  # on the current head, or has not registered on it yet once every other check
-  # is green, so an unresolved bot comment parks the step for a decision
+  # When the CI step reads a registered review bot's (Greptile's or cubic's)
+  # unresolved review comments. "on_failure" (default) reads them only when the
+  # bot's check failed. "always" also reads them when the bot's check completed
+  # green on the current head, or has not registered on it yet once every other
+  # check is green, so an unresolved bot comment parks the step for a decision
   # instead of reporting checks-passed. A repository that sets
   # ci.review_bot_comments on its own default branch overrides this value.
   review_bot_comments: on_failure
