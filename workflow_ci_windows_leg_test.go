@@ -1,6 +1,10 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,9 +23,10 @@ import (
 // packages sequentially until timeout-minutes cancelled it with no verdict.
 // These tests pin the properties that keep that from silently coming back - the
 // scan-exclusion step, a three-way shard split (core remainder, git-heavy
-// packages without pipeline/steps, and pipeline/steps alone) so each job's wall
-// stays inside the cap, and a per-binary Go timeout well inside that cap so a
-// genuine hang lands as a goroutine dump instead of an opaque job cancellation.
+// packages without pipeline/steps, and pipeline/steps alone, itself split by
+// test name across several matrix rows) so each job's wall stays inside the
+// cap, and a per-binary Go timeout well inside that cap so a genuine hang lands
+// as a goroutine dump instead of an opaque job cancellation.
 //
 // The workflow cannot be exercised from `go test` (it needs a Windows runner),
 // so it is asserted through a typed workflow, `go list` package sets, and a
@@ -120,6 +125,7 @@ func goListPackages(t *testing.T, patterns ...string) []string {
 func goTestPackagePatterns(command workflowCommand) []string {
 	var patterns []string
 	for _, arg := range command.args[1:] {
+		arg = unquoteWorkflowArg(arg)
 		if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "@") {
 			continue
 		}
@@ -223,6 +229,7 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 		matrixShards = append(matrixShards, shard)
 	}
 	slices.Sort(matrixShards)
+	matrixShards = slices.Compact(matrixShards)
 	if !slices.Equal(matrixShards, wantWindowsShards) {
 		t.Fatalf("windows matrix shards %v, want %v so pipeline/steps runs in parallel with the other git-heavy packages", matrixShards, wantWindowsShards)
 	}
@@ -426,4 +433,142 @@ func goTestTimeout(t *testing.T, command workflowCommand) time.Duration {
 	}
 	t.Fatalf("Windows test command must pass an explicit -timeout, got %#v", command.args)
 	return 0
+}
+
+func unquoteWorkflowArg(arg string) string {
+	if len(arg) >= 2 && (arg[0] == '"' || arg[0] == '\'') && arg[len(arg)-1] == arg[0] {
+		return arg[1 : len(arg)-1]
+	}
+	return arg
+}
+
+type stepsShard struct {
+	name string
+	run  *regexp.Regexp
+	skip *regexp.Regexp
+}
+
+func (s stepsShard) selects(test string) bool {
+	return (s.run == nil || s.run.MatchString(test)) && (s.skip == nil || !s.skip.MatchString(test))
+}
+
+func TestCIWorkflow_WindowsStepsShardsRunEveryTestExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	job := ciTestJob(t)
+	var shards []stepsShard
+	for _, row := range job.Strategy.Matrix.Include {
+		if row["os"] != "windows-latest" || row["shard"] != "steps" {
+			continue
+		}
+		shards = append(shards, stepsShard{
+			name: row["name"],
+			run:  stepsShardPattern(t, row, "steps_run"),
+			skip: stepsShardPattern(t, row, "steps_skip"),
+		})
+	}
+	if len(shards) < 2 {
+		t.Fatalf("pipeline/steps runs on %d Windows matrix rows; want it split across more than one so each go test binary stays well inside -timeout", len(shards))
+	}
+
+	var stepsCommands []workflowCommand
+	for _, command := range windowsGoTestCommands(t) {
+		if matrixShardCondition(job.Steps[command.step].If) == "steps" {
+			stepsCommands = append(stepsCommands, command)
+		}
+	}
+	if len(stepsCommands) != 1 {
+		t.Fatalf("want one Windows go test command for the steps rows, got %d", len(stepsCommands))
+	}
+	command := stepsCommands[0]
+	step := job.Steps[command.step]
+	if step.Shell != "pwsh" {
+		t.Fatalf("steps shard step must run with pwsh so $env: expands, got shell %q", step.Shell)
+	}
+	for flag, wiring := range map[string]struct{ env, matrix string }{
+		"-run":  {"NM_CI_WINDOWS_STEPS_RUN", "steps_run"},
+		"-skip": {"NM_CI_WINDOWS_STEPS_SKIP", "steps_skip"},
+	} {
+		if got, want := step.Env[wiring.env], "${{ matrix."+wiring.matrix+" }}"; got != want {
+			t.Errorf("steps shard env %s = %q, want %q", wiring.env, got, want)
+		}
+		arg := flag + "=$env:" + wiring.env
+		if !slices.ContainsFunc(command.args, func(a string) bool { return unquoteWorkflowArg(a) == arg }) {
+			t.Errorf("steps shard go test must pass %q so the matrix partition reaches the test binary, got %v", arg, command.args)
+		}
+	}
+
+	names := append(declaredTestNames(t, filepath.Join("internal", "pipeline", "steps")), "Test", "Test_Probe")
+	for c := 'A'; c <= 'Z'; c++ {
+		names = append(names, "Test"+string(c)+"Probe")
+	}
+	for c := '0'; c <= '9'; c++ {
+		names = append(names, "Test"+string(c)+"Probe")
+	}
+	for _, name := range names {
+		var selectedBy []string
+		for _, shard := range shards {
+			if shard.selects(name) {
+				selectedBy = append(selectedBy, shard.name)
+			}
+		}
+		if len(selectedBy) != 1 {
+			t.Errorf("%s is selected by Windows steps shards %v; every test must run in exactly one", name, selectedBy)
+		}
+	}
+}
+
+func stepsShardPattern(t *testing.T, row map[string]string, key string) *regexp.Regexp {
+	t.Helper()
+	pattern := row[key]
+	if pattern == "" {
+		return nil
+	}
+	if strings.Contains(pattern, "/") {
+		t.Fatalf("matrix row %q %s %q contains /, which go test splits into subtest levels", row["name"], key, pattern)
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		t.Fatalf("matrix row %q %s %q: %v", row["name"], key, pattern, err)
+	}
+	return compiled
+}
+
+func declaredTestNames(t *testing.T, root string) []string {
+	t.Helper()
+	var names []string
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if ok && fn.Recv == nil && isGoTestName(fn.Name.Name) {
+				names = append(names, fn.Name.Name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("collect test names under %s: %v", root, err)
+	}
+	if len(names) == 0 {
+		t.Fatalf("found no tests under %s", root)
+	}
+	return names
+}
+
+func isGoTestName(name string) bool {
+	for _, prefix := range []string{"Test", "Fuzz", "Example"} {
+		rest, ok := strings.CutPrefix(name, prefix)
+		if ok && (rest == "" || !(rest[0] >= 'a' && rest[0] <= 'z')) {
+			return name != "TestMain"
+		}
+	}
+	return false
 }
