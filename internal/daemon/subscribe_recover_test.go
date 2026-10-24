@@ -197,16 +197,18 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	}
 	defer cancelSub()
 
-	// Cancel the run (by sending another push, which cancels active runs).
+	// Replace the run with a materially different task. An equivalent delivery
+	// reuses the active run; changed intent remains a superseding launch.
 	started2 := make(chan struct{})
 	slowStep.started = started2
 
 	var pushResult2 ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:   p.RepoDir("testrepo-sub2"),
+		Ref:    "refs/heads/main",
+		Old:    "0000000000000000000000000000000000000000",
+		New:    headSHA,
+		Intent: "replacement validation",
 	}, &pushResult2)
 	if err != nil {
 		t.Fatal(err)
@@ -854,7 +856,7 @@ func TestSkipWorktreeCleanup_CIMonitorInterrupted(t *testing.T) {
 
 	t.Run("preserves worktree holding an unpushed commit", func(t *testing.T) {
 		runID, wtPath := newInterruptedWorktree(t, headSHA)
-		gitCmd(t, wtPath, "config", "user.email", "test@test.com")
+		gitCmd(t, wtPath, "config", "user.email", "dev@example.com")
 		gitCmd(t, wtPath, "config", "user.name", "Test")
 		if err := os.WriteFile(filepath.Join(wtPath, "fix.txt"), []byte("ci fix"), 0o644); err != nil {
 			t.Fatal(err)

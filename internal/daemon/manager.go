@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,6 +51,7 @@ type RunManager struct {
 	mu           sync.Mutex
 	executors    map[string]*pipeline.Executor      // runID → executor
 	cancels      map[string]context.CancelCauseFunc // runID → cancel function with cause
+	runContexts  map[string]context.Context         // runID → context exposing requested cancellation
 	dones        map[string]chan struct{}           // runID → closed when goroutine exits
 	wg           sync.WaitGroup                     // tracks background run goroutines
 	shuttingDown atomic.Bool                        // prevents new runs during shutdown
@@ -93,6 +95,7 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 	return &RunManager{
 		executors:     make(map[string]*pipeline.Executor),
 		cancels:       make(map[string]context.CancelCauseFunc),
+		runContexts:   make(map[string]context.Context),
 		dones:         make(map[string]chan struct{}),
 		db:            database,
 		paths:         p,
@@ -470,6 +473,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
 	m.cancels[plan.run.ID] = cancel
+	m.runContexts[plan.run.ID] = runCtx
 	m.dones[plan.run.ID] = done
 	m.mu.Unlock()
 
@@ -502,6 +506,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
+			delete(m.runContexts, plan.run.ID)
 			delete(m.dones, plan.run.ID)
 			m.mu.Unlock()
 		}()
@@ -772,8 +777,8 @@ func ownedGateRepoID(p *paths.Paths, gate string) (string, error) {
 // sameGateDir reports whether two paths name the same gate directory. The
 // canonical spellings are compared first; when they differ, the two directories
 // must be the same on-disk object (os.SameFile). That follows the filesystem's
-// own case rule: a macOS home registered as /Users/Name but stored as
-// /Users/name resolves to one directory, while on a case-sensitive volume the
+// own case rule: a macOS home registered as /Users/example but stored as
+// /Users/EXAMPLE resolves to one directory, while on a case-sensitive volume the
 // same two spellings are different directories and stay refused. A path that
 // cannot be stat'ed is never the same, so the guard stays fail-closed.
 func sameGateDir(a, b string) bool {
@@ -1136,6 +1141,31 @@ func digestIntent(intent string) string {
 	return fmt.Sprintf("%x", sum)
 }
 
+type runAdmissionIdentity struct {
+	HeadSHA              string              `json:"head_sha"`
+	EffectiveConfig      *config.Config      `json:"effective_config"`
+	SkipSteps            []types.StepName    `json:"skip_steps,omitempty"`
+	Intent               string              `json:"intent,omitempty"`
+	IntentSource         string              `json:"intent_source,omitempty"`
+	LaunchNonce          string              `json:"launch_nonce,omitempty"`
+	ValidationGeneration string              `json:"validation_generation,omitempty"`
+	IntentDigest         string              `json:"intent_digest,omitempty"`
+	PRBaseBranch         string              `json:"pr_base_branch,omitempty"`
+	OmitIntent           bool                `json:"omit_intent,omitempty"`
+	VerificationPlanID   string              `json:"verification_plan_id,omitempty"`
+	ClosingIssueRefs     []string            `json:"closing_issue_refs,omitempty"`
+	PiProfile            *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+}
+
+func digestRunAdmission(identity runAdmissionIdentity) (string, error) {
+	payload, err := json.Marshal(identity)
+	if err != nil {
+		return "", fmt.Errorf("encode run admission identity: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum), nil
+}
+
 func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 	if run == nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("run is required")
@@ -1365,7 +1395,7 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 // the first point where a trusted repository Pi override can replace a global
 // auto or non-Pi selection, so profile resolution must not reject it earlier.
 func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig) error {
-	cfg, _, err := m.effectiveConfigBeforeRun(ctx, repo, headSHA, globalCfg, "Pi run profile")
+	cfg, _, _, err := m.effectiveConfigBeforeRun(ctx, repo, headSHA, globalCfg, "Pi run profile")
 	if err != nil {
 		return err
 	}
@@ -1375,17 +1405,17 @@ func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, re
 // effectiveConfigBeforeRun resolves the configuration a run at headSHA would
 // get, from the gate and a privately fetched trusted default branch, before
 // any run is created or superseded. purpose names the caller in errors.
-func (m *RunManager) effectiveConfigBeforeRun(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig, purpose string) (*config.Config, *config.RepoConfig, error) {
+func (m *RunManager) effectiveConfigBeforeRun(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig, purpose string) (*config.Config, *config.RepoConfig, string, error) {
 	gateDir := m.paths.RepoDir(repo.ID)
 	trustedSHA, err := fetchTrustedDefaultBranchSHA(ctx, gateDir, repo, purpose)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	effective, err := effectiveRepoConfigAt(ctx, gateDir, repo, trustedSHA, headSHA, purpose)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return config.MergeForRemote(globalCfg, effective, repo.UpstreamURL), effective, nil
+	return config.MergeForRemote(globalCfg, effective, repo.UpstreamURL), effective, trustedSHA, nil
 }
 
 // effectiveRepoConfigAt resolves the repository configuration a run at headSHA
@@ -1506,10 +1536,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			trackStartFailure("invalid_pi_profile")
 			return "", err
 		}
-		if err := m.validatePiProfileAgentsBeforeCancel(ctx, repo, headSHA, globalCfg); err != nil {
-			trackStartFailure("invalid_pi_profile")
-			return "", err
-		}
 	}
 
 	plan, err := verificationplan.Resolve(m.paths.RunInputsDir(), planID, repo.ID, branch, headSHA)
@@ -1530,9 +1556,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			return "", fmt.Errorf("verification plan capture already belongs to a run")
 		}
 	}
-
-	// Cancel any active run for this repo+branch.
-	m.cancelActiveRuns(repo.ID, branch)
 
 	storedIntent := intent
 	if source != db.RunIntentSourceRerun && launchNonce == "" && plan == nil {
@@ -1557,7 +1580,69 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// pr.publish_intent is enforced independently by the PR step.
 	storedOmitIntent := omitIntent || (globalCfg != nil && !globalCfg.Intent.PublishesIntentByDefault())
 
-	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, pin)
+	// Build a privacy-safe identity before superseding anything. The submitted
+	// head pins pushed configuration, while effectiveConfigBeforeRun privately
+	// fetches and pins the trusted default-branch configuration. An equivalent
+	// active delivery reuses the existing run; a changed head, intent, launch
+	// option, or effective configuration remains a genuinely new task.
+	var admissionDigest string
+	var admissionCfg *config.Config
+	var admissionRepoCfg *config.RepoConfig
+	var admissionTrustedSHA string
+	active, activeErr := m.db.GetActiveRun(repo.ID, branch)
+	if activeErr != nil {
+		return "", activeErr
+	}
+	if active != nil && globalCfgErr != nil {
+		trackStartFailure("load_global_config")
+		return "", fmt.Errorf("load global config before replacing active run: %w", globalCfgErr)
+	}
+	if globalCfgErr == nil {
+		effectiveCfg, effectiveRepoCfg, trustedSHA, preflightErr := m.effectiveConfigBeforeRun(ctx, repo, headSHA, globalCfg, "run admission")
+		if preflightErr != nil {
+			if active != nil {
+				trackStartFailure("admission_config")
+				return "", preflightErr
+			}
+		} else {
+			admissionCfg = effectiveCfg
+			admissionRepoCfg = effectiveRepoCfg
+			admissionTrustedSHA = trustedSHA
+			if pin != nil {
+				if err := effectiveCfg.ValidatePiProfileAgents(); err != nil {
+					trackStartFailure("invalid_pi_profile")
+					return "", err
+				}
+			}
+			admissionDigest, err = digestRunAdmission(runAdmissionIdentity{
+				HeadSHA: headSHA, EffectiveConfig: effectiveCfg, SkipSteps: skipSteps,
+				Intent: storedIntent, IntentSource: source, LaunchNonce: launchNonce,
+				ValidationGeneration: validationGeneration, IntentDigest: intentDigest,
+				PRBaseBranch: storedPRBaseBranch, OmitIntent: storedOmitIntent,
+				VerificationPlanID: planID, ClosingIssueRefs: closingIssues, PiProfile: pin,
+			})
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	currentActive, currentActiveErr := m.db.GetActiveRun(repo.ID, branch)
+	if currentActiveErr != nil {
+		return "", currentActiveErr
+	}
+	if retry == nil && plan == nil && m.reusableActiveRun(active, currentActive, headSHA, admissionDigest) {
+		slog.Info("reused equivalent active run", "run_id", currentActive.ID, "repo_id", repo.ID, "branch", branch)
+		telemetry.Track("run", telemetry.Fields{
+			"action": "duplicate_suppressed", "trigger": trigger, "branch_role": branchRole,
+		})
+		return currentActive.ID, nil
+	}
+
+	// A different task on the same branch supersedes its predecessor. Runs on
+	// other branches and repositories remain concurrent.
+	m.cancelActiveRuns(repo.ID, branch)
+
+	run, err := m.db.InsertRunWithAdmissionDigest(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, admissionDigest, storedPRBaseBranch, storedOmitIntent, plan, pin)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -1650,8 +1735,8 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// the resolve, a stale origin/<defaultBranch> left in the shared bare
 	// repo by a previous run could serve a trusted copy that the live default
 	// branch has already removed - silently running stale shell.
-	var trustedSHA string
-	if repo.DefaultBranch != "" {
+	trustedSHA := admissionTrustedSHA
+	if admissionCfg == nil && repo.DefaultBranch != "" {
 		fetchErr := fetchRunDefaultBranch(ctx, wtDir, repo)
 		if fetchErr != nil {
 			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
@@ -1691,7 +1776,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	effectiveRepoCfg := admissionRepoCfg
+	if effectiveRepoCfg == nil {
+		effectiveRepoCfg = config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	}
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
 	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
@@ -1700,7 +1788,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		// This is not an error: it is the secure default in action.
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
-	cfg := config.MergeForRemote(globalCfg, effectiveRepoCfg, repo.UpstreamURL)
+	cfg := admissionCfg
+	if cfg == nil {
+		cfg = config.MergeForRemote(globalCfg, effectiveRepoCfg, repo.UpstreamURL)
+	}
 	if err := cfg.Review.ValidatePathInstructionsBudget(); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("review_path_instructions_budget")
@@ -1817,6 +1908,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	m.mu.Lock()
 	m.executors[run.ID] = executor
 	m.cancels[run.ID] = cancel
+	m.runContexts[run.ID] = runCtx
 	m.dones[run.ID] = done
 	m.mu.Unlock()
 
@@ -1874,6 +1966,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			m.mu.Lock()
 			delete(m.executors, run.ID)
 			delete(m.cancels, run.ID)
+			delete(m.runContexts, run.ID)
 			delete(m.dones, run.ID)
 			m.mu.Unlock()
 		}()
@@ -1924,6 +2017,19 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}()
 
 	return run.ID, nil
+}
+
+func (m *RunManager) reusableActiveRun(observed, current *db.Run, headSHA, admissionDigest string) bool {
+	if observed == nil || current == nil || current.ID != observed.ID ||
+		current.AwaitingAgentSince != nil || current.SubmittedHeadSHA == nil ||
+		*current.SubmittedHeadSHA != headSHA || current.AdmissionDigest == nil ||
+		admissionDigest == "" || *current.AdmissionDigest != admissionDigest {
+		return false
+	}
+	m.mu.Lock()
+	runCtx, tracked := m.runContexts[current.ID]
+	m.mu.Unlock()
+	return tracked && context.Cause(runCtx) == nil
 }
 
 // evalAutoCaptureTimeout bounds one automatic collection pass. Collection is

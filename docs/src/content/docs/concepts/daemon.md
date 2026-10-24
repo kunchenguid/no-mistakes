@@ -112,11 +112,18 @@ An existing unit picks up the policy when `no-mistakes daemon start`, `restart`,
 
 ## Concurrent push handling
 
-If you push to the same branch while a run is already active, the daemon:
+If the same branch, submitted commit, effective configuration, and launch
+request arrive again while a run is active, the daemon reuses that run instead
+of spending another agent turn on equivalent work. A run waiting at an
+approval gate is not reused: another push remains an explicit way to replace
+that parked run.
+
+When the commit, intent, launch options, or effective configuration differ,
+the daemon:
 
 1. Cancels the in-progress run (reason: "cancelled: superseded by new push")
 2. Waits for it to finish
-3. Starts a new run with the latest push
+3. Starts a new run with the latest request
 
 Pushes to different branches run concurrently.
 

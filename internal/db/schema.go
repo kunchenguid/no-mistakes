@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_nonce         TEXT,
     launch_validation_generation TEXT,
     launch_intent_digest TEXT,
+    admission_digest     TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
@@ -333,6 +334,10 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN launch_nonce TEXT`,
 	`ALTER TABLE runs ADD COLUMN launch_validation_generation TEXT`,
 	`ALTER TABLE runs ADD COLUMN launch_intent_digest TEXT`,
+	// Admission identity binds the submitted head to the effective launch
+	// configuration and request shape. It is nullable for historical rows so
+	// they never become accidental reuse candidates.
+	`ALTER TABLE runs ADD COLUMN admission_digest TEXT`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_repo_branch_launch_nonce ON runs (repo_id, branch, launch_nonce) WHERE launch_nonce IS NOT NULL`,
 	// The first successful conditional update marks the sole `created`
 	// observer; all later claims are durable replays.

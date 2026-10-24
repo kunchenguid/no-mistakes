@@ -254,7 +254,7 @@ func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo,
 			return fmt.Errorf("the run's model profile now resolves to %s/%s instead of %s/%s", resolved.Model, resolved.Effort, source.PiProfile.Model, source.PiProfile.Effort)
 		}
 	}
-	cfg, currentRepoCfg, err := m.effectiveConfigBeforeRun(ctx, repo, source.HeadSHA, globalCfg, "retry configuration")
+	cfg, currentRepoCfg, _, err := m.effectiveConfigBeforeRun(ctx, repo, source.HeadSHA, globalCfg, "retry configuration")
 	if err != nil {
 		return err
 	}
