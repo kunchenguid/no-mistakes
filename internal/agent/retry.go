@@ -150,7 +150,8 @@ func cloneSessionRef(session *SessionRef) *SessionRef {
 // claudeRetryClassifier retries both transient API errors and the
 // no-structured-output case that the existing loop already handled. When the
 // CLI reported the API error it ended on, that record alone decides: the
-// message text beside it is not classifier input.
+// reported HTTP status takes precedence; without one, only the record's
+// terminal diagnostic is classified, never surrounding assistant or stderr text.
 func claudeRetryClassifier(err error) (string, bool) {
 	if errors.Is(err, errNoStructuredOutput) {
 		return "missing structured output", true
@@ -182,8 +183,19 @@ var transientNeedles = []struct {
 	{"connection refused", "connection refused"},
 	{"connection reset", "connection reset"},
 	{"i/o timeout", "i/o timeout"},
+	{"request timed out", "request timeout"},
 	{"no such host", "dns lookup failed"},
 	{"temporary failure in name resolution", "dns temporary failure"},
+	// The errno-symbol spellings agent CLIs built on Node runtimes print where
+	// Go's net stack prints the text forms above. Claude's "API Error: Can't
+	// reach the API server ... (EAI_AGAIN)" banner arrived as plain stdout
+	// with an empty stderr and no api_error_status, so the message text is the
+	// only transient-classification input an exit on it ever carries.
+	{"eai_again", "dns temporary failure"},
+	{"enotfound", "dns lookup failed"},
+	{"econnrefused", "connection refused"},
+	{"econnreset", "connection reset"},
+	{"etimedout", "i/o timeout"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
 	// A model ending its turn with prose instead of the required JSON object

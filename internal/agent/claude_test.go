@@ -782,6 +782,15 @@ func TestClaudeAgent_RetriesOnlyATerminalTransientAPIError(t *testing.T) {
 			wantAttempts: 1,
 			wantErr:      "claude exited: exit status 1: stdout: You've hit your weekly limit \u00b7 resets Jul 9 at 9pm (America/Chicago)",
 		},
+		{
+			// The 2026-09-27 incident shape: the CLI's DNS-failure banner on
+			// stdout, empty stderr, no api_error_status. Transient, so every
+			// bounded attempt runs before the failure surfaces.
+			name:         "EAI_AGAIN banner on stdout",
+			banner:       "API Error: Can't reach the API server — check your internet or DNS (EAI_AGAIN)\n",
+			wantAttempts: claudeMaxRetries + 1,
+			wantErr:      "claude exited: exit status 1: stdout: API Error: Can't reach the API server — check your internet or DNS (EAI_AGAIN)",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := ""
@@ -813,6 +822,92 @@ func TestClaudeAgent_RetriesOnlyATerminalTransientAPIError(t *testing.T) {
 				t.Errorf("error = %q, want %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestClaudeAgent_RetriesEAIAGAINThenSucceeds(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "transient-then-succeed")
+	t.Setenv("NM_CLAUDE_STDIN_COUNT_FILE", filepath.Join(t.TempDir(), "attempts"))
+	t.Setenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN", "1")
+	t.Setenv("NM_CLAUDE_STDIN_BANNER", "API Error: Can't reach the API server — check your internet or DNS (EAI_AGAIN)\n")
+	a := newClaudeStdinHelperAgent(t)
+
+	attempts := 0
+	res, err := a.Run(context.Background(), RunOpts{
+		Prompt:    "review",
+		CWD:       t.TempDir(),
+		OnAttempt: func(Attempt) { attempts++ },
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2 (one transient DNS failure, then success)", attempts)
+	}
+	if res == nil || res.Output == nil {
+		t.Errorf("result = %+v, want the helper's structured output", res)
+	}
+}
+
+func TestClaudeAgent_RetriesTerminalNetworkErrors(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	// Oracle: Claude Code 2.1.301's recorded network failures end with is_error,
+	// terminal_reason=api_error and a null api_error_status. Replaying that
+	// protocol must retry; dropping its result text used to stop at attempt 1.
+	for _, code := range []string{"EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "Request timed out"} {
+		for _, mode := range []string{"fresh", "resume", "exhausted", "permanent"} {
+			t.Run(code+"/"+mode, func(t *testing.T) {
+				message := "API Error: Can't reach the API server — check your internet or DNS (" + code + ")"
+				if code == "Request timed out" {
+					message = code
+				}
+				status := "null"
+				if mode == "permanent" {
+					status = "400"
+					message = "Invalid request quoting " + code
+				}
+				text, err := json.Marshal(message)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("NM_CLAUDE_STDIN_HELPER", "transient-then-succeed")
+				t.Setenv("NM_CLAUDE_STDIN_COUNT_FILE", filepath.Join(t.TempDir(), "attempts"))
+				t.Setenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN", "1")
+				t.Setenv("NM_CLAUDE_STDIN_BANNER", `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":`+status+`,"result":`+string(text)+"}\n")
+				wantAttempts := 2
+				wantFailure := mode == "exhausted" || mode == "permanent"
+				if mode == "exhausted" {
+					t.Setenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN", "10")
+					wantAttempts = 4 // Initial invocation plus three bounded retries.
+				} else if mode == "permanent" {
+					wantAttempts = 1
+				}
+				attempts := 0
+				opts := RunOpts{
+					Prompt:    "review",
+					CWD:       t.TempDir(),
+					OnAttempt: func(Attempt) { attempts++ },
+				}
+				if mode == "resume" {
+					opts.Session = &SessionRef{ID: "helper-session"}
+					t.Setenv("NM_CLAUDE_STDIN_EXPECT_RESUME", "helper-session")
+				}
+				res, err := newClaudeStdinHelperAgent(t).Run(context.Background(), opts)
+				if attempts != wantAttempts {
+					t.Errorf("attempts = %d, want %d", attempts, wantAttempts)
+				}
+				if wantFailure {
+					if err == nil || !strings.Contains(err.Error(), message) {
+						t.Fatalf("error = %v, want terminal diagnostic %q", err, message)
+					}
+				} else if err != nil || res == nil || string(res.Output) != `{"ok":true}` {
+					t.Fatalf("Run = %+v, %v, want recovered structured output", res, err)
+				}
+			})
+		}
 	}
 }
 
@@ -994,6 +1089,30 @@ func TestClaudeStdinHelper(t *testing.T) {
 		}
 		_, _ = io.WriteString(os.Stdout, os.Getenv("NM_CLAUDE_STDIN_BANNER"))
 		os.Exit(1)
+	case "transient-then-succeed":
+		// Validate each subprocess invocation, including retries, against the
+		// caller's requested conversation before emitting any result.
+		if session := os.Getenv("NM_CLAUDE_STDIN_EXPECT_RESUME"); session != "" && !claudeArgsContainPair(args, "--resume", session) {
+			t.Fatalf("argv %v missing --resume %s", args, session)
+		}
+		// Fails NM_CLAUDE_STDIN_TRANSIENT_REMAIN invocations (banner on stdout,
+		// exit 1), counted through NM_CLAUDE_STDIN_COUNT_FILE because every
+		// retry attempt is a fresh process, then emits a success result.
+		remain := 0
+		if v := os.Getenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN"); v != "" {
+			remain, _ = strconv.Atoi(v)
+		}
+		count := 0
+		if data, err := os.ReadFile(os.Getenv("NM_CLAUDE_STDIN_COUNT_FILE")); err == nil {
+			count, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+		if count < remain {
+			_ = os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_COUNT_FILE"), []byte(strconv.Itoa(count+1)), 0o644)
+			_, _ = io.WriteString(os.Stdout, os.Getenv("NM_CLAUDE_STDIN_BANNER"))
+			os.Exit(1)
+		}
+		emitClaudeHelperResult()
+		return
 	case "result-then-fail":
 		emitClaudeHelperResult()
 		os.Exit(1)
