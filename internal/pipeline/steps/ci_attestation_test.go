@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -490,10 +491,9 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 	}
 }
 
-// This fixture has no available GitLab host, so publication skips attestation
-// interaction. GitLab with an available host supports raw reads and restamping;
-// provider identity alone no longer causes the skip.
-func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) {
+// This fixture has no available GitLab host and the run holds a PR URL, so the
+// repair is reported unsettled instead of publishing past the attestation.
+func TestCIStep_PublishRepairWithUnavailableForgeCLIIsUnsettled(t *testing.T) {
 	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
@@ -501,15 +501,9 @@ func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) 
 	f.sctx.Run.PRURL = &gitlabPR
 	writeCIFix(f.dir)
 
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
-	if err != nil {
-		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
-	}
-	if !repair.HeadAdvanced || repair.Revalidate {
-		t.Fatalf("repair = %+v, want a published head advance without attestation", repair)
-	}
-	if strings.Contains(f.log(), "pipeline attestation") || strings.Contains(f.log(), "attestation rebind") {
-		t.Fatalf("expected no attestation interaction at all for a non-GitHub provider:\n%s", f.log())
+	_, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
+	if !errors.Is(err, errCIAttestationUnsettled) || !strings.Contains(err.Error(), "forge CLI unavailable") {
+		t.Fatalf("commitRepair error = %v, want an unsettled attestation naming the forge CLI", err)
 	}
 }
 
@@ -631,7 +625,7 @@ func TestPushStep_AttestsHeadBeforePush(t *testing.T) {
 	}
 }
 
-func TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed(t *testing.T) {
+func TestPushStep_UnavailableSCMWithPersistedPRStopsBeforePush(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -667,28 +661,79 @@ func TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed(t *testing.T
 		"FAKE_CLI_LOG="+logFile,
 	)
 
-	if _, err := (&PushStep{}).Execute(sctx); err != nil {
-		t.Fatalf("push step failed: %v", err)
+	_, err := (&PushStep{}).Execute(sctx)
+	if !errors.Is(err, errAttestationWriteFailed) || !strings.Contains(err.Error(), "forge CLI unavailable") {
+		t.Fatalf("push step error = %v, want an attestation failure naming the unavailable forge CLI", err)
 	}
-	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != newHead {
-		t.Fatalf("remote head = %s, want %s", remoteHead, newHead)
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead == newHead {
+		t.Fatal("push continued although the attestation could not be written")
 	}
 	body, err := os.ReadFile(bodyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(body) != priorAttestedBody {
-		t.Fatal("unavailable SCM host unexpectedly changed the PR attestation")
-	}
-	if got, out := runVerifyPy(t, string(body), newHead); got != "failure" || !strings.Contains(out, "does not match") {
-		t.Fatalf("stale attestation must fail closed at the pushed head, got %s\n%s", got, out)
+		t.Fatal("unavailable forge CLI unexpectedly changed the PR attestation")
 	}
 	logData, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(logData), "auth status") || strings.Contains(string(logData), "--method PATCH") {
-		t.Fatalf("expected an unavailable-host skip before any PR write:\n%s", logData)
+		t.Fatalf("expected an unavailable-host stop before any PR write:\n%s", logData)
+	}
+}
+
+func TestPushStep_WriteWithoutNewHeadInReadBackIsNotSettled(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, priorHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	priorAttestedBody := compliantPipelineBody(t, priorHead)
+	if err := os.WriteFile(filepath.Join(dir, "new-work.txt"), []byte("new work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "new work")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, newHead, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.PRURL = &prURL
+	setupGateMirror(t, sctx)
+	recordReviewApproval(t, sctx, newHead)
+
+	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
+	if err := os.WriteFile(bodyFile, []byte(priorAttestedBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	sctx.Env = append(fakeCIGH(t, "OPEN", `[]`),
+		"FAKE_CLI_PR_EDIT_DROP=1",
+		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
+		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
+		"FAKE_CLI_LOG="+logFile,
+	)
+
+	_, err := (&PushStep{}).Execute(sctx)
+	if !errors.Is(err, errAttestationWriteFailed) || !strings.Contains(err.Error(), "read back") {
+		t.Fatalf("push step error = %v, want an unsettled attestation write", err)
+	}
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead == newHead {
+		t.Fatal("push continued although the written attestation never landed")
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(logData), "--method PATCH"); got != 3 {
+		t.Fatalf("attestation write attempts = %d, want 3:\n%s", got, logData)
 	}
 }
 
