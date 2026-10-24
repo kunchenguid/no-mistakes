@@ -23,6 +23,7 @@ func TestAxiMutationCommandsEmitPageviews(t *testing.T) {
 		{"respond", []string{"axi", "respond", "--action", "approve"}, "/axi/respond", "axi-respond"},
 		{"abort", []string{"axi", "abort"}, "/axi/abort", "axi-abort"},
 		{"retry", []string{"axi", "retry", "--run", "run-1"}, "/axi/retry", "axi-retry"},
+		{"handoff", []string{"axi", "handoff"}, "/axi/handoff", "axi-handoff"},
 	}
 
 	for _, tc := range cases {

@@ -133,10 +133,10 @@ While the CI step is active, the TUI shows a dedicated CI panel instead of the g
 It shows the PR label, the latest CI activity, and a log tail.
 When a real CI auto-fix attempt starts, the panel increments `CI auto-fixes: N`.
 The panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`, once the monitor reports readiness and known mergeability is clear.
-Under [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass) the green verdict ends the run instead, so the panel's final state is the release: the run finishes as `checks_passed` and the pipeline box reports `✓ Checks passed - PR ready to merge`, with nothing left watching the PR. Readiness includes the trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) when no checks are registered; an empty forge response alone is not ready.
+Under [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass) the green verdict ends the run instead, so the panel's final state is the release: the run finishes as `checks_passed` and the pipeline box reports `✓ Checks passed - PR ready to merge`, with nothing left watching the PR. Readiness includes the trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) when no checks are registered; an empty forge response alone is not ready. To end that green monitor without cancelling the run, use [`no-mistakes axi handoff`](/no-mistakes/reference/cli/#no-mistakes-axi-handoff) from the repository's current branch.
 That text means the CI monitor is still active; it can still pause later if the configured idle timeout elapses with no base-branch movement.
 That ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged or closed.
-The ready signal is persisted, so a fresh attach shows `Checks passed` without depending on delivery of an earlier log line.
+The ready signal is persisted for fresh attaches, so a fresh attach shows `Checks passed` without depending on delivery of an earlier log line; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for readiness write-failure behavior.
 
 ### Local branch
 
@@ -226,6 +226,7 @@ So is a Test budget-cut gate that reports `test-agent-unvalidated-work`: approva
 When a run finishes, a one-line banner appears:
 
 - `✓ Pipeline passed  4.2s` (green) - the run finished successfully, even if later steps were auto-skipped
+- `✓ Green PR handed off for human review` (green) - green monitoring ended explicitly; the PR remains open
 - `✗ Review failed  1.8s` (red) - names the failing step
 - `✗ Pipeline cancelled` (red) - user aborted
 

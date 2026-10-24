@@ -43,16 +43,25 @@ type StepFactory func() []pipeline.Step
 
 var recoveredConfigFetchTimeout = 10 * time.Second
 
+// These bounds leave the caller's IPC deadline enough time to receive the
+// timeout response. The client deadline is carried on the IPC request and is
+// preferred when it is sooner.
+var handoffRequestTimeout = 25 * time.Second
+var handoffRequestSafetyMargin = time.Second
+
 var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
-	mu           sync.Mutex
-	executors    map[string]*pipeline.Executor      // runID → executor
-	cancels      map[string]context.CancelCauseFunc // runID → cancel function with cause
-	dones        map[string]chan struct{}           // runID → closed when goroutine exits
-	wg           sync.WaitGroup                     // tracks background run goroutines
-	shuttingDown atomic.Bool                        // prevents new runs during shutdown
+	mu              sync.Mutex
+	executors       map[string]*pipeline.Executor      // runID → executor
+	cancels         map[string]context.CancelCauseFunc // runID → cancel function with cause
+	dones           map[string]chan struct{}           // runID → closed when goroutine exits
+	handoffRequests map[string]*handoffRequest         // runID → pending monitor request
+	ciMonitorActive map[string]bool                    // runID → CI monitor accepts observations
+	ciWakes         map[string]chan struct{}           // runID → CI poll wake signal
+	wg              sync.WaitGroup                     // tracks background run goroutines
+	shuttingDown    atomic.Bool                        // prevents new runs during shutdown
 
 	afterRetryProof func() // test seam: runs between HandleRetry's proof and the launch
 	db              *db.DB
@@ -85,21 +94,44 @@ type RunManager struct {
 // past the cap is an ordinary error, never unbounded growth.
 const maxSubscribersPerRun = 32
 
+type handoffRequest struct {
+	result chan error
+}
+
+func handoffContext(parent context.Context) (context.Context, context.CancelFunc) {
+	now := time.Now()
+	deadline := now.Add(handoffRequestTimeout)
+	clientDeadline, ok := parent.Deadline()
+	if !ok {
+		clientDeadline, ok = ipc.RequestDeadline(parent)
+	}
+	if ok {
+		clientDeadline = clientDeadline.Add(-handoffRequestSafetyMargin)
+		if clientDeadline.Before(deadline) {
+			deadline = clientDeadline
+		}
+	}
+	return context.WithDeadline(parent, deadline)
+}
+
 // NewRunManager creates a RunManager. Pass nil for stepFactory to use default steps.
 func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *RunManager {
 	if stepFactory == nil {
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
 	return &RunManager{
-		executors:     make(map[string]*pipeline.Executor),
-		cancels:       make(map[string]context.CancelCauseFunc),
-		dones:         make(map[string]chan struct{}),
-		db:            database,
-		paths:         p,
-		steps:         stepFactory,
-		subscribers:   make(map[string][]*eventMailbox),
-		stateRevs:     make(map[string]int64),
-		completedRuns: make(map[string]bool),
+		executors:       make(map[string]*pipeline.Executor),
+		cancels:         make(map[string]context.CancelCauseFunc),
+		dones:           make(map[string]chan struct{}),
+		handoffRequests: make(map[string]*handoffRequest),
+		ciMonitorActive: make(map[string]bool),
+		ciWakes:         make(map[string]chan struct{}),
+		db:              database,
+		paths:           p,
+		steps:           stepFactory,
+		subscribers:     make(map[string][]*eventMailbox),
+		stateRevs:       make(map[string]int64),
+		completedRuns:   make(map[string]bool),
 	}
 }
 
@@ -458,6 +490,10 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor.SetCIObservationTransition(m.transitionCIObservation)
+	executor.SetCIMonitorLifecycle(m.transitionCIMonitorLifecycle)
+	executor.SetCIWake(m.ciWake)
+	executor.SetHandoffPending(m.handoffPending)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
 		go func() {
@@ -471,6 +507,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	m.executors[plan.run.ID] = executor
 	m.cancels[plan.run.ID] = cancel
 	m.dones[plan.run.ID] = done
+	m.ciWakes[plan.run.ID] = make(chan struct{}, 1)
 	m.mu.Unlock()
 
 	m.wg.Add(1)
@@ -503,6 +540,9 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
 			delete(m.dones, plan.run.ID)
+			m.resolveHandoffRequestLocked(plan.run.ID, errors.New("run ended before handoff"))
+			delete(m.ciWakes, plan.run.ID)
+			delete(m.ciMonitorActive, plan.run.ID)
 			m.mu.Unlock()
 		}()
 
@@ -1799,6 +1839,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetCIObservationTransition(m.transitionCIObservation)
+	executor.SetCIMonitorLifecycle(m.transitionCIMonitorLifecycle)
+	executor.SetCIWake(m.ciWake)
+	executor.SetHandoffPending(m.handoffPending)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
 	if retry != nil {
@@ -1818,6 +1862,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	m.executors[run.ID] = executor
 	m.cancels[run.ID] = cancel
 	m.dones[run.ID] = done
+	m.ciWakes[run.ID] = make(chan struct{}, 1)
 	m.mu.Unlock()
 
 	// Background goroutine now owns worktree cleanup.
@@ -1875,6 +1920,9 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			delete(m.executors, run.ID)
 			delete(m.cancels, run.ID)
 			delete(m.dones, run.ID)
+			m.resolveHandoffRequestLocked(run.ID, errors.New("run ended before handoff"))
+			delete(m.ciWakes, run.ID)
+			delete(m.ciMonitorActive, run.ID)
 			m.mu.Unlock()
 		}()
 
@@ -2280,6 +2328,7 @@ func (m *RunManager) Shutdown() {
 	cancels := make(map[string]context.CancelCauseFunc, len(m.cancels))
 	for id, cancel := range m.cancels {
 		cancels[id] = cancel
+		m.resolveHandoffRequestLocked(id, pipeline.ErrDaemonShutdown)
 	}
 	m.mu.Unlock()
 
@@ -2304,6 +2353,7 @@ func (m *RunManager) Shutdown() {
 func (m *RunManager) HandleCancel(runID string) error {
 	m.mu.Lock()
 	cancel, ok := m.cancels[runID]
+	m.resolveHandoffRequestLocked(runID, fmt.Errorf(types.RunCancelReasonAbortedByUser))
 	m.mu.Unlock()
 
 	if !ok {
@@ -2312,6 +2362,147 @@ func (m *RunManager) HandleCancel(runID string) error {
 
 	cancel(fmt.Errorf(types.RunCancelReasonAbortedByUser))
 	return nil
+}
+
+func (m *RunManager) transitionCIObservation(runID string, withdrawal, completes bool, reason string, persist func() error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	req := m.handoffRequests[runID]
+	if req != nil && (withdrawal || completes) {
+		delete(m.handoffRequests, runID)
+		if err := persist(); err != nil {
+			req.result <- err
+			return err
+		}
+		if completes {
+			req.result <- nil
+			return pipeline.ErrHandoff
+		}
+		if reason == "" {
+			reason = "the monitor is no longer ready"
+		}
+		req.result <- fmt.Errorf("handoff refused: %s", reason)
+		return nil
+	}
+	return persist()
+}
+
+func (m *RunManager) transitionCIMonitorLifecycle(runID string, active bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ciMonitorActive[runID] = active
+	if !active {
+		m.resolveHandoffRequestLocked(runID, errors.New("CI monitor is no longer active"))
+	}
+}
+
+func (m *RunManager) handoffPending(runID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.handoffRequests[runID] != nil
+}
+func (m *RunManager) ciWake(runID string) <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ciWakes[runID]
+}
+
+func (m *RunManager) resolveHandoffRequestLocked(runID string, err error) {
+	if req := m.handoffRequests[runID]; req != nil {
+		delete(m.handoffRequests, runID)
+		req.result <- err
+	}
+}
+
+func (m *RunManager) HandleHandoff(ctx context.Context, runID string) error {
+	requestCtx, cancel := handoffContext(ctx)
+	defer cancel()
+
+	m.mu.Lock()
+	_, ok := m.cancels[runID]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("no active CI monitor for run %s; use axi status to inspect the run", runID)
+	}
+	if !m.ciMonitorActive[runID] {
+		m.mu.Unlock()
+		return fmt.Errorf("handoff requires an actively monitoring CI step; use axi run to resolve gates, or axi abort to discard the run")
+	}
+	if m.handoffRequests[runID] != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("handoff already requested for run %s; use axi status to inspect the run", runID)
+	}
+	run, err := m.db.GetRun(runID)
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	if run == nil || run.Status != types.RunRunning || run.PRURL == nil || strings.TrimSpace(*run.PRURL) == "" {
+		m.mu.Unlock()
+		return fmt.Errorf("handoff requires an open PR with checks-passed; use axi run to wait for green CI, or axi abort to discard the run")
+	}
+	if run.PRState == nil || *run.PRState != "open" {
+		m.mu.Unlock()
+		return fmt.Errorf("handoff requires an open PR with checks-passed; use axi run to wait for green CI, or axi abort to discard the run")
+	}
+	if run.CIReadyAt == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("handoff requires an open PR with checks-passed; use axi run to wait for green CI, or axi abort to discard the run")
+	}
+	steps, err := m.db.GetStepsByRun(runID)
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	monitoring := false
+	for _, step := range steps {
+		if step.StepName == types.StepCI && step.Status == types.StepStatusRunning {
+			monitoring = true
+			break
+		}
+	}
+	if !monitoring {
+		m.mu.Unlock()
+		return fmt.Errorf("handoff requires an actively monitoring CI step; use axi run to resolve gates, or axi abort to discard the run")
+	}
+	req := &handoffRequest{result: make(chan error, 1)}
+	m.handoffRequests[runID] = req
+	if wake := m.ciWakes[runID]; wake != nil {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+	m.mu.Unlock()
+
+	select {
+	case err := <-req.result:
+		return err
+	case <-requestCtx.Done():
+		var timeoutErr error
+		if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+			timeoutErr = fmt.Errorf("handoff timed out waiting for CI monitor observation: %w", context.DeadlineExceeded)
+		} else {
+			timeoutErr = fmt.Errorf("handoff timed out because the client disconnected: %w", context.Canceled)
+		}
+		m.mu.Lock()
+		if m.handoffRequests[runID] == req {
+			delete(m.handoffRequests, runID)
+			m.mu.Unlock()
+			return timeoutErr
+		}
+		m.mu.Unlock()
+		// A monitor transition won the race with the deadline. Its result is
+		// authoritative when it has already resolved this request. A retry may
+		// have replaced it after cleanup, though; do not wait forever on the
+		// superseded request's channel in that case.
+		select {
+		case err := <-req.result:
+			return err
+		default:
+			return timeoutErr
+		}
+	}
 }
 
 // cancelActiveRuns cancels any in-progress runs for the given repo+branch
@@ -2338,6 +2529,7 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 		m.mu.Lock()
 		cancel, ok := m.cancels[run.ID]
 		done := m.dones[run.ID]
+		m.resolveHandoffRequestLocked(run.ID, fmt.Errorf(types.RunCancelReasonSuperseded))
 		m.mu.Unlock()
 		if !ok {
 			continue

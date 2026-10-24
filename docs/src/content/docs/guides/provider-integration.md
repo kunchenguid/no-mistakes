@@ -214,8 +214,9 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
   [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate) for
   author-preserving publication and its provider limits.
 - CI status polling - Azure branch policy evaluations (build validation and
-  status checks) are read via `az repos pr policy list` until the PR is
-  completed, abandoned, or the configured `ci_timeout` idle window elapses
+  status checks) are read via `az repos pr policy list` while the CI monitor is
+  active; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci)
+  for its lifecycle and handoff controls
 - Merge-conflict polling and auto-fix from the PR's `mergeStatus`
 
 **What you don't get (yet):**
@@ -284,8 +285,7 @@ origin auth status
 - PR creation and update (`origin pr create` / `origin pr edit`). The Origin CLI
   defaults new changes to draft; no-mistakes always passes `--status` explicitly
   (`open` unless `providers.origin.draft_pull_requests` is true).
-- CI check polling through `origin pr checks` until the PR is merged or closed,
-  or the configured `ci_timeout` idle window elapses.
+- CI check polling through `origin pr checks` while the monitor is active; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for its lifecycle.
 - Mergeability polling from `origin pr view --json mergeability`, and
   merge-conflict auto-fix when Origin reports `hasMergeConflicts`, conflicted
   paths, or a conflict verdict under the nested `mergeability.mergeability`.

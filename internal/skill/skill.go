@@ -271,8 +271,9 @@ Run the pipeline and decide on its findings as they come up:
      wait for the merge: tell the user the PR is ready and ask them to review
      and merge it (the PR link is in the ` + "`help`" + ` line). A generic empty forge
      check list without that declaration is not ready. no-mistakes keeps
-     monitoring the PR in the background until it is merged, closed, or its
-     configured idle timeout elapses, so a human can watch it in the TUI.
+     monitoring the PR in the background while the monitor is active; use
+     ` + "`no-mistakes axi handoff`" + ` to end green monitoring after handing
+     the open PR to human reviewers, or let the configured idle timeout elapse.
      Under the opt-in ` + "`ci.release_after_checks_pass`" + ` the run instead finishes at
      the verdict: ` + "`run.status`" + ` is ` + "`checks_passed`" + `, the run released its worktree,
      and nothing is left watching the PR.
@@ -355,9 +356,10 @@ waits for a human to bring it up to date; only when the repository opts
 into ` + "`ci.rebase_behind`" + ` does the monitor give it the same rebase, once its
 checks are green and the base has held still for one poll. A PR that is merely behind a base without that rule needs nothing, since
 the platform merges it. The one exception is when that monitor is
-no longer running - the PR was closed, the run was aborted or superseded, it
-idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
-with ` + "`no-mistakes rerun`" + `, subject to the clean-head check above. An accepted
+no longer running - the PR was closed, the run was aborted, superseded, or
+explicitly handed off, it idle-timed-out, or its auto-fix attempts were
+exhausted - in which case recover with ` + "`no-mistakes rerun`" + `, subject to the
+clean-head check above. An accepted
 rerun cancels the stale monitor and re-runs the full pipeline including a
 deterministic rebase step. Do **not** reach for
 ` + "`no-mistakes axi run`" + ` to refresh a still-active PR: with the default
@@ -365,7 +367,7 @@ monitor, after ` + "`checks-passed`" + ` it
 reattaches to the running monitor (HEAD unchanged) and returns its output
 without rebasing.
 
-On a successful outcome (` + "`checks-passed`" + ` or ` + "`passed`" + `), close the loop with the
+On a successful outcome (` + "`checks-passed`" + `, ` + "`passed`" + `, or ` + "`handed-off`" + `), close the loop with the
 user: summarize what happened during the pipeline in a concise, easily readable
 format - what was validated and what was found. If the output includes a
 ` + "`fixes`" + ` table, the pipeline fixed findings your original change missed:
@@ -416,8 +418,10 @@ A ` + "`test-agent-unvalidated-work`" + ` finding means a timed-out Test agent l
 commits or changes no Test turn validated. Approval is rejected, so ` + "`--yes`" + `
 stops at that gate without responding. Relay what the finding names and do
 not skip Test, which would publish that work. Ask the operator to choose:
-` + "`--action fix`" + ` spends another agent budget to validate the work, and
-` + "`no-mistakes axi abort`" + ` stops the run.
+` + "`--action fix`" + ` spends another agent budget to validate the work, or
+` + "`no-mistakes axi abort`" + ` stops and cancels a discarded run; its behavior is unchanged.
+
+At a green open-PR CI monitor, ` + "`no-mistakes axi handoff`" + ` ends monitoring when the PR is handed to human reviewers. It requires authoritative ` + "`checks-passed`" + ` readiness and records terminal ` + "`handed_off`" + `, without merging or closing the PR. Before green, resolve the checks or gates with ` + "`axi run`" + ` instead.
 
 ## Inspecting state
 
@@ -429,6 +433,7 @@ no-mistakes axi sync          # apply only an offered guarded synchronization
 no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi sync --adopt-published  # adopt an exactly published rebased head into its stale gate lane
 no-mistakes axi logs --step <name> --full   # one step's recorded findings, complete summary, and full log
+no-mistakes axi handoff       # end green CI monitoring for human review (handed_off, PR stays open)
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 no-mistakes axi respond --run <id> --action approve   # answer a specific run's parked gate by id (works outside its worktree)
@@ -465,7 +470,7 @@ Read the ` + "`action`" + ` column per row: decide ` + "`r1`" + ` (auto-fix) on 
 judgment - ` + "`respond --action fix --findings r1`" + ` hands it to the pipeline to
 fix - but stop and escalate ` + "`r2`" + ` (ask-user) to the user before responding. A
 final state
-instead shows ` + "`outcome: <checks-passed|passed|passed-with-override|passed-with-skips|failed|cancelled>`" + ` with no
+instead shows ` + "`outcome: <checks-passed|passed|passed-with-override|passed-with-skips|handed-off|failed|cancelled>`" + ` with no
 ` + "`findings`" + ` table. Field names and exact columns can vary by step and version,
 so read the actual ` + "`findings`" + ` header rather than assuming this layout.
 `

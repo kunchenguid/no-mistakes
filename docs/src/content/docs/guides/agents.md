@@ -150,7 +150,7 @@ Re-run `no-mistakes init` after an upgrade to refresh that skill, including over
 Older versions vendored the skill into each initialized repo's `.claude/skills` and `.agents/skills`; those copies are no longer needed, and `init` prints a notice when it finds one so you can remove it.
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is ready - either its registered checks are green or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) with no registered checks - and known mergeability is clear, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge. An empty check result without that declaration is not ready; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for the readiness rules.
-That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
+That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it, or run [`no-mistakes axi handoff`](/no-mistakes/reference/cli/#no-mistakes-axi-handoff) to end green monitoring without cancelling the run. Handoff requires an actively monitored open PR with persisted readiness and records `handed_off`; it does not merge or close the PR. The open/green check is a snapshot at the monitor evaluation.
 By default the run stays active there and keeps monitoring the PR, so the agent runs no command and must never hand-rebase.
 Successful outcomes also instruct the agent to summarize the run for the user.
 When the pipeline applied fixes, successful outcomes include a `fixes` table listing each fix so the agent can acknowledge what it missed and the user can review them.
@@ -159,7 +159,7 @@ Under [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirel
 When that monitor sees an actual conflict it rebases onto the base, resolves it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push, so no agent or user action is needed.
 On GitHub, a clean PR whose base requires branches to be up to date (`mergeStateStatus: BEHIND`) still reports `checks-passed` and waits for a human to bring it up to date; only when the repository opts into [`ci.rebase_behind`](/no-mistakes/reference/repo-config/#cirebase_behind) does the monitor give it the same rebase, once its checks are green and the base has held still for one poll.
 A PR that is merely behind a base without that rule needs nothing either, since the platform merges it.
-The one exception is when that monitor is no longer running - the PR was closed, the run was aborted or superseded, it idle-timed-out, or its auto-fix attempts were exhausted - in which case see [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the restart conditions.
+The one exception is when that monitor is no longer running - the PR was closed, the run was aborted, superseded, or explicitly handed off, it idle-timed-out, or its auto-fix attempts were exhausted - in which case see [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the restart conditions.
 A run that failed before Push only because an agent invocation failed - a provider error, a usage limit, or the agent process exiting - can instead continue from its failed step with [`no-mistakes axi retry --run <id>`](/no-mistakes/reference/cli/#no-mistakes-axi-retry); it refuses with the failed proof whenever continuing is not provably safe.
 The agent must not use `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
 
@@ -178,6 +178,7 @@ no-mistakes axi sync --adopt-published
 no-mistakes axi respond --action approve
 no-mistakes axi respond --run <id> --action approve
 no-mistakes axi logs --step review --full
+no-mistakes axi handoff
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
 no-mistakes axi retry --run <id>
