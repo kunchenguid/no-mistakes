@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.101.0](https://github.com/kunchenguid/no-mistakes/compare/v1.100.2...v1.101.0) (2026-10-24)
+
+
+### Features
+
+* **cli:** accept file and stdin input for axi respond ([#1509](https://github.com/kunchenguid/no-mistakes/issues/1509)) ([61e0a91](https://github.com/kunchenguid/no-mistakes/commit/61e0a91a537d943ca34ca2d33859aef6f9db95e6))
+
+
+### Bug Fixes
+
+* **db:** order filesystem-identity repo lookup by insertion, strengthen case-identity test ([#1479](https://github.com/kunchenguid/no-mistakes/issues/1479)) ([309ed0a](https://github.com/kunchenguid/no-mistakes/commit/309ed0a9fcd117272914ff9d561330040550673a))
+* **pipeline:** preserve user-authored findings during review merges ([#1512](https://github.com/kunchenguid/no-mistakes/issues/1512)) ([88ab445](https://github.com/kunchenguid/no-mistakes/commit/88ab445d894a37d0ab08468cd4d863cccba08737))
+
 ## [1.100.2](https://github.com/kunchenguid/no-mistakes/compare/v1.100.1...v1.100.2) (2026-10-24)
 
 
