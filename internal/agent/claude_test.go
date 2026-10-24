@@ -851,6 +851,33 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "submit-then-idle":
+		_, _ = io.WriteString(os.Stdout, claudeSubmitThenIdleStream(t, true))
+		for {
+			time.Sleep(time.Second)
+		}
+	case "late-submit-then-idle":
+		stream := claudeSubmitThenIdleStream(t, true)
+		submitted := strings.Index(stream, `"toolu_submit"`)
+		delay, err := time.ParseDuration(os.Getenv("NM_CLAUDE_SUBMIT_DELAY"))
+		if submitted < 0 || err != nil {
+			os.Exit(7)
+		}
+		submission := strings.LastIndex(stream[:submitted], "\n") + 1
+		_, _ = io.WriteString(os.Stdout, stream[:submission])
+		time.Sleep(delay)
+		_, _ = io.WriteString(os.Stdout, stream[submission:])
+		for {
+			time.Sleep(time.Second)
+		}
+	case "submit-then-result":
+		_, _ = io.WriteString(os.Stdout, claudeSubmitThenIdleStream(t, true))
+		time.Sleep(200 * time.Millisecond)
+		emitClaudeHelperResult()
+		return
+	case "submit-then-exit":
+		_, _ = io.WriteString(os.Stdout, claudeSubmitThenIdleStream(t, true))
+		os.Exit(1)
 	case "replay-then-fail":
 		if fixture := os.Getenv("NM_CLAUDE_STDIN_FIXTURE"); fixture != "" {
 			stream, err := os.ReadFile(fixture)
