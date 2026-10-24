@@ -3,6 +3,7 @@ package steps
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -127,11 +128,7 @@ func wrapPRAppendix(appendix string) string {
 func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit int) (prContent, error) {
 	before := redactPRContent(prContent{Body: parts.before}).Body
 	after := redactPRContent(prContent{Body: parts.after}).Body
-	// Before the marker escape: removing a control byte must not be able to
-	// splice a marker together after the escape has looked for one.
-	appendix = neutralizePRControls(appendix)
-	appendix = escapePRAppendixMarkers(appendix)
-	appendix = redactPRContent(prContent{Body: appendix}).Body
+	appendix = cleanPRAppendix(appendix)
 	if !parts.managed && before != "" {
 		before += "\n\n"
 	}
@@ -145,9 +142,19 @@ func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit 
 	return content, nil
 }
 
+func cleanPRAppendix(appendix string) string {
+	// Before the marker escape: removing a control byte must not be able to
+	// splice a marker together after the escape has looked for one.
+	appendix = neutralizePRControls(appendix)
+	appendix = escapePRAppendixMarkers(appendix)
+	return redactPRContent(prContent{Body: appendix}).Body
+}
+
+var errOwnedPRBudget = errors.New("PR body exceeds provider budget; refusing to drop author text, closing references or recorded evidence")
+
 func validateOwnedPRBudget(body string, bodyLimit int) error {
 	if len(body) > maxPullRequestBodyBytes || (bodyLimit > 0 && scm.PRBodyLen(body) > bodyLimit) {
-		return fmt.Errorf("PR body exceeds provider budget; refusing to drop author text, closing references or recorded evidence")
+		return errOwnedPRBudget
 	}
 	return nil
 }
@@ -173,7 +180,7 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 		// The author text around the appendix is kept verbatim, so only
 		// references it does not already close are added.
 		authorText := parts.before + "\n" + parts.after
-		content, err := composeOwnedPRContent(parts, title, appendIssuesSection(appendix, issuesSection(sctx, authorText)), bodyLimit)
+		content, err := composeOwnedPRContentWithArchive(sctx, parts, title, appendIssuesSection(appendix, issuesSection(sctx, authorText)), bodyLimit)
 		if err != nil {
 			return err
 		}
