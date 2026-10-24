@@ -1,10 +1,11 @@
 // Package evidence publishes pipeline test-evidence artifacts to a dedicated
-// orphan branch in the same repository.
+// orphan history in the same repository, under refs/no-mistakes/evidence/<name>.
 //
 // Evidence used to be committed into the pushed branch, so every merged PR
 // carried its screenshots and logs into the default branch's history forever.
 // An orphan branch keeps the artifacts in the same repository - same access
-// control, binaries welcome, no external host - while sharing no history with
+// control, binaries welcome, no external host - outside the deployable branch
+// namespace, while sharing no history with
 // the code branches, so nothing lands in the PR branch or the default branch.
 //
 // PR bodies link artifacts by the evidence COMMIT sha rather than the branch

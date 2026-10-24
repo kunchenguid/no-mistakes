@@ -177,7 +177,7 @@ func TestPRStep_StoreInRepoKeepsCommitLinkAndAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
+	tip := gitCmd(t, remote, "rev-parse", "refs/no-mistakes/evidence/no-mistakes/evidence")
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.png"
 	if !strings.Contains(content.Body, "![Checkout screenshot]("+testAttachmentURL+")") {
 		t.Fatalf("expected attachment embed, got:\n%s", content.Body)
@@ -391,7 +391,7 @@ func TestPRStep_OversizedImagePreservesCommittedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
+	tip := gitCmd(t, remote, "rev-parse", "refs/no-mistakes/evidence/no-mistakes/evidence")
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/oversize.png"
 	if !strings.Contains(content.Body, wantLink) {
 		t.Fatalf("expected committed evidence path to be preserved, got:\n%s", content.Body)
@@ -421,7 +421,7 @@ func TestPRStep_UnsupportedImagePreservesCommittedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
+	tip := gitCmd(t, remote, "rev-parse", "refs/no-mistakes/evidence/no-mistakes/evidence")
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.bmp"
 	if !strings.Contains(content.Body, wantLink) {
 		t.Fatalf("expected committed evidence path to be preserved, got:\n%s", content.Body)

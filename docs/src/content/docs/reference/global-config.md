@@ -1374,7 +1374,7 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On 
 | `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence artifacts to the repository's orphan evidence branch |
 | `test.evidence.attach_media`  | `bool`   | `true`                   | Upload image and video evidence to GitHub user-attachments when the PR is rendered |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
-| `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
+| `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence history under `refs/no-mistakes/evidence/`      |
 | `test.evidence.commit_message` | `string` | `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})` | Subject template for evidence-branch commits |
 | `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute directory where run evidence is written on local disk             |
 | `test.evidence.retention`     | `string` | `336h` (14 days)         | How long a run's evidence survives; `unlimited`/`none`/`off`/`never` or a non-positive duration disables the bound |
@@ -1387,14 +1387,16 @@ The testing section embeds the returned image markdown or bare video URL so remo
 When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
 Published text files get the same home-directory redaction as the PR title and body, so a path under the operator's home is committed with that part rewritten to `~`. Binary and visual artifacts are published as written, and the local evidence files are never changed.
 When both `attach_media` and `store_in_repo` apply, the testing section carries the user-attachments embed in addition to the commit-pinned git link.
-The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
+The evidence history is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Publication uses `refs/no-mistakes/evidence/<branch>` (by default, `refs/no-mistakes/evidence/no-mistakes/evidence`), outside `refs/heads/*`, so integrations watching branch pushes do not deploy evidence. The existing `branch` setting names the history within that namespace; it still takes a branch-style name, not a full ref. Links use the evidence commit rather than the ref, so they keep resolving after later runs.
+
+An evidence branch an earlier version published under `refs/heads/<branch>` is neither read, updated, nor deleted; publication starts a fresh history under the new namespace, and links into the old branch keep resolving because they name its commits. Normal branch clones do not fetch this namespace; fetch it explicitly when inspecting evidence locally.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 `branch` must be a valid Git branch name; an invalid value fails the config with the offending key and value.
 `commit_message` supports literal text and two placeholders: `{{.Branch}}` (the code branch name) and `{{.RunID}}` (the run ID). It follows the same template restrictions, size limits, and unsafe-character rules as [`commit.fix_message`](#commitfix_message); an invalid template fails configuration loading, and a subject that fails validation at publish time leaves the evidence unpublished.
 The publisher never force-pushes. It appends to the fetched evidence-branch tip with a fast-forward push, retries one lost race, and refuses to use the run branch, default branch, or an existing branch whose tip lacks the `.no-mistakes-evidence` marker.
 Publication is also refused when the remote cannot be read or pushed, an artifact exceeds 64 MiB, a run exceeds 500 files or 256 MiB, or another writer wins the retry. The PR body then keeps its local rendering instead of adding links that would not resolve.
 Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
-Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
+Enabling this pushes a ref under `refs/no-mistakes/evidence/` to your remote; it is not a branch, so CI workflows and deploy integrations that trigger on branch pushes do not build it.
 
 #### Local storage and cleanup
 
