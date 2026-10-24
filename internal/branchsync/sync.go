@@ -172,6 +172,7 @@ type Service struct {
 	fetchRemote func(context.Context, string, string, string, string) error
 
 	beforeApply                       func()
+	beforeAdoptPushedHead             func()
 	beforeGateReset                   func()
 	beforeRecoverTerminalHeadPreserve func()
 	beforeRecoverWorktreeMove         func()
@@ -400,7 +401,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 		return state
 	}
 
-	s.classifyRelation(ctx, &state, bound, run.BaseSHA, true)
+	s.classifyRelation(ctx, &state, run, bound, true)
 	return state
 }
 
@@ -1752,6 +1753,143 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 	return adopted
 }
 
+// AdoptPushedHead moves a clean branch that is still at a terminal run's
+// submitted head onto that run's published head. Ordinary sync never calls it.
+// The live remote must equal the persisted pushed head, that commit must be
+// present locally, and both are read again immediately before the anchor and
+// the move. The pre-move head is anchored at refs/no-mistakes/sync-anchor/<run>.
+func (s *Service) AdoptPushedHead(ctx context.Context) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
+	state, run, ok := s.inspect(ctx)
+	if run == nil {
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "adopting the published head requires the checked-out branch's published run; no files or refs were changed")
+	}
+	if !ok || !pushedHeadAdoptionState(state) {
+		if !ok || strings.HasPrefix(state.Safety, "blocked_") {
+			return state
+		}
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "ordinary synchronization applies to this branch; no files or refs were changed")
+	}
+	pushed := ptr(run.LastPushedSHA)
+	submitted := ptr(run.SubmittedHeadSHA)
+	if !publishedSubmittedHeadAdoptionRun(run) {
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "adopting the published head requires a terminal published run whose branch is still at the submitted head; no files or refs were changed")
+	}
+	if state.Local.Head != submitted {
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_submitted", "the local head is not the run's submitted head; no files or refs were changed")
+	}
+	if !state.Local.Clean {
+		return blockedPlan(state, StateDirty, "blocked_adopt_pushed_head_dirty", "the invoking worktree is not completely clean; no files or refs were changed")
+	}
+	wd := s.workDir()
+	if !objectExists(ctx, wd, pushed) {
+		return blockedPlan(state, StateDiverged, "blocked_adopt_pushed_head_missing", "the pushed commit is not present locally; no files or refs were changed")
+	}
+	if state.Local.Head == pushed || isAncestor(ctx, wd, state.Local.Head, pushed) || isAncestor(ctx, wd, pushed, state.Local.Head) || equivalentDivergence(ctx, wd, state.Local.Head, pushed, run.BaseSHA) {
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "ordinary synchronization applies to this branch; no files or refs were changed")
+	}
+
+	repo, err := s.DB.GetRepo(s.Repo.ID)
+	if err != nil || repo == nil {
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "the configured push target is unavailable; no files or refs were changed")
+	}
+	pushURL := s.resolvedPushURL(ctx, repo)
+	ref := ptr(run.PushRef)
+	fingerprint := TargetFingerprint(repo.PushURL())
+	generation := value(run.PushGeneration)
+	live, liveErr := s.readLiveRemote(ctx, pushURL, ref)
+	if liveErr != nil {
+		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_offline", "could not read the live remote head; no files or refs were changed")
+	}
+	if live != pushed {
+		return blockedPlan(state, StateRemoteRewritten, "blocked_adopt_pushed_head_remote_mismatch", "the live remote head does not equal the persisted pushed head; no files or refs were changed")
+	}
+	if s.beforeAdoptPushedHead != nil {
+		s.beforeAdoptPushedHead()
+	}
+	if !s.pushedHeadAdoptionStillBound(ctx, run.ID, submitted, pushed, ref, fingerprint, generation) {
+		return blockedPlan(state, StateDiverged, "blocked_adopt_pushed_head_changed", "the branch, worktree, or live remote changed before the move; no files or refs were changed")
+	}
+
+	anchorRef := syncAnchorRef(run.ID)
+	preMove := submitted
+	if _, err := git.Run(ctx, wd, "update-ref", anchorRef, preMove); err != nil {
+		return blockedPlan(state, StateAmbiguousContext, "blocked_preserve_failed", "the pre-move local head could not be anchored; no files or refs were changed")
+	}
+	if anchored, err := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preMove {
+		return blockedPlan(state, StateAmbiguousContext, "blocked_preserve_failed", "the pre-move local head could not be verified after anchoring; no files or worktree refs were changed")
+	}
+	_, applyErr := git.Run(ctx, wd, "reset", "--hard", pushed)
+	finalHead, _ := git.HeadSHA(ctx, wd)
+	finalClean, finalReason := worktreeClean(ctx, wd)
+	state.Local.Head = finalHead
+	state.Local.Clean = finalClean
+	state.Local.Reason = finalReason
+	state.Changed = finalHead == pushed && finalHead != preMove
+	state.Remote.ObservedHead = live
+	state.Remote.Freshness = "live"
+	if applyErr != nil || finalHead != pushed {
+		state.State = StateAmbiguousContext
+		state.Safety = "blocked_adopt_pushed_head_apply_failed"
+		state.Error = fmt.Sprintf("adopting the published head failed; final HEAD is %s and the pre-move head is anchored at %s", finalHead, anchorRef)
+		state.NextAction = nil
+		return state
+	}
+	if !finalClean {
+		state.State = StateDirty
+		state.Relation = RelationEqual
+		state.Safety = "blocked_post_apply_" + finalReason
+		state.Error = "HEAD reached the published head, but the worktree is not clean; no recovery was attempted"
+		state.NextAction = nil
+		return state
+	}
+	state.State = StateSynchronized
+	state.Relation = RelationEqual
+	state.Safety = "already_synchronized"
+	state.NextAction = nil
+	state.Error = ""
+	return state
+}
+
+func (s *Service) readLiveRemote(ctx context.Context, pushURL, ref string) (string, error) {
+	liveCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer cancel()
+	return s.runLsRemote(liveCtx, s.workDir(), pushURL, ref)
+}
+
+func pushedHeadAdoptionState(state State) bool {
+	return state.Safety == "blocked_diverged" || state.State == StateBehind
+}
+
+// pushedHeadAdoptionStillBound reads the live remote first and then repeats
+// every local check, so an edit, a branch move, or a PR or target change made
+// while the read waited refuses the move.
+func (s *Service) pushedHeadAdoptionStillBound(ctx context.Context, runID, submitted, pushed, ref, fingerprint string, generation int64) bool {
+	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
+	if repoErr != nil || freshRepo == nil {
+		return false
+	}
+	live, liveErr := s.readLiveRemote(ctx, s.resolvedPushURL(ctx, freshRepo), ref)
+	if liveErr != nil || live != pushed {
+		return false
+	}
+	freshRun, err := s.DB.GetRun(runID)
+	if err != nil || freshRun == nil || freshRun.PushActive || freshRun.CustodyReturnedAt != nil ||
+		!terminalRunStatus(freshRun.Status) || ptr(freshRun.LastPushedSHA) != pushed || ptr(freshRun.SubmittedHeadSHA) != submitted ||
+		value(freshRun.PushGeneration) != generation || ptr(freshRun.PushRef) != ref ||
+		ptr(freshRun.PushTargetFingerprint) != fingerprint || TargetFingerprint(freshRepo.PushURL()) != fingerprint {
+		return false
+	}
+	recheck, recheckRun, ok := s.inspect(ctx)
+	if !ok || recheckRun == nil || recheckRun.ID != runID || !pushedHeadAdoptionState(recheck) || !recheck.Local.Clean || recheck.Local.Head != submitted {
+		return false
+	}
+	wd := s.workDir()
+	return objectExists(ctx, wd, pushed) && !isAncestor(ctx, wd, submitted, pushed) && !isAncestor(ctx, wd, pushed, submitted) && !equivalentDivergence(ctx, wd, submitted, pushed, freshRun.BaseSHA)
+}
+
 // resolvedPushURL answers with the same authoritative push target the rest of
 // this service verifies against: Repo.PushURL(), the configured fork or the
 // registered upstream. Adoption's whole safety argument is that the head it
@@ -1960,11 +2098,12 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		return state, run, false
 	}
 
-	s.classifyRelation(ctx, &state, ptr(run.LastPushedSHA), run.BaseSHA, false)
+	s.classifyRelation(ctx, &state, run, ptr(run.LastPushedSHA), false)
 	return state, run, true
 }
 
-func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, base string, live bool) {
+func (s *Service) classifyRelation(ctx context.Context, state *State, run *db.Run, pushed string, live bool) {
+	base := run.BaseSHA
 	if state.Local.Head == pushed {
 		state.State = StateSynchronized
 		state.Relation = RelationEqual
@@ -1999,7 +2138,7 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 			state.State = StateDiverged
 			state.Relation = RelationDiverged
 			state.Safety = "blocked_diverged"
-			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git checkout --detach " + pushed}
+			state.NextAction = blockedDivergenceNextAction(state, run, pushed)
 			state.Error = "local and pipeline-pushed histories have diverged; no files or refs were changed"
 			return
 		}
@@ -2024,6 +2163,33 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 
 func syncAnchorRef(runID string) string {
 	return "refs/no-mistakes/sync-anchor/" + runID
+}
+
+const adoptPushedHeadCommand = "no-mistakes axi sync --adopt-pushed-head"
+
+// blockedDivergenceNextAction offers the explicit published-head adoption when
+// the clean branch is still the terminal run's submitted head. Every other
+// divergence keeps the detached checkout, which moves no branch ref.
+func blockedDivergenceNextAction(state *State, run *db.Run, pushed string) *NextAction {
+	if state != nil && publishedSubmittedHeadAdoption(*state, run) {
+		return &NextAction{Code: "adopt_pushed_head", Command: adoptPushedHeadCommand}
+	}
+	return &NextAction{Code: "inspect_and_reconcile_manually", Command: "git checkout --detach " + pushed}
+}
+
+func publishedSubmittedHeadAdoptionRun(run *db.Run) bool {
+	return run != nil && ptr(run.LastPushedSHA) != "" && ptr(run.SubmittedHeadSHA) != "" &&
+		run.PushRef != nil && run.PushGeneration != nil && terminalRunStatus(run.Status) && run.CustodyReturnedAt == nil
+}
+
+func publishedSubmittedHeadAdoption(state State, run *db.Run) bool {
+	return publishedSubmittedHeadAdoptionRun(run) &&
+		state.Local.Clean &&
+		state.Pipeline.SubmittedHead != "" &&
+		state.Local.Head == state.Pipeline.SubmittedHead &&
+		state.Pipeline.PushedHead != "" &&
+		state.Local.Head != state.Pipeline.PushedHead &&
+		types.RunStatus(state.Pipeline.Status).Terminal()
 }
 
 func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) bool {

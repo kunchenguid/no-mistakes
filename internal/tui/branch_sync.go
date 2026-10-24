@@ -49,6 +49,8 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 			} else if state.NextAction != nil && state.NextAction.Code == "sync" {
 				message = "Local branch diverged, but the pipeline head may contain equivalent work. Refresh to verify before syncing."
 				footer = "u sync branch"
+			} else if state.NextAction != nil && state.NextAction.Code == "adopt_pushed_head" {
+				message = "Local branch is still the submitted head. Ordinary sync will not move it. Adopt the published head with `" + state.NextAction.Command + "`."
 			} else {
 				message = "Local branch and pipeline-pushed head have diverged. No automatic reconciliation is allowed."
 			}

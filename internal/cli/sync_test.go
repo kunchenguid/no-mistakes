@@ -1557,14 +1557,22 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"sync", "--check", "--recover"},
 		{"sync", "--check", "--adopt-published"},
 		{"sync", "--recover", "--adopt-published"},
+		{"sync", "--check", "--adopt-pushed-head"},
+		{"sync", "--recover", "--adopt-pushed-head"},
+		{"sync", "--adopt-published", "--adopt-pushed-head"},
 		{"sync", "--keep-local"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--recover"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--yes"},
+		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--adopt-pushed-head"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--check", "--adopt-published"},
 		{"axi", "sync", "--recover", "--adopt-published"},
+		{"axi", "sync", "--check", "--adopt-pushed-head"},
+		{"axi", "sync", "--recover", "--adopt-pushed-head"},
+		{"axi", "sync", "--adopt-published", "--adopt-pushed-head"},
 		{"axi", "sync", "--keep-local"},
 		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
+		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--adopt-pushed-head"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError
@@ -1771,4 +1779,15 @@ func asExitError(err error, target **exitError) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+func TestPushedHeadAdoptedRequiresAFinalCleanAdoptedState(t *testing.T) {
+	clean := branchsync.State{Changed: true, State: branchsync.StateSynchronized, Safety: "already_synchronized", Local: branchsync.LocalState{Clean: true}}
+	if !pushedHeadAdopted(clean) {
+		t.Fatalf("clean adopted state refused: %#v", clean)
+	}
+	dirty := branchsync.State{Changed: true, State: branchsync.StateDirty, Safety: "blocked_post_apply_dirty"}
+	if pushedHeadAdopted(dirty) {
+		t.Fatalf("blocked post-apply state with Changed accepted: %#v", dirty)
+	}
 }
