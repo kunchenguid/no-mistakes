@@ -395,6 +395,29 @@ func TestWriteGateShape(t *testing.T) {
 	}
 }
 
+// A finding the review round only carried must not look like one its reviewer
+// just submitted: the row names the round it came from and why it stayed.
+func TestWriteGateShapeMarksCarriedFindings(t *testing.T) {
+	gate := stepView{
+		Name:   "review",
+		Status: "fix_review",
+		FindingsJSON: findingsJSON(t, []types.Finding{
+			{ID: "review-1", Severity: "warning", File: "main.go", Action: types.ActionAskUser, Description: "leaks fd", CarriedFromRound: 1, CarriedReason: "file not in reviewed_paths"},
+			{ID: "review-2", Severity: "warning", File: "util.go", Action: types.ActionAskUser, Description: "new defect"},
+		}, "2 issues"),
+	}
+	out := axiDoc(gateFields(gate)...)
+	for _, want := range []string{
+		"  findings[2]{id,severity,file,action,description,carried}:\n",
+		`    review-1,warning,main.go,ask-user,leaks fd,"carried from round 1, not cleared: file not in reviewed_paths"` + "\n",
+		"    review-2,warning,util.go,ask-user,new defect,\"\"\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("gate missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderDriveResult_ProtectedPathGateHelp(t *testing.T) {
 	refusal := pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "package.lock", Rule: "*.lock"})
 	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {

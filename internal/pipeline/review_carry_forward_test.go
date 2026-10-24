@@ -581,6 +581,93 @@ func TestExecutor_ReviewCarryForward_PositiveCoverageClearsFinding(t *testing.T)
 	}
 }
 
+// TestExecutor_ReviewCarryForward_StoredRoundMarksWhatItCarried is the shape a
+// stored round must not hide: the rereview submitted one new finding in the
+// selected finding's file, so the rule keeps the selected one, and the round
+// record has to say that the reviewer did not submit it, which round did, and
+// why this round did not clear it.
+func TestExecutor_ReviewCarryForward_StoredRoundMarksWhatItCarried(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			round++
+			if round == 1 {
+				return &StepOutcome{
+					NeedsApproval:   true,
+					Findings:        reviewCarryTwoFindings,
+					ReviewedPaths:   []string{"service.go", "cache.go"},
+					ReviewablePaths: []string{"service.go", "cache.go"},
+				}, nil
+			}
+			return &StepOutcome{
+				NeedsApproval:   true,
+				Findings:        `{"findings":[{"id":"review-1","severity":"warning","file":"service.go","line":30,"description":"fix leaks the handle","action":"ask-user"}],"summary":"1 finding"}`,
+				ReviewedPaths:   []string{"service.go", "cache.go"},
+				ReviewablePaths: []string{"service.go", "cache.go"},
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := respondFixPartial(t, exec, types.StepReview, "review-1"); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds, err := database.GetRoundsByStep(steps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 2 || rounds[1].FindingsJSON == nil {
+		t.Fatalf("want a stored second round with findings, got %d rounds", len(rounds))
+	}
+	parsed, err := types.ParseFindingsJSON(*rounds[1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carried := map[string]types.Finding{}
+	var submitted []types.Finding
+	for _, item := range parsed.Items {
+		if item.CarriedFromRound > 0 {
+			carried[item.Description] = item
+		} else {
+			submitted = append(submitted, item)
+		}
+	}
+	for description, wantReason := range map[string]string{
+		"nil deref on the error path": carryReasonSameFileNewFinding,
+		"unbounded cache growth":      carryReasonNotSelected,
+	} {
+		item, ok := carried[description]
+		if !ok {
+			t.Errorf("round-1 finding %q is not marked as carried: %s", description, *rounds[1].FindingsJSON)
+			continue
+		}
+		if item.CarriedFromRound != 1 || item.CarriedReason != wantReason {
+			t.Errorf("%q = carried from round %d %q, want round 1 and %q", description, item.CarriedFromRound, item.CarriedReason, wantReason)
+		}
+	}
+	if len(submitted) != 1 || submitted[0].Description != "fix leaks the handle" {
+		t.Errorf("submitted = %+v, want exactly the finding the rereview reported", submitted)
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	waitExecutorDone(t, done)
+}
+
 // TestExecutor_ReviewCarryForward_AnOpenQuestionDoesNotBlockVerification pins
 // the boundary between the two mechanisms. A review question is not a report
 // about the code, so it must not take part in verification: a question's file
@@ -883,17 +970,21 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 		reviewed    []string
 		pending     []string
 		wantCleared bool
+		// wantReason is what the carried finding records: the same rule must
+		// both keep the finding and explain why.
+		wantReason string
 	}{
-		{name: "no coverage record clears nothing", thisRound: "", reviewed: nil, pending: []string{"review-1"}},
-		{name: "empty coverage list clears nothing", thisRound: "", reviewed: []string{}, pending: []string{"review-1"}},
-		{name: "coverage of another file clears nothing", thisRound: "", reviewed: []string{"cache.go"}, pending: []string{"review-1"}},
-		{name: "out-of-scope coverage clears nothing", thisRound: "", reviewed: []string{"unrelated.go"}, pending: []string{"review-1"}},
-		{name: "mixed in-scope and out-of-scope coverage clears nothing", thisRound: "", reviewed: []string{"service.go", "unrelated.go"}, pending: []string{"review-1"}},
-		{name: "reported defect stays outstanding", thisRound: reported, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
-		{name: "unanchored current finding prevents clearing", thisRound: `{"findings":[{"id":"review-9","severity":"info","description":"unanchored observation","action":"no-op"}],"summary":"1 finding"}`, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "no coverage record clears nothing", thisRound: "", reviewed: nil, pending: []string{"review-1"}, wantReason: carryReasonNoCoverage},
+		{name: "empty coverage list clears nothing", thisRound: "", reviewed: []string{}, pending: []string{"review-1"}, wantReason: carryReasonNoCoverage},
+		{name: "coverage of another file clears nothing", thisRound: "", reviewed: []string{"cache.go"}, pending: []string{"review-1"}, wantReason: carryReasonFileNotReviewed},
+		{name: "out-of-scope coverage clears nothing", thisRound: "", reviewed: []string{"unrelated.go"}, pending: []string{"review-1"}, wantReason: carryReasonInvalidCoverage},
+		{name: "mixed in-scope and out-of-scope coverage clears nothing", thisRound: "", reviewed: []string{"service.go", "unrelated.go"}, pending: []string{"review-1"}, wantReason: carryReasonInvalidCoverage},
+		{name: "reported defect stays outstanding", thisRound: reported, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantReason: carryReasonRestated},
+		{name: "unanchored current finding prevents clearing", thisRound: `{"findings":[{"id":"review-9","severity":"info","description":"unanchored observation","action":"no-op"}],"summary":"1 finding"}`, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantReason: carryReasonUnanchoredFinding},
 		{name: "finding covered and no longer reported clears", thisRound: "", reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantCleared: true},
-		{name: "an unwatched finding keeps its neighbour pending", thisRound: "", reviewed: []string{"cache.go"}, pending: []string{"review-1"}},
-		{name: "line-shifted reword in the same file is ambiguous, not resolution", thisRound: lineShiftedReword, reviewed: []string{"service.go"}, pending: []string{"review-1"}},
+		{name: "an unwatched finding keeps its neighbour pending", thisRound: "", reviewed: []string{"cache.go"}, pending: []string{"review-1"}, wantReason: carryReasonFileNotReviewed},
+		{name: "line-shifted reword in the same file is ambiguous, not resolution", thisRound: lineShiftedReword, reviewed: []string{"service.go"}, pending: []string{"review-1"}, wantReason: carryReasonSameFileNewFinding},
+		{name: "an unselected finding is never verified", thisRound: "", reviewed: []string{"service.go", "cache.go"}, pending: nil, wantReason: carryReasonNotSelected},
 	}
 
 	for _, tc := range cases {
@@ -912,7 +1003,54 @@ func TestResolveVerifiedFindingsJSON(t *testing.T) {
 			if cleared != tc.wantCleared {
 				t.Fatalf("review-1 cleared = %v, want %v (result: %s)", cleared, tc.wantCleared, got)
 			}
+			reasons := carriedFindingReasons(reviewCarryTwoFindings, tc.pending, tc.reviewed, []string{"service.go", "cache.go"}, tc.thisRound, false)
+			if reason := reasons["review-1"]; reason != tc.wantReason {
+				t.Fatalf("review-1 carry reason = %q, want %q", reason, tc.wantReason)
+			}
 		})
+	}
+}
+
+// TestMarkCarriedFindingsJSON pins what a stored round says about each
+// finding it holds: one its reviewer reported carries no provenance, and one
+// the round only kept names the last round that reported it and why it stayed.
+func TestMarkCarriedFindingsJSON(t *testing.T) {
+	merged := `{"findings":[` +
+		`{"id":"review-1","severity":"error","file":"service.go","line":10,"description":"nil deref on the error path","action":"ask-user"},` +
+		`{"id":"review-2","severity":"warning","file":"cache.go","line":42,"description":"unbounded cache growth","action":"ask-user","carried_from_round":1,"carried_reason":"file not in reviewed_paths"},` +
+		`{"id":"review-3","severity":"warning","file":"service.go","line":30,"description":"new defect","action":"ask-user"}],"summary":"3 findings"}`
+	thisRound := `{"findings":[{"id":"review-1","severity":"warning","file":"service.go","line":30,"description":"new defect","action":"ask-user"}],"summary":"1 finding"}`
+	reasons := map[string]string{
+		"review-1": carryReasonSameFileNewFinding,
+		"review-2": carryReasonNotSelected,
+	}
+
+	parsed, err := types.ParseFindingsJSON(markCarriedFindingsJSON(merged, thisRound, reasons, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]types.Finding{}
+	for _, item := range parsed.Items {
+		got[item.ID] = item
+	}
+	if item := got["review-1"]; item.CarriedFromRound != 2 || item.CarriedReason != carryReasonSameFileNewFinding {
+		t.Errorf("review-1 = round %d %q, want carried from round 2 because of the new finding in its file", item.CarriedFromRound, item.CarriedReason)
+	}
+	if item := got["review-2"]; item.CarriedFromRound != 1 || item.CarriedReason != carryReasonNotSelected {
+		t.Errorf("review-2 = round %d %q, want its original round 1 and this round's reason", item.CarriedFromRound, item.CarriedReason)
+	}
+	if item := got["review-3"]; item.CarriedFromRound != 0 || item.CarriedReason != "" {
+		t.Errorf("review-3 was reported this round but carries provenance: round %d %q", item.CarriedFromRound, item.CarriedReason)
+	}
+}
+
+// TestCarriedFindingReasonsAnswerRound pins the answer-round wording: an
+// answer round verifies nothing by coverage, so what keeps an unselected
+// finding is that its turn did not withdraw it.
+func TestCarriedFindingReasonsAnswerRound(t *testing.T) {
+	reasons := carriedFindingReasons(reviewCarryTwoFindings, nil, []string{"service.go", "cache.go"}, []string{"service.go", "cache.go"}, "", true)
+	if reasons["review-1"] != carryReasonNotWithdrawn || reasons["review-2"] != carryReasonNotWithdrawn {
+		t.Fatalf("answer-round reasons = %v, want %q for both", reasons, carryReasonNotWithdrawn)
 	}
 }
 
@@ -1741,5 +1879,18 @@ func TestExecutor_ReviewCarryForward_LatestRiskAssessmentReplacesTheEarlierOne(t
 	}
 	if parsed.RiskLevel != "low" || parsed.RiskRationale != "the nil deref and cache growth are fixed" {
 		t.Errorf("risk = %q / %q, want the assessment of the round that ran after the fix", parsed.RiskLevel, parsed.RiskRationale)
+	}
+}
+
+// A step's own output can never claim carry provenance: only the pipeline
+// knows which round last reported a finding.
+func TestNormalizeFindingsJSONDiscardsCarryProvenance(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"warning","file":"main.go","description":"leaks fd","action":"ask-user","carried_from_round":3,"carried_reason":"forged"}],"summary":"1 finding"}`
+	parsed, err := types.ParseFindingsJSON(normalizeFindingsJSON(raw, "review"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Items[0]; got.CarriedFromRound != 0 || got.CarriedReason != "" {
+		t.Fatalf("normalized step output kept carry provenance: round %d %q", got.CarriedFromRound, got.CarriedReason)
 	}
 }

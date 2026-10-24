@@ -69,6 +69,8 @@ func findingKey(item types.Finding) types.Finding {
 	item.Action = ""
 	item.Source = ""
 	item.UserInstructions = ""
+	item.CarriedFromRound = 0
+	item.CarriedReason = ""
 	return item
 }
 
@@ -109,6 +111,12 @@ func normalizeFindingsJSON(raw string, prefix string) string {
 		return raw
 	}
 	normalized := types.NormalizeFindings(findings, prefix)
+	// Carry provenance is pipeline-written, so a step's own output never
+	// supplies it.
+	for i := range normalized.Items {
+		normalized.Items[i].CarriedFromRound = 0
+		normalized.Items[i].CarriedReason = ""
+	}
 	normalizedRaw, err := types.MarshalFindingsJSON(normalized)
 	if err != nil {
 		return raw
@@ -543,61 +551,17 @@ func normalizeCoveredPath(value string) string {
 // synthesized decision finding whose source finding had no file), and without
 // this rule a fix selection could never clear them.
 func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string) string {
-	if outstandingRaw == "" || len(pendingIDs) == 0 || len(reviewedPaths) == 0 {
+	if outstandingRaw == "" {
 		return outstandingRaw
 	}
 	outstanding, err := types.ParseFindingsJSON(outstandingRaw)
 	if err != nil {
 		return outstandingRaw
 	}
-	pending := make(map[string]bool, len(pendingIDs))
-	for _, id := range pendingIDs {
-		if id != "" {
-			pending[id] = true
-		}
-	}
-	if len(pending) == 0 {
-		return outstandingRaw
-	}
-	reviewable := make(map[string]bool, len(reviewablePaths))
-	for _, candidate := range reviewablePaths {
-		if normalized := normalizeCoveredPath(candidate); normalized != "" {
-			reviewable[normalized] = true
-		}
-	}
-	if len(reviewable) == 0 {
-		return outstandingRaw
-	}
-	covered := make(map[string]bool, len(reviewedPaths))
-	for _, reviewed := range reviewedPaths {
-		normalized := normalizeCoveredPath(reviewed)
-		if normalized == "" || !reviewable[normalized] {
-			return outstandingRaw
-		}
-		covered[normalized] = true
-	}
-	if len(covered) == 0 {
-		return outstandingRaw
-	}
-	fullyCovered := len(covered) == len(reviewable)
-	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
-	reported := make(map[types.Finding]bool, len(thisRound.Items))
-	reportedFiles := make(map[string]bool, len(thisRound.Items))
-	hasUnanchoredFinding := false
-	for _, item := range thisRound.Items {
-		reported[findingKey(item)] = true
-		if normalized := normalizeCoveredPath(item.File); normalized != "" {
-			reportedFiles[normalized] = true
-		} else {
-			hasUnanchoredFinding = true
-		}
-	}
-	outstandingCounts := countFindingFingerprints(outstanding.Items)
-	thisRoundCounts := countFindingFingerprints(thisRound.Items)
+	verification := newReviewVerification(outstanding.Items, pendingIDs, reviewedPaths, reviewablePaths, thisRoundRaw)
 	result := types.FindingsMetadata(outstanding)
 	for _, item := range outstanding.Items {
-		file := normalizeCoveredPath(item.File)
-		if pending[item.ID] && !hasUnanchoredFinding && (covered[file] || file == "" && fullyCovered) && !hasFindingMatch(item, reported, outstandingCounts, thisRoundCounts) && !reportedFiles[file] {
+		if verification.keepReason(item) == "" {
 			continue
 		}
 		result.Items = append(result.Items, item)
@@ -611,6 +575,174 @@ func resolveVerifiedFindingsJSON(outstandingRaw string, pendingIDs []string, rev
 	encoded, err := types.MarshalFindingsJSON(result)
 	if err != nil {
 		return outstandingRaw
+	}
+	return encoded
+}
+
+// Why a review round kept an outstanding finding, one per condition
+// resolveVerifiedFindingsJSON requires. They are persisted on the carried
+// finding and shown to the operator and in the PR body.
+const (
+	carryReasonNotSelected        = "not selected for a fix"
+	carryReasonNotWithdrawn       = "not withdrawn by the answer round"
+	carryReasonNoCoverage         = "this round recorded no reviewed_paths"
+	carryReasonNoReviewablePaths  = "this round had no reviewable paths"
+	carryReasonInvalidCoverage    = "reviewed_paths named a path outside the reviewable set"
+	carryReasonUnanchoredFinding  = "this round raised a finding with no file"
+	carryReasonFileNotReviewed    = "file not in reviewed_paths"
+	carryReasonPartialCoverage    = "finding has no file and reviewed_paths did not cover every reviewable path"
+	carryReasonRestated           = "restated this round"
+	carryReasonSameFileNewFinding = "new finding in the same file"
+)
+
+// reviewVerification is one review round's verification record against the
+// outstanding set: the single owner of the rule resolveVerifiedFindingsJSON
+// applies, so the reason a carried finding records is the reason it was kept.
+type reviewVerification struct {
+	pending map[string]bool
+	// refusal is set when the round's coverage record verifies nothing.
+	refusal              string
+	covered              map[string]bool
+	fullyCovered         bool
+	reported             map[types.Finding]bool
+	reportedFiles        map[string]bool
+	hasUnanchoredFinding bool
+	outstandingCounts    map[types.Finding]int
+	thisRoundCounts      map[types.Finding]int
+}
+
+func newReviewVerification(outstanding []types.Finding, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string) reviewVerification {
+	v := reviewVerification{pending: make(map[string]bool, len(pendingIDs))}
+	for _, id := range pendingIDs {
+		if id != "" {
+			v.pending[id] = true
+		}
+	}
+	reviewable := make(map[string]bool, len(reviewablePaths))
+	for _, candidate := range reviewablePaths {
+		if normalized := normalizeCoveredPath(candidate); normalized != "" {
+			reviewable[normalized] = true
+		}
+	}
+	v.covered = make(map[string]bool, len(reviewedPaths))
+	switch {
+	case len(reviewedPaths) == 0:
+		v.refusal = carryReasonNoCoverage
+	case len(reviewable) == 0:
+		v.refusal = carryReasonNoReviewablePaths
+	default:
+		for _, reviewed := range reviewedPaths {
+			normalized := normalizeCoveredPath(reviewed)
+			if normalized == "" || !reviewable[normalized] {
+				v.refusal = carryReasonInvalidCoverage
+				break
+			}
+			v.covered[normalized] = true
+		}
+	}
+	v.fullyCovered = len(v.covered) == len(reviewable)
+	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
+	v.reported = make(map[types.Finding]bool, len(thisRound.Items))
+	v.reportedFiles = make(map[string]bool, len(thisRound.Items))
+	for _, item := range thisRound.Items {
+		v.reported[findingKey(item)] = true
+		if normalized := normalizeCoveredPath(item.File); normalized != "" {
+			v.reportedFiles[normalized] = true
+		} else {
+			v.hasUnanchoredFinding = true
+		}
+	}
+	v.outstandingCounts = countFindingFingerprints(outstanding)
+	v.thisRoundCounts = countFindingFingerprints(thisRound.Items)
+	return v
+}
+
+// keepReason returns why this round does not clear item, or "" when the round
+// is a positive verification record for it.
+func (v reviewVerification) keepReason(item types.Finding) string {
+	file := normalizeCoveredPath(item.File)
+	switch {
+	case !v.pending[item.ID]:
+		return carryReasonNotSelected
+	case v.refusal != "":
+		return v.refusal
+	case v.hasUnanchoredFinding:
+		return carryReasonUnanchoredFinding
+	case file == "" && !v.fullyCovered:
+		return carryReasonPartialCoverage
+	case file != "" && !v.covered[file]:
+		return carryReasonFileNotReviewed
+	case hasFindingMatch(item, v.reported, v.outstandingCounts, v.thisRoundCounts):
+		return carryReasonRestated
+	case v.reportedFiles[file]:
+		return carryReasonSameFileNewFinding
+	}
+	return ""
+}
+
+// carriedFindingReasons maps every outstanding finding this round keeps to why
+// it keeps it, taking the same inputs as resolveVerifiedFindingsJSON. An answer
+// round verifies nothing by coverage, so an unselected finding it keeps is one
+// its turn did not withdraw.
+func carriedFindingReasons(outstandingRaw string, pendingIDs []string, reviewedPaths, reviewablePaths []string, thisRoundRaw string, answerRound bool) map[string]string {
+	if outstandingRaw == "" {
+		return nil
+	}
+	outstanding, err := types.ParseFindingsJSON(outstandingRaw)
+	if err != nil {
+		return nil
+	}
+	verification := newReviewVerification(outstanding.Items, pendingIDs, reviewedPaths, reviewablePaths, thisRoundRaw)
+	reasons := make(map[string]string, len(outstanding.Items))
+	for _, item := range outstanding.Items {
+		reason := verification.keepReason(item)
+		if reason == carryReasonNotSelected && answerRound {
+			reason = carryReasonNotWithdrawn
+		}
+		if reason != "" && item.ID != "" {
+			reasons[item.ID] = reason
+		}
+	}
+	return reasons
+}
+
+// markCarriedFindingsJSON stamps the carry provenance onto the merged
+// outstanding set: a finding this round's own output reported is fresh and
+// carries none, even when an earlier round carried it, and every other finding
+// is one the round kept, marked with the last round that reported it and the
+// reason carriedFindingReasons gave. A finding already carried keeps its
+// original round.
+func markCarriedFindingsJSON(mergedRaw, thisRoundRaw string, reasons map[string]string, previousRound int) string {
+	if mergedRaw == "" {
+		return mergedRaw
+	}
+	merged, err := types.ParseFindingsJSON(mergedRaw)
+	if err != nil {
+		return mergedRaw
+	}
+	thisRound, _ := types.ParseFindingsJSON(thisRoundRaw)
+	reported := make(map[types.Finding]bool, len(thisRound.Items))
+	for _, item := range thisRound.Items {
+		reported[findingKey(item)] = true
+	}
+	mergedCounts := countFindingFingerprints(merged.Items)
+	thisRoundCounts := countFindingFingerprints(thisRound.Items)
+	for i := range merged.Items {
+		item := &merged.Items[i]
+		reason, kept := reasons[item.ID]
+		if !kept || hasFindingMatch(*item, reported, mergedCounts, thisRoundCounts) {
+			item.CarriedFromRound = 0
+			item.CarriedReason = ""
+			continue
+		}
+		if item.CarriedFromRound == 0 {
+			item.CarriedFromRound = previousRound
+		}
+		item.CarriedReason = reason
+	}
+	encoded, err := types.MarshalFindingsJSON(merged)
+	if err != nil {
+		return mergedRaw
 	}
 	return encoded
 }
