@@ -663,7 +663,9 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 			fmt.Fprintln(os.Stderr, editErr)
 			os.Exit(1)
 		}
-		fakeGHStorePRBody(args)
+		if os.Getenv("FAKE_CLI_PR_EDIT_DROP") == "" {
+			fakeGHStorePRBody(args)
+		}
 		os.Exit(0)
 	}
 }

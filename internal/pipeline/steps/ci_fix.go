@@ -905,8 +905,8 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // content contract;
 // the branch is the configured PR base branch (the PR step never manages a
 // PR there either, see effectivePRBaseBranch); the SCM host is unavailable
-// (matches the PR step's own skip semantics); or no PR exists yet for this
-// branch. It never mints an attestation for a PR that was not raised through
+// and the run holds no PR URL yet (once it holds one, an unavailable host
+// stops the push); or no PR exists yet for this branch. It never mints an attestation for a PR that was not raised through
 // no-mistakes - restampPRAttestationWithSteps already enforces that. Any
 // other failure (PR discovery errors, a provider plugin whose status
 // handshake broke its contract - the PR step fails on that too, see
@@ -935,6 +935,9 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		if pluginContractBroken(err) {
 			return fmt.Errorf("%w: %w", errAttestationWriteFailed, err)
 		}
+		if owned := runPRURL(sctx); owned != "" {
+			return fmt.Errorf("%w: forge CLI unavailable, cannot update pull request %s: %w", errAttestationWriteFailed, owned, err)
+		}
 		if sctx.Log != nil {
 			sctx.Log(fmt.Sprintf("skipping attestation write: %v", err))
 		}
@@ -958,6 +961,33 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		return fmt.Errorf("%w: %w", errAttestationWriteFailed, err)
 	}
 	return nil
+}
+
+// confirmAttestedHead reads the PR body back after a write and requires the
+// attestation marker to carry head. A write the forge accepted but did not
+// persist is not settled.
+func confirmAttestedHead(ctx context.Context, reader scm.PRContentReader, pr *scm.PR, head string) error {
+	content, err := reader.GetPRContent(ctx, pr)
+	if err != nil {
+		return fmt.Errorf("read back pull request body: %w", err)
+	}
+	if got := attestedHeadOf(content.Body); got != strings.TrimSpace(head) {
+		return fmt.Errorf("pull request body read back with attestation head %q, want %q", got, strings.TrimSpace(head))
+	}
+	return nil
+}
+
+func attestedHeadOf(body string) string {
+	marker := extractPipelineAttestationMarker(body)
+	if marker == "" {
+		return ""
+	}
+	payload := strings.TrimSuffix(strings.TrimPrefix(marker, pipelineAttestationCommentPrefix), pipelineAttestationCommentClosingToken)
+	var attestation pipelineAttestation
+	if err := json.Unmarshal([]byte(payload), &attestation); err != nil {
+		return ""
+	}
+	return attestation.HeadSHA
 }
 
 func attestationPolicyFrom(sctx *pipeline.StepContext) pipelineAttestationPolicy {
@@ -994,6 +1024,7 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 	}
 	const attempts = 3
 	var lastErr error
+	sawMarker := false
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
@@ -1008,22 +1039,30 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 					return err
 				}
 			}
-			if !rebound {
+			if !rebound && sawMarker {
+				err = errors.New("pull request body lost its attestation marker after an earlier attempt found one")
+			} else if !rebound {
 				if logfn != nil {
 					logfn("skipping attestation rebind: pull request body carries no attestation marker")
 				}
 				return nil
 			}
-			if updated == content.Body {
+			if err == nil && updated == content.Body {
 				return nil
 			}
+			sawMarker = sawMarker || rebound
 
 			// UpdatePR replaces the complete body; this is not an atomic
 			// marker-only edit. Confirm that the body is still the version we
 			// prepared before writing it. If someone edited it meanwhile, retry
 			// from their version instead of overwriting their changes.
-			latest, readErr := reader.GetPRContent(ctx, pr)
+			var latest scm.PRContent
+			var readErr error
+			if err == nil {
+				latest, readErr = reader.GetPRContent(ctx, pr)
+			}
 			switch {
+			case err != nil:
 			case readErr != nil:
 				err = readErr
 			case latest.Body != content.Body:
@@ -1031,7 +1070,9 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 			default:
 				// Do not send title: a body-only write leaves a concurrent title
 				// edit untouched.
-				_, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated})
+				if _, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated}); err == nil {
+					err = confirmAttestedHead(ctx, reader, pr, newHeadSHA)
+				}
 			}
 		}
 		if err == nil {
