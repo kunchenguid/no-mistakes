@@ -1887,7 +1887,7 @@ func (s *Service) AdoptPushedHead(ctx context.Context) State {
 	if run == nil {
 		return blockedPlan(state, state.State, "blocked_adopt_pushed_head_not_applicable", "adopting the published head requires the checked-out branch's published run; no files or refs were changed")
 	}
-	if !ok || (state.Safety != "blocked_diverged" && state.State != StateBehind) {
+	if !ok || !pushedHeadAdoptionState(state) {
 		if !ok || strings.HasPrefix(state.Safety, "blocked_") {
 			return state
 		}
@@ -1980,26 +1980,35 @@ func (s *Service) readLiveRemote(ctx context.Context, pushURL, ref string) (stri
 	return s.runLsRemote(liveCtx, s.workDir(), pushURL, ref)
 }
 
+func pushedHeadAdoptionState(state State) bool {
+	return state.Safety == "blocked_diverged" || state.State == StateBehind
+}
+
+// pushedHeadAdoptionStillBound reads the live remote first and then repeats
+// every local check, so an edit, a branch move, or a PR or target change made
+// while the read waited refuses the move.
 func (s *Service) pushedHeadAdoptionStillBound(ctx context.Context, runID, submitted, pushed, ref, fingerprint string, generation int64) bool {
-	freshRun, err := s.DB.GetRun(runID)
 	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
-	if err != nil || repoErr != nil || freshRun == nil || freshRepo == nil || freshRun.PushActive || freshRun.CustodyReturnedAt != nil ||
+	if repoErr != nil || freshRepo == nil {
+		return false
+	}
+	live, liveErr := s.readLiveRemote(ctx, s.resolvedPushURL(ctx, freshRepo), ref)
+	if liveErr != nil || live != pushed {
+		return false
+	}
+	freshRun, err := s.DB.GetRun(runID)
+	if err != nil || freshRun == nil || freshRun.PushActive || freshRun.CustodyReturnedAt != nil ||
 		!terminalRunStatus(freshRun.Status) || ptr(freshRun.LastPushedSHA) != pushed || ptr(freshRun.SubmittedHeadSHA) != submitted ||
 		value(freshRun.PushGeneration) != generation || ptr(freshRun.PushRef) != ref ||
 		ptr(freshRun.PushTargetFingerprint) != fingerprint || TargetFingerprint(freshRepo.PushURL()) != fingerprint {
 		return false
 	}
 	recheck, recheckRun, ok := s.inspect(ctx)
-	if !ok || recheckRun == nil || recheckRun.ID != runID || !recheck.Local.Clean || recheck.Local.Head != submitted {
+	if !ok || recheckRun == nil || recheckRun.ID != runID || !pushedHeadAdoptionState(recheck) || !recheck.Local.Clean || recheck.Local.Head != submitted {
 		return false
 	}
 	wd := s.workDir()
-	if !objectExists(ctx, wd, pushed) || isAncestor(ctx, wd, submitted, pushed) || isAncestor(ctx, wd, pushed, submitted) || equivalentDivergence(ctx, wd, submitted, pushed, freshRun.BaseSHA) {
-		return false
-	}
-	pushURL := s.resolvedPushURL(ctx, freshRepo)
-	live, liveErr := s.readLiveRemote(ctx, pushURL, ref)
-	return liveErr == nil && live == pushed
+	return objectExists(ctx, wd, pushed) && !isAncestor(ctx, wd, submitted, pushed) && !isAncestor(ctx, wd, pushed, submitted) && !equivalentDivergence(ctx, wd, submitted, pushed, freshRun.BaseSHA)
 }
 
 // resolvedPushURL answers with the same authoritative push target the rest of

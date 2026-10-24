@@ -1781,3 +1781,14 @@ func asExitError(err error, target **exitError) bool {
 	}
 	return false
 }
+
+func TestPushedHeadAdoptedRequiresAFinalCleanAdoptedState(t *testing.T) {
+	clean := branchsync.State{Changed: true, State: branchsync.StateSynchronized, Safety: "already_synchronized", Local: branchsync.LocalState{Clean: true}}
+	if !pushedHeadAdopted(clean) {
+		t.Fatalf("clean adopted state refused: %#v", clean)
+	}
+	dirty := branchsync.State{Changed: true, State: branchsync.StateDirty, Safety: "blocked_post_apply_dirty"}
+	if pushedHeadAdopted(dirty) {
+		t.Fatalf("blocked post-apply state with Changed accepted: %#v", dirty)
+	}
+}

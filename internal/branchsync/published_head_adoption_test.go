@@ -169,6 +169,72 @@ func TestAdoptPushedHeadRefusesEachBrokenCondition(t *testing.T) {
 		}
 	})
 
+	t.Run("worktree edited while the live read waits", func(t *testing.T) {
+		t.Parallel()
+		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+		head := mustRun(t, f.local, "rev-parse", "HEAD")
+		if state := f.service.Refresh(f.ctx); state.Safety != "blocked_diverged" {
+			t.Fatalf("refresh = %#v", state)
+		}
+		reads := 0
+		f.service.lsRemote = func(context.Context, string, string, string) (string, error) {
+			reads++
+			if reads == 2 {
+				mustWrite(t, filepath.Join(f.local, "file.txt"), "edited while waiting\n")
+			}
+			return f.pushed, nil
+		}
+
+		refused := f.service.AdoptPushedHead(f.ctx)
+		assertAdoptionRefused(t, f, refused, "blocked_adopt_pushed_head_changed", head)
+		if got := mustRun(t, f.local, "show", ":file.txt"); got == "" {
+			t.Fatal("file lost")
+		}
+	})
+
+	t.Run("branch commits while the live read waits", func(t *testing.T) {
+		t.Parallel()
+		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+		if state := f.service.Refresh(f.ctx); state.Safety != "blocked_diverged" {
+			t.Fatalf("refresh = %#v", state)
+		}
+		reads := 0
+		f.service.lsRemote = func(context.Context, string, string, string) (string, error) {
+			reads++
+			if reads == 2 {
+				mustWrite(t, filepath.Join(f.local, "race.txt"), "race\n")
+				mustRun(t, f.local, "add", "race.txt")
+				mustRun(t, f.local, "commit", "-m", "race")
+			}
+			return f.pushed, nil
+		}
+
+		refused := f.service.AdoptPushedHead(f.ctx)
+		assertAdoptionRefused(t, f, refused, "blocked_adopt_pushed_head_changed", mustRun(t, f.local, "rev-parse", "HEAD"))
+	})
+
+	t.Run("PR merges while the live read waits", func(t *testing.T) {
+		t.Parallel()
+		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+		head := mustRun(t, f.local, "rev-parse", "HEAD")
+		if state := f.service.Refresh(f.ctx); state.Safety != "blocked_diverged" {
+			t.Fatalf("refresh = %#v", state)
+		}
+		reads := 0
+		f.service.lsRemote = func(context.Context, string, string, string) (string, error) {
+			reads++
+			if reads == 2 {
+				if err := f.db.UpdateRunPRState(f.run.ID, "merged"); err != nil {
+					t.Error(err)
+				}
+			}
+			return f.pushed, nil
+		}
+
+		refused := f.service.AdoptPushedHead(f.ctx)
+		assertAdoptionRefused(t, f, refused, "blocked_adopt_pushed_head_changed", head)
+	})
+
 	t.Run("remote changes before the move", func(t *testing.T) {
 		t.Parallel()
 		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
