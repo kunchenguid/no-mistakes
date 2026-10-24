@@ -449,6 +449,7 @@ no-mistakes axi respond --run <id> --action approve   # answer a specific run's 
 - A non-terminal run object may include `awaiting_agent: parked <duration>` immediately after `status`; that means the run is parked at a gate. Only an implicitly resolved current-branch gate offers bare `axi respond`; an explicit `--run <id>` status is inspection-only even when its branch matches, because the branch may have a newer active run, and names `axi respond --run <id>` as its response command. Follow the response's `help`.
 - A run object with a `running` or `fixing` step may include an `active_steps` table. `active_for` is the enclosing step duration; `round_active_for` is the displayed execution or fix round duration and resets for a fix round. Older runs without round timing leave `round_active_for` empty.
 - The `help` list at the bottom of most responses tells you the next commands to run.
+- With `--branch <name>`, `axi status` drops that current-branch scope and reads the exact named branch's newest-run publication snapshot and complete run inventory, read-only.
 - Errors are printed as `error: ...` on stdout with a `help` list; act on the suggestion.
 - Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.
 
