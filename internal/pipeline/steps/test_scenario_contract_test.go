@@ -408,14 +408,14 @@ func TestTestStep_AfterDeployCoverageWarningDoesNotPark(t *testing.T) {
 	t.Parallel()
 	for _, withPlan := range []bool{false, true} {
 		for _, tc := range []struct {
-			name		string
-			reasonClass	string
-			verdict		string
-			liveResult	string
-			blocking	*types.Finding
-			command		string
-			wantApproval	bool
-			wantNote	bool
+			name         string
+			reasonClass  string
+			verdict      string
+			liveResult   string
+			blocking     *types.Finding
+			command      string
+			wantApproval bool
+			wantNote     bool
 		}{
 			{name: "production only", reasonClass: "needs-production", wantNote: true},
 			{name: "deploy only", reasonClass: "needs-deploy", wantNote: true},
