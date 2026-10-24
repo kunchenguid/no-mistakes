@@ -256,6 +256,7 @@ Drive each scenario:
 - When a live scenario drives a TUI through a pseudo-terminal, give the pty a non-zero window size (TIOCSWINSZ) before the TUI reads its grid, and drain the master. A 0x0 grid makes the TUI exit immediately with a symptom such as "terminal reported a zero-sized grid" and never register, so a live UI check silently becomes a fake. Bare script(1) and pty.fork() from a non-tty parent typically yield that 0x0 grid.
 - Mark a scenario "live": true ONLY when you drove it against the real product in this run. A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live.
 - Return a scenario with result "untested" only when live validation is truly impossible here: every workaround you could find within the workspace boundary still cannot drive it. Its reason must state what you tried in order to drive it live and why each attempt cannot work, naming the specific tool, credential, permission, or authority that is out of reach and how to provide it. "No environment was provided" is not such a reason while you could have built a disposable one.
+- Give every untested scenario a "reason_class": "needs-production" when only the real production environment or its credentials can drive it, "needs-deploy" when it can only be observed once this change is deployed, "needs-third-party" when it needs a real third-party service or billing account that no sandbox, test mode, or local stand-in can replace, and "other" for anything else. A scenario you could reach but did not drive, a missing local tool or permission, an unfinished check, missing evidence, and a timeout are always "other".
 - If a needed tool is not on PATH and has no repository-local path, do not search the host machine for it or install it system-wide or globally. Try another available route or obtain, install, or build the tool inside the disposable workspace and use it there. Only if no workspace-local route can drive the scenario live, report the affected scenario as "untested" with what you tried and why it could not work.
 - Never guess a pass, and never mark a scenario live because you believe it would work.
 - Report every scenario in the "scenarios" array with name, result ("pass", "fail", or "untested"), live, evidence, and reason.
@@ -487,7 +488,12 @@ func trustedTestInstructionsSection(sctx *pipeline.StepContext) string {
 //   - "inconclusive" is a warning finding: the change has a live-exercisable
 //     surface but too little could be driven live to judge, which is a
 //     question for the human rather than something a fix round can repair,
-//     so it parks and asks.
+//     so it parks and asks. The one exception is types.ScenariosLeftForAfterDeploy:
+//     when nothing failed and every untested scenario needs production, a
+//     deploy, or a third party, no pipeline run could drive more and the
+//     answer is always to check those scenarios after deploy, so the verdict
+//     is an info note that names them instead of a park. It stays a Test
+//     exception (db.StepResult.TestOverrideReason), never a clean pass.
 //   - "no-surface" is a warning finding: the change itself has nothing
 //     no-mistakes can drive live, so it parks and asks whether proceeding
 //     without live validation is acceptable. It is not a silent pass and
@@ -512,6 +518,14 @@ func verdictFindings(findings Findings) []Finding {
 			Description: fmt.Sprintf("live validation verdict: no-go (%s)%s", coverage, failedScenarioSuffix(findings.Scenarios)),
 		}}
 	case types.TestVerdictInconclusive:
+		if types.ScenariosLeftForAfterDeploy(findings.Scenarios) {
+			return []Finding{{
+				Category:    types.FindingCategoryTestVerdict,
+				Severity:    types.FindingSeverityInfo,
+				Action:      types.ActionNoOp,
+				Description: fmt.Sprintf("live validation verdict: inconclusive (%s); every untested scenario needs production, a deploy, or a third party, so it is left for after deploy%s", coverage, afterDeployScenarioSuffix(findings.Scenarios)),
+			}}
+		}
 		return []Finding{{
 			Category:    types.FindingCategoryTestVerdict,
 			Severity:    types.FindingSeverityWarning,
@@ -536,6 +550,22 @@ func failedScenarioSuffix(scenarios []types.TestScenario) string {
 
 func untestedScenarioSuffix(scenarios []types.TestScenario) string {
 	return scenarioNameSuffix(scenarios, types.ScenarioResultUntested, "untested")
+}
+
+// afterDeployScenarioSuffix names each untested scenario with the reason class
+// that leaves it for after deploy, so the note says what to check and where.
+func afterDeployScenarioSuffix(scenarios []types.TestScenario) string {
+	var parts []string
+	for _, scenario := range scenarios {
+		if scenario.Result != types.ScenarioResultUntested {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", strings.TrimSpace(scenario.Name), scenario.ReasonClass))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; check after deploy: " + strings.Join(parts, ", ")
 }
 
 // untestedScenarioReasonSuffix names each untested scenario together with the

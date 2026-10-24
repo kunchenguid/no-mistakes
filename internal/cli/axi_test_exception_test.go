@@ -68,6 +68,20 @@ func TestRunViewFromDBQualifiesLegacyTestOverrides(t *testing.T) {
 	}
 }
 
+// An inconclusive verdict whose untested scenarios all need production, a
+// deploy, or a third party completes Test without a park, so no approval
+// reason exists. The run must still read as an exception, never a clean pass.
+func TestRunViewFromDBQualifiesAnAfterDeployInconclusiveNote(t *testing.T) {
+	findings := `{"findings":[{"id":"test-1","severity":"info","action":"no-op","category":"test-verdict","description":"live validation verdict: inconclusive"}],"verdict":"inconclusive",` +
+		`"scenarios":[{"name":"live card charge settles","result":"untested","live":false,"evidence":"","reason":"needs the production payment account","reason_class":"needs-production"}]}`
+	run := &db.Run{Status: types.RunCompleted}
+	steps := []*db.StepResult{{StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: strptr(findings)}}
+	view := runViewFromDB(run, steps, nil)
+	if got := outcomeForRun(view); got != "passed-with-override" || !strings.Contains(view.TestOverrideReason, "live validation verdict: inconclusive") {
+		t.Fatalf("outcome = %q, reason = %q; want passed-with-override naming the inconclusive verdict", got, view.TestOverrideReason)
+	}
+}
+
 func TestRunViewFromDBQualifiesOnlyExceptionEvidence(t *testing.T) {
 	const reason = "operator explanation"
 	for _, tc := range []struct {

@@ -170,8 +170,10 @@ const (
 )
 
 var (
-	knownScenarioResults = []string{ScenarioResultPass, ScenarioResultFail, ScenarioResultUntested}
-	knownTestVerdicts    = []string{TestVerdictGo, TestVerdictNoGo, TestVerdictInconclusive, TestVerdictNoSurface}
+	knownScenarioResults       = []string{ScenarioResultPass, ScenarioResultFail, ScenarioResultUntested}
+	knownTestVerdicts          = []string{TestVerdictGo, TestVerdictNoGo, TestVerdictInconclusive, TestVerdictNoSurface}
+	knownScenarioReasonClasses = []string{ScenarioReasonClassNeedsProduction, ScenarioReasonClassNeedsDeploy, ScenarioReasonClassNeedsThirdParty, ScenarioReasonClassOther}
+	afterDeployReasonClasses   = []string{ScenarioReasonClassNeedsProduction, ScenarioReasonClassNeedsDeploy, ScenarioReasonClassNeedsThirdParty}
 )
 
 // IsKnownScenarioResult reports whether result is part of the scenario result
@@ -192,6 +194,22 @@ func KnownScenarioResults() []string { return slices.Clone(knownScenarioResults)
 // KnownTestVerdicts returns the verdict vocabulary, for error messages that
 // have to name what they accept.
 func KnownTestVerdicts() []string { return slices.Clone(knownTestVerdicts) }
+
+// IsKnownScenarioReasonClass reports whether class is part of the scenario
+// reason class vocabulary.
+func IsKnownScenarioReasonClass(class string) bool {
+	return slices.Contains(knownScenarioReasonClasses, class)
+}
+
+// KnownScenarioReasonClasses returns the scenario reason class vocabulary,
+// for error messages that have to name what they accept.
+func KnownScenarioReasonClasses() []string { return slices.Clone(knownScenarioReasonClasses) }
+
+// IsAfterDeployReasonClass reports whether class names a dependency only a
+// deploy can reach: production, a deploy, or a third party.
+func IsAfterDeployReasonClass(class string) bool {
+	return slices.Contains(afterDeployReasonClasses, class)
+}
 
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
@@ -225,13 +243,33 @@ type Finding struct {
 // driven here is reported with Result ScenarioResultUntested plus a Reason
 // explaining the unavailable capability or absence of a live product surface,
 // rather than being guessed at.
+//
+// ReasonClass classifies why an untested scenario could not be driven (see
+// the ScenarioReasonClass constants). It is optional and empty on every
+// payload written before it existed; an empty or "other" class never lets an
+// inconclusive verdict skip its park (ScenariosLeftForAfterDeploy).
 type TestScenario struct {
-	Name     string `json:"name"`
-	Result   string `json:"result"`
-	Live     bool   `json:"live"`
-	Evidence string `json:"evidence"`
-	Reason   string `json:"reason"`
+	Name        string `json:"name"`
+	Result      string `json:"result"`
+	Live        bool   `json:"live"`
+	Evidence    string `json:"evidence"`
+	Reason      string `json:"reason"`
+	ReasonClass string `json:"reason_class,omitempty"`
 }
+
+// Scenario reason classes: why an untested scenario could not be driven live.
+// The three "needs" classes name a dependency no pipeline run can reach - the
+// real production environment or its credentials, a real deploy, or a real
+// third-party service or billing account - so the scenario can only be
+// checked after deploy. ScenarioReasonClassOther covers everything else,
+// including a reachable scenario the agent could not drive, a missing local
+// tool or permission, an unfinished check, missing evidence, or a timeout.
+const (
+	ScenarioReasonClassNeedsProduction = "needs-production"
+	ScenarioReasonClassNeedsDeploy     = "needs-deploy"
+	ScenarioReasonClassNeedsThirdParty = "needs-third-party"
+	ScenarioReasonClassOther           = "other"
+)
 
 // LiveScenarioCounts returns how many of scenarios were driven live against
 // the real product, and how many there are in total.
@@ -260,6 +298,28 @@ func NoLiveExercisableScenarios(scenarios []TestScenario) bool {
 		}
 	}
 	return true
+}
+
+// ScenariosLeftForAfterDeploy reports whether the only thing keeping live
+// validation short is scenarios that need production, a deploy, or a third
+// party: no scenario failed, at least one is untested, and every untested
+// scenario carries an after-deploy reason class. It is the one predicate that
+// lets an inconclusive verdict record a note instead of parking; anything
+// unclassified, classified "other", or failed keeps the park.
+func ScenariosLeftForAfterDeploy(scenarios []TestScenario) bool {
+	untested := false
+	for _, s := range scenarios {
+		switch s.Result {
+		case ScenarioResultFail:
+			return false
+		case ScenarioResultUntested:
+			if !IsAfterDeployReasonClass(s.ReasonClass) {
+				return false
+			}
+			untested = true
+		}
+	}
+	return untested
 }
 
 // TestArtifact describes evidence produced by the test step for human review.

@@ -101,6 +101,33 @@ func TestBuildTestingSummary_NoSurfaceVerdictIsVisible(t *testing.T) {
 	}
 }
 
+// An inconclusive run whose untested scenarios all need production, a deploy,
+// or a third party parks nothing, so the PR is where a reviewer learns which
+// scenarios remain to check after deploy. An unclassified or "other" row
+// renders exactly as before.
+func TestBuildTestingSummary_AfterDeployScenariosAreNamed(t *testing.T) {
+	t.Parallel()
+	findingsJSON := liveValidatedFindingsJSON(t, []types.TestScenario{
+		{Name: "user reaches the success screen", Result: types.ScenarioResultPass, Live: true, Evidence: "checkout.png"},
+		{Name: "live card charge settles", Result: types.ScenarioResultUntested, Reason: "needs the production payment account", ReasonClass: types.ScenarioReasonClassNeedsProduction},
+		{Name: "tax provider accepts the invoice", Result: types.ScenarioResultUntested, Reason: "tax provider has no sandbox", ReasonClass: types.ScenarioReasonClassNeedsThirdParty},
+		{Name: "declined payment shows the retry copy", Result: types.ScenarioResultUntested, Reason: "no browser on this machine", ReasonClass: types.ScenarioReasonClassOther},
+	}, types.TestVerdictInconclusive)
+	steps, rounds := testStepWithFindings(t, findingsJSON)
+
+	md := BuildTestingSummary(steps, rounds)
+	for _, want := range []string{
+		"Live validation: ⚠️ inconclusive - 1 of 4 scenarios driven live against the product",
+		"| live card charge settles | ⏸️ untested | no | Check after deploy (needs-production): needs the production payment account |",
+		"| tax provider accepts the invoice | ⏸️ untested | no | Check after deploy (needs-third-party): tax provider has no sandbox |",
+		"| declined payment shows the retry copy | ⏸️ untested | no | no browser on this machine |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("expected Testing section to contain %q, got:\n%s", want, md)
+		}
+	}
+}
+
 // A run recorded before the contract existed carries neither scenarios nor a
 // verdict. It must render exactly as it always did rather than growing an
 // empty table or claiming "no verdict recorded" where there is nothing to say.

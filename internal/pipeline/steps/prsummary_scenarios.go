@@ -110,7 +110,9 @@ func scenarioResultEmoji(result string) string {
 // The Evidence column deliberately merges a passing scenario's evidence with
 // an untested scenario's reason: a reader wants one column answering "on what
 // basis?", and for an untested scenario the unavailable capability or absence
-// of a live product surface is that basis.
+// of a live product surface is that basis. An untested scenario that needs
+// production, a deploy, or a third party leads with that class, so a reviewer
+// sees which scenarios remain to check after deploy.
 func renderScenarioTable(scenarios []types.TestScenario, flavor prBodyFlavor) string {
 	if len(scenarios) == 0 {
 		return ""
@@ -132,6 +134,9 @@ func renderScenarioTable(scenarios []types.TestScenario, flavor prBodyFlavor) st
 		basis := strings.TrimSpace(scenario.Evidence)
 		if result == types.ScenarioResultUntested && strings.TrimSpace(scenario.Reason) != "" {
 			basis = strings.TrimSpace(scenario.Reason)
+		}
+		if result == types.ScenarioResultUntested && types.IsAfterDeployReasonClass(scenario.ReasonClass) {
+			basis = strings.TrimSpace("Check after deploy (" + scenario.ReasonClass + "): " + basis)
 		}
 		b.WriteString(fmt.Sprintf("| %s | %s %s | %s | %s |\n",
 			name,

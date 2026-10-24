@@ -228,9 +228,9 @@ On GitHub, a clean PR whose base requires up-to-date branches (`mergeStateStatus
 After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the restart conditions.
 Under [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass) the run finishes at that verdict instead: `run.status` is `checks_passed`, it releases its worktree and its lane, and nothing is left monitoring the PR, so a later update is a fresh `axi run` on the updated head - this run will not rebase or re-push it.
 Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
-`passed-with-override` qualifies either `passed` or `checks-passed` when the run has an explicitly approved Test exception or a CI approval over still-failing checks.
+`passed-with-override` qualifies either `passed` or `checks-passed` when the run has an explicitly approved Test exception, an after-deploy `inconclusive` note, or a CI approval over still-failing checks.
 It stays a success, including at the checks-passed stopping point, but does not claim a clean validation.
-A Test exception is an approval past a failing configured `commands.test`, a `no-go` verdict, an `inconclusive` verdict, or a [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) budget cut; approving a `no-surface` park records its reason without adding the override qualification.
+A Test exception is an approval past a failing configured `commands.test`, a `no-go` verdict, an `inconclusive` verdict, or a [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) budget cut. An `inconclusive` verdict that completes as an after-deploy note without a park is also a Test exception; approving a `no-surface` park records its reason without adding the override qualification.
 `run.test_override_reason` preserves the Test exception explanation in drive and status output, including at the `checks-passed` stopping point; CI overrides retain their separate reason.
 Report those exceptions rather than describing Test as clean.
 `passed-with-skips` is a completed run where PR publication or CI verification automatically skipped because its provider was unavailable, or CI had no PR URL.
