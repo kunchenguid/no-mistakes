@@ -239,6 +239,8 @@ func renderLaunchAgentWithProxyEnv(exe string, p *paths.Paths, home string, prox
   <string>%s</string>
   <key>StandardErrorPath</key>
   <string>%s</string>
+  <key>ProcessType</key>
+  <string>Interactive</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
