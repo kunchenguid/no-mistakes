@@ -1458,6 +1458,19 @@ func TestCIStep_FixPromptTestDiffIgnoresBaseTipCommits(t *testing.T) {
 	}
 }
 
+func TestCIStep_FixPromptListsNonASCIITestPath(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := ciAssertionFixture(t, false)
+	writeCIFixFixtureFile(t, dir, "tests/über.test.sh", "assert_umlaut_added\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "umlaut test")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
+	if !strings.Contains(prompt, "+assert_umlaut_added") {
+		t.Errorf("non-ASCII test path missing from the test-file diff:\n%s", prompt)
+	}
+}
+
 func captureCIFixPrompt(t *testing.T, dir, baseSHA, headSHA string, targets ciFixTargets) string {
 	t.Helper()
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
