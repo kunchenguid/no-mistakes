@@ -405,19 +405,20 @@ func TestGetChecksSupersedesJoblessCancelledWorkflowOnlyWithALaterReplacement(t 
 		workflowID  int64
 		startedAt   string
 		wantCancel  bool
+		wantBucket  scm.CheckBucket
 	}{
-		{name: "later success represented by jobs", replacement: true, withJob: true, conclusion: "success", workflowID: 1001},
-		{name: "later success without jobs", replacement: true, conclusion: "success", workflowID: 1001, wantCancel: true},
-		{name: "later pending run with jobs", replacement: true, withJob: true, workflowID: 1001},
-		{name: "later failed run with jobs", replacement: true, withJob: true, conclusion: "failure", workflowID: 1001},
+		{name: "later success represented by jobs", replacement: true, withJob: true, conclusion: "success", workflowID: 1001, wantBucket: scm.CheckBucketPass},
+		{name: "later success without jobs", replacement: true, conclusion: "success", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "later pending run with jobs", replacement: true, withJob: true, workflowID: 1001, wantBucket: scm.CheckBucketPending},
+		{name: "later failed run with jobs", replacement: true, withJob: true, conclusion: "failure", workflowID: 1001, wantBucket: scm.CheckBucketFail},
 		{name: "no replacement", wantCancel: true},
-		{name: "another workflow with the same name", replacement: true, withJob: true, conclusion: "success", workflowID: 1002, wantCancel: true},
-		{name: "unknown workflow", replacement: true, withJob: true, conclusion: "success", wantCancel: true},
-		{name: "older success", replacement: true, withJob: true, conclusion: "success", workflowID: 1001, startedAt: "2026-08-26T08:00:00Z", wantCancel: true},
-		{name: "later pending run without jobs", replacement: true, workflowID: 1001, wantCancel: true},
-		{name: "later failed run without jobs", replacement: true, conclusion: "failure", workflowID: 1001, wantCancel: true},
-		{name: "later cancelled run without jobs", replacement: true, conclusion: "cancelled", workflowID: 1001, wantCancel: true},
-		{name: "later skipped run without jobs", replacement: true, conclusion: "skipped", workflowID: 1001, wantCancel: true},
+		{name: "another workflow with the same name", replacement: true, withJob: true, conclusion: "success", workflowID: 1002, wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "unknown workflow", replacement: true, withJob: true, conclusion: "success", wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "older success", replacement: true, withJob: true, conclusion: "success", workflowID: 1001, startedAt: "2026-08-26T08:00:00Z", wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "later pending run without jobs", replacement: true, workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketPending},
+		{name: "later failed run without jobs", replacement: true, conclusion: "failure", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketFail},
+		{name: "later cancelled run without jobs", replacement: true, conclusion: "cancelled", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketCancel},
+		{name: "later skipped run without jobs", replacement: true, conclusion: "skipped", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketSkip},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -456,6 +457,7 @@ func TestGetChecksSupersedesJoblessCancelledWorkflowOnlyWithALaterReplacement(t 
 				t.Fatal(err)
 			}
 			cancelled := false
+			replacements := 0
 			for _, check := range checks {
 				if check.ProviderID == "github-workflow-run:101" {
 					cancelled = true
@@ -463,6 +465,15 @@ func TestGetChecksSupersedesJoblessCancelledWorkflowOnlyWithALaterReplacement(t 
 						t.Fatalf("cancelled workflow changed bucket: %+v", check)
 					}
 				}
+				if (tc.withJob && check.Name == "validate") || (!tc.withJob && check.ProviderID == "github-workflow-run:102") {
+					replacements++
+					if check.Bucket != tc.wantBucket {
+						t.Fatalf("replacement bucket = %q, want %q: %+v", check.Bucket, tc.wantBucket, check)
+					}
+				}
+			}
+			if wantReplacements := map[bool]int{true: 1}[tc.replacement]; replacements != wantReplacements {
+				t.Fatalf("replacement present %d times, want %d; checks = %+v", replacements, wantReplacements, checks)
 			}
 			if cancelled != tc.wantCancel {
 				t.Fatalf("cancelled workflow present = %v, want %v; checks = %+v", cancelled, tc.wantCancel, checks)
