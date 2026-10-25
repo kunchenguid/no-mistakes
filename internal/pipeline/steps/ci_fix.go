@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -44,6 +46,8 @@ const ciFixerClassRules = `- Do not watch or poll CI runs. Never run gh run watc
 
 const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code (a broken test, build, lint, or similar defect in the change), you MUST produce file changes that fix it and set code_change_needed to true. A real failing test or build must still be fixed.
 		- If a failing check is not caused by the code under review (a stale or superseded check run, an infrastructure or attestation check such as "PR must be raised via no-mistakes" that fails only because a later pipeline push moved the head, or any failure external to the code), you MAY conclude that no code change is warranted. Set code_change_needed to false and report that conclusion in summary instead of editing files. Do not invent work to satisfy a check the code did not cause.
+		- An assertion that exists on the base commit is a rule the base branch encodes. Do not weaken, invert, delete, or rewrite it so a test accepts behavior the base forbids. A test file or assertion line this PR added may be corrected when that assertion itself is wrong. The "Base-branch test assertions" section names the base commit and the test-file diff against it: a "+" line is a PR-added assertion, a "-" line is a base-branch assertion this PR already changes, and a test line absent from that diff is unchanged from the base commit.
+		- When a failing check comes from a base-branch assertion, change the code under review so the assertion holds and set code_change_needed to true. When the change conflicts with the rule that assertion encodes and the code cannot satisfy the assertion without abandoning the change, set code_change_needed to false and report the conflict in summary instead of editing the assertion. That parks the selected findings as ask-user.
 		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
 		- If a test is flaky, make it deterministic.
 		- Make the smallest correct root-cause fix.
@@ -56,6 +60,83 @@ const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the m
 		- Do not make unrelated file edits.
 ` + ciFixerClassRules + `
 		- Verify the rebase completes cleanly before finishing.`
+
+const maxCITestAssertionDiffBytes = 32 * 1024
+
+func baseBranchTestAssertionContext(ctx context.Context, workDir, baseSHA, headSHA string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nBase-branch test assertions (commit %s):\n", baseSHA)
+	fmt.Fprintf(&b, "An assertion present at this commit is a rule the base branch encodes. The diff below is test files only, from that commit to %s. A \"+\" line is an assertion this PR added. A \"-\" line is a base-branch assertion this PR already changes; do not extend that change to make a check pass. A test line absent from this diff is unchanged from the base commit and is a base-branch assertion.\n", headSHA)
+	diff, err := ciTestFileDiff(ctx, workDir, baseSHA, headSHA)
+	if err != nil {
+		fmt.Fprintf(&b, "Test-file diff against the base commit could not be computed: %s\nCompare failing assertions with that commit directly before editing a test.\n", err.Error())
+		return b.String()
+	}
+	if strings.TrimSpace(diff) == "" {
+		b.WriteString("No test file differs from the base commit. Every assertion currently in the tree is a base-branch assertion.\n")
+		return b.String()
+	}
+	b.WriteString(diff)
+	if !strings.HasSuffix(diff, "\n") {
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func ciTestFileDiff(ctx context.Context, workDir, baseSHA, headSHA string) (string, error) {
+	names, err := git.DiffNameOnly(ctx, workDir, baseSHA, headSHA)
+	if err != nil {
+		return "", err
+	}
+	var tests []string
+	for _, name := range names {
+		if isCIFixTestPath(name) {
+			tests = append(tests, name)
+		}
+	}
+	if len(tests) == 0 {
+		return "", nil
+	}
+	args := make([]string, 0, 5+len(tests))
+	args = append(args, "diff", "--no-ext-diff", "-U0", baseSHA+".."+headSHA, "--")
+	args = append(args, tests...)
+	out, err := git.Run(ctx, workDir, args...)
+	if err != nil {
+		return "", err
+	}
+	if len(out) <= maxCITestAssertionDiffBytes {
+		return out, nil
+	}
+	out = out[:maxCITestAssertionDiffBytes]
+	if i := strings.LastIndex(out, "\n"); i > 0 {
+		out = out[:i]
+	}
+	return out + "\n[test-file diff truncated]\n", nil
+}
+
+func isCIFixTestPath(name string) bool {
+	name = strings.TrimPrefix(name, "./")
+	base := strings.ToLower(path.Base(name))
+	switch {
+	case strings.HasPrefix(base, "test_"):
+		return true
+	case strings.Contains(base, "_test."):
+		return true
+	case strings.Contains(base, ".test."):
+		return true
+	case strings.Contains(base, "_spec."):
+		return true
+	case strings.Contains(base, ".spec."):
+		return true
+	}
+	for _, seg := range strings.Split(name, "/") {
+		switch strings.ToLower(seg) {
+		case "test", "tests", "testing", "__tests__", "spec", "specs":
+			return true
+		}
+	}
+	return false
+}
 
 // repairFromFindings runs one CI fix round over the findings the executor
 // selected for it (sctx.PreviousFindings): the auto-fix subset of the last
@@ -308,6 +389,9 @@ Context:
 	prompt += "\n- Keep detailed diagnosis and verification evidence in your explanatory output, which is recorded in the run log, rather than in summary."
 	if rebase {
 		prompt += fmt.Sprintf("\n- rebase target commit: %s", rebaseBaseSHA)
+	}
+	if promptRules == ciFailingCheckFixRules {
+		prompt += baseBranchTestAssertionContext(ctx, sctx.WorkDir, promptBaseSHA, sctx.Run.HeadSHA)
 	}
 	if logOutput != "" {
 		prompt += fmt.Sprintf(`
