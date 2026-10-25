@@ -1471,6 +1471,60 @@ func TestCIStep_FixPromptListsNonASCIITestPath(t *testing.T) {
 	}
 }
 
+func TestCIStep_FixPromptKeepsBaseLinesOfARenamedTestFile(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := ciAssertionFixture(t, false)
+	gitCmd(t, dir, "checkout", "feature")
+	if err := os.MkdirAll(filepath.Join(dir, "tests", "unit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "mv", "tests/guard.test.sh", "tests/unit/guard.test.sh")
+	writeCIFixFixtureFile(t, dir, "tests/unit/guard.test.sh", "assert_forbid shortcut\nassert_pr_owns renamed\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "move guard into tests/unit")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
+	if !strings.Contains(prompt, "+assert_pr_owns renamed") {
+		t.Errorf("PR-added line missing from the renamed file's diff:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "+assert_forbid shortcut") {
+		t.Errorf("base assertion in a moved test file was classified as PR-added:\n%s", prompt)
+	}
+}
+
+func TestCIStep_AssertionConflictParksAskUserWhenRepairAlsoRebases(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := ciAssertionFixture(t, true)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"summary":"the change conflicts with the base guard","code_change_needed":false}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = gitCmd(t, dir, "remote", "get-url", "origin")
+	targets := ciTargetsFor([]string{"test"}, true)
+	encoded, err := types.MarshalFindingsJSON(targets.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.PreviousFindings = encoded
+	host := &completionSnapshotHost{checks: []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}}
+
+	outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable {
+		t.Fatalf("outcome = %#v, want the assertion conflict parked as ask-user", outcome)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if findings.Summary != "the change conflicts with the base guard" {
+		t.Fatalf("reported conclusion = %q", findings.Summary)
+	}
+}
+
 func captureCIFixPrompt(t *testing.T, dir, baseSHA, headSHA string, targets ciFixTargets) string {
 	t.Helper()
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
