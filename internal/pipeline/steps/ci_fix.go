@@ -87,21 +87,21 @@ func baseBranchTestAssertionContext(ctx context.Context, workDir, baseSHA, headS
 
 func ciTestFileDiff(ctx context.Context, workDir, baseSHA, headSHA string) (string, bool, error) {
 	span := baseSHA + "..." + headSHA
-	namesOut, err := git.Run(ctx, workDir, "diff", "--name-only", span)
+	namesOut, err := git.Run(ctx, workDir, "diff", "--name-only", "-z", span)
 	if err != nil {
 		return "", false, err
 	}
 	var tests []string
-	for _, name := range strings.Split(namesOut, "\n") {
-		if name = strings.TrimSpace(name); name != "" && isCIFixTestPath(name) {
+	for _, name := range strings.Split(namesOut, "\x00") {
+		if name != "" && isCIFixTestPath(name) {
 			tests = append(tests, name)
 		}
 	}
 	if len(tests) == 0 {
 		return "", false, nil
 	}
-	args := make([]string, 0, 5+len(tests))
-	args = append(args, "diff", "--no-ext-diff", "-U0", span, "--")
+	args := make([]string, 0, 6+len(tests))
+	args = append(args, "--literal-pathspecs", "diff", "--no-ext-diff", "-U0", span, "--")
 	args = append(args, tests...)
 	out, err := git.Run(ctx, workDir, args...)
 	if err != nil {
