@@ -1401,7 +1401,7 @@ func TestCIStep_FixPromptClassifiesBaseBranchTestAssertions(t *testing.T) {
 		for _, want := range []string{
 			"Base-branch test assertions (commit " + baseSHA + ")",
 			"A \"+\" line is an assertion this PR added",
-			"A test line absent from this diff is unchanged from the base commit",
+			"a line absent from the diff is unchanged from the merge-base",
 			"+assert_pr_owns this",
 			"+func TestPRAdded(",
 		} {
@@ -1425,8 +1425,8 @@ func TestCIStep_FixPromptClassifiesBaseBranchTestAssertions(t *testing.T) {
 		dir, baseSHA, headSHA := ciAssertionFixture(t, false)
 		prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
 		for _, want := range []string{
-			"No test file differs from the base commit.",
-			"Every assertion currently in the tree is a base-branch assertion.",
+			"No file with a test-looking path differs from the merge-base.",
+			"check a failing test file with the git diff command above",
 		} {
 			if !strings.Contains(prompt, want) {
 				t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -1439,6 +1439,23 @@ func TestCIStep_FixPromptClassifiesBaseBranchTestAssertions(t *testing.T) {
 			t.Errorf("unchanged base assertion was shown as a PR addition:\n%s", prompt)
 		}
 	})
+}
+
+func TestCIStep_FixPromptTestDiffIgnoresBaseTipCommits(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := ciAssertionFixture(t, true)
+	gitCmd(t, dir, "checkout", "main")
+	writeCIFixFixtureFile(t, dir, "tests/late.test.sh", "assert_main_added_later\n")
+	gitCmd(t, dir, "add", "tests/late.test.sh")
+	gitCmd(t, dir, "commit", "-m", "main moves on")
+	gitCmd(t, dir, "push", "origin", "main")
+	prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, true))
+	if strings.Contains(prompt, "assert_main_added_later") {
+		t.Errorf("a base-tip-only assertion was shown as a PR change:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "+assert_pr_owns this") {
+		t.Errorf("PR-added assertion missing from the test-file diff:\n%s", prompt)
+	}
 }
 
 func captureCIFixPrompt(t *testing.T, dir, baseSHA, headSHA string, targets ciFixTargets) string {
