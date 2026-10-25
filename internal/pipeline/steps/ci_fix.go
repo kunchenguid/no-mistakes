@@ -88,14 +88,31 @@ func baseBranchTestAssertionContext(ctx context.Context, workDir, baseSHA, headS
 
 func ciTestFileDiff(ctx context.Context, workDir, baseSHA, headSHA string) (string, bool, error) {
 	span := baseSHA + "..." + headSHA
-	namesOut, err := git.Run(ctx, workDir, "diff", "--name-only", "-z", span)
+	namesOut, err := git.Run(ctx, workDir, "diff", "--name-status", "-z", span)
 	if err != nil {
 		return "", false, err
 	}
 	var tests []string
-	for _, name := range strings.Split(namesOut, "\x00") {
-		if name != "" && isCIFixTestPath(name) {
-			tests = append(tests, name)
+	fields := strings.Split(namesOut, "\x00")
+	for i := 0; i < len(fields); i++ {
+		status := fields[i]
+		if status == "" {
+			continue
+		}
+		pathCount := 1
+		if status[0] == 'R' || status[0] == 'C' {
+			pathCount = 2
+		}
+		if i+pathCount >= len(fields) {
+			break
+		}
+		paths := fields[i+1 : i+1+pathCount]
+		i += pathCount
+		for _, name := range paths {
+			if isCIFixTestPath(name) {
+				tests = append(tests, paths...)
+				break
+			}
 		}
 	}
 	if len(tests) == 0 {
@@ -469,7 +486,7 @@ CI logs:
 		repair.Summary = conclusion.Summary
 		return repair, nil
 	}
-	if !rebase && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
+	if (!rebase || promptRules == ciFailingCheckFixRules) && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
 		repair.NoCodeChangeNeeded = true
 		repair.Summary = conclusion.Summary
 	}
