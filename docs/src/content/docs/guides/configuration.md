@@ -28,7 +28,7 @@ Config is split across two files:
 | `<repo>/.no-mistakes.yaml`   | Per-repo overrides                                 | [Repo Config Reference](/no-mistakes/reference/repo-config/)     |
 
 Set `NM_HOME` to relocate the global config directory (the global file becomes `$NM_HOME/config.yaml`).
-Bitbucket Cloud credentials come from environment variables rather than config files.
+Bitbucket Cloud authenticates through the `twg` CLI rather than config files; see [Provider Integration](/no-mistakes/guides/provider-integration/#bitbucket-cloud).
 For Azure DevOps, authenticate the `az` CLI with either `az devops login` or `AZURE_DEVOPS_EXT_PAT` for non-interactive daemon auth; see [Environment Variables](/no-mistakes/reference/environment/).
 
 ## How to think about config
