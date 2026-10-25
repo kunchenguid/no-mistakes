@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.101.0](https://github.com/kunchenguid/no-mistakes/compare/v1.100.2...v1.101.0) (2026-10-25)
+
+
+### Features
+
+* **cli:** accept file and stdin input for axi respond ([#1509](https://github.com/kunchenguid/no-mistakes/issues/1509)) ([61e0a91](https://github.com/kunchenguid/no-mistakes/commit/61e0a91a537d943ca34ca2d33859aef6f9db95e6))
+* **config:** support a global PR appendix default ([#1601](https://github.com/kunchenguid/no-mistakes/issues/1601)) ([ce5df06](https://github.com/kunchenguid/no-mistakes/commit/ce5df06ff9557ab9dae5ebe4fcac2df2cccf5424))
+* **daemon:** add optional concurrent run limit with FIFO queue ([#1598](https://github.com/kunchenguid/no-mistakes/issues/1598)) ([51e9d94](https://github.com/kunchenguid/no-mistakes/commit/51e9d944c636462cd56d41e5ac2100aa7dc9be72))
+* **pipeline:** add optional CodeRabbit pre-merge review gate ([#1599](https://github.com/kunchenguid/no-mistakes/issues/1599)) ([ad48863](https://github.com/kunchenguid/no-mistakes/commit/ad488634d31bb3bfbff6de2f12e824e958a85e8a))
+
+
+### Bug Fixes
+
+* **agent:** handle Codex provider schema incompatibility ([#1589](https://github.com/kunchenguid/no-mistakes/issues/1589)) ([8a78c40](https://github.com/kunchenguid/no-mistakes/commit/8a78c40ff1a3b44e7953d643d3bad7b2fe95aaee))
+* **agent:** retry transient network failures without HTTP status ([#1592](https://github.com/kunchenguid/no-mistakes/issues/1592)) ([883dcf6](https://github.com/kunchenguid/no-mistakes/commit/883dcf657c9791c1383bd8845706c0fb5affc806))
+* **cli:** omit Go setup from CI workflows without a root go.mod ([#1600](https://github.com/kunchenguid/no-mistakes/issues/1600)) ([d953176](https://github.com/kunchenguid/no-mistakes/commit/d953176e9ff31b6b295a94ec7940742d2fa26070))
+* **db:** order filesystem-identity repo lookup by insertion, strengthen case-identity test ([#1479](https://github.com/kunchenguid/no-mistakes/issues/1479)) ([309ed0a](https://github.com/kunchenguid/no-mistakes/commit/309ed0a9fcd117272914ff9d561330040550673a))
+* **pipeline:** honor media attachment opt-out with evidence publication ([#1602](https://github.com/kunchenguid/no-mistakes/issues/1602)) ([d48a9af](https://github.com/kunchenguid/no-mistakes/commit/d48a9af4749c287e2fdbf8a76cacd507a6677f49))
+* **pipeline:** preserve user-authored findings during review merges ([#1512](https://github.com/kunchenguid/no-mistakes/issues/1512)) ([88ab445](https://github.com/kunchenguid/no-mistakes/commit/88ab445d894a37d0ab08468cd4d863cccba08737))
+* **test:** clarify live scenarios as executed product surfaces ([#1603](https://github.com/kunchenguid/no-mistakes/issues/1603)) ([6652db3](https://github.com/kunchenguid/no-mistakes/commit/6652db32250f76b96f1019a1dc936192ef72cfe0))
+
 ## [1.100.2](https://github.com/kunchenguid/no-mistakes/compare/v1.100.1...v1.100.2) (2026-10-24)
 
 
