@@ -235,6 +235,30 @@ func TestAdoptPushedHeadRefusesEachBrokenCondition(t *testing.T) {
 		assertAdoptionRefused(t, f, refused, "blocked_adopt_pushed_head_changed", head)
 	})
 
+	t.Run("push target changes while the live read waits", func(t *testing.T) {
+		t.Parallel()
+		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())
+		head := mustRun(t, f.local, "rev-parse", "HEAD")
+		if state := f.service.Refresh(f.ctx); state.Safety != "blocked_diverged" {
+			t.Fatalf("refresh = %#v", state)
+		}
+		other := filepath.Join(t.TempDir(), "other.git")
+		mustRun(t, filepath.Dir(other), "init", "--bare", other)
+		reads := 0
+		f.service.lsRemote = func(context.Context, string, string, string) (string, error) {
+			reads++
+			if reads == 2 {
+				if _, err := f.db.UpdateRepoMetadata(f.repo.ID, other, "main"); err != nil {
+					t.Error(err)
+				}
+			}
+			return f.pushed, nil
+		}
+
+		refused := f.service.AdoptPushedHead(f.ctx)
+		assertAdoptionRefused(t, f, refused, "blocked_adopt_pushed_head_changed", head)
+	})
+
 	t.Run("remote changes before the move", func(t *testing.T) {
 		t.Parallel()
 		f := newPublishedDivergenceFixture(t, rewriteSubmittedLine())

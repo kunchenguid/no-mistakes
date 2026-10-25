@@ -1996,11 +1996,15 @@ func (s *Service) pushedHeadAdoptionStillBound(ctx context.Context, runID, submi
 	if liveErr != nil || live != pushed {
 		return false
 	}
+	targetRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
+	if repoErr != nil || targetRepo == nil {
+		return false
+	}
 	freshRun, err := s.DB.GetRun(runID)
 	if err != nil || freshRun == nil || freshRun.PushActive || freshRun.CustodyReturnedAt != nil ||
 		!terminalRunStatus(freshRun.Status) || ptr(freshRun.LastPushedSHA) != pushed || ptr(freshRun.SubmittedHeadSHA) != submitted ||
 		value(freshRun.PushGeneration) != generation || ptr(freshRun.PushRef) != ref ||
-		ptr(freshRun.PushTargetFingerprint) != fingerprint || TargetFingerprint(freshRepo.PushURL()) != fingerprint {
+		ptr(freshRun.PushTargetFingerprint) != fingerprint || TargetFingerprint(targetRepo.PushURL()) != fingerprint || ptr(freshRun.PushTargetKind) != targetKind(targetRepo) {
 		return false
 	}
 	recheck, recheckRun, ok := s.inspect(ctx)
