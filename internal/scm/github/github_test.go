@@ -394,6 +394,86 @@ func TestGetChecksCollapseOrderingDoesNotLetWorkflowRunUnionResurrectSupersededC
 	}
 }
 
+func TestGetChecksSupersedesJoblessCancelledWorkflowOnlyWithALaterReplacement(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		replacement bool
+		withJob     bool
+		conclusion  string
+		workflowID  int64
+		startedAt   string
+		wantCancel  bool
+	}{
+		{name: "later success represented by jobs", replacement: true, withJob: true, conclusion: "success", workflowID: 1001},
+		{name: "later success without jobs", replacement: true, conclusion: "success", workflowID: 1001},
+		{name: "later pending run with jobs", replacement: true, withJob: true, workflowID: 1001},
+		{name: "later failed run with jobs", replacement: true, withJob: true, conclusion: "failure", workflowID: 1001},
+		{name: "no replacement", wantCancel: true},
+		{name: "another workflow with the same name", replacement: true, withJob: true, conclusion: "success", workflowID: 1002, wantCancel: true},
+		{name: "unknown workflow", replacement: true, withJob: true, conclusion: "success", wantCancel: true},
+		{name: "older success", replacement: true, withJob: true, conclusion: "success", workflowID: 1001, startedAt: "2026-08-26T08:00:00Z", wantCancel: true},
+		{name: "later pending run without jobs", replacement: true, workflowID: 1001, wantCancel: true},
+		{name: "later failed run without jobs", replacement: true, conclusion: "failure", workflowID: 1001, wantCancel: true},
+		{name: "later cancelled run without jobs", replacement: true, conclusion: "cancelled", workflowID: 1001, wantCancel: true},
+		{name: "later skipped run without jobs", replacement: true, conclusion: "skipped", workflowID: 1001, wantCancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			jobs := `[]`
+			runs := `{"id":101,"workflow_id":1001,"name":"PR Gates","status":"completed","conclusion":"cancelled","run_started_at":"2026-08-26T08:25:50Z"}`
+			count := 1
+			if tc.replacement {
+				count++
+				startedAt := tc.startedAt
+				if startedAt == "" {
+					startedAt = "2026-08-26T08:39:44Z"
+				}
+				status := "completed"
+				if tc.conclusion == "" {
+					status = "in_progress"
+				}
+				runs += fmt.Sprintf(`,{"id":102,"workflow_id":%d,"name":"PR Gates rerun","status":%q,"conclusion":%q,"run_started_at":%q}`, tc.workflowID, status, tc.conclusion, startedAt)
+				if tc.withJob {
+					jobs = fmt.Sprintf(`[{"__typename":"CheckRun","name":"validate","status":%q,"conclusion":%q,"startedAt":%q,"detailsUrl":"https://github.com/test/repo/actions/runs/102/job/202"}]`, strings.ToUpper(status), strings.ToUpper(tc.conclusion), startedAt)
+				}
+			}
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+				githubCommitChecksCommand("", "test/repo", "deadbeef"):               {stdout: githubCommitChecksResponse(jobs)},
+				"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+					stdout: fmt.Sprintf(`[{"total_count":%d,"workflow_runs":[%s]}]`, count, runs),
+				},
+			}), nil, "", "test/repo")
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancelled := false
+			for _, check := range checks {
+				if check.ProviderID == "github-workflow-run:101" {
+					cancelled = true
+					if check.Bucket != scm.CheckBucketCancel {
+						t.Fatalf("cancelled workflow changed bucket: %+v", check)
+					}
+				}
+			}
+			if cancelled != tc.wantCancel {
+				t.Fatalf("cancelled workflow present = %v, want %v; checks = %+v", cancelled, tc.wantCancel, checks)
+			}
+			wantCount := count
+			if !tc.wantCancel {
+				wantCount--
+			}
+			if len(checks) != wantCount {
+				t.Fatalf("got %d checks, want %d; replacement must stay visible: %+v", len(checks), wantCount, checks)
+			}
+		})
+	}
+}
+
 func TestGetChecksPreservesIndependentSameNameWorkflows(t *testing.T) {
 	t.Parallel()
 
