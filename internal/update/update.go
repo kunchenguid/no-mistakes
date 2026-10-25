@@ -191,7 +191,11 @@ func (u *updater) maybeNotifyAndCheck(args []string) {
 	if cache != nil {
 		cmp, err := compareVersions(u.currentVersion, cache.LatestVersion)
 		if err == nil && cmp < 0 {
-			fmt.Fprintf(u.stderrWriter(), "%sA new version of %s is available: %s -> %s\nRun \"%s update\" to update%s\n", u.yellow(), u.appName, u.currentVersion, cache.LatestVersion, u.appName, u.reset())
+			command := u.appName + " update"
+			if runningBeta(cache.LatestVersion, cache.StableVersion) {
+				command += " --beta"
+			}
+			fmt.Fprintf(u.stderrWriter(), "%sA new version of %s is available: %s -> %s\nRun %q to update%s\n", u.yellow(), u.appName, u.currentVersion, cache.LatestVersion, command, u.reset())
 		}
 	}
 	if cacheStale(cache, u.currentVersion, u.now()) && u.spawnBackground != nil {
