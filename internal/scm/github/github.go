@@ -767,7 +767,7 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 		}
 		// A jobless cancellation has no job name to match during collapse.
 		// Both API inputs belong to the same head. Suppress only its summary
-		// when a later run of the same workflow has jobs or concluded success.
+		// when a later run of the same workflow is represented by jobs.
 		if run.Bucket == scm.CheckBucketCancel && run.WorkflowID != 0 && runID != "" {
 			superseded := false
 			for _, replacement := range runs {
@@ -775,7 +775,7 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 				if replacement.WorkflowID != run.WorkflowID || replacementID == "" || replacementID == runID {
 					continue
 				}
-				if !jobRuns[replacementID] && replacement.State != "SUCCESS" {
+				if !jobRuns[replacementID] {
 					continue
 				}
 				if after, ordered := h.checkStartedAfter(replacement, run); ordered && after {

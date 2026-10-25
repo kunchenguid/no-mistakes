@@ -407,7 +407,7 @@ func TestGetChecksSupersedesJoblessCancelledWorkflowOnlyWithALaterReplacement(t 
 		wantCancel  bool
 	}{
 		{name: "later success represented by jobs", replacement: true, withJob: true, conclusion: "success", workflowID: 1001},
-		{name: "later success without jobs", replacement: true, conclusion: "success", workflowID: 1001},
+		{name: "later success without jobs", replacement: true, conclusion: "success", workflowID: 1001, wantCancel: true},
 		{name: "later pending run with jobs", replacement: true, withJob: true, workflowID: 1001},
 		{name: "later failed run with jobs", replacement: true, withJob: true, conclusion: "failure", workflowID: 1001},
 		{name: "no replacement", wantCancel: true},
