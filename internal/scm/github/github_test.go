@@ -434,7 +434,11 @@ func TestGetChecksSupersedesJoblessCancelledWorkflowOnlyWithALaterReplacement(t 
 				if tc.conclusion == "" {
 					status = "in_progress"
 				}
-				runs += fmt.Sprintf(`,{"id":102,"workflow_id":%d,"name":"PR Gates rerun","status":%q,"conclusion":%q,"run_started_at":%q}`, tc.workflowID, status, tc.conclusion, startedAt)
+				replacementName := "PR Gates"
+				if !tc.withJob {
+					replacementName = "PR Gates rerun"
+				}
+				runs += fmt.Sprintf(`,{"id":102,"workflow_id":%d,"name":%q,"status":%q,"conclusion":%q,"run_started_at":%q}`, tc.workflowID, replacementName, status, tc.conclusion, startedAt)
 				if tc.withJob {
 					jobs = fmt.Sprintf(`[{"__typename":"CheckRun","name":"validate","status":%q,"conclusion":%q,"startedAt":%q,"detailsUrl":"https://github.com/test/repo/actions/runs/102/job/202"}]`, strings.ToUpper(status), strings.ToUpper(tc.conclusion), startedAt)
 				}

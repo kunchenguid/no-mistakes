@@ -745,9 +745,13 @@ func (h *Host) repoSlug() string {
 
 func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.Check {
 	represented := make(map[string][]int, len(checks))
+	jobRuns := make(map[string]bool, len(checks))
 	for i, check := range checks {
 		if runID := h.actionsRunID(check.Link); runID != "" {
 			represented[runID] = append(represented[runID], i)
+			if check.Kind == scm.CheckKindRun {
+				jobRuns[runID] = true
+			}
 		}
 	}
 	for _, run := range runs {
@@ -760,6 +764,28 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 				checks[i].WorkflowID = run.WorkflowID
 			}
 			continue
+		}
+		// A jobless cancellation has no job name to match during collapse.
+		// Both API inputs belong to the same head. Suppress only its summary
+		// when a later run of the same workflow has jobs or concluded success.
+		if run.Bucket == scm.CheckBucketCancel && run.WorkflowID != 0 && runID != "" {
+			superseded := false
+			for _, replacement := range runs {
+				replacementID := h.actionsRunID(replacement.Link)
+				if replacement.WorkflowID != run.WorkflowID || replacementID == "" || replacementID == runID {
+					continue
+				}
+				if !jobRuns[replacementID] && replacement.State != "SUCCESS" {
+					continue
+				}
+				if after, ordered := h.checkStartedAfter(replacement, run); ordered && after {
+					superseded = true
+					break
+				}
+			}
+			if superseded {
+				continue
+			}
 		}
 		checks = append(checks, run)
 		if runID != "" {
