@@ -305,7 +305,7 @@ func TestInitRefreshDoesNotOverwriteACustomNoMistakesRemote(t *testing.T) {
 	}
 
 	_, _, err := Init(ctx, d, p, workDir)
-	if err == nil || !strings.Contains(err.Error(), `remote "no-mistakes" already exists with url "`+customRemote+`"`) {
+	if err == nil || !strings.Contains(err.Error(), `remote "no-mistakes" already exists with url `+strconv.Quote(customRemote)) {
 		t.Fatalf("refresh must refuse a custom remote, got %v", err)
 	}
 	if strings.Contains(err.Error(), "NM_HOME") {
