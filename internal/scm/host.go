@@ -95,6 +95,11 @@ type PR struct {
 	// being certified. Providers that expose CI outside the PR check rollup
 	// use it to include those runs.
 	HeadSHA string
+	// ObservedHeadSHA is set by head-reporting adapters only after obtaining
+	// provider evidence during GetChecks, even if a later discovery read fails.
+	// It must never be copied from the requested HeadSHA on a failed lookup.
+	// Callers clear it before each read; an empty value supplies no observation.
+	ObservedHeadSHA string
 	// BaseBranch is the forge's actual target branch for this PR. It is
 	// authoritative once a PR exists and protects resumed CI repair from a
 	// later configuration change.

@@ -494,13 +494,14 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	pr.ObservedHeadSHA = ""
 	headSHA := ""
 	if strings.TrimSpace(pr.HeadSHA) != "" || len(h.requiredReviews) > 0 {
 		headSHA, err = h.getPRHeadSHA(ctx, selector)
 		if err != nil {
 			return nil, err
 		}
-		pr.HeadSHA = headSHA
+		pr.ObservedHeadSHA = headSHA
 	}
 	var checks []scm.Check
 	if headSHA != "" {
@@ -522,12 +523,20 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if err != nil {
 			return nil, err
 		}
+		pr.ObservedHeadSHA = currentHeadSHA
 		if currentHeadSHA != headSHA {
-			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+			return nil, fmt.Errorf("%w: PR head changed during check discovery from %s to %s", scm.ErrHeadChanged, headSHA, currentHeadSHA)
 		}
 	}
+	// External reviews are read for the live head this observation was bound
+	// to (reported in ObservedHeadSHA), without overwriting the caller's
+	// requested head.
+	reviewPR := *pr
+	if headSHA != "" {
+		reviewPR.HeadSHA = headSHA
+	}
 	for _, reviewer := range h.requiredReviews {
-		checks, err = h.requiredReviewChecks(ctx, pr, reviewer, checks)
+		checks, err = h.requiredReviewChecks(ctx, &reviewPR, reviewer, checks)
 		if err != nil {
 			return nil, err
 		}

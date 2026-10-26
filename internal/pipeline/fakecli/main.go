@@ -430,6 +430,29 @@ func fakeGitRemoteErrorHandler(args []string) {
 }
 
 func fakePRHeadSHA() string {
+	if raw := os.Getenv("FAKE_CLI_PR_HEAD_SEQUENCE"); raw != "" {
+		var heads []string
+		if err := json.Unmarshal([]byte(raw), &heads); err != nil || len(heads) == 0 {
+			os.Exit(1)
+		}
+		indexPath := os.Getenv("FAKE_CLI_PR_HEAD_INDEX")
+		index := 0
+		if data, err := os.ReadFile(indexPath); err == nil {
+			index, _ = strconv.Atoi(string(data))
+		}
+		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o600); err != nil {
+			os.Exit(1)
+		}
+		if index >= len(heads) {
+			index = len(heads) - 1
+		}
+		if heads[index] == "ERROR" {
+			fmt.Fprintln(os.Stderr, "head lookup failed")
+			os.Exit(1)
+		}
+		return heads[index]
+	}
+
 	configured := os.Getenv("FAKE_CLI_PR_HEAD_SHA")
 	if os.Getenv("FAKE_CLI_HEAD_FROM_WORKTREE") != "1" || configured != "deadbeef" {
 		return configured

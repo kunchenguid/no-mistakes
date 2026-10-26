@@ -512,6 +512,10 @@ func parseCIFixTargets(raw string) (ciFixTargets, error) {
 	if err != nil {
 		return ciFixTargets{}, err
 	}
+	return ciFixTargetsFromFindings(findings), nil
+}
+
+func ciFixTargetsFromFindings(findings Findings) ciFixTargets {
 	targets := ciFixTargets{Findings: findings}
 	seen := map[string]bool{}
 	for _, item := range findings.Items {
@@ -537,7 +541,7 @@ func parseCIFixTargets(raw string) (ciFixTargets, error) {
 		}
 		return targets.Checks[i].Name < targets.Checks[j].Name
 	})
-	return targets, nil
+	return targets
 }
 
 func (t ciFixTargets) empty() bool { return len(t.Findings.Items) == 0 }

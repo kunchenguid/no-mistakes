@@ -25,6 +25,12 @@ func requiredReviewChecks(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR,
 	if !requiresExternalReview(sctx) {
 		return checks, nil
 	}
+	// The adapter reads an external review for the head it observed, which it
+	// reports in ObservedHeadSHA without overwriting the requested head.
+	currentHead := pr.HeadSHA
+	if pr.ObservedHeadSHA != "" {
+		currentHead = pr.ObservedHeadSHA
+	}
 	for _, reviewer := range sctx.Config.CI.RequiredReviews {
 		found := false
 		for _, check := range checks {
@@ -32,7 +38,7 @@ func requiredReviewChecks(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR,
 				continue
 			}
 			found = true
-			if check.HeadSHA == "" || check.HeadSHA != pr.HeadSHA {
+			if check.HeadSHA == "" || check.HeadSHA != currentHead {
 				return nil, fmt.Errorf("external review %s does not match the current PR head", reviewer)
 			}
 		}

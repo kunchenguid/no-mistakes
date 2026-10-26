@@ -550,6 +550,46 @@ func TestGetChecks(t *testing.T) {
 	}
 }
 
+func TestGetChecksHeadSHAOptIn(t *testing.T) {
+	tests := []struct {
+		name         string
+		strict       bool
+		expectedHead string
+		checks       string
+		want         error
+		wantMessage  string
+	}{
+		{name: "mismatched head", expectedHead: "abc123", checks: `[{"name":"build","bucket":"pass","head_sha":"other"}]`, want: scm.ErrHeadChanged},
+		{name: "missing legacy head", expectedHead: "abc123", checks: `[{"name":"build","bucket":"pass"}]`},
+		{name: "strict missing head", strict: true, expectedHead: "abc123", checks: `[{"name":"build","bucket":"pass"}]`, want: ErrProtocol, wantMessage: `check "build"`},
+		{name: "strict valid head", strict: true, expectedHead: "abc123", checks: `[{"name":"build","bucket":"pass","head_sha":"abc123"}]`},
+		{name: "no expected head", strict: true, checks: `[{"name":"build","bucket":"pass","head_sha":"other"}]`},
+		{name: "strict missing beats earlier stale", strict: true, expectedHead: "abc123", checks: `[{"name":"build","bucket":"pass","head_sha":"other"},{"name":"lint","bucket":"pass"}]`, want: ErrProtocol, wantMessage: `check "lint"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := statusNoCaps
+			if tt.strict {
+				status = `{"protocol_version":1,"capabilities":{"check_head_sha":true},"max_pr_body_chars":0}`
+			}
+			host, transport := availableHost(t, status, Options{})
+			transport.reply(`{"checks":` + tt.checks + `}`)
+			pr := testPR()
+			pr.HeadSHA = tt.expectedHead
+			_, err := host.GetChecks(context.Background(), pr)
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("GetChecks: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.want) || (tt.wantMessage != "" && !strings.Contains(err.Error(), tt.wantMessage)) {
+				t.Fatalf("GetChecks error = %v, want %v containing %q", err, tt.want, tt.wantMessage)
+			}
+		})
+	}
+}
+
 func TestOptionalCapabilitiesAreGatedByHandshake(t *testing.T) {
 	host, _ := availableHost(t, statusNoCaps, Options{})
 	ctx := context.Background()
