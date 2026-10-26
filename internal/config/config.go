@@ -359,14 +359,22 @@ type ForgeProfile struct {
 type ForgeProfiles map[string]ForgeProfile
 
 // RepositoryOverride contains machine-local settings for one normalized remote.
-// Review and Document are additive guidance only: they are rendered alongside
-// the repository's trusted rules and can never replace or remove them.
+// Review, Document, and Test are additive guidance only: they are rendered
+// alongside the repository's trusted rules and can never replace or remove them.
 type RepositoryOverride struct {
 	Commit   GlobalCommitRaw            `yaml:"commit"`
 	PR       RepositoryPRRaw            `yaml:"pr"`
 	Commands map[string]CommandOverride `yaml:"commands"`
 	Review   OperatorReviewRaw          `yaml:"review"`
 	Document DocumentRaw                `yaml:"document"`
+	Test     RepositoryTestRaw          `yaml:"test"`
+}
+
+// RepositoryTestRaw is the test block a repository_overrides entry may set:
+// only the additive live-validation runbook, never a setting that steers
+// evidence publication or the gate.
+type RepositoryTestRaw struct {
+	Instructions string `yaml:"instructions"`
 }
 
 // OperatorReviewRaw is the review block the operator's global config may set,
@@ -1240,6 +1248,10 @@ type Test struct {
 	Evidence                Evidence
 	Instructions            string
 	AllowApproveOverFailure string
+	// RepositoryInstructions come from the repository_overrides entry matching
+	// the repository's remote and are rendered before, never instead of,
+	// Instructions.
+	RepositoryInstructions string
 }
 
 // Evidence is the resolved test-evidence config. When StoreInRepo is true, the
@@ -3976,9 +3988,10 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	// repository's decision (see EvidenceRaw.LocalRoot).
 	applyEvidenceStorageOverrides(&test.Evidence, &global.Test.Evidence)
 	// The runbook describes ONE repository's product, so it is resolved from
-	// the repository only - never from global config, which has no repository
-	// to describe. repo here is the EffectiveRepoConfig result, so this value
-	// is already trusted-only.
+	// the repository only - never from top-level global config, which has no
+	// repository to describe (a matching repository_overrides entry adds its
+	// own as Test.RepositoryInstructions below). repo here is the
+	// EffectiveRepoConfig result, so this value is already trusted-only.
 	test.Prepare = repo.Test.Prepare
 	test.BaseAttribution = repo.Test.BaseAttribution
 	test.Instructions = strings.TrimSpace(repo.Test.Instructions)
@@ -4127,6 +4140,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		cfg.CommandOverrides = copyCommandOverrides(override.Commands)
 		cfg.Review.RepositoryPathInstructions = resolvePathInstructions(override.Review.PathInstructions)
 		cfg.Document.RepositoryInstructions = strings.TrimSpace(override.Document.Instructions)
+		cfg.Test.RepositoryInstructions = strings.TrimSpace(override.Test.Instructions)
 	}
 
 	if repo.Agent != "" {

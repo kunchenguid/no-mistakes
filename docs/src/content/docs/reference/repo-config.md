@@ -424,7 +424,7 @@ It augments or clarifies the built-in policy; it cannot disable documentation in
 
 Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
 
-An operator can add their own policy for this repository through a machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-and-documentation-guidance) entry; it is rendered as a separate, labeled section and never replaces this field.
+An operator can add their own policy for this repository through a machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-documentation-and-test-guidance) entry; it is rendered as a separate, labeled section and never replaces this field.
 
 ### review.conversation
 
@@ -529,7 +529,7 @@ Like `document.instructions`, this field steers gate behavior, so it is honored 
 
 #### Machine-local rules
 
-The operator gating a repository can add rules from their own global config, globally with [`review.path_instructions`](/no-mistakes/reference/global-config/#reviewpath_instructions) or for this repository with a [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-and-documentation-guidance) entry.
+The operator gating a repository can add rules from their own global config, globally with [`review.path_instructions`](/no-mistakes/reference/global-config/#reviewpath_instructions) or for this repository with a [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-documentation-and-test-guidance) entry.
 Those rules render in their own labeled sections before this field's, never replace it, and count toward the limits above together with it.
 
 ### gates
@@ -1153,8 +1153,10 @@ Repository-specific runbook for standing the product up during live validation.
 | Type | `string` (multiline) |
 | Default | Empty |
 
-The Test step injects these instructions into its evidence prompt so the agent can start and drive the real product the way an end user would.
+The Test step injects these instructions into its repair and evidence prompts so each agent can start and drive the real product the way an end user would.
 Like `document.instructions`, this field steers its own gate, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`. A contributor's pushed branch cannot rewrite the runbook that validates that branch.
+
+An operator can add their own runbook for this repository through a machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-review-documentation-and-test-guidance) entry; it is rendered as a separate, labeled section before this field's and never replaces it.
 
 ### test.allow_approve_over_failure
 
