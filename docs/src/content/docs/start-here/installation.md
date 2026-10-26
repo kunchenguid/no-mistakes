@@ -126,8 +126,7 @@ A [Nix install](#nix) upgrades through Nix instead.
 no-mistakes eject
 ```
 
-Removes the `no-mistakes` remote, deletes the bare repo, cleans up worktrees, and removes the database record.
-It does not remove repo-local agent skill files created by `no-mistakes init`.
+Removes the gate from the current repository; [`no-mistakes eject`](/no-mistakes/reference/cli/#no-mistakes-eject) lists exactly what it removes and what it leaves in place.
 
 ## Uninstall
 
