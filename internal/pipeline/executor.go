@@ -37,14 +37,39 @@ const (
 	defaultGateReconcileTimeout  = config.DefaultGateReconcileTimeout
 )
 
+// FixInstructions is the per-finding guidance a fix response attaches, keyed
+// by finding ID. FromDriver marks guidance from an agent driving the run
+// through `no-mistakes axi`; it is stored apart from the user's own
+// instructions so that no later prompt presents a driver's scoping as a
+// decision the user made.
+type FixInstructions struct {
+	ByFinding  map[string]string
+	FromDriver bool
+}
+
+func (f *FixInstructions) userNotes() map[string]string {
+	if f == nil || f.FromDriver {
+		return nil
+	}
+	return f.ByFinding
+}
+
+func (f *FixInstructions) driverNotes() map[string]string {
+	if f == nil || !f.FromDriver {
+		return nil
+	}
+	return f.ByFinding
+}
+
 type approvalResponse struct {
-	origin         types.ResponseOrigin
-	action         types.ApprovalAction
-	findingIDs     []string
-	instructions   map[string]string
-	addedFindings  []types.Finding
-	approvalReason string
-	coverageRound  *db.StepRound
+	origin             types.ResponseOrigin
+	action             types.ApprovalAction
+	findingIDs         []string
+	instructions       map[string]string
+	driverInstructions map[string]string
+	addedFindings      []types.Finding
+	approvalReason     string
+	coverageRound      *db.StepRound
 	// approvalOverride is the unresolved condition an accepted approval
 	// records, verified while the gate was still parked.
 	approvalOverride string
@@ -221,7 +246,7 @@ type ResponseOptions struct {
 //
 // It returns the dispositions the response recorded, which the daemon echoes
 // to the caller.
-func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string, options ...ResponseOptions) (RespondDispositions, error) {
+func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions *FixInstructions, addedFindings []types.Finding, approvalReason string, options ...ResponseOptions) (RespondDispositions, error) {
 	var option ResponseOptions
 	if len(options) > 0 {
 		option = options[0]
@@ -284,13 +309,14 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		return RespondDispositions{}, errors.New(refusal)
 	}
 	response := approvalResponse{
-		origin:         option.Origin.OrUnknown(),
-		action:         action,
-		findingIDs:     findingIDs,
-		instructions:   instructions,
-		addedFindings:  addedFindings,
-		approvalReason: approvalReason,
-		coverageRound:  coverageRound,
+		origin:             option.Origin.OrUnknown(),
+		action:             action,
+		findingIDs:         findingIDs,
+		instructions:       instructions.userNotes(),
+		driverInstructions: instructions.driverNotes(),
+		addedFindings:      addedFindings,
+		approvalReason:     approvalReason,
+		coverageRound:      coverageRound,
 	}
 	if action == types.ActionApprove && e.waitingApprovalVerify != nil {
 		unresolved, err := e.waitingApprovalVerify()
@@ -2033,6 +2059,7 @@ func restorePendingDecision(response approvalResponse, previous, gate string) (a
 	var restoredAdditions []types.Finding
 	var restoredKeys []types.Finding
 	instructions := make(map[string]string)
+	driverInstructions := make(map[string]string)
 	for _, item := range recorded.Items {
 		if item.ID == "" {
 			continue
@@ -2041,6 +2068,9 @@ func restorePendingDecision(response approvalResponse, previous, gate string) (a
 			restoredGateIDs = append(restoredGateIDs, item.ID)
 			if item.UserInstructions != "" {
 				instructions[item.ID] = item.UserInstructions
+			}
+			if item.DriverInstructions != "" {
+				driverInstructions[item.ID] = item.DriverInstructions
 			}
 			continue
 		}
@@ -2056,18 +2086,11 @@ func restorePendingDecision(response approvalResponse, previous, gate string) (a
 		return response, nil
 	}
 	response.findingIDs = combineFindingIDLists(restoredGateIDs, response.findingIDs)
-	if len(instructions) > 0 {
-		merged := make(map[string]string, len(instructions)+len(response.instructions))
-		for id, note := range instructions {
-			merged[id] = note
-		}
-		// An instruction the response states itself is the operator's latest
-		// word about that finding and wins over the recorded one.
-		for id, note := range response.instructions {
-			merged[id] = note
-		}
-		response.instructions = merged
-	}
+	// An instruction the response states itself, from either author, is the
+	// latest word about that finding and wins over the recorded one.
+	statedUser, statedDriver := response.instructions, response.driverInstructions
+	response.instructions = restoreRecordedNotes(instructions, statedUser, statedDriver)
+	response.driverInstructions = restoreRecordedNotes(driverInstructions, statedDriver, statedUser)
 	// A restatement is dropped in favor of the restored item: dispatching both
 	// would hand the fixer the same finding twice.
 	restored := make(map[types.Finding]bool, len(restoredKeys))
@@ -2082,6 +2105,24 @@ func restorePendingDecision(response approvalResponse, previous, gate string) (a
 	}
 	response.addedFindings = append(restoredAdditions, explicit...)
 	return response, restoredGateIDs
+}
+
+// restoreRecordedNotes returns stated plus every recorded note for a finding
+// the response states no instruction about, in either stated or other.
+func restoreRecordedNotes(recorded, stated, other map[string]string) map[string]string {
+	if len(recorded) == 0 {
+		return stated
+	}
+	merged := make(map[string]string, len(recorded)+len(stated))
+	for id, note := range recorded {
+		if _, ok := other[id]; !ok {
+			merged[id] = note
+		}
+	}
+	for id, note := range stated {
+		merged[id] = note
+	}
+	return merged
 }
 
 // recordDeclinedRound persists an approve, skip, or abort resolution as a real
@@ -2825,7 +2866,7 @@ func normalizeFixSelection(gate string, response approvalResponse, review bool) 
 	// an added finding must never take an ID that belongs to a gate finding
 	// this response declined, or the record and the echo would claim a fix for
 	// a concern the operator did not choose and the decline would be dropped.
-	merged = mergeUserOverridesJSON(selected, response.instructions, resolveAddedFindingIDs(response.addedFindings, gate))
+	merged = mergeUserOverridesJSON(selected, response.instructions, response.driverInstructions, resolveAddedFindingIDs(response.addedFindings, gate))
 	outstanding, persisted = gate, merged
 	if review {
 		outstanding = mergeOutstandingFindingsJSON(gate, merged, nil)

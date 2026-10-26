@@ -778,9 +778,11 @@ func budgetCutGuidanceSection(sctx *pipeline.StepContext) string {
 	}
 	var guidance []string
 	for _, item := range types.FilterFindings(findings, testBudgetCutIDs).Items {
-		text := sanitizePromptMultilineText(item.UserInstructions)
-		if text != "" && !slices.Contains(guidance, text) {
-			guidance = append(guidance, text)
+		for _, note := range []string{item.UserInstructions, item.DriverInstructions} {
+			text := sanitizePromptMultilineText(note)
+			if text != "" && !slices.Contains(guidance, text) {
+				guidance = append(guidance, text)
+			}
 		}
 	}
 	if len(guidance) == 0 {

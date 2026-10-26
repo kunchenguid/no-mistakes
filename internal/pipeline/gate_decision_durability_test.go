@@ -107,7 +107,7 @@ func TestExecutor_ReansweredRoundPreservesAcknowledgedFindingContent(t *testing.
 				exec.waitingRoundID = round.ID
 				exec.waitingFindings = gate
 				exec.approvalCh = make(chan approvalResponse, 1)
-				got, err := exec.RespondWithOverrides(step, types.ActionFix, ids, ignored, notes, added, "")
+				got, err := exec.RespondWithOverrides(step, types.ActionFix, ids, ignored, userInstructions(notes), added, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -230,7 +230,7 @@ func TestExecutor_RecoveredRoundRestoresTheAcceptedAddition(t *testing.T) {
 			crashed.waitingRoundID = rounds[0].ID
 			crashed.waitingFindings = gate
 			accepted := []types.Finding{{Description: "repair logger", UserInstructions: "keep compatibility"}}
-			if _, err := crashed.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1"}, []string{"R2"}, map[string]string{"R1": "preserve logger format"}, accepted, ""); err != nil {
+			if _, err := crashed.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1"}, []string{"R2"}, userInstructions(map[string]string{"R1": "preserve logger format"}), accepted, ""); err != nil {
 				t.Fatal(err)
 			}
 
