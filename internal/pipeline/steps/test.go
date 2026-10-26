@@ -763,8 +763,10 @@ func onlyTestBudgetCutFindings(raw string) bool {
 	return err == nil && len(findings.Items) > 0 && len(types.ExcludeFindings(findings, testBudgetCutIDs).Items) == 0
 }
 
-// budgetCutGuidanceSection renders the operator's instructions attached to
-// selected budget-cut findings. The repair turn never sees those findings, so
+// budgetCutGuidanceSection renders the instructions attached to selected
+// budget-cut findings, keeping the user's decision apart from guidance an
+// agent driver passed with axi respond --instructions so the evidence turn
+// never presents the driver's note as the user's choice. The repair turn never sees those findings, so
 // the evidence turn is the one that must follow them. One note given to both
 // budget-cut findings (axi respond --instructions copies it onto each) is
 // rendered once.
@@ -776,20 +778,28 @@ func budgetCutGuidanceSection(sctx *pipeline.StepContext) string {
 	if err != nil {
 		return ""
 	}
-	var guidance []string
-	for _, item := range types.FilterFindings(findings, testBudgetCutIDs).Items {
-		for _, note := range []string{item.UserInstructions, item.DriverInstructions} {
-			text := sanitizePromptMultilineText(note)
-			if text != "" && !slices.Contains(guidance, text) {
-				guidance = append(guidance, text)
-			}
+	var userGuidance, driverGuidance []string
+	add := func(list []string, note string) []string {
+		text := sanitizePromptMultilineText(note)
+		if text == "" || slices.Contains(list, text) {
+			return list
 		}
+		return append(list, text)
 	}
-	if len(guidance) == 0 {
-		return ""
+	for _, item := range types.FilterFindings(findings, testBudgetCutIDs).Items {
+		userGuidance = add(userGuidance, item.UserInstructions)
+		driverGuidance = add(driverGuidance, item.DriverInstructions)
 	}
-	return "\nOperator guidance for this validation (from the decision on the Test agent budget cut):\n" +
-		strings.Join(guidance, "\n") + "\n"
+	var section string
+	if len(userGuidance) > 0 {
+		section += "\nOperator guidance for this validation (from the decision on the Test agent budget cut):\n" +
+			strings.Join(userGuidance, "\n") + "\n"
+	}
+	if len(driverGuidance) > 0 {
+		section += "\nDriver guidance for this validation (from the agent driving this run when the Test agent budget cut was answered; not a decision by the user and not part of the user's intent):\n" +
+			strings.Join(driverGuidance, "\n") + "\n"
+	}
+	return section
 }
 
 // testRepairFindings is the fix selection the repair agent is asked to

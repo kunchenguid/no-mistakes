@@ -1435,3 +1435,52 @@ func TestTestStep_InitialAgent_NoTargetedEvidenceRequiresHonestFinding(t *testin
 		}
 	}
 }
+
+// A driver's --instructions on a budget-cut answer reach the evidence turn
+// labelled as the driver's guidance, never as the operator's decision.
+func TestBudgetCutGuidanceSection_LabelsDriverInstructions(t *testing.T) {
+	t.Parallel()
+	const userNote = "USER-NOTE validate only checkout"
+	const driverNote = "DRIVER-NOTE skip the docs"
+	for _, tt := range []struct {
+		name              string
+		user, driver      string
+		wantUser, wantDrv bool
+	}{
+		{"driver only", "", driverNote, false, true},
+		{"user only", userNote, "", true, false},
+		{"both", userNote, driverNote, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			findings := types.Findings{Items: []types.Finding{
+				{ID: types.FindingIDTestAgentTimeout, Severity: "warning", Action: types.ActionAskUser, Description: "budget cut", UserInstructions: tt.user, DriverInstructions: tt.driver},
+				{ID: types.FindingIDTestAgentUnvalidatedWork, Severity: "warning", Action: types.ActionAskUser, Description: "unvalidated", UserInstructions: tt.user, DriverInstructions: tt.driver},
+			}}
+			raw, err := types.MarshalFindingsJSON(findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := budgetCutGuidanceSection(&pipeline.StepContext{Fixing: true, PreviousFindings: raw})
+			userHeader := "Operator guidance for this validation (from the decision on the Test agent budget cut):\n"
+			driverHeader := "Driver guidance for this validation (from the agent driving this run"
+			if hasUser := strings.Contains(got, userHeader+userNote+"\n"); hasUser != tt.wantUser {
+				t.Fatalf("user guidance rendered = %v, want %v:\n%s", hasUser, tt.wantUser, got)
+			}
+			if hasDriver := strings.Contains(got, driverHeader) && strings.Contains(got, "not a decision by the user"); hasDriver != tt.wantDrv {
+				t.Fatalf("driver guidance labelled = %v, want %v:\n%s", hasDriver, tt.wantDrv, got)
+			}
+			if tt.driver != "" {
+				if strings.Contains(got, userHeader+driverNote) {
+					t.Fatalf("driver guidance presented as the operator's decision:\n%s", got)
+				}
+				if n := strings.Count(got, driverNote); n != 1 {
+					t.Fatalf("driver note rendered %d times, want once:\n%s", n, got)
+				}
+				if !strings.Contains(got[strings.Index(got, driverHeader):], driverNote) {
+					t.Fatalf("driver note not under the driver header:\n%s", got)
+				}
+			}
+		})
+	}
+}
