@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.102.0](https://github.com/kunchenguid/no-mistakes/compare/v1.101.0...v1.102.0) (2026-10-26)
+
+
+### Features
+
+* **config:** accept machine-local test.instructions in repository_overrides (port of [#1481](https://github.com/kunchenguid/no-mistakes/issues/1481)) ([#1618](https://github.com/kunchenguid/no-mistakes/issues/1618)) ([30d9ec2](https://github.com/kunchenguid/no-mistakes/commit/30d9ec2e67552a5dd8b863474dcfb9788bdff7a7))
+
+
+### Bug Fixes
+
+* **evidence:** redact run worktree paths in published text evidence ([#1612](https://github.com/kunchenguid/no-mistakes/issues/1612)) ([52b832e](https://github.com/kunchenguid/no-mistakes/commit/52b832e997b2a5833eca192541a3d6378823f8f9))
+* **pipeline:** disable rerere for the rebase step's own rebase and merge ([#1613](https://github.com/kunchenguid/no-mistakes/issues/1613)) ([c173449](https://github.com/kunchenguid/no-mistakes/commit/c17344946827e40129e1a003a05891a65e2bd1f1))
+* **pipeline:** record axi --instructions as driver guidance, not a user decision (port of [#1510](https://github.com/kunchenguid/no-mistakes/issues/1510)) ([#1617](https://github.com/kunchenguid/no-mistakes/issues/1617)) ([e8189a8](https://github.com/kunchenguid/no-mistakes/commit/e8189a86f1515b20cf8ad5db5429e054ff880c04))
+* **pipeline:** require fresh CI failures before repair (port of [#1483](https://github.com/kunchenguid/no-mistakes/issues/1483)) ([#1619](https://github.com/kunchenguid/no-mistakes/issues/1619)) ([f0c91d3](https://github.com/kunchenguid/no-mistakes/commit/f0c91d3f4a7e382cf6946c44a61e757225e70ef9))
+* **pipeline:** stop early when skipping review prevents push ([#1606](https://github.com/kunchenguid/no-mistakes/issues/1606)) ([2f6b7a1](https://github.com/kunchenguid/no-mistakes/commit/2f6b7a13340db91367a35c8cd7f1915a1ff2f271))
+* **scm:** drop jobless cancelled workflow runs superseded by a later same-head run ([#1610](https://github.com/kunchenguid/no-mistakes/issues/1610)) ([dac5a6f](https://github.com/kunchenguid/no-mistakes/commit/dac5a6f74ad6918d948644c768408f96be98126d))
+
 ## [1.101.0](https://github.com/kunchenguid/no-mistakes/compare/v1.100.2...v1.101.0) (2026-10-25)
 
 
