@@ -126,11 +126,13 @@ func assertSharedHomeRefusal(t *testing.T, err error, otherGate, ownGate string)
 		`remote "no-mistakes" already exists with url "` + otherGate + `"`,
 		"this .git is shared with another NM_HOME",
 		"this home's gate is " + ownGate,
-		"git remote remove no-mistakes",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("refusal is missing %q:\n%s", want, msg)
 		}
+	}
+	if strings.Contains(msg, "git remote remove") {
+		t.Errorf("refusal must not suggest removing the other home's remote:\n%s", msg)
 	}
 	m := insteadOfRecipe.FindStringSubmatch(msg)
 	if m == nil {
@@ -333,6 +335,34 @@ func TestTearingDownAnotherHomesGateKeepsTheSharedRemote(t *testing.T) {
 			t.Error("eject must still remove home B's own gate")
 		}
 	})
+}
+
+// A failed fresh init removes only the remote it wrote. A copied checkout's
+// remote to the original's gate sits in the same repos dir, but this init
+// never wrote it.
+func TestInitRollbackKeepsARemoteItDidNotWrite(t *testing.T) {
+	workDir := setupTestRepo(t)
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	siblingGate := p.RepoDir("original")
+	if err := gitpkg.AddRemote(context.Background(), workDir, RemoteName, siblingGate); err != nil {
+		t.Fatalf("add sibling gate remote: %v", err)
+	}
+	old := ensureGateHooksPathIsolation
+	ensureGateHooksPathIsolation = func(context.Context, string) (bool, error) {
+		return false, errors.New("injected provisioning failure")
+	}
+	t.Cleanup(func() { ensureGateHooksPathIsolation = old })
+
+	if _, _, err := Init(context.Background(), d, p, workDir); err == nil {
+		t.Fatal("init must fail when provisioning fails")
+	}
+	if got := literalGateURL(t, workDir); got != siblingGate {
+		t.Fatalf("rollback changed a remote this init never wrote to %q, want %q", got, siblingGate)
+	}
 }
 
 // A rewrite that maps only fetches onto this gate is not enough: the pipeline

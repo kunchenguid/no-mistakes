@@ -137,7 +137,9 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		// Only tear down a gate we created in this call; never destroy an
 		// already-initialized gate when a repair pass fails.
 		if existing == nil {
-			removeOwnWorkingRemote(ctx, absRoot, p.ReposDir())
+			if urls, err := git.GetConfiguredRemoteURLs(ctx, absRoot, RemoteName); err == nil && len(urls) == 1 && urls[0] == bareDir {
+				_ = git.RemoveRemote(ctx, absRoot, RemoteName)
+			}
 			os.RemoveAll(bareDir)
 		}
 		return nil, false, err
@@ -271,10 +273,8 @@ func ensureWorkingRemote(ctx context.Context, absRoot, bareDir, reposDir string)
 		"(for example a linked worktree used by another OS account), and this home's gate is %s.\n"+
 		"init leaves the remote alone, because rewriting it would send the other home's pushes to this gate.\n"+
 		"To push through this home's gate, map the other gate onto it in your own global git config, then re-run init:\n\n"+
-		"  git config --global \"url.%s.insteadOf\" \"%s\"\n\n"+
-		"If %s is a leftover from a no-mistakes home that no longer exists, remove the remote instead, then re-run init:\n\n"+
-		"  git remote remove %s",
-		refusal, bareDir, bareDir, literalURL, literalURL, RemoteName)
+		"  git config --global \"url.%s.insteadOf\" \"%s\"",
+		refusal, bareDir, bareDir, literalURL)
 }
 
 // remoteResolvesTo reports whether every URL git resolves for the working
