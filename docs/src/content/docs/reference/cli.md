@@ -66,6 +66,9 @@ When a fork URL is already recorded, re-running `init` without `--fork-url` pres
 Passing `--fork-url` again replaces the stored fork URL after validation.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
 If you copy an initialized working directory while the original still exists, the copy is treated as a separate repo and gets a fresh gate.
+On a fresh init and on a refresh alike, `init` decides from the literal `no-mistakes` remote URL in `.git/config`, before any `url.<base>.insteadOf` rewrite: it repoints stale wiring into its own `repos` directory, leaves alone a URL that your git config already rewrites to this gate for both fetch and push, and refuses anything else, including a remote with several URLs, rather than rewriting it.
+When the checkout's `.git` is shared with another no-mistakes home (another `NM_HOME`, for example a linked worktree used by another OS account), that remote names the other home's gate, so the refusal names both gates and prints the per-account rewrite `git config --global "url.<this gate>.insteadOf" "<other gate>"`.
+With that rewrite in your own global git config, `init` leaves the shared remote alone and your pushes through it reach your own gate; a rolled-back init or an `eject` from your home leaves it in place too.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
 Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
 
@@ -595,7 +598,7 @@ Remove the gate from the current repository.
 no-mistakes eject
 ```
 
-Removes the `no-mistakes` remote, deletes the bare repo directory, cleans up worktrees, and deletes the database record (cascades to runs and steps).
+Removes the `no-mistakes` remote (unless it points at another no-mistakes home's gate in a shared `.git`), deletes the bare repo directory, cleans up worktrees, and deletes the database record (cascades to runs and steps).
 It does not remove any legacy repo-local agent skill files left by older versions; current `init` installs the skill at user level instead.
 
 ## no-mistakes attach

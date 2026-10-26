@@ -252,6 +252,7 @@ git remote -v | grep no-mistakes
 
 If it's missing, run `no-mistakes init` again.
 Re-running init refreshes an existing gate and repairs the `no-mistakes` remote when it is missing.
+If init instead refuses because the remote already exists with another URL, it leaves that remote alone; when the `.git` is shared with another no-mistakes home, follow the `url.<base>.insteadOf` rewrite the refusal prints (see [`no-mistakes init`](/no-mistakes/reference/cli/#no-mistakes-init)).
 It also reattaches an existing gate after you rename or move the repo directory, as long as the old path no longer exists.
 
 ### Check the receive hooks
