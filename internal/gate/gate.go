@@ -273,8 +273,14 @@ func ensureWorkingRemote(ctx context.Context, absRoot, bareDir, reposDir string)
 		"(for example a linked worktree used by another OS account), and this home's gate is %s.\n"+
 		"init leaves the remote alone, because rewriting it would send the other home's pushes to this gate.\n"+
 		"To push through this home's gate, map the other gate onto it in your own global git config, then re-run init:\n\n"+
-		"  git config --global \"url.%s.insteadOf\" \"%s\"",
-		refusal, bareDir, bareDir, literalURL)
+		"  git config --global %s %s",
+		refusal, bareDir, shellQuote("url."+bareDir+".insteadOf"), shellQuote(literalURL))
+}
+
+// shellQuote quotes s as one POSIX shell word, so a path holding $, quotes, or
+// spaces survives copying the printed command into a shell.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // remoteResolvesTo reports whether every URL git resolves for the working

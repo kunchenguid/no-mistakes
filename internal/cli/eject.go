@@ -12,8 +12,9 @@ func newEjectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "eject",
 		Short: "Remove no-mistakes gate from the current repository",
-		Long: `Removes the "no-mistakes" git remote, deletes the bare repo and worktrees,
-and removes the repo record from the database.`,
+		Long: `Removes the "no-mistakes" git remote when its only literal URL is inside this
+home's repos directory (any other remote is left in place), deletes the bare
+repo and worktrees, and removes the repo record from the database.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("eject", func() error {
