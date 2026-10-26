@@ -99,7 +99,10 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
 		default:
 			for _, target := range failingTargets.Checks {
-				if !checkTargetFailedTerminally(checks, target) {
+				// Only a fresh failure is repairable. A selected check that
+				// was re-run and then cancelled has no failure left for the
+				// fixer; cancellations go to the ask-user path instead.
+				if !checkTargetStillFailing(checks, target) {
 					sctx.Log("selected CI checks are missing or no longer failing; waiting for current CI observation")
 					failingTargets.Checks = nil
 					break

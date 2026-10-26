@@ -952,3 +952,45 @@ func TestCIObservationFindings_CodeRabbitIsRecognizedOnlyWhenOptedIn(t *testing.
 		t.Fatalf("opted-in findings anchor %v, want the CodeRabbit and Greptile comments", files)
 	}
 }
+
+// A selected check that failed, was re-run, and ended cancelled has no failure
+// left to repair: the pre-repair refresh must not hand it to the fixer.
+func TestCIResumedRepairFailRerunCancelledSkipsRepair(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		finding string
+		current scm.Check
+	}{
+		{
+			name:    "matched by name",
+			finding: `{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"}`,
+			current: scm.Check{Name: "test", Bucket: scm.CheckBucketCancel},
+		},
+		{
+			name:    "matched by provider id",
+			finding: `{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"}`,
+			current: scm.Check{Name: "test", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketCancel},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				t.Error("fix agent ran for a selected check whose re-run was cancelled")
+				return nil, errors.New("unexpected fixer invocation")
+			}}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.PreviousFindings = `{"findings":[` + tt.finding + `]}`
+			host := &completionSnapshotHost{checks: []scm.Check{tt.current}}
+			step := &CIStep{}
+			outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+			if err != nil || outcome != nil {
+				t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+			}
+			if len(ag.calls) != 0 {
+				t.Fatalf("agent calls = %d, want none for a cancelled re-run", len(ag.calls))
+			}
+		})
+	}
+}

@@ -291,6 +291,19 @@ func (s *CIStep) lastRepairStillUnverified(checks []scm.Check, mergeConflict boo
 	return true
 }
 
+// checkTargetStillFailing reports whether a check matching target is in the
+// fail bucket. Unlike checkTargetFailedTerminally it does not accept a
+// cancelled check: the pre-repair refresh must only hand the fixer a failure
+// the provider still reports, never a cancellation of a re-run.
+func checkTargetStillFailing(checks []scm.Check, target scm.CheckTarget) bool {
+	for _, check := range checks {
+		if checkMatchesTarget(check, target) && check.Failing() {
+			return true
+		}
+	}
+	return false
+}
+
 func checkTargetFailedTerminally(checks []scm.Check, target scm.CheckTarget) bool {
 	for _, check := range checks {
 		if checkMatchesTarget(check, target) && checkFailedTerminally(check) {
