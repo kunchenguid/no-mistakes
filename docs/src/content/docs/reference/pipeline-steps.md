@@ -65,7 +65,15 @@ This is best-effort context, and when available it is included in rebase fixes, 
 - Skips instead of failing when disabled, no matching transcript is found, the diff is empty, extraction errors, or persistence fails
 
 This step does not block the pipeline for missing transcripts, summarization that exceeds the five-minute extraction cap, or other extraction failures, which are reported as skipped outcomes.
-It can fail the run only if cleanup fails after the disambiguation agent leaves worktree side effects.
+Cleanup failures after the disambiguation agent leaves worktree side effects fail the run.
+
+After Intent, and again before Review and Test start, the pipeline estimates the public PR body without an agent turn or publication. The estimate uses the public intent, recorded pipeline/testing evidence, explicit closing references, the pinned trusted PR template's required top-level H1 headings when configured, and appendix/attestation overhead. For an existing owned PR, it also counts the live author text preserved around the appendix. Template instructions, options, placeholders, and lower-level headings are removable during drafting, so the estimate does not count them. It respects intent publication controls and the configured appendix mode. Built-in forge limits are local; provider plugins supply their limit through their status handshake.
+
+A provider-plugin protocol violation or timeout during an early estimate fails the current step, as it does at PR publication; ordinary provider unavailability only skips the estimate.
+
+When the PR step will publish an owned body (`pr.template` is configured, or an existing PR has a managed appendix), an estimate over the publication budget fails before review or test, naming the largest sections, their sizes, and the binding limit (the 63,488-byte publication safety limit or the forge's tighter UTF-16 character limit). Move long evidence into a linked file or retained artifact, or shorten the public intent/template narrative before starting another run. For ordinary drafts, the early check only logs a warning, including above the limit; the PR step can shed or clamp generated sections as before. Below the limit, an estimate at 80% or more logs a warning. It never shortens author text, closing references, or recorded evidence in an owned body.
+
+This is an estimate of material known at each checkpoint: later agent-written narrative, subsequent author edits on an existing PR, evidence, and upload links can still grow. The final owned-body refusal in the PR step remains the backstop; ordinary drafts keep their existing shedding and clamping behavior. The early check does not upload evidence or automatically move it into a file.
 
 ## Rebase
 

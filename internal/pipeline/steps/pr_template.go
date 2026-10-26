@@ -199,6 +199,10 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
 		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
 	}
+	return renderPRAppendix(sctx, provider, pipelineMD, risk, testing), nil
+}
+
+func renderPRAppendix(sctx *pipeline.StepContext, provider scm.Provider, pipelineMD, risk, testing string) string {
 	parts := []string{}
 	if intent := publicPRIntent(sctx); intent != "" {
 		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
@@ -206,5 +210,5 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 	if evidence := appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider); evidence != "" {
 		parts = append(parts, evidence)
 	}
-	return strings.Join(parts, "\n\n"), nil
+	return strings.Join(parts, "\n\n")
 }
