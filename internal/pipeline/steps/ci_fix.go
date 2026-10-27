@@ -980,8 +980,8 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // the branch is the configured PR base branch (the PR step never manages a
 // PR there either, see effectivePRBaseBranch); the SCM host is unavailable
 // and the run holds no PR URL yet (once it holds one, an unavailable host
-// stops the push); or no PR exists yet for this branch. It never mints an attestation for a PR that was not raised through
-// no-mistakes - restampPRAttestationWithSteps already enforces that. Any
+// stops the push); or no PR exists yet for this branch. It never mints an
+// attestation for a PR that was not raised through no-mistakes - restampPRAttestationWithSteps already enforces that. Any
 // other failure (PR discovery errors, a provider plugin whose status
 // handshake broke its contract - the PR step fails on that too, see
 // pluginContractBroken - or a discoverable PR whose write does not
