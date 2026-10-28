@@ -58,7 +58,7 @@ const canonicalUnknownBranchRunRelationship = "An explicit `--run <id>` rendered
 // only one surface; this keeps the corrected guidance present on all three.
 func TestStaleMonitorGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	surfaces := map[string]string{
-		"skill body":      skill.Markdown(),
+		"skill recovery":  skillReference(t, "recovery"),
 		"agents guide":    readAgentsGuide(t),
 		"axi help string": staleMonitorGuidance,
 	}
@@ -80,7 +80,7 @@ func TestStaleMonitorGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	// Detailed rerun conditions belong to the skill and live guidance; the
 	// agents guide links to the CLI reference instead of duplicating them.
 	for name, content := range map[string]string{
-		"skill body":      skill.Markdown(),
+		"skill recovery":  skillReference(t, "recovery"),
 		"axi help string": staleMonitorGuidance,
 		"human recovery summary": humanSyncSummary(branchsync.State{
 			State: branchsync.StatePipelineOwned, Safety: "blocked_pipeline_owned_recoverable",
@@ -166,9 +166,9 @@ func TestBranchSyncGuidance_EmittedForBoundArchiveRecovery(t *testing.T) {
 
 func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	surfaces := map[string]string{
-		"skill body":   skill.Markdown(),
-		"agents guide": readAgentsGuide(t),
-		"axi run help": newAxiRunCmd().Long,
+		"skill prerequisites": skillReference(t, "getting-started"),
+		"agents guide":        readAgentsGuide(t),
+		"axi run help":        newAxiRunCmd().Long,
 	}
 	for name, content := range surfaces {
 		normalized := strings.Join(strings.Fields(content), " ")
@@ -179,7 +179,7 @@ func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 }
 
 func TestAxiStatusUnknownBranchRunRelationshipGuidance_InInstalledSkill(t *testing.T) {
-	if !strings.Contains(skill.Markdown(), canonicalUnknownBranchRunRelationship) {
+	if !strings.Contains(skillReference(t, "commands"), canonicalUnknownBranchRunRelationship) {
 		t.Error("installed skill is missing the explicit-run unknown-branch relationship contract")
 	}
 }
@@ -287,8 +287,23 @@ var canonicalReleasedChecksPassedPhrases = []string{
 
 func TestReleasedChecksPassedGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	for _, phrase := range canonicalReleasedChecksPassedPhrases {
-		if !strings.Contains(skill.Markdown(), phrase) {
+		if !strings.Contains(skillReference(t, "gates"), phrase) {
 			t.Errorf("generated skill is missing release guidance %q", phrase)
 		}
 	}
+}
+
+func skillReference(t *testing.T, name string) string {
+	t.Helper()
+	path := "references/" + name + ".md"
+	if !strings.Contains(skill.Markdown(), "]("+path+")") {
+		t.Fatalf("skill core does not link to %s", path)
+	}
+	for _, file := range skill.Files() {
+		if file.Path == path {
+			return file.Content
+		}
+	}
+	t.Fatalf("skill reference %s is missing", path)
+	return ""
 }

@@ -1,9 +1,9 @@
 // Package skill holds the canonical content of the no-mistakes agent skill.
 //
 // It is the single source of truth for the skill's identity (name and
-// trigger description) and its SKILL.md body. The genskill tool renders
-// Markdown() to the public skills/no-mistakes/SKILL.md (verified fresh in
-// CI), and the init command installs the same rendering into the user-level
+// trigger description), SKILL.md body, and on-demand references. The genskill
+// tool renders Files() under skills/no-mistakes (verified fresh in CI),
+// and the init command installs the same set into the user-level
 // agent skill directories under the user's home.
 // The CLI's axi home view reuses Description so the two never drift.
 package skill
@@ -44,9 +44,27 @@ func Markdown() string {
 	return b.String()
 }
 
+// File is one generated document, with a slash-separated path relative to the
+// no-mistakes skill directory.
+type File struct {
+	Path    string
+	Content string
+}
+
+// Files returns the complete, deterministic skill set for both genskill and init.
+func Files() []File {
+	return []File{
+		{Path: "SKILL.md", Content: Markdown()},
+		{Path: "references/getting-started.md", Content: gettingStarted},
+		{Path: "references/gates.md", Content: gates + escalation},
+		{Path: "references/recovery.md", Content: recovery},
+		{Path: "references/commands.md", Content: commands},
+	}
+}
+
 // body is the Markdown instructions an agent reads when the skill activates.
-// Keep it focused: the operating loop, the command vocabulary, and how to read
-// the TOON output. Do not embed live state here - the skill is static.
+// Keep the operating loop and safety rules here, with detailed procedures in
+// linked references. Do not embed live state here - the skill is static.
 const body = `
 # no-mistakes
 
@@ -62,6 +80,76 @@ asks for something specific, translate that request into the matching ` + "`axi 
 flags yourself - for example, "skip the lint step" becomes ` + "`--skip=lint`" + `. Run
 ` + "`no-mistakes axi run --help`" + ` to see the available flags.
 
+## Before you start
+
+Use a committed feature branch in an initialized repository. For task-first
+invocations, implement and commit the user's task before validating it. Read
+[getting started](references/getting-started.md) for scope, test-quality,
+preconditions, agent availability, and the required explicit intent.
+
+The daemon is shared with other runs. Never stop, restart, or update it to
+unstick your run. Inspect with ` + "`no-mistakes daemon status`" + ` and
+` + "`no-mistakes axi status`" + `, and report a daemon failure to the operator.
+
+## Validate and decide
+
+1. Run ` + "`no-mistakes axi`" + ` to inspect the current branch. Leave other
+   branches' runs alone. Reattach a matching in-flight run with
+   ` + "`no-mistakes axi run`" + `; respond to its parked gate instead of starting over.
+2. Start new validation with
+   ` + "`no-mistakes axi run --intent '<what the user set out to accomplish>'`" + `.
+   Calls can take several minutes and default to ` + "`--wait 8m`" + `.
+   Background the call if your harness requires it. A wait expiring is not
+   a failed run or proof the daemon died. Inspect status and reattach.
+3. Read every return. A ` + "`gate:`" + ` waits for your response and never advances
+   on its own. Read [gate procedures](references/gates.md) before responding,
+   including finding selection, review questions, exceptions, and outcomes.
+   For eligible mechanical findings use
+   ` + "`no-mistakes axi respond --action fix --findings <ids>`" + `.
+   Use the returned ` + "`help`" + ` and live command help for version-matched flags.
+4. Continue until an ` + "`outcome:`" + `. Normal decision gates are exit 0 stops.
+   ` + "`checks-passed`" + ` means CI readiness, not merge. Stop driving and report
+   the PR and any fixes, exceptions, or missing evidence. Do not wait for merge.
+   A generic empty check list does not prove readiness.
+5. Before a post-pipeline local commit or fresh run, read ` + "`branch_sync`" + `.
+   Follow its exact next action and read [recovery](references/recovery.md)
+   before sync, retry, rerun, custody recovery, or updating a stale PR.
+   Commit follow-up work on top so every pipeline fix commit remains present.
+
+While a run is active, the pipeline owns code changes. Decide and respond at
+gates. Never hand-edit fixes, abort-and-restart, reset, or replace the branch
+to get around a finding or drop pipeline fixes.
+
+## Escalate ask-user findings
+
+` + "`auto-fix`" + ` and ` + "`no-op`" + ` findings can be decided on your own judgment.
+For ` + "`ask-user`" + `, stop and relay every finding's id, file, and full
+description verbatim to the user. Do not approve, fix, or skip it yourself.
+Translate their decision into the response, passing their guidance through
+` + "`--instructions`" + ` when fixing.
+
+Only explicit consent to drive the whole run unattended authorizes
+` + "`--yes`" + ` to resolve ordinary ask-user findings automatically. Even then,
+protected-path refusals, open review questions, unreadable question history,
+and unvalidated Test work require an operator. Read the
+[escalation exceptions](references/gates.md#escalate-ask-user-findings)
+before acting. Review questions need ` + "`axi answer`" + `, never a verdict.
+
+## On-demand references
+
+- [Getting started](references/getting-started.md): invocation modes, task
+  scope, test quality, prerequisites, intent input.
+- [Gate procedures](references/gates.md): finding actions, complete coverage,
+  review answers, Test exceptions, unattended consent, outcome reporting.
+- [Recovery](references/recovery.md): failed runs, retries, branch custody,
+  synchronization, preserved fixes, and stale CI monitors.
+- [Commands and output](references/commands.md): inspection commands,
+  run scoping, TOON fields, liveness, exit codes, and a gate example.
+Read the applicable reference when that situation occurs. Paths are relative
+to this skill directory, including after installation by init.
+`
+
+const gettingStarted = `
 ## Two ways to invoke
 
 ` + "`/no-mistakes`" + ` works in two modes, depending on whether the user hands you a
@@ -115,7 +203,7 @@ Before starting, run ` + "`no-mistakes axi`" + ` (home view).
 If it shows an active run on your current branch, inspect it with ` + "`no-mistakes axi status`" + `.
 If it is parked at a gate, drive it with ` + "`no-mistakes axi respond`" + `.
 Reattach an in-flight run by re-running ` + "`no-mistakes axi run`" + ` when it still matches your current ` + "`HEAD`" + ` - either as the submitted head or as the current pipeline head.
-Only ` + "`no-mistakes axi abort`" + ` it when you mean to discard that run before starting over; aborting is a between-runs action, never a way to take over or bypass a gate while a run is still going (see [Validate and decide](#validate-and-decide)).
+Only ` + "`no-mistakes axi abort`" + ` it when you mean to discard that run before starting over; aborting is a between-runs action, never a way to take over or bypass a gate while a run is still going (see [Validate and decide](gates.md#validate-and-decide)).
 If it shows an active run on another branch, leave that run alone and start validation for your current branch with ` + "`no-mistakes axi run --intent \"...\"`" + `.
 
 ## Intent is required
@@ -140,6 +228,9 @@ asked for that might otherwise look surprising in the diff. A few sentences to a
 short paragraph is normal - write down what you learned from the conversation
 that a reviewer reading only the diff would not know.
 
+`
+
+const gates = `
 ## Validate and decide
 
 Run the pipeline and decide on its findings as they come up:
@@ -288,13 +379,18 @@ Run the pipeline and decide on its findings as they come up:
      bound to the full ` + "`run.head_sha`" + `. This is neither CI readiness nor a
      failing code verdict. Explicit per-run skips retain their existing behavior.
    - ` + "`failed`" + ` or ` + "`cancelled`" + ` - they did not; read the output and address it.
-     Follow the custody guidance below before fixing whatever the output
+     Follow the [custody guidance](recovery.md) before fixing whatever the output
      points at (a failing test, a lint error, a finding you skipped). Commit the
      fix on the same feature branch, then submit it with
      ` + "`no-mistakes axi run --intent \"...\"`" + `. A fresh run or ` + "`rerun`" + ` is a
      *between-runs* action, correct only after a terminal outcome like this -
      never mid-run to circumvent a gate. Do not leave the user at a ` + "`failed`" + `
      outcome without either retrying or explaining what blocks it.
+
+`
+
+const recovery = `
+# Recovery
 
 ` + "`no-mistakes rerun`" + ` keeps its existing head selection: the gate head, or the
 latest terminal run's verified unpublished preserved head while custody remains
@@ -372,6 +468,9 @@ format - what was validated and what was found. If the output includes a
 acknowledge those misses and explicitly list each fix so the user can easily
 review them.
 
+`
+
+const escalation = `
 ## Escalate ` + "`ask-user`" + ` findings
 
 A gate whose findings are all ` + "`auto-fix`" + ` or ` + "`no-op`" + ` is safe to drive on your
@@ -419,6 +518,9 @@ not skip Test, which would publish that work. Ask the operator to choose:
 ` + "`--action fix`" + ` spends another agent budget to validate the work, and
 ` + "`no-mistakes axi abort`" + ` stops the run.
 
+`
+
+const commands = `
 ## Inspecting state
 
 ` + "```sh" + `

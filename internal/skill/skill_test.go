@@ -55,7 +55,7 @@ func TestBodyIncludesGeneratedGateStepGuard(t *testing.T) {
 
 func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 	// Check the generated, installed skill's guidance contract.
-	md := Markdown()
+	md := skillReference(t, "getting-started")
 	for _, want := range []string{
 		"## Two ways to invoke",
 		"feature branch",
@@ -75,7 +75,7 @@ func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 // These expectations pin the task-first writing contract, independently of
 // the shared constant used by the renderer. They do not test model behavior.
 func TestBodyDocumentsIndependentTestOracles(t *testing.T) {
-	md := strings.Join(strings.Fields(Markdown()), " ")
+	md := strings.Join(strings.Fields(skillReference(t, "getting-started")), " ")
 	for _, want := range []string{
 		"Use an independent oracle",
 		"expected result must come from somewhere other than the code under test",
@@ -91,7 +91,7 @@ func TestBodyDocumentsIndependentTestOracles(t *testing.T) {
 }
 
 func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
-	md := Markdown()
+	md := skillReference(t, "getting-started") + skillReference(t, "gates")
 	for _, want := range []string{
 		"inspect it with `no-mistakes axi status`",
 		"drive it with `no-mistakes axi respond`",
@@ -110,15 +110,29 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 	}
 }
 
+func skillReference(t *testing.T, name string) string {
+	t.Helper()
+	path := "references/" + name + ".md"
+	for _, file := range Files() {
+		if file.Path == path {
+			return file.Content
+		}
+	}
+	t.Fatalf("skill reference %s is missing", path)
+	return ""
+}
+
 func TestInstallWritesBothPaths(t *testing.T) {
 	root := t.TempDir()
 	written, err := Install(root)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	wantRel := []string{
-		filepath.Join(".claude", "skills", Name, "SKILL.md"),
-		filepath.Join(".agents", "skills", Name, "SKILL.md"),
+	var wantRel []string
+	for _, base := range InstallBases {
+		for _, file := range Files() {
+			wantRel = append(wantRel, filepath.Join(base, Name, filepath.FromSlash(file.Path)))
+		}
 	}
 	if len(written) != len(wantRel) {
 		t.Fatalf("written = %v, want %v", written, wantRel)
@@ -131,8 +145,8 @@ func TestInstallWritesBothPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		if string(data) != Markdown() {
-			t.Errorf("%s content does not match Markdown()", rel)
+		if string(data) != Files()[i%len(Files())].Content {
+			t.Errorf("%s content does not match generated document", rel)
 		}
 	}
 }
@@ -150,8 +164,8 @@ func TestInstallUserWritesUnderHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallUser: %v", err)
 	}
-	if len(written) != len(InstallBases) {
-		t.Fatalf("written = %v, want one path per base", written)
+	if len(written) != len(InstallBases)*len(Files()) {
+		t.Fatalf("written = %v, want every document per base", written)
 	}
 	for _, base := range InstallBases {
 		data, err := os.ReadFile(filepath.Join(home, base, Name, "SKILL.md"))
@@ -241,13 +255,13 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 			}
 
 			// Every reported path must be readable with current content.
-			for _, rel := range written {
+			for i, rel := range written {
 				data, err := os.ReadFile(filepath.Join(root, rel))
 				if err != nil {
 					t.Fatalf("read reported %s: %v", rel, err)
 				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", rel)
+				if string(data) != Files()[i%len(Files())].Content {
+					t.Errorf("%s content does not match generated document", rel)
 				}
 			}
 
@@ -286,6 +300,90 @@ func TestInstallOverwritesStaleContent(t *testing.T) {
 	}
 	if string(data) != Markdown() {
 		t.Errorf("stale SKILL.md was not refreshed to current content")
+	}
+}
+
+// The public package contract is a short entry point linking to four documents.
+// Exercise init's user-level installation entry point twice with both stale
+// files and missing files, then follow a recovery link through each logical
+// agent installation. This is an automated installer test, not a live CLI run.
+func TestInstallRefreshesCompleteSkillSet(t *testing.T) {
+	root := t.TempDir()
+	// Isolate os.UserHomeDir on both Unix and Windows.
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	paths := []string{
+		"SKILL.md",
+		"references/getting-started.md",
+		"references/gates.md",
+		"references/recovery.md",
+		"references/commands.md",
+	}
+	if _, err := InstallUser(); err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range InstallBases {
+		for i, path := range paths {
+			full := filepath.Join(root, base, Name, filepath.FromSlash(path))
+			data, err := os.ReadFile(full)
+			if err != nil || len(data) == 0 {
+				t.Fatalf("initial install %s: bytes=%d, error=%v", full, len(data), err)
+			}
+			if i%2 == 0 {
+				err = os.WriteFile(full, []byte("stale"), 0o644)
+			} else {
+				err = os.Remove(full)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	written, err := InstallUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != len(InstallBases)*len(paths) {
+		t.Fatalf("refresh wrote %d documents, want %d", len(written), len(InstallBases)*len(paths))
+	}
+	for _, base := range InstallBases {
+		for _, file := range Files() {
+			data, err := os.ReadFile(filepath.Join(root, base, Name, filepath.FromSlash(file.Path)))
+			if err != nil || string(data) != file.Content {
+				t.Errorf("refresh %s/%s: content mismatch or error %v", base, file.Path, err)
+			}
+		}
+		core, err := os.ReadFile(filepath.Join(root, base, Name, "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range paths[1:] {
+			if !strings.Contains(string(core), "]("+path+")") {
+				t.Errorf("core does not link to %s", path)
+			}
+		}
+		data, err := os.ReadFile(filepath.Join(root, base, Name, "references", "recovery.md"))
+		if err != nil || !strings.Contains(string(data), "next_action.command") {
+			t.Errorf("following the recovery link lost the exact-command guidance: %v", err)
+		}
+	}
+}
+
+func TestCoreStaysShortAndKeepsSafetyRules(t *testing.T) {
+	md := Markdown()
+	if len(md) > 7500 {
+		t.Errorf("core is %d bytes, want at most 7500; move detail into references", len(md))
+	}
+	for _, want := range []string{
+		"Never stop, restart, or update it",
+		"full\ndescription verbatim",
+		"Never hand-edit fixes",
+		"never advances\n   on its own",
+		"Review questions need `axi answer`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("core lost safety guidance %q", want)
+		}
 	}
 }
 

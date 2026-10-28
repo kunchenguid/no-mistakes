@@ -75,8 +75,8 @@ e2e-record:
 	go run ./cmd/recordfixture opencode --out internal/e2e/fixtures/opencode
 	go run ./cmd/recordfixture antigravity --out internal/e2e/fixtures/antigravity
 
-# Regenerate the committed agent skill (skills/no-mistakes/SKILL.md) from the
-# internal/skill source of truth.
+# Regenerate the committed agent skill and references under skills/no-mistakes
+# from the internal/skill source of truth.
 skill:
 	go run ./cmd/genskill
 

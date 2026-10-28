@@ -146,7 +146,7 @@ In both modes, it resolves low-risk findings on its own and stops to relay anyth
 
 Grok Build is a pipeline runner, not a driving-skill target. `no-mistakes init` installs the `/no-mistakes` skill for Claude Code and agents that use the vendor-neutral `.agents` convention; the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init) owns its locations and supported consumers.
 If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
-Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
+Re-run `no-mistakes init` after an upgrade. The [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init) describes how it refreshes the installed skill.
 Older versions vendored the skill into each initialized repo's `.claude/skills` and `.agents/skills`; those copies are no longer needed, and `init` prints a notice when it finds one so you can remove it.
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is ready - either its registered checks are green or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) with no registered checks - and known mergeability is clear, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge. An empty check result without that declaration is not ready; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for the readiness rules.
