@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.103.0](https://github.com/kunchenguid/no-mistakes/compare/v1.102.1...v1.103.0) (2026-10-28)
+
+
+### Features
+
+* **agent:** add explicit reviewer quota fallback chains ([#1634](https://github.com/kunchenguid/no-mistakes/issues/1634)) ([f2a99ec](https://github.com/kunchenguid/no-mistakes/commit/f2a99ec90167a4e173f6e5098224091701a50251))
+* **pipeline:** support expanded PR testing evidence ([#1632](https://github.com/kunchenguid/no-mistakes/issues/1632)) ([15ff6d8](https://github.com/kunchenguid/no-mistakes/commit/15ff6d8c21cd8f7df088219aef9ad3fc450b9b87))
+
+
+### Bug Fixes
+
+* **agent:** preserve completed results after wait delay ([#1637](https://github.com/kunchenguid/no-mistakes/issues/1637)) ([e758a76](https://github.com/kunchenguid/no-mistakes/commit/e758a76f58e2f36a902c119c8220625622ee0936))
+* **pipeline:** prevent ignore patterns from bypassing trusted review ([#1640](https://github.com/kunchenguid/no-mistakes/issues/1640)) ([4bdc121](https://github.com/kunchenguid/no-mistakes/commit/4bdc12107669d6ad6e8bac19118d17496d69654d))
+* **pipeline:** respect intent in Test and Document repairs ([#1638](https://github.com/kunchenguid/no-mistakes/issues/1638)) ([acf0b3e](https://github.com/kunchenguid/no-mistakes/commit/acf0b3e9b5c6db66ad1330d085c94e179394a4e7))
+* **scm:** accept configured GitLab MR web hosts ([#1639](https://github.com/kunchenguid/no-mistakes/issues/1639)) ([91afff1](https://github.com/kunchenguid/no-mistakes/commit/91afff1a10d919dce7ed80f6ca1e75c52e6923f4))
+
 ## [1.102.1](https://github.com/kunchenguid/no-mistakes/compare/v1.102.0...v1.102.1) (2026-10-27)
 
 
