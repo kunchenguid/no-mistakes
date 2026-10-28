@@ -388,7 +388,7 @@ func TestNativeAgents_UnfinishedRunKeepsParseErrorOverWaitDelay(t *testing.T) {
 	if err == nil {
 		t.Fatal("Run succeeded without any result")
 	}
-	if !errors.Is(err, os.ErrClosed) || !strings.Contains(err.Error(), "codex parse events: ") {
+	if !errors.Is(err, os.ErrClosed) || !strings.Contains(err.Error(), "codex parse events (result received: false): ") {
 		t.Fatalf("error = %v, want the parse error leading", err)
 	}
 }

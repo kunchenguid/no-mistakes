@@ -139,7 +139,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		err = started.waitAfterParseError(err)
 		if !started.closedByWaitDelay(err) || lastMessage == "" || codexErr != "" {
 			stderrWG.Wait()
-			retErr := fmt.Errorf("codex parse events: %w", err)
+			retErr := fmt.Errorf("codex parse events (result received: %t): %w", lastMessage != "" && codexErr == "", err)
 			emitAgentExited(opts, "codex", pid, retErr)
 			return partialResult(), retErr
 		}

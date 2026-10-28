@@ -109,7 +109,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Resu
 		if !started.closedByWaitDelay(err) || !pp.agentEnded {
 			stderrWG.Wait()
 			err = errors.Join(err, piStdinError(<-stdinErrCh))
-			retErr := fmt.Errorf("pi parse events: %w", err)
+			retErr := fmt.Errorf("pi parse events (result received: %t): %w", pp.agentEnded, err)
 			emitAgentExited(opts, "pi", pid, retErr)
 			return pp.failedResult(), retErr
 		}
