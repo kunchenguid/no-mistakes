@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -334,33 +335,24 @@ func escapedStdoutHolder(t *testing.T, dir string) string {
 		"while [ \"$(ps -o sid= -p $holder)\" = \"$(ps -o sid= -p $$)\" ]; do sleep 0.02; done\n"
 }
 
-// A cleanly exited agent whose result was fully written must finish even when
-// an escaped descendant keeps stdout open until WaitDelay force-closes it.
+// The Test step runs its analyzer with RequireCompletedChildren and a result
+// schema (runTestAnalyzer). Under exactly those options a cleanly exited agent
+// whose result was fully written must finish even when an escaped descendant
+// keeps stdout open until WaitDelay force-closes it.
 func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
-	const claudeResult = `{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"ok"}]}}
-{"type":"result","subtype":"success","is_error":false,"result":"ok"}`
-	const codexMessage = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}`
-	const piEnd = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}`
-
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	tests := []struct {
 		name string
 		run  func(t *testing.T, dir, holder string) (*Result, error)
 	}{
 		{"claude", func(t *testing.T, dir, holder string) (*Result, error) {
-			bin := filepath.Join(dir, "claude")
-			script := "#!/bin/sh\ncat > /dev/null\n" + holder + "printf '%s\\n' '" + claudeResult + "'\nexit 0\n"
-			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-				t.Fatalf("write fake claude: %v", err)
-			}
-			return (&claudeAgent{bin: bin}).runOnce(context.Background(), RunOpts{Prompt: "p", CWD: dir, RequireCompletedChildren: true})
+			return runFakeClaudeResult(t, dir, holder, schema)
 		}},
 		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
-			bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+codexMessage+"'\nexit 0\n", "")
-			return (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+			return runFakeCodexResult(t, dir, holder, schema)
 		}},
 		{"pi", func(t *testing.T, dir, holder string) (*Result, error) {
-			bin := writeFakePi(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+piEnd+"'\nexit 0\n", "")
-			return (&piAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+			return runFakePiResult(t, dir, holder)
 		}},
 	}
 	for _, tt := range tests {
@@ -371,11 +363,84 @@ func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run = %v, want the finished result", err)
 			}
-			if res.Text != "ok" {
-				t.Fatalf("Text = %q, want ok", res.Text)
+			if res.Text != "ok" && string(res.Output) != `{"ok":true}` {
+				t.Fatalf("result = text %q output %q, want the finished result", res.Text, res.Output)
 			}
 		})
 	}
+}
+
+// RequireCompletedChildren must stay fail-closed on the WaitDelay path: an
+// agent that wrote its result but left a child in its own process group still
+// running is refused, because the owned-children probe runs before WaitDelay can
+// turn the run into a swallowable ErrWaitDelay.
+func TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	tests := []struct {
+		name string
+		run  func(t *testing.T, dir, holder string) (*Result, error)
+	}{
+		{"claude", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeClaudeResult(t, dir, holder, schema)
+		}},
+		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeCodexResult(t, dir, holder, schema)
+		}},
+		{"pi", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakePiResult(t, dir, holder)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			_, err := tt.run(t, dir, ownedStdoutHolder(t, dir))
+			if err == nil || !strings.Contains(err.Error(), "agent exited with active owned children") {
+				t.Fatalf("Run error = %v, want refusal for active owned children", err)
+			}
+		})
+	}
+}
+
+// ownedStdoutHolder leaves a child in the agent's own process group holding
+// stdout, so the owned-children probe sees it still running.
+func ownedStdoutHolder(t *testing.T, dir string) string {
+	t.Helper()
+	pidFile := filepath.Join(dir, "owned.pid")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	return "sleep 120 &\necho $! > \"" + pidFile + "\"\n"
+}
+
+func runFakeClaudeResult(t *testing.T, dir, holder string, schema json.RawMessage) (*Result, error) {
+	t.Helper()
+	const events = `{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","structured_output":{"ok":true}}`
+	bin := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\ncat > /dev/null\n" + holder + "printf '%s\\n' '" + events + "'\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	return (&claudeAgent{bin: bin}).runOnce(context.Background(), RunOpts{Prompt: "p", CWD: dir, JSONSchema: schema, RequireCompletedChildren: true})
+}
+
+func runFakeCodexResult(t *testing.T, dir, holder string, schema json.RawMessage) (*Result, error) {
+	t.Helper()
+	const message = `{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}`
+	bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+message+"'\nexit 0\n", "")
+	return (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir, JSONSchema: schema, RequireCompletedChildren: true})
+}
+
+func runFakePiResult(t *testing.T, dir, holder string) (*Result, error) {
+	t.Helper()
+	const end = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}`
+	bin := writeFakePi(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+end+"'\nexit 0\n", "")
+	return (&piAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir, RequireCompletedChildren: true})
 }
 
 // Without a captured result, the real read failure is reported - not the
