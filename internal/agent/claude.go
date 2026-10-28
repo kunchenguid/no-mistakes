@@ -157,10 +157,12 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	var stdoutTail claudeStdoutTail
 	if err := parseClaudeEvents(ctx, io.TeeReader(started.stdout, &stdoutTail), opts.OnChunk, &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		retErr := fmt.Errorf("claude parse events: %w", err)
-		emitAgentExited(opts, "claude", pid, retErr)
-		return resultFromUsage(usage), retErr
+		if !started.closedByWaitDelay(err) || !claudeFinishedWithOutput(result, opts.JSONSchema) {
+			stderrWG.Wait()
+			retErr := fmt.Errorf("claude parse events: %w", err)
+			emitAgentExited(opts, "claude", pid, retErr)
+			return resultFromUsage(usage), retErr
+		}
 	}
 
 	waitErr := started.wait()

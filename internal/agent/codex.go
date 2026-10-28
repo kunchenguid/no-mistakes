@@ -137,13 +137,15 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	}
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		retErr := fmt.Errorf("codex parse events: %w", err)
-		emitAgentExited(opts, "codex", pid, retErr)
-		return partialResult(), retErr
+		if !started.closedByWaitDelay(err) || lastMessage == "" || codexErr != "" {
+			stderrWG.Wait()
+			retErr := fmt.Errorf("codex parse events: %w", err)
+			emitAgentExited(opts, "codex", pid, retErr)
+			return partialResult(), retErr
+		}
 	}
 
-	waitErr := started.wait()
+	waitErr := started.waitKeepingResult(lastMessage != "" && codexErr == "")
 	stderrWG.Wait()
 	// Stderr can retain a recovered request's diagnostic after a successful
 	// turn. Only a failed exit makes it authoritative; JSONL error events are

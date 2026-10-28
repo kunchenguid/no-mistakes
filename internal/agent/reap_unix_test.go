@@ -311,3 +311,84 @@ func waitForNativeAgentPipeHelperReady(path string, timeout time.Duration) bool 
 	}
 	return false
 }
+
+// escapedStdoutHolder is a script fragment that leaves a session-detached
+// process holding the agent's stdout open after the agent exits, so neither
+// the process-group kill nor EOF ends the drain and WaitDelay must.
+func escapedStdoutHolder(t *testing.T, dir string) string {
+	t.Helper()
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid not available")
+	}
+	pidFile := filepath.Join(dir, "holder.pid")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	// The wait matters: until setsid() runs the holder is still in the agent's
+	// process group and the exit-time group kill would reap it.
+	return "setsid sleep 120 &\nholder=$!\necho $holder > \"" + pidFile + "\"\n" +
+		"while [ \"$(ps -o sid= -p $holder)\" = \"$(ps -o sid= -p $$)\" ]; do sleep 0.02; done\n"
+}
+
+// A cleanly exited agent whose result was fully written must finish even when
+// an escaped descendant keeps stdout open until WaitDelay force-closes it.
+func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
+	const claudeResult = `{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok"}`
+	const codexMessage = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}`
+	const piEnd = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}`
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T, dir, holder string) (*Result, error)
+	}{
+		{"claude", func(t *testing.T, dir, holder string) (*Result, error) {
+			bin := filepath.Join(dir, "claude")
+			script := "#!/bin/sh\ncat > /dev/null\n" + holder + "printf '%s\\n' '" + claudeResult + "'\nexit 0\n"
+			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+				t.Fatalf("write fake claude: %v", err)
+			}
+			return (&claudeAgent{bin: bin}).runOnce(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+		}},
+		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
+			bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+codexMessage+"'\nexit 0\n", "")
+			return (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+		}},
+		{"pi", func(t *testing.T, dir, holder string) (*Result, error) {
+			bin := writeFakePi(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+piEnd+"'\nexit 0\n", "")
+			return (&piAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			res, err := tt.run(t, dir, escapedStdoutHolder(t, dir))
+			if err != nil {
+				t.Fatalf("Run = %v, want the finished result", err)
+			}
+			if res.Text != "ok" {
+				t.Fatalf("Text = %q, want ok", res.Text)
+			}
+		})
+	}
+}
+
+// Without a captured result, the real read failure is reported - not the
+// WaitDelay expiry that hid it - and the error says so.
+func TestNativeAgents_UnfinishedRunKeepsParseErrorOverWaitDelay(t *testing.T) {
+	dir := t.TempDir()
+	holder := escapedStdoutHolder(t, dir)
+	bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"exit 0\n", "")
+	_, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+	if err == nil {
+		t.Fatal("Run succeeded without any result")
+	}
+	if !errors.Is(err, os.ErrClosed) || !strings.Contains(err.Error(), "codex parse events: ") {
+		t.Fatalf("error = %v, want the parse error leading", err)
+	}
+}

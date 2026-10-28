@@ -19,6 +19,8 @@ type nativeAgentCommand struct {
 	waitCh         chan error
 	terminateOnce  sync.Once
 	closePipesOnce sync.Once
+	waitOnce       sync.Once
+	waitErr        error
 	pipeMu         sync.Mutex
 	remainingPipes int
 	pipesDone      chan struct{}
@@ -159,18 +161,39 @@ func (c *nativeAgentCommand) terminate() {
 	})
 }
 
+// waitAfterParseError reaps the agent after its output failed to parse and
+// returns the parse error. A WaitDelay expiry is attached to it rather than
+// substituted for it, so the real cause is never hidden.
 func (c *nativeAgentCommand) waitAfterParseError(parseErr error) error {
 	c.terminate()
 	c.closePipes()
-	waitErr := c.wait()
-	if errors.Is(waitErr, exec.ErrWaitDelay) {
-		return waitErr
+	if waitErr := c.wait(); errors.Is(waitErr, exec.ErrWaitDelay) {
+		return fmt.Errorf("%w (%v)", parseErr, waitErr)
 	}
 	return parseErr
 }
 
+// closedByWaitDelay reports whether parseErr is only the stdout read failing
+// because WaitDelay force-closed a pipe that an escaped descendant of a cleanly
+// exited agent kept open. Call it after waitAfterParseError.
+func (c *nativeAgentCommand) closedByWaitDelay(parseErr error) bool {
+	return errors.Is(parseErr, os.ErrClosed) && errors.Is(c.wait(), exec.ErrWaitDelay)
+}
+
+// waitKeepingResult returns the agent's wait error, except that a bare
+// WaitDelay expiry is not an error once the caller holds a finished result:
+// the agent exited cleanly and only a lingering descendant held a pipe open.
+func (c *nativeAgentCommand) waitKeepingResult(finished bool) error {
+	err := c.wait()
+	if finished && errors.Is(err, exec.ErrWaitDelay) {
+		return nil
+	}
+	return err
+}
+
 func (c *nativeAgentCommand) wait() error {
-	return <-c.waitCh
+	c.waitOnce.Do(func() { c.waitErr = <-c.waitCh })
+	return c.waitErr
 }
 
 func (c *nativeAgentCommand) closePipes() {
