@@ -139,3 +139,19 @@ func TestAgentEnvironmentAddsTheRunsClaudeConfigDirToTheForgeOverlay(t *testing.
 		t.Fatalf("unset run changed the forge overlay: %+v", got)
 	}
 }
+
+func TestDaemonHealthAdvertisesClaudeConfigDirSupport(t *testing.T) {
+	p, _ := startTestDaemon(t)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var health ipc.HealthResult
+	if err := client.Call(ipc.MethodHealth, &ipc.HealthParams{}, &health); err != nil {
+		t.Fatal(err)
+	}
+	if !health.ClaudeConfigDir {
+		t.Fatalf("health = %+v, want claude_config_dir advertised", health)
+	}
+}

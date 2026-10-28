@@ -404,6 +404,9 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 		return emitError(cmd, 2, err.Error())
 	}
 	ctx = callerrestrictions.WithLaunchRecord(ctx, restrictions)
+	if err := env.client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {
