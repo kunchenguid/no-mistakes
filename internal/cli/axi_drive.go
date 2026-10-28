@@ -325,6 +325,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 	if err := requireDaemonHonorsClosingIssueRefs(env.client, closesIssues); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
+	if err := env.client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {

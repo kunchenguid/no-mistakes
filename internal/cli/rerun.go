@@ -93,6 +93,9 @@ func newRerunCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if err := client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+					return err
+				}
 				var result ipc.RerunResult
 				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes, ClaudeConfigDir: claudeConfigDir}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)

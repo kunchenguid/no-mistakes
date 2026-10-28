@@ -79,6 +79,9 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 		if err != nil {
 			return rerunErrMsg{err: err, requestID: requestID}
 		}
+		if err := m.client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+			return rerunErrMsg{err: err, requestID: requestID}
+		}
 		var rerun ipc.RerunResult
 		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: branch, PreviousRunID: previousRunID, ClaudeConfigDir: claudeConfigDir}, &rerun); err != nil {
 			return rerunErrMsg{err: err, requestID: requestID}

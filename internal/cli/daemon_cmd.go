@@ -169,6 +169,11 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 
+			claudeConfigDir := strings.TrimSpace(os.Getenv(runenv.ClaudeConfigDirEnvVar))
+			if err := client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+				return err
+			}
+
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 				Gate:                   gatePath,
@@ -182,7 +187,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				PRBaseBranch:           prBaseBranch,
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
-				ClaudeConfigDir:        strings.TrimSpace(os.Getenv(runenv.ClaudeConfigDirEnvVar)),
+				ClaudeConfigDir:        claudeConfigDir,
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,

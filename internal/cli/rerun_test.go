@@ -189,7 +189,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			commitDuringWait := make(chan struct{}, 1)
 			commitBeforePush := make(chan struct{}, 1)
 			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
-				return &ipc.HealthResult{Status: "ok"}, nil
+				return &ipc.HealthResult{Status: "ok", ClaudeConfigDir: true}, nil
 			})
 			srv.Handle(ipc.MethodGetRunsForHead, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
 				select {
