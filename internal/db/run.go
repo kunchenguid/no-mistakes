@@ -514,9 +514,8 @@ func (d *DB) GetActiveRuns() ([]*Run, error) {
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
 	// push_active is cleared for a terminal status: a run that can no longer
 	// push (or repair and re-push) must not keep the marker that makes
-	// concurrent sync refuse. ci_monitor_interrupted is marked by the daemon's
-	// own recovery statement, which leaves the marker as it is.
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled', 'checks_passed') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status, now(), id)
+	// concurrent sync refuse.
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status.Terminal(), now(), id)
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
@@ -1240,6 +1239,16 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 
 	placeholders, args := recoveryExclusionClause(preserved)
 
+	// Older recovery paths left push ownership on terminal CI monitors.
+	// Repair those rows without changing publication or custody evidence.
+	_, err = tx.Exec(
+		`UPDATE runs SET push_active = 0 WHERE push_active = 1 AND status IN (?, ?, ?, ?, ?)`,
+		types.RunCompleted, types.RunFailed, types.RunCancelled, types.RunChecksPassed, types.RunCIMonitorInterrupted,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("release terminal push ownership: %w", err)
+	}
+
 	readyArgs := []any{types.RunChecksPassed, ts, types.RunPending, types.RunRunning, types.StepCI, types.StepStatusCompleted}
 	readyArgs = append(readyArgs, args...)
 	readyResult, err := tx.Exec(
@@ -1278,7 +1287,7 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	ciArgs = append(ciArgs, args...)
 	ciResult, err := tx.Exec(
 		`UPDATE runs
-		 SET status = ?, error = ?, awaiting_agent_since = NULL, updated_at = ?
+		 SET status = ?, error = ?, push_active = 0, awaiting_agent_since = NULL, updated_at = ?
 		 WHERE status IN (?, ?)
 		   AND pr_url IS NOT NULL
 		   AND pr_url <> ''

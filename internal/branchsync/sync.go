@@ -1087,7 +1087,9 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			if err != nil {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; no files or refs were changed")
 			}
-			if _, err := git.Run(ctx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
+			// This source is the invoking worktree, so its partial clone may
+			// fetch promised objects while upload-pack stages the kept head.
+			if _, err := git.RunWithEnv(ctx, s.GateDir, []string{"GIT_NO_LAZY_FETCH=0"}, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; no files or refs were changed")
 			}
 			staged, err := git.Run(ctx, s.GateDir, "rev-parse", stagingRef+"^{commit}")
@@ -1198,7 +1200,8 @@ func (s *Service) recoverKeepLocalFromArchive(ctx context.Context, run *db.Run, 
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; no files or refs were changed")
 		}
 		stagingRef := "refs/no-mistakes/custody-return/" + run.ID
-		if _, err := git.Run(ctx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
+		// The invoking partial clone may fetch promised objects while staging.
+		if _, err := git.RunWithEnv(ctx, s.GateDir, []string{"GIT_NO_LAZY_FETCH=0"}, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; no files or refs were changed")
 		}
 		staged, err := git.Run(ctx, s.GateDir, "rev-parse", stagingRef+"^{commit}")
