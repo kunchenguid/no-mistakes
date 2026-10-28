@@ -352,7 +352,7 @@ func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
 			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 				t.Fatalf("write fake claude: %v", err)
 			}
-			return (&claudeAgent{bin: bin}).runOnce(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+			return (&claudeAgent{bin: bin}).runOnce(context.Background(), RunOpts{Prompt: "p", CWD: dir, RequireCompletedChildren: true})
 		}},
 		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
 			bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+codexMessage+"'\nexit 0\n", "")

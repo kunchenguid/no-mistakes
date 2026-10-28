@@ -165,7 +165,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		}
 	}
 
-	waitErr := started.wait()
+	waitErr := started.waitKeepingResult(claudeFinishedWithOutput(result, opts.JSONSchema))
 	stderrWG.Wait()
 	if waitErr != nil {
 		if ctx.Err() != nil || opts.RequireCompletedChildren || !claudeFinishedWithOutput(result, opts.JSONSchema) {
