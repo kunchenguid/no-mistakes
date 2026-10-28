@@ -392,3 +392,17 @@ func TestNativeAgents_UnfinishedRunKeepsParseErrorOverWaitDelay(t *testing.T) {
 		t.Fatalf("error = %v, want the parse error leading", err)
 	}
 }
+
+func TestCodexEmptyResultEventIsReportedAsReceived(t *testing.T) {
+	dir := t.TempDir()
+	holder := escapedStdoutHolder(t, dir)
+	message := `{"type":"item.completed","item":{"type":"agent_message","text":""}}`
+	bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+message+"'\nexit 0\n", "")
+	_, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+	if err == nil {
+		t.Fatal("Run succeeded without usable result text")
+	}
+	if !strings.Contains(err.Error(), "codex parse events (result received: true): ") {
+		t.Fatalf("error = %v, want received result event reported", err)
+	}
+}

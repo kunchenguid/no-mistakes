@@ -159,7 +159,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		err = started.waitAfterParseError(err)
 		if !started.closedByWaitDelay(err) || !claudeFinishedWithOutput(result, opts.JSONSchema) {
 			stderrWG.Wait()
-			retErr := fmt.Errorf("claude parse events (result received: %t): %w", claudeFinishedWithOutput(result, opts.JSONSchema), err)
+			retErr := fmt.Errorf("claude parse events (result received: %t): %w", result != nil, err)
 			emitAgentExited(opts, "claude", pid, retErr)
 			return resultFromUsage(usage), retErr
 		}
