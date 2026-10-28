@@ -568,9 +568,11 @@ type AdmitPushResult struct {
 	Context           GateContextResult `json:"context"`
 }
 
-// HealthResult confirms the daemon is alive.
+// HealthResult confirms the daemon is alive. ClaudeConfigDir advertises that
+// the daemon applies a run's claude_config_dir; an older daemon omits it.
 type HealthResult struct {
-	Status string `json:"status"`
+	Status          string `json:"status"`
+	ClaudeConfigDir bool   `json:"claude_config_dir,omitempty"`
 }
 
 // ShutdownResult confirms shutdown was initiated.

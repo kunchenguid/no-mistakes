@@ -377,6 +377,9 @@ func runAxiRunWithPRText(cmd *cobra.Command, autoYes bool, skipSteps []types.Ste
 	if err := requireDaemonHonorsRunPRText(env.client, prText); err != nil {
 		return emitError(cmd, 2, err.Error())
 	}
+	if err := env.client.RequireClaudeConfigDirSupport(claudeConfigDir); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {

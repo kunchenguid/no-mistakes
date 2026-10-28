@@ -1176,7 +1176,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	}
 
 	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
-		return &ipc.HealthResult{Status: "ok"}, nil
+		return &ipc.HealthResult{Status: "ok", ClaudeConfigDir: true}, nil
 	})
 
 	srv.Handle(ipc.MethodScheduleRestart, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
