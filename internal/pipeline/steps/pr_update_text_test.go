@@ -191,6 +191,60 @@ func TestPRUpdateTextKeepCreateThenUpdatePublishesOneIntent(t *testing.T) {
 	}
 }
 
+func TestPRUpdateTextKeepCreateRefusesRewrittenBody(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "")
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		data, _ := json.Marshal(prContent{Title: "feat: x", Body: "## What Changed\n\n- x"})
+		return &agent.Result{Output: data}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = append(env, "FAKE_CLI_PR_CREATE_REWRITE_BODY=1")
+	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(sr.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(sr.ID, keptRiskJSON); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "created PR body differs") || !strings.Contains(err.Error(), "pr.update_text: keep") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPRUpdateTextKeepCreateRefusesUnreadableIdentity(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "")
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		data, _ := json.Marshal(prContent{Title: "feat: x", Body: "## What Changed\n\n- x"})
+		return &agent.Result{Output: data}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = append(env, "FAKE_CLI_PR_CREATE_EMPTY=1")
+	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(sr.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(sr.ID, keptRiskJSON); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "no readable PR identity") || !strings.Contains(err.Error(), "pr.update_text: keep") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestPRUpdateTextRegenerateRewrites(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"", config.PRUpdateTextRegenerate} {

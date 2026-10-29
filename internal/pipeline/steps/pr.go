@@ -237,7 +237,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
 		if template != "" || keepsPRUpdateText(sctx) {
-			return nil, fmt.Errorf("templated PR create returned no readable PR identity")
+			return nil, fmt.Errorf("%s create returned no readable PR identity", createdBodyOwner(template))
 		}
 		if len(sctx.ClosingIssueRefs) > 0 {
 			return nil, fmt.Errorf("verify closing issues: created pull request identity is unavailable")
@@ -251,14 +251,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if template != "" || keepsPRUpdateText(sctx) {
 		reader, ok := host.(scm.PRContentReader)
 		if !ok {
-			return nil, fmt.Errorf("provider cannot verify the created template body")
+			return nil, fmt.Errorf("provider cannot verify the created body for %s", createdBodyOwner(template))
 		}
 		actual, err := reader.GetPRContent(ctx, created)
 		if err != nil {
-			return nil, fmt.Errorf("verify created templated PR: %w", err)
+			return nil, fmt.Errorf("verify created PR for %s: %w", createdBodyOwner(template), err)
 		}
 		if actual.Body != content.Body {
-			return nil, fmt.Errorf("created PR body differs from the proposed template and evidence; refusing successful publication")
+			return nil, fmt.Errorf("created PR body differs from the proposed %s and evidence; refusing successful publication", createdBodyOwner(template))
 		}
 	}
 	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
@@ -1717,6 +1717,13 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 		Title: title,
 		Body:  body,
 	}, nil
+}
+
+func createdBodyOwner(template string) string {
+	if template != "" {
+		return "pr.template"
+	}
+	return "pr.update_text: keep"
 }
 
 func keepsPRUpdateText(sctx *pipeline.StepContext) bool {
