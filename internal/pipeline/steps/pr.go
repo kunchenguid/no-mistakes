@@ -236,7 +236,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
-		if template != "" {
+		if template != "" || keepsPRUpdateText(sctx) {
 			return nil, fmt.Errorf("templated PR create returned no readable PR identity")
 		}
 		if len(sctx.ClosingIssueRefs) > 0 {
@@ -248,7 +248,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
-	if template != "" {
+	if template != "" || keepsPRUpdateText(sctx) {
 		reader, ok := host.(scm.PRContentReader)
 		if !ok {
 			return nil, fmt.Errorf("provider cannot verify the created template body")
