@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -160,19 +161,45 @@ func axiRoundFromDB(r *db.StepRound) (axiRoundView, error) {
 		if err := decodeRoundJSON(*r.FindingsJSON, &payload); err != nil {
 			return view, fmt.Errorf("parse findings: %w", err)
 		}
+		if err := requireNoNullMembers(payload.Findings); err != nil {
+			return view, fmt.Errorf("parse findings: %w", err)
+		}
 		view.Summary, view.Findings = payload.Summary, payload.Findings
 	}
 	if r.SelectedFindingIDs != nil {
-		if err := json.Unmarshal([]byte(*r.SelectedFindingIDs), &view.SelectedFindingIDs); err != nil {
+		var ids []*string
+		if err := decodeRoundJSON(*r.SelectedFindingIDs, &ids); err != nil {
 			return view, fmt.Errorf("parse selected finding IDs: %w", err)
+		}
+		if err := requireNoNullMembers(ids); err != nil {
+			return view, fmt.Errorf("parse selected finding IDs: %w", err)
+		}
+		if ids != nil {
+			view.SelectedFindingIDs = make([]string, len(ids))
+			for i, id := range ids {
+				view.SelectedFindingIDs[i] = *id
+			}
 		}
 	}
 	if r.UserFindingsJSON != nil {
 		if err := decodeRoundJSON(*r.UserFindingsJSON, &view.UserFindings); err != nil {
 			return view, fmt.Errorf("parse user findings: %w", err)
 		}
+		if err := requireNoNullMembers(view.UserFindings); err != nil {
+			return view, fmt.Errorf("parse user findings: %w", err)
+		}
 	}
 	return view, nil
+}
+
+// A null member decodes to a zero value that would export as real data
+func requireNoNullMembers[T any](members []T) error {
+	for i, m := range members {
+		if reflect.ValueOf(m).IsNil() {
+			return fmt.Errorf("member %d is null", i)
+		}
+	}
+	return nil
 }
 
 // Preserve numbers in optional finding fields without float64 rounding

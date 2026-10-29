@@ -205,6 +205,9 @@ func TestAxiRoundsErrorsAreNotCleanHistory(t *testing.T) {
 		{"wrong findings type", `{"findings":{}}`, "[]", "[]", "parse findings"},
 		{"broken selection", `{"findings":[]}`, "[1]", "[]", "parse selected finding IDs"},
 		{"broken user findings", `{"findings":[]}`, "[]", "{}", "parse user findings"},
+		{"null finding member", `{"findings":[null]}`, "[]", "[]", "parse findings"},
+		{"null selection member", `{"findings":[]}`, "[null]", "[]", "parse selected finding IDs"},
+		{"null user finding member", `{"findings":[]}`, "[]", "[null]", "parse user findings"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, err := database.InsertRun(repo.ID, "feature/corrupt", "head", "base")
