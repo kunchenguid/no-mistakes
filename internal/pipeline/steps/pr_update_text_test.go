@@ -146,6 +146,51 @@ func TestPRUpdateTextKeepOnCreate(t *testing.T) {
 	}
 }
 
+func TestPRUpdateTextKeepCreateThenUpdatePublishesOneIntent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	createEnv, _ := fakeGH(t, "")
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		data, _ := json.Marshal(prContent{Title: "feat: x", Body: "## What Changed\n\n- x"})
+		return &agent.Result{Output: data}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = createEnv
+	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+	sctx.UserIntent = "Ship the intent exactly once."
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(sr.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(sr.ID, keptRiskJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	created := string(mustRead(t, envEntry(createEnv, "FAKE_CLI_PR_BODY_FILE")))
+	if n := strings.Count(created, "## Intent"); n != 1 {
+		t.Fatalf("created body has %d Intent sections:\n%s", n, created)
+	}
+
+	updateEnv, _ := fakeGH(t, "https://github.com/test/repo/pull/42")
+	bodyFile := envEntry(updateEnv, "FAKE_CLI_PR_BODY_FILE")
+	if err := os.WriteFile(bodyFile, []byte(created), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = updateEnv
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	updated := string(mustRead(t, bodyFile))
+	if n := strings.Count(updated, "## Intent"); n != 1 {
+		t.Fatalf("updated body has %d Intent sections:\n%s", n, updated)
+	}
+}
+
 func TestPRUpdateTextRegenerateRewrites(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"", config.PRUpdateTextRegenerate} {

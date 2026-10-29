@@ -494,7 +494,7 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	inventory := prPromptInventory(sctx, finalDiff, baseSHA)
 	var pipelineMD, riskLine, testingMD, keptEvidence string
 	if keepsPRUpdateText(sctx) {
-		keptEvidence, err = s.recordedPREvidence(sctx, provider)
+		keptEvidence, err = s.buildPRAppendix(sctx, provider)
 		if err != nil {
 			return prContent{}, err
 		}
