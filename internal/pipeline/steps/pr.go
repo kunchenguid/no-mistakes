@@ -140,7 +140,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err != nil {
 				return nil, fmt.Errorf("read existing PR before publication: %w", err)
 			}
-		} else if template != "" {
+		} else if template != "" || keepsPRUpdateText(sctx) {
 			return nil, fmt.Errorf("provider cannot read existing PR content for author-safe template updates")
 		}
 		// Claim after the live read and before composition, so a reattach can
@@ -152,7 +152,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		updated := existing
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
-		if template != "" || hasPRAppendixMarkers(live.Body) {
+		// update_text: keep uses that same path when no template is configured.
+		if template != "" || hasPRAppendixMarkers(live.Body) || keepsPRUpdateText(sctx) {
 			if _, err := parsePROwnedBody(live.Body); err != nil {
 				return nil, err
 			}
@@ -444,6 +445,11 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	if err != nil {
 		return prContent{}, err
 	}
+	// A kept draft is already an owned body. Redacting it again would change
+	// bytes the integrity guard just stamped.
+	if keepsPRUpdateText(sctx) {
+		return content, nil
+	}
 	redacted := redactPRContent(content, sctx.WorkDir, nmWorktreesRoot())
 	// Component text is cleaned before it is budgeted, so redaction should not
 	// grow the body. If it does, the body was never fitted to the limit: refuse
@@ -540,6 +546,9 @@ Final diff paths and statuses:
 				}
 				if content.Title != originalTitle {
 					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
+				}
+				if keepsPRUpdateText(sctx) {
+					return s.publishKeptDraft(sctx, content.Title, content.Body, provider, bodyLimit)
 				}
 				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 				return content, nil
@@ -1685,9 +1694,16 @@ func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingM
 		body = "## What Changed\n\nFinal diff unavailable; no complete scope summary was generated."
 	}
 	body = neutralizeAttestationMarkers(provider, body)
+	if keepsPRUpdateText(sctx) {
+		return (&PRStep{}).publishKeptDraft(sctx, title, body, provider, bodyLimit)
+	}
 	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 	return prContent{
 		Title: title,
 		Body:  body,
 	}, nil
+}
+
+func keepsPRUpdateText(sctx *pipeline.StepContext) bool {
+	return sctx != nil && sctx.Config != nil && sctx.Config.PR.KeepsUpdateText()
 }

@@ -195,16 +195,36 @@ func templateStructureLines(text string) []string {
 }
 
 func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, true)
-	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
-		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
+	evidence, err := s.recordedPREvidence(sctx, provider)
+	if err != nil {
+		return "", err
 	}
 	parts := []string{}
 	if intent := publicPRIntent(sctx); intent != "" {
 		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
 	}
-	if evidence := appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider); evidence != "" {
+	if evidence != "" {
 		parts = append(parts, evidence)
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, true)
+	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
+		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
+	}
+	return appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider), nil
+}
+
+// publishKeptDraft stores the ordinary narrative above an owned appendix.
+// A later update refreshes that appendix through the template preservation path.
+func (s *PRStep) publishKeptDraft(sctx *pipeline.StepContext, title, narrative string, provider scm.Provider, bodyLimit int) (prContent, error) {
+	narrative = narrativeWithIntent(sctx, narrative)
+	evidence, err := s.recordedPREvidence(sctx, provider)
+	if err != nil {
+		return prContent{}, err
+	}
+	evidence = appendIssuesSection(evidence, issuesSection(sctx, narrative))
+	return composeOwnedPRContent(prOwnedBody{before: narrative}, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }

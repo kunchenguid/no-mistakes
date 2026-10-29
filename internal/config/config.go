@@ -411,6 +411,9 @@ type RepositoryPRRaw struct {
 	TitleFormat *string `yaml:"title_format"`
 	Template    string  `yaml:"template"`
 	Appendix    string  `yaml:"appendix"`
+	// UpdateText is keep or regenerate. Only a matching repository_overrides
+	// entry can set it. Empty means regenerate.
+	UpdateText string `yaml:"update_text"`
 }
 
 // RepositoryOverrides maps remote URLs to machine-local per-repository settings.
@@ -1081,7 +1084,10 @@ type PR struct {
 	// Nil preserves the historical default: publish the extracted intent.
 	PublishIntent *bool
 	// Appendix is full, collapsed, or minimal. Empty preserves full.
-	Appendix    string
+	Appendix string
+	// UpdateText is keep or regenerate. Empty means regenerate. It is set only
+	// from a matching repository_overrides entry.
+	UpdateText  string
 	TitleFormat string
 }
 
@@ -4129,6 +4135,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		if pr.Appendix == "" {
 			pr.Appendix = override.PR.Appendix
 		}
+		pr.UpdateText = override.PR.UpdateText
 	}
 	if pr.Appendix == "" {
 		pr.Appendix = global.PR.Appendix
