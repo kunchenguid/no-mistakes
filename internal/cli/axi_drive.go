@@ -122,6 +122,8 @@ func outcomeFor(status string) string {
 		return "failed"
 	case types.RunCancelled:
 		return "cancelled"
+	case types.RunHandedOff:
+		return "handed-off"
 	case types.RunCIMonitorInterrupted:
 		return "ci-monitor-interrupted"
 	default:
@@ -129,7 +131,7 @@ func outcomeFor(status string) string {
 	}
 }
 
-// outcomeForRun qualifies completed runs whose external checks were overridden
+// outcomeForRun qualifies successful terminal runs whose external checks were overridden
 // or whose publication/verification automatically skipped. Explicit per-run
 // skips carry no automatic cause and retain their existing outcome.
 func outcomeForRun(rv runView) string {
@@ -1066,9 +1068,10 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // does a gate holding an open review question or an unreadable question history
 // (pipeline.HasUnansweredReviewQuestion / HasUnreadableReviewQuestionHistory).
 //
-// The CI step keeps monitoring an open PR until a human merges or closes it (a
-// live status the TUI shows), so it never reaches a terminal state on its own
-// by default. An agent driving the run must not block on that human action, so
+// The CI step keeps monitoring an open PR until a human merges or closes it, or
+// explicitly hands it off (a live status the TUI shows), so it never reaches a
+// terminal state on its own by default. An agent driving the run must not block
+// on that human action, so
 // once CI checks pass driveRun returns with ciReady=true: the change is
 // validated and the PR is ready for a human to merge. The daemon keeps
 // monitoring in the background. Under the opt-in ci.release_after_checks_pass
@@ -1356,8 +1359,8 @@ func respondDispositionFields(result ipc.RespondResult) []toon.Field {
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
 // 0, a normal decision point), a checks-passed outcome (exit 0, CI readiness is
 // established by green checks or the trusted no_ci declaration and the PR is
-// ready for a human to merge), or the terminal outcome (exit 0 when passed,
-// exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
+// ready for a human to merge), or the terminal outcome (exit 0 when passed or
+// handed off, exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
 // the fixes the pipeline applied and reporting instructions, so the agent
 // closes the loop with the user instead of stopping at "it passed". lead
 // fields, when given, open the document ahead of the run object, so a command
@@ -1447,10 +1450,13 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		fields = append(fields, toon.Field{Key: "error", Value: *run.Error})
 	}
 
-	if rv.Status == string(types.RunCompleted) {
+	if rv.Status == string(types.RunCompleted) || rv.Status == string(types.RunHandedOff) {
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		var help []string
+		if rv.Status == string(types.RunHandedOff) {
+			help = append(help, "Green CI monitoring ended explicitly for human review; the PR remains open and was not merged or cancelled.")
+		}
 		if rv.CIOverrideReason != "" {
 			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
 		}

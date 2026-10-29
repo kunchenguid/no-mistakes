@@ -69,7 +69,7 @@ type Model struct {
 	latestVersion    string
 	err              error
 	quitting         bool
-	done             bool // run completed or failed
+	done             bool // run reached a terminal status
 	rerunPending     bool
 	rerunRequestID   uint64
 	showDiff         bool // toggle diff viewer
@@ -430,6 +430,8 @@ func (m Model) terminalTitle() string {
 			return "✓ Completed" + suffix
 		case m.run.Status == types.RunChecksPassed:
 			return "✓ Checks passed - PR ready to merge" + suffix
+		case m.run.Status == types.RunHandedOff:
+			return "✓ Handed off" + suffix
 		case m.run.Status == types.RunFailed:
 			return "✗ Failed" + suffix
 		case m.run.Status == types.RunCancelled:

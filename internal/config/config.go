@@ -69,7 +69,7 @@ const (
 	// Global-config-only; a pushed branch cannot change it.
 	DefaultGateReconcileTimeout = 30 * time.Second
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
-	// merged, closed, or the run is aborted - never self-terminate".
+	// merged, closed, handed off, or aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
 	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)
@@ -833,13 +833,13 @@ type CI struct {
 	CarryReviewOnReplay bool
 
 	// ReleaseAfterChecksPass makes the CI step finish the run at its checks
-	// verdict instead of monitoring the pull request until it is merged or
-	// closed.
+	// verdict instead of monitoring the pull request until it is merged, closed,
+	// declined, or explicitly handed off.
 	//
 	// false (default): the step records readiness and keeps polling, which is
 	// the behavior every run has had until now - a later base-branch advance or
 	// conflict is repaired and the merge itself is observed, bounded by
-	// ci_timeout.
+	// ci_timeout, unless an operator explicitly hands off the green monitor.
 	//
 	// true: the green observation ends the step, and the run completes with the
 	// checks_passed status, releasing its worktree and its lane while the merge
@@ -1553,7 +1553,8 @@ forgejo_axi_path: forgejo-axi
 # watch it keeps afterwards. Each base-branch advance re-arms this timer.
 # Set to "unlimited", "none", "off", "never", or any non-positive duration
 # to disable the timeout. By default the monitor keeps watching after checks
-# are green; ci.release_after_checks_pass ends the run at readiness.
+# are green; ci.release_after_checks_pass ends the run at readiness, and
+# no-mistakes axi handoff ends it explicitly for human review.
 # See docs/src/content/docs/reference/global-config.md#ci_timeout.
 ci_timeout: "168h"
 
@@ -1783,15 +1784,15 @@ ci:
   carry_review_on_replay: false
 
   # Whether the CI step finishes the run as soon as every check is green
-  # instead of monitoring the pull request until it is merged or closed.
-  # Defaults to false, which is what the step has always done: the run stays
-  # open, keeps watching the PR, and can still auto-rebase it if the base branch
-  # later conflicts. Set true to record the checks-passed verdict and release
-  # the run there (outcome: checks-passed, run status: checks_passed), so the
-  # run's worktree and lane are not held for a human merge decision - the
-  # recorded CI duration then measures CI only. CI readiness is still recorded
-  # either way; a repository that sets ci.release_after_checks_pass on its own
-  # default branch overrides this value.
+  # instead of monitoring the pull request until it is merged, closed, or
+  # explicitly handed off. Defaults to false, which is what the step has
+  # always done: the run stays open, keeps watching the PR, and can still
+  # auto-rebase it if the base branch later conflicts. Set true to record the
+  # checks-passed verdict and release the run there (outcome: checks-passed,
+  # run status: checks_passed), so the run's worktree and lane are not held for
+  # a human merge decision - the recorded CI duration then measures CI only.
+  # CI readiness is still recorded either way; a repository that sets
+  # ci.release_after_checks_pass on its own default branch overrides this value.
   release_after_checks_pass: false
 
 # Auto-fix commit subject template. Available variables: {{.Step}}, {{.Summary}}, and {{.Branch}}.

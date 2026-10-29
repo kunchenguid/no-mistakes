@@ -6,7 +6,7 @@ import (
 )
 
 func TestRunStatusTerminal(t *testing.T) {
-	terminal := []RunStatus{RunCompleted, RunFailed, RunCancelled, RunChecksPassed, RunCIMonitorInterrupted}
+	terminal := []RunStatus{RunCompleted, RunFailed, RunCancelled, RunChecksPassed, RunCIMonitorInterrupted, RunHandedOff}
 	for _, s := range terminal {
 		if !s.Terminal() {
 			t.Errorf("status %q: Terminal() = false, want true", s)

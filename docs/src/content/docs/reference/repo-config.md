@@ -987,7 +987,7 @@ A value set here wins over the operator's own [`ci.carry_review_on_replay`](/no-
 
 ### ci.release_after_checks_pass
 
-Whether the CI step finishes the run at its checks verdict instead of monitoring the pull request until it is merged or closed.
+Whether the CI step finishes the run at its checks verdict instead of monitoring the pull request until it is merged, closed, declined, or handed off.
 
 | | |
 |---|---|
@@ -1000,7 +1000,7 @@ ci:
   release_after_checks_pass: true
 ```
 
-- **`false` (default)** is what the step has always done: once every check is green the run records readiness and keeps watching the PR until it is merged, closed, or declined, and a later base-branch advance or conflict is still repaired on its own.
+- **`false` (default)** is what the step has always done: once every check is green the run records readiness and keeps watching the PR until it is merged, closed, or declined, unless an operator explicitly hands off the green monitor; a later base-branch advance or conflict is still repaired on its own.
 - **`true`** finishes the step at that point. The run completes with the `checks_passed` status, releases its worktree, and reports `outcome: checks-passed`; whether and when the PR is merged is then the user's decision, and nothing observes the merge afterwards, so the recorded CI duration stops at the checks verdict instead of including the wait for a merge.
 
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot opt itself into the shorter run, or out of it.

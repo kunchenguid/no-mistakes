@@ -29,6 +29,11 @@ func newAbortQuiescenceFixture(t *testing.T, getRun func(context.Context, int) (
 
 func newAbortQuiescenceFixtureWithCancel(t *testing.T, getRun func(context.Context, int) (*ipc.RunInfo, error), cancelErr error, cancelAfterRequest ...func()) {
 	t.Helper()
+	newStopQuiescenceFixture(t, ipc.MethodCancelRun, getRun, cancelErr, cancelAfterRequest...)
+}
+
+func newStopQuiescenceFixture(t *testing.T, method string, getRun func(context.Context, int) (*ipc.RunInfo, error), cancelErr error, cancelAfterRequest ...func()) {
+	t.Helper()
 	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 
@@ -78,7 +83,7 @@ func newAbortQuiescenceFixtureWithCancel(t *testing.T, getRun func(context.Conte
 			ID: "run-quiesce", Branch: "feature/abort", Status: types.RunRunning,
 		}}, nil
 	})
-	srv.Handle(ipc.MethodCancelRun, func(context.Context, json.RawMessage) (interface{}, error) {
+	srv.Handle(method, func(context.Context, json.RawMessage) (interface{}, error) {
 		for _, cancel := range cancelAfterRequest {
 			cancel()
 		}
@@ -96,8 +101,11 @@ func newAbortQuiescenceFixtureWithCancel(t *testing.T, getRun func(context.Conte
 		}
 		return &ipc.GetRunResult{Run: run}, nil
 	})
+	if err := srv.Listen(p.Socket()); err != nil {
+		t.Fatal(err)
+	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve(p.Socket()) }()
+	go func() { errCh <- srv.ServeReady() }()
 	t.Cleanup(func() {
 		srv.Close()
 		select {
@@ -106,15 +114,6 @@ func newAbortQuiescenceFixtureWithCancel(t *testing.T, getRun func(context.Conte
 			t.Error("fake daemon did not stop")
 		}
 	})
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if client, dialErr := ipc.Dial(p.Socket()); dialErr == nil {
-			client.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
 	previousTimeout := abortStateWaitTimeout
 	abortStateWaitTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { abortStateWaitTimeout = previousTimeout })

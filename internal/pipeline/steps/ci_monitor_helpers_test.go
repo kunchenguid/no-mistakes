@@ -55,8 +55,12 @@ func TestCIMonitorReadinessChangeNotifiesConsumers(t *testing.T) {
 		changes = append(changes, [2]bool{ready, declaredNoCI})
 	}
 
-	logCIMonitorStatus(sctx, ciNoChecksPassedMsg, "")
-	clearCIMonitorReady(sctx)
+	if _, err := logCIMonitorStatus(sctx, ciNoChecksPassedMsg, ciMonitorStatus{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearCIMonitorReady(sctx); err != nil {
+		t.Fatal(err)
+	}
 
 	want := [][2]bool{{true, true}, {false, false}}
 	if len(changes) != len(want) {
