@@ -76,7 +76,7 @@ Rewriting an existing PR's title or body (the attestation rebind before a push, 
 
 ### Multiple GitHub or GitLab identities
 
-If one daemon serves repositories that require non-overlapping accounts, give each account an isolated CLI config directory and use account-specific host aliases in repository remotes, for example `git@github-personal:you/project.git`. Then map those raw host tokens with global [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles). The reference owns the configuration, validation, compatibility, and fail-closed routing contract.
+If one daemon serves repositories that require non-overlapping accounts, give each account an isolated CLI config directory and use account-specific host aliases in repository remotes, for example `git@github-personal:you/project.git`. Then map those raw host tokens with global [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles). When the accounts are already signed in to one gh configuration, a GitHub profile keyed by `host/owner` with `gh_user` selects the login per repository owner instead, with no extra config directory or alias. The reference owns the configuration, validation, compatibility, and fail-closed routing contract.
 
 **What you get:**
 

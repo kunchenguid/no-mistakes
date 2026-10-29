@@ -345,18 +345,35 @@ type globalConfigRaw struct {
 	Providers           ProvidersRaw                 `yaml:"providers"`
 }
 
-// ForgeProfile selects one isolated provider CLI configuration directory.
+// ForgeProfile selects one isolated provider CLI configuration directory, or
+// one GitHub login already signed in to a gh configuration.
 // ExpectedLogin optionally pins the account the profile must be signed in as;
-// resolution fails closed when the profile's active login differs. It carries
-// an account name only, never credentials.
+// resolution fails closed when the profile's active login differs. GHUser
+// selects a signed-in gh account by name, in GHConfigDir when set and in the
+// ambient gh configuration otherwise; its token is read once per run and never
+// stored. Both carry an account name only, never credentials.
 type ForgeProfile struct {
 	GHConfigDir   string `yaml:"gh_config_dir"`
 	GLabConfigDir string `yaml:"glab_config_dir"`
 	ExpectedLogin string `yaml:"expected_login"`
+	GHUser        string `yaml:"gh_user"`
 }
 
-// ForgeProfiles maps a remote host token to its machine-local provider profile.
+// IsGitHub reports whether the profile routes through the gh CLI.
+func (p ForgeProfile) IsGitHub() bool {
+	return p.GHConfigDir != "" || p.GHUser != ""
+}
+
+// ForgeProfiles maps a remote host token, optionally scoped to one repository
+// owner as "host/owner", to its machine-local provider profile.
 type ForgeProfiles map[string]ForgeProfile
+
+// SplitForgeProfileKey splits a forge_profiles key into its host token and
+// optional repository owner. A plain host key returns an empty owner.
+func SplitForgeProfileKey(key string) (host, owner string) {
+	host, owner, _ = strings.Cut(key, "/")
+	return host, owner
+}
 
 // RepositoryOverride contains machine-local settings for one normalized remote.
 // Review, Document, and Test are additive guidance only: they are rendered
@@ -2980,21 +2997,42 @@ func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
 		if _, exists := profiles[host]; exists {
 			return nil, fmt.Errorf("invalid forge_profiles: duplicate host %q after case normalization", host)
 		}
+		hostToken, owner := SplitForgeProfileKey(host)
+		if hostToken == "" {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: host must not be empty", host)
+		}
+		if strings.Contains(host, "/") && (owner == "" || strings.ContainsAny(owner, "/ \t")) {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: an owner-scoped key must be host/owner with a single owner segment", host)
+		}
 		ghDir := strings.TrimSpace(profile.GHConfigDir)
 		glabDir := strings.TrimSpace(profile.GLabConfigDir)
-		if (ghDir == "") == (glabDir == "") {
+		profile.GHUser = strings.TrimSpace(profile.GHUser)
+		profile.ExpectedLogin = strings.TrimSpace(profile.ExpectedLogin)
+		if profile.GHUser != "" {
+			if glabDir != "" {
+				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user selects a GitHub account and cannot be combined with glab_config_dir", host)
+			}
+			if profile.ExpectedLogin != "" {
+				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user already selects the login; remove expected_login", host)
+			}
+			if !validGitHubLogin(profile.GHUser) {
+				return nil, fmt.Errorf("invalid forge_profiles.%s.gh_user: %q is not a GitHub login", host, profile.GHUser)
+			}
+		} else if (ghDir == "") == (glabDir == "") {
 			return nil, fmt.Errorf("invalid forge_profiles.%s: exactly one of gh_config_dir or glab_config_dir is required", host)
+		}
+		if owner != "" && glabDir != "" {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: owner-scoped keys are supported only for GitHub profiles", host)
 		}
 		profile.GHConfigDir = ghDir
 		profile.GLabConfigDir = glabDir
-		profile.ExpectedLogin = strings.TrimSpace(profile.ExpectedLogin)
 		if ghDir != "" {
 			normalized, err := normalizeForgeProfilePath(ghDir)
 			if err != nil {
 				return nil, fmt.Errorf("invalid forge_profiles.%s.gh_config_dir: %w", host, err)
 			}
 			profile.GHConfigDir = normalized
-		} else {
+		} else if glabDir != "" {
 			normalized, err := normalizeForgeProfilePath(glabDir)
 			if err != nil {
 				return nil, fmt.Errorf("invalid forge_profiles.%s.glab_config_dir: %w", host, err)
@@ -3004,6 +3042,21 @@ func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
 		profiles[host] = profile
 	}
 	return profiles, nil
+}
+
+// validGitHubLogin accepts the characters GitHub and GitHub Enterprise logins
+// use (managed-user logins add "_"). It refuses a leading "-" so the value can
+// never read as a flag when it is handed to gh.
+func validGitHubLogin(login string) bool {
+	if login == "" || strings.HasPrefix(login, "-") {
+		return false
+	}
+	for _, r := range login {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeForgeProfilePath(value string) (string, error) {
