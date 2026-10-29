@@ -545,6 +545,7 @@ Each round has these fields:
 - `trigger`: the recorded execution trigger, such as `initial`, `auto_fix`, legacy `user_fix`, `coverage`, `answer`, or `retry`; consumers must allow new trigger values.
 - `summary` and `findings`: the round's complete summary and array of finding objects, or `null` when absent.
   Finding fields are preserved, including optional fields and instructions; consumers must ignore unknown fields.
+  TOON prints an integer outside ±(2^53−1) as a quoted decimal string to keep it exact; `--json` keeps it a number.
   An explicit empty findings array stays `[]` and does not mean that earlier findings were resolved.
 - `selected_finding_ids`: IDs selected for fixing **after this round**, or `null` when no selection was recorded.
   `[]` is an explicit selection of nothing, distinct from no decision.

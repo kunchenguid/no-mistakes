@@ -125,7 +125,7 @@ func TestAxiRoundsExportsStoredFindingsAndDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TOON: %v\n%s", err, toonOut)
 	}
-	for _, want := range []string{"schema_version: 1", "rounds[5]:", strconv.Quote(description), "selection_source: user_declined", "selected_finding_ids: null", "extra: preserved"} {
+	for _, want := range []string{"schema_version: 1", "rounds[5]:", strconv.Quote(description), "selection_source: user_declined", "selected_finding_ids: null", "extra: preserved", `large: "9007199254740993"`, "line: 42"} {
 		if !strings.Contains(toonOut, want) {
 			t.Fatalf("TOON output missing %q:\n%s", want, toonOut)
 		}

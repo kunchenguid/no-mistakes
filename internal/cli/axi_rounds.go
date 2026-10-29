@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"reflect"
 	"strings"
 
@@ -142,7 +143,7 @@ func runAxiRounds(cmd *cobra.Command, step, runID string, asJSON bool) error {
 		toon.Field{Key: "schema_version", Value: doc.SchemaVersion},
 		toon.Field{Key: "run_id", Value: doc.RunID},
 		toon.Field{Key: "step", Value: doc.Step},
-		toon.Field{Key: "rounds", Value: values["rounds"]},
+		toon.Field{Key: "rounds", Value: exactTOONIntegers(values["rounds"])},
 	)
 	return nil
 }
@@ -217,4 +218,24 @@ func decodeRoundJSON(raw string, target any) error {
 		return fmt.Errorf("unexpected trailing JSON value")
 	}
 	return nil
+}
+
+// toon-go parses json.Number as float64 but renders a big.Int beyond 2^53 as a
+// decimal string, so integers survive TOON exactly
+func exactTOONIntegers(v any) any {
+	switch val := v.(type) {
+	case json.Number:
+		if i, ok := new(big.Int).SetString(val.String(), 10); ok {
+			return i
+		}
+	case map[string]any:
+		for k, child := range val {
+			val[k] = exactTOONIntegers(child)
+		}
+	case []any:
+		for i, child := range val {
+			val[i] = exactTOONIntegers(child)
+		}
+	}
+	return v
 }
