@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.104.0](https://github.com/kunchenguid/no-mistakes/compare/v1.103.0...v1.104.0) (2026-10-29)
+
+
+### Features
+
+* add opt-in handoff for green CI monitors ([#1518](https://github.com/kunchenguid/no-mistakes/issues/1518)) ([02144b0](https://github.com/kunchenguid/no-mistakes/commit/02144b005064e825485b39d03d718a0047c622f6))
+* **cli:** add axi rounds to export per-round findings and decisions ([#1650](https://github.com/kunchenguid/no-mistakes/issues/1650)) ([7c88a31](https://github.com/kunchenguid/no-mistakes/commit/7c88a31a5513a7dd1d1f3cba28479623b2e3fbd4))
+* **forgecontext:** select a signed-in gh login per repository owner ([#1652](https://github.com/kunchenguid/no-mistakes/issues/1652)) ([69918d7](https://github.com/kunchenguid/no-mistakes/commit/69918d7f3e744a4c848c1b49843327c68a8a63bb))
+
+
+### Bug Fixes
+
+* **daemon:** preserve telemetry opt-out in managed services ([#1644](https://github.com/kunchenguid/no-mistakes/issues/1644)) ([7537785](https://github.com/kunchenguid/no-mistakes/commit/7537785a0df9e8111a8dcf8b8d0b688dedadfee7))
+* **pipeline:** retain CI fix-agent crash diagnostics after checks pass ([#1642](https://github.com/kunchenguid/no-mistakes/issues/1642)) ([3bf6783](https://github.com/kunchenguid/no-mistakes/commit/3bf6783380a2aa58359c0d83d5cce8cf15f22ab4))
+
 ## [1.103.0](https://github.com/kunchenguid/no-mistakes/compare/v1.102.1...v1.103.0) (2026-10-28)
 
 
