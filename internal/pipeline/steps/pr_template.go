@@ -219,12 +219,8 @@ func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Pro
 
 // publishKeptDraft stores the ordinary narrative above an owned appendix.
 // A later update refreshes that appendix through the template preservation path.
-func (s *PRStep) publishKeptDraft(sctx *pipeline.StepContext, title, narrative string, provider scm.Provider, bodyLimit int) (prContent, error) {
+func publishKeptDraft(sctx *pipeline.StepContext, title, narrative, evidence string, bodyLimit int) (prContent, error) {
 	narrative = narrativeWithIntent(sctx, narrative)
-	evidence, err := s.recordedPREvidence(sctx, provider)
-	if err != nil {
-		return prContent{}, err
-	}
 	evidence = appendIssuesSection(evidence, issuesSection(sctx, narrative))
 	return composeOwnedPRContent(prOwnedBody{before: narrative}, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }

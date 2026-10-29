@@ -3,6 +3,7 @@ package steps
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -37,6 +38,8 @@ type prOwnedBody struct {
 	managed                 bool
 }
 
+var errUnownedLegacyAttestation = errors.New("existing PR has an unowned legacy attestation; explicitly separate its generated evidence before enabling pr.template")
+
 // The digest is an accidental-edit/ownership guard, NOT authentication. PR
 // authors can edit every byte, including the attestation. We never infer
 // ownership from headings: only an intact, unchanged, explicitly delimited
@@ -44,7 +47,7 @@ type prOwnedBody struct {
 func parsePROwnedBody(body string) (prOwnedBody, error) {
 	if !hasPRAppendixMarkers(body) {
 		if strings.Contains(body, pipelineAttestationCommentPrefix) {
-			return prOwnedBody{}, fmt.Errorf("existing PR has an unowned legacy attestation; explicitly separate its generated evidence before enabling pr.template")
+			return prOwnedBody{}, errUnownedLegacyAttestation
 		}
 		return prOwnedBody{before: body}, nil
 	}

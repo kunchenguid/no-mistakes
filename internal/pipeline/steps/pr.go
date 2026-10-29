@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path"
@@ -141,6 +142,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, fmt.Errorf("read existing PR before publication: %w", err)
 			}
 		} else if template != "" || keepsPRUpdateText(sctx) {
+			if template == "" {
+				return nil, fmt.Errorf("provider cannot read existing PR content for pr.update_text: keep")
+			}
 			return nil, fmt.Errorf("provider cannot read existing PR content for author-safe template updates")
 		}
 		// Claim after the live read and before composition, so a reattach can
@@ -155,6 +159,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		// update_text: keep uses that same path when no template is configured.
 		if template != "" || hasPRAppendixMarkers(live.Body) || keepsPRUpdateText(sctx) {
 			if _, err := parsePROwnedBody(live.Body); err != nil {
+				if errors.Is(err, errUnownedLegacyAttestation) && template == "" && keepsPRUpdateText(sctx) {
+					return nil, fmt.Errorf("existing PR has an unowned legacy attestation; explicitly separate its generated evidence from the narrative once before using pr.update_text: keep")
+				}
 				return nil, err
 			}
 			var emptyNarrative string
@@ -485,10 +492,18 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
 	inventory := prPromptInventory(sctx, finalDiff, baseSHA)
-	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx, provider)
-	if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" &&
-		((bodyLimit > 0 && scm.PRBodyLen(marker) > bodyLimit) || len(marker) > maxPullRequestBodyBytes) {
-		return prContent{}, fmt.Errorf("pipeline attestation exceeds PR body limit")
+	var pipelineMD, riskLine, testingMD, keptEvidence string
+	if keepsPRUpdateText(sctx) {
+		keptEvidence, err = s.recordedPREvidence(sctx, provider)
+		if err != nil {
+			return prContent{}, err
+		}
+	} else {
+		pipelineMD, riskLine, testingMD = s.buildPipelineSection(sctx, provider)
+		if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" &&
+			((bodyLimit > 0 && scm.PRBodyLen(marker) > bodyLimit) || len(marker) > maxPullRequestBodyBytes) {
+			return prContent{}, fmt.Errorf("pipeline attestation exceeds PR body limit")
+		}
 	}
 
 	titleRules := prTitlePromptRules(sctx)
@@ -526,7 +541,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		fallback, fallbackErr := fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+		fallback, fallbackErr := s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, keptEvidence, bodyLimit, provider)
 		return fallback, fallbackErr
 	}
 
@@ -548,7 +563,7 @@ Final diff paths and statuses:
 					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
 				if keepsPRUpdateText(sctx) {
-					return s.publishKeptDraft(sctx, content.Title, content.Body, provider, bodyLimit)
+					return publishKeptDraft(sctx, content.Title, content.Body, keptEvidence, bodyLimit)
 				}
 				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 				return content, nil
@@ -556,7 +571,7 @@ Final diff paths and statuses:
 		}
 	}
 
-	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+	return s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, keptEvidence, bodyLimit, provider)
 }
 
 func (s *PRStep) draftConfiguredPRTitle(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string) (string, error) {
@@ -1683,7 +1698,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
+func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, keptEvidence string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	title, err := renderPRTitle(sctx, "update pull request")
 	if err != nil {
 		return prContent{}, err
@@ -1695,7 +1710,7 @@ func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingM
 	}
 	body = neutralizeAttestationMarkers(provider, body)
 	if keepsPRUpdateText(sctx) {
-		return (&PRStep{}).publishKeptDraft(sctx, title, body, provider, bodyLimit)
+		return publishKeptDraft(sctx, title, body, keptEvidence, bodyLimit)
 	}
 	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 	return prContent{

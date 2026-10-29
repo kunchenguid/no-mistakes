@@ -208,7 +208,7 @@ func TestPRUpdateTextKeepRefusesUnownedAttestation(t *testing.T) {
 	sctx.Env = env
 	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 	_, err := (&PRStep{}).Execute(sctx)
-	if err == nil || !strings.Contains(err.Error(), "unowned legacy attestation") {
+	if err == nil || !strings.Contains(err.Error(), "unowned legacy attestation") || !strings.Contains(err.Error(), "pr.update_text") || strings.Contains(err.Error(), "pr.template") {
 		t.Fatalf("error = %v", err)
 	}
 	if got := string(mustRead(t, bodyFile)); got != legacy {
