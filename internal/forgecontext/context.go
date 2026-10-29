@@ -88,7 +88,7 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 	if profile.IsGitHub() {
 		var env runenv.Overlay
 		if profile.GHUser != "" {
-			env, err = githubUserEnvironment(ctx, profile.GHConfigDir, targetHost, profile.GHUser)
+			env, err = githubUserEnvironment(ctx, targetHost, profile.GHUser)
 		} else {
 			err = validateGitHubProfile(profile.GHConfigDir, targetHost, profile.ExpectedLogin)
 			env = githubEnvironment(profile.GHConfigDir)
@@ -402,18 +402,13 @@ func profileForKey(profiles config.ForgeProfiles, key string) (config.ForgeProfi
 }
 
 // githubUserEnvironment reads the stored token of one login signed in to the
-// gh configuration (dir, or the ambient one when dir is empty) and returns the
+// ambient gh configuration and returns the
 // run environment that authenticates every gh and gh-credential-helper call as
 // that login. The token is read once, from gh's stdout only; it never reaches
 // an argument, a log line, a file, or an error. A login gh cannot produce a
 // token for refuses the run instead of falling back to the active account.
-func githubUserEnvironment(ctx context.Context, dir, targetHost, login string) (runenv.Overlay, error) {
-	if dir != "" {
-		if err := requireDirectory(dir, "GitHub"); err != nil {
-			return runenv.Overlay{}, err
-		}
-	}
-	env := githubEnvironment(dir)
+func githubUserEnvironment(ctx context.Context, targetHost, login string) (runenv.Overlay, error) {
+	env := githubEnvironment("")
 	ctx, cancel := context.WithTimeout(ctx, ghTokenTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", targetHost, "--user", login)

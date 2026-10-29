@@ -349,9 +349,8 @@ type globalConfigRaw struct {
 // one GitHub login already signed in to a gh configuration.
 // ExpectedLogin optionally pins the account the profile must be signed in as;
 // resolution fails closed when the profile's active login differs. GHUser
-// selects a signed-in gh account by name, in GHConfigDir when set and in the
-// ambient gh configuration otherwise; its token is read once per run and never
-// stored. Both carry an account name only, never credentials.
+// selects an account signed in to the ambient gh configuration by name; its
+// token is read once per run and never stored. Both carry an account name only, never credentials.
 type ForgeProfile struct {
 	GHConfigDir   string `yaml:"gh_config_dir"`
 	GLabConfigDir string `yaml:"glab_config_dir"`
@@ -3012,6 +3011,9 @@ func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
 			if glabDir != "" {
 				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user selects a GitHub account and cannot be combined with glab_config_dir", host)
 			}
+			if ghDir != "" {
+				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user selects a login in the ambient gh configuration and cannot be combined with gh_config_dir", host)
+			}
 			if profile.ExpectedLogin != "" {
 				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user already selects the login; remove expected_login", host)
 			}
@@ -3021,8 +3023,8 @@ func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
 		} else if (ghDir == "") == (glabDir == "") {
 			return nil, fmt.Errorf("invalid forge_profiles.%s: exactly one of gh_config_dir or glab_config_dir is required", host)
 		}
-		if owner != "" && glabDir != "" {
-			return nil, fmt.Errorf("invalid forge_profiles.%s: owner-scoped keys are supported only for GitHub profiles", host)
+		if owner != "" && profile.GHUser == "" {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: owner-scoped keys are supported only for gh_user profiles", host)
 		}
 		profile.GHConfigDir = ghDir
 		profile.GLabConfigDir = glabDir

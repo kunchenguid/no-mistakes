@@ -543,7 +543,7 @@ For Codex, `service_tier` and reasoning effort tune different things: `service_t
 
 ### forge_profiles
 
-Optional machine-local routing for repositories that use different GitHub or GitLab identities. Keys are the raw host tokens recorded in the repository remote, including SSH aliases such as `github-personal`. A GitHub profile key may also name one repository owner as `host/owner`. Each entry must set exactly one provider config directory, or select a signed-in GitHub login with `gh_user`:
+Optional machine-local routing for repositories that use different GitHub or GitLab identities. Keys are the raw host tokens recorded in the repository remote, including SSH aliases such as `github-personal`. A `gh_user` profile key may also name one repository owner as `host/owner`. Each entry must set exactly one provider config directory, or select a signed-in GitHub login with `gh_user`:
 
 ```yaml
 forge_profiles:
@@ -564,7 +564,7 @@ Paths must be absolute or begin with `~/`; environment variables and other shell
 
 When a repository matches a profile, no-mistakes validates it before starting the pipeline and applies an immutable environment to every subprocess in that run: built-in provider commands, custom shell commands, agents, managed agent servers, and the run's Git commands together with any hooks or credential helpers they spawn. A GitHub profile sets `GH_CONFIG_DIR` and removes higher-precedence GitHub token, host, and repository variables; a GitLab profile does the equivalent for `GLAB_CONFIG_DIR` and GitLab variables. The daemon process environment is never changed.
 
-Each selected GitHub config must contain the target host and exactly one account for it, with that account active, unless the profile sets `gh_user`. A selected GitLab config must contain the target host. An optional `expected_login` pins the account name the profile must be signed in as; resolution fails closed when the config's active login differs or is missing, so a swapped or re-authenticated config directory can never route a run through the wrong account. It carries an account name only, never credentials. `no-mistakes doctor` validates every configured profile and its online authentication.
+Each selected GitHub config must contain the target host and exactly one account for it, with that account active. A selected GitLab config must contain the target host. An optional `expected_login` pins the account name the profile must be signed in as; resolution fails closed when the config's active login differs or is missing, so a swapped or re-authenticated config directory can never route a run through the wrong account. It carries an account name only, never credentials. `no-mistakes doctor` validates every configured profile and its online authentication.
 
 #### Choosing one of several gh accounts with `gh_user`
 
@@ -576,11 +576,11 @@ forge_profiles:
     gh_user: remicaesar
 ```
 
-At run setup, no-mistakes runs `gh auth token --hostname <host> --user <gh_user>` once, against `gh_config_dir` when the profile sets one and against the ambient gh configuration otherwise, and gives that token to every subprocess in the run as `GH_TOKEN` (`GH_ENTERPRISE_TOKEN` on a GitHub Enterprise Server host). The other GitHub token, host, and repository variables are removed as for any GitHub profile. gh prefers that variable over its active account, and `gh auth git-credential` returns it, so HTTPS pushes through the gh credential helper authenticate as the same login. The token is held in memory for the run only: it never appears in arguments, logs, files, or the run record, and a recovered run reads it again. A profile never stores a token itself.
+At run setup, no-mistakes runs `gh auth token --hostname <host> --user <gh_user>` once, against the ambient gh configuration, and gives that token to every subprocess in the run as `GH_TOKEN` (`GH_ENTERPRISE_TOKEN` on a GitHub Enterprise Server host). The other GitHub token, host, and repository variables are removed as for any GitHub profile. gh prefers that variable over its active account, and `gh auth git-credential` returns it, so HTTPS pushes through the gh credential helper authenticate as the same login. The token is held in memory for the run only: it never appears in arguments, logs, files, or the run record, and a recovered run reads it again. A profile never stores a token itself.
 
-If gh has no token for that login on the host (the login is unknown or signed out), the run fails at setup with the gh error; it never falls back to the active account. `gh_user` cannot be combined with `glab_config_dir` or `expected_login` (the login it names is already the pin), and the single-account check above does not apply to it.
+If gh has no token for that login on the host (the login is unknown or signed out), the run fails at setup with the gh error; it never falls back to the active account. `gh_user` cannot be combined with `gh_config_dir`, `glab_config_dir`, or `expected_login` (the login it names is already the pin).
 
-An owner-scoped key is looked up before its plain host key, and a repository whose owner has no scoped key falls back to the plain host key, so existing host-keyed profiles keep working unchanged. An owner-scoped key never activates routing for other owners: with only `github.com/remicaesar` configured, repositories other owners hold on `github.com` keep ambient authentication. Owner-scoped keys are supported for GitHub profiles only.
+An owner-scoped key is looked up before its plain host key, and a repository whose owner has no scoped key falls back to the plain host key, so existing host-keyed profiles keep working unchanged. An owner-scoped key never activates routing for other owners: with only `github.com/remicaesar` configured, repositories other owners hold on `github.com` keep ambient authentication. Owner-scoped keys are supported for `gh_user` profiles only.
 
 Profile activation is provider-specific and fail-closed: after at least one plain host-keyed GitHub profile is configured, a GitHub repository must match a GitHub profile; GitLab remains ambient unless a GitLab profile is also configured, and vice versa. With no `forge_profiles`, provider detection and ambient CLI authentication behave exactly as before.
 

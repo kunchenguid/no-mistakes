@@ -155,9 +155,6 @@ func TestLoadGlobalParsesOwnerScopedGHUserProfiles(t *testing.T) {
 	cfg, err := LoadGlobalFromBytes([]byte("forge_profiles:\n" +
 		"  GitHub.com/RemiCaesar:\n" +
 		"    gh_user: ' remicaesar '\n" +
-		"  github.com/acme:\n" +
-		"    gh_user: acme-bot\n" +
-		"    gh_config_dir: " + dir + "\n" +
 		"  github.com:\n" +
 		"    gh_config_dir: " + dir + "\n"))
 	if err != nil {
@@ -165,9 +162,6 @@ func TestLoadGlobalParsesOwnerScopedGHUserProfiles(t *testing.T) {
 	}
 	if got := cfg.ForgeProfiles["github.com/remicaesar"]; got.GHUser != "remicaesar" || got.GHConfigDir != "" {
 		t.Fatalf("owner-scoped ambient profile = %#v", got)
-	}
-	if got := cfg.ForgeProfiles["github.com/acme"]; got.GHUser != "acme-bot" || got.GHConfigDir != dir {
-		t.Fatalf("owner-scoped profile with config dir = %#v", got)
 	}
 	if got := cfg.ForgeProfiles["github.com"]; got.GHUser != "" || got.GHConfigDir != dir {
 		t.Fatalf("plain host profile changed = %#v", got)
@@ -185,7 +179,10 @@ func TestLoadGlobalRejectsInvalidGHUserProfiles(t *testing.T) {
 		{name: "with expected login", key: "github.com", profile: "{gh_user: me, expected_login: me}", want: "remove expected_login"},
 		{name: "flag-shaped login", key: "github.com", profile: "{gh_user: --hostname}", want: "is not a GitHub login"},
 		{name: "login with space", key: "github.com", profile: "{gh_user: 'a b'}", want: "is not a GitHub login"},
-		{name: "owner-scoped gitlab", key: "gitlab.com/group", profile: "{glab_config_dir: /tmp/glab}", want: "only for GitHub profiles"},
+		{name: "with gh config dir", key: "github.com/acme", profile: "{gh_user: me, gh_config_dir: /tmp/gh}", want: "cannot be combined with gh_config_dir"},
+		{name: "owner-scoped gitlab", key: "gitlab.com/group", profile: "{glab_config_dir: /tmp/glab}", want: "only for gh_user profiles"},
+		{name: "owner-scoped gh config dir", key: "github.com/acme", profile: "{gh_config_dir: /tmp/gh}", want: "only for gh_user profiles"},
+		{name: "owner-scoped expected login", key: "github.com/acme", profile: "{gh_config_dir: /tmp/gh, expected_login: acme-bot}", want: "only for gh_user profiles"},
 		{name: "nested owner", key: "github.com/a/b", profile: "{gh_user: me}", want: "single owner segment"},
 		{name: "empty owner", key: "github.com/", profile: "{gh_user: me}", want: "single owner segment"},
 		{name: "empty host", key: "/acme", profile: "{gh_user: me}", want: "host must not be empty"},

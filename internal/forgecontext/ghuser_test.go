@@ -235,27 +235,6 @@ func TestResolveRefusesWhenGHIsMissing(t *testing.T) {
 	}
 }
 
-func TestResolveGHUserInAConfigDirSkipsTheSingleAccountCheck(t *testing.T) {
-	argsFile := installFakeGH(t, "work")
-	dir := t.TempDir()
-	hosts := "github.com:\n    users:\n        personal:\n        work:\n    user: personal\n"
-	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hosts), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	resolved, err := Resolve(context.Background(), config.ForgeProfiles{"github.com/acme": {GHConfigDir: dir, GHUser: "work"}}, "https://github.com/acme/repo.git", "")
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if _, configDir := readArgs(t, argsFile); configDir != dir {
-		t.Fatalf("gh read GH_CONFIG_DIR %q, want %q", configDir, dir)
-	}
-	env := envMap(resolved.Environment.Apply([]string{}))
-	if env["GH_CONFIG_DIR"] != dir || env["GH_TOKEN"] != "token-for-work" {
-		t.Fatalf("environment = %v, want the work login in %s", resolved.Environment, dir)
-	}
-}
-
 func TestResolveGHUserOnEnterpriseHostUsesTheEnterpriseTokenVariable(t *testing.T) {
 	argsFile := installFakeGH(t, "octo")
 	resolved, err := Resolve(context.Background(), config.ForgeProfiles{"ghe.example.com/team": {GHUser: "octo"}}, "https://ghe.example.com/team/repo.git", "")
