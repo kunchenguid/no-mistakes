@@ -71,7 +71,7 @@ Every invocation of `daemon stop`, `daemon uninstall`, `daemon restart`, or `upd
 
 The daemon writes an identity record to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path. CLI clients bound how long they wait for that socket to accept a connection with `daemon_connect_timeout` (default `3s`, override with `NM_DAEMON_CONNECT_TIMEOUT`), so a daemon process that is alive but stuck fails the connection instead of hanging the caller; see [Troubleshooting](/no-mistakes/guides/troubleshooting/#check-for-stale-artifacts).
 When the socket file exists but refuses connections and the PID file names a daemon that is provably gone (its process no longer exists, or its start time no longer matches), every status probe treats the daemon as not running and removes the stale socket and PID file, so `daemon status` reports `daemon not running` and `update` goes on to start the new daemon. The removal happens only while holding the singleton lock and only if the PID file is unchanged, so it never touches a daemon that is starting up. A live or unverifiable recorded PID leaves both files in place, and commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) then fail fast rather than silently starting a replacement daemon; `no-mistakes daemon start` self-heals past that case.
-After accepting a shutdown request, `daemon stop` waits for the daemon process itself to exit before returning success. Losing IPC health is not enough because the listener closes near the start of shutdown, while the singleton lock and other process-owned resources are released only at process exit. `daemon restart` uses the same complete-stop handoff before starting the replacement, so the old and new processes do not contend for the root.
+After accepting a shutdown request, `daemon stop` waits for the daemon process itself to exit before returning success. Losing IPC health is not enough: closing the listener does not release the singleton lock or other process-owned resources. `daemon restart` uses the same complete-stop handoff before starting the replacement, so the old and new processes do not contend for the root.
 
 Process launch and daemon readiness are separate states. After taking the singleton lock, the daemon publishes its PID before exclusive crash recovery begins, but startup is not successful until the IPC server returns a real health response. `daemon start` allows up to 45 seconds for cold environment setup and recovery, reports a child that exits before readiness promptly, and never treats the PID file or a bound socket as proof that the daemon is ready. If detached startup times out, the command kills and reaps that child before returning; if managed startup fails, it cleans up the managed attempt before trying the detached fallback and preserves both errors when both paths fail.
 
@@ -90,7 +90,7 @@ When a push arrives via the post-receive hook:
 3. Streams events to any connected TUI clients and serves request/response state to AXI clients
 4. Cleans up the worktree when the run finishes (success or failure), subject to the retention rules below
 
-An unresolved [`protected_paths`](/no-mistakes/reference/repo-config/#protected_paths) refusal preserves the index and working files across daemon shutdown, cancellation by a newer push, and crash recovery, including when trusted-config loading fails and the run cannot resume. This retention does not weaken recovery validation or keep a terminal run active: orphan-process cleanup and test-evidence expiry still apply. Successful completion of the refused step releases this protection; deliberate operator skip and abort retain their existing cleanup behavior.
+An unresolved [`protected_paths`](/no-mistakes/reference/repo-config/#protected_paths) refusal preserves the index and working files across daemon shutdown, operator cancellation, cancellation by a newer push, and crash recovery, including when trusted-config loading fails and the run cannot resume. If cancellation arrives after staging refuses a protected edit, the step fails without opening an approval gate, but saves the refusal findings so cleanup preserves the edits. This retention does not weaken recovery validation or keep a terminal run active: orphan-process cleanup and test-evidence expiry still apply. Successful completion of the refused step releases this protection; deliberate operator skip and gate abort retain their existing cleanup behavior.
 
 Step 4's cleanup is best effort: a `git worktree remove` failure (for example a vendored `.git` nested somewhere under a large `node_modules` tree) leaves the directory behind rather than retrying immediately. The [`worktree` retention setting](/no-mistakes/reference/global-config/#worktree) is the safety net for that leftover - it reaps eligible directories under the default tree after every finished run and again at startup, so a long-lived daemon converges on the retention budget instead of waiting for the crash-recovery sweep below, which only ever runs once per restart.
 
@@ -127,7 +127,7 @@ reason about in one long-lived process than inside independent hook invocations.
 
 ## Crash recovery
 
-A clean stop (`SIGTERM`, `daemon stop`, `daemon restart`) leaves a run that is fully recorded as waiting at an approval gate exactly as a crash would, so the next start resumes it at that gate. A clean stop still fails a run that is in the middle of a step.
+For graceful-stop behavior, see [Shutdown](#shutdown).
 
 On startup, the daemon checks for runs that were left in `pending` or `running` status (which means the daemon stopped while they were active):
 
@@ -170,6 +170,13 @@ The [starting and stopping](#starting-and-stopping) section owns the active-run
 guard, the top-level `--force` override, and the separate validation-step
 containment rule.
 
-1. Cancels all active runs, except that a run fully recorded as waiting at an approval gate keeps its record and worktree so the next start resumes it (see [Crash recovery](#crash-recovery))
-2. Waits up to 30 seconds for goroutines to finish
-3. Removes the PID file and socket
+When graceful shutdown begins (`SIGTERM` or the shutdown IPC method, including `daemon stop` and `daemon restart`), the daemon:
+
+1. Refuses new runs and approval responses, and stops starting subsequent pipeline steps.
+2. Gives executing steps up to 30 seconds to finish. Runs fully recorded at an existing or newly reached approval gate keep their record, worktree, and evidence for [startup recovery](#crash-recovery); a run whose final step finishes completes normally. If a step finishes but more steps remain, the run fails with `daemon shutting down` without starting the next step.
+3. Cancels work still executing at the deadline with `daemon shutting down`, then waits up to 30 seconds for cancellation cleanup. Interrupted steps fail and do not resume.
+4. Removes the PID file and socket.
+
+Shutdown preserves an already accepted gate abort and its reason, or an existing cancellation cause such as operator cancellation or a superseding push, rather than turning it into a resumable approval park.
+
+The stop command and managed service give the daemon enough time for both phases before falling back to a hard kill. On systemd, the initial stop signal goes only to the daemon, so its agent subprocesses can drain; remaining children are killed at the service stop deadline. `SIGKILL` and an OOM kill cannot run the drain and retain their existing crash-recovery behavior.

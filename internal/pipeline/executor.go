@@ -81,6 +81,10 @@ type approvalResponse struct {
 	ignoreFindingIDs []string
 }
 
+type gateAbortError string
+
+func (err gateAbortError) Error() string { return string(err) }
+
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
 	db     *db.DB
@@ -106,6 +110,9 @@ type Executor struct {
 	crashRetryBaseSHA   string
 	crashRetryRecovered bool
 
+	drainOnce sync.Once
+	drainCh   chan struct{}
+
 	mu                     sync.Mutex
 	approvalCh             chan approvalResponse  // buffered channel for approval responses
 	waiting                bool                   // true when blocked on approval
@@ -128,6 +135,23 @@ type Executor struct {
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
 	onPRMerged            func(context.Context, string)
+}
+
+// BeginDrain lets an executing step finish but prevents another step from
+// starting. Existing approval gates are left parked, never approved by shutdown.
+func (e *Executor) BeginDrain() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.drainOnce.Do(func() { close(e.drainCh) })
+}
+
+func (e *Executor) draining() bool {
+	select {
+	case <-e.drainCh:
+		return true
+	default:
+		return false
+	}
 }
 
 // SetOnPRMerged registers a best-effort hook invoked after a merged PR state
@@ -179,6 +203,7 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 		steps:                 steps,
 		onEvent:               onEvent,
 		approvalCh:            make(chan approvalResponse, 1),
+		drainCh:               make(chan struct{}),
 		gateReconcileInterval: defaultGateReconcileInterval,
 		gateReconcileTimeout:  defaultGateReconcileTimeout,
 	}
@@ -279,6 +304,10 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		return RespondDispositions{}, fmt.Errorf("unrecognized approval action %q (valid: approve, fix, skip, abort, answer)", action)
 	}
 	e.mu.Lock()
+	if e.draining() {
+		e.mu.Unlock()
+		return RespondDispositions{}, fmt.Errorf("daemon is shutting down")
+	}
 	if !e.waiting {
 		e.mu.Unlock()
 		return RespondDispositions{}, fmt.Errorf("no step awaiting approval")
@@ -406,9 +435,9 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	e.waiting = false
 	e.waitingFindings = ""
 	e.waitingStepResultID = ""
+	e.approvalCh <- response
 	e.mu.Unlock()
 
-	e.approvalCh <- response
 	return dispositions, nil
 }
 
@@ -737,6 +766,21 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	if err != nil {
 		return err
 	}
+	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
+	duration := recoveredStepDuration(gate.stepResult)
+	if e.draining() {
+		if cause := drainCancellationCause(ctx); !errors.Is(cause, ErrDaemonShutdown) {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+			}
+			if dbErr := e.db.FailStep(gate.stepResult.ID, cause.Error(), duration); dbErr != nil {
+				slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", cause.Error(), &duration)
+			return e.failRun(run, repo, cause, ctx)
+		}
+		return ErrParkedAtShutdown
+	}
 	if err := e.validateSkippedReview(run, repo); err != nil {
 		return e.failRun(run, repo, err, ctx)
 	}
@@ -750,8 +794,6 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.initializeRunScopes(run.ID)
 	e.crashRetryRecovered = true
 
-	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
-	duration := recoveredStepDuration(gate.stepResult)
 	completeRecoveredGate := func() error {
 		if gate.step.Name() == types.StepReview {
 			if gate.reviewedHeadSHA == "" {
@@ -839,8 +881,11 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	)
 
 	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
-	if errors.Is(err, ErrDaemonShutdown) {
-		return ErrParkedAtShutdown
+	if errors.Is(err, ErrDaemonShutdown) || (err == nil && e.draining() && response.action != types.ActionAbort) {
+		err = drainCancellationCause(ctx)
+		if errors.Is(err, ErrDaemonShutdown) {
+			return ErrParkedAtShutdown
+		}
 	}
 	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
@@ -909,7 +954,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			slog.Warn("failed to mark recovered step as aborted", "step", gate.step.Name(), "error", dbErr)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", abortError, &duration)
-		return e.failRun(run, repo, fmt.Errorf("step %s: %s", gate.step.Name(), abortError), ctx)
+		return e.failRun(run, repo, gateAbortError(fmt.Sprintf("step %s: %s", gate.step.Name(), abortError)), ctx)
 	// A fix round and an answered review question re-enter the same step the
 	// same way; only the bookkeeping before it and the state handed in differ.
 	// An answer is not a verdict, so it records no selection on the round -
@@ -1205,6 +1250,9 @@ func (e *Executor) autoFixLimit(stepName types.StepName) int {
 // Returns whether to skip the remainder, an optional earlier restart step,
 // and any execution error.
 func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState) (bool, types.StepName, error) {
+	if e.draining() {
+		return false, "", drainCancellationCause(ctx)
+	}
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
@@ -1495,10 +1543,22 @@ rounds:
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
 		}
+		// Configured commands can report cancellation as an exit code instead
+		// of an error. Fail interrupted execution before it can create a gate.
+		if err == nil {
+			err = context.Cause(ctx)
+		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
 			durationMS := executionMS + roundDuration
+			// Cancellation still fails the step, but cleanup must see a staging
+			// refusal even when it arrived as an already-converted CI outcome.
+			if outcome != nil && HasProtectedPathRefusal(outcome.Findings) {
+				if dbErr := e.db.SetStepFindings(sr.ID, normalizeFindingsJSON(outcome.Findings, string(stepName))); dbErr != nil {
+					slog.Warn("failed to set protected-path refusal in db", "step", stepName, "error", dbErr)
+				}
+			}
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
@@ -1728,8 +1788,11 @@ rounds:
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), effectiveFindings, "", &executionMS)
 
 			response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, effectiveFindings, true)
-			if errors.Is(err, ErrDaemonShutdown) {
-				return false, "", ErrParkedAtShutdown
+			if errors.Is(err, ErrDaemonShutdown) || (err == nil && e.draining() && response.action != types.ActionAbort) {
+				err = drainCancellationCause(ctx)
+				if errors.Is(err, ErrDaemonShutdown) {
+					return false, "", ErrParkedAtShutdown
+				}
 			}
 			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 				slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
@@ -1786,7 +1849,7 @@ rounds:
 					slog.Warn("failed to mark step as aborted", "step", stepName, "error", dbErr)
 				}
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", abortError, &executionMS)
-				return false, "", fmt.Errorf("step %s: %s", stepName, abortError)
+				return false, "", gateAbortError(fmt.Sprintf("step %s: %s", stepName, abortError))
 
 			case types.ActionFix:
 				telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(effectiveFindings, response.findingIDs), 0))
@@ -2280,28 +2343,39 @@ func pluralize(n int, singular, plural string) string {
 // cancelled. Reconciliation runs synchronously under a bounded child context,
 // so no watcher goroutine can outlive approval, cancellation, or shutdown.
 // The caller must set e.waiting and e.waitingStep before calling this method.
-func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sctx *StepContext, findings string, immediate bool) (approvalResponse, bool, error) {
+func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sctx *StepContext, findings string, immediate bool) (response approvalResponse, reconciled bool, err error) {
 	defer func() {
 		e.mu.Lock()
+		defer e.mu.Unlock()
 		e.waiting = false
 		e.waitingStep = ""
 		e.waitingFindings = ""
 		e.waitingStepResultID = ""
-		e.mu.Unlock()
-		// Drain any stale response that arrived after context cancellation or
-		// raced with an external reconciliation.
+		// Drain stale responses after cancellation or external reconciliation,
+		// but preserve an accepted abort unless a non-shutdown cause already won.
 		select {
-		case <-e.approvalCh:
+		case queued := <-e.approvalCh:
+			if queued.action == types.ActionAbort && (context.Cause(ctx) == nil || errors.Is(context.Cause(ctx), ErrDaemonShutdown)) {
+				response, reconciled, err = queued, false, nil
+			}
 		default:
 		}
 	}()
 
+	if ctx.Err() != nil {
+		return approvalResponse{}, false, context.Cause(ctx)
+	}
+	if e.draining() {
+		return approvalResponse{}, false, drainCancellationCause(ctx)
+	}
 	_, reconciles := step.(ApprovalGateReconciler)
 	_, resumes := step.(ApprovalGateResumer)
 	if !reconciles && !resumes {
 		select {
 		case response := <-e.approvalCh:
 			return response, false, nil
+		case <-e.drainCh:
+			return approvalResponse{}, false, drainCancellationCause(ctx)
 		case <-ctx.Done():
 			return approvalResponse{}, false, context.Cause(ctx)
 		}
@@ -2319,7 +2393,12 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 			return response, false, nil
 		case <-ctx.Done():
 			return approvalResponse{}, false, context.Cause(ctx)
+		case <-e.drainCh:
+			return approvalResponse{}, false, drainCancellationCause(ctx)
 		case <-timer.C:
+			if e.draining() {
+				return approvalResponse{}, false, drainCancellationCause(ctx)
+			}
 			// A resumer runs first and returns a RESPONSE rather than a
 			// completion, so the gate re-enters its step exactly as it would
 			// for an operator's own action. Claiming the gate here is the same
@@ -2357,6 +2436,15 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 			timer.Reset(e.gateReconcileInterval)
 		}
 	}
+}
+
+// An abort or superseding push that already cancelled the run still wins over
+// a concurrent drain notification, just as it does over deadline cancellation.
+func drainCancellationCause(ctx context.Context) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return ErrDaemonShutdown
 }
 
 func (e *Executor) claimGateReconciliation() bool {
@@ -2417,13 +2505,18 @@ func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *S
 // failRun marks a run as failed and returns the error.
 // It accepts an optional context; if the context was cancelled with a cause,
 // the cause message is used as the run's error (more informative than "context canceled").
+// An accepted gate abort keeps its reason over a shutdown cancellation cause.
 func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...context.Context) error {
 	if errors.Is(err, ErrParkedAtShutdown) {
 		return err
 	}
 	errMsg := err.Error()
+	var abort gateAbortError
 	for _, ctx := range ctxs {
 		if cause := context.Cause(ctx); cause != nil && cause != context.Canceled {
+			if errors.Is(cause, ErrDaemonShutdown) && errors.As(err, &abort) {
+				continue
+			}
 			errMsg = cause.Error()
 			break
 		}

@@ -23,6 +23,104 @@ type protectedPathPushRetryStep struct {
 	edited bool
 }
 
+type cancelledProtectedPathStep struct {
+	refused   chan error
+	converted bool
+}
+
+func (*cancelledProtectedPathStep) Name() types.StepName { return types.StepPush }
+func (s *cancelledProtectedPathStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	outcome, err := (protectedPathCommitStep{step: &steps.PushStep{}}).Execute(sctx)
+	refusal := pipeline.ProtectedPathOutcome(err)
+	if refusal == nil {
+		s.refused <- fmt.Errorf("expected protected-path refusal, got outcome %+v, error %v", outcome, err)
+		return outcome, err
+	}
+	// Hold the real staging refusal at the step/executor boundary until the
+	// operator cancels or the daemon's shutdown grace period expires.
+	s.refused <- nil
+	<-sctx.Ctx.Done()
+	if s.converted {
+		// CI repair returns a refusal outcome rather than its original error.
+		return refusal, nil
+	}
+	return outcome, err
+}
+
+func TestProtectedPathRefusalBeforeCancellationSurvivesCleanup(t *testing.T) {
+	// The protection contract preserves HEAD, index and working-file bytes
+	// after refused staging. A cancellation must retain that refusal in the DB
+	// before terminal cleanup; otherwise cleanup deletes the only edited copy.
+	for _, converted := range []bool{false, true} {
+		form := "error"
+		if converted {
+			form = "outcome"
+		}
+		for _, operator := range []bool{false, true} {
+			cause := "shutdown_deadline"
+			if operator {
+				cause = "operator_cancel_before_shutdown"
+			}
+			t.Run(form+"/"+cause, func(t *testing.T) {
+				p, database := newParkedRunEnv(t)
+				repo, head := setupTestGitRepo(t, p, database, "protected-mid-step-cancel")
+				step := &cancelledProtectedPathStep{refused: make(chan error, 1), converted: converted}
+				manager := NewRunManager(database, p, func() []pipeline.Step {
+					return []pipeline.Step{step, &mockPassStep{name: types.StepCI}}
+				})
+				t.Cleanup(func() { manager.shutdown(0) })
+				runID, err := manager.startRun(context.Background(), repo, "main", head, head, "test", nil, "protected-cancel", "", false, "", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-step.refused:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("staging did not refuse the protected edit")
+				}
+				if operator {
+					if err := manager.HandleCancel(runID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				manager.shutdown(time.Millisecond)
+				run, err := database.GetRun(runID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantStatus, wantError := types.RunFailed, pipeline.ErrDaemonShutdown.Error()
+				if operator {
+					wantStatus, wantError = types.RunCancelled, types.RunCancelReasonAbortedByUser
+				}
+				if run.Status != wantStatus || run.Error == nil || *run.Error != wantError || run.AwaitingAgentSince != nil {
+					t.Fatalf("cancellation was replaced or parked: %+v", run)
+				}
+				results, err := database.GetStepsByRun(runID)
+				if err != nil || len(results) != 2 {
+					t.Fatalf("step results = %+v, error = %v", results, err)
+				}
+				if results[0].Status != types.StepStatusFailed || results[0].Error == nil || *results[0].Error != wantError || results[1].Status != types.StepStatusPending {
+					t.Fatalf("cancellation did not fail only the current step: first=%+v later=%+v", results[0], results[1])
+				}
+				if results[0].FindingsJSON == nil || !pipeline.HasProtectedPathRefusal(*results[0].FindingsJSON) {
+					t.Fatalf("cancellation lost the protected-path refusal: %+v", results[0])
+				}
+				findings, err := types.ParseFindingsJSON(*results[0].FindingsJSON)
+				if err != nil || len(findings.Items) != 1 || findings.Items[0].File != "test.txt" || findings.Items[0].Action != types.ActionAskUser {
+					t.Fatalf("persisted refusal = %+v, error = %v", findings, err)
+				}
+				workDir := p.WorktreeDir(repo.ID, runID)
+				assertProtectedWorktreePreserved(t, workDir, head)
+				cleanupOrphanWorktrees(database, p, nil)
+				assertProtectedWorktreePreserved(t, workDir, head)
+			})
+		}
+	}
+}
+
 func TestProtectedPathRefusalCancellationCleanup(t *testing.T) {
 	for _, action := range []string{"new_push", "cancel_run", "abort_response", "abort_response_with_reason"} {
 		t.Run(action, func(t *testing.T) {
@@ -97,9 +195,13 @@ func TestProtectedPathRefusalCancellationCleanup(t *testing.T) {
 				t.Fatalf("run error = %v, want the operator's reason recorded", run.Error)
 			}
 			workDir := p.WorktreeDir(repo.ID, result.RunID)
-			if action == "new_push" {
-				if run.Status != types.RunCancelled || run.Error == nil || *run.Error != types.RunCancelReasonSuperseded {
-					t.Fatalf("unexpected supersession: %+v", run)
+			if action == "new_push" || action == "cancel_run" {
+				wantReason := types.RunCancelReasonSuperseded
+				if action == "cancel_run" {
+					wantReason = types.RunCancelReasonAbortedByUser
+				}
+				if run.Status != types.RunCancelled || run.Error == nil || *run.Error != wantReason {
+					t.Fatalf("unexpected cancellation: %+v", run)
 				}
 				assertProtectedWorktreePreserved(t, workDir, head)
 				cleanupOrphanWorktrees(database, p, nil)

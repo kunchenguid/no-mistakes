@@ -1014,7 +1014,7 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 // protectedPathCleanupReason protects only the index and working files. It must
 // not be used as a process-liveness or test-evidence retention predicate.
 func protectedPathCleanupReason(d *db.DB, run *db.Run) string {
-	if run == nil || (run.Status == types.RunCancelled && run.Error != nil && *run.Error == types.RunCancelReasonAbortedByUser) {
+	if run == nil {
 		return ""
 	}
 	results, err := d.GetStepsByRun(run.ID)

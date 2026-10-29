@@ -717,7 +717,7 @@ func (f *retryFixture) manager(t *testing.T, test pipeline.Step) *RunManager {
 	m := NewRunManager(f.d, f.p, func() []pipeline.Step {
 		return []pipeline.Step{&countingStep{name: types.StepRebase, count: f.executions}, &countingStep{name: types.StepReview, count: f.executions}, test}
 	})
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { m.shutdown(0) })
 	return m
 }
 

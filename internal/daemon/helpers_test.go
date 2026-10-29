@@ -17,10 +17,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestMain(m *testing.M) {
+	if handled, exitCode, err := shellenv.RunWindowsCooperativeCommandHelper(os.Args[1:]); handled {
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		}
+		os.Exit(exitCode)
+	}
+
 	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
 	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {
@@ -183,6 +191,16 @@ func runTestDaemon(t *testing.T, p *paths.Paths, d *db.DB, sf StepFactory, stopW
 
 	t.Cleanup(func() {
 		if client, err := ipc.Dial(p.Socket()); err == nil {
+			// Fixture steps may deliberately block until cancelled. Teardown
+			// must release them before requesting a graceful daemon shutdown;
+			// otherwise each such test spends the production drain grace.
+			runs, err := d.GetActiveRuns()
+			if err != nil {
+				t.Errorf("list fixture runs for cleanup: %v", err)
+			}
+			for _, run := range runs {
+				_ = client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: run.ID}, nil)
+			}
 			_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
 			client.Close()
 		}
@@ -272,10 +290,9 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 	}
 	t.Cleanup(func() { d.Close() })
 
-	// A run reaches its terminal DB state before its goroutine finishes git
-	// worktree cleanup. On process-spawn-bound Windows that cleanup can take
-	// longer than three seconds, so give graceful shutdown its own budget.
-	runTestDaemon(t, p, d, sf, 15*time.Second)
+	// Allow cancellation cleanup and IPC teardown before releasing the fixture
+	// database and root. runTestDaemon cancels blocked fixtures before shutdown.
+	runTestDaemon(t, p, d, sf, daemonShutdownTimeout+10*time.Second)
 	return p, d
 }
 

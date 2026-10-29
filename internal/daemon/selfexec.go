@@ -44,9 +44,9 @@ func daemonStartTimeout() time.Duration {
 // unlink does, so the health check can keep reporting an ambiguous error
 // for longer after a graceful shutdown request has already succeeded.
 func daemonStopTimeout() time.Duration {
-	fallback := 5 * time.Second
+	fallback := daemonShutdownTimeout
 	if runtimeGOOS == "windows" {
-		fallback = 15 * time.Second
+		fallback += 10 * time.Second
 	}
 	return durationFromEnv("NM_TEST_DAEMON_STOP_TIMEOUT", fallback)
 }

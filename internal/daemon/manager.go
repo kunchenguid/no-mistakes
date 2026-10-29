@@ -60,6 +60,8 @@ type RunManager struct {
 	maxConcurrentRuns int
 	wg                sync.WaitGroup // tracks background run goroutines
 	shuttingDown      atomic.Bool    // prevents new runs during shutdown
+	shutdownCtx       context.Context
+	shutdownCancel    context.CancelCauseFunc
 
 	afterRetryProof func() // test seam: runs between HandleRetry's proof and the launch
 	db              *db.DB
@@ -97,16 +99,19 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 	if stepFactory == nil {
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
+	shutdownCtx, shutdownCancel := context.WithCancelCause(context.Background())
 	return &RunManager{
-		executors:     make(map[string]*pipeline.Executor),
-		cancels:       make(map[string]context.CancelCauseFunc),
-		dones:         make(map[string]chan struct{}),
-		db:            database,
-		paths:         p,
-		steps:         stepFactory,
-		subscribers:   make(map[string][]*eventMailbox),
-		stateRevs:     make(map[string]int64),
-		completedRuns: make(map[string]bool),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
+		executors:      make(map[string]*pipeline.Executor),
+		cancels:        make(map[string]context.CancelCauseFunc),
+		dones:          make(map[string]chan struct{}),
+		db:             database,
+		paths:          p,
+		steps:          stepFactory,
+		subscribers:    make(map[string][]*eventMailbox),
+		stateRevs:      make(map[string]int64),
+		completedRuns:  make(map[string]bool),
 	}
 }
 
@@ -487,11 +492,16 @@ func (m *RunManager) resumeRecoveredRuns(plans []recoveredRunPlan) {
 func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	sequence := m.reserveAdmission()
 	defer m.releaseAdmission(sequence)
+	m.mu.Lock()
 	if m.shuttingDown.Load() {
+		m.mu.Unlock()
 		_ = plan.agent.Close()
 		return
 	}
-	runCtx, cancel := context.WithCancelCause(context.Background())
+	m.wg.Add(1)
+	m.mu.Unlock()
+	defer m.wg.Done()
+	runCtx, cancel := context.WithCancelCause(m.shutdownCtx)
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
@@ -1507,10 +1517,22 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		})
 	}
 
+	// Admission and shutdown's Wait are ordered under the same mutex. Track
+	// setup too: a launch fetching trusted config must not register after the
+	// shutdown snapshot and escape cancellation.
+	m.mu.Lock()
 	if m.shuttingDown.Load() {
+		m.mu.Unlock()
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
 	}
+	m.wg.Add(1)
+	m.mu.Unlock()
+	defer m.wg.Done()
+	ctx, cancelSetup := context.WithCancelCause(ctx)
+	stopShutdown := context.AfterFunc(m.shutdownCtx, func() { cancelSetup(pipeline.ErrDaemonShutdown) })
+	defer stopShutdown()
+	defer cancelSetup(nil)
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep
 	// the exact prior repo value and continue when discovery, validation, or the
@@ -1837,7 +1859,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	})
 
 	// Create executor with event broadcast.
-	runCtx, cancel := context.WithCancelCause(context.Background())
+	runCtx, cancel := context.WithCancelCause(m.shutdownCtx)
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
@@ -2315,40 +2337,55 @@ func (m *RunManager) HandleAnswerReviewQuestion(runID, questionID, answer, answe
 	return result, nil
 }
 
-// Shutdown cancels all active runs. Called during daemon shutdown to prevent
-// orphaned goroutines from continuing agent calls and git operations.
-func (m *RunManager) Shutdown() {
-	m.shuttingDown.Store(true)
+// shutdownDrainGrace allows the current step to finish before cancellation.
+// shutdownCancelGrace retains the existing bounded wait for child cleanup.
+const (
+	shutdownDrainGrace  = 30 * time.Second
+	shutdownCancelGrace = 30 * time.Second
+	// Outer process/service deadlines must leave time for both phases and IPC
+	// teardown, rather than SIGKILLing the daemon during its drain.
+	daemonShutdownTimeout = shutdownDrainGrace + shutdownCancelGrace + 5*time.Second
+)
 
+// Shutdown stops admission, drains current steps and preserves existing approval
+// parks. Work still executing at the deadline is cancelled exactly as before;
+// this is not recovery of an interrupted step.
+func (m *RunManager) Shutdown() {
+	m.shutdown(shutdownDrainGrace)
+}
+
+func (m *RunManager) shutdown(grace time.Duration) {
 	m.mu.Lock()
-	var queued []queuedRun
-	queued = append(queued, m.runQueue...)
+	m.shuttingDown.Store(true)
+	for _, executor := range m.executors {
+		executor.BeginDrain()
+	}
+	queued := m.runQueue
 	m.runQueue = nil
 	m.mu.Unlock()
 	for _, qe := range queued {
 		m.shutdownQueuedRun(qe)
 	}
-
-	m.mu.Lock()
-	cancels := make(map[string]context.CancelCauseFunc, len(m.cancels))
-	for id, cancel := range m.cancels {
-		cancels[id] = cancel
-	}
-	m.mu.Unlock()
-
-	for id, cancel := range cancels {
-		cancel(pipeline.ErrDaemonShutdown)
-		slog.Info("cancelled run on shutdown", "run_id", id)
-	}
+	slog.Info("draining current pipeline steps", "grace", grace)
 
 	done := make(chan struct{})
 	go func() {
 		m.wg.Wait()
 		close(done)
 	}()
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+		m.shutdownCancel(pipeline.ErrDaemonShutdown)
+		return
+	case <-timer.C:
+	}
+	slog.Info("shutdown drain deadline reached; cancelling remaining runs")
+	m.shutdownCancel(pipeline.ErrDaemonShutdown)
+	select {
+	case <-done:
+	case <-time.After(shutdownCancelGrace):
 		slog.Warn("timed out waiting for runs to finish during shutdown")
 	}
 }

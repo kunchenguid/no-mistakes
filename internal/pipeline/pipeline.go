@@ -15,8 +15,8 @@ var ErrApprovalBlocked = errors.New("approval blocked by required review")
 
 var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
-// ErrDaemonShutdown is the cancellation cause RunManager.Shutdown gives every
-// active run.
+// ErrDaemonShutdown is the cancellation cause used when the shutdown drain
+// deadline expires, or a run reaches a step boundary during the drain.
 var ErrDaemonShutdown = errors.New("daemon shutting down")
 
 // ErrParkedAtShutdown is returned when a daemon shutdown reached a run that was

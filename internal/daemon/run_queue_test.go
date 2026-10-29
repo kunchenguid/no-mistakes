@@ -310,7 +310,7 @@ func TestMaxConcurrentRuns_ConcurrentSubmissionsPreserveAdmissionOrder(t *testin
 			})
 			t.Cleanup(func() {
 				releaseOnce.Do(func() { close(releaseSetup) })
-				m.Shutdown()
+				m.shutdown(0)
 			})
 			repo, head := setupTestGitRepo(t, p, d, "concurrent-admission")
 			submit := func(branch string) (string, error) {
@@ -484,7 +484,7 @@ func TestMaxConcurrentRuns_QueuedCancellationPublishesTerminalEvent(t *testing.T
 			m := NewRunManager(d, p, func() []pipeline.Step {
 				return []pipeline.Step{&notifyBlockStep{name: types.StepReview, started: started}}
 			})
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { m.shutdown(0) })
 			repo, head := setupTestGitRepo(t, p, d, "cancel-event")
 			submit := func(branch string) string {
 				t.Helper()
@@ -514,7 +514,8 @@ func TestMaxConcurrentRuns_QueuedCancellationPublishesTerminalEvent(t *testing.T
 				submit("feature/queued")
 			case "shutdown":
 				wantCause = "daemon shutting down"
-				m.Shutdown()
+				// This tests queued cancellation events, not drain duration.
+				m.shutdown(0)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
@@ -559,7 +560,7 @@ func TestMaxConcurrentRuns_RecoveredParkedRunsShareCap(t *testing.T) {
 			&notifyBlockStep{name: types.StepLint, started: started},
 		}
 	})
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { m.shutdown(0) })
 	repo, head := setupTestGitRepo(t, p, d, "recovered-cap")
 	var ids []string
 	for _, branch := range []string{"feature/first", "feature/second"} {
@@ -585,7 +586,7 @@ func TestMaxConcurrentRuns_RecoveredParkedRunsShareCap(t *testing.T) {
 		}
 	}
 	m = NewRunManager(d, p, m.steps)
-	t.Cleanup(m.Shutdown)
+	t.Cleanup(func() { m.shutdown(0) })
 	plans = m.recoverableParkedRuns(context.Background())
 	if len(plans) != 2 {
 		t.Fatalf("recoverable plans after shutdown = %d, want two", len(plans))
@@ -678,7 +679,7 @@ func TestMaxConcurrentRuns_CancelRecoveredRunPreservesUnpublishedHead(t *testing
 			m := NewRunManager(d, p, func() []pipeline.Step {
 				return []pipeline.Step{&mockApprovalStep{name: types.StepDocument}, &mockPassStep{name: types.StepLint}}
 			})
-			t.Cleanup(m.Shutdown)
+			t.Cleanup(func() { m.shutdown(0) })
 			repo, submitted := setupTestGitRepo(t, p, d, "cancel-recovered")
 			insertParkedQueueTestRun(t, p, d, repo, "feature/held", submitted)
 			run := insertParkedQueueTestRun(t, p, d, repo, "feature/queued", submitted)
