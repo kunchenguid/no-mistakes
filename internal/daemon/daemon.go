@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/fsutil"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -480,25 +481,12 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	logStartupPhase("orphan_processes", orphanProcStarted)
 
 	// reapWorktrees applies the operator's retention policy to the default
-	// <NM_HOME>/worktrees tree before cleanupOrphanWorktrees runs its
-	// unconditional sweep of operator-placed (worktree_roots) leftovers, so a
-	// disabled or wide retention window is honored on the default tree
-	// instead of being bypassed by startup cleanup.
-	worktreeStarted := time.Now()
-	reapWorktrees(d, p, wtPolicy, now)
-	cleanupOrphanWorktrees(d, p, leftover)
-	logStartupPhase("worktree_cleanup", worktreeStarted)
-
-	// Evidence is reaped after stale-run recovery for the same reason worktrees
-	// are: every run's status is settled by now, so the active-run guard can
-	// tell a crashed run's leftovers from work still in flight.
-	evidenceStarted := time.Now()
-	policy := evidenceReapPolicyFor(global)
-	root := evidenceRootFor(p, global)
-	reapEvidence(d, root, policy, now)
-	reapLegacyEvidence(d, root, policy, now)
-	reapRunLogs(d, p.LogsDir(), policy, now)
-	logStartupPhase("evidence_cleanup", evidenceStarted)
+	// <NM_HOME>/worktrees tree before cleanupOrphanWorktrees sweeps
+	// operator-placed (worktree_roots) leftovers, so a disabled or wide
+	// retention window is honored on the default tree instead of being
+	// bypassed by startup cleanup. Both preserve real checkouts even when
+	// clean or successfully snapshotted, because removal stability is unproven.
+	cleanupStartupStorage(context.Background(), d, p, global, wtPolicy, now, leftover)
 
 	mgr.resumeRecoveredRuns(plans)
 }
@@ -608,19 +596,19 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Work
 	}, "daemon_startup")
 }
 
-// retainedDefaultTreeRunIDs is the run IDs of default-tree worktrees the
-// worktree retention policy is keeping. The startup process sweep runs before
-// reapWorktrees decides what to remove, so it consults the same decision here
+// retainedDefaultTreeRunIDs identifies default-tree worktrees outside the
+// policy's cleanup candidates. The startup process sweep runs before
+// reapWorktrees attempts cleanup, so it consults the same selection here
 // rather than treating "run is terminal" alone as orphaned - otherwise a
 // restart could kill a process still using a checkout the operator configured
 // to retain (see worktreeReapCandidates).
 func retainedDefaultTreeRunIDs(d *db.DB, p *paths.Paths, policy worktreeReapPolicy, now time.Time) map[string]bool {
-	removable, _ := defaultTreeOrphanWorktrees(d, p)
+	removable, _ := defaultTreeOrphanWorktrees(context.Background(), d, p)
 	if len(removable) == 0 {
 		return nil
 	}
 	removing := make(map[string]bool, len(removable))
-	for _, wt := range worktreeReapCandidates(removable, policy, now) {
+	for _, wt := range worktreeReapCandidates(context.Background(), removable, policy, now) {
 		removing[wt.runID] = true
 	}
 	retained := make(map[string]bool, len(removable))
@@ -807,11 +795,38 @@ func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 	}
 }
 
-// cleanupOrphanWorktrees removes worktree directories left behind by runs
+const startupCleanupTimeout = 10 * time.Second
+
+func cleanupStartupStorage(ctx context.Context, d *db.DB, p *paths.Paths, global *config.GlobalConfig, policy worktreeReapPolicy, now time.Time, leftover []db.RunWorktree) {
+	ctx, cancel := context.WithTimeout(ctx, startupCleanupTimeout)
+	defer cancel()
+	evidenceStarted := time.Now()
+	evidencePolicy := evidenceReapPolicyFor(global)
+	root := evidenceRootFor(p, global)
+	reapEvidence(ctx, d, root, evidencePolicy, now)
+	reapLegacyEvidence(ctx, d, root, evidencePolicy, now)
+	reapRunLogs(ctx, d, p.LogsDir(), evidencePolicy, now)
+	logStartupPhase("evidence_cleanup", evidenceStarted)
+	if err := git.ReapDirtyWorkScratch(ctx); err != nil && ctx.Err() == nil {
+		slog.Debug("capture scratch retained", "error", err)
+	}
+	worktreeStarted := time.Now()
+	reapWorktrees(ctx, d, p, policy, now)
+	cleanupOrphanWorktrees(ctx, d, p, leftover)
+	logStartupPhase("worktree_cleanup", worktreeStarted)
+	if err := ctx.Err(); err != nil {
+		slog.Warn("startup storage cleanup stopped; unfinished directories retained", "error", err)
+	}
+}
+
+// cleanupOrphanWorktrees attempts cleanup of directories left behind by runs
 // that are no longer active, for the operator-placed leftovers named by
 // recordedOrphanWorktrees (see worktree_roots in the global config) - that
-// directory is the operator's own, so every eligible leftover there is
-// removed unconditionally, once, at startup. It is DB-aware: a worktree is
+// directory is the operator's own, so only recorded leftovers are considered
+// once at startup. As in finished-run cleanup, real checkouts are retained
+// even when clean or successfully snapshotted: stability through removal is
+// unproven. Configured cleanup budgets cannot ensure their reclamation.
+// It is DB-aware: a worktree is
 // only removed when its run row is terminal, or when there is no matching
 // run row at all. This is what keeps cleanup from deleting the checkout out
 // from under a pipeline that is still actually running (see
@@ -820,9 +835,9 @@ func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 // sees has already been resolved to a terminal status.
 //
 // Leftovers under the default <NM_HOME>/worktrees tree are NOT removed here:
-// that tree is bounded by the operator's retention policy via reapWorktrees,
-// which recoverOnStartup runs first, so this only reclaims the (now likely
-// empty) per-repo directories reapWorktrees left behind.
+// that tree has its cleanup candidates selected by reapWorktrees, which
+// recoverOnStartup runs first. This only removes per-repo directories that
+// are empty after that pass; retained checkouts keep their parents nonempty.
 //
 // Every directory it is going to remove is swept in ONE process snapshot before
 // any of them is removed. The sweep-before-removal invariant is what matters
@@ -832,21 +847,21 @@ func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 // pass runs before the daemon binds its socket, against the startup budget. A
 // crash that leaves several directories behind would otherwise make the daemon
 // slower to start the more there is to clean up.
-func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) {
-	ctx := context.Background()
-	_, repoDirs := defaultTreeOrphanWorktrees(d, p)
-	removable := recordedOrphanWorktrees(d, p, leftover)
-
-	sweepable := make([]procreap.Worktree, 0, len(removable))
-	for _, wt := range removable {
-		sweepable = append(sweepable, procreap.Worktree{Dir: wt.dir, RepoID: wt.repoID, RunID: wt.runID})
+func cleanupOrphanWorktrees(ctx context.Context, d *db.DB, p *paths.Paths, leftover []db.RunWorktree) {
+	if ctx.Err() != nil {
+		return
 	}
-	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_cleanup")
-
-	for _, wt := range removable {
-		removeOrphanWorktree(ctx, wt)
+	_, repoDirs := defaultTreeOrphanWorktrees(ctx, d, p)
+	removable := recordedOrphanWorktrees(ctx, d, p, leftover)
+	if ctx.Err() != nil {
+		return
 	}
+
+	removeOrphanWorktrees(ctx, p.WorktreesDir(), removable, "worktree_cleanup")
 	for _, dir := range repoDirs {
+		if ctx.Err() != nil {
+			return
+		}
 		os.Remove(dir)
 	}
 }
@@ -858,18 +873,25 @@ type orphanWorktree struct {
 	dir     string
 	repoID  string
 	runID   string
+	baseSHA string
 }
 
 // defaultTreeOrphanWorktrees walks <NM_HOME>/worktrees, which no-mistakes owns
 // outright, and returns the run worktrees no run still owns plus the repository
 // directories to drop once they are empty.
-func defaultTreeOrphanWorktrees(d *db.DB, p *paths.Paths) (removable []orphanWorktree, repoDirs []string) {
+func defaultTreeOrphanWorktrees(ctx context.Context, d *db.DB, p *paths.Paths) (removable []orphanWorktree, repoDirs []string) {
+	if ctx.Err() != nil {
+		return nil, nil
+	}
 	wtRoot := p.WorktreesDir()
 	entries, err := os.ReadDir(wtRoot)
 	if err != nil {
 		return nil, nil // directory may not exist yet
 	}
 	for _, repoEntry := range entries {
+		if ctx.Err() != nil {
+			return removable, repoDirs
+		}
 		if !repoEntry.IsDir() {
 			continue
 		}
@@ -879,6 +901,9 @@ func defaultTreeOrphanWorktrees(d *db.DB, p *paths.Paths) (removable []orphanWor
 			continue
 		}
 		for _, runEntry := range runEntries {
+			if ctx.Err() != nil {
+				return removable, repoDirs
+			}
 			if !runEntry.IsDir() {
 				continue
 			}
@@ -888,7 +913,7 @@ func defaultTreeOrphanWorktrees(d *db.DB, p *paths.Paths) (removable []orphanWor
 				repoID:  repoEntry.Name(),
 				runID:   runEntry.Name(),
 			}
-			if removableOrphanWorktree(d, wt) {
+			if removableOrphanWorktree(ctx, d, &wt) {
 				removable = append(removable, wt)
 			}
 		}
@@ -909,14 +934,17 @@ func defaultTreeOrphanWorktrees(d *db.DB, p *paths.Paths) (removable []orphanWor
 // eject applies (see gate.removeRepoWorktrees): nothing there is enumerated,
 // and a directory no run recorded is never even looked at. Whether a named
 // directory may go is decided by removableOrphanWorktree.
-func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) []orphanWorktree {
+func recordedOrphanWorktrees(ctx context.Context, d *db.DB, p *paths.Paths, leftover []db.RunWorktree) []orphanWorktree {
 	var removable []orphanWorktree
 	for _, wt := range leftover {
+		if ctx.Err() != nil {
+			return removable
+		}
 		if info, err := os.Stat(wt.Dir); err != nil || !info.IsDir() {
 			continue
 		}
 		candidate := orphanWorktree{gateDir: p.RepoDir(wt.RepoID), dir: wt.Dir, repoID: wt.RepoID, runID: wt.RunID}
-		if removableOrphanWorktree(d, candidate) {
+		if removableOrphanWorktree(ctx, d, &candidate) {
 			removable = append(removable, candidate)
 		}
 	}
@@ -927,8 +955,11 @@ func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree
 // This removal decision does not exempt retained terminal runs from evidence
 // expiry (a separate, unrelated budget); the startup process sweep now applies
 // the same worktree retention policy through retainedDefaultTreeRunIDs.
-func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
-	if skip, reason := skipWorktreeCleanup(context.Background(), d, wt.runID, wt.dir); skip {
+func removableOrphanWorktree(ctx context.Context, d *db.DB, wt *orphanWorktree) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if skip, reason := skipWorktreeCleanup(ctx, d, wt.runID, wt.dir); skip {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
@@ -937,22 +968,111 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 		slog.Warn("preserving run worktree: cannot read run", "run_id", wt.runID, "error", err)
 		return false
 	}
+	if run != nil {
+		wt.baseSHA = run.BaseSHA
+	}
 	if reason := protectedPathCleanupReason(d, run); reason != "" {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
-	return true
+	return ctx.Err() == nil
 }
 
-// removeOrphanWorktree removes one run worktree directory its caller has
-// already decided on and swept (see cleanupOrphanWorktrees). It reports
+// dirtyWorkCaptureTimeout caps each capture or confirmation, subject to the
+// caller's earlier deadline. Startup passes its shared sweep context;
+// finished-run cleanup uses a context independent of the cancelled run.
+// An unfinished operation keeps the checkout.
+const dirtyWorkCaptureTimeout = 5 * time.Minute
+
+// captureDirtyWorkBeforeRemoval records unique uncommitted work in the gate
+// before a checkout is deleted. A nil error means the checkout was clean or
+// the snapshot was verified. Any error means the caller must not delete it.
+func captureDirtyWorkBeforeRemoval(ctx context.Context, gateDir, wtDir, runID, baseSHA string) (*git.DirtyWorkSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, dirtyWorkCaptureTimeout)
+	defer cancel()
+	return git.CaptureDirtyWork(ctx, git.DirtyWorkRequest{
+		GateDir:  gateDir,
+		Worktree: wtDir,
+		RunID:    runID,
+		BaseSHA:  baseSHA,
+	})
+}
+
+// confirmDirtyWorkBeforeRemoval rechecks the snapshot, then refuses every
+// real checkout: a point-in-time match cannot prove stability through removal
+// without writer coordination. Only a missing path or non-checkout directory
+// may pass; a nil snapshot alone never authorizes checkout removal.
+func confirmDirtyWorkBeforeRemoval(ctx context.Context, wtDir string, snap *git.DirtyWorkSnapshot) error {
+	ctx, cancel := context.WithTimeout(ctx, dirtyWorkCaptureTimeout)
+	defer cancel()
+	if err := git.DirtyWorkStillMatches(ctx, wtDir, snap); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(filepath.Join(wtDir, ".git")); err == nil {
+		return errors.New("checkout retained because stability through removal cannot be proven without writer coordination")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func removeOrphanWorktrees(ctx context.Context, root string, worktrees []orphanWorktree, reason string) int {
+	if len(worktrees) == 0 || ctx.Err() != nil {
+		return 0
+	}
+	paths := make([]string, 0, len(worktrees))
+	sweepable := make([]procreap.Worktree, 0, len(worktrees))
+	for _, wt := range worktrees {
+		paths = append(paths, wt.dir)
+		sweepable = append(sweepable, procreap.Worktree{Dir: wt.dir, RepoID: wt.repoID, RunID: wt.runID})
+	}
+	removed := 0
+	_ = git.WithDirtyWorkCheckouts(ctx, paths, func() error {
+		sweepRunWorktrees(ctx, root, sweepable, reason)
+		for _, wt := range worktrees {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if removeOrphanWorktree(ctx, wt) {
+				removed++
+			}
+		}
+		return nil
+	})
+	return removed
+}
+
+// removeOrphanWorktree attempts cleanup of one run worktree directory its
+// caller has selected and swept (see cleanupOrphanWorktrees). It reports
 // whether the directory was actually removed, since git worktree remove and
-// its os.RemoveAll fallback can both fail and merely log a warning.
+// its recursive fallback can both fail and merely log a warning.
+//
+// Capture failure or confirmDirtyWorkBeforeRemoval's preservation refusal
+// returns false without removal. Only non-checkout leftovers can currently
+// reach git worktree remove or its recursive fallback.
 func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	gateDir, wtPath := wt.gateDir, wt.dir
+	snap, err := captureDirtyWorkBeforeRemoval(ctx, gateDir, wtPath, wt.runID, wt.baseSHA)
+	if err != nil {
+		slog.Warn("preserving orphan worktree: unique uncommitted work was not captured", "path", wtPath, "run_id", wt.runID, "error", err)
+		return false
+	}
+	if err := confirmDirtyWorkBeforeRemoval(ctx, wtPath, snap); err != nil {
+		slog.Warn("preserving orphan worktree: cleanup verification refused", "path", wtPath, "run_id", wt.runID, "error", err)
+		return false
+	}
+	if err := ctx.Err(); err != nil {
+		return false
+	}
 	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
-		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
-		if err := os.RemoveAll(wtPath); err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		slog.Warn("git worktree remove failed, falling back to recursive cleanup", "path", wtPath, "error", err)
+		if err := fsutil.RemoveAll(ctx, wtPath); err != nil {
 			slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
 			return false
 		}
@@ -970,19 +1090,17 @@ func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) bool {
 // all (e.g. a directory left behind after its run row was independently
 // pruned) are eligible for removal. RunManager.startRun always inserts the
 // run row before creating the worktree directory, so on a single daemon a
-// "no matching run" directory is never one whose insert simply hasn't landed
-// yet - it is safe to remove immediately.
+// "no matching run" directory is eligible immediately: its insert has already
+// landed or the row is gone. Eligibility does not override the preservation
+// refusal: removeOrphanWorktree retains every real checkout.
 //
 // A run marked RunCIMonitorInterrupted (the daemon restarted while monitoring
-// CI for an already-open PR, issue #361) is terminal and would otherwise leak
-// its checkout on every future restart. Such a worktree is reclaimed like any
-// other terminal-run leftover EXCEPT when it may hold unpushed work: a CI
-// auto-fix commits locally before pushing (see steps/ci_fix.go), so a crash in
-// that window leaves the only copy of the fix commit in this checkout. We
-// reclaim only when the worktree HEAD equals the head the run already pushed -
-// run.HeadSHA advances solely after a verified push, so a match proves nothing
-// local is unpushed - and fail safe to preservation on any mismatch or
-// unreadable HEAD so recoverable commits are never discarded.
+// CI for an already-open PR, issue #361) is terminal but may hold unpushed
+// work: a CI auto-fix commits locally before pushing (see steps/ci_fix.go).
+// A crash in that window leaves the only copy of the fix commit in this
+// checkout. Cleanup eligibility requires HEAD to match run.HeadSHA, which
+// advances solely after a verified push. A mismatch or unreadable HEAD keeps
+// recoverable commits from being discarded.
 func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (bool, string) {
 	run, err := d.GetRun(runID)
 	if err != nil {
@@ -1046,7 +1164,7 @@ type gateMigrationStats struct {
 
 var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
 
-var sweepRunWorktrees = procreap.SweepRunWorktrees
+var sweepRunWorktrees = procreap.SweepRunWorktreesContext
 
 // migrateGateConfigs discovers gates from authoritative DB records plus legacy
 // directories with the strict <id>.git shape. Every unstamped candidate is

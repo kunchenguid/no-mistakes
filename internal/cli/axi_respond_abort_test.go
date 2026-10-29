@@ -9,8 +9,29 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// This checks the emitted help and generated skill as public text contracts.
+func TestAxiRespond_RestoreGuidanceIncludesWindowsException(t *testing.T) {
+	help, err := executeCmd("axi", "respond", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, output := range map[string]string{"CLI help": help, "generated skill": skill.Markdown()} {
+		output = strings.Join(strings.Fields(strings.ReplaceAll(output, "`", "")), " ")
+		for _, want := range []string{
+			"git -c core.symlinks=true -c core.autocrlf=<saved> -c core.eol=<saved> -c apply.whitespace=nowarn stash apply --index <snapshot>",
+			"On Windows without symlink creation support, omit -c core.symlinks=true from both commands.",
+			"That Windows procedure does not support symlink restoration.",
+		} {
+			if !strings.Contains(output, want) {
+				t.Errorf("%s missing restore guidance %q", name, want)
+			}
+		}
+	}
+}
 
 // `axi respond --action abort` hands the executor's existing gate abort the
 // parked gate's identity and the operator's reason, and reports the rejection

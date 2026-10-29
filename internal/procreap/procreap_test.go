@@ -1,12 +1,94 @@
 package procreap
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSweepCancellationReachesProcessDiscovery(t *testing.T) {
+	for _, stage := range []string{"table", "cwd"} {
+		t.Run(stage, func(t *testing.T) {
+			f := &fakeSystem{procs: []Process{{PID: 123456789}}}
+			f.install(t)
+			entered := make(chan struct{})
+			if stage == "table" {
+				listProcessesFunc = func(ctx context.Context) ([]Process, error) {
+					close(entered)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+			} else {
+				processCWDsFunc = func(ctx context.Context, _ []int) map[int]string {
+					close(entered)
+					<-ctx.Done()
+					return nil
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := Sweep(Options{Context: ctx, WorktreesRoot: t.TempDir()})
+				done <- err
+			}()
+			<-entered
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancelled discovery = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("process discovery ignored sweep cancellation")
+			}
+		})
+	}
+}
+
+func TestSweepCancellationBoundsTerminationGrace(t *testing.T) {
+	root := t.TempDir()
+	const pid = 123456789
+	f := &fakeSystem{
+		procs:      []Process{{PID: pid}},
+		cwds:       map[int]string{pid: filepath.Join(root, "repo", "run")},
+		ignoreTerm: map[int]bool{pid: true},
+	}
+	f.install(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signal := signalProcessFunc
+	signalProcessFunc = func(pid int, sig procSignal) error {
+		err := signal(pid, sig)
+		if sig == sigTerm {
+			cancel()
+		}
+		return err
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		SweepAndLog(Options{Context: ctx, WorktreesRoot: root, Scopes: []string{root}, Grace: time.Minute}, "test")
+	}()
+	t.Cleanup(func() {
+		f.mu.Lock()
+		f.dead[pid] = true
+		f.mu.Unlock()
+		<-done
+	})
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("termination grace outlived the sweep deadline")
+	}
+	if !f.sentTo(pid, sigTerm) || !f.sentTo(pid, sigKill) {
+		t.Fatal("bounded sweep did not terminate its already-selected process")
+	}
+}
 
 // fakeSystem is an in-memory process table with recorded signals, so the
 // sweep's policy can be exercised without signalling anything real.
@@ -43,13 +125,13 @@ func (f *fakeSystem) install(t *testing.T) {
 	t.Cleanup(func() {
 		listProcessesFunc, processCWDsFunc, signalProcessFunc, signalGroupFunc, processAliveFunc = origList, origCWD, origSignal, origGroup, origAlive
 	})
-	listProcessesFunc = func() ([]Process, error) {
+	listProcessesFunc = func(context.Context) ([]Process, error) {
 		f.mu.Lock()
 		f.listCalls++
 		f.mu.Unlock()
 		return f.procs, nil
 	}
-	processCWDsFunc = func(pids []int) map[int]string {
+	processCWDsFunc = func(ctx context.Context, pids []int) map[int]string {
 		f.mu.Lock()
 		f.cwdCalls++
 		f.mu.Unlock()

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,15 +57,15 @@ func TestCleanupOrphanWorktreesSweepsEveryRemovableDirectoryInOneSnapshot(t *tes
 	var sweeps [][]procreap.Worktree
 	original := sweepRunWorktrees
 	t.Cleanup(func() { sweepRunWorktrees = original })
-	sweepRunWorktrees = func(worktreesRoot string, wts []procreap.Worktree, reason string) {
+	sweepRunWorktrees = func(ctx context.Context, worktreesRoot string, wts []procreap.Worktree, reason string) {
 		sweeps = append(sweeps, wts)
 	}
 
 	// Force every eligible default-tree directory past the retention window
 	// regardless of its actual mtime, mirroring recoverOnStartup's order.
 	future := time.Now().Add(365 * 24 * time.Hour)
-	reapWorktrees(d, p, worktreeReapPolicy{Retention: time.Nanosecond}, future)
-	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
+	reapWorktrees(context.Background(), d, p, worktreeReapPolicy{Retention: time.Nanosecond}, future)
+	cleanupOrphanWorktrees(context.Background(), d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if len(sweeps) != 2 {
 		t.Fatalf("startup cleanup ran %d sweeps, want 2 (default tree, then operator-placed leftovers)", len(sweeps))

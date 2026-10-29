@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"slices"
@@ -122,6 +123,20 @@ func (m *RunManager) pumpQueue() {
 	}
 }
 
+// releaseExecutionSlot admits queued work before best-effort maintenance.
+// The run goroutine remains in wg until its cleanup has finished.
+func (m *RunManager) releaseExecutionSlot(runID string) {
+	m.mu.Lock()
+	delete(m.executors, runID)
+	delete(m.cancels, runID)
+	delete(m.dones, runID)
+	m.resolveHandoffRequestLocked(runID, errors.New("run ended before handoff"))
+	delete(m.ciWakes, runID)
+	delete(m.ciMonitorActive, runID)
+	m.mu.Unlock()
+	m.pumpQueue()
+}
+
 func (m *RunManager) shutdownQueuedRun(qe queuedRun) {
 	if qe.spawn == nil {
 		return
@@ -204,7 +219,7 @@ func (m *RunManager) cancelQueuedRun(qe queuedRun, cause string) {
 		m.broadcast(event)
 	}
 	if err == nil && (qe.recovered == nil || verified) {
-		m.removeRunWorktree(qe.repoID, qe.runID, qe.gateDir, qe.wtDir, "queued_run_cancelled")
+		m.removeRunWorktree(context.Background(), qe.repoID, qe.runID, qe.gateDir, qe.wtDir, "queued_run_cancelled")
 	}
 	qe.cancel(nil)
 	qe.agent.Close()

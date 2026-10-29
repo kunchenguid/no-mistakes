@@ -332,7 +332,7 @@ It is recorded as the driving agent's `driver_instructions`, apart from the TUI'
 `--action abort` rejects the parked gate and is the same gate-level abort the executor already has, now reachable from the agent surface.
 It requires `--reason`, so a rejection is never recorded without the operator's explanation.
 The gate's round is recorded as declined, the step fails with `aborted by user: <reason>`, and the run ends `failed` with that text in its error, so the reason is durable in the run and step records and shown by `axi status`.
-No fix round starts, and nothing is approved, skipped, pushed, or merged. Saved commits, findings, and evidence stay available, but the failed run removes its run worktree, so uncommitted edits in it (for example a refused protected-path edit) are lost: save anything you need before aborting.
+No fix round starts, and nothing is approved, skipped, pushed, or merged. Saved commits, findings, and evidence stay available. Worktree cleanup follows the daemon's [preservation policy](/no-mistakes/concepts/daemon/#what-it-does), which owns checkout retention, snapshot exclusions, and restoration.
 The output leads with a `rejected:` object naming the `run`, `step`, and `reason`, followed by the terminal run object and its `branch_sync` object; follow that object's `next_action` to return branch custody through the supported recovery path.
 It is refused, with nothing recorded, when the ID names no run, when the run is not parked at a gate, or when `--step` names a step other than the parked one.
 This is a human decision, not a way around a finding.

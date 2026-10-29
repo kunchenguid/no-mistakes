@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -387,6 +389,130 @@ func TestMaxConcurrentRuns_ConcurrentSubmissionsPreserveAdmissionOrder(t *testin
 	}
 }
 
+func TestMaxConcurrentRuns_SetupFailureReleasesAdmissionBeforeSlowCleanup(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	content, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), append(content, []byte("max_concurrent_runs: 1\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, head := setupTestGitRepo(t, p, d, "failed-setup-admission")
+	failedRepo := *repo
+	failedRepo.WorkingPath = filepath.Join(t.TempDir(), "missing-checkout")
+	started := make(chan string, 4)
+	m := NewRunManager(d, p, func() []pipeline.Step {
+		return []pipeline.Step{&notifyBlockStep{name: types.StepReview, started: started}}
+	})
+	cleanupEntered := make(chan procreap.Worktree, 1)
+	cleanupExited := make(chan struct{})
+	cleanupBarrier, releaseCleanup := context.WithCancel(context.Background())
+	var firstSweep atomic.Bool
+	previousSweep := sweepRunWorktrees
+	sweepRunWorktrees = func(ctx context.Context, root string, worktrees []procreap.Worktree, reason string) {
+		if !firstSweep.CompareAndSwap(false, true) {
+			return
+		}
+		defer close(cleanupExited)
+		cleanupEntered <- worktrees[0]
+		select {
+		case <-cleanupBarrier.Done():
+		case <-ctx.Done():
+		}
+	}
+	failedDone := make(chan struct{})
+	var setupErr error
+	t.Cleanup(func() {
+		releaseCleanup()
+		m.Shutdown()
+		select {
+		case <-failedDone:
+		case <-time.After(15 * time.Second):
+			t.Error("failed setup cleanup did not finish")
+		}
+		sweepRunWorktrees = previousSweep
+	})
+	go func() {
+		defer close(failedDone)
+		_, setupErr = m.startRun(context.Background(), &failedRepo, "feature/failed", head, head, "push", nil, "", "", false, "", nil)
+	}()
+	var failedWorktree procreap.Worktree
+	select {
+	case failedWorktree = <-cleanupEntered:
+	case <-failedDone:
+		t.Fatalf("setup exited before reaching cleanup: %v", setupErr)
+	case <-time.After(15 * time.Second):
+		t.Fatal("failed setup did not reach cleanup")
+	}
+	const unique = "unique setup bytes\n"
+	if err := os.WriteFile(filepath.Join(failedWorktree.Dir, "unique.txt"), []byte(unique), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	submit := func(branch string) string {
+		t.Helper()
+		id, err := m.startRun(context.Background(), repo, branch, head, head, "push", nil, "", "", false, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	secondID := submit("feature/second")
+	expectQueuedBranch(t, started, "feature/second")
+	select {
+	case <-cleanupExited:
+		t.Fatal("setup cleanup stopped blocking before the ready run started")
+	default:
+	}
+	thirdID := submit("feature/third")
+	expectNoQueuedBranch(t, started)
+	if got := runStatus(t, d, thirdID); got != types.RunPending {
+		t.Fatalf("third run status = %s, want pending", got)
+	}
+	releaseCleanup()
+	select {
+	case <-failedDone:
+	case <-time.After(15 * time.Second):
+		t.Fatal("failed setup did not finish after cleanup was released")
+	}
+	if setupErr == nil || !strings.Contains(setupErr.Error(), "configure worktree git identity") {
+		t.Fatalf("setup error = %v, want identity failure", setupErr)
+	}
+	expectNoQueuedBranch(t, started)
+	if got, err := os.ReadFile(filepath.Join(failedWorktree.Dir, "unique.txt")); err != nil || string(got) != unique {
+		t.Fatalf("failed setup cleanup changed unique work: %q, %v", got, err)
+	}
+	if got, err := gitpkg.RunRaw(context.Background(), p.RepoDir(repo.ID), "show", gitpkg.DirtyWorkRef(failedWorktree.RunID)+"^3:unique.txt"); err != nil || string(got) != unique {
+		t.Fatalf("failed setup snapshot lost unique bytes: %q, %v", got, err)
+	}
+	if got := runStatus(t, d, failedWorktree.RunID); got != types.RunFailed {
+		t.Fatalf("setup run status = %s, want failed", got)
+	}
+	if err := m.HandleCancel(secondID); err != nil {
+		t.Fatal(err)
+	}
+	expectQueuedBranch(t, started, "feature/third")
+	if err := m.HandleCancel(thirdID); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(15 * time.Second):
+		t.Fatal("admitted runs did not finish after cancellation")
+	}
+	expectNoQueuedBranch(t, started)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.runQueue) != 0 || len(m.executors) != 0 || len(m.cancels) != 0 || len(m.dones) != 0 {
+		t.Fatal("setup failure left admission or execution accounting behind")
+	}
+}
+
 func TestMaxConcurrentRuns_ConfigErrorRetainsCap(t *testing.T) {
 	for _, failure := range []string{"invalid", "missing", "unreadable_replacement"} {
 		t.Run(failure, func(t *testing.T) {
@@ -750,8 +876,8 @@ func TestMaxConcurrentRuns_CancelRecoveredRunPreservesUnpublishedHead(t *testing
 			if terminal.TerminalHeadVerifiedAt == nil || terminal.HeadSHA != fixed {
 				t.Fatalf("terminal head = %s, verified = %v, want verified %s", terminal.HeadSHA, terminal.TerminalHeadVerifiedAt, fixed)
 			}
-			if _, err := os.Stat(workDir); !os.IsNotExist(err) {
-				t.Fatalf("cancelled worktree was not removed: %v", err)
+			if _, err := os.Stat(workDir); err != nil {
+				t.Fatalf("cancelled checkout was removed without a stability proof: %v", err)
 			}
 			if got := gitOutput(t, gateDir, "rev-parse", custody.RecoveryRef(run.ID)); got != fixed {
 				t.Fatalf("recovery anchor = %s, want %s", got, fixed)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/fsutil"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
@@ -79,7 +80,10 @@ func evidenceRootFor(p *paths.Paths, global *config.GlobalConfig) string {
 // A directory whose run row is still pending or running is never touched, at
 // any step - the same active-run guard cleanupOrphanWorktrees uses, for the
 // same reason: only a settled run's leftovers are safe to remove.
-func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Time) {
+func reapEvidence(ctx context.Context, d *db.DB, root string, policy evidenceReapPolicy, now time.Time) {
+	if ctx.Err() != nil {
+		return
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return // directory may not exist yet, which is the normal case
@@ -94,6 +98,9 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 	}
 	candidates := make([]candidate, 0, len(entries))
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		if !entry.IsDir() {
 			continue
 		}
@@ -106,7 +113,7 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 		if run == nil {
 			continue
 		}
-		if skip, reason := skipWorktreeCleanup(context.Background(), d, runID, run.WorktreePath()); skip {
+		if skip, reason := skipWorktreeCleanup(ctx, d, runID, run.WorktreePath()); skip {
 			slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", reason)
 			continue
 		}
@@ -135,9 +142,12 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 	removed := 0
 	survivors := make([]candidate, 0, len(candidates))
 	for _, c := range candidates {
+		if ctx.Err() != nil {
+			return
+		}
 		expired := policy.Retention > 0 && now.Sub(c.modTime) > policy.Retention
 		if c.isEmpty || expired {
-			if removeEvidenceDir(c.path, c.runID) {
+			if removeEvidenceDir(ctx, c.path, c.runID) {
 				removed++
 			}
 			continue
@@ -147,7 +157,10 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 
 	if policy.MaxRuns > 0 && len(survivors) > policy.MaxRuns {
 		for _, c := range survivors[:len(survivors)-policy.MaxRuns] {
-			if removeEvidenceDir(c.path, c.runID) {
+			if ctx.Err() != nil {
+				return
+			}
+			if removeEvidenceDir(ctx, c.path, c.runID) {
 				removed++
 			}
 		}
@@ -158,8 +171,8 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 	}
 }
 
-func removeEvidenceDir(path, runID string) bool {
-	if err := os.RemoveAll(path); err != nil {
+func removeEvidenceDir(ctx context.Context, path, runID string) bool {
+	if err := fsutil.RemoveAll(ctx, path); err != nil {
 		slog.Warn("failed to remove run evidence", "path", path, "run_id", runID, "error", err)
 		return false
 	}
@@ -172,7 +185,10 @@ func removeEvidenceDir(path, runID string) bool {
 // moving files would not repair them, and a wholesale removal could delete
 // artifacts a run started before the upgrade is still writing. Reaping by the
 // same rules, with the same active-run guard, is bounded and surprises nobody.
-func reapLegacyEvidence(d *db.DB, current string, policy evidenceReapPolicy, now time.Time) {
+func reapLegacyEvidence(ctx context.Context, d *db.DB, current string, policy evidenceReapPolicy, now time.Time) {
+	if ctx.Err() != nil {
+		return
+	}
 	legacy := filepath.Join(os.TempDir(), legacyEvidenceDirName)
 	if legacy == current {
 		return // an operator who pointed local_root back at it owns it now
@@ -180,8 +196,10 @@ func reapLegacyEvidence(d *db.DB, current string, policy evidenceReapPolicy, now
 	if _, err := os.Stat(legacy); err != nil {
 		return
 	}
-	reapEvidence(d, legacy, policy, now)
+	reapEvidence(ctx, d, legacy, policy, now)
 	// Remove the root itself once it is empty; os.Remove fails harmlessly while
 	// anything remains.
-	_ = os.Remove(legacy)
+	if ctx.Err() == nil {
+		_ = os.Remove(legacy)
+	}
 }

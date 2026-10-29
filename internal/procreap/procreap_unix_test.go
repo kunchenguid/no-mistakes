@@ -220,7 +220,7 @@ func parseEscapedPID(t *testing.T, output string) int {
 func requireCWDLookup(t *testing.T) {
 	t.Helper()
 	self := os.Getpid()
-	cwds := processCWDs([]int{self})
+	cwds := processCWDs(context.Background(), []int{self})
 	if _, ok := cwds[self]; !ok {
 		t.Skip("process working directories are not readable on this host")
 	}

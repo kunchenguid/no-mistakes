@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/fsutil"
 )
 
 // reapRunLogs bounds <NM_HOME>/logs/<run_id>, the per-run step-log directory
@@ -32,7 +33,10 @@ import (
 // "empty directory" rule - MkdirAll here always precedes at least one step
 // log being opened for append, so an empty log directory is not the dominant
 // case it is for evidence.
-func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time) {
+func reapRunLogs(ctx context.Context, d *db.DB, root string, policy evidenceReapPolicy, now time.Time) {
+	if ctx.Err() != nil {
+		return
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return // directory may not exist yet, which is the normal case
@@ -45,6 +49,9 @@ func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time
 	}
 	candidates := make([]candidate, 0, len(entries))
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		if !entry.IsDir() {
 			continue
 		}
@@ -57,7 +64,7 @@ func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time
 		if run == nil {
 			continue
 		}
-		if skip, reason := skipWorktreeCleanup(context.Background(), d, runID, run.WorktreePath()); skip {
+		if skip, reason := skipWorktreeCleanup(ctx, d, runID, run.WorktreePath()); skip {
 			slog.Debug("skipping run log cleanup", "run_id", runID, "reason", reason)
 			continue
 		}
@@ -74,7 +81,7 @@ func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time
 		// directory's own mtime is still the floor for a directory with no
 		// files yet.
 		modTime := info.ModTime()
-		if newest, ok := newestFileModTime(path); ok && newest.After(modTime) {
+		if newest, ok := newestFileModTime(ctx, path); ok && newest.After(modTime) {
 			modTime = newest
 		}
 		candidates = append(candidates, candidate{path: path, modTime: modTime, runID: runID})
@@ -87,9 +94,12 @@ func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time
 	removed := 0
 	survivors := make([]candidate, 0, len(candidates))
 	for _, c := range candidates {
+		if ctx.Err() != nil {
+			return
+		}
 		expired := policy.Retention > 0 && now.Sub(c.modTime) > policy.Retention
 		if expired {
-			if removeRunLogDir(c.path, c.runID) {
+			if removeRunLogDir(ctx, c.path, c.runID) {
 				removed++
 			}
 			continue
@@ -99,7 +109,10 @@ func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time
 
 	if policy.MaxRuns > 0 && len(survivors) > policy.MaxRuns {
 		for _, c := range survivors[:len(survivors)-policy.MaxRuns] {
-			if removeRunLogDir(c.path, c.runID) {
+			if ctx.Err() != nil {
+				return
+			}
+			if removeRunLogDir(ctx, c.path, c.runID) {
 				removed++
 			}
 		}
@@ -110,8 +123,8 @@ func reapRunLogs(d *db.DB, root string, policy evidenceReapPolicy, now time.Time
 	}
 }
 
-func removeRunLogDir(path, runID string) bool {
-	if err := os.RemoveAll(path); err != nil {
+func removeRunLogDir(ctx context.Context, path, runID string) bool {
+	if err := fsutil.RemoveAll(ctx, path); err != nil {
 		slog.Warn("failed to remove run log directory", "path", path, "run_id", runID, "error", err)
 		return false
 	}
@@ -121,7 +134,7 @@ func removeRunLogDir(path, runID string) bool {
 // newestFileModTime returns the most recent modification time among the
 // regular files directly inside dir. It reports false when dir has no
 // files to compare against.
-func newestFileModTime(dir string) (time.Time, bool) {
+func newestFileModTime(ctx context.Context, dir string) (time.Time, bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return time.Time{}, false
@@ -129,6 +142,9 @@ func newestFileModTime(dir string) (time.Time, bool) {
 	var newest time.Time
 	found := false
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return time.Time{}, false
+		}
 		if entry.IsDir() {
 			continue
 		}

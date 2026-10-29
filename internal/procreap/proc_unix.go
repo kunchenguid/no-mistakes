@@ -29,8 +29,8 @@ const cwdLookupTimeout = 10 * time.Second
 // listProcesses reads the whole process table. `ps` is used rather than /proc
 // so one implementation covers macOS and Linux, matching how the daemon's
 // other process inspection works (internal/daemon/proc_unix.go).
-func listProcesses() ([]Process, error) {
-	cmd := exec.Command(psExecutable(), "-ww", "-eo", "pid=,ppid=,pgid=,etime=,command=")
+func listProcesses(ctx context.Context) ([]Process, error) {
+	cmd := exec.CommandContext(ctx, psExecutable(), "-ww", "-eo", "pid=,ppid=,pgid=,etime=,command=")
 	cmd.Env = cEnv()
 	out, err := cmd.Output()
 	if err != nil {
@@ -218,12 +218,12 @@ func parseLsofCWD(out string) map[int]string {
 	return cwds
 }
 
-func lsofCWDs(pids []int) map[int]string {
+func lsofCWDs(ctx context.Context, pids []int) map[int]string {
 	lsof, err := exec.LookPath("lsof")
 	if err != nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), cwdLookupTimeout)
+	ctx, cancel := context.WithTimeout(ctx, cwdLookupTimeout)
 	defer cancel()
 	ids := make([]string, 0, len(pids))
 	for _, pid := range pids {

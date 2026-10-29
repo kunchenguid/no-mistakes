@@ -336,7 +336,7 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup(t *testing.T) {
 	leakedPID := startOrphanInWorktree(t, finished)
 	otherPID := startOrphanInWorktree(t, other)
 
-	m.sweepRunWorktreeProcesses("repo1", "run1", finished)
+	m.sweepRunWorktreeProcesses(context.Background(), "repo1", "run1", finished)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived run cleanup", leakedPID)
@@ -368,7 +368,7 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildInTheRunsRecordedRoot(t *testi
 	operatorPID := startOrphanInWorktree(t, operatorDir)
 	unclaimedPID := startOrphanInWorktree(t, unclaimed)
 
-	m.sweepRunWorktreeProcesses("repo1", runID, finished)
+	m.sweepRunWorktreeProcesses(context.Background(), "repo1", runID, finished)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's configured worktree survived run cleanup", leakedPID)
@@ -467,7 +467,7 @@ func TestRemoveRunWorktreeSweepsBeforeRemoving(t *testing.T) {
 	leakedPID := startOrphanInWorktree(t, wtDir)
 	operatorPID := startOrphanInWorktree(t, filepath.Join(root, "scratch-checkout"))
 
-	NewRunManager(d, p, nil).removeRunWorktree("repo1", runID, p.RepoDir("repo1"), wtDir, "test")
+	NewRunManager(d, p, nil).removeRunWorktree(context.Background(), "repo1", runID, p.RepoDir("repo1"), wtDir, "test")
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the removed worktree survived removal", leakedPID)
@@ -475,8 +475,8 @@ func TestRemoveRunWorktreeSweepsBeforeRemoving(t *testing.T) {
 	if !processIsAlive(operatorPID) {
 		t.Errorf("removal signalled %d in the operator's own directory", operatorPID)
 	}
-	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
-		t.Errorf("worktree directory survived removal, stat err: %v", err)
+	if _, err := os.Stat(wtDir); err != nil {
+		t.Errorf("unproven checkout was removed after sweeping, stat err: %v", err)
 	}
 }
 

@@ -358,12 +358,7 @@ git worktree list
 git worktree remove --force <path>
 ```
 
-Otherwise, eligible orphan worktrees are cleaned on the next startup, subject to those same retention rules:
-
-```sh
-no-mistakes daemon stop
-no-mistakes daemon start
-```
+Restarting the daemon retries eligible cleanup under the same [preservation policy](/no-mistakes/concepts/daemon/#what-it-does); it does not override checkout retention.
 
 ## Reset everything
 

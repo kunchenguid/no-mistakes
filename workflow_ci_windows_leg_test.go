@@ -452,6 +452,82 @@ func (s stepsShard) selects(test string) bool {
 	return (s.run == nil || s.run.MatchString(test)) && (s.skip == nil || !s.skip.MatchString(test))
 }
 
+func TestCIWorkflow_WindowsGitShardsRunEveryTestExactlyOnce(t *testing.T) {
+	t.Parallel()
+	job := ciTestJob(t)
+	var shards []stepsShard
+	for _, row := range job.Strategy.Matrix.Include {
+		if row["os"] == "windows-latest" && row["shard"] == "git" {
+			shards = append(shards, stepsShard{
+				name: row["name"],
+				run:  stepsShardPattern(t, row, "git_run"),
+				skip: stepsShardPattern(t, row, "git_skip"),
+			})
+		}
+	}
+	if len(shards) < 2 {
+		t.Fatalf("git-heavy packages run on %d Windows rows; capture and recheck matrices exceed one package budget", len(shards))
+	}
+	var commands []workflowCommand
+	for _, command := range windowsGoTestCommands(t) {
+		if matrixShardCondition(job.Steps[command.step].If) == "git" {
+			commands = append(commands, command)
+		}
+	}
+	if len(commands) != 1 {
+		t.Fatalf("want one go test command for the git rows, got %d", len(commands))
+	}
+	command := commands[0]
+	step := job.Steps[command.step]
+	if step.Shell != "pwsh" {
+		t.Fatalf("git shard shell = %q, want pwsh for environment expansion", step.Shell)
+	}
+	for flag, wiring := range map[string]struct{ env, matrix string }{
+		"-run":  {"NM_CI_WINDOWS_GIT_RUN", "git_run"},
+		"-skip": {"NM_CI_WINDOWS_GIT_SKIP", "git_skip"},
+	} {
+		if got, want := step.Env[wiring.env], "${{ matrix."+wiring.matrix+" }}"; got != want {
+			t.Errorf("git shard env %s = %q, want %q", wiring.env, got, want)
+		}
+		if arg := flag + "=$env:" + wiring.env; !slices.ContainsFunc(command.args, func(a string) bool { return unquoteWorkflowArg(a) == arg }) {
+			t.Errorf("git shard go test does not pass %q: %v", arg, command.args)
+		}
+	}
+
+	// Ask the test binaries for their public inventory rather than inferring
+	// executable tests from implementation source. Complement probes also
+	// cover names absent on this host, including Windows-only future tests.
+	args := append([]string{"test", "-list=.", "-run=^$"}, goTestPackagePatterns(command)...)
+	out, err := exec.Command("go", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("list git-heavy tests: %v\n%s", err, out)
+	}
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); isGoTestName(line) {
+			names = append(names, line)
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("git-heavy test binaries listed no executable tests")
+	}
+	names = append(names, "Test", "Test_Probe", "FuzzProbe", "ExampleProbe")
+	for c := 'A'; c <= 'Z'; c++ {
+		names = append(names, "Test"+string(c)+"Probe")
+	}
+	for _, name := range names {
+		var selectedBy []string
+		for _, shard := range shards {
+			if shard.selects(name) {
+				selectedBy = append(selectedBy, shard.name)
+			}
+		}
+		if len(selectedBy) != 1 {
+			t.Errorf("%s is selected by Windows git shards %v; want exactly one", name, selectedBy)
+		}
+	}
+}
+
 func TestCIWorkflow_WindowsStepsShardsRunEveryTestExactlyOnce(t *testing.T) {
 	t.Parallel()
 

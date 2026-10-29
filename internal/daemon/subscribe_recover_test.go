@@ -568,20 +568,11 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if completed.ReviewApprovedHeadSHA == nil || *completed.ReviewApprovedHeadSHA != headSHA {
 		t.Fatalf("recovered review approval = %#v, want %s", completed.ReviewApprovedHeadSHA, headSHA)
 	}
-	// The executor marks the run terminal before its owner goroutine performs
-	// worktree cleanup. Wait for that cleanup rather than assuming it completed
-	// in the same scheduling slice, which is especially unreliable on Windows.
-	cleanupDeadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(worktree); os.IsNotExist(err) {
-			break
-		} else if err != nil {
-			t.Fatalf("stat recovered worktree: %v", err)
-		}
-		if time.Now().After(cleanupDeadline) {
-			t.Fatalf("recovered worktree still exists after cleanup: %s", worktree)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := confirmDirtyWorkBeforeRemoval(context.Background(), worktree, nil); err == nil {
+		t.Fatal("recovered run authorized cleanup without a stability proof")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("recovered checkout was removed without a stability proof: %v", err)
 	}
 }
 

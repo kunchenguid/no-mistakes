@@ -1564,8 +1564,17 @@ func newAxiRespondCmd() *cobra.Command {
 			"recorded as declined, the step fails as \"aborted by user: <reason>\", and the\n" +
 			"run ends failed. --reason is required and is kept in the step error and the\n" +
 			"run error. No fix round starts and nothing is approved or pushed. Saved\n" +
-			"commits, findings and evidence stay available, but the failed run removes its\n" +
-			"worktree, so save any uncommitted edits first. Return branch custody through\n" +
+			"commits, findings and evidence stay available. Cleanup currently retains every\n" +
+			"real checkout, even when clean or successfully snapshotted, because stability\n" +
+			"through removal cannot be proven. Cleanup attempts to snapshot unique\n" +
+			"uncommitted work in the gate at refs/no-mistakes/dirty/<run-id>. Ignored files\n" +
+			"are excluded from the snapshot.\n" +
+			"Read restore-core-autocrlf and restore-core-eol from the snapshot message.\n" +
+			"Use those values for both creating a worktree at the first parent and running\n" +
+			"git -c core.symlinks=true -c core.autocrlf=<saved> -c core.eol=<saved> -c apply.whitespace=nowarn stash apply --index <snapshot>.\n" +
+			"On Windows without symlink creation support, omit -c core.symlinks=true\n" +
+			"from both commands. That Windows procedure does not support symlink restoration.\n" +
+			"Return branch custody through\n" +
 			"the structured branch_sync next_action in the output. Unlike `axi abort`,\n" +
 			"which cancels whatever the run is doing, this records a rejection at one\n" +
 			"gate and is refused unless the run is parked there.\n\n" +

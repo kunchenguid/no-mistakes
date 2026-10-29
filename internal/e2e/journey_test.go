@@ -54,6 +54,16 @@ func TestUserJourney(t *testing.T) {
 	}
 }
 
+// Historical UI rows use their own fixture so their timestamps cannot make
+// the pipeline journey's retained checkouts eligible for cleanup.
+func TestRootDefaultsToHistory(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("nm init for root history: %v\n%s", err, out)
+	}
+	assertRootDefaultsToHistory(t, h)
+}
+
 func TestAXIControlByteFailureGateRemainsReadable(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 	out, err := h.Run("init")
@@ -319,7 +329,6 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRunsDefaultLimit(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 	assertStatusShortHeadSHA(t, h)
-	assertRootDefaultsToHistory(t, h)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -2480,10 +2489,6 @@ func assertRootDefaultsToHistory(t *testing.T, h *Harness) {
 		t.Fatalf("open sql db for root history: %v", err)
 	}
 	defer sqlDB.Close()
-	oldTS := time.Now().Add(-30 * 24 * time.Hour).Unix()
-	if _, err := sqlDB.Exec(`UPDATE runs SET created_at = ?, updated_at = ?`, oldTS, oldTS); err != nil {
-		t.Fatalf("age existing runs before root history assertion: %v", err)
-	}
 	timestamps := []int64{
 		time.Now().Add(-10 * 24 * time.Hour).Unix(),
 		time.Now().Add(-4 * 24 * time.Hour).Unix(),

@@ -49,6 +49,18 @@ jobs:
           - os: windows-latest
             name: test (windows-git)
             shard: git
+            # Capture/confirmation matrices, late-change rechecks, and daemon
+            # recovery need separate 15-minute package budgets on Windows.
+            # The last row skips the union so new tests still run exactly once.
+            git_run: '^Test[A-CF-L]'
+          - os: windows-latest
+            name: test (windows-git-2)
+            shard: git
+            git_run: '^Test([D-EM-Q]|Run)'
+          - os: windows-latest
+            name: test (windows-git-3)
+            shard: git
+            git_skip: '^Test([A-Q]|Run)'
           # pipeline/steps is split by test name. The last row skips the union
           # of the other rows' patterns, so a new test always lands in exactly
           # one shard; rebalance the ranges against the shards' -v timings.
@@ -125,7 +137,11 @@ jobs:
       # floor.
       - name: Test on Windows (git-heavy)
         if: runner.os == 'Windows' && matrix.shard == 'git'
-        run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
+        shell: pwsh
+        env:
+          NM_CI_WINDOWS_GIT_RUN: ${{ matrix.git_run }}
+          NM_CI_WINDOWS_GIT_SKIP: ${{ matrix.git_skip }}
+        run: go test -v -timeout=15m "-run=$env:NM_CI_WINDOWS_GIT_RUN" "-skip=$env:NM_CI_WINDOWS_GIT_SKIP" ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
 
       - name: Test on Windows (pipeline/steps)
         if: runner.os == 'Windows' && matrix.shard == 'steps'

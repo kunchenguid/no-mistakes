@@ -21,6 +21,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) == 4 && os.Args[1] == "--nm-startup-cleanup-filter" {
+		os.Exit(runStartupCleanupFilterProcess(os.Args[2], os.Args[3]))
+	}
 	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
 	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {

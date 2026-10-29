@@ -3,15 +3,19 @@
 package procreap
 
 import (
+	"context"
 	"os"
 	"strconv"
 )
 
 // processCWDs resolves each pid's working directory from /proc, which is both
 // cheaper and more reliable than shelling out on Linux.
-func processCWDs(pids []int) map[int]string {
+func processCWDs(ctx context.Context, pids []int) map[int]string {
 	cwds := make(map[int]string, len(pids))
 	for _, pid := range pids {
+		if ctx.Err() != nil {
+			break
+		}
 		target, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
 		if err != nil {
 			continue

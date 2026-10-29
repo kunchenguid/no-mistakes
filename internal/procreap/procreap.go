@@ -31,7 +31,8 @@
 //     (Options.RunActive).
 //   - Unscoped sweeps additionally require Options.MinAge, so a process that
 //     started moments ago is never mistaken for a leak.
-//   - SIGTERM first; SIGKILL only for what is still alive after Options.Grace.
+//   - SIGTERM first; SIGKILL for what is still alive when Options.Grace ends
+//     or the cleanup context is cancelled.
 //
 // A process whose cwd is outside <NM_HOME>/worktrees and outside the run
 // worktrees the caller names explicitly (Options.Worktrees) can never match,
@@ -41,6 +42,7 @@
 package procreap
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -57,8 +59,7 @@ const (
 	// to a run the daemon is about to resume is never a candidate.
 	DefaultMinAge = 10 * time.Minute
 
-	// DefaultGrace is how long a matched process may take to exit after
-	// SIGTERM before it is SIGKILLed.
+	// DefaultGrace is the default Options.Grace limit.
 	DefaultGrace = 3 * time.Second
 )
 
@@ -89,6 +90,9 @@ type Worktree struct {
 
 // Options configures a sweep.
 type Options struct {
+	// Context bounds the whole sweep. Nil preserves the unbounded caller API.
+	Context context.Context
+
 	// WorktreesRoot is <NM_HOME>/worktrees. Required.
 	WorktreesRoot string
 
@@ -129,8 +133,8 @@ type Options struct {
 	// only correct for a scoped sweep. Ignored when Scopes is set.
 	RunActive func(repoID, runID string) bool
 
-	// Grace is how long a signalled process may exit before SIGKILL.
-	// Zero means DefaultGrace.
+	// Grace is the maximum wait after SIGTERM before SIGKILL. Cancellation
+	// of Context ends the wait early. Zero means DefaultGrace.
 	Grace time.Duration
 }
 
@@ -148,10 +152,17 @@ var (
 // error is the normal outcome and also what platforms without a process-table
 // reader (Windows, where job objects already contain the whole tree) return.
 func Sweep(opts Options) ([]Victim, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(opts.WorktreesRoot) == "" && len(opts.Worktrees) == 0 {
 		return nil, nil
 	}
-	procs, err := listProcessesFunc()
+	procs, err := listProcessesFunc(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +190,10 @@ func Sweep(opts Options) ([]Victim, error) {
 		return nil, nil
 	}
 
-	cwds := processCWDsFunc(candidates)
+	cwds := processCWDsFunc(ctx, candidates)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	matchers := worktreeMatchers(opts)
 	var scopes []string
 	for _, scope := range opts.Scopes {
@@ -206,7 +220,7 @@ func Sweep(opts Options) ([]Victim, error) {
 	}
 
 	victims := expandVictims(matched, procs, protected)
-	terminate(victims, opts.Grace)
+	terminate(ctx, victims, opts.Grace)
 	return victims, nil
 }
 
@@ -261,6 +275,12 @@ func SweepRunWorktree(worktreesRoot, repoID, runID, dir string, reason string) {
 // worktrees tree, with neither the age floor nor the run-active check an
 // unscoped caller must supply.
 func SweepRunWorktrees(worktreesRoot string, wts []Worktree, reason string) {
+	SweepRunWorktreesContext(context.Background(), worktreesRoot, wts, reason)
+}
+
+// SweepRunWorktreesContext shares its caller's cleanup deadline across process
+// discovery and termination, before any checkout capture or removal begins.
+func SweepRunWorktreesContext(ctx context.Context, worktreesRoot string, wts []Worktree, reason string) {
 	scopes := make([]string, 0, len(wts))
 	for _, wt := range wts {
 		if strings.TrimSpace(wt.Dir) == "" {
@@ -272,6 +292,7 @@ func SweepRunWorktrees(worktreesRoot string, wts []Worktree, reason string) {
 		return
 	}
 	SweepAndLog(Options{
+		Context:       ctx,
 		WorktreesRoot: worktreesRoot,
 		Worktrees:     wts,
 		Scopes:        scopes,
@@ -300,10 +321,9 @@ func protectedPIDs(byPID map[int]Process) map[int]bool {
 // so a single spelling is not enough to recognise our own tree.
 //
 // The canonical form resolves symlinks through the deepest ancestor that still
-// exists (see worktrees.Canonical), which matters because the directory named
-// here is often gone: a run worktree is removed at run end while a process that
-// escaped its process group keeps standing in it, and that deleted cwd is the
-// whole reason this package exists. Resolving only paths that still exist would
+// exists (see worktrees.Canonical), because the directory named here may already
+// be gone. A process that escaped its process group can keep a deleted worktree
+// as its cwd. Resolving only paths that still exist would
 // leave such a process unreachable whenever any component of its path is a
 // symlink - which on macOS includes anything under /tmp.
 func pathPrefixes(dir string) []string {
@@ -443,10 +463,9 @@ func expandVictims(matched map[int]string, procs []Process, protected map[int]bo
 }
 
 // terminate asks every victim to exit, then kills whatever is still alive
-// after grace. SIGTERM first is not politeness: a test runner or a worker
-// script given the chance to exit flushes its output and removes its own
-// temporary state, which SIGKILL denies it.
-func terminate(victims []Victim, grace time.Duration) {
+// when grace ends or ctx is cancelled. SIGTERM first lets a test runner or worker
+// script flush output and remove its own temporary state before forced cleanup.
+func terminate(ctx context.Context, victims []Victim, grace time.Duration) {
 	if grace <= 0 {
 		grace = DefaultGrace
 	}
@@ -462,10 +481,15 @@ func terminate(victims []Victim, grace time.Duration) {
 				break
 			}
 		}
-		if !remaining || !time.Now().Before(deadline) {
+		if !remaining || ctx.Err() != nil || !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
 	}
 	for i := range victims {
 		if !processAliveFunc(victims[i].PID) {

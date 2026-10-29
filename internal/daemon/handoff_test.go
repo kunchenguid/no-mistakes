@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -94,6 +95,35 @@ func TestHandleHandoffAfterMonitorExitRefusesImmediately(t *testing.T) {
 	m.transitionCIMonitorLifecycle(run.ID, false)
 	if err := m.HandleHandoff(context.Background(), run.ID); err == nil || !strings.Contains(err.Error(), "actively monitoring") {
 		t.Fatalf("handoff error = %v, want immediate monitor refusal", err)
+	}
+}
+
+func TestReleaseExecutionSlotClearsHandoffState(t *testing.T) {
+	_, run, m, _, cancel, wake := newHandoffFixture(t, true)
+	defer cancel(context.Canceled)
+	m.executors[run.ID] = nil
+	m.dones[run.ID] = make(chan struct{})
+	result := requestHandoff(t, m, run.ID, wake)
+
+	m.releaseExecutionSlot(run.ID)
+	select {
+	case err := <-result:
+		if err == nil || err.Error() != "run ended before handoff" {
+			t.Fatalf("handoff result = %v, want executor-exit refusal", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor exit left the handoff request waiting")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, executor := m.executors[run.ID]
+	_, cancelling := m.cancels[run.ID]
+	_, done := m.dones[run.ID]
+	_, pending := m.handoffRequests[run.ID]
+	_, waking := m.ciWakes[run.ID]
+	_, monitoring := m.ciMonitorActive[run.ID]
+	if executor || cancelling || done || pending || waking || monitoring {
+		t.Fatal("executor exit left run or handoff tracking behind")
 	}
 }
 

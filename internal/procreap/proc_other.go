@@ -2,6 +2,8 @@
 
 package procreap
 
+import "context"
+
 // On Windows every no-mistakes subprocess is confined to a job object
 // (internal/shellenv), which the kernel tears down with the whole tree - a
 // descendant cannot escape it the way a setsid(2) call escapes a POSIX process
@@ -15,9 +17,9 @@ const (
 	sigKill
 )
 
-func listProcesses() ([]Process, error) { return nil, nil }
+func listProcesses(context.Context) ([]Process, error) { return nil, nil }
 
-func processCWDs(pids []int) map[int]string { return nil }
+func processCWDs(context.Context, []int) map[int]string { return nil }
 
 func processAlive(pid int) bool { return false }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,7 +94,7 @@ func TestReapRunLogsHonorsRetentionAndSparesActiveRuns(t *testing.T) {
 	activePending := f.seed("active-pending", types.RunPending, 30*24*time.Hour)
 	activeRunning := f.seed("active-running", types.RunRunning, 30*24*time.Hour)
 
-	reapRunLogs(f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
+	reapRunLogs(context.Background(), f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
 
 	if !f.exists(fresh) {
 		t.Error("run log inside the retention window was removed")
@@ -117,7 +118,7 @@ func TestReapRunLogsTrimsToTheRunCeilingOldestFirst(t *testing.T) {
 	middle := f.seed("middle", types.RunCompleted, 3*time.Hour)
 	newest := f.seed("newest", types.RunCompleted, time.Hour)
 
-	reapRunLogs(f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 2}, time.Now())
+	reapRunLogs(context.Background(), f.db, f.root, evidenceReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 2}, time.Now())
 
 	if f.exists(oldest) {
 		t.Error("the oldest run log survived the run ceiling")
@@ -136,7 +137,7 @@ func TestReapRunLogsKeepsEverythingWhenBothBoundsAreDisabled(t *testing.T) {
 	ancient := f.seed("ancient", types.RunCompleted, 365*24*time.Hour)
 	recent := f.seed("recent", types.RunCompleted, time.Hour)
 
-	reapRunLogs(f.db, f.root, evidenceReapPolicy{Retention: 0, MaxRuns: 0}, time.Now())
+	reapRunLogs(context.Background(), f.db, f.root, evidenceReapPolicy{Retention: 0, MaxRuns: 0}, time.Now())
 
 	if !f.exists(ancient) || !f.exists(recent) {
 		t.Error("run logs were reaped even though both bounds are disabled")
@@ -157,7 +158,7 @@ func TestReapRunLogsLeavesDaemonLogFilesAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reapRunLogs(f.db, f.root, evidenceReapPolicy{Retention: time.Hour, MaxRuns: 1}, time.Now())
+	reapRunLogs(context.Background(), f.db, f.root, evidenceReapPolicy{Retention: time.Hour, MaxRuns: 1}, time.Now())
 
 	if _, err := os.Stat(daemonLog); err != nil {
 		t.Errorf("reaper removed a daemon log file, not a per-run log directory: %v", err)
@@ -177,7 +178,7 @@ func TestRunCleanupReapsRunLogsAcrossTheWholeTree(t *testing.T) {
 
 	cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
 	cfg.Test.Evidence.Retention = 14 * 24 * time.Hour
-	m.cleanupRunEvidence(cfg, fresh)
+	m.cleanupRunEvidence(context.Background(), cfg, fresh)
 
 	if f.exists(stale) {
 		t.Error("a stale run log survived cleanup of an unrelated run")

@@ -87,7 +87,7 @@ func TestReapWorktreesHonorsRetentionAndSparesActiveRuns(t *testing.T) {
 	activePending := f.seed("active-pending", types.RunPending, 30*24*time.Hour)
 	activeRunning := f.seed("active-running", types.RunRunning, 30*24*time.Hour)
 
-	reapWorktrees(f.db, f.p, worktreeReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
+	reapWorktrees(context.Background(), f.db, f.p, worktreeReapPolicy{Retention: 14 * 24 * time.Hour}, time.Now())
 
 	if !f.exists(fresh) {
 		t.Error("a worktree inside the retention window was removed")
@@ -113,7 +113,7 @@ func TestReapWorktreesTrimsToTheRunCeilingOldestFirst(t *testing.T) {
 	middle := f.seed("middle", types.RunCompleted, 3*time.Hour)
 	newest := f.seed("newest", types.RunCompleted, time.Hour)
 
-	reapWorktrees(f.db, f.p, worktreeReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 2}, time.Now())
+	reapWorktrees(context.Background(), f.db, f.p, worktreeReapPolicy{Retention: 14 * 24 * time.Hour, MaxRuns: 2}, time.Now())
 
 	if f.exists(oldest) {
 		t.Error("the oldest leftover worktree survived the run ceiling")
@@ -131,7 +131,7 @@ func TestReapWorktreesKeepsEverythingWhenBothBoundsAreDisabled(t *testing.T) {
 	ancient := f.seed("ancient", types.RunCompleted, 365*24*time.Hour)
 	recent := f.seed("recent", types.RunCompleted, time.Hour)
 
-	reapWorktrees(f.db, f.p, worktreeReapPolicy{Retention: 0, MaxRuns: 0}, time.Now())
+	reapWorktrees(context.Background(), f.db, f.p, worktreeReapPolicy{Retention: 0, MaxRuns: 0}, time.Now())
 
 	if !f.exists(ancient) || !f.exists(recent) {
 		t.Error("worktrees were reaped even though both bounds are disabled")
@@ -167,7 +167,7 @@ func TestRunCleanupReapsLeftoverWorktreesAcrossTheWholeTree(t *testing.T) {
 
 	cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
 	cfg.Worktree.Retention = 14 * 24 * time.Hour
-	m.cleanupRunEvidence(cfg, fresh)
+	m.cleanupRunWorktrees(context.Background(), cfg)
 
 	if f.exists(stale) {
 		t.Error("a stale leftover worktree survived cleanup of an unrelated run")
@@ -185,7 +185,7 @@ func TestRunCleanupWorktreeReapIsSafeWithoutConfig(t *testing.T) {
 
 	kept := f.seed("kept", types.RunCompleted, time.Minute)
 
-	m.cleanupRunEvidence(nil, "run-that-never-existed")
+	m.cleanupRunWorktrees(context.Background(), nil)
 
 	if !f.exists(kept) {
 		t.Error("cleanup with no config removed a fresh leftover worktree")
@@ -219,7 +219,7 @@ func TestRemoveOrphanWorktreeReportsRemovalFailure(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(parent, 0o755) })
 
 	wt := orphanWorktree{gateDir: filepath.Join(tmp, "nonexistent-gate"), dir: wtDir, repoID: "repo1", runID: "run1"}
-	if removeOrphanWorktree(context.Background(), wt) {
+	if removeOrphanWorktrees(context.Background(), tmp, []orphanWorktree{wt}, "test") != 0 {
 		t.Fatal("removeOrphanWorktree reported success for a directory that is still on disk")
 	}
 	if _, err := os.Stat(wtDir); err != nil {

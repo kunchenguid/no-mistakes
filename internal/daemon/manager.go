@@ -557,24 +557,10 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 				cancel(nil)
 				_ = plan.agent.Close()
 				m.closeSubscribers(plan.run.ID)
+				m.releaseExecutionSlot(plan.run.ID)
 				if !parkedAtShutdown {
-					m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
-					// A recovered run is a finished run too. This is the second of the
-					// two completion boundaries, and leaving it out is what let a run
-					// resumed after a daemon restart keep its empty evidence directory
-					// until some later run or restart happened to sweep it.
-					m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+					m.cleanupFinishedRun(plan.cfg, plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
 				}
-				m.mu.Lock()
-				delete(m.executors, plan.run.ID)
-				delete(m.cancels, plan.run.ID)
-				delete(m.dones, plan.run.ID)
-				m.resolveHandoffRequestLocked(plan.run.ID, errors.New("run ended before handoff"))
-				delete(m.ciWakes, plan.run.ID)
-				delete(m.ciMonitorActive, plan.run.ID)
-				m.mu.Unlock()
-				// A freed slot starts the next queued run, if any.
-				m.pumpQueue()
 			}()
 
 			if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); errors.Is(err, pipeline.ErrParkedAtShutdown) {
@@ -724,14 +710,28 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // by a worktree_roots edit made while the run was executing. The ordering rule
 // and its rationale live on procreap.SweepRunWorktree, which every removal site
 // in every package goes through.
-func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
-	procreap.SweepRunWorktree(m.paths.WorktreesDir(), repoID, runID, wtDir, "run_cleanup")
+func (m *RunManager) sweepRunWorktreeProcesses(ctx context.Context, repoID, runID, wtDir string) {
+	sweepRunWorktrees(ctx, m.paths.WorktreesDir(), []procreap.Worktree{{Dir: wtDir, RepoID: repoID, RunID: runID}}, "run_cleanup")
 }
 
-// cleanupRunEvidence tidies up after one finished run, then bounds the whole
-// evidence directory, the run's own step-log directory (see reapRunLogs), and
-// any leftover run worktree that immediate removal did not clear (see
-// reapWorktrees).
+const finishedRunCleanupTimeout = 10 * time.Second
+
+// cleanupFinishedRun gives immediate capture and the whole maintenance sweep
+// one budget, independent of the finished run's cancelled execution context.
+func (m *RunManager) cleanupFinishedRun(cfg *config.Config, repoID, runID, gateDir, wtDir, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), finishedRunCleanupTimeout)
+	defer cancel()
+	m.cleanupRunEvidence(ctx, cfg, runID)
+	m.removeRunWorktree(ctx, repoID, runID, gateDir, wtDir, reason)
+	m.cleanupRunWorktrees(ctx, cfg)
+	if err := ctx.Err(); err != nil {
+		slog.Warn("finished-run cleanup stopped; unfinished checkouts retained", "run_id", runID, "error", err)
+	}
+}
+
+// cleanupRunEvidence tidies up after one finished run, then attempts retention
+// sweeps of evidence and step logs (see reapRunLogs), subject to ctx's shared
+// cleanup deadline.
 //
 // The per-run half is deliberately os.Remove and not os.RemoveAll: it succeeds
 // only when the directory is empty, so a run that produced no artifact leaves
@@ -740,19 +740,18 @@ func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 // without this nearly every run left a permanent empty directory - that alone
 // was the overwhelming majority of the accumulation this reaper exists to stop.
 //
-// The sweeps that follow keep a long-lived daemon converging on both retention
-// budgets instead of waiting for a restart. All of this is best effort: losing
+// Evidence and logs follow their retention budgets; worktree preservation
+// refusals can keep checkouts beyond theirs. All of this is best effort: losing
 // a cleanup pass costs disk, while failing a finished run over it would cost
 // the user their result.
-func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
+func (m *RunManager) cleanupRunEvidence(ctx context.Context, cfg *config.Config, runID string) {
+	if ctx.Err() != nil {
+		return
+	}
 	configured := ""
 	policy := evidenceReapPolicy{
 		Retention: config.DefaultEvidenceRetention,
 		MaxRuns:   config.DefaultEvidenceMaxRuns,
-	}
-	wtPolicy := worktreeReapPolicy{
-		Retention: config.DefaultWorktreeRetention,
-		MaxRuns:   config.DefaultWorktreeMaxRuns,
 	}
 	if cfg != nil {
 		configured = cfg.Test.Evidence.LocalRoot
@@ -760,43 +759,83 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 			Retention: cfg.Test.Evidence.Retention,
 			MaxRuns:   cfg.Test.Evidence.MaxRuns,
 		}
-		wtPolicy = worktreeReapPolicy{
-			Retention: cfg.Worktree.Retention,
-			MaxRuns:   cfg.Worktree.MaxRuns,
-		}
 	}
 	root := m.paths.EvidenceRoot(configured)
 	if err := os.Remove(filepath.Join(root, runID)); err != nil && !os.IsNotExist(err) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	now := time.Now()
-	reapEvidence(m.db, root, policy, now)
-	reapWorktrees(m.db, m.paths, wtPolicy, now)
-	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
+	reapEvidence(ctx, m.db, root, policy, now)
+	reapRunLogs(ctx, m.db, m.paths.LogsDir(), policy, now)
+	if err := git.ReapDirtyWorkScratch(ctx); err != nil && ctx.Err() == nil {
+		slog.Debug("capture scratch retained", "error", err)
+	}
+}
+
+func (m *RunManager) cleanupRunWorktrees(ctx context.Context, cfg *config.Config) {
+	policy := worktreeReapPolicy{
+		Retention: config.DefaultWorktreeRetention,
+		MaxRuns:   config.DefaultWorktreeMaxRuns,
+	}
+	if cfg != nil {
+		policy = worktreeReapPolicy{Retention: cfg.Worktree.Retention, MaxRuns: cfg.Worktree.MaxRuns}
+	}
+	reapWorktrees(ctx, m.db, m.paths, policy, time.Now())
 }
 
 // removeRunWorktree sweeps processes before deciding whether to remove the
 // directory, so refusal retention cannot keep escaped workers alive.
 //
-// Every removal of a run worktree this package performs goes through here, and
-// none calls git.WorktreeRemove directly, because the ordering is easy to forget
+// Run-lifecycle cleanup routes go through here rather than calling
+// git.WorktreeRemove directly, because the ordering is easy to forget
 // at one site and invisible when forgotten - a run whose setup failed, whose
 // execution returned, or which was resumed after a crash all reach this point by
 // different routes. reason distinguishes the routes in the log.
-func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
-	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
-	run, err := m.db.GetRun(runID)
-	if err != nil {
-		slog.Warn("preserving run worktree: cannot read run", "run_id", runID, "error", err)
-		return
-	}
-	if refusal := protectedPathCleanupReason(m.db, run); refusal != "" {
-		slog.Warn("preserving run worktree", "run_id", runID, "path", wtDir, "reason", refusal)
-		return
-	}
-	if err := git.WorktreeRemove(context.Background(), gateDir, wtDir); err != nil {
-		slog.Warn("failed to remove run worktree", "reason", reason, "run_id", runID, "path", wtDir, "error", err)
-	}
+//
+// Capture is attempted before confirmDirtyWorkBeforeRemoval applies the
+// preservation policy. Both a failed capture and that confirmation's refusal
+// keep the directory; a verified snapshot does not authorize its removal.
+func (m *RunManager) removeRunWorktree(ctx context.Context, repoID, runID, gateDir, wtDir, reason string) {
+	ctx, cancel := context.WithTimeout(ctx, finishedRunCleanupTimeout)
+	defer cancel()
+	_ = git.WithDirtyWorkCheckouts(ctx, []string{wtDir}, func() error {
+		m.sweepRunWorktreeProcesses(ctx, repoID, runID, wtDir)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		run, err := m.db.GetRun(runID)
+		if err != nil {
+			slog.Warn("preserving run worktree: cannot read run", "run_id", runID, "error", err)
+			return err
+		}
+		if refusal := protectedPathCleanupReason(m.db, run); refusal != "" {
+			slog.Warn("preserving run worktree", "run_id", runID, "path", wtDir, "reason", refusal)
+			return fmt.Errorf("cleanup refused: %s", refusal)
+		}
+		baseSHA := ""
+		if run != nil {
+			baseSHA = run.BaseSHA
+			if run.ID != "" {
+				runID = run.ID
+			}
+		}
+		// The lock covers capture through removal. Releasing it before deletion
+		// lets a second pass snapshot a newer edit, delete the checkout, and
+		// then lose that snapshot when this pass publishes the older ref.
+		snap, err := captureDirtyWorkBeforeRemoval(ctx, gateDir, wtDir, runID, baseSHA)
+		if err != nil {
+			slog.Warn("preserving run worktree: unique uncommitted work was not captured", "run_id", runID, "path", wtDir, "reason", reason, "error", err)
+			return err
+		}
+		if err := confirmDirtyWorkBeforeRemoval(ctx, wtDir, snap); err != nil {
+			slog.Warn("preserving run worktree: cleanup verification refused", "run_id", runID, "path", wtDir, "reason", reason, "error", err)
+			return err
+		}
+		if err := git.WorktreeRemove(ctx, gateDir, wtDir); err != nil {
+			slog.Warn("failed to remove run worktree", "reason", reason, "run_id", runID, "path", wtDir, "error", err)
+		}
+		return nil
+	})
 }
 
 // closeSubscribers soft-closes every subscriber for a run and marks the run
@@ -1535,7 +1574,13 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 // and retry is nil for every run that does not continue a failed one.
 func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, retry *retryLaunch, profiles ...*agentcfg.PiProfile) (string, error) {
 	sequence := m.reserveAdmission()
-	defer m.releaseAdmission(sequence)
+	var cleanupSetupWorktree func()
+	defer func() {
+		m.releaseAdmission(sequence)
+		if cleanupSetupWorktree != nil {
+			cleanupSetupWorktree()
+		}
+	}()
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -1697,16 +1742,13 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}
 
 	// The worktree exists from here on, so cleanup ownership is armed from here
-	// on: every later setup failure returns through this defer, and the
-	// background goroutine takes ownership only once it is running. Arming it any
-	// later would leave the directory behind - in the operator's own worktree
-	// root, unswept - for whichever failures happen in between.
-	bgOwnsWorktree := false
-	defer func() {
-		if !bgOwnsWorktree {
-			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_setup_failed")
-		}
-	}()
+	// on: every later setup failure returns through the deferred cleanup, and the
+	// background goroutine takes ownership only once it is running. Setup
+	// failures still attempt capture and cleanup; preservation refusals keep
+	// real checkouts in their recorded placement.
+	cleanupSetupWorktree = func() {
+		m.removeRunWorktree(context.Background(), repo.ID, run.ID, gateDir, wtDir, "run_setup_failed")
+	}
 
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
@@ -1943,21 +1985,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 				ag.Close()
 				// Close subscriber channels for this run.
 				m.closeSubscribers(run.ID)
+				m.releaseExecutionSlot(run.ID)
 				if !parkedAtShutdown {
-					m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
-					m.cleanupRunEvidence(cfg, run.ID)
+					m.cleanupFinishedRun(cfg, repo.ID, run.ID, gateDir, wtDir, "run_finished")
 				}
-				// Remove tracking.
-				m.mu.Lock()
-				delete(m.executors, run.ID)
-				delete(m.cancels, run.ID)
-				delete(m.dones, run.ID)
-				m.resolveHandoffRequestLocked(run.ID, errors.New("run ended before handoff"))
-				delete(m.ciWakes, run.ID)
-				delete(m.ciMonitorActive, run.ID)
-				m.mu.Unlock()
-				// A freed slot starts the next queued run, if any.
-				m.pumpQueue()
 			}()
 
 			if err := executor.Execute(runCtx, run, repo, wtDir); errors.Is(err, pipeline.ErrParkedAtShutdown) {
@@ -2006,7 +2037,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}()
 	}
 
-	bgOwnsWorktree = true
+	cleanupSetupWorktree = nil
 	m.admitRun(sequence, queuedRun{
 		runID: run.ID, repoID: repo.ID, branch: branch,
 		gateDir: gateDir, wtDir: wtDir,

@@ -142,15 +142,14 @@ func TestRunWorktreeIsCreatedInConfiguredRoot(t *testing.T) {
 	}
 }
 
-// TestRunSetupFailureLeavesNoWorktreeBehind covers the failures that happen
+// TestRunSetupFailureRetainsUnprovenCheckout covers the failures that happen
 // between creating the worktree and the run goroutine taking ownership of it.
-// Cleanup ownership is armed the moment the directory exists, so none of them can
-// leave it behind - in the operator's own worktree root, where it would sit until
-// the next daemon start noticed it.
+// The failed run keeps its recorded placement and the real checkout, including
+// clean bytes: cleanup cannot prove stability through removal.
 //
 // git identity configuration is the earliest of those failures: it reads the
 // checkout's git config, so a repository whose checkout is gone fails there.
-func TestRunSetupFailureLeavesNoWorktreeBehind(t *testing.T) {
+func TestRunSetupFailureRetainsUnprovenCheckout(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
 	})
@@ -199,11 +198,26 @@ func TestRunSetupFailureLeavesNoWorktreeBehind(t *testing.T) {
 	}
 
 	entries, err := os.ReadDir(root)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		t.Errorf("setup failure left %q behind in the operator's worktree root", filepath.Join(root, entry.Name()))
+	runs, err := d.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Status != types.RunFailed {
+		t.Fatalf("setup failure did not leave one failed run: %#v", runs)
+	}
+	run := runs[0]
+	wtDir := filepath.Join(root, run.ID)
+	if len(entries) != 1 || entries[0].Name() != run.ID || !samePath(run.WorktreePath(), wtDir) {
+		t.Fatalf("failed run lost its recorded checkout: entries %v, recorded %q", entries, run.WorktreePath())
+	}
+	if got, err := os.ReadFile(filepath.Join(wtDir, "test.txt")); err != nil || string(got) != "hello" {
+		t.Fatalf("setup failure changed or removed checkout bytes: %q, %v", got, err)
+	}
+	if got := gitOutput(t, wtDir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("retained checkout head = %s, want %s", got, headSHA)
 	}
 }
 
@@ -325,7 +339,7 @@ func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyRunDirectories(t *testi
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
+	cleanupOrphanWorktrees(context.Background(), d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(terminalWT); !os.IsNotExist(err) {
 		t.Fatalf("terminal run worktree should have been cleaned up, stat err: %v", err)
@@ -375,8 +389,8 @@ func TestCleanupOrphanWorktrees_UnconfiguredRepoUsesDefaultRoot(t *testing.T) {
 	// aware); force every eligible directory past the retention window
 	// regardless of its actual mtime, mirroring recoverOnStartup's order.
 	future := time.Now().Add(365 * 24 * time.Hour)
-	reapWorktrees(d, p, worktreeReapPolicy{Retention: time.Nanosecond}, future)
-	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
+	reapWorktrees(context.Background(), d, p, worktreeReapPolicy{Retention: time.Nanosecond}, future)
+	cleanupOrphanWorktrees(context.Background(), d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(terminalWT); !os.IsNotExist(err) {
 		t.Fatalf("default-root worktree should have been cleaned up, stat err: %v", err)
@@ -617,7 +631,7 @@ func TestCleanupOrphanWorktrees_OperatorRootRemovesOnlyWhatARunRecorded(t *testi
 		}
 	}
 
-	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
+	cleanupOrphanWorktrees(context.Background(), d, p, leftoverRecordedRunWorktrees(d, p))
 
 	for _, gone := range []string{ownWT, otherWT} {
 		if _, err := os.Stat(gone); !os.IsNotExist(err) {
@@ -757,7 +771,7 @@ func TestCleanupOrphanWorktrees_ReachesARootTheConfigNoLongerNames(t *testing.T)
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
+	cleanupOrphanWorktrees(context.Background(), d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(recordedWT); !os.IsNotExist(err) {
 		t.Fatalf("recorded worktree in a root the config no longer names survived cleanup, stat err: %v", err)
