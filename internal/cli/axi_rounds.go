@@ -115,7 +115,8 @@ func runAxiRounds(cmd *cobra.Command, step, runID string, asJSON bool) error {
 	if selected == nil {
 		return fail(1, fmt.Sprintf("step %q not recorded in run %q", step, run.ID))
 	}
-	rounds, err := env.d.GetRoundsByStep(selected.ID)
+	// A carried step's rounds stay on the step it was carried from
+	rounds, err := env.d.GetRoundsByStep(selected.RoundsStepID())
 	if err != nil {
 		return fail(1, fmt.Sprintf("load rounds: %v", err))
 	}
@@ -155,14 +156,8 @@ func axiRoundFromDB(r *db.StepRound) (axiRoundView, error) {
 		DurationMS: r.DurationMS, CreatedAt: r.CreatedAt,
 	}
 	if r.FindingsJSON != nil {
-		var payload struct {
-			Summary  *string          `json:"summary"`
-			Findings []map[string]any `json:"findings"`
-		}
-		if err := decodeRoundJSON(*r.FindingsJSON, &payload); err != nil {
-			return view, fmt.Errorf("parse findings: %w", err)
-		}
-		if err := requireNoNullMembers(payload.Findings); err != nil {
+		payload, err := decodeRoundFindings(*r.FindingsJSON)
+		if err != nil {
 			return view, fmt.Errorf("parse findings: %w", err)
 		}
 		view.Summary, view.Findings = payload.Summary, payload.Findings
@@ -183,14 +178,27 @@ func axiRoundFromDB(r *db.StepRound) (axiRoundView, error) {
 		}
 	}
 	if r.UserFindingsJSON != nil {
-		if err := decodeRoundJSON(*r.UserFindingsJSON, &view.UserFindings); err != nil {
+		payload, err := decodeRoundFindings(*r.UserFindingsJSON)
+		if err != nil {
 			return view, fmt.Errorf("parse user findings: %w", err)
 		}
-		if err := requireNoNullMembers(view.UserFindings); err != nil {
-			return view, fmt.Errorf("parse user findings: %w", err)
-		}
+		view.UserFindings = payload.Findings
 	}
 	return view, nil
+}
+
+type roundFindingsPayload struct {
+	Summary  *string          `json:"summary"`
+	Findings []map[string]any `json:"findings"`
+}
+
+// Both columns store a findings object, never a bare array
+func decodeRoundFindings(raw string) (roundFindingsPayload, error) {
+	var payload roundFindingsPayload
+	if err := decodeRoundJSON(raw, &payload); err != nil {
+		return payload, err
+	}
+	return payload, requireNoNullMembers(payload.Findings)
 }
 
 // A null member decodes to a zero value that would export as real data

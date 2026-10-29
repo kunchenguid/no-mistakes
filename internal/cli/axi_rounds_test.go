@@ -58,7 +58,14 @@ func TestAxiRoundsExportsStoredFindingsAndDecisions(t *testing.T) {
 	initialJSON := string(payload)
 	first := insertAxiRound(t, database, step.ID, 1, "initial", &initialJSON)
 	selection := `["r1"]`
-	userFindings := `[{"id":"r1","description":"selected","user_instructions":"keep compatibility"},{"id":"added","description":"operator addition"}]`
+	// Stored through the production marshaller, which writes a findings object
+	userFindings, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{
+		{ID: "r1", Description: "selected", UserInstructions: "keep compatibility"},
+		{ID: "added", Description: "operator addition"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := database.SetStepRoundUserDecision(first.ID, &selection, db.RoundSelectionSourceUser, &userFindings, types.ResponseOriginInteractive); err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +195,47 @@ func TestAxiRoundsRunScopeAndEmptyHistory(t *testing.T) {
 	}
 }
 
+func TestAxiRoundsCarriedStepExportsItsSourceRounds(t *testing.T) {
+	repoDir, _, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+	source, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceStep, err := database.InsertStepResult(source.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"summary":"Source review","findings":[{"id":"r1","description":"carried issue"}]}`
+	insertAxiRound(t, database, sourceStep.ID, 1, "initial", &findings)
+	if err := database.UpdateStepStatus(sourceStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	sourceStep, err = database.GetStepResult(sourceStep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := database.InsertRun(repo.ID, "feature/carried", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertCarriedStepResult(continued.ID, sourceStep); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := executeAxiRounds(t, "--step", "review", "--run", continued.ID, "--json")
+	if err != nil {
+		t.Fatalf("rounds: %v\n%s", err, out)
+	}
+	var doc axiRoundsDocument
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.RunID != continued.ID || len(doc.Rounds) != 1 || doc.Rounds[0].Findings[0]["description"] != "carried issue" {
+		t.Fatalf("carried step lost its source rounds: %s", out)
+	}
+}
+
 func TestAxiRoundsErrorsAreNotCleanHistory(t *testing.T) {
 	repoDir, _, database, repo := setupAxiQueryRepo(t)
 	chdir(t, repoDir)
@@ -201,13 +249,13 @@ func TestAxiRoundsErrorsAreNotCleanHistory(t *testing.T) {
 	for _, tc := range []struct {
 		name, findings, selected, userFindings, want string
 	}{
-		{"broken findings", `{"findings":[`, "[]", "[]", "parse findings"},
-		{"wrong findings type", `{"findings":{}}`, "[]", "[]", "parse findings"},
-		{"broken selection", `{"findings":[]}`, "[1]", "[]", "parse selected finding IDs"},
-		{"broken user findings", `{"findings":[]}`, "[]", "{}", "parse user findings"},
-		{"null finding member", `{"findings":[null]}`, "[]", "[]", "parse findings"},
-		{"null selection member", `{"findings":[]}`, "[null]", "[]", "parse selected finding IDs"},
-		{"null user finding member", `{"findings":[]}`, "[]", "[null]", "parse user findings"},
+		{"broken findings", `{"findings":[`, "[]", `{"findings":[]}`, "parse findings"},
+		{"wrong findings type", `{"findings":{}}`, "[]", `{"findings":[]}`, "parse findings"},
+		{"broken selection", `{"findings":[]}`, "[1]", `{"findings":[]}`, "parse selected finding IDs"},
+		{"bare user findings array", `{"findings":[]}`, "[]", "[]", "parse user findings"},
+		{"null finding member", `{"findings":[null]}`, "[]", `{"findings":[]}`, "parse findings"},
+		{"null selection member", `{"findings":[]}`, "[null]", `{"findings":[]}`, "parse selected finding IDs"},
+		{"null user finding member", `{"findings":[]}`, "[]", `{"findings":[null]}`, "parse user findings"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, err := database.InsertRun(repo.ID, "feature/corrupt", "head", "base")
