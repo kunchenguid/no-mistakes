@@ -224,33 +224,57 @@ func forceKillShellCommand(cmd *exec.Cmd) error {
 }
 
 // ShellCommandGroupActive reports whether the command's job still holds a
-// process that makes the leader's exit unverified. It lists the job's processes
-// and inspects each one: a stale listing of a process that has exited, and the
-// operating system's console host that the leader itself started, are not
-// children. Everything else, including a process that cannot be inspected, is
-// reported. The job's TotalProcesses counter is read before the list and again
-// after the last inspection, and the job is reported active if it moved, so a
-// process started while the list was being inspected cannot slip past. The
-// answer is taken at once and never waits for a child to finish, so it is as
-// strict as the process-group probe on other platforms.
-func ShellCommandGroupActive(cmd *exec.Cmd) (bool, error) {
+// process that makes the leader's exit unverified. Each probe lists the job's
+// processes and inspects each one: a stale listing of a process that has
+// exited, and the operating system's console host that the leader itself
+// started, are not children. Everything else, including a process that cannot
+// be inspected, is reported. The job's TotalProcesses counter is read before
+// the list and again after the last inspection, and the job is reported
+// active if it moved, so a process started while the list was being inspected
+// cannot slip past. The job is re-probed on a fixed cadence until window
+// elapses: a child that was merely finishing when the leader exited (issue
+// #1614) gets the window to leave the job, and only a member still live past
+// the deadline makes the verdict active. The returned detail names up to
+// groupMemberReportLimit members seen on the last probe so the caller's
+// error can identify what refused to exit; it is empty when the verdict rests
+// only on a moved TotalProcesses counter with nothing nameable left.
+func ShellCommandGroupActive(cmd *exec.Cmd, window time.Duration) (active bool, detail string, err error) {
 	job, ok := shellCommandJob(cmd)
 	if !ok || !job.assigned.Load() || cmd.Process == nil {
-		return false, errors.New("command has no assigned job")
+		return false, "", errors.New("command has no assigned job")
 	}
-	totalBefore, err := jobTotalProcesses(job.handle)
+	leaderPID := uint32(cmd.Process.Pid)
+	deadline := time.Now().Add(window)
+	for {
+		live, members, err := probeShellCommandJob(job.handle, leaderPID)
+		if err != nil || !live || !time.Now().Before(deadline) {
+			return live, formatGroupMembers(members), err
+		}
+		time.Sleep(groupProbeInterval)
+	}
+}
+
+// probeShellCommandJob takes one inspected snapshot of the job, keeping the
+// TotalProcesses movement check whole so the re-probe loop never weakens it.
+func probeShellCommandJob(job windows.Handle, leaderPID uint32) (bool, []groupMember, error) {
+	totalBefore, err := jobTotalProcesses(job)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	procs, err := inspectJobProcesses(job.handle)
+	procs, err := inspectJobProcesses(job)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	totalAfter, err := jobTotalProcesses(job.handle)
+	totalAfter, err := jobTotalProcesses(job)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	return jobHasLiveProcesses(totalBefore, totalAfter, procs, uint32(cmd.Process.Pid)), nil
+	offenders := offendingJobProcesses(procs, leaderPID)
+	members := make([]groupMember, 0, len(offenders))
+	for _, p := range offenders {
+		members = append(members, groupMember{pid: int(p.pid), command: p.imagePath})
+	}
+	return jobHasLiveProcesses(totalBefore, totalAfter, procs, leaderPID), members, nil
 }
 
 // jobTotalProcesses returns how many processes have ever been assigned to the
@@ -365,7 +389,8 @@ func inspectJobProcess(job windows.Handle, pid uint32, consoleHost string) jobPr
 	var path [windows.MAX_LONG_PATH]uint16
 	size := uint32(len(path))
 	if err := windows.QueryFullProcessImageName(handle, 0, &path[0], &size); err == nil {
-		proc.systemConsoleHost = strings.EqualFold(windows.UTF16ToString(path[:size]), consoleHost)
+		proc.imagePath = windows.UTF16ToString(path[:size])
+		proc.systemConsoleHost = strings.EqualFold(proc.imagePath, consoleHost)
 	}
 	return proc
 }

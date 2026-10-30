@@ -70,11 +70,159 @@ func TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren(t *testing.T)
 			if err := syscall.Kill(-leader.Process.Pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
 				t.Fatalf("fixture group must still exist: %v", err)
 			}
-			active, err := ShellCommandGroupActive(leader)
+			active, _, err := ShellCommandGroupActive(leader, 300*time.Millisecond)
 			if err != nil || active != live {
 				t.Fatalf("live=%v: group active=%v, error=%v", live, active, err)
 			}
 		})
+	}
+}
+
+// TestShellCommandGroupActiveAcceptsMemberFinishingInsideWindow is the issue
+// #1614 regression: a member still finishing when the leader exits is seen by
+// the first probe, but it leaves the group inside the settle window, so the
+// bounded re-probe accepts the leader's exit. The same member probed with no
+// window is still refused, which is what the check did before the fix.
+func TestShellCommandGroupActiveAcceptsMemberFinishingInsideWindow(t *testing.T) {
+	// The member is a direct backgrounded process (not a subshell) with its
+	// stdio detached, so it outlives the leader by ~0.5s inside the leader's
+	// process group and reparents to init - the exact shape the wild failures
+	// showed.
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "sleep 0.5 >/dev/null 2>&1 & exit 0")
+	ConfigureShellCommand(cmd)
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatal(err)
+	}
+	defer TerminateShellCommandGroup(cmd)
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	active, detail, err := ShellCommandGroupActive(cmd, 0)
+	if err != nil || !active {
+		t.Fatalf("single probe: active=%v detail=%q err=%v, want the finishing member reported", active, detail, err)
+	}
+	if !strings.Contains(detail, "(sleep 0.5)") {
+		t.Fatalf("single probe detail = %q, want the member's pid and command", detail)
+	}
+
+	started := time.Now()
+	active, detail, err = ShellCommandGroupActive(cmd, 3*time.Second)
+	if err != nil || active {
+		t.Fatalf("bounded re-probe: active=%v detail=%q err=%v, want the finishing member accepted", active, detail, err)
+	}
+	if elapsed := time.Since(started); elapsed >= 3*time.Second {
+		t.Fatalf("bounded re-probe took %s; the member left the group inside the window", elapsed)
+	}
+}
+
+// TestShellCommandGroupActiveRefusesMemberSurvivingWindow keeps the check
+// fail-closed under the re-probe: a member that is still alive when the window
+// ends is refused, and the verdict names it so the failure identifies the
+// offending process.
+func TestShellCommandGroupActiveRefusesMemberSurvivingWindow(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "member.pid")
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+		"sleep 30 >/dev/null 2>&1 & echo $! > "+pidFile+"; exit 0")
+	ConfigureShellCommand(cmd)
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatal(err)
+	}
+	defer TerminateShellCommandGroup(cmd)
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	memberPID := readPID(t, pidFile, 5*time.Second)
+	t.Cleanup(func() { _ = syscall.Kill(memberPID, syscall.SIGKILL) })
+
+	const window = 400 * time.Millisecond
+	started := time.Now()
+	active, detail, err := ShellCommandGroupActive(cmd, window)
+	if err != nil || !active {
+		t.Fatalf("active=%v detail=%q err=%v, want the surviving member refused", active, detail, err)
+	}
+	if elapsed := time.Since(started); elapsed < window {
+		t.Fatalf("re-probe returned after %s, before the %s window elapsed", elapsed, window)
+	}
+	if !strings.Contains(detail, "pid "+strconv.Itoa(memberPID)) || !strings.Contains(detail, "(sleep 30)") {
+		t.Fatalf("detail = %q, want pid %d and its command named", detail, memberPID)
+	}
+}
+
+// TestShellCommandGroupActivePassesImmediatelyForSessionEscapee documents the
+// scope boundary: a member that calls setsid leaves the leader's process group
+// and is invisible to the probe - the verdict passes without spending the
+// settle window. (Escaped orphans are internal/procreap's job, not this
+// check's.)
+func TestShellCommandGroupActivePassesImmediatelyForSessionEscapee(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "member.pid")
+	readyFile := filepath.Join(dir, "member.ready")
+	leader := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestShellCommandSessionEscapeeHelper$")
+	leader.Env = append(os.Environ(),
+		"NM_SHELLENV_SESSION_HELPER=leader",
+		"NM_SHELLENV_SESSION_PID="+pidFile,
+		"NM_SHELLENV_SESSION_READY="+readyFile,
+	)
+	ConfigureShellCommand(leader)
+	if err := StartShellCommand(leader); err != nil {
+		t.Fatal(err)
+	}
+	defer TerminateShellCommandGroup(leader)
+	memberPID := readPID(t, pidFile, 5*time.Second)
+	t.Cleanup(func() { _ = syscall.Kill(memberPID, syscall.SIGKILL) })
+	if err := leader.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	const window = 2 * time.Second
+	started := time.Now()
+	active, detail, err := ShellCommandGroupActive(leader, window)
+	if err != nil || active {
+		t.Fatalf("active=%v detail=%q err=%v, want the escaped member invisible", active, detail, err)
+	}
+	if elapsed := time.Since(started); elapsed >= window {
+		t.Fatalf("escapee was probed for the whole %s window; it should pass immediately", window)
+	}
+}
+
+// TestShellCommandSessionEscapeeHelper is the process tree for
+// TestShellCommandGroupActivePassesImmediatelyForSessionEscapee: the leader
+// spawns a child that calls setsid(2) to leave the leader's process group,
+// reports that through the ready file, and only then exits - so the probe runs
+// after the member is already gone from the group.
+func TestShellCommandSessionEscapeeHelper(t *testing.T) {
+	switch os.Getenv("NM_SHELLENV_SESSION_HELPER") {
+	case "leader":
+		child := exec.Command(os.Args[0], "-test.run=^TestShellCommandSessionEscapeeHelper$")
+		child.Env = append(os.Environ(),
+			"NM_SHELLENV_SESSION_HELPER=escapee",
+			"NM_SHELLENV_SESSION_READY="+os.Getenv("NM_SHELLENV_SESSION_READY"),
+		)
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(os.Getenv("NM_SHELLENV_SESSION_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o644); err != nil {
+			_ = child.Process.Kill()
+			os.Exit(4)
+		}
+		if !waitForHelperReady(os.Getenv("NM_SHELLENV_SESSION_READY"), 5*time.Second) {
+			_ = child.Process.Kill()
+			os.Exit(3)
+		}
+		os.Exit(0)
+	case "escapee":
+		if _, err := syscall.Setsid(); err != nil {
+			os.Exit(5)
+		}
+		if err := os.WriteFile(os.Getenv("NM_SHELLENV_SESSION_READY"), []byte("ready"), 0o644); err != nil {
+			os.Exit(6)
+		}
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	default:
+		t.Skip("helper invoked by TestShellCommandGroupActivePassesImmediatelyForSessionEscapee")
 	}
 }
 

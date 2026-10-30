@@ -22,33 +22,38 @@ type jobProcess struct {
 	pid       uint32
 	parentPID uint32
 	state     jobProcessState
+	// imagePath is the process's full image path when the inspection could
+	// read it; it names the member in the active verdict's detail.
+	imagePath string
 	// systemConsoleHost is true only for the operating system's conhost.exe,
 	// identified by its full image path under the system directory.
 	systemConsoleHost bool
 }
 
-// liveJobProcesses counts the entries that make a leader's clean exit
+// offendingJobProcesses returns the entries that make a leader's clean exit
 // unverified: a process that is really still running, or one that could not be
-// inspected. Two kinds of entry are not counted. An entry that has already
+// inspected. Two kinds of entry are not returned. An entry that has already
 // exited is a stale listing. The operating system's console host that the
 // leader itself started (its parent is the leader) is not a child the leader
 // owns: a console child gets a headless console host that joins the job and can
-// briefly outlive it. Both are named by identity rather than waited out, so a
-// real child that is still running is refused at once and can never be
-// accepted because it happens to finish inside a grace window. Anything that
-// cannot be proven to be one of the two is counted, which keeps the check
-// fail-closed.
-func liveJobProcesses(procs []jobProcess, leaderPID uint32) int {
-	live := 0
+// briefly outlive it. Both are excluded by identity, never by waiting them
+// out. Anything that cannot be proven to be one of the two is returned, which
+// keeps the check fail-closed.
+func offendingJobProcesses(procs []jobProcess, leaderPID uint32) []jobProcess {
+	var offenders []jobProcess
 	for _, p := range procs {
 		switch {
 		case p.state == jobProcessExited:
 		case p.state == jobProcessRunning && p.systemConsoleHost && p.parentPID == leaderPID:
 		default:
-			live++
+			offenders = append(offenders, p)
 		}
 	}
-	return live
+	return offenders
+}
+
+func liveJobProcesses(procs []jobProcess, leaderPID uint32) int {
+	return len(offendingJobProcesses(procs, leaderPID))
 }
 
 // jobHasLiveProcesses decides whether a job still holds a process that makes

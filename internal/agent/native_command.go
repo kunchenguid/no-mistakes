@@ -12,6 +12,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
+// ownedChildrenSettleWindow bounds how long the owned-children probe re-checks
+// an exited agent's process group or job before refusing its result (issue
+// #1614). A member that was merely finishing when the leader exited - a test
+// runner's last worker, a toolchain helper mid-shutdown - leaves inside this
+// window, while a genuinely surviving child is still refused and reaped by the
+// deferred group terminate.
+const ownedChildrenSettleWindow = 2 * time.Second
+
 type nativeAgentCommand struct {
 	cmd            *exec.Cmd
 	stdout         *nativeAgentPipe
@@ -107,11 +115,15 @@ func startNativeAgentCommand(cmd *exec.Cmd, activity func(), requireCompletedChi
 	go func() {
 		err := shellenv.AttributeOOMKill(oomBase, oomOK, cmd.Wait())
 		if err == nil && requireCompletedChildren {
-			active, probeErr := shellenv.ShellCommandGroupActive(cmd)
+			active, members, probeErr := shellenv.ShellCommandGroupActive(cmd, ownedChildrenSettleWindow)
 			if probeErr != nil {
 				err = fmt.Errorf("native check completion is unverified: %w", probeErr)
 			} else if active {
-				err = errors.New("native check completion is unverified: agent exited with active owned children")
+				msg := "native check completion is unverified: agent exited with active owned children"
+				if members != "" {
+					msg += ": " + members
+				}
+				err = errors.New(msg)
 			}
 		}
 		started.terminate()
