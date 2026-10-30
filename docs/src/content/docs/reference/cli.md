@@ -31,17 +31,22 @@ Initialize or refresh the gate for the current repository.
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
 no-mistakes init --worktree-root ~/work/my-repo-runs
+no-mistakes init --skip-user-skill
 ```
 
-| Flag              | Type     | Default | Description                                                                                      |
-| ----------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--fork-url`      | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
-| `--worktree-root` | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
+| Flag                | Type     | Default | Description                                                                                      |
+| ------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `--fork-url`        | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--worktree-root`   | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
+| `--skip-user-skill` | `bool`   | `false` | Do not install or refresh the `/no-mistakes` agent skill at user level                           |
 
-Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md` (unless you pass `--skip-user-skill`), and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies serve Claude Code (`~/.claude/skills`) and agents that use the vendor-neutral `~/.agents/skills` convention (Codex, OpenCode, Rovo Dev, and Pi) across all repos. Grok Build is a pipeline runner and does not consume this installed skill.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
+With `--skip-user-skill`, `init` does not run the skill installer at all: neither user-level `SKILL.md` is created, refreshed, or otherwise touched (including through the symlink layouts above), and a missing skills directory is not created.
+Everything else about `init` is unchanged, and it reports `skipped: --skip-user-skill` on its skill line.
+The flag applies to that run only and is not remembered, so a later `init` without it installs or refreshes the skill again.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass `--fork-url` with your fork remote URL.
@@ -61,7 +66,7 @@ It refuses to register a checkout that contains a directory an existing [`worktr
 It also refuses to register anything while `~/.no-mistakes/config.yaml` does not load, naming the fault, because the daemon refuses to start on that same config.
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
-It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
+It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and, unless you pass `--skip-user-skill`, the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
@@ -70,7 +75,7 @@ On a fresh init and on a refresh alike, `init` decides from the literal `no-mist
 When the checkout's `.git` is shared with another no-mistakes home (another `NM_HOME`, for example a linked worktree used by another OS account), that remote names the other home's gate, so the refusal names both gates and prints the per-account rewrite `git config --global 'url.<this gate>.insteadOf' '<other gate>'`, with both paths shell-quoted so it can be pasted as is.
 With that rewrite in your own global git config, `init` leaves the shared remote alone and your pushes through it reach your own gate; a rolled-back init or an `eject` from your home leaves it in place too.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
-Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
+Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place. Passing `--skip-user-skill` is not a failure: the installer never runs and the gate is set up as usual.
 
 ## no-mistakes ci-workflow
 
