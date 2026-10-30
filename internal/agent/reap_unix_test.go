@@ -355,9 +355,11 @@ func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
 			return runFakePiResult(t, dir, holder)
 		}},
 	}
+	// Sequential: each subtest writes its fake agent and then execs it, and a
+	// parallel sibling's fork can inherit the still-open write fd, failing the
+	// exec with ETXTBSY.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			res, err := tt.run(t, dir, escapedStdoutHolder(t, dir))
 			if err != nil {
@@ -390,9 +392,9 @@ func TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild(t *testing
 			return runFakePiResult(t, dir, holder)
 		}},
 	}
+	// Sequential for the same ETXTBSY reason as the escaped-holder test.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			_, err := tt.run(t, dir, ownedStdoutHolder(t, dir))
 			if err == nil || !strings.Contains(err.Error(), "agent exited with active owned children") {

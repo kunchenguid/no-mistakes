@@ -253,6 +253,10 @@ type ReviewBot struct {
 	// AppSlug is the provider app slug the bot publishes its check under.
 	AppSlug string
 	// Logins are the account logins the bot posts review comments as.
+	// Both forms are listed because GitHub's GraphQL review-thread query
+	// (reviewThreadsQuery, author{login}) reports a Bot actor's bare login
+	// such as "cubic-dev-ai", while the REST endpoints report the "[bot]"
+	// form such as "cubic-dev-ai[bot]".
 	Logins       []string
 	GitLabLogins []string
 }
@@ -267,6 +271,7 @@ const CodeRabbitAuthorID int64 = 136622811
 // bot is one entry here.
 var ReviewBots = []ReviewBot{
 	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}, GitLabLogins: []string{"greptileai"}},
+	{AppSlug: "cubic-dev-ai", Logins: []string{"cubic-dev-ai[bot]", "cubic-dev-ai"}},
 	{AppSlug: "coderabbitai", RequiredReview: "coderabbit", AppID: CodeRabbitAppID, AuthorID: CodeRabbitAuthorID, Logins: []string{"coderabbitai", "coderabbitai[bot]"}},
 }
 
@@ -283,7 +288,8 @@ func ReviewBotsFor(requiredReviews []string) []ReviewBot {
 }
 
 // ReviewBotForCheck authenticates the check publisher among bots. CodeRabbit
-// requires its immutable GitHub.com app identity; Greptile retains slug matching.
+// requires its immutable GitHub.com app identity; Greptile and cubic keep slug
+// matching.
 func ReviewBotForCheck(bots []ReviewBot, check Check) (ReviewBot, bool) {
 	for _, bot := range bots {
 		if bot.AppID != 0 {

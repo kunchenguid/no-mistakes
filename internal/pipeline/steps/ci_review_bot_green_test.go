@@ -348,13 +348,40 @@ func TestGreenReviewBotChecksExcludesPendingAndFailing(t *testing.T) {
 		{Name: "build", Bucket: scm.CheckBucketPass, App: "github-actions"},
 		{Name: "Greptile green", Bucket: scm.CheckBucketPass, App: "greptile-apps"},
 		{Name: "Greptile neutral", Bucket: scm.CheckBucketSkip, App: "greptile-apps"},
+		{Name: "cubic pending", Bucket: scm.CheckBucketPending, App: "cubic-dev-ai"},
+		{Name: "cubic green", Bucket: scm.CheckBucketPass, App: "cubic-dev-ai"},
 	})
 	var names []string
 	for _, check := range got {
 		names = append(names, check.check.Name)
 	}
-	if strings.Join(names, ",") != "Greptile green,Greptile neutral" {
+	if strings.Join(names, ",") != "Greptile green,Greptile neutral,cubic green" {
 		t.Fatalf("green review-bot checks = %v", names)
+	}
+}
+
+// A registered bot with no check on the head at all is still read, as a
+// nameless entry, so a head the bot has not registered on yet does not hide
+// its earlier unresolved comments.
+func TestGreenReviewBotChecksIncludesEveryAbsentRegisteredBot(t *testing.T) {
+	t.Parallel()
+	bots := scm.ReviewBotsFor(nil)
+	got := greenReviewBotChecks(bots, []scm.Check{
+		{Name: "build", Bucket: scm.CheckBucketPass, App: "github-actions"},
+	})
+	var slugs []string
+	for _, check := range got {
+		if check.check.Name != "" || !check.green {
+			t.Fatalf("absent bot entry = %+v, want nameless and green", check)
+		}
+		slugs = append(slugs, check.bot.AppSlug)
+	}
+	var want []string
+	for _, bot := range bots {
+		want = append(want, bot.AppSlug)
+	}
+	if strings.Join(slugs, ",") != strings.Join(want, ",") {
+		t.Fatalf("absent review bots = %v, want %v", slugs, want)
 	}
 }
 
