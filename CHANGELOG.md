@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.105.0](https://github.com/kunchenguid/no-mistakes/compare/v1.104.0...v1.105.0) (2026-10-30)
+
+
+### Features
+
+* **pipeline:** add pr.update_text keep mode to preserve PR title and narrative ([#1654](https://github.com/kunchenguid/no-mistakes/issues/1654)) ([4626813](https://github.com/kunchenguid/no-mistakes/commit/46268130ed88c184436bb7f51679a7cc9e7c17bb))
+
+
+### Bug Fixes
+
+* **daemon:** keep the Windows daemon console-less at logon ([#1657](https://github.com/kunchenguid/no-mistakes/issues/1657)) ([3ef3bde](https://github.com/kunchenguid/no-mistakes/commit/3ef3bde04915bcdf6ae716df8caa6da0dd98bb3a))
+* **pipeline:** bound the Test evidence turn's completion and state its budget ([#1658](https://github.com/kunchenguid/no-mistakes/issues/1658)) ([1144220](https://github.com/kunchenguid/no-mistakes/commit/1144220a931a558d45d6895914d4635a0565b8a3)), closes [#1576](https://github.com/kunchenguid/no-mistakes/issues/1576)
+
 ## [1.104.0](https://github.com/kunchenguid/no-mistakes/compare/v1.103.0...v1.104.0) (2026-10-29)
 
 
