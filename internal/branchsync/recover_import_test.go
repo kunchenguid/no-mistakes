@@ -1,6 +1,7 @@
 package branchsync
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -160,7 +161,13 @@ func TestRecoverPreservedHeadContainingLocalOnlyWorkIsAdoptedWithoutLocalHeadInG
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
+	// The cached recover fixture may remove its scratch pipeline clone, so
+	// clone the gate again when it is absent to commit the pipeline's further work.
 	pipeline := filepath.Join(filepath.Dir(f.gate), "pipeline")
+	if _, err := os.Stat(pipeline); os.IsNotExist(err) {
+		mustRun(t, filepath.Dir(f.gate), "-c", "core.autocrlf=false", "clone", f.gate, pipeline)
+		mustRun(t, pipeline, "checkout", "feature/recover")
+	}
 	mustWrite(t, filepath.Join(pipeline, "more.txt"), "pipeline kept going\n")
 	mustRun(t, pipeline, "add", "more.txt")
 	mustRun(t, pipeline, "commit", "-m", "no-mistakes(test): more")
