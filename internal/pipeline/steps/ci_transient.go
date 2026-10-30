@@ -655,7 +655,7 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 	}
 	var failedIdx []int
 	for i := range checks {
-		if checks[i].Failing() {
+		if checks[i].Failing() && checks[i].InfrastructureFailure == "" {
 			failedIdx = append(failedIdx, i)
 		}
 	}

@@ -769,6 +769,20 @@ func fakeCIGHHandler(args []string) {
 		fmt.Println(checksJSON)
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/jobs/") {
+		if payload := os.Getenv("FAKE_CLI_ACTIONS_JOB"); payload != "" {
+			fmt.Println(payload)
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "/annotations") {
+		if payload := os.Getenv("FAKE_CLI_CHECK_ANNOTATIONS"); payload != "" {
+			fmt.Println(payload)
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "/check-runs") {
 		if payload := os.Getenv("FAKE_CLI_EXTERNAL_REVIEWS"); payload != "" {
 			fmt.Println(payload)

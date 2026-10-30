@@ -721,7 +721,7 @@ Legacy alias: `auto_fix.babysit`.
 ### ci.rerun_transient
 
 How many times the CI step may re-run a single provider-attributed check before that check reaches an approval gate.
-This covers cancellations on supported providers and, when the value is positive, opts GitHub into detecting jobs that failed before any repository step ran.
+This covers cancellations on supported providers and, when the value is positive, opts GitHub into detecting setup/action-resolution failures before any repository step ran.
 
 | | |
 |---|---|
@@ -734,7 +734,7 @@ Every rerun this budget authorizes is another provider-side workflow run billed 
 A pushed branch cannot raise its own rerun budget.
 The default is `0` because a cancelled conclusion does not identify its cause: the same value covers the provider aborting its own infrastructure, a maintainer stopping a runaway or unsafe job, and repository concurrency with `cancel-in-progress`.
 Rerunning on that ambiguity can restart work someone deliberately stopped, so raise this only for a repository whose cancellations are known to be provider-side.
-At `0`, no-mistakes makes no extra provider call to classify a GitHub setup failure, so that failure keeps the earlier CI failure and auto-fix behavior.
+At `0`, GitHub setup-failure detection is disabled, so those failures keep the earlier CI failure and auto-fix behavior. Independent [billing-refusal detection](/no-mistakes/reference/pipeline-steps/#ci) still reads provider evidence and can require an operator decision.
 
 With no trusted copy of this file, the operator's own [`ci.rerun_transient`](/no-mistakes/reference/global-config/#cirerun_transient) applies, then the built-in default.
 A value set here always wins over the global one, so the maintainer of the repository has the last word on how many workflow runs their project is billed for.
@@ -744,7 +744,7 @@ With a positive budget, a rerun is requested when the provider attributes the ou
 - The provider reported the outcome as `cancelled`, the one terminal conclusion it attributes to itself rather than to the job.
 - On GitHub, the job failed before any repository step ran because its setup/action-resolution phase failed, for example during a "Failed to resolve action download info" / HTTP 503 outage while downloading the actions the job uses. This is read structurally from the job's own setup-step conclusion, never from log text, so it cannot mask a real failure: a genuine test or lint failure cleared setup and failed a later step. When the detected setup failure persists past the budget, it reaches the same approval gate as an unresolved cancellation rather than the fix agent. An unreadable or unmatched job fails closed and remains an ordinary failure.
 
-The remaining outcomes are the job's own verdict on the commit and are never re-run:
+The remaining outcomes are never re-run. Except for the billing refusals described in the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci), they are classified as follows:
 
 - `failure`, `error`, `action_required`, and `startup_failure` (after any repository step ran) are the job's verdict, so they escalate on the first failure with no added latency.
   One GitHub outcome is not a verdict at all: a workflow run that concluded `action_required` without running a single job is the forge holding a first-time contributor's workflows until a maintainer approves them.

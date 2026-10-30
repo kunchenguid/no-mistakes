@@ -530,7 +530,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	mergeabilityBlockedReason := ""
 	var timeoutFailingChecks []scm.CheckTarget
 	lastCheckHeadSHA := sctx.Run.HeadSHA
-	var timeoutExternalReviews []scm.Check
+	var timeoutDecisionChecks []scm.Check
 	timeoutMergeConflict := false
 	lastMonitorLog := ciMonitorStatus{}
 	consecutiveCheckErrs := 0
@@ -550,8 +550,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		} else {
 			outcome = ciMonitoringTimeoutOutcome()
 		}
-		if len(timeoutExternalReviews) > 0 {
-			external := ciObservationFindings(ciIssues{requiredReviews: requiredReviews(sctx), checks: timeoutExternalReviews, failing: failingCheckNames(timeoutExternalReviews)})
+		if len(timeoutDecisionChecks) > 0 {
+			external := ciObservationFindings(ciIssues{requiredReviews: requiredReviews(sctx), checks: timeoutDecisionChecks, failing: failingCheckNames(timeoutDecisionChecks)})
 			if len(timeoutFailingChecks) > 0 || timeoutMergeConflict || mergeabilityBlockedReason != "" {
 				prior, _ := types.ParseFindingsJSON(outcome.Findings)
 				external.Items = append(prior.Items, external.Items...)
@@ -702,6 +702,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		checks, observedHead, _, err := getCIChecks(ctx, host, pr)
 		if observedHead != "" && observedHead != lastCheckHeadSHA {
 			timeoutFailingChecks = nil
+			timeoutDecisionChecks = nil
 			lastCheckHeadSHA = observedHead
 		}
 		if err == nil {
@@ -727,6 +728,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// previous observation was for a different head.
 				consecutiveCheckErrs = 0
 				timeoutFailingChecks = nil
+				timeoutDecisionChecks = nil
 				if err := logStatus(fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err)); err != nil {
 					return nil, err
 				}
@@ -748,12 +750,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		} else {
 			consecutiveCheckErrs = 0
-			timeoutExternalReviews = nil
+			timeoutDecisionChecks = nil
 			for _, check := range checks {
 				if check.ExternalReview != "" && check.Bucket != scm.CheckBucketPass {
 					check.Bucket = scm.CheckBucketFail
 					check.State += " (CI TIMEOUT)"
-					timeoutExternalReviews = append(timeoutExternalReviews, check)
+					timeoutDecisionChecks = append(timeoutDecisionChecks, check)
+				} else if check.Failing() && check.InfrastructureFailure != "" {
+					timeoutDecisionChecks = append(timeoutDecisionChecks, check)
 				}
 			}
 			// A failure the provider produced before the repository's own steps
@@ -761,7 +765,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// verdict on the code. Re-bucket those into the transient path before
 			// anything reads the failing set, so they are re-run rather than sent
 			// to the fix agent. Gated on the transient budget, so an opted-out
-			// repo pays no extra provider calls and keeps the prior behavior.
+			// repo pays no setup-classification calls. Billing evidence is read
+			// independently by the GitHub adapter.
 			markPreRunInfraFailures(sctx, host, checks)
 			// checksPending is the narrow execution state: only checks that are
 			// actively running or queued block a rerun or issue escalation. A
@@ -854,17 +859,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// stays the set the fix agent is asked to repair.
 			reportedIssues := mergeCheckNames(failing, unresolvedCancelled)
 			timeoutFailingChecks = terminalCheckTargetsForNames(checks, mergeCheckNames(reportedIssues, awaitingRerun))
-			// Synthetic review requirements are decisions, including at timeout;
-			// never hand their IDs to the generic job-repair outcome.
-			for _, check := range checks {
-				if check.ExternalReview != "" {
-					for i := len(timeoutFailingChecks) - 1; i >= 0; i-- {
-						if timeoutFailingChecks[i].ProviderID == check.ProviderID {
-							timeoutFailingChecks = append(timeoutFailingChecks[:i], timeoutFailingChecks[i+1:]...)
-						}
-					}
-				}
-			}
 
 			if hasIssues || len(awaitingRerun) > 0 {
 				if err := clearCIMonitorReadyForIssues(sctx); err != nil {

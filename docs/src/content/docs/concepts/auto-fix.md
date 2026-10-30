@@ -41,14 +41,14 @@ Unresolved documentation findings and unresolved blocking lint findings pause fo
 
 The CI step has one cheaper option than a fix round, and it tries it first.
 
-A check whose failure the provider attributes to itself rather than to your commit, such as a cancellation, is the provider telling you about itself. On GitHub, a positive transient rerun budget also enables structural detection of jobs that failed before any repository step ran. Handing a detected provider failure to the fix agent spends an agent round reading a run that never tested anything, and the fix it invents edits code that was never broken. So when every terminally failed check on the pull request is one of those and the configured budget authorizes a rerun, the CI step asks the provider to run those checks again for the same commit and keeps polling.
+A check whose failure the provider attributes to itself rather than to your commit, such as a cancellation, is the provider telling you about itself. On GitHub, a positive transient rerun budget also enables structural detection of setup/action-resolution failures before any repository step ran. Handing a detected provider failure to the fix agent spends an agent round reading a run that never tested anything, and the fix it invents edits code that was never broken. So when every terminally failed check on the pull request is one of those and the configured budget authorizes a rerun, the CI step asks the provider to run those checks again for the same commit and keeps polling.
 
 That deterministic rerun sits strictly before the agent rounds described above:
 
 1. Every check finishes and at least one has failed.
 2. If all of those failures are provider-attributed checks, the pull request has no merge conflict, and the configured budget authorizes it, each one is re-run and the monitor keeps polling. No `auto_fix.ci` attempt is consumed.
 3. When such a detected provider-attributed outcome is the only remaining issue, a check with no authorized or outstanding rerun pauses for a decision without consuming an `auto_fix.ci` attempt.
-4. Every other failure becomes an `auto-fix` finding on its first observation and enters the `auto_fix.ci` loop through the same executor loop described above. A red check from a supported review bot (Greptile, or CodeRabbit when opted in through [`ci.required_reviews`](/no-mistakes/reference/repo-config/#cirequired_reviews)) becomes `ask-user` findings instead, one per unresolved review comment, so the bot's opinion parks for a decision rather than spending a fix round. On GitLab no check can be attributed to a review bot, so the bot's unresolved discussions are read only under [`ci.review_bot_comments: always`](/no-mistakes/reference/repo-config/#cireview_bot_comments), through that same `ask-user` path.
+4. Other failures become `auto-fix` findings on their first observation and enter the `auto_fix.ci` loop through the same executor loop described above, subject to the [CI step's infrastructure and review exceptions](/no-mistakes/reference/pipeline-steps/#ci).
 
 [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns the budget, the exact classification, and every case that skips the rerun.
 
