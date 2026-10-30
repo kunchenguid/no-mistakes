@@ -145,8 +145,8 @@ func CanApply(state State) bool {
 // Service synchronizes only the invoking worktree. Repo is the registered
 // repository record, while WorkDir may be its main or a linked worktree.
 // GateDir is the repo's local bare gate; selection may read its exact branch
-// head and ancestry as provenance evidence, while Recover is the only method
-// that mutates it.
+// head and ancestry as provenance evidence; explicit recovery methods can
+// preserve and reconcile its refs.
 type Service struct {
 	DB      *db.DB
 	Repo    *db.Repo
@@ -178,6 +178,8 @@ type Service struct {
 	beforeRecoverBranchMove           func()
 	afterRecoverBranchMove            func()
 	beforeRecoverRebind               func()
+	beforeReconcile                   func()
+	beforeReconcileMove               func()
 }
 
 // remoteTimeout returns the bounded deadline budget for one remote
@@ -2307,7 +2309,7 @@ func terminalRunStatus(status types.RunStatus) bool {
 }
 
 // classifyPipelineOwned reports a run that still holds branch custody without
-// a successful push binding. While the run is active the block is absolute:
+// a successful push binding for its current head. While the run is active the block is absolute:
 // the pipeline will publish or keep moving the head, so the worktree must
 // wait. Once a run that MOVED the head is TERMINAL nothing will ever publish
 // that head - the branch would be stranded in custody forever - so the same
@@ -2320,6 +2322,9 @@ func terminalRunStatus(status types.RunStatus) bool {
 func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *db.Run, activeMessage string) {
 	state.State = StatePipelineOwned
 	state.Pipeline.Phase = "pre_push"
+	if ptr(run.LastPushedSHA) != "" && value(run.PushGeneration) > 0 {
+		state.Pipeline.Phase = "post_push"
+	}
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
 		_, _, anyMissing, allEligible := s.missingHeadKeepLocalRuns(ctx, state, run)
@@ -2348,6 +2353,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			state.Safety = "blocked_recover_manual_reconciliation"
 			state.Error = "the run finished " + string(run.Status) + " but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			s.offerReconciliation(ctx, state, run)
 			return
 		}
 		state.Safety = "blocked_pipeline_owned_recoverable"
@@ -2387,7 +2393,9 @@ func (proof recoverySourceProof) apply(state State) State {
 		state.Error = "the terminal run's recorded pipeline head has no verified recovery source; inspect and reconcile the recorded and live heads manually; no files or refs were changed"
 	}
 	state.Recovery = proof.evidence
-	state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+	if state.NextAction == nil || state.NextAction.Code != "reconcile_custody" {
+		state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+	}
 	return state
 }
 
