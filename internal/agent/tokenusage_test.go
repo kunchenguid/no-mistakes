@@ -14,7 +14,7 @@ func TestTokenUsageNormalizesProviderInputBuckets(t *testing.T) {
 		{"claude", func(t *testing.T) TokenUsage {
 			var usage TokenUsage
 			events := `{"type":"assistant","message":{"usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[]}}`
-			if err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil); err != nil {
+			if err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			return usage
