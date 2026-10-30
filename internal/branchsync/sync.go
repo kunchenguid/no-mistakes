@@ -401,6 +401,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 	}
 
 	s.classifyRelation(ctx, &state, bound, run.BaseSHA, true)
+	s.classifyRewrittenSubmission(ctx, &state, freshRun)
 	return state
 }
 
@@ -1754,6 +1755,113 @@ func (s *Service) finishKeepLocalRecover(ctx context.Context, state State, runID
 	return fresh
 }
 
+// PrepareRewrittenSubmission records the caller's explicit decision to submit
+// a deliberate, not-yet-published history rewrite. It is intentionally an
+// anchor operation, not a bypass: the exact previously published gate head is
+// preserved under the selected run's create-only recovery ref, while the
+// worktree, gate branch, configured push target, and push binding remain
+// unchanged. The following fresh run must still pass ordinary private-mirror
+// reconciliation and the full validation pipeline.
+func (s *Service) PrepareRewrittenSubmission(ctx context.Context) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
+	state, run, ok := s.inspect(ctx)
+	if !ok || run == nil || state.State != StateDiverged || state.Relation != RelationDiverged ||
+		!state.Local.Clean || !terminalRunStatus(run.Status) || run.CustodyReturnedAt != nil ||
+		!exactPushedBinding(s.Repo, run, state.Local.Branch) || state.PRState == "merged" || state.PRState == "closed" {
+		return blockedPlan(state, state.State, "blocked_prepare_rewritten_not_applicable", "preparing a rewritten submission requires a clean divergent branch and a terminal run whose exact current head was successfully published; no files or refs were changed")
+	}
+	if strings.TrimSpace(s.GateDir) == "" {
+		return blockedPlan(state, StateAmbiguousContext, "blocked_prepare_rewritten_gate_unavailable", "the local gate is unavailable, so the previously published lane cannot be preserved; no files or refs were changed")
+	}
+
+	published := ptr(run.LastPushedSHA)
+	branchRef := "refs/heads/" + state.Local.Branch
+	gateHead, exists, err := git.DirectRefTarget(ctx, s.GateDir, branchRef)
+	if err != nil || !exists || gateHead != published {
+		return blockedPlan(state, StateDiverged, "blocked_prepare_rewritten_gate_changed", "the direct gate lane no longer equals the exact previously published head; no files or refs were changed")
+	}
+	if objectType, err := git.Run(ctx, s.GateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
+		return blockedPlan(state, StateDiverged, "blocked_prepare_rewritten_gate_invalid", "the gate lane does not point directly at a commit; no files or refs were changed")
+	}
+	anchorRef := custody.RecoveryRef(run.ID)
+	anchorHead, anchorExists, err := git.DirectRefTarget(ctx, s.GateDir, anchorRef)
+	if err != nil || (anchorExists && anchorHead != published) {
+		return blockedPlan(state, StateDiverged, "blocked_prepare_rewritten_anchor_conflict", "the create-only recovery anchor is symbolic, unreadable, or already records a different head; no files or refs were changed")
+	}
+	if anchorExists {
+		if objectType, err := git.Run(ctx, s.GateDir, "cat-file", "-t", anchorHead); err != nil || objectType != "commit" {
+			return blockedPlan(state, StateDiverged, "blocked_prepare_rewritten_anchor_conflict", "the existing recovery anchor does not point at the exact previously published commit; no files or refs were changed")
+		}
+	}
+
+	repo, err := s.DB.GetRepo(s.Repo.ID)
+	if err != nil || repo == nil || TargetFingerprint(repo.PushURL()) != ptr(run.PushTargetFingerprint) ||
+		targetKind(repo) != ptr(run.PushTargetKind) || ptr(run.PushRef) != branchRef {
+		return blockedPlan(state, StateTargetChanged, "blocked_prepare_rewritten_target_changed", "the configured push target no longer matches the exact successful push binding; no files or refs were changed")
+	}
+	pushURL := s.resolvedPushURL(ctx, repo)
+	if strings.TrimSpace(pushURL) == "" {
+		return blockedPlan(state, StateDiverged, "blocked_prepare_rewritten_target_unavailable", "the configured push target is unavailable; no files or refs were changed")
+	}
+	liveCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	live, err := s.runLsRemote(liveCtx, s.workDir(), pushURL, branchRef)
+	cancel()
+	if err != nil {
+		return blockedPlan(state, StateOffline, "blocked_prepare_rewritten_offline", "the configured push target could not be verified; no files or refs were changed")
+	}
+	if live != published {
+		return blockedPlan(state, StateRemoteRewritten, "blocked_prepare_rewritten_published_head_mismatch", "the configured push target does not exactly match the recorded published head; no files or refs were changed")
+	}
+
+	liveCtx, cancel = context.WithTimeout(ctx, s.remoteTimeout())
+	live, err = s.runLsRemote(liveCtx, s.workDir(), pushURL, branchRef)
+	cancel()
+	if err != nil || live != published {
+		return blockedPlan(state, StateRemoteRewritten, "blocked_prepare_rewritten_published_head_mismatch", "the configured push target changed while the rewrite was being verified; no files or refs were changed")
+	}
+
+	// Re-read every mutable assumption after the final remote operation. The
+	// checkout, ownership, binding, or configured target may change while that
+	// operation consumes its full timeout; none may receive preparation credit
+	// from a decision made before that window.
+	recheck, recheckRun, recheckOK := s.inspect(ctx)
+	if !recheckOK || recheckRun == nil || recheckRun.ID != run.ID || recheckRun.Status != run.Status ||
+		recheck.State != StateDiverged || recheck.Relation != RelationDiverged ||
+		recheck.PRState == "merged" || recheck.PRState == "closed" ||
+		recheckRun.CustodyReturnedAt != nil || !exactPushedBinding(s.Repo, recheckRun, state.Local.Branch) ||
+		recheckRun.HeadSHA != run.HeadSHA || ptr(recheckRun.LastPushedSHA) != published ||
+		value(recheckRun.PushGeneration) != value(run.PushGeneration) ||
+		recheck.Local.Branch != state.Local.Branch || recheck.Local.Head != state.Local.Head || !recheck.Local.Clean {
+		return blockedPlan(recheck, StateDiverged, "blocked_prepare_rewritten_assumptions_changed", "the branch, HEAD, run, or push binding changed while the rewrite was being verified; no files or refs were changed")
+	}
+	currentRepo, err := s.DB.GetRepo(s.Repo.ID)
+	if err != nil || currentRepo == nil || TargetFingerprint(currentRepo.PushURL()) != ptr(run.PushTargetFingerprint) ||
+		targetKind(currentRepo) != ptr(run.PushTargetKind) || ptr(run.PushRef) != branchRef {
+		return blockedPlan(recheck, StateTargetChanged, "blocked_prepare_rewritten_target_changed", "the configured push target changed while the rewrite was being verified; no files or refs were changed")
+	}
+
+	anchorCommand := fmt.Sprintf("create %s %s\n", anchorRef, published)
+	if anchorExists {
+		anchorCommand = fmt.Sprintf("verify %s %s\n", anchorRef, published)
+	}
+	transaction := fmt.Sprintf("start\nverify %s %s\n%sprepare\ncommit\n", branchRef, published, anchorCommand)
+	if _, err := git.RunWithInput(ctx, s.GateDir, transaction, "update-ref", "--stdin", "--no-deref"); err != nil {
+		return blockedPlan(recheck, StateDiverged, "blocked_prepare_rewritten_assumptions_changed", "the gate lane or create-only recovery anchor changed while the rewrite was being recorded; no files or refs were changed")
+	}
+	prepared, preparedRun, preparedOK := s.inspect(ctx)
+	if !preparedOK || preparedRun == nil || preparedRun.ID != run.ID || prepared.Safety != "rewrite_prepared" || prepared.Local.Head != state.Local.Head {
+		prepared.Changed = !anchorExists
+		prepared.Safety = "blocked_prepare_rewritten_assumptions_changed"
+		prepared.Error = fmt.Sprintf("the exact old gate head was recorded at %s, but branch ownership changed before the fresh-run action could be reported; inspect current status before continuing", anchorRef)
+		prepared.NextAction = &NextAction{Code: "inspect_status", Command: "no-mistakes axi status"}
+		return prepared
+	}
+	prepared.Changed = !anchorExists
+	return prepared
+}
+
 // AdoptPublished moves one stale custody-returned gate lane to a rewritten
 // branch only after the configured push target proves that the exact local
 // head is already published there. It never pushes to that target or changes
@@ -2056,7 +2164,51 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 	}
 
 	s.classifyRelation(ctx, &state, ptr(run.LastPushedSHA), run.BaseSHA, false)
+	s.classifyRewrittenSubmission(ctx, &state, run)
 	return state, run, true
+}
+
+// classifyRewrittenSubmission recognizes the one history rewrite that can be
+// prepared without weakening private-mirror reconciliation: a clean local
+// head diverges from the exact head a terminal run successfully published,
+// while the direct gate lane still holds that same published head. The action
+// records preservation of the old lane; it does not claim containment or
+// authorize any remote rewrite. A fresh run still performs the ordinary
+// archive-before-delete reconciliation and full validation.
+func (s *Service) classifyRewrittenSubmission(ctx context.Context, state *State, run *db.Run) {
+	if state == nil || run == nil || state.State != StateDiverged || state.Relation != RelationDiverged ||
+		state.Safety != "blocked_diverged" ||
+		!state.Local.Clean || !terminalRunStatus(run.Status) || run.CustodyReturnedAt != nil ||
+		!exactPushedBinding(s.Repo, run, state.Local.Branch) || state.PRState == "merged" || state.PRState == "closed" ||
+		strings.TrimSpace(s.GateDir) == "" {
+		return
+	}
+	published := ptr(run.LastPushedSHA)
+	branchRef := "refs/heads/" + state.Local.Branch
+	gateHead, exists, err := git.DirectRefTarget(ctx, s.GateDir, branchRef)
+	if err != nil || !exists || gateHead != published {
+		return
+	}
+	if objectType, err := git.Run(ctx, s.GateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
+		return
+	}
+	anchorRef := custody.RecoveryRef(run.ID)
+	anchorHead, anchorExists, err := git.DirectRefTarget(ctx, s.GateDir, anchorRef)
+	if err != nil || (anchorExists && anchorHead != published) {
+		return
+	}
+	if anchorExists {
+		if objectType, err := git.Run(ctx, s.GateDir, "cat-file", "-t", anchorHead); err != nil || objectType != "commit" {
+			return
+		}
+		state.Safety = "rewrite_prepared"
+		state.Error = ""
+		state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+		return
+	}
+	state.Safety = "rewrite_preparation_required"
+	state.Error = "the clean local head deliberately diverges from the exact published pipeline head; record preservation of the old gate lane before starting a fresh run"
+	state.NextAction = &NextAction{Code: "prepare_rewritten_submission", Command: "no-mistakes axi sync --prepare-rewritten"}
 }
 
 func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, base string, live bool) {

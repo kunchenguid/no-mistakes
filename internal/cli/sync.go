@@ -17,7 +17,7 @@ import (
 var syncInteractive = terminalInteractive
 
 func newSyncCmd() *cobra.Command {
-	var check, yes, recover, keepLocal, adoptPublished bool
+	var check, yes, recover, keepLocal, adoptPublished, prepareRewritten bool
 	var bindArchiveRef string
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -42,19 +42,21 @@ func newSyncCmd() *cobra.Command {
 			"a divergent later head remains archived; it never creates or moves a Git ref.\n" +
 			"--adopt-published moves a stale custody-returned gate lane only after the\n" +
 			"configured push target proves the exact divergent local head is already\n" +
-			"published there.",
+			"published there. --prepare-rewritten records an intentional unpublished\n" +
+			"rewrite by preserving the exact previously published gate head; it moves\n" +
+			"no branch or remote, and the new head still requires a fresh full run.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
 				return &exitError{code: 2, err: fmt.Errorf("--check and --yes cannot be used together")}
 			}
-			if (check && recover) || (check && adoptPublished) || (recover && adoptPublished) {
-				return &exitError{code: 2, err: fmt.Errorf("choose only one of --check, --recover, and --adopt-published")}
+			if boolCount(check, recover, adoptPublished, prepareRewritten) > 1 {
+				return &exitError{code: 2, err: fmt.Errorf("choose only one of --check, --recover, --adopt-published, and --prepare-rewritten")}
 			}
 			if keepLocal && !recover {
 				return &exitError{code: 2, err: fmt.Errorf("--keep-local requires --recover")}
 			}
-			if bindArchiveRef != "" && (check || yes || recover || keepLocal || adoptPublished) {
+			if bindArchiveRef != "" && (check || yes || recover || keepLocal || adoptPublished || prepareRewritten) {
 				return &exitError{code: 2, err: fmt.Errorf("--bind-archive-ref cannot be combined with synchronization or recovery flags")}
 			}
 			if bindArchiveRef != "" {
@@ -66,6 +68,9 @@ func newSyncCmd() *cobra.Command {
 			if adoptPublished {
 				return runHumanAdoptPublished(cmd, yes)
 			}
+			if prepareRewritten {
+				return runHumanPrepareRewritten(cmd, yes)
+			}
 			return runHumanSync(cmd, check, yes)
 		},
 	}
@@ -74,12 +79,13 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or rebind a terminal run's push binding to a verified rewritten remote head (recover_remote_rewritten)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
+	cmd.Flags().BoolVar(&prepareRewritten, "prepare-rewritten", false, "record an intentional unpublished rewrite by preserving the exact previously published gate head before a fresh run")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
 	return cmd
 }
 
 func newAxiSyncCmd() *cobra.Command {
-	var check, recover, keepLocal, adoptPublished bool
+	var check, recover, keepLocal, adoptPublished, prepareRewritten bool
 	var bindArchiveRef string
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -98,27 +104,30 @@ func newAxiSyncCmd() *cobra.Command {
 			"--bind-archive-ref binds one exact existing refs/heads/archive/* commit to\n" +
 			"the selected terminal run; it never creates or moves a Git ref.\n" +
 			"--adopt-published performs the guarded gate-lane recovery offered by\n" +
-			"next_action.code: adopt_published.",
+			"next_action.code: adopt_published. --prepare-rewritten performs the\n" +
+			"create-only preservation offered by next_action.code:\n" +
+			"prepare_rewritten_submission before a fresh full validation run.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if (check && recover) || (check && adoptPublished) || (recover && adoptPublished) {
-				return emitError(cmd, 2, "choose only one of --check, --recover, and --adopt-published")
+			if boolCount(check, recover, adoptPublished, prepareRewritten) > 1 {
+				return emitError(cmd, 2, "choose only one of --check, --recover, --adopt-published, and --prepare-rewritten")
 			}
 			if keepLocal && !recover {
 				return emitError(cmd, 2, "--keep-local requires --recover")
 			}
-			if bindArchiveRef != "" && (check || recover || keepLocal || adoptPublished) {
+			if bindArchiveRef != "" && (check || recover || keepLocal || adoptPublished || prepareRewritten) {
 				return emitError(cmd, 2, "--bind-archive-ref cannot be combined with synchronization or recovery flags")
 			}
-			return runAxiSync(cmd, check, recover, keepLocal, adoptPublished, bindArchiveRef)
+			return runAxiSync(cmd, check, recover, keepLocal, adoptPublished, prepareRewritten, bindArchiveRef)
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or rebind a terminal run's push binding to a verified rewritten remote head (recover_remote_rewritten)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
+	cmd.Flags().BoolVar(&prepareRewritten, "prepare-rewritten", false, "record an intentional unpublished rewrite by preserving the exact previously published gate head before a fresh run")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
 	return cmd
 }
@@ -373,6 +382,57 @@ func runHumanAdoptPublished(cmd *cobra.Command, yes bool) error {
 	return &exitError{code: 1}
 }
 
+func runHumanPrepareRewritten(cmd *cobra.Command, yes bool) error {
+	started := time.Now()
+	var observed branchsync.State
+	result := "error"
+	defer func() { trackSyncAttempt("sync", "human_cli", "prepare_rewritten", observed, result, started) }()
+
+	service, closeFn, err := openSyncService()
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	observed = service.InspectCached(cmd.Context())
+	if !yes {
+		printHumanSyncState(cmd, observed)
+		if !syncInteractive() {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Non-interactive input cannot confirm this declaration. Re-run with `no-mistakes sync --prepare-rewritten --yes`.")
+			result = "refused"
+			return &exitError{code: 1}
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "  This records that you deliberately rebased the unpublished local commits.")
+		fmt.Fprintln(cmd.OutOrStdout(), "  It preserves the exact previously published gate head and moves no branch or remote.")
+		fmt.Fprint(cmd.OutOrStdout(), "  Prepare this rewritten head for a fresh full validation run? [y/N] ")
+		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if readErr != nil && strings.TrimSpace(line) == "" {
+			return readErr
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Cancelled; no files or refs were changed.")
+			result = "cancelled"
+			return nil
+		}
+	}
+
+	state := service.PrepareRewrittenSubmission(cmd.Context())
+	observed = state
+	printHumanSyncState(cmd, state)
+	if state.Safety == "rewrite_prepared" && state.NextAction != nil && state.NextAction.Code == "run_pipeline" {
+		if state.Changed {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Previous published head preserved; start a fresh run when ready.")
+			result = "applied"
+		} else {
+			result = "noop"
+		}
+		return nil
+	}
+	result = "refused"
+	return &exitError{code: 1}
+}
+
 func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "\n  Local branch: %s\n", humanSyncSummary(state))
@@ -430,6 +490,12 @@ func humanSyncSummary(state branchsync.State) string {
 		if state.Safety == branchsync.SafetySafeEquivalentAdvance {
 			return "diverged, but local changes are represented in the pipeline head; guarded advance verified"
 		}
+		if state.Safety == "rewrite_preparation_required" {
+			return "deliberately rebased unpublished commits require explicit old-lane preservation before a fresh run"
+		}
+		if state.Safety == "rewrite_prepared" {
+			return "the exact old published lane is preserved; start a fresh full validation run"
+		}
 		if state.NextAction != nil && state.NextAction.Code == "sync" {
 			return "diverged; refresh required to verify equivalent pipeline content"
 		}
@@ -447,7 +513,7 @@ func humanSyncSummary(state branchsync.State) string {
 	}
 }
 
-func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bool, bindArchiveRef string) error {
+func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished, prepareRewritten bool, bindArchiveRef string) error {
 	started := time.Now()
 	mode := "apply"
 	switch {
@@ -461,6 +527,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 		mode = "recover"
 	case adoptPublished:
 		mode = "adopt_published"
+	case prepareRewritten:
+		mode = "prepare_rewritten"
 	}
 	var state branchsync.State
 	result := "error"
@@ -481,6 +549,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 		state = service.Recover(cmd.Context(), keepLocal)
 	case adoptPublished:
 		state = service.AdoptPublished(cmd.Context())
+	case prepareRewritten:
+		state = service.PrepareRewrittenSubmission(cmd.Context())
 	default:
 		state = service.Apply(cmd.Context())
 	}
@@ -513,6 +583,9 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 	if adoptPublished {
 		successful = state.Changed
 	}
+	if prepareRewritten {
+		successful = state.Safety == "rewrite_prepared" && state.NextAction != nil && state.NextAction.Code == "run_pipeline"
+	}
 	if successful {
 		if state.Changed {
 			result = "applied"
@@ -523,6 +596,16 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, adoptPublished bo
 	}
 	result = "refused"
 	return &exitError{code: 1}
+}
+
+func boolCount(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
+	}
+	return count
 }
 
 func verifiedArchiveRecovery(state branchsync.State) bool {

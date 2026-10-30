@@ -152,6 +152,17 @@ its credit; the scan is never truncated or refused by size, because dropping
 candidates would drop their preservation credit and silently reintroduce the
 deadlock the credit exists to end.
 
+One explicit operator path may create the same preservation record before a
+fresh submission: `axi sync --prepare-rewritten`, for a deliberate unpublished
+rebase of the exact head a terminal run successfully published. It requires
+the direct gate lane and live configured push target to still equal that
+durable push binding, then create-only anchors the old lane at
+`refs/no-mistakes/recover/<run>`. It moves no branch or remote and grants no
+head exception. The next fresh submission must still archive the exact old
+lane before deleting it, and the rebased head still receives full validation.
+Thus a silent head substitution, a rewrite already present on the configured
+target, or a changed/conflicting preservation record remains refused.
+
 **Accepted Decision 41-A (issue #983):** pipeline publication may replace a
 private mirror head that is **exactly equal to a head the publishing run itself
 placed on the mirror** without tree-survival proof: its
