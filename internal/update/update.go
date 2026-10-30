@@ -62,6 +62,7 @@ type updater struct {
 	nixStoreInstall    bool
 	noColor            bool
 	includePrereleases bool
+	stableVersion      string
 	assumeYes          bool
 	force              bool
 }
@@ -151,13 +152,27 @@ func inNixStore(path string) bool {
 }
 
 func (u *updater) refreshCache(ctx context.Context) error {
-	plan, err := u.checkLatest(ctx)
+	manifest, err := u.fetchChannelsManifest(ctx)
 	if err != nil {
 		return err
 	}
-	return writeCache(u.cachePath, &checkCache{
+	stableVersion := ""
+	if manifest.Stable != nil {
+		stableVersion = manifest.Stable.TagName
+	}
+	includePrereleases := runningBeta(u.currentVersion, stableVersion)
+	release, err := manifest.channel(includePrereleases)
+	if err != nil {
+		return err
+	}
+	plan, err := u.planRelease(release)
+	if err != nil {
+		return err
+	}
+	return writeCache(u.channelCachePath(includePrereleases), &checkCache{
 		CheckedAt:     u.now(),
 		LatestVersion: plan.LatestVersion,
+		StableVersion: stableVersion,
 	})
 }
 
@@ -172,11 +187,15 @@ func (u *updater) maybeNotifyAndCheck(args []string) {
 	if len(args) > 0 && (args[0] == "update" || args[0] == backgroundFlag || args[0] == "--version" || args[0] == "-v") {
 		return
 	}
-	cache := readCache(u.cachePath)
+	cache := u.notificationCache()
 	if cache != nil {
 		cmp, err := compareVersions(u.currentVersion, cache.LatestVersion)
 		if err == nil && cmp < 0 {
-			fmt.Fprintf(u.stderrWriter(), "%sA new version of %s is available: %s -> %s\nRun \"%s update\" to update%s\n", u.yellow(), u.appName, u.currentVersion, cache.LatestVersion, u.appName, u.reset())
+			command := u.appName + " update"
+			if runningBeta(cache.LatestVersion, cache.StableVersion) {
+				command += " --beta"
+			}
+			fmt.Fprintf(u.stderrWriter(), "%sA new version of %s is available: %s -> %s\nRun %q to update%s\n", u.yellow(), u.appName, u.currentVersion, cache.LatestVersion, command, u.reset())
 		}
 	}
 	if cacheStale(cache, u.currentVersion, u.now()) && u.spawnBackground != nil {
@@ -188,7 +207,7 @@ func (u *updater) cachedLatestVersion() string {
 	if u == nil || u.disableBackground || u.nixStoreInstall || isDevVersion(u.currentVersion) || os.Getenv(noUpdateCheckEnv) == "1" {
 		return ""
 	}
-	cache := readCache(u.cachePath)
+	cache := u.notificationCache()
 	if cache == nil {
 		return ""
 	}
@@ -212,7 +231,7 @@ func (u *updater) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := writeCache(u.cachePath, &checkCache{CheckedAt: u.now(), LatestVersion: plan.LatestVersion}); err != nil {
+	if err := writeCache(u.channelCachePath(u.includePrereleases), &checkCache{CheckedAt: u.now(), LatestVersion: plan.LatestVersion, StableVersion: u.stableVersion}); err != nil {
 		return err
 	}
 	if !plan.UpdateAvailable {
