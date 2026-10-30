@@ -1,0 +1,42 @@
+package main
+
+import (
+ "context"
+ "fmt"
+ "os"
+ "path/filepath"
+ "strconv"
+ "strings"
+ "syscall"
+ "time"
+ "github.com/kunchenguid/no-mistakes/internal/agent"
+ "github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+func main() {
+ root, _ := filepath.Abs(".test-1614")
+ a, err := agent.New(types.AgentName("codex"), filepath.Join(root,"agent-fixture.py"), nil)
+ if err != nil { panic(err) }
+ defer a.Close()
+ for _, mode := range []string{"clean","finishing","sticky","escaped"} {
+  pf := filepath.Join(root,mode+".pid")
+  start := time.Now()
+  res, err := a.Run(context.Background(), agent.RunOpts{Prompt:"Return the completed result",CWD:root,RequireCompletedChildren:true,Env:[]string{"LAB_MODE="+mode,"LAB_PIDFILE="+pf}})
+  elapsed:=time.Since(start)
+  pid:=0
+  if b,e:=os.ReadFile(pf); e==nil {pid,_=strconv.Atoi(string(b))}
+  alive:=pid>0 && syscall.Kill(pid,0)==nil
+  fmt.Printf("scenario=%s elapsed=%s child_pid=%d child_alive_after_return=%v\n",mode,elapsed,pid,alive)
+  fmt.Printf("result=%+v\nerror=%v\n",res,err)
+  pass:=true
+  switch mode {
+  case "clean": pass=err==nil && elapsed<time.Second
+  case "finishing": pass=err==nil && elapsed>=time.Second && elapsed<2500*time.Millisecond && !alive
+  case "sticky": pass=err!=nil && strings.Contains(err.Error(),"active owned children") && strings.Contains(err.Error(),fmt.Sprintf("pid %d",pid)) && strings.Contains(err.Error(),"python") && elapsed>=2*time.Second && elapsed<4*time.Second && !alive
+  case "escaped": pass=err==nil && elapsed<time.Second && alive
+  }
+  if alive { _=syscall.Kill(pid,syscall.SIGKILL) }
+  if !pass { panic("scenario failed: "+mode) }
+  fmt.Println("observable assertions: PASS")
+ }
+}

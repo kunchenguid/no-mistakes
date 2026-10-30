@@ -1,0 +1,156 @@
+=== RUN   TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild
+=== RUN   TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/claude
+=== PAUSE TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/claude
+=== RUN   TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/codex
+=== PAUSE TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/codex
+=== RUN   TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/pi
+=== PAUSE TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/pi
+=== CONT  TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/claude
+=== CONT  TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/pi
+=== CONT  TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/codex
+--- PASS: TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild (0.00s)
+    --- PASS: TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/claude (2.20s)
+    --- PASS: TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/codex (2.40s)
+    --- PASS: TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild/pi (2.55s)
+=== RUN   TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild
+=== RUN   TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/claude
+=== PAUSE TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/claude
+=== RUN   TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/codex
+=== PAUSE TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/codex
+=== RUN   TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/pi
+=== PAUSE TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/pi
+=== CONT  TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/claude
+=== CONT  TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/pi
+=== CONT  TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/codex
+--- PASS: TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild (0.00s)
+    --- PASS: TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/claude (0.74s)
+    --- PASS: TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/pi (0.81s)
+    --- PASS: TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild/codex (0.99s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/agent	4.056s
+=== RUN   TestLiveJobProcesses
+=== PAUSE TestLiveJobProcesses
+=== RUN   TestJobHasLiveProcesses
+=== PAUSE TestJobHasLiveProcesses
+=== RUN   TestFormatGroupMembers
+=== PAUSE TestFormatGroupMembers
+=== RUN   TestFormatGroupMembersBoundsTheList
+=== PAUSE TestFormatGroupMembersBoundsTheList
+=== RUN   TestFormatGroupMembersBoundsCommandLength
+=== PAUSE TestFormatGroupMembersBoundsCommandLength
+=== RUN   TestOffendingJobProcesses
+=== PAUSE TestOffendingJobProcesses
+=== RUN   TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren
+=== RUN   TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren/false
+=== RUN   TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren/true
+--- PASS: TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren (0.39s)
+    --- PASS: TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren/false (0.06s)
+    --- PASS: TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren/true (0.34s)
+=== RUN   TestShellCommandGroupActiveAcceptsMemberFinishingInsideWindow
+--- PASS: TestShellCommandGroupActiveAcceptsMemberFinishingInsideWindow (0.57s)
+=== RUN   TestShellCommandGroupActiveRefusesMemberSurvivingWindow
+--- PASS: TestShellCommandGroupActiveRefusesMemberSurvivingWindow (0.49s)
+=== RUN   TestShellCommandGroupActivePassesImmediatelyForSessionEscapee
+--- PASS: TestShellCommandGroupActivePassesImmediatelyForSessionEscapee (0.02s)
+=== CONT  TestLiveJobProcesses
+=== CONT  TestFormatGroupMembersBoundsTheList
+=== CONT  TestOffendingJobProcesses
+--- PASS: TestOffendingJobProcesses (0.00s)
+--- PASS: TestFormatGroupMembersBoundsTheList (0.00s)
+=== CONT  TestFormatGroupMembersBoundsCommandLength
+=== RUN   TestLiveJobProcesses/empty_job
+--- PASS: TestFormatGroupMembersBoundsCommandLength (0.00s)
+=== CONT  TestFormatGroupMembers
+=== CONT  TestJobHasLiveProcesses
+=== PAUSE TestLiveJobProcesses/empty_job
+=== RUN   TestFormatGroupMembers/no_members
+=== PAUSE TestFormatGroupMembers/no_members
+=== RUN   TestLiveJobProcesses/stale_exited_entry_for_the_leader
+=== PAUSE TestLiveJobProcesses/stale_exited_entry_for_the_leader
+=== RUN   TestFormatGroupMembers/pid_and_command
+=== PAUSE TestFormatGroupMembers/pid_and_command
+=== RUN   TestJobHasLiveProcesses/clean_exit_with_a_stable_total
+=== PAUSE TestJobHasLiveProcesses/clean_exit_with_a_stable_total
+=== RUN   TestJobHasLiveProcesses/console_host_only_with_a_stable_total
+=== PAUSE TestJobHasLiveProcesses/console_host_only_with_a_stable_total
+=== RUN   TestJobHasLiveProcesses/running_child_with_a_stable_total
+=== PAUSE TestJobHasLiveProcesses/running_child_with_a_stable_total
+=== RUN   TestJobHasLiveProcesses/grandchild_started_after_the_list_was_read
+=== PAUSE TestJobHasLiveProcesses/grandchild_started_after_the_list_was_read
+=== RUN   TestJobHasLiveProcesses/total_moved_with_an_empty_list
+=== PAUSE TestJobHasLiveProcesses/total_moved_with_an_empty_list
+=== RUN   TestJobHasLiveProcesses/total_moved_beside_the_console_host
+=== PAUSE TestJobHasLiveProcesses/total_moved_beside_the_console_host
+=== RUN   TestJobHasLiveProcesses/several_processes_started_while_inspecting
+=== PAUSE TestJobHasLiveProcesses/several_processes_started_while_inspecting
+=== CONT  TestJobHasLiveProcesses/clean_exit_with_a_stable_total
+=== CONT  TestJobHasLiveProcesses/several_processes_started_while_inspecting
+=== CONT  TestJobHasLiveProcesses/running_child_with_a_stable_total
+=== CONT  TestJobHasLiveProcesses/grandchild_started_after_the_list_was_read
+=== CONT  TestJobHasLiveProcesses/console_host_only_with_a_stable_total
+=== CONT  TestJobHasLiveProcesses/total_moved_beside_the_console_host
+=== CONT  TestJobHasLiveProcesses/total_moved_with_an_empty_list
+--- PASS: TestJobHasLiveProcesses (0.00s)
+    --- PASS: TestJobHasLiveProcesses/clean_exit_with_a_stable_total (0.00s)
+    --- PASS: TestJobHasLiveProcesses/several_processes_started_while_inspecting (0.00s)
+    --- PASS: TestJobHasLiveProcesses/running_child_with_a_stable_total (0.00s)
+    --- PASS: TestJobHasLiveProcesses/grandchild_started_after_the_list_was_read (0.00s)
+    --- PASS: TestJobHasLiveProcesses/console_host_only_with_a_stable_total (0.00s)
+    --- PASS: TestJobHasLiveProcesses/total_moved_beside_the_console_host (0.00s)
+    --- PASS: TestJobHasLiveProcesses/total_moved_with_an_empty_list (0.00s)
+=== RUN   TestLiveJobProcesses/console_host_the_leader_started
+=== PAUSE TestLiveJobProcesses/console_host_the_leader_started
+=== RUN   TestLiveJobProcesses/console_host_and_a_stale_leader_entry
+=== PAUSE TestLiveJobProcesses/console_host_and_a_stale_leader_entry
+=== RUN   TestFormatGroupMembers/missing_command_degrades_to_the_pid
+=== PAUSE TestFormatGroupMembers/missing_command_degrades_to_the_pid
+=== RUN   TestLiveJobProcesses/running_child_is_refused
+=== PAUSE TestLiveJobProcesses/running_child_is_refused
+=== RUN   TestFormatGroupMembers/several_members_join
+=== PAUSE TestFormatGroupMembers/several_members_join
+=== CONT  TestFormatGroupMembers/no_members
+=== CONT  TestFormatGroupMembers/missing_command_degrades_to_the_pid
+=== CONT  TestFormatGroupMembers/pid_and_command
+=== CONT  TestFormatGroupMembers/several_members_join
+--- PASS: TestFormatGroupMembers (0.00s)
+    --- PASS: TestFormatGroupMembers/no_members (0.00s)
+    --- PASS: TestFormatGroupMembers/missing_command_degrades_to_the_pid (0.00s)
+    --- PASS: TestFormatGroupMembers/pid_and_command (0.00s)
+    --- PASS: TestFormatGroupMembers/several_members_join (0.00s)
+=== RUN   TestLiveJobProcesses/running_child_beside_the_console_host
+=== PAUSE TestLiveJobProcesses/running_child_beside_the_console_host
+=== RUN   TestLiveJobProcesses/console_host_of_a_grandchild_is_not_the_leader's
+=== PAUSE TestLiveJobProcesses/console_host_of_a_grandchild_is_not_the_leader's
+=== RUN   TestLiveJobProcesses/process_named_like_a_console_host_elsewhere_is_a_child
+=== PAUSE TestLiveJobProcesses/process_named_like_a_console_host_elsewhere_is_a_child
+=== RUN   TestLiveJobProcesses/uninspectable_process_fails_closed
+=== PAUSE TestLiveJobProcesses/uninspectable_process_fails_closed
+=== RUN   TestLiveJobProcesses/uninspectable_console_host_candidate_fails_closed
+=== PAUSE TestLiveJobProcesses/uninspectable_console_host_candidate_fails_closed
+=== RUN   TestLiveJobProcesses/several_live_children_are_all_counted
+=== PAUSE TestLiveJobProcesses/several_live_children_are_all_counted
+=== CONT  TestLiveJobProcesses/empty_job
+=== CONT  TestLiveJobProcesses/running_child_beside_the_console_host
+=== CONT  TestLiveJobProcesses/process_named_like_a_console_host_elsewhere_is_a_child
+=== CONT  TestLiveJobProcesses/console_host_the_leader_started
+=== CONT  TestLiveJobProcesses/console_host_of_a_grandchild_is_not_the_leader's
+=== CONT  TestLiveJobProcesses/running_child_is_refused
+=== CONT  TestLiveJobProcesses/stale_exited_entry_for_the_leader
+=== CONT  TestLiveJobProcesses/uninspectable_console_host_candidate_fails_closed
+=== CONT  TestLiveJobProcesses/uninspectable_process_fails_closed
+=== CONT  TestLiveJobProcesses/console_host_and_a_stale_leader_entry
+=== CONT  TestLiveJobProcesses/several_live_children_are_all_counted
+--- PASS: TestLiveJobProcesses (0.00s)
+    --- PASS: TestLiveJobProcesses/empty_job (0.00s)
+    --- PASS: TestLiveJobProcesses/running_child_beside_the_console_host (0.00s)
+    --- PASS: TestLiveJobProcesses/process_named_like_a_console_host_elsewhere_is_a_child (0.00s)
+    --- PASS: TestLiveJobProcesses/console_host_the_leader_started (0.00s)
+    --- PASS: TestLiveJobProcesses/console_host_of_a_grandchild_is_not_the_leader's (0.00s)
+    --- PASS: TestLiveJobProcesses/running_child_is_refused (0.00s)
+    --- PASS: TestLiveJobProcesses/stale_exited_entry_for_the_leader (0.00s)
+    --- PASS: TestLiveJobProcesses/uninspectable_console_host_candidate_fails_closed (0.00s)
+    --- PASS: TestLiveJobProcesses/uninspectable_process_fails_closed (0.00s)
+    --- PASS: TestLiveJobProcesses/console_host_and_a_stale_leader_entry (0.00s)
+    --- PASS: TestLiveJobProcesses/several_live_children_are_all_counted (0.00s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/shellenv	1.756s

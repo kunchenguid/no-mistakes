@@ -1,0 +1,16 @@
+scenario=clean elapsed=381.619542ms child_pid=0 child_alive_after_return=false
+result=&{Output:null Text:{"verdict":"go"} Usage:{InputTokens:0 OutputTokens:0 CacheReadTokens:0 CacheCreationTokens:0 ReasoningTokens:0 ReasoningReported:false Reported:false CacheCreationReported:false} UsageReported:false SessionID: Resumed:false ResumeRetryable:<nil> Model: ModelProvider: Provider: Metrics:0x773ed512e280 CacheCreationReported:false SessionUsageCumulative:true}
+error=<nil>
+observable assertions: PASS
+scenario=finishing elapsed=1.294241542s child_pid=24338 child_alive_after_return=false
+result=&{Output:null Text:{"verdict":"go"} Usage:{InputTokens:0 OutputTokens:0 CacheReadTokens:0 CacheCreationTokens:0 ReasoningTokens:0 ReasoningReported:false Reported:false CacheCreationReported:false} UsageReported:false SessionID: Resumed:false ResumeRetryable:<nil> Model: ModelProvider: Provider: Metrics:0x773ed512e050 CacheCreationReported:false SessionUsageCumulative:true}
+error=<nil>
+observable assertions: PASS
+scenario=sticky elapsed=2.082058459s child_pid=24880 child_alive_after_return=false
+result=<nil>
+error=codex exited: native check completion is unverified: agent exited with active owned children: pid 24880 (/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Py...): 
+observable assertions: PASS
+scenario=escaped elapsed=20.457834ms child_pid=25452 child_alive_after_return=true
+result=&{Output:null Text:{"verdict":"go"} Usage:{InputTokens:0 OutputTokens:0 CacheReadTokens:0 CacheCreationTokens:0 ReasoningTokens:0 ReasoningReported:false Reported:false CacheCreationReported:false} UsageReported:false SessionID: Resumed:false ResumeRetryable:<nil> Model: ModelProvider: Provider: Metrics:0x773ed512e050 CacheCreationReported:false SessionUsageCumulative:true}
+error=<nil>
+observable assertions: PASS
