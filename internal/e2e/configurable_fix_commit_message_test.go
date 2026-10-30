@@ -170,9 +170,14 @@ func TestFixCommitTrailersJourney(t *testing.T) {
 	// The model is whatever the recorded claude fixture served; it must arrive
 	// as reported, not as the unknown placeholder.
 	const prefix = "Assisted-by: no-mistakes:claude:"
-	if len(fixTrailers) != 1 || !strings.HasPrefix(fixTrailers[0], prefix) ||
-		strings.Contains(fixTrailers[0], "\n") || strings.TrimPrefix(fixTrailers[0], prefix) == "unknown" {
-		t.Fatalf("review fix commit trailers = %q, want one %q trailer carrying the served model", fixTrailers, prefix+"<model>")
+	if len(fixTrailers) != 1 {
+		t.Fatalf("review fix commit trailers = %q, want one correction commit", fixTrailers)
+	}
+	lines := strings.Split(fixTrailers[0], "\n")
+	const signoff = "Signed-off-by: E2E Test <e2e@example.com>"
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], prefix) ||
+		strings.TrimPrefix(lines[0], prefix) == "" || strings.TrimPrefix(lines[0], prefix) == "unknown" || lines[1] != signoff {
+		t.Fatalf("review fix commit trailers = %q, want %q carrying the served model alongside %q", fixTrailers, prefix+"<model>", signoff)
 	}
 	if len(userTrailers) != 1 || userTrailers[0] != "" {
 		t.Fatalf("user commit trailers = %q, want the user's commit left untouched", userTrailers)

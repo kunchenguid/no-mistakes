@@ -44,7 +44,7 @@ func TestCommitAgentFixes_AppendsTrailersForTheAgentThatRan(t *testing.T) {
 	if got, want := lastCommitMessage(t, dir), "no-mistakes(review): repair widget"; got != want {
 		t.Fatalf("commit subject = %q, want %q", got, want)
 	}
-	want := "Co-Authored-By: no-mistakes codex <noreply@example.com>\nAssisted-by: no-mistakes:codex:gpt-5.5"
+	want := "Co-Authored-By: no-mistakes codex <noreply@example.com>\nAssisted-by: no-mistakes:codex:gpt-5.5\nSigned-off-by: test <test@test.com>"
 	if got := gitTrailers(t, dir); got != want {
 		t.Fatalf("commit trailers = %q, want %q", got, want)
 	}
@@ -62,12 +62,12 @@ func TestCommitAgentFixes_TrailersFallBackToStepAgentName(t *testing.T) {
 	if _, err := commitAgentFixesWithResult(sctx, types.StepLint, "fix lint", "fallback", producer); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := gitTrailers(t, dir), "Assisted-by: no-mistakes:claude:claude-opus-5-5"; got != want {
+	if got, want := gitTrailers(t, dir), "Assisted-by: no-mistakes:claude:claude-opus-5-5\nSigned-off-by: test <test@test.com>"; got != want {
 		t.Fatalf("commit trailers = %q, want %q", got, want)
 	}
 }
 
-func TestCommitAgentFixes_NoProducerMeansNoTrailers(t *testing.T) {
+func TestCommitAgentFixes_NoProducerStillSignsOff(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "claude"}, dir, baseSHA, headSHA, config.Commands{})
@@ -77,8 +77,8 @@ func TestCommitAgentFixes_NoProducerMeansNoTrailers(t *testing.T) {
 	if err := commitAgentFixes(sctx, types.StepReview, "repair widget", "fallback"); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitTrailers(t, dir); got != "" {
-		t.Fatalf("commit trailers = %q, want none for an unattributed commit", got)
+	if got, want := gitTrailers(t, dir), "Signed-off-by: test <test@test.com>"; got != want {
+		t.Fatalf("commit trailers = %q, want %q without attribution trailers", got, want)
 	}
 }
 
@@ -118,7 +118,7 @@ func TestCIStep_CommitRepairAppendsTrailers(t *testing.T) {
 	if !repair.HeadAdvanced {
 		t.Fatal("CI repair did not advance HEAD")
 	}
-	if got, want := gitTrailers(t, dir), "Assisted-by: no-mistakes:grok:grok-5"; got != want {
+	if got, want := gitTrailers(t, dir), "Assisted-by: no-mistakes:grok:grok-5\nSigned-off-by: test <test@test.com>"; got != want {
 		t.Fatalf("commit trailers = %q, want %q", got, want)
 	}
 }

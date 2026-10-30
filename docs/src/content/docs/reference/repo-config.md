@@ -1081,7 +1081,7 @@ This non-executing field is read from the pushed branch without enabling `allow_
 
 ### commit.trailers
 
-Override the trailers appended to agent-produced commits for this repository.
+Override the configured attribution trailers appended to agent-produced commits for this repository.
 
 | | |
 | --- | --- |
@@ -1089,7 +1089,7 @@ Override the trailers appended to agent-produced commits for this repository.
 | Default | Inherits from global config, where it is unset |
 
 The entries follow the [global `commit.trailers` placeholders and validation rules](/no-mistakes/reference/global-config/#committrailers).
-A list here replaces the inherited one rather than extending it, and `trailers: []` turns inherited trailers off for this repository.
+A list here replaces the inherited one rather than extending it, and `trailers: []` turns inherited attribution trailers off for this repository. See the separate [correction commit sign-off contract](/no-mistakes/reference/pipeline-steps/#correction-commit-sign-offs).
 
 This non-executing field is read from the pushed branch without enabling `allow_repo_commands`, like `commit.fix_message`: it shapes the messages of fix commits on that branch, whether the pipeline makes them or rewrites them onto a fix agent's own `git commit` (see [fix commits](/no-mistakes/concepts/auto-fix/#fix-commits)).
 

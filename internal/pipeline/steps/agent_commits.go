@@ -68,6 +68,27 @@ func conformAgentCommits(sctx *pipeline.StepContext, stepName types.StepName, re
 		return err
 	}
 
+	// commit-tree has no --signoff option. The renderer owns the message shape:
+	// a subject followed only by configured trailers. Append the literal sign-off
+	// here rather than using interpret-trailers, whose trailer.* configuration
+	// can rename the key, change placement, or run commands.
+	ident, err := stepGitRun(sctx, "var", "GIT_COMMITTER_IDENT")
+	if err != nil {
+		return fmt.Errorf("resolve correction committer: %w", err)
+	}
+	end := strings.LastIndex(ident, ">")
+	if end < 0 {
+		return fmt.Errorf("resolve correction committer: unexpected Git identity")
+	}
+	signoff := "Signed-off-by: " + ident[:end+1]
+	if !strings.Contains("\n"+message+"\n", "\n"+signoff+"\n") {
+		separator := "\n\n"
+		if strings.Contains(message, "\n\n") {
+			separator = "\n"
+		}
+		message += separator + signoff
+	}
+
 	parent, changed := anchor, false
 	published, resolvedPublished := -1, false
 	for i, sha := range chain {

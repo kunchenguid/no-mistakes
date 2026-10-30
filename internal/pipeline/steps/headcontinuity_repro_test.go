@@ -188,7 +188,7 @@ func TestCommitAgentFixes_AllowsForwardAgentCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): apply fix")
+	gitCmd(t, dir, "commit", "-s", "-m", "no-mistakes(review): apply fix")
 	forward := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	// Pipeline then commits its own working-tree edits on top - must succeed.

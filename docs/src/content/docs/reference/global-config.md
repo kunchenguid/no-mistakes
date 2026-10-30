@@ -1254,7 +1254,7 @@ Git trailers appended to each commit made from a single agent invocation's chang
 | | |
 | --- | --- |
 | Type | `list` of `string` templates |
-| Default | Unset, so commits carry no trailers |
+| Default | Unset, so commits carry no configured attribution trailers |
 
 Each entry renders to one trailer line. It supports literal text and two Go-style placeholders:
 
@@ -1280,7 +1280,8 @@ Entries are limited to 1,024 bytes and 16 placeholders, the list to 16 entries, 
 The 1,024-byte limit also applies to the rendered line, checked when configuration loads with every placeholder at its 64-byte maximum, so an entry that loads cannot overflow at commit time.
 An invalid entry fails configuration loading, and a render failure at commit time leaves the changes unstaged.
 
-Trailers are added to Review, Test, Document, and Lint fix commits, operator-authorized repository gate repairs, and CI repair commits. Commits that no single invocation produced get none rather than a guessed agent: the Push step's catch-all commit, a CI repair retried after a protected-path refusal, and rebase or merge commits that an agent writes itself.
+Configured attribution trailers are added to Review, Test, Document, and Lint fix commits, operator-authorized repository gate repairs, and CI repair commits. Commits that no single invocation produced get none rather than a guessed agent: the Push step's catch-all commit, a CI repair retried after a protected-path refusal, and rebase or merge commits that an agent writes itself.
+The pipeline's [correction commit sign-offs](/no-mistakes/reference/pipeline-steps/#correction-commit-sign-offs) are independent of this setting.
 A per-repo [`commit.trailers`](/no-mistakes/reference/repo-config/#committrailers) list or a matching [`repository_overrides`](#repository_overrides) entry replaces this list rather than extending it; an empty list clears it.
 
 ### pr.appendix

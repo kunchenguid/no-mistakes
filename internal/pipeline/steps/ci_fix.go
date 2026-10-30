@@ -663,7 +663,7 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
 	sctx.Log("retrying retained CI repair after protected-path refusal")
 	// The retained changes outlived the invocation that made them, so no
-	// producer is known here and the commit carries no trailers.
+	// producer is known here and the commit carries no attribution trailers.
 	repair, err := s.commitRepair(sctx, "", nil)
 	if err != nil || repair.HeadAdvanced {
 		return repair, err
@@ -731,7 +731,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 		}
 		return ciRepairResult{}, nil
 	}
-	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {
+	if _, err := stepGitRun(sctx, "commit", "-s", "-m", message); err != nil {
 		return ciRepairResult{}, fmt.Errorf("commit: %w", err)
 	}
 	headSHA, err := stepGitHeadSHA(sctx)

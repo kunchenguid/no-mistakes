@@ -23,6 +23,8 @@ func TestAgentHeadRecordingPreservesSharedGateRefs(t *testing.T) {
 				gateDir := filepath.Join(t.TempDir(), "gate.git")
 				gitCmd(t, source, "clone", "--bare", source, gateDir)
 				gitCmd(t, gateDir, "remote", "set-url", "origin", upstream)
+				gitCmd(t, gateDir, "config", "user.name", "test")
+				gitCmd(t, gateDir, "config", "user.email", "test@test.com")
 				workDir := filepath.Join(t.TempDir(), "detached")
 				gitCmd(t, gateDir, "worktree", "add", "--detach", workDir, submittedHead)
 				writeCommit := func(dir, name, content string) string {
@@ -39,7 +41,7 @@ func TestAgentHeadRecordingPreservesSharedGateRefs(t *testing.T) {
 							subject = "no-mistakes(ci): record CI repair"
 						}
 					}
-					gitCmd(t, dir, "commit", "-m", subject)
+					gitCmd(t, dir, "commit", "-s", "-m", subject)
 					return gitCmd(t, dir, "rev-parse", "HEAD")
 				}
 				agentHead := writeCommit(workDir, "agent.txt", "agent fix\n")
@@ -156,7 +158,7 @@ func TestAgentHeadRecordingUpdatesNonSharedWorktreeRef(t *testing.T) {
 			if recorder == "ci" {
 				subject = "no-mistakes(ci): record CI repair"
 			}
-			gitCmd(t, dir, "commit", "-m", subject)
+			gitCmd(t, dir, "commit", "-s", "-m", subject)
 			agentHead := gitCmd(t, dir, "rev-parse", "HEAD")
 			if recorder == "review" {
 				if err := commitAgentFixes(sctx, types.StepReview, "record agent fixes", ""); err != nil {
