@@ -20,11 +20,24 @@ var InstallBases = []string{
 // InstallUser installs the skill into the agent skill directories under the
 // current user's home directory. It returns the home-relative paths written.
 func InstallUser() ([]string, error) {
+	report, err := InstallUserWithReport()
+	return report.Written, err
+}
+
+// InstallReport distinguishes refreshed files from externally managed skill
+// directories. All paths are relative to the installation root.
+type InstallReport struct {
+	Written []string
+	Managed []string
+}
+
+// InstallUserWithReport is InstallUser with managed-path reporting for init.
+func InstallUserWithReport() (InstallReport, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolve home directory: %w", err)
+		return InstallReport{}, fmt.Errorf("resolve home directory: %w", err)
 	}
-	return Install(home)
+	return InstallWithReport(home)
 }
 
 // Install writes SKILL.md into each agent skills directory under root
@@ -37,28 +50,45 @@ func InstallUser() ([]string, error) {
 // `.agents/skills`, the whole `.claude` dir -> `.agents`, or the reverse. Install
 // follows such links transparently, including when the symlinked target dir does
 // not exist yet (a plain os.MkdirAll would fail with "file exists" on a dangling
-// symlink). Both logical bases stay readable afterward via the link.
+// symlink). Both logical bases stay readable afterward via the link. Individual
+// skill-directory symlinks are externally managed and never overwritten.
+// Use InstallWithReport to report those paths.
 func Install(root string) ([]string, error) {
+	report, err := InstallWithReport(root)
+	return report.Written, err
+}
+
+// InstallWithReport installs real skill directories and reports skipped links.
+func InstallWithReport(root string) (InstallReport, error) {
 	content := []byte(Markdown())
-	written := make([]string, 0, len(InstallBases))
+	report := InstallReport{}
 	for _, base := range InstallBases {
 		rel := filepath.Join(base, Name, "SKILL.md")
 		path := filepath.Join(root, rel)
-		// Resolve any symlink components to a real directory before creating
-		// it, so a dangling symlink in the path does not collide with MkdirAll.
+		// Lstat follows parent/base links, but not the individual skill link.
+		// Check before resolving or creating anything in its external target.
+		info, err := os.Lstat(filepath.Dir(path))
+		if err != nil && !os.IsNotExist(err) {
+			return report, err
+		}
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			report.Managed = append(report.Managed, filepath.Join(base, Name))
+			continue
+		}
+		// Resolve parent links, including dangling bases, as before.
 		realDir, err := resolveThroughSymlinks(filepath.Dir(path))
 		if err != nil {
-			return written, err
+			return report, err
 		}
 		if err := os.MkdirAll(realDir, 0o755); err != nil {
-			return written, err
+			return report, err
 		}
 		if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), content, 0o644); err != nil {
-			return written, err
+			return report, err
 		}
-		written = append(written, rel)
+		report.Written = append(report.Written, rel)
 	}
-	return written, nil
+	return report, nil
 }
 
 // Vendored reports the repo-relative paths of legacy vendored skill copies

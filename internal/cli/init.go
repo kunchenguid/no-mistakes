@@ -74,7 +74,7 @@ func newInitCmd() *cobra.Command {
 				// Install the agent skill at user level so agents can drive
 				// no-mistakes via `/no-mistakes` in any repo. Best-effort: a
 				// skill write failure must not undo a successful gate setup.
-				_, skillErr := skill.InstallUser()
+				skillReport, skillErr := skill.InstallUserWithReport()
 
 				w := cmd.OutOrStdout()
 				fmt.Fprintln(w, sCyan.Render(banner))
@@ -95,11 +95,7 @@ func newInitCmd() *cobra.Command {
 				if repo.ForkURL != "" {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork"), safeurl.Redact(repo.ForkURL))
 				}
-				if skillErr != nil {
-					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
-				} else {
-					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents at user level"))
-				}
+				printSkillInstallReport(w, skillReport, skillErr)
 				if resolvedWorktreeRoot != "" {
 					printWorktreeRootGuidance(w, p, repo.WorkingPath, resolvedWorktreeRoot)
 				}
@@ -116,6 +112,18 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
 	cmd.Flags().StringVar(&worktreeRoot, "worktree-root", "", "Directory to create this repository's run worktrees in, so directory-scoped toolchain config (mise, direnv) reaches them; prints the worktree_roots entry to add to the global config")
 	return cmd
+}
+
+func printSkillInstallReport(w io.Writer, report skill.InstallReport, err error) {
+	if len(report.Written) > 0 {
+		fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents at user level"))
+	}
+	for _, path := range report.Managed {
+		fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sDim.Render("skipped externally managed skill: ~/"+path))
+	}
+	if err != nil {
+		fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+err.Error()))
+	}
 }
 
 // resolveWorktreeRoot validates a --worktree-root value and returns the
