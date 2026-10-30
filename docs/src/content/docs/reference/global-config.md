@@ -372,7 +372,9 @@ submission, so an older daemon cannot silently launch it without a pin.
 ### review_agents
 
 Optional, **global-only** harness and model/effort overrides for the review loop.
-Repository `.no-mistakes.yaml` cannot set these profiles. Omitted roles keep the
+Repository `.no-mistakes.yaml` cannot set these profiles; a matching
+[`repository_overrides`](#machine-local-review-agents) entry in this file can
+replace individual roles for one repository. Omitted roles keep the
 normal `agent` selection and fallback chain; other pipeline steps are unchanged.
 
 ```yaml
@@ -420,7 +422,7 @@ for the recorded identities.
 An OpenCode turn that ran tools, or whose tool activity is unknown, cannot fall
 back to a fresh reviewer session.
 These candidates are independent reviewer instances and never fall back to the
-writer or fixer implicitly. `fallback` is global-only, does not use quota routing,
+writer or fixer implicitly. `fallback` is operator-only, does not use quota routing,
 and accepts neither nested fallback lists nor `after_round`; fixer roles reject it.
 
 #### Later-round role overrides
@@ -1306,7 +1308,7 @@ rendering behavior and provider caveats. Invalid modes fail config loading.
 ### repository_overrides
 
 Machine-local settings scoped to one repository by remote host and full repository path.
-This lets one machine add checks, lower command scheduling priority, add review, documentation, and live-validation guidance, or apply ticket conventions without adding settings to that repository.
+This lets one machine add checks, lower command scheduling priority, add review, documentation, and live-validation guidance, choose review-loop agents, or apply ticket conventions without adding settings to that repository.
 Remote hosts are matched case-insensitively.
 HTTP, HTTPS, SSH, and Git-protocol URLs, plus scp-style remotes, are accepted; the transport scheme is not part of the match.
 A URL's scheme-default port (80, 443, 22, or 9418 for HTTP, HTTPS, SSH, or Git) matches an omitted port; non-default ports remain distinct.
@@ -1379,6 +1381,27 @@ Under `review` only `path_instructions` is accepted, under `document` only `inst
 Changes apply to the next run, and to a run recovered after a daemon restart, which re-reads this file.
 
 Eval replay cases store no remote URL, so a replay does not apply a matching entry's review, documentation, or test guidance.
+
+#### Machine-local review agents
+
+A matching entry can choose the review loop's harnesses for that one repository, with the same roles and fields as the global [`review_agents`](#review_agents) block:
+
+```yaml
+review_agents:
+  reviewer: {agent: claude}
+  fixer: {agent: codex}
+repository_overrides:
+  https://github.com/acme/widget.git:
+    review_agents:
+      reviewer:
+        agent: opencode
+        model: openrouter/z-ai/glm-4.6
+```
+
+Each role the entry names replaces the global entry for that role whole, including its `fallback` and `after_round`; roles it omits keep the global value. Above, `acme/widget` reviews on OpenCode and still fixes on Codex, and every other repository keeps both global roles. An entry without `review_agents` changes nothing.
+Entries are validated at load with the same rules and messages as the global block, prefixed with the override's normalized remote.
+The entry is matched against the registered repository's remote, so a pushed branch can never select it, and the repository's own `.no-mistakes.yaml` still cannot set `review_agents`.
+Like the global block, a [per-run Pi profile](#per-run-pi-profiles) pin replaces every role and refuses a non-Pi one.
 
 #### Machine-local commands
 

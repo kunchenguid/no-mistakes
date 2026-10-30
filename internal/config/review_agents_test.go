@@ -1,9 +1,12 @@
 package config
 
 import (
+	"reflect"
+	"strings"
+	"testing"
+
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-	"testing"
 )
 
 func TestReviewAgentsProfilesAreIndependent(t *testing.T) {
@@ -140,5 +143,72 @@ func TestReviewAgentsRejectInvalidLaterRoundOverlays(t *testing.T) {
 		"review_agents: {fixer_after_rounds: {agent: pi}}",
 	} {
 		t.Run(input, func(t *testing.T) { loadGlobalConfigError(t, input) })
+	}
+}
+
+func TestRepositoryOverrideReviewAgentsReplacePerRole(t *testing.T) {
+	global := writeGlobalConfig(t, `agent: claude
+review_agents:
+  reviewer: {agent: claude, model: global-review}
+  fixer: {agent: codex}
+  reviewer_after_round: {agent: codex}
+repository_overrides:
+  https://github.com/acme/partial:
+    review_agents:
+      reviewer: {agent: opencode, model: openrouter/z-ai/glm-4.6}
+  https://github.com/acme/full:
+    review_agents:
+      reviewer: {agent: pi, model: r}
+      fixer: {agent: pi, model: f}
+      reviewer_after_round: {agent: pi, model: rl, after_round: 2}
+      fixer_after_round: {agent: pi, model: fl}
+  https://github.com/acme/none:
+    test: {instructions: run it}
+`)
+	afterRound := 2
+	want := map[string]map[string]ReviewAgent{
+		"https://github.com/acme/other": global.ReviewAgents,
+		"https://github.com/acme/none":  global.ReviewAgents,
+		"git@github.com:acme/partial.git": {
+			RoleReviewer:           {Agent: types.AgentOpenCode, Model: "openrouter/z-ai/glm-4.6"},
+			RoleFixer:              {Agent: types.AgentCodex},
+			RoleReviewerAfterRound: {Agent: types.AgentCodex},
+		},
+		"https://github.com/acme/full": {
+			RoleReviewer:           {Agent: types.AgentPi, Model: "r"},
+			RoleFixer:              {Agent: types.AgentPi, Model: "f"},
+			RoleReviewerAfterRound: {Agent: types.AgentPi, Model: "rl", AfterRound: &afterRound},
+			RoleFixerAfterRound:    {Agent: types.AgentPi, Model: "fl"},
+		},
+	}
+	for remote, roles := range want {
+		t.Run(remote, func(t *testing.T) {
+			// The repository's own config must not reach review_agents either way.
+			repo, err := LoadRepoFromBytes([]byte("review_agents: {reviewer: {agent: pi, model: attacker-model}}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := MergeForRemote(global, repo, remote).ReviewAgents; !reflect.DeepEqual(got, roles) {
+				t.Fatalf("review agents = %+v, want %+v", got, roles)
+			}
+		})
+	}
+	if got := global.ReviewAgents[RoleReviewer]; got.Agent != types.AgentClaude || len(global.ReviewAgents) != 3 {
+		t.Fatalf("repository override mutated the global roles: %+v", global.ReviewAgents)
+	}
+}
+
+func TestRepositoryOverrideReviewAgentsRejectInvalidConfig(t *testing.T) {
+	for input, want := range map[string]string{
+		"{other: {agent: pi}}":                   `invalid review_agents role "other"`,
+		"{fixer: {agent: unknown}}":              `review_agents.fixer.agent must name an explicit harness, got "unknown"`,
+		"{reviewer: {agent: pi, effort: turbo}}": "invalid review_agents.reviewer:",
+	} {
+		t.Run(input, func(t *testing.T) {
+			err := loadGlobalConfigError(t, "repository_overrides:\n  https://github.com/acme/widget:\n    review_agents: "+input+"\n")
+			if !strings.Contains(err.Error(), "repository_overrides.github.com/acme/widget") || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
 	}
 }
