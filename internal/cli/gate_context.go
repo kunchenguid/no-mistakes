@@ -82,8 +82,8 @@ func classifyGateControlCaller(ctx context.Context, allowOlder bool) (gatecontex
 			return gatecontext.Result{}, false, fmt.Errorf("connect to daemon for gate execution context: %w", err)
 		}
 		defer client.Close()
-		var wire ipc.GateContextResult
-		if err := client.Call(ipc.MethodGateContext, &ipc.GateContextParams{CWD: cwd, MarkerPresent: marker}, &wire); err != nil {
+		result, err := queryGateContext(ctx, client, cwd, marker)
+		if err != nil {
 			var rpcErr *ipc.RPCError
 			if !allowOlder || !errors.As(err, &rpcErr) || rpcErr.Code != ipc.ErrMethodNotFound {
 				return gatecontext.Result{}, false, fmt.Errorf("classify gate execution context: %w", err)
@@ -97,15 +97,7 @@ func classifyGateControlCaller(ctx context.Context, allowOlder bool) (gatecontex
 				return gatecontext.Result{}, false, fmt.Errorf("classify older daemon gate execution context: invalid daemon PID")
 			}
 		} else {
-			return gatecontext.Result{
-				Nested:           wire.Nested,
-				ManagedGit:       wire.ManagedGit,
-				AgentDescendant:  wire.AgentDescendant,
-				DaemonDescendant: wire.DaemonDescendant,
-				MarkerPresent:    wire.MarkerPresent,
-				RunID:            wire.RunID,
-				Phase:            wire.Phase,
-			}, false, nil
+			return result, false, nil
 		}
 	}
 	// A stale/non-socket endpoint can make IsRunning return an error together
@@ -130,6 +122,37 @@ func classifyGateControlCaller(ctx context.Context, allowOlder bool) (gatecontex
 	}
 	result, err := (gatecontext.Inspector{DB: database, Paths: p}).Inspect(ctx, request)
 	return result, older, err
+}
+
+// readEnclosingGateContext requires a live authenticated daemon response. It
+// never uses local DB fallback or IsRunning's stale-endpoint repair path.
+func readEnclosingGateContext(ctx context.Context) (gatecontext.Result, error) {
+	p, err := paths.New()
+	if err != nil {
+		return gatecontext.Result{}, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return gatecontext.Result{}, err
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		return gatecontext.Result{}, err
+	}
+	defer client.Close()
+	return queryGateContext(ctx, client, cwd, gatecontext.MarkerPresent())
+}
+
+func queryGateContext(ctx context.Context, client *ipc.Client, cwd string, marker bool) (gatecontext.Result, error) {
+	var wire ipc.GateContextResult
+	if err := client.CallWithContext(ctx, ipc.MethodGateContext, &ipc.GateContextParams{CWD: cwd, MarkerPresent: marker}, &wire, 0); err != nil {
+		return gatecontext.Result{}, err
+	}
+	return gatecontext.Result{
+		RunContext: wire.RunContext, Nested: wire.Nested, ManagedGit: wire.ManagedGit,
+		AgentDescendant: wire.AgentDescendant, DaemonDescendant: wire.DaemonDescendant,
+		MarkerPresent: wire.MarkerPresent, RunID: wire.RunID, Phase: wire.Phase,
+	}, nil
 }
 
 func emitGateContextRefusal(cmd *cobra.Command, result gatecontext.Result) error {

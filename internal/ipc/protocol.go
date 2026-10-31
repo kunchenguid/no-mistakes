@@ -473,13 +473,14 @@ type CancelRunResult struct {
 
 // GateContextResult is the privacy-safe execution-context classification.
 type GateContextResult struct {
-	Nested           bool           `json:"nested"`
-	ManagedGit       bool           `json:"managed_git,omitempty"`
-	AgentDescendant  bool           `json:"agent_descendant,omitempty"`
-	DaemonDescendant bool           `json:"daemon_descendant,omitempty"`
-	MarkerPresent    bool           `json:"marker_present,omitempty"`
-	RunID            string         `json:"run_id,omitempty"`
-	Phase            types.StepName `json:"phase,omitempty"`
+	RunContext       *types.GateRunContext `json:"run_context,omitempty"`
+	Nested           bool                  `json:"nested"`
+	ManagedGit       bool                  `json:"managed_git,omitempty"`
+	AgentDescendant  bool                  `json:"agent_descendant,omitempty"`
+	DaemonDescendant bool                  `json:"daemon_descendant,omitempty"`
+	MarkerPresent    bool                  `json:"marker_present,omitempty"`
+	RunID            string                `json:"run_id,omitempty"`
+	Phase            types.StepName        `json:"phase,omitempty"`
 }
 
 // AdmitPushResult is returned before a receive hook permits ref mutation.

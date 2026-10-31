@@ -43,8 +43,8 @@ type Request struct {
 	SkipManagedGit bool
 }
 
-// Result is safe to render to an agent. It intentionally carries no paths or
-// process details.
+// Result carries control-refusal evidence and, separately, verified custom-gate
+// provenance. Only RunContext exposes the canonical isolated-copy path.
 type Result struct {
 	Nested           bool
 	ManagedGit       bool
@@ -53,6 +53,7 @@ type Result struct {
 	MarkerPresent    bool
 	RunID            string
 	Phase            types.StepName
+	RunContext       *types.GateRunContext
 }
 
 // Inspector combines canonical managed Git identity with authenticated IPC
@@ -123,6 +124,18 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 		if len(matches) == 1 {
 			result.RunID = matches[0].runID
 			result.Phase = matches[0].phase
+			step := matches[0]
+			want := worktrees.RecordedDir(i.Paths, step.worktreeDir, step.repoID, step.runID)
+			// Provenance requires BOTH unique ancestry and exact canonical Git
+			// ownership; refusal metadata alone is intentionally less strict.
+			if result.ManagedGit && managedRepoID == step.repoID &&
+				worktreeRoot != "" && sameCanonicalPath(worktreeRoot, want) &&
+				step.phase.IsCustomGate() && (step.status == types.StepStatusRunning || step.status == types.StepStatusFixing) {
+				result.RunContext = &types.GateRunContext{
+					RunID: step.runID, RepoID: step.repoID,
+					Worktree: canonicalPath(want), Phase: step.phase,
+				}
+			}
 		}
 	}
 
@@ -157,6 +170,7 @@ type activeAgentStep struct {
 	// one current configuration would derive.
 	worktreeDir string
 	phase       types.StepName
+	status      types.StepStatus
 	agentPID    int
 }
 
@@ -186,7 +200,7 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 			if step.AgentPID != nil {
 				pid = *step.AgentPID
 			}
-			out = append(out, activeAgentStep{runID: run.RunID, repoID: run.RepoID, worktreeDir: run.Dir, phase: step.StepName, agentPID: pid})
+			out = append(out, activeAgentStep{runID: run.RunID, repoID: run.RepoID, worktreeDir: run.Dir, phase: step.StepName, status: step.Status, agentPID: pid})
 		}
 	}
 	return out, nil
@@ -241,7 +255,7 @@ func ancestry(pid int, parent func(int) (int, error)) (map[int]bool, error) {
 	chain := make(map[int]bool)
 	for depth := 0; pid > 0 && depth < 256; depth++ {
 		if chain[pid] {
-			break
+			return nil, fmt.Errorf("cyclic process ancestry")
 		}
 		chain[pid] = true
 		if pid == 1 {
@@ -252,6 +266,9 @@ func ancestry(pid int, parent func(int) (int, error)) (map[int]bool, error) {
 			return nil, err
 		}
 		pid = next
+	}
+	if pid > 1 {
+		return nil, fmt.Errorf("process ancestry exceeds depth limit")
 	}
 	return chain, nil
 }

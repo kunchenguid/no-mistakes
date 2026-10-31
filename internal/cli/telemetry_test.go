@@ -125,6 +125,18 @@ func TestStatusUninitializedRepoEmitsNoTelemetry(t *testing.T) {
 	}
 }
 
+func TestAxiContextEmitsNoTelemetry(t *testing.T) {
+	t.Setenv("NM_HOME", makeSocketSafeTempDir(t))
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	_, _ = executeCmd("axi", "context", "--json")
+	if got := recorder.count("command") + recorder.count("pageview"); got != 0 {
+		t.Fatalf("context emitted %d telemetry events, want 0", got)
+	}
+}
+
 func TestDoctorTracksFailedChecksAsError(t *testing.T) {
 	nmHome := filepath.Join(t.TempDir(), "missing-nm-home")
 	t.Setenv("NM_HOME", nmHome)

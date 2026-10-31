@@ -1623,6 +1623,7 @@ func runSnapshot(mgr *RunManager, runID string, read func(string) (*ipc.RunInfo,
 
 func gateContextResult(result gatecontext.Result) ipc.GateContextResult {
 	return ipc.GateContextResult{
+		RunContext:       result.RunContext,
 		Nested:           result.Nested,
 		ManagedGit:       result.ManagedGit,
 		AgentDescendant:  result.AgentDescendant,

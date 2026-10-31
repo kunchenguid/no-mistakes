@@ -554,6 +554,8 @@ gates:
 
 A gate runs its command in the run worktree through the platform shell, `sh -c` on POSIX or `cmd.exe /c` on Windows. A command that ignores `NO_MISTAKES_FINDINGS_FILE` passes on exit code 0 and reports one error finding on a non-zero exit, as before. Agent gates are not supported. An entry with `instructions` fails config parsing so it cannot be mistaken for a command gate.
 
+Gate scripts and their descendants can use [`no-mistakes axi context --json`](/no-mistakes/reference/cli/#no-mistakes-axi-context) to identify their enclosing active run and isolated copy. Unavailable context means receipt consumers must execute checks fresh, not infer identity from environment markers or branch status.
+
 #### Structured findings
 
 Before each command execution, including a re-check after a fix, no-mistakes creates an empty file in a private temporary directory outside the worktree and supplies its absolute path as `NO_MISTAKES_FINDINGS_FILE`. The command may write this JSON to that file:
