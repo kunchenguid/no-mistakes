@@ -536,7 +536,8 @@ func AutoFixableFindings(findings Findings) Findings {
 
 // MergeUserOverrides applies per-finding user instructions to existing agent
 // findings and appends user-added findings at the end. Added findings have
-// Source stamped to FindingSourceUser and receive deterministic "user-N" IDs
+// Source stamped to FindingSourceUser, their pipeline-written carry
+// provenance cleared, and receive deterministic "user-N" IDs
 // if they do not carry an ID. The original Findings is not mutated.
 func MergeUserOverrides(findings Findings, instructions map[string]string, added []Finding) Findings {
 	result := FindingsMetadata(findings)
@@ -559,6 +560,9 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	appended := false
 	for _, item := range added {
 		item.Source = FindingSourceUser
+		item.CarriedFromRound = 0
+		item.CarriedReason = ""
+		item.AddedAtRound = 0
 		if item.Action == "" {
 			item.Action = ActionAutoFix
 		}
