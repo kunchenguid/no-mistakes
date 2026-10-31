@@ -630,8 +630,8 @@ func activeRunInfoForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
 // preflightGuard returns an emitter for the first unmet pre-flight condition
 // when starting a new run, or nil when the branch is ready to validate. It
 // mirrors the wizard's branch/commit hygiene as detect-and-guide: refuse the
-// default branch, and refuse an uncommitted working tree, each with the
-// command the agent should run.
+// default branch, refuse an uncommitted working tree, and check effective Git
+// commit identity, each with actionable guidance.
 func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra.Command) error {
 	if env.repo.DefaultBranch != "" && branch == env.repo.DefaultBranch {
 		return func(cmd *cobra.Command) error {
@@ -656,6 +656,11 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 		}
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, "uncommitted changes in the working tree", help...)
+		}
+	}
+	if err := checkGitCommitIdentity(ctx); err != nil {
+		return func(cmd *cobra.Command) error {
+			return emitError(cmd, 1, err.Error(), gitIdentityHelp)
 		}
 	}
 	return nil

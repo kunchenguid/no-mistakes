@@ -154,7 +154,7 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 Explicit intent is the user's goal or request, not a description of the diff.
 no-mistakes uses the supplied text instead of transcript inference; see [Intent input](#intent-input) for transports and whitespace handling.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
-When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
+When starting a new run, `axi run` refuses the default branch, uncommitted working trees, and an unresolved or empty effective Git author/committer identity with actionable errors instead of auto-branching, auto-committing, or inventing an author. Identity is checked before submitting the run; reattachment to an existing run does not require this preflight.
 Ordinary reattachment to an in-flight run does not require intent input and never replaces that run's intent, even if new text is supplied. [Strict launch receipts](#strict-launch-receipts) require the original intent bytes on every retry, using any of the input transports below.
 
 ### Intent input
@@ -845,6 +845,7 @@ no-mistakes doctor
 Checks:
 
 - `git` binary
+- Effective Git author and committer identity in the current directory; both need a nonempty name and email
 - `gh` CLI (optional, needed for GitHub PR and CI steps)
 - `az` CLI (optional, needed for Azure DevOps PR and CI steps)
 - Data directory (`~/.no-mistakes/`)
@@ -857,6 +858,8 @@ Checks:
 - Every configured [`provider_plugins`](/no-mistakes/reference/global-config/#provider_plugins) entry, reported as `plugin <name>`: that its command executable resolves
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
+
+Run `doctor` from the repository you intend to validate so its identity check includes that repository's configuration. It uses `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`, honoring Git's config includes, author/committer settings, environment overrides, and `user.useConfigOnly`. An explicitly empty email is also refused. Configure your own name and email with `git config user.name "Your Name"` and `git config user.email "you@example.com"` (add `--global` only if you want those defaults). If already configured, check role-specific config and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` overrides; do not disable `user.useConfigOnly` to bypass the check. No identity is written or printed by the check. This checks the caller's current environment, not a pin or guarantee of the daemon's later environment.
 
 The standalone runner rows inspect default binary names; each ACP alias row (`cursor`, `devin`) reports whichever of its command binary and `acpx` are missing.
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
