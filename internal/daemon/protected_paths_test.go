@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -448,6 +449,270 @@ func (s protectedPathCommitStep) Execute(sctx *pipeline.StepContext) (*pipeline.
 		sctx.Agent = recoveredRunTestAgent{}
 	}
 	return s.step.Execute(sctx)
+}
+
+// TestProtectedPathsBranchLocalRefusedBeforeRun is the end-to-end regression for
+// #1036: a submitted branch that declares protected_paths the trusted default
+// branch does not carry must be refused before the run starts, rather than
+// failing open and letting auto-fix mutate those paths. setupTestGitRepo commits
+// a trusted .no-mistakes.yaml with no protected_paths, so the branch's
+// declaration would be silently dropped without this check.
+func TestProtectedPathsBranchLocalRefusedBeforeRun(t *testing.T) {
+	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&steps.PushStep{}}
+	})
+	repo, _ := setupTestGitRepo(t, p, database, "protected-branch-local")
+	configFile := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configFile, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nprotected_paths:\n  - tests/**\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", ".no-mistakes.yaml")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "declare protected paths on feature")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/feature")
+	featureHead := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/feature",
+		Old: strings.Repeat("0", 40), New: featureHead,
+	}, &result)
+	if err == nil {
+		t.Fatalf("expected the run to be refused, but it started (run %s)", result.RunID)
+	}
+	for _, want := range []string{"protected_paths", "tests/**", "default branch"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not mention %q", err, want)
+		}
+	}
+
+	// The refusal must not leave a run that could later resume into auto-fix of
+	// the protected paths: any run row for the branch is terminal with the reason.
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, run := range runs {
+		if run.Branch != "feature" {
+			continue
+		}
+		seen = true
+		if !run.Status.Terminal() {
+			t.Fatalf("refused run is not terminal: %+v", run)
+		}
+		if run.Error == nil || !strings.Contains(*run.Error, "protected_paths") {
+			t.Fatalf("refused run did not record the reason: %+v", run)
+		}
+	}
+	if !seen {
+		t.Fatal("no run row for the refused branch was recorded")
+	}
+}
+
+// TestProtectedPathsBranchLocalStaleInheritanceStarts covers a branch cut while
+// the default branch carried protected_paths that the default branch has since
+// removed: the branch only inherited the entry, so its push must start a run
+// instead of being refused as a branch-local declaration.
+func TestProtectedPathsBranchLocalStaleInheritanceStarts(t *testing.T) {
+	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&steps.PushStep{}}
+	})
+	repo, _ := setupTestGitRepo(t, p, database, "protected-stale-inheritance")
+	configFile := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	base := "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\n"
+	if err := os.WriteFile(configFile, []byte(base+"protected_paths:\n  - tests/**\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "commit", "-am", "protect tests on main")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	featureHead := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/feature")
+	if err := os.WriteFile(configFile, []byte(base), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "commit", "-am", "drop protected paths on main")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/feature",
+		Old: strings.Repeat("0", 40), New: featureHead,
+	}, &result); err != nil {
+		t.Fatalf("branch that only inherited protected_paths was refused: %v", err)
+	}
+	if result.RunID == "" {
+		t.Fatal("no run started for the branch")
+	}
+}
+
+// TestProtectedPathsBranchLocalRecoveredRunTerminalizes covers the #1043
+// Greptile P1 on current main: a parked run whose branch declares
+// protected_paths the trusted default branch lacks must not stay marked running
+// through recovery (re-prepared on every restart, then finally swept with an
+// unrelated "daemon crashed" reason). Recovery records the named refusal and
+// terminalizes the run instead.
+func TestProtectedPathsBranchLocalRecoveredRunTerminalizes(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	source := filepath.Join(t.TempDir(), "source")
+	gitCmd(t, "", "init", source)
+	gitCmd(t, source, "config", "user.email", "test@test.com")
+	gitCmd(t, source, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(source, ".no-mistakes.yaml"), []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "test.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "add", ".")
+	gitCmd(t, source, "commit", "-m", "main without protected_paths")
+
+	repo, err := database.InsertRepoWithID("branch-local-recovery", source, "https://example.com/owner/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := p.RepoDir(repo.ID)
+	gitCmd(t, "", "init", "--bare", gate)
+	gitCmd(t, source, "remote", "add", "gate", gate)
+	gitCmd(t, source, "push", "gate", "HEAD:refs/heads/main")
+	// The run worktree fetches the trusted default branch from origin, as a
+	// real init-configured gate does.
+	gitCmd(t, gate, "remote", "add", "origin", gate)
+
+	if err := os.WriteFile(filepath.Join(source, ".no-mistakes.yaml"), []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nprotected_paths:\n  - tests/**\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "add", ".no-mistakes.yaml")
+	gitCmd(t, source, "commit", "-m", "declare protected paths on feature")
+	featureHead := gitOutput(t, source, "rev-parse", "HEAD")
+	gitCmd(t, source, "push", "gate", "HEAD:refs/heads/feature")
+
+	run, err := database.InsertRun(repo.ID, "feature", featureHead, featureHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunWorktreeDir(run.ID, p.WorktreeDir(repo.ID, run.ID)); err != nil {
+		t.Fatal(err)
+	}
+	managed := p.WorktreeDir(repo.ID, run.ID)
+	if err := git.WorktreeAdd(context.Background(), gate, managed, featureHead); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an unpublished pipeline fix commit the parked run made after its
+	// submitted head; recovery must anchor it before terminalizing.
+	gitCmd(t, managed, "config", "user.email", "test@test.com")
+	gitCmd(t, managed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(managed, "fix.txt"), []byte("pipeline fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, managed, "add", "fix.txt")
+	gitCmd(t, managed, "commit", "-m", "pipeline fix")
+	fixHead := gitOutput(t, managed, "rev-parse", "HEAD")
+	if err := database.UpdateRunHeadSHA(run.ID, fixHead); err != nil {
+		t.Fatal(err)
+	}
+	// An unfinished fix left uncommitted (e.g. by a Test agent timeout) exists
+	// only in the worktree; cleanup must not delete it.
+	unfinished := filepath.Join(managed, "unfinished.txt")
+	if err := os.WriteFile(unfinished, []byte("uncommitted fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The run is parked at a real gate: a completed step before it and the
+	// gate's step awaiting approval.
+	doneStep, err := database.InsertStepResult(run.ID, types.StepRebase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStep(doneStep.ID, 0, 10, ""); err != nil {
+		t.Fatal(err)
+	}
+	gateStep, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ParkStepForApproval(run.ID, gateStep.ID, types.StepStatusAwaitingApproval, 1, 20, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewRunManager(database, p, nil)
+	plans := mgr.recoverableParkedRuns(context.Background())
+	if len(plans) != 0 {
+		t.Fatalf("refused run must not be resumed, got %d plan(s)", len(plans))
+	}
+	if got := gitOutput(t, gate, "rev-parse", custody.RecoveryRef(run.ID)); got != fixHead {
+		t.Fatalf("unpublished pipeline head was not anchored: %s, want %s", got, fixHead)
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunFailed {
+		t.Fatalf("refused recovered run status = %q, want %q (error %v)", got.Status, types.RunFailed, got.Error)
+	}
+	if got.Error == nil || !strings.Contains(*got.Error, "protected_paths") || !strings.Contains(*got.Error, "tests/**") {
+		t.Fatalf("refused recovered run did not record the named refusal: %v", got.Error)
+	}
+	if !strings.Contains(*got.Error, "uncommitted changes") || !strings.Contains(*got.Error, managed) {
+		t.Fatalf("refusal does not say the dirty worktree is kept: %v", *got.Error)
+	}
+	if got.AwaitingAgentSince != nil {
+		t.Fatalf("failed run still reports awaiting agent since %d", *got.AwaitingAgentSince)
+	}
+	// A failed run must not still show a gate that no response can reach.
+	runSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range runSteps {
+		switch s.ID {
+		case doneStep.ID:
+			if s.Status != types.StepStatusCompleted {
+				t.Fatalf("completed step changed to %q", s.Status)
+			}
+		case gateStep.ID:
+			if s.Status != types.StepStatusFailed || s.Error == nil || !strings.Contains(*s.Error, "tests/**") {
+				t.Fatalf("parked gate step = %q (error %v), want failed with the refusal", s.Status, s.Error)
+			}
+		}
+	}
+	reapAll := worktreeReapPolicy{Retention: time.Nanosecond}
+	future := time.Now().Add(365 * 24 * time.Hour)
+	reapWorktrees(database, p, reapAll, future)
+	if data, err := os.ReadFile(unfinished); err != nil || string(data) != "uncommitted fix\n" {
+		t.Fatalf("worktree reaper deleted the refused run's uncommitted work: %v", err)
+	}
+	refusal, _, ok := strings.Cut(*got.Error, fmt.Sprintf(recoveryRefusalKeptWorktreeFormat, managed))
+	if !ok {
+		t.Fatalf("refusal %q does not end with the kept-worktree notice", *got.Error)
+	}
+	if err := database.UpdateRunError(run.ID, refusal); err != nil {
+		t.Fatal(err)
+	}
+	reapWorktrees(database, p, reapAll, future)
+	if _, err := os.Stat(managed); !os.IsNotExist(err) {
+		t.Fatalf("control: the same reaper policy kept a refused run's worktree without the kept-worktree notice (stat err %v)", err)
+	}
 }
 
 func TestProtectedPathRefusalParksBeforeManagerCleanup(t *testing.T) {
