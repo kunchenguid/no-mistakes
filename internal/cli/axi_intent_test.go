@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -171,23 +172,92 @@ func TestAxiRunIntentAbsentStillRequiresIntentForNewRun(t *testing.T) {
 
 func TestAxiRunIntentReattachDoesNotReplaceIntent(t *testing.T) {
 	// Only lookup/drive methods exist: any launch or mutation would fail.
-	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{})
-	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) { return fx.completed(), nil })
+	var drives, subscriptions atomic.Int32
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		subscribe: func(ctx context.Context, raw json.RawMessage) (ipc.StreamFunc, error) {
+			subscriptions.Add(1)
+			return hangSubscribe(ctx, raw)
+		},
+	})
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo, err := findRepo(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model a post-receive hook's active run, first without intent and then
+	// with stored intent. Reattachment must not rewrite either case.
+	run, err := d.InsertRun(repo.ID, "feature/timeout", fx.head, fx.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	fx.setGetActive(func(context.Context) (*ipc.RunInfo, error) {
+		active := fx.running()
+		active.ID = run.ID
+		return active, nil
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
+		drives.Add(1)
+		completed := fx.completed()
+		completed.ID = run.ID
+		return completed, nil
+	})
 	text := "a different goal\n"
 	path := writeIntentFile(t, text)
-	for _, args := range [][]string{nil, {"--intent", text}, {"--intent-file", path}, {"--intent", "-"}} {
+	for _, stored := range []string{"", "original goal", text} {
+		if stored != "" {
+			if err := d.UpdateRunIntent(run.ID, db.RunIntent{Summary: stored, Source: "user"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before, err := d.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"--intent", text}, {"--intent-file", path}, {"--intent", "-"}} {
+			cmd := newAxiRunCmd()
+			cmd.SetArgs(args)
+			cmd.SetIn(strings.NewReader(text))
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			err := cmd.Execute()
+			var ee *exitError
+			if !errors.As(err, &ee) || ee.code != 2 || !strings.Contains(out.String(), run.ID) || !strings.Contains(out.String(), "intent is accepted only when starting a new run") || !strings.Contains(out.String(), "Omit --intent/--intent-file to reattach") {
+				t.Fatalf("explicit reattach %q, stored %q = %v\n%s", args, stored, err, out.String())
+			}
+			if drives.Load() != 0 || subscriptions.Load() != 0 {
+				t.Fatal("explicit reattach drove the existing run")
+			}
+			after, err := d.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("explicit reattach mutated persisted run: before=%+v after=%+v", before, after)
+			}
+		}
+	}
+	// With no input, ordinary reattachment still drives the existing run.
+	{
 		cmd := newAxiRunCmd()
-		cmd.SetArgs(args)
 		unread := &intentErrorReader{}
 		cmd.SetIn(unread)
-		if len(args) != 0 && args[1] == "-" {
-			cmd.SetIn(strings.NewReader(text))
-		}
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
-		if err := cmd.Execute(); err != nil || !strings.Contains(out.String(), "run-timeout") || !strings.Contains(out.String(), "outcome: passed") {
-			t.Fatalf("reattach %q = %v\n%s", args, err, out.String())
+		if err := cmd.Execute(); err != nil || !strings.Contains(out.String(), run.ID) || !strings.Contains(out.String(), "outcome: passed") || drives.Load() == 0 {
+			t.Fatalf("reattach without intent = %v\n%s", err, out.String())
 		}
 		if unread.reads != 0 {
 			t.Fatal("ordinary reattach read unselected stdin")

@@ -179,7 +179,8 @@ func newAxiRunCmd() *cobra.Command {
 			"whitespace when storing intent. Prefer file/stdin to interpolating prose\n" +
 			"into shell commands: the caller's shell can expand\n" +
 			"backticks and dollars in --intent TEXT before no-mistakes receives it.\n" +
-			"Ordinary reattachment needs no input and keeps the existing run's intent.\n\n" +
+			"Ordinary reattachment keeps the existing run's intent and refuses explicit\n" +
+			"intent input, even if the text is unchanged. Omit --intent/--intent-file to reattach.\n\n" +
 			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
 			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
 			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
@@ -367,6 +368,13 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 		}
 		if active != nil {
+			// Ordinary reattachment cannot apply new intent to work already in
+			// progress. Reject explicit input rather than silently discarding it.
+			// Strict receipt replays use the daemon's intent binding above.
+			if intent != "" {
+				return emitError(cmd, 2, fmt.Sprintf("active run %s is already in progress; intent is accepted only when starting a new run", active.ID),
+					"Omit --intent/--intent-file to reattach, or abort the active run before starting a new one with the intended constraints")
+			}
 			if !active.PiProfile.Matches(profile) {
 				return emitError(cmd, 2, "active run has a different Pi profile; omit --model/--effort to reattach")
 			}
@@ -832,6 +840,22 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 		}
 		if planID != "" && (run.VerificationPlan == nil || run.VerificationPlan.ID != planID) {
 			return "", fmt.Errorf("triggered run has a conflicting verification plan")
+		}
+		// An up-to-date push runs no hook. A delayed earlier hook can win
+		// this lookup, so verify the selected run actually recorded our intent
+		// before treating it as the result of this launch.
+		if intent != "" {
+			stored, err := env.d.GetRun(run.ID)
+			if err != nil {
+				return "", fmt.Errorf("verify triggered run %s intent: %w", run.ID, err)
+			}
+			expected := intent
+			if planID == "" {
+				expected = strings.TrimSpace(expected)
+			}
+			if stored == nil || stored.Intent == nil || *stored.Intent != expected {
+				return "", fmt.Errorf("triggered run %s does not record the supplied intent; refusing to drive it; omit --intent/--intent-file to reattach, or abort it before starting a new run", run.ID)
+			}
 		}
 		return run.ID, nil
 	}

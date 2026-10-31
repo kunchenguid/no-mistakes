@@ -294,7 +294,7 @@ func TestLivePiProfileReattachAndRerunSemantics(t *testing.T) {
 	}
 
 	// A bare reattach must keep the original pin untouched.
-	out, err = h.Run("axi", "run", "--intent", "pinned reattach probe")
+	out, err = h.Run("axi", "run")
 	if err != nil {
 		t.Fatalf("reattach without flags: %v\n%s", err, out)
 	}
