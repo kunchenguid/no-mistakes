@@ -118,6 +118,9 @@ func startNativeAgentCommand(cmd *exec.Cmd, activity func(), requireCompletedChi
 			active, members, probeErr := shellenv.ShellCommandGroupActive(cmd, ownedChildrenSettleWindow)
 			if probeErr != nil {
 				err = fmt.Errorf("native check completion is unverified: %w", probeErr)
+				if members != "" {
+					err = fmt.Errorf("%w; last observed %s", err, members)
+				}
 			} else if active {
 				msg := "native check completion is unverified: agent exited with active owned children"
 				if members != "" {

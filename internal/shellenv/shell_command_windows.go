@@ -235,9 +235,12 @@ func forceKillShellCommand(cmd *exec.Cmd) error {
 // elapses: a child that was merely finishing when the leader exited (issue
 // #1614) gets the window to leave the job, and only a member still live past
 // the deadline makes the verdict active. The returned detail names up to
-// groupMemberReportLimit members seen on the last probe so the caller's
+// groupMemberReportLimit members seen on the last good probe so the caller's
 // error can identify what refused to exit; it is empty when the verdict rests
-// only on a moved TotalProcesses counter with nothing nameable left.
+// only on a moved TotalProcesses counter with nothing nameable left. A probe
+// that fails after earlier probes saw members still returns those
+// last-observed members, since the probe's error refuses completion without
+// identifying anyone.
 func ShellCommandGroupActive(cmd *exec.Cmd, window time.Duration) (active bool, detail string, err error) {
 	job, ok := shellCommandJob(cmd)
 	if !ok || !job.assigned.Load() || cmd.Process == nil {
@@ -245,10 +248,17 @@ func ShellCommandGroupActive(cmd *exec.Cmd, window time.Duration) (active bool, 
 	}
 	leaderPID := uint32(cmd.Process.Pid)
 	deadline := time.Now().Add(window)
+	var lastMembers []groupMember
 	for {
 		live, members, err := probeShellCommandJob(job.handle, leaderPID)
-		if err != nil || !live || !time.Now().Before(deadline) {
-			return live, formatGroupMembers(members), err
+		if len(members) > 0 {
+			lastMembers = members
+		}
+		if err != nil {
+			return live, formatGroupMembers(lastMembers), err
+		}
+		if !live || !time.Now().Before(deadline) {
+			return live, formatGroupMembers(members), nil
 		}
 		time.Sleep(groupProbeInterval)
 	}

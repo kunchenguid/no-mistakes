@@ -95,6 +95,31 @@ func TestShellCommandGroupActiveExpiredPSCannotCertifyEmptyGroup(t *testing.T) {
 	})
 }
 
+func TestShellCommandGroupActiveTimeoutKeepsLastObservedMember(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pgid := syscall.Getpgrp()
+		cmd := &exec.Cmd{Process: &os.Process{Pid: pgid}}
+		calls := 0
+		_, detail, err := shellCommandGroupActive(cmd, 2*time.Second, func(ctx context.Context) ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return fmt.Appendf(nil, "%d S 4242 sleep 30\n", pgid), nil
+			}
+			// The final probe gets only the remaining window and stalls
+			// past it; the refusal must still name the member the last
+			// good probe saw.
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err=%v; want unverified completion from deadline error", err)
+		}
+		if !strings.Contains(detail, "pid 4242") || !strings.Contains(detail, "sleep 30") {
+			t.Fatalf("detail=%q; want the last observed member named", detail)
+		}
+	})
+}
+
 func TestShellCommandGroupActiveStopsAtDeadlineBetweenProbes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		pgid := syscall.Getpgrp()

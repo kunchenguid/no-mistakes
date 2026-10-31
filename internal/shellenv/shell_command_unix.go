@@ -153,8 +153,10 @@ func TerminateShellCommandGroup(cmd *exec.Cmd) {
 // when the leader exited (issue #1614) gets the window to leave the group, and
 // only a member still live past the deadline makes the verdict active. The
 // returned detail names up to groupMemberReportLimit members seen on the last
-// probe so the caller's error can identify what refused to exit; it is empty
-// when nothing nameable survived.
+// good probe so the caller's error can identify what refused to exit; it is
+// empty when nothing nameable survived. A probe that fails after earlier
+// probes saw members still returns those last-observed members, since the
+// probe's error refuses completion without identifying anyone.
 func ShellCommandGroupActive(cmd *exec.Cmd, window time.Duration) (active bool, detail string, err error) {
 	return shellCommandGroupActive(cmd, window, shellCommandGroupPS)
 }
@@ -164,6 +166,7 @@ func shellCommandGroupActive(cmd *exec.Cmd, window time.Duration, ps func(contex
 		return false, "", errors.New("command was not started")
 	}
 	deadline := time.Now().Add(window)
+	var lastMembers []groupMember
 	for first := true; ; first = false {
 		timeout := min(defaultWaitDelay, time.Until(deadline))
 		if first && timeout <= 0 {
@@ -171,8 +174,14 @@ func shellCommandGroupActive(cmd *exec.Cmd, window time.Duration, ps func(contex
 			timeout = 100 * time.Millisecond
 		}
 		live, members, err := probeShellCommandGroup(cmd.Process.Pid, timeout, ps)
-		if err != nil || !live || !time.Now().Before(deadline) {
-			return live, formatGroupMembers(members), err
+		if len(members) > 0 {
+			lastMembers = members
+		}
+		if err != nil {
+			return live, formatGroupMembers(lastMembers), err
+		}
+		if !live || !time.Now().Before(deadline) {
+			return live, formatGroupMembers(members), nil
 		}
 		time.Sleep(min(groupProbeInterval, time.Until(deadline)))
 		if !time.Now().Before(deadline) {
