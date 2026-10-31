@@ -507,6 +507,12 @@ func codexFillNullableFields(value, schema any) bool {
 	return changed
 }
 
+// addAdditionalPropertiesFalse rewrites a parsed JSON schema in place into the
+// shape a strict function schema requires: every object level carries
+// additionalProperties: false and a required list naming every property, and a
+// property the caller left optional becomes nullable instead of omittable.
+// This normalizes Codex's output schema file; Pi uses piStrictToolSchema to
+// keep concrete property types for compatibility with legacy tool validation.
 func addAdditionalPropertiesFalse(value any) {
 	schema, ok := value.(map[string]any)
 	if !ok {

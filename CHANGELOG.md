@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.106.1](https://github.com/kunchenguid/no-mistakes/compare/v1.106.0...v1.106.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **agent:** make Pi structured-output schemas strict-valid ([#1665](https://github.com/kunchenguid/no-mistakes/issues/1665)) ([cb90f1d](https://github.com/kunchenguid/no-mistakes/commit/cb90f1d26b6b9dd9146b9380889e086d665b54ac))
+
 ## [1.106.0](https://github.com/kunchenguid/no-mistakes/compare/v1.105.0...v1.106.0) (2026-10-31)
 
 
