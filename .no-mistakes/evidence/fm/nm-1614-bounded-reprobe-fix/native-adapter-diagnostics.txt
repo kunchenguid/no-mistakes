@@ -1,0 +1,2 @@
+{"child_duration_seconds":"1.2","child_pid":49024,"elapsed_ms":1590,"error":"\u003cnil\u003e","provider":"scripted wire fixture (not a live LLM)","text":"ok"}
+{"child_duration_seconds":"30","child_pid":49262,"elapsed_ms":2034,"error":"codex exited: native check completion is unverified: inspect process group states: context deadline exceeded; last observed pid 49262 (sleep 30): ","provider":"scripted wire fixture (not a live LLM)","text":""}

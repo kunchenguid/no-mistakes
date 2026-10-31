@@ -1,0 +1,9 @@
+{"active_after_window":false,"child_pid":0,"error":"\u003cnil\u003e","initial_active":false,"initial_members":"","last_members":"","leader_pid":1171,"probe_ms":0,"scenario":"clean"}
+{"active_after_window":false,"child_pid":1186,"error":"\u003cnil\u003e","initial_active":true,"initial_members":"pid 1186 (sleep 1.2)","last_members":"","leader_pid":1179,"probe_ms":1334,"scenario":"finishing"}
+cleanup scenario=finishing child_pid=1186 no_live_child=true
+{"active_after_window":false,"child_pid":1975,"error":"inspect process group states: context deadline exceeded","initial_active":true,"initial_members":"pid 1975 (sleep 30)","last_members":"pid 1975 (sleep 30)","leader_pid":1973,"probe_ms":2001,"scenario":"surviving"}
+cleanup scenario=surviving child_pid=1975 no_live_child=true
+{"active_after_window":false,"child_pid":2813,"error":"inspect process group states: context deadline exceeded","initial_active":true,"initial_members":"pid 2813 (sleep 30)","last_members":"","leader_pid":2805,"probe_ms":2003,"scenario":"slow-first-ps"}
+cleanup scenario=slow-first-ps child_pid=2813 no_live_child=true
+{"active_after_window":false,"child_pid":3697,"error":"inspect process group states: context deadline exceeded","initial_active":true,"initial_members":"pid 3697 (sleep 30)","last_members":"pid 3697 (sleep 30)","leader_pid":3695,"probe_ms":2003,"scenario":"slow-later-ps"}
+cleanup scenario=slow-later-ps child_pid=3697 no_live_child=true
