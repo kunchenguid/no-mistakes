@@ -642,7 +642,7 @@ func (rv runView) automaticSkips() []automaticSkipRow {
 	var rows []automaticSkipRow
 	for _, s := range rv.Steps {
 		if s.Status == string(types.StepStatusSkipped) && s.SkipReason != "" &&
-			(s.Name == string(types.StepPR) || s.Name == string(types.StepCI)) {
+			(s.Name == string(types.StepIntent) || s.Name == string(types.StepPR) || s.Name == string(types.StepCI)) {
 			rows = append(rows, automaticSkipRow{Step: s.Name, Reason: s.SkipReason})
 		}
 	}

@@ -43,8 +43,8 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 			if sctx != nil && sctx.Run != nil {
 				runID = sctx.Run.ID
 			}
-			slog.Warn("panic during intent extraction", "run_id", runID, "panic", r)
-			outcome = &pipeline.StepOutcome{Skipped: true}
+			slog.Warn("panic during intent extraction", "run_id", runID)
+			outcome = skippedIntent(sctx, "intent extraction panicked")
 			err = nil
 		}
 	}()
@@ -59,14 +59,14 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 		return &pipeline.StepOutcome{}, nil
 	}
 
-	if sctx == nil || sctx.Config == nil || !sctx.Config.Intent.Enabled {
-		if sctx != nil && sctx.Log != nil {
-			sctx.Log("intent extraction disabled in config")
-		}
-		return &pipeline.StepOutcome{Skipped: true}, nil
+	if sctx == nil || sctx.Config == nil {
+		return skippedIntent(sctx, "intent configuration unavailable"), nil
+	}
+	if !sctx.Config.Intent.Enabled {
+		return skippedIntent(sctx, "intent extraction disabled in config"), nil
 	}
 	if sctx.DB == nil || sctx.Run == nil || sctx.Repo == nil {
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return skippedIntent(sctx, "intent extraction unavailable: missing run, repository, or database"), nil
 	}
 
 	sctx.Log("scanning recent agent transcripts...")
@@ -103,27 +103,22 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	if runErr != nil {
 		if errors.Is(runErr, intent.ErrNoMatch) {
 			outcomeLabel = "no_match"
-			sctx.Log("no matching agent transcript found")
-			return &pipeline.StepOutcome{Skipped: true}, nil
+			return skippedIntent(sctx, "no matching agent transcript found"), nil
 		}
 		if errors.Is(runErr, errIntentEmptyDiff) {
 			outcomeLabel = "empty_diff"
-			sctx.Log("no diff between base and head, skipping intent extraction")
-			return &pipeline.StepOutcome{Skipped: true}, nil
+			return skippedIntent(sctx, "no diff between base and head"), nil
 		}
 		if errors.Is(runErr, intent.ErrDisambiguatorCleanup) {
 			outcomeLabel = "error"
 			sctx.Log(fmt.Sprintf("intent extraction failed: %v", runErr))
 			return nil, runErr
 		}
-		slog.Debug("intent: extract failed", "run_id", sctx.Run.ID, "error", runErr)
 		outcomeLabel = "error"
-		sctx.Log(fmt.Sprintf("intent extraction failed: %v", runErr))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return skippedIntent(sctx, "intent extraction failed"), nil
 	}
 	if result == nil {
-		sctx.Log("no intent attached")
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return skippedIntent(sctx, "no intent extracted"), nil
 	}
 
 	matchedAgent = result.AgentName
@@ -137,8 +132,7 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 		Score:     result.Score,
 	}); dbErr != nil {
 		slog.Warn("intent: persist failed", "run_id", sctx.Run.ID, "error", dbErr)
-		sctx.Log(fmt.Sprintf("intent matched but failed to persist: %v", dbErr))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return skippedIntent(sctx, "inferred intent could not be saved"), nil
 	}
 
 	summaryCopy := result.Summary
@@ -156,6 +150,16 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 
 	slog.Info("intent: attached", "run_id", sctx.Run.ID, "agent", matchedAgent, "score", score)
 	return &pipeline.StepOutcome{}, nil
+}
+
+// Keep the log and persisted skip cause identical, without copying errors or
+// transcript contents into the diagnostics shown at gates and in outcomes.
+func skippedIntent(sctx *pipeline.StepContext, cause string) *pipeline.StepOutcome {
+	reason := "review continuing without intent: " + cause
+	if sctx != nil && sctx.Log != nil {
+		sctx.Log(reason)
+	}
+	return &pipeline.StepOutcome{Skipped: true, SkipReason: reason}
 }
 
 // errIntentEmptyDiff is returned by defaultRunIntent when the diff between

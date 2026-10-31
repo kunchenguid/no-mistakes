@@ -293,7 +293,7 @@ Run the pipeline and decide on its findings as they come up:
    - `passed-with-override` - the pipeline completed with an explicitly approved Test exception or CI failure.
      Report the exception, not a clean pass.
      Test evidence is in `run.test_override_reason`, including when CI readiness returns `checks-passed`; do not omit it from the summary.
-   - `passed-with-skips` - publication or CI verification automatically skipped.
+   - `passed-with-skips` - intent extraction, PR publication, or CI verification automatically skipped.
      Report the missing evidence and its cause from `run.automatic_skips`,
      bound to the full `run.head_sha`. This is neither CI readiness nor a
      failing code verdict. Explicit per-run skips retain their existing behavior.

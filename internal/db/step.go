@@ -37,7 +37,7 @@ type StepResult struct {
 	// the configured-command waiver used by PR enforcement. NULL means no
 	// recorded approval; an empty string means approved without a reason.
 	ApprovalReason *string
-	// SkipReason records an automatic PR/CI skip, distinct from an explicit
+	// SkipReason records an automatic step skip, distinct from an explicit
 	// per-run skip. Legacy rows have no recorded reason.
 	SkipReason *string
 	// ResponseOrigin records the caller of the latest gate response stored on

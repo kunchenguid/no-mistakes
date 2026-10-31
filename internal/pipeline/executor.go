@@ -1317,6 +1317,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		touchLogActivity(text, strings.Contains(text, "\n"))
 	}
 	onAgentLifecycle := func(event agent.LifecycleEvent) {
+		// Intent agents read private transcripts. Their free-form lifecycle
+		// messages can quote those transcripts through stderr or retry errors.
+		if stepName == types.StepIntent {
+			event.Message = fmt.Sprintf("%s %s", event.Agent, event.Phase)
+		}
 		text := event.Message
 		if text == "" {
 			text = fmt.Sprintf("%s %s", event.Agent, event.Phase)

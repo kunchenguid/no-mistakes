@@ -366,3 +366,48 @@ func TestIntentStep_UsesSuppliedIntent(t *testing.T) {
 		t.Errorf("missing supplied-intent log line; logs: %v", logs)
 	}
 }
+
+func TestIntentStep_SkipsExplainMissingIntent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		setup   func(*pipeline.StepContext)
+		extract func(context.Context, *pipeline.StepContext) (*intent.Result, error)
+		cause   string
+	}{
+		{name: "disabled", setup: func(s *pipeline.StepContext) { s.Config.Intent.Enabled = false }, cause: "disabled in config"},
+		{name: "missing context", setup: func(s *pipeline.StepContext) { s.Repo = nil }, cause: "unavailable"},
+		{name: "no match", extract: func(context.Context, *pipeline.StepContext) (*intent.Result, error) { return nil, intent.ErrNoMatch }, cause: "no matching agent transcript"},
+		{name: "empty diff", extract: func(context.Context, *pipeline.StepContext) (*intent.Result, error) { return nil, errIntentEmptyDiff }, cause: "no diff"},
+		{name: "unavailable transcript", extract: func(context.Context, *pipeline.StepContext) (*intent.Result, error) {
+			return nil, errors.New("PRIVATE-TRANSCRIPT")
+		}, cause: "extraction failed"},
+		{name: "no result", extract: func(context.Context, *pipeline.StepContext) (*intent.Result, error) { return nil, nil }, cause: "no intent extracted"},
+		{name: "panic", extract: func(context.Context, *pipeline.StepContext) (*intent.Result, error) { panic("PRIVATE-TRANSCRIPT") }, cause: "panicked"},
+		{name: "persistence failed", setup: func(s *pipeline.StepContext) { s.DB.Close() }, extract: func(context.Context, *pipeline.StepContext) (*intent.Result, error) {
+			return &intent.Result{Summary: "PRIVATE-TRANSCRIPT", AgentName: "fake"}, nil
+		}, cause: "could not be saved"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sctx := newIntentStepContext(t)
+			if tc.setup != nil {
+				tc.setup(sctx)
+			}
+			var logs []string
+			sctx.Log = func(line string) { logs = append(logs, line) }
+			outcome, err := (&IntentStep{runIntent: tc.extract}).Execute(sctx)
+			if err != nil || outcome == nil || !outcome.Skipped || outcome.NeedsApproval {
+				t.Fatalf("expected automatic continuation, got %+v, %v", outcome, err)
+			}
+			if !strings.Contains(outcome.SkipReason, "without intent") || !strings.Contains(outcome.SkipReason, tc.cause) {
+				t.Errorf("skip reason = %q, want missing intent and cause %q", outcome.SkipReason, tc.cause)
+			}
+			if strings.Contains(outcome.SkipReason+strings.Join(logs, "\n"), "PRIVATE-TRANSCRIPT") {
+				t.Error("skip diagnostics leaked transcript content")
+			}
+			if sctx.Run.Intent != nil {
+				t.Errorf("skipped extraction attached intent: %v", sctx.Run.Intent)
+			}
+		})
+	}
+}

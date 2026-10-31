@@ -242,8 +242,8 @@ It stays a success, including at the checks-passed stopping point, but does not 
 A Test exception is an approval past a failing configured `commands.test`, a `no-go` verdict, an `inconclusive` verdict, or a [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) budget cut; approving a `no-surface` park records its reason without adding the override qualification.
 `run.test_override_reason` preserves the Test exception explanation in drive and status output, including at the `checks-passed` stopping point; CI overrides retain their separate reason.
 Report those exceptions rather than describing Test as clean.
-`passed-with-skips` is a completed run where PR publication or CI verification automatically skipped because its provider was unavailable, or CI had no PR URL.
-It retains exit code 0: missing verification is not a failing code verdict.
+`passed-with-skips` is a completed run where [intent extraction](/no-mistakes/reference/pipeline-steps/#intent), PR publication, or CI verification automatically skipped with a recorded cause.
+It retains exit code 0: missing context or verification is not a failing code verdict.
 `run.automatic_skips` names each affected step and cause, and `run.head_sha` gives the full recorded head in both drive output and `axi status`.
 Report that missing evidence; this outcome does not establish CI readiness or a merge.
 Explicit per-run skips retain their existing behavior.

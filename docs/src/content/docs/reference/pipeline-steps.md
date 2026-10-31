@@ -63,6 +63,7 @@ This is best-effort context, and when available it is included in rebase fixes, 
 - Logs accepted candidate diagnostics, including source, session, CWD, score, confidence, overlap, decision, and acceptance reason
 - Logs the matched source, score, and sanitized inferred intent when a transcript matches
 - Skips instead of failing when disabled, no matching transcript is found, the diff is empty, extraction errors, or persistence fails
+- Logs and persists a reason for every automatic skip, distinguishing disabled extraction from failure to discover or save intent without including transcript contents or raw extraction errors in that reason. AXI exposes it under [`run.automatic_skips`](/no-mistakes/reference/cli/#no-mistakes-axi-run)
 
 This step does not block the pipeline for missing transcripts, summarization that exceeds the five-minute extraction cap, or other extraction failures, which are reported as skipped outcomes.
 It can fail the run only if cleanup fails after the disambiguation agent leaves worktree side effects.
