@@ -71,6 +71,11 @@ func TestShellCommandGroupActiveIgnoresZombiesButKeepsLiveChildren(t *testing.T)
 				t.Fatalf("fixture group must still exist: %v", err)
 			}
 			active, _, err := ShellCommandGroupActive(leader, 300*time.Millisecond)
+			if live && errors.Is(err, context.DeadlineExceeded) {
+				// A ps probe that exhausts the remaining window refuses
+				// completion as unverified, rather than declaring inactivity.
+				return
+			}
 			if err != nil || active != live {
 				t.Fatalf("live=%v: group active=%v, error=%v", live, active, err)
 			}
@@ -136,17 +141,24 @@ func TestShellCommandGroupActiveRefusesMemberSurvivingWindow(t *testing.T) {
 	memberPID := readPID(t, pidFile, 5*time.Second)
 	t.Cleanup(func() { _ = syscall.Kill(memberPID, syscall.SIGKILL) })
 
+	// Check identity independently of the bounded wait: a last ps probe
+	// may legitimately time out and refuse completion as unverified instead.
+	active, detail, err := ShellCommandGroupActive(cmd, 0)
+	if err != nil || !active || !strings.Contains(detail, "pid "+strconv.Itoa(memberPID)) || !strings.Contains(detail, "(sleep 30)") {
+		t.Fatalf("active=%v detail=%q err=%v, want pid %d and its command named", active, detail, err, memberPID)
+	}
 	const window = 400 * time.Millisecond
 	started := time.Now()
-	active, detail, err := ShellCommandGroupActive(cmd, window)
-	if err != nil || !active {
+	active, detail, err = ShellCommandGroupActive(cmd, window)
+	if err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("unexpected probe error: %v", err)
+		}
+	} else if !active {
 		t.Fatalf("active=%v detail=%q err=%v, want the surviving member refused", active, detail, err)
 	}
 	if elapsed := time.Since(started); elapsed < window {
 		t.Fatalf("re-probe returned after %s, before the %s window elapsed", elapsed, window)
-	}
-	if !strings.Contains(detail, "pid "+strconv.Itoa(memberPID)) || !strings.Contains(detail, "(sleep 30)") {
-		t.Fatalf("detail = %q, want pid %d and its command named", detail, memberPID)
 	}
 }
 

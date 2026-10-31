@@ -156,23 +156,35 @@ func TerminateShellCommandGroup(cmd *exec.Cmd) {
 // probe so the caller's error can identify what refused to exit; it is empty
 // when nothing nameable survived.
 func ShellCommandGroupActive(cmd *exec.Cmd, window time.Duration) (active bool, detail string, err error) {
+	return shellCommandGroupActive(cmd, window, shellCommandGroupPS)
+}
+
+func shellCommandGroupActive(cmd *exec.Cmd, window time.Duration, ps func(context.Context) ([]byte, error)) (active bool, detail string, err error) {
 	if cmd == nil || cmd.Process == nil {
 		return false, "", errors.New("command was not started")
 	}
 	deadline := time.Now().Add(window)
-	for {
-		live, members, err := probeShellCommandGroup(cmd.Process.Pid)
+	for first := true; ; first = false {
+		timeout := min(defaultWaitDelay, time.Until(deadline))
+		if first && timeout <= 0 {
+			// A zero-window call still needs one verifiable snapshot.
+			timeout = 100 * time.Millisecond
+		}
+		live, members, err := probeShellCommandGroup(cmd.Process.Pid, timeout, ps)
 		if err != nil || !live || !time.Now().Before(deadline) {
 			return live, formatGroupMembers(members), err
 		}
-		time.Sleep(groupProbeInterval)
+		time.Sleep(min(groupProbeInterval, time.Until(deadline)))
+		if !time.Now().Before(deadline) {
+			return live, formatGroupMembers(members), nil
+		}
 	}
 }
 
 // probeShellCommandGroup takes one snapshot of the process group: the signal
 // probe establishes the group is not empty, then the ps table names every
 // member that has not finished execution.
-func probeShellCommandGroup(pgid int) (bool, []groupMember, error) {
+func probeShellCommandGroup(pgid int, timeout time.Duration, ps func(context.Context) ([]byte, error)) (bool, []groupMember, error) {
 	err := syscall.Kill(-pgid, 0)
 	if errors.Is(err, syscall.ESRCH) {
 		return false, nil, nil
@@ -183,11 +195,12 @@ func probeShellCommandGroup(pgid int) (bool, []groupMember, error) {
 	// A zombie still occupies its process group but has finished execution.
 	// Linux's signal probe succeeds for it; macOS can return EPERM instead.
 	// Inspect states with the same portable ps fields used by procreap.
-	ctx, cancel := context.WithTimeout(context.Background(), defaultWaitDelay)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	probe := exec.CommandContext(ctx, "ps", "-eo", "pgid=,stat=,pid=,command=")
-	ConfigureShellCommand(probe)
-	out, err := OutputShellCommand(probe)
+	out, err := ps(ctx)
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return false, nil, fmt.Errorf("inspect process group states: %w", err)
 	}
@@ -213,6 +226,12 @@ func probeShellCommandGroup(pgid int) (bool, []groupMember, error) {
 		}
 	}
 	return len(members) > 0, members, nil
+}
+
+func shellCommandGroupPS(ctx context.Context) ([]byte, error) {
+	probe := exec.CommandContext(ctx, "ps", "-eo", "pgid=,stat=,pid=,command=")
+	ConfigureShellCommand(probe)
+	return OutputShellCommand(probe)
 }
 
 // groupGoneWithin reports whether the process group emptied out before the

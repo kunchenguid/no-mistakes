@@ -395,6 +395,11 @@ func TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild(t *testing
 			t.Parallel()
 			dir := t.TempDir()
 			_, err := tt.run(t, dir, ownedStdoutHolder(t, dir))
+			if errors.Is(err, context.DeadlineExceeded) && strings.Contains(err.Error(), "native check completion is unverified:") {
+				// A ps probe that uses up the settle window must also refuse
+				// completion, but cannot certify the member's current identity.
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), "agent exited with active owned children") {
 				t.Fatalf("Run error = %v, want refusal for active owned children", err)
 			}
