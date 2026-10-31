@@ -401,7 +401,8 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return resultFromUsage(usage), RejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		parseErr := RejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		return resultFromUsage(usage), parseErr
 	}
 
 	res := textResult(text, usage)
@@ -806,9 +807,8 @@ func containsAlphanumeric(s string) bool {
 
 // errSplitBareObjects marks a split answer whose adjacent objects have disjoint
 // keys but still do not validate once merged (the model left the answer
-// incomplete). It is deliberately distinct from a generic schema error so the
-// retry classifier can retry it: the step's real work is done and only the
-// final text shape is wrong.
+// incomplete). It stays distinct from a generic schema error so the failure is
+// identifiable, and it is a result-format failure: the task is not run again.
 var errSplitBareObjects = errors.New("split bare JSON objects could not be fused into one valid object")
 
 // errDuplicateBareObjectKey marks adjacent bare objects that share a top-level

@@ -648,17 +648,21 @@ func TestFinalizeTextResult_FusesCommaSeparatedSplitObjects(t *testing.T) {
 	}
 }
 
-func TestFinalizeTextResult_UnfusedSplitObjectsReturnDedicatedRetryableError(t *testing.T) {
+func TestFinalizeTextResult_UnfusedSplitObjectsStayAFormatFailure(t *testing.T) {
 	// A concluding split pair whose union is still not schema-valid must fail
-	// with its own dedicated error instead of the generic schema error, so the
-	// retry classifier gives the step a fresh turn rather than killing the run.
+	// with its own dedicated error instead of the generic schema error. That
+	// failure is a result-format error, so the task is not classified for a
+	// full retry that would replay completed work.
 	text := `{"findings":[]},{"risk_level":"low"}`
 	_, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{})
 	if !errors.Is(err, errSplitBareObjects) {
 		t.Fatalf("expected errSplitBareObjects, got %v", err)
 	}
-	if _, retry := classifyTransient(err); !retry {
-		t.Fatalf("expected the unfused split error to be retryable, got %v", err)
+	if _, retry := classifyTransient(err); retry {
+		t.Fatalf("unfused split must not be a full-task retry, got %v", err)
+	}
+	if !isResultFormatError(err) {
+		t.Fatalf("expected a result-format error, got %v", err)
 	}
 }
 

@@ -1722,6 +1722,36 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 	}
 }
 
+func TestCIStep_FormatFailureDoesNotRetryRepair(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[{"name":"greptile","state":"FAILURE","bucket":"fail"}]`)
+	invocations := 0
+	ag := &mockAgent{
+		name: "malformed-result",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			invocations++
+			return nil, agent.RejectStructuredOutput(errors.New("malformed repair result"))
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/3195"
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+
+	outcome, err := driveCI(t, &CIStep{}, sctx)
+	if err == nil || !agent.IsStructuredOutputRejected(err) {
+		t.Fatalf("outcome = %#v, error = %v; want a terminal structured-output failure", outcome, err)
+	}
+	if invocations != 1 {
+		t.Fatalf("agent invocations = %d, want no CI repair replay", invocations)
+	}
+}
+
 // TestCIStep_NonTimeoutFixFailureKeepsRetrying is the counter-test: only a
 // proven full-budget burn parks. An ordinary transient fix failure keeps its
 // existing warn-and-retry behaviour, because repeating it is cheap and often

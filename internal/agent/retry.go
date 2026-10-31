@@ -110,6 +110,9 @@ func runWithRetry(
 		if err == nil {
 			return result, nil
 		}
+		if isResultFormatError(err) {
+			return keptFormatResult(result), formatKept(err)
+		}
 		lastResult = result
 		label, retry := classify(err)
 		if !retry {
@@ -148,15 +151,11 @@ func cloneSessionRef(session *SessionRef) *SessionRef {
 	return &copy
 }
 
-// claudeRetryClassifier retries both transient API errors and the
-// no-structured-output case that the existing loop already handled. When the
-// CLI reported the API error it ended on, that record alone decides: the
-// reported HTTP status takes precedence; without one, only the record's
-// terminal diagnostic is classified, never surrounding assistant or stderr text.
+// claudeRetryClassifier retries transient API errors. When the CLI reported
+// the API error it ended on, that record alone decides: the reported HTTP
+// status takes precedence; without one, only the record's terminal diagnostic
+// is classified, never surrounding assistant or stderr text.
 func claudeRetryClassifier(err error) (string, bool) {
-	if errors.Is(err, errNoStructuredOutput) {
-		return "missing structured output", true
-	}
 	var apiErr *claudeAPIError
 	if errors.As(err, &apiErr) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -199,25 +198,13 @@ var transientNeedles = []struct {
 	{"etimedout", "i/o timeout"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
-	// A model ending its turn with prose instead of the required JSON object
-	// is a stochastic behavior, not a deterministic defect: the step's real
-	// work is typically already complete, so a cold retry succeeds often
-	// enough to be worth more than a terminal failure.
-	{"ended its turn with prose", "prose final turn"},
+	// A finished turn whose structured result is rejected is not listed here.
+	// Re-running the task replays edits and tests that already finished;
+	// result_format.go owns the clear error that keeps the completed work.
 	// agy's strict tool-call validation kills the whole run when the model
 	// emits one malformed call; the step work is usually already complete.
 	{"declaring permissions", "agy permission declaration"},
 	{"invalid tool call", "invalid tool call"},
-	// Provider tool-protocol residue after a complete JSON object, or a
-	// structured answer split across two adjacent objects the parser could not
-	// fuse: in each case the step's real work is done and only the final text
-	// shape is wrong. Same rationale as the prose needle above. Generic schema
-	// validation failures stay non-transient (see the schema_validation
-	// negative case), and so do two objects that each validate on their own,
-	// which are competing verdicts rather than one split answer; only these two
-	// parse-specific strings are added.
-	{"invalid character '<' after top-level value", "provider protocol residue after JSON"},
-	{"split bare json objects could not be fused into one valid object", "unfused split bare JSON objects"},
 }
 
 var terminalNeedles = []struct {
@@ -253,14 +240,6 @@ func classifyTransient(err error) (string, bool) {
 	msg := strings.ToLower(err.Error())
 	if isTerminalRetryError(msg) {
 		return "", false
-	}
-	const piMissingOutputPrefix = "pi did not finish by calling no_mistakes_output alone"
-	if strings.HasPrefix(msg, piMissingOutputPrefix) {
-		stderr := strings.TrimSpace(strings.TrimPrefix(msg[len(piMissingOutputPrefix):], ":"))
-		if isPiPermanentStderr(stderr) {
-			return "", false
-		}
-		return "pi missing output tool", true
 	}
 	const piExitPrefix = "pi exited: "
 	if strings.HasPrefix(msg, piExitPrefix) {
