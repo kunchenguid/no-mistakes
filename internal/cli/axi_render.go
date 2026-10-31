@@ -116,6 +116,7 @@ type stepView struct {
 // runView is a render-ready view of a pipeline run.
 type runView struct {
 	PiProfile        *agentcfg.PiProfile
+	ClaudeConfigDir  string
 	VerificationPlan *verificationplan.Snapshot
 	// QuotaRouting is the run's parsed quota-aware ordering record, nil when
 	// the feature was off for this run.
@@ -154,6 +155,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		CIOverrideReason:   r.CIOverrideReason,
 		TestOverrideReason: r.TestOverrideReason,
 		PiProfile:          r.PiProfile,
+		ClaudeConfigDir:    r.ClaudeConfigDir,
 		VerificationPlan:   r.VerificationPlan,
 		RetryOf:            r.RetryOf,
 		RetriedBy:          r.RetriedBy,
@@ -211,6 +213,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		slog.Warn("run carries an unreadable quota routing record", "run", r.ID, "error", err)
 	} else if payload != nil {
 		rv.QuotaRouting = payload
+	}
+	if r.ClaudeConfigDir != nil {
+		rv.ClaudeConfigDir = *r.ClaudeConfigDir
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -537,6 +542,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	if rv.QuotaRouting != nil {
 		fields = append(fields, quotaRoutingField(rv.QuotaRouting))
+	}
+	if rv.ClaudeConfigDir != "" {
+		fields = append(fields, toon.Field{Key: "claude_config_dir", Value: rv.ClaudeConfigDir})
 	}
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})
