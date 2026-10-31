@@ -759,7 +759,9 @@ type AutoFixRaw struct {
 // CIRaw is the YAML representation of CI-step settings.
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type CIRaw struct {
-	RequiredReviews []string `yaml:"required_reviews"`
+	RequiredReviews     []string `yaml:"required_reviews"`
+	RequiredReviewAppID *int64   `yaml:"required_review_app_id"`
+	RequiredReviewBotID *string  `yaml:"required_review_bot_id"`
 
 	RerunTransient *int `yaml:"rerun_transient"`
 	// RevalidateRepairs is a pointer so an explicit `false` in a repository's
@@ -781,6 +783,10 @@ type CIRaw struct {
 type CI struct {
 	// RequiredReviews names external reviewers whose completion gates readiness.
 	RequiredReviews []string
+	// RequiredReviewAppID pins the host-local CodeRabbit GitHub App identity (GHES only).
+	RequiredReviewAppID int64
+	// RequiredReviewBotID pins the CodeRabbit account identity on GitLab.
+	RequiredReviewBotID string
 
 	// RerunTransient is how many times the CI step may re-run a single check
 	// the provider reported as cancelled - the one terminal outcome it
@@ -2777,6 +2783,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateRequiredReviews(raw.CI.RequiredReviews); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateRequiredReviewAppID(raw.CI.RequiredReviewAppID); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	if err := validateRequiredReviewBotID(raw.CI.RequiredReviewBotID); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 	if err := validateRebaseRaw(raw.Rebase); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
@@ -3193,6 +3205,12 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateRequiredReviews(cfg.CI.RequiredReviews); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateRequiredReviewAppID(cfg.CI.RequiredReviewAppID); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateRequiredReviewBotID(cfg.CI.RequiredReviewBotID); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateRebaseRaw(cfg.Rebase); err != nil {
@@ -3917,6 +3935,12 @@ func validateRebaseRaw(r RebaseRaw) error {
 func applyCIOverrides(dst *CI, src *CIRaw) {
 	if src.RequiredReviews != nil {
 		dst.RequiredReviews = append([]string{}, src.RequiredReviews...)
+	}
+	if src.RequiredReviewAppID != nil {
+		dst.RequiredReviewAppID = *src.RequiredReviewAppID
+	}
+	if src.RequiredReviewBotID != nil {
+		dst.RequiredReviewBotID = *src.RequiredReviewBotID
 	}
 
 	if src.RerunTransient != nil {

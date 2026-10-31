@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -200,6 +201,13 @@ func TestWindowsCommandCancellationHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("NM_WINDOWS_COMMAND_READY"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if mode == "linger" {
+		// A child that is merely finishing when the leader exits: it stays in
+		// the job a moment longer, then leaves on its own (issue #1614).
+		ms, _ := strconv.Atoi(os.Getenv("NM_WINDOWS_COMMAND_LINGER_MS"))
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		return
+	}
 	if mode == "ignore" {
 		for range interrupts {
 		}
@@ -380,7 +388,7 @@ func TestShellCommandGroupActiveAcceptsCleanChildlessExit(t *testing.T) {
 		t.Fatalf("leader did not exit cleanly: %v", err)
 	}
 
-	active, err := ShellCommandGroupActive(cmd)
+	active, _, err := ShellCommandGroupActive(cmd, 0)
 	if err != nil {
 		t.Fatalf("ShellCommandGroupActive() error = %v", err)
 	}
@@ -390,10 +398,11 @@ func TestShellCommandGroupActiveAcceptsCleanChildlessExit(t *testing.T) {
 	}
 }
 
-// TestShellCommandGroupActiveRefusesLiveChildImmediately keeps the check
-// fail-closed: a child the leader left running stays in the job and is reported
-// at once, without a grace window it could finish inside.
-func TestShellCommandGroupActiveRefusesLiveChildImmediately(t *testing.T) {
+// TestShellCommandGroupActiveRefusesChildAlivePastWindow keeps the check
+// fail-closed under the re-probe: a child the leader left running is probed
+// until the window ends, then refused - and the verdict names it so the
+// failure identifies the offending process (issue #1614).
+func TestShellCommandGroupActiveRefusesChildAlivePastWindow(t *testing.T) {
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
 	// `start /b` returns as soon as the child is launched, so cmd.exe exits
@@ -407,6 +416,66 @@ func TestShellCommandGroupActiveRefusesLiveChildImmediately(t *testing.T) {
 	}
 	cmd.Env = append(os.Environ(),
 		"NM_WINDOWS_COMMAND_HELPER=ignore",
+		"NM_WINDOWS_HELPER_EXE="+os.Args[0],
+		"NM_WINDOWS_COMMAND_READY="+ready,
+		"NM_WINDOWS_COMMAND_CLEANUP="+filepath.Join(dir, "cleanup"),
+	)
+	ConfigureShellCommand(cmd)
+	if _, ok := shellCommandJob(cmd); !ok {
+		t.Skip("job object setup unavailable")
+	}
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatalf("StartShellCommand() error = %v", err)
+	}
+	defer TerminateShellCommandGroup(cmd)
+
+	childPID := 0
+	deadline := time.Now().Add(10 * time.Second)
+	for childPID == 0 {
+		if contents, err := os.ReadFile(ready); err == nil {
+			childPID, _ = strconv.Atoi(string(contents))
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child the leader started never reported ready")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("leader did not exit cleanly: %v", err)
+	}
+
+	const window = 500 * time.Millisecond
+	started := time.Now()
+	active, detail, err := ShellCommandGroupActive(cmd, window)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("ShellCommandGroupActive() error = %v", err)
+	}
+	if !active {
+		t.Fatal("ShellCommandGroupActive() = false with a live child in the job; want true")
+	}
+	if elapsed < window {
+		t.Errorf("a live child was refused after %s, before the %s window elapsed", elapsed, window)
+	}
+	if !strings.Contains(detail, "pid "+strconv.Itoa(childPID)) {
+		t.Errorf("detail = %q, want the surviving child pid %d named", detail, childPID)
+	}
+}
+
+// TestShellCommandGroupActiveAcceptsChildFinishingInsideWindow is the issue
+// #1614 regression on the job-object path: a child that is merely finishing
+// when the leader exits leaves the job inside the settle window, so the
+// bounded re-probe accepts the leader's exit.
+func TestShellCommandGroupActiveAcceptsChildFinishingInsideWindow(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	cmd := exec.CommandContext(context.Background(), "cmd.exe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine: `cmd.exe /d /c start "" /b "%NM_WINDOWS_HELPER_EXE%" -test.run=TestWindowsCommandCancellationHelper`,
+	}
+	cmd.Env = append(os.Environ(),
+		"NM_WINDOWS_COMMAND_HELPER=linger",
+		"NM_WINDOWS_COMMAND_LINGER_MS=700",
 		"NM_WINDOWS_HELPER_EXE="+os.Args[0],
 		"NM_WINDOWS_COMMAND_READY="+ready,
 		"NM_WINDOWS_COMMAND_CLEANUP="+filepath.Join(dir, "cleanup"),
@@ -434,17 +503,18 @@ func TestShellCommandGroupActiveRefusesLiveChildImmediately(t *testing.T) {
 		t.Fatalf("leader did not exit cleanly: %v", err)
 	}
 
+	const window = 3 * time.Second
 	started := time.Now()
-	active, err := ShellCommandGroupActive(cmd)
+	active, detail, err := ShellCommandGroupActive(cmd, window)
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("ShellCommandGroupActive() error = %v", err)
 	}
-	if !active {
-		t.Fatal("ShellCommandGroupActive() = false with a live child in the job; want true")
+	if active {
+		t.Fatalf("ShellCommandGroupActive() = true with only a finishing child (detail %q); want false", detail)
 	}
-	if elapsed > time.Second {
-		t.Errorf("a live child was reported after %s; the check must not wait for a child to drain", elapsed)
+	if elapsed >= window {
+		t.Errorf("the finishing child was probed for the whole %s window; it left the job inside it", window)
 	}
 }
 

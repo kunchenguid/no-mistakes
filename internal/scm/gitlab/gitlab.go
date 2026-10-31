@@ -23,11 +23,13 @@ type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 
 // Host talks to GitLab through the glab CLI.
 type Host struct {
-	cmd          CmdFactory
-	cliAvailable func() bool
-	host         string // repo's GitLab hostname; scopes the auth check
-	projectPath  string // repo's "group/project" path; enables REST job reads
-	draft        bool   // open created MRs as drafts (glab mr create --draft)
+	cmd                 CmdFactory
+	cliAvailable        func() bool
+	host                string // repo's GitLab hostname; scopes the auth check
+	projectPath         string // repo's "group/project" path; enables REST job reads
+	draft               bool   // open created MRs as drafts (glab mr create --draft)
+	requiredReviews     []string
+	requiredReviewBotID string
 }
 
 // New builds a Host. cliAvailable reports whether the glab binary is
@@ -53,6 +55,12 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, projectPath string) *Ho
 func NewWithDraft(cmd CmdFactory, cliAvailable func() bool, host, projectPath string, draft bool) *Host {
 	h := New(cmd, cliAvailable, host, projectPath)
 	h.draft = draft
+	return h
+}
+
+func (h *Host) WithRequiredReviews(reviewers []string, botID string) *Host {
+	h.requiredReviews = append([]string(nil), reviewers...)
+	h.requiredReviewBotID = strings.TrimSpace(botID)
 	return h
 }
 
@@ -678,6 +686,17 @@ func (h *Host) pipelineChecks(ctx context.Context, pr *scm.PR, pipeline *gitlabH
 		}
 		if pipeline != nil || hasNonPassingCheck(external) {
 			checks = append(checks, external...)
+		}
+	}
+	if check, ok, err := h.codeRabbitReviewCheck(ctx, pr); err != nil {
+		return nil, err
+	} else if ok {
+		checks = append(checks, check)
+		if pipeline == nil {
+			checks = append(checks, scm.Check{
+				Name: "Pipeline registration", ProviderID: "gitlab:pipeline-registration",
+				Bucket: scm.CheckBucketPending, State: "WAITING FOR PIPELINE",
+			})
 		}
 	}
 	if afterReads != nil {

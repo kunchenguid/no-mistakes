@@ -283,11 +283,17 @@ func ReviewBotsFor(requiredReviews []string) []ReviewBot {
 }
 
 // ReviewBotForCheck authenticates the check publisher among bots. CodeRabbit
-// requires its immutable GitHub.com app identity; Greptile retains slug matching.
+// requires GitHub.com's fixed app ID or a verified required-review check carrying
+// its trusted GHES instance ID; Greptile retains slug matching.
 func ReviewBotForCheck(bots []ReviewBot, check Check) (ReviewBot, bool) {
 	for _, bot := range bots {
 		if bot.AppID != 0 {
 			if check.AppHost == "github.com" && check.AppID == bot.AppID {
+				return bot, true
+			}
+			// A required-review adapter marks its synthesized check only after
+			// validating that forge's trusted app or account identity.
+			if check.ExternalReview == bot.RequiredReview && check.AppHost != "" && (check.AppID > 0 || check.App == bot.AppSlug && check.HeadSHA != "") {
 				return bot, true
 			}
 		} else if check.App != "" && strings.EqualFold(strings.TrimSpace(check.App), bot.AppSlug) {
@@ -400,7 +406,8 @@ func CombineFailedCheckLogs(logs []FailedCheckLog) (string, error) {
 }
 
 type ReviewComment struct {
-	AuthorID int64
+	AuthorID       int64
+	VerifiedAuthor bool
 
 	ID        string
 	Author    string

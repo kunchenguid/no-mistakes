@@ -245,7 +245,11 @@ func reviewBotFindings(provider scm.Provider, checks []reviewBotCheck, comments 
 		hasComments := false
 		for _, comment := range comments {
 			author, ok := scm.ReviewBotForLogin(provider, comment.Author)
-			if !ok || author.AppSlug != checked.bot.AppSlug || author.AuthorID != 0 && comment.AuthorID != author.AuthorID {
+			identityMatches := ok && (author.AuthorID == 0 || comment.AuthorID == author.AuthorID)
+			if checked.check.ExternalReview != "" && comment.VerifiedAuthor {
+				identityMatches, ok, author = true, true, checked.bot
+			}
+			if !ok || author.AppSlug != checked.bot.AppSlug || !identityMatches {
 				continue
 			}
 			hasComments = true

@@ -1047,7 +1047,7 @@ The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_
 
 The operator-level fallback for [`ci.required_reviews`](/no-mistakes/reference/repo-config/#cirequired_reviews).
 That reference owns supported reviewer profiles, completion evidence, and the trust boundary.
-Defaults to `[]`; the trusted repository list overrides it, including an explicit empty list.
+Defaults to `[]`; the trusted repository list overrides it, including an explicit empty list. `ci.required_review_app_id` may pin the GHES CodeRabbit App ID; `ci.required_review_bot_id` may pin the GitLab CodeRabbit account ID. These are identifiers, not credentials, and must match the configured forge.
 
 ### ci.revalidate_repairs
 

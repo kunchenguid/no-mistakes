@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.106.0](https://github.com/kunchenguid/no-mistakes/compare/v1.105.0...v1.106.0) (2026-10-31)
+
+
+### Features
+
+* **cli:** add init --skip-user-skill flag ([#1662](https://github.com/kunchenguid/no-mistakes/issues/1662)) ([a17529d](https://github.com/kunchenguid/no-mistakes/commit/a17529d735000869beee5f13f863fc220b1d6d61))
+* **scm:** support CodeRabbit reviews on GitLab and GHES ([#1628](https://github.com/kunchenguid/no-mistakes/issues/1628)) ([e0815ec](https://github.com/kunchenguid/no-mistakes/commit/e0815ec07e5ca2a85aec3c7a85ad29ea02306dbd))
+
+
+### Bug Fixes
+
+* **branchsync:** recover when the local head already carries preserved work held only in the gate ([#1487](https://github.com/kunchenguid/no-mistakes/issues/1487)) ([2ae13f7](https://github.com/kunchenguid/no-mistakes/commit/2ae13f71aa0ee007ce694e8ef21029c9e2ccc9a4))
+* **shellenv:** re-probe owned children before rejecting Test completion ([#1664](https://github.com/kunchenguid/no-mistakes/issues/1664)) ([a333382](https://github.com/kunchenguid/no-mistakes/commit/a333382a31d3739c847fc777c56c0453057d191f))
+
 ## [1.105.0](https://github.com/kunchenguid/no-mistakes/compare/v1.104.0...v1.105.0) (2026-10-30)
 
 
