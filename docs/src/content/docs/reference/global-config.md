@@ -141,7 +141,7 @@ providers:
 
 ### agent
 
-Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
+Default agent for runs and setup-wizard suggestions. Can be overridden per-repo or by an explicit [per-run agent selection](/no-mistakes/reference/cli/#other-run-options).
 
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
@@ -924,7 +924,7 @@ Opt-in, quota-aware agent ordering at run start.
 | Type    | `map[string]{enabled, expected_run_length, read_timeout, quota_axi_path}` |
 | Default | `enabled: false` (the feature is opt-in) |
 
-When `enabled: true`, no-mistakes reads **one** snapshot with the locally installed `quota-axi --full --json` at the start of each run and reorders the resolved agent list by quota evidence before the run picks its head agent. Explicit [`review_agents`](#review_agents) overrides do not use quota routing. Ordering follows these rules:
+When `enabled: true`, no-mistakes reads **one** snapshot with the locally installed `quota-axi --full --json` at the start of each run that uses quota routing and reorders the resolved agent list by quota evidence before the run picks its head agent. Explicit [`review_agents`](#review_agents) overrides and [per-run agent selections](/no-mistakes/reference/cli/#other-run-options) do not use quota routing. Ordering follows these rules:
 
 - An agent with concrete proof of exhaustion - runway `exhausted_now`, or a known `0%` remaining - is moved to the back of the list (it stays in the list, so the existing launch-failure fallback still has somewhere to go).
 - An agent whose runway is `projected_exhaustion` must have a reported usable runway greater than `expected_run_length`; otherwise it is treated like an exhausted one.

@@ -129,6 +129,9 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 	if run.PiProfile != nil {
 		fmt.Fprintf(w, "pinned Pi profile: model=%s effort=%s (requested for every invocation; MODEL below is served evidence)\n", run.PiProfile.Model, run.PiProfile.Effort)
 	}
+	if run.RunAgent != "" {
+		fmt.Fprintf(w, "selected run agent: %s (requested for every invocation; AGENT below is served evidence)\n", run.RunAgent)
+	}
 	record, err := quotarouting.ParseRecord(run.QuotaRouting)
 	if err != nil {
 		return fmt.Errorf("quota routing for run %s: %w", run.ID, err)

@@ -27,6 +27,23 @@ When set, everything else moves under this root:
 
 A push is handled by the root that owns the gate it was pushed to, not by the root `NM_HOME` names. Git does not set `NM_HOME` for a hook, so the managed `pre-receive` and `post-receive` hooks would otherwise reach whichever daemon the pushing shell happened to point at - usually the default `~/.no-mistakes`, since the variable is normally unset. Instead the CLI resolves its root from the gate path the hook passes it: a gate always lives at `$NM_HOME/repos/<id>.git`, so the owning root is a property of where the gate sits. A push to a gate under one root therefore reaches that root's daemon even when `NM_HOME` is unset or names a different root. A path that is not a managed gate is refused rather than resolved against the default root, so `pre-receive` fails the push and `post-receive` stays non-blocking and records the skipped notification in the gate's `notify-push.log`. The daemon enforces the same ownership on its own side of both calls, refusing to admit or to start a run for a gate that does not sit under its root. Existing installs get this by updating the binary; the hook scripts are unchanged, so no gate needs regenerating.
 
+## `NM_REQUIRED_RUN_AGENT`
+
+Require a per-run agent selection for `axi run` and `rerun` in this client process.
+
+|         |                  |
+| ------- | ---------------- |
+| Type    | `string`         |
+| Default | unset            |
+| Value   | `codex`          |
+
+When set to `codex`, an omitted `--agent` selects Codex through the same immutable per-run path as `--agent codex`.
+An explicit `--agent` must match; an empty or unsupported value is refused before the client starts or replaces a run.
+An empty or unsupported `NM_REQUIRED_RUN_AGENT` is also refused.
+The client checks an older daemon's selection capability before launch and refuses to reattach to an active run with a different selection.
+Unset this variable for ordinary runs, which retain configured agent defaults.
+This is a client-process setting, not a daemon or repository default; it does not change a run already in progress or apply to a plain Git gate push.
+
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 
 Override how long a CLI client waits for an existing daemon socket to accept a connection before failing instead of hanging.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
@@ -138,6 +139,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			runAgent, err := parseRunAgentPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			verificationPlanID, err := parseVerificationPlanPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -181,6 +186,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				PRBaseBranch:           prBaseBranch,
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
+				RunAgent:               runAgent,
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,
@@ -410,6 +416,20 @@ func probeDaemonOmitIntent(client *ipc.Client) error {
 	}
 	if err != nil {
 		return fmt.Errorf("the running daemon is too old to honor --no-publish-intent (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
+}
+
+func requireDaemonRunAgent(client *ipc.Client, selection agentcfg.RunAgent) error {
+	if selection == "" {
+		return nil
+	}
+	var result ipc.ProbeRunAgentResult
+	if err := client.Call(ipc.MethodProbeRunAgent, struct{}{}, &result); err != nil {
+		return fmt.Errorf("running daemon cannot honor --agent: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("running daemon declined --agent capability")
 	}
 	return nil
 }

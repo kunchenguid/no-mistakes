@@ -17,6 +17,7 @@ const (
 	MethodPushReceived              = "push_received"
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
+	MethodProbeRunAgent             = "probe_run_agent"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
 	MethodCaptureVerificationPlan   = "capture_verification_plan"
 	MethodStartFreshRun             = "start_fresh_run"
@@ -85,6 +86,7 @@ func (e *RPCError) Error() string { return e.Message }
 type PushReceivedParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	RunAgent           agentcfg.RunAgent   `json:"run_agent,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -115,6 +117,7 @@ type PushReceivedParams struct {
 type StartFreshRunParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	RunAgent           agentcfg.RunAgent   `json:"run_agent,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -158,10 +161,15 @@ type ProbeOmitIntentResult struct {
 	OK bool `json:"ok"`
 }
 
+type ProbeRunAgentResult struct {
+	OK bool `json:"ok"`
+}
+
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	RunAgent  agentcfg.RunAgent   `json:"run_agent,omitempty"`
 
 	RepoID               string `json:"repo_id"`
 	Branch               string `json:"branch"`
@@ -226,6 +234,7 @@ type GetActiveRunParams struct {
 type RerunParams struct {
 	VerificationPlanID string              `json:"verification_plan_id,omitempty"`
 	PiProfile          *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	RunAgent           agentcfg.RunAgent   `json:"run_agent,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -363,6 +372,7 @@ type PushReceivedResult struct {
 // generation and intent digest are persisted; raw intent is never included.
 type LaunchReceipt struct {
 	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	RunAgent  agentcfg.RunAgent   `json:"run_agent,omitempty"`
 
 	RunID                string `json:"run_id"`
 	Disposition          string `json:"disposition"`
@@ -503,6 +513,7 @@ type ShutdownResult struct {
 type RunInfo struct {
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
+	RunAgent         agentcfg.RunAgent          `json:"run_agent,omitempty"`
 
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`

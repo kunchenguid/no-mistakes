@@ -291,7 +291,7 @@ func (s *Server) dispatch(ctx context.Context, req Request) *Response {
 // still take the WARN path above.
 func readOnlyMethod(method string) bool {
 	switch method {
-	case MethodHealth, MethodProbeOmitIntent, MethodGetRun, MethodGetStepDiff, MethodGetRuns, MethodGetRunsForHead, MethodGetActiveRun, MethodGateContext, MethodAdmitPush:
+	case MethodHealth, MethodProbeOmitIntent, MethodProbeRunAgent, MethodGetRun, MethodGetStepDiff, MethodGetRuns, MethodGetRunsForHead, MethodGetActiveRun, MethodGateContext, MethodAdmitPush:
 		return true
 	default:
 		return false

@@ -201,10 +201,12 @@ type retryFixture struct {
 type retryFixtureOptions struct {
 	beforeSource func(t *testing.T, f *retryFixture)
 	profile      *agentcfg.PiProfile
+	runAgent     agentcfg.RunAgent
 	plan         *verificationplan.Snapshot
 	failInTest   bool
 	twoHop       bool
 	globalYAML   string
+	recordGlobal bool
 	// repoYAML replaces the effective repository configuration the review
 	// round records; empty records the configuration a new run would get.
 	repoYAML   string
@@ -225,11 +227,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.beforeSource != nil {
 		opts.beforeSource(t, f)
 	}
-	var profiles []*agentcfg.PiProfile
-	if opts.profile != nil {
-		profiles = append(profiles, opts.profile)
-	}
-	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, profiles...)
+	source, err := d.InsertRunWithAgent(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.profile, opts.runAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +242,14 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 			err = d.CompleteStepWithStatus(sr.ID, types.StepStatusCompleted, 0, 1, "")
 		case name == types.StepReview && opts.failInTest:
 			if err = d.CompleteStepWithStatus(sr.ID, types.StepStatusCompleted, 0, 1, ""); err == nil {
+				globalYAML := []byte(opts.globalYAML)
+				if opts.recordGlobal {
+					global, loadErr := config.LoadGlobal(p.ConfigFile())
+					if loadErr != nil {
+						t.Fatal(loadErr)
+					}
+					globalYAML = global.SourceYAML
+				}
 				recorded := []byte(opts.repoYAML)
 				if opts.repoYAML == "" {
 					var effective *config.RepoConfig
@@ -252,7 +258,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 					}
 				}
 				if err == nil {
-					_, err = d.InsertReviewStepRoundWithProvenance(sr.ID, 1, "initial", opts.findings, nil, submitted, "", submitted, []byte(opts.globalYAML), recorded, 1)
+					_, err = d.InsertReviewStepRoundWithProvenance(sr.ID, 1, "initial", opts.findings, nil, submitted, "", submitted, globalYAML, recorded, 1)
 				}
 			}
 			if err == nil {
@@ -649,6 +655,84 @@ func TestRetryStartsWhenEveryProofHolds(t *testing.T) {
 	}
 	if got := f.executions.Load(); got != 2 {
 		t.Fatalf("executed %d steps, want review and test only", got)
+	}
+}
+
+func TestRetryPreservesSelectedAgentAcrossConfiguredDefaultChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the agent stand-ins are POSIX shell scripts")
+	}
+	f := newRetryFixture(t, retryFixtureOptions{
+		runAgent:   agentcfg.RunAgentCodex,
+		failInTest: true,
+		invocation: db.AgentInvocation{Agent: "codex", Model: "gpt-5", Purpose: "review", Round: 1},
+		beforeSource: func(t *testing.T, f *retryFixture) {
+			writeFakeAgents(t, f.p, "claude", "review_agents:\n  reviewer: {agent: claude}\n  fixer: {agent: claude}\n", "claude", "codex")
+		},
+	})
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	run := waitForRunTerminalState(t, f.d, result.RunID)
+	if run.Status != types.RunCompleted || run.RunAgent != agentcfg.RunAgentCodex || result.Step != types.StepTest {
+		t.Fatalf("retry lost selected agent: result=%+v run=%+v", result, run)
+	}
+}
+
+func TestRetrySelectedAgentIgnoresChangedRoleDefaultsInRecordedReviewConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the agent stand-ins are POSIX shell scripts")
+	}
+	f := newRetryFixture(t, retryFixtureOptions{
+		runAgent: agentcfg.RunAgentCodex, failInTest: true, recordGlobal: true,
+		invocation: db.AgentInvocation{Agent: "codex", Model: "gpt-5", Purpose: "review", Round: 1},
+		beforeSource: func(t *testing.T, f *retryFixture) {
+			writeFakeAgents(t, f.p, "claude", "review_agents:\n  reviewer: {agent: claude}\n", "claude", "codex")
+		},
+	})
+	global, err := config.LoadGlobal(f.p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := strings.Replace(string(global.SourceYAML), "agent: claude\n", "agent: codex\n", 1)
+	current = strings.Replace(current, "reviewer: {agent: claude}", "reviewer: {agent: codex}", 1)
+	if err := os.WriteFile(f.p.ConfigFile(), []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatalf("retry after ignored defaults changed: %v", err)
+	}
+	if run := waitForRunTerminalState(t, f.d, result.RunID); run.Status != types.RunCompleted || result.Step != types.StepTest {
+		t.Fatalf("retry = %+v, run = %s; want Test continued", result, run.Status)
+	}
+}
+
+func TestRetrySelectedAgentRefusesChangedReviewSettings(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the agent stand-ins are POSIX shell scripts")
+	}
+	f := newRetryFixture(t, retryFixtureOptions{
+		runAgent: agentcfg.RunAgentCodex, failInTest: true, recordGlobal: true,
+		invocation: db.AgentInvocation{Agent: "codex", Model: "gpt-5", Purpose: "review", Round: 1},
+		beforeSource: func(t *testing.T, f *retryFixture) {
+			writeFakeAgents(t, f.p, "claude", "", "claude", "codex")
+		},
+	})
+	global, err := config.LoadGlobal(f.p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.p.ConfigFile(), append(global.SourceYAML, []byte("review:\n  path_instructions:\n    - path: '**/*.go'\n      instructions: check Go changes\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.retry(t, f.source.ID)
+	if err == nil {
+		t.Fatalf("retry started %s after review configuration changed", result.RunID)
+	}
+	if !strings.Contains(err.Error(), "global configuration changed since the carried review ran (review)") {
+		t.Fatalf("retry refusal = %v, want changed review configuration", err)
 	}
 }
 

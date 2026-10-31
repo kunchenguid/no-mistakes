@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS runs (
     pr_base_branch       TEXT,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
     pi_profile           TEXT,
+    run_agent            TEXT,
     verification_plan    TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
@@ -264,6 +265,8 @@ var migrationStatements = []string{
 	// mutable: a mid-run quota switch appends to the record's switch list.
 	`ALTER TABLE runs ADD COLUMN quota_routing TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_pi_profile_immutable BEFORE UPDATE OF pi_profile ON runs WHEN NEW.pi_profile IS NOT OLD.pi_profile BEGIN SELECT RAISE(ABORT, 'run Pi profile is immutable'); END`,
+	`ALTER TABLE runs ADD COLUMN run_agent TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_run_agent_immutable BEFORE UPDATE OF run_agent ON runs WHEN NEW.run_agent IS NOT OLD.run_agent BEGIN SELECT RAISE(ABORT, 'run agent is immutable'); END`,
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,

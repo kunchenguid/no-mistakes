@@ -111,11 +111,7 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 		if source.PRBaseBranch != nil {
 			prBaseBranch = strings.TrimSpace(*source.PRBaseBranch)
 		}
-		var profiles []*agentcfg.PiProfile
-		if source.PiProfile != nil {
-			profiles = append(profiles, source.PiProfile)
-		}
-		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, launch, profiles...)
+		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, launch, source.PiProfile, source.RunAgent)
 		link = launch.link
 		link.RunID = continuation
 		return continuation, err
@@ -258,6 +254,9 @@ func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo,
 	if err != nil {
 		return err
 	}
+	if err := cfg.ApplyRunAgent(source.RunAgent); err != nil {
+		return err
+	}
 	return m.proveConfigurationMatches(ctx, source, globalCfg, cfg, currentRepoCfg, pinned, checkpoint)
 }
 
@@ -278,7 +277,7 @@ func (m *RunManager) proveConfigurationMatches(ctx context.Context, source *db.R
 		return fmt.Errorf("the repository's gates changed since the run started, so its step sequence would differ")
 	}
 	carried := checkpoint.Steps[:checkpoint.Index]
-	if err := m.proveCarriedReviewConfig(globalCfg, currentRepoCfg, carried); err != nil {
+	if err := m.proveCarriedReviewConfig(source.RunAgent, globalCfg, currentRepoCfg, carried); err != nil {
 		return err
 	}
 	return m.proveCarriedAgent(ctx, source, cfg, carried)
@@ -288,10 +287,16 @@ func (m *RunManager) proveConfigurationMatches(ctx context.Context, source *db.R
 // under with the configuration a new run would get now: the repository
 // effective repository configuration and the global configuration its rounds
 // recorded when they ran.
-func (m *RunManager) proveCarriedReviewConfig(globalCfg *config.GlobalConfig, current *config.RepoConfig, carried []*db.StepResult) error {
+func (m *RunManager) proveCarriedReviewConfig(runAgent agentcfg.RunAgent, globalCfg *config.GlobalConfig, current *config.RepoConfig, carried []*db.StepResult) error {
 	currentYAML, err := yaml.Marshal(current)
 	if err != nil {
 		return fmt.Errorf("serialize the repository configuration: %w", err)
+	}
+	var repoIgnored, globalIgnored []string
+	if runAgent == agentcfg.RunAgentCodex {
+		// ApplyRunAgent replaces these merged fields for this run.
+		repoIgnored = []string{"agent"}
+		globalIgnored = []string{"agent", "review_agents", "quota_routing"}
 	}
 	for _, row := range carried {
 		if row.StepName != types.StepReview || row.Status != types.StepStatusCompleted {
@@ -313,7 +318,7 @@ func (m *RunManager) proveCarriedReviewConfig(globalCfg *config.GlobalConfig, cu
 		if recordedRepo == nil {
 			return fmt.Errorf("the carried review recorded no repository configuration to compare, so rerun the pipeline instead")
 		}
-		changed, err := changedSettings(recordedRepo, currentYAML)
+		changed, err := changedSettings(recordedRepo, currentYAML, repoIgnored...)
 		if err != nil {
 			return err
 		}
@@ -323,7 +328,7 @@ func (m *RunManager) proveCarriedReviewConfig(globalCfg *config.GlobalConfig, cu
 		if recordedGlobal == nil {
 			continue
 		}
-		changed, err = changedSettings(recordedGlobal, globalCfg.SourceYAML)
+		changed, err = changedSettings(recordedGlobal, globalCfg.SourceYAML, globalIgnored...)
 		if err != nil {
 			return err
 		}
@@ -336,13 +341,17 @@ func (m *RunManager) proveCarriedReviewConfig(globalCfg *config.GlobalConfig, cu
 
 // changedSettings names the top-level settings whose values differ between two
 // YAML documents.
-func changedSettings(recorded, current []byte) ([]string, error) {
+func changedSettings(recorded, current []byte, ignored ...string) ([]string, error) {
 	var before, after map[string]any
 	if err := yaml.Unmarshal(recorded, &before); err != nil {
 		return nil, fmt.Errorf("read a recorded configuration: %w", err)
 	}
 	if err := yaml.Unmarshal(current, &after); err != nil {
 		return nil, fmt.Errorf("read the current configuration: %w", err)
+	}
+	for _, key := range ignored {
+		delete(before, key)
+		delete(after, key)
 	}
 	var changed []string
 	for key, value := range before {

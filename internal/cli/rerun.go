@@ -31,6 +31,10 @@ func newRerunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			runAgent, err := runAgentFromFlags(cmd)
+			if err != nil {
+				return err
+			}
 			closes, err := normalizeClosingIssueRefs(closesIssues)
 			if err != nil {
 				return err
@@ -70,6 +74,9 @@ func newRerunCmd() *cobra.Command {
 				if err := probeDaemonOmitIntent(client); err != nil {
 					return err
 				}
+				if err := requireDaemonRunAgent(client, runAgent); err != nil {
+					return err
+				}
 				if err := requireDaemonHonorsClosingIssueRefs(client, closes); err != nil {
 					return err
 				}
@@ -89,7 +96,7 @@ func newRerunCmd() *cobra.Command {
 					return err
 				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, RunAgent: runAgent, ClosingIssueRefs: closes}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -103,6 +110,7 @@ func newRerunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this rerun (adds to the inherited decision; tighten-only)")
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "GitHub issue this PR closes when merged; repeat for multiple issues (42 or owner/repo#42); adds to inherited references")
 	bindPiProfileFlags(cmd, &model, &effort)
+	cmd.Flags().String("agent", "", "select codex for every model-backed role of this new run (immutable)")
 	return cmd
 }
 
