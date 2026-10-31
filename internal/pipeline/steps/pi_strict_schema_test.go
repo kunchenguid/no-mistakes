@@ -78,6 +78,101 @@ func strictPiDeclaration(t *testing.T, cwd string) map[string]any {
 	return declaration
 }
 
+// strictSchemaViolations walks a strict function schema declaration the way
+// pi-ai and the provider both enforce it: every object level must carry
+// additionalProperties: false and a required list naming every property, and
+// no keyword outside the strict subset may appear. It returns each violation
+// as a JSON-path string.
+func strictSchemaViolations(value any, path string) []string {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var violations []string
+	isObject := schema["type"] == "object" || schema["properties"] != nil
+	if isObject {
+		if schema["additionalProperties"] != false {
+			violations = append(violations, path+": additionalProperties must be false")
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		required := map[string]bool{}
+		if names, ok := schema["required"].([]any); ok {
+			for _, name := range names {
+				if s, ok := name.(string); ok {
+					required[s] = true
+				}
+			}
+		}
+		for name := range properties {
+			if !required[name] {
+				violations = append(violations, path+": required must name property "+name)
+			}
+		}
+		for name := range required {
+			if _, ok := properties[name]; !ok {
+				violations = append(violations, path+": required names unknown property "+name)
+			}
+		}
+	}
+	for _, keyword := range []string{
+		"$ref", "$defs", "definitions", "allOf", "oneOf", "patternProperties",
+		"dependentSchemas", "dependencies", "unevaluatedProperties",
+		"propertyNames", "contains", "prefixItems", "not", "if", "then", "else",
+	} {
+		if _, ok := schema[keyword]; ok {
+			violations = append(violations, path+": "+keyword+" is outside the strict subset")
+		}
+	}
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		for name, property := range properties {
+			violations = append(violations, strictSchemaViolations(property, path+"/properties/"+name)...)
+		}
+	}
+	if items, ok := schema["items"]; ok {
+		violations = append(violations, strictSchemaViolations(items, path+"/items")...)
+	}
+	return violations
+}
+
+// The strict output tool's declared parameters must already satisfy the
+// provider's strict function contract: pi-ai only started normalizing schemas
+// at 0.84.4, and strict-capable releases before it send the declaration
+// verbatim, which is the v1.106.0 review failure against openai-codex
+// ("At schema path /, additionalProperties must be false"). Every schema the
+// steps hand to RunOpts.JSONSchema must therefore declare a strict-valid tool.
+func TestPiStrictDeclarationSatisfiesTheStrictFunctionContract(t *testing.T) {
+	t.Parallel()
+	schemas := map[string]json.RawMessage{
+		"review":                reviewSchemaForFinalize(false),
+		"review finalize":       reviewSchemaForFinalize(true),
+		"lint findings":         findingsSchema,
+		"test findings":         testFindingsSchema,
+		"commit summary":        commitSummarySchema,
+		"fix summary":           fixSummarySchema,
+		"housekeeping findings": housekeepingFindingsSchema,
+		"ci fix conclusion":     ciFixConclusionSchema,
+		"pr content":            prContentSchema,
+		"pr title":              prTitleSchema,
+		"pr template":           templatePRContentSchema,
+	}
+	for name, schema := range schemas {
+		t.Run(name, func(t *testing.T) {
+			cwd := t.TempDir()
+			pi, err := agent.New(types.AgentPi, writeStrictPi(t, `{}`), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The run's output validation is irrelevant here: the fake Pi has
+			// already copied the extension the adapter launched it with.
+			_, _ = pi.Run(context.Background(), agent.RunOpts{Prompt: "review", CWD: cwd, JSONSchema: schema})
+			declaration := strictPiDeclaration(t, cwd)
+			if violations := strictSchemaViolations(declaration, "/"); len(violations) > 0 {
+				t.Fatalf("strict declaration violates the function contract: %s", strings.Join(violations, "; "))
+			}
+		})
+	}
+}
+
 func TestPiStrictDeclarationLeavesSummaryLengthToPostValidation(t *testing.T) {
 	t.Parallel()
 	overLong, err := json.Marshal(strings.Repeat("a", config.MaxFixMessageSummaryBytes+1))

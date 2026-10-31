@@ -196,8 +196,12 @@ func preparePiOutput(schema json.RawMessage) (string, func(), error) {
 	if err := json.Unmarshal(schema, &declared); err != nil {
 		return "", nil, fmt.Errorf("pi output schema: %w", err)
 	}
-	allowOptionalSchemaNulls(declared)
-	parameters, err := json.Marshal(piStrictToolSchema(declared))
+	// The strict tool must already satisfy the provider's strict function
+	// schema: pi-ai only normalizes it from 0.84.4 on, and older strict-capable
+	// releases send these parameters verbatim.
+	strict := piStrictToolSchema(declared)
+	addAdditionalPropertiesFalse(strict)
+	parameters, err := json.Marshal(strict)
 	if err != nil {
 		return "", nil, fmt.Errorf("pi output schema: %w", err)
 	}

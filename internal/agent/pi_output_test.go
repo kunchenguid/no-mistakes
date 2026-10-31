@@ -256,13 +256,18 @@ func TestPreparePiOutputKeepsTheSchemaContract(t *testing.T) {
 	// The embedded template is checked out with CRLF line endings on Windows.
 	line, _, _ := strings.Cut(tail, "\n")
 	parameters := strings.TrimSuffix(strings.TrimRight(line, "\r"), ";")
+	// The declaration is the provider's strict function contract: every
+	// property is required (optionals arrive as null) and extra keys are
+	// refused. The run's own validation schema still accepts a missing
+	// optional field, but output conforming to the declaration must too.
 	for _, tc := range []struct {
 		output string
 		valid  bool
 	}{
-		{`{"required":"yes"}`, true},
+		{`{"required":"yes"}`, false},
 		{`{"required":"yes","optional":null}`, true},
 		{`{"required":"yes","optional":[1]}`, true},
+		{`{"required":"yes","optional":null,"surprise":1}`, false},
 		{`{}`, false},
 		{`{"required":null}`, false},
 		{`{"required":"maybe"}`, false},
@@ -308,6 +313,110 @@ func TestPiAgent_StrictRunWithoutTheOutputToolIsASchemaRejection(t *testing.T) {
 				t.Fatalf("rejection must keep usage and carry no output: %+v", result)
 			}
 		})
+	}
+}
+
+// strictPiToolViolations walks the declaration the strict output tool carries
+// and reports every level that violates the provider's strict function
+// contract: objects must forbid additional properties and require every
+// declared property, because strict-capable pi-ai before 0.84.4 forwards these
+// parameters verbatim instead of normalizing them first.
+func strictPiToolViolations(value any, path string) []string {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var violations []string
+	if schema["type"] == "object" || schema["properties"] != nil {
+		if schema["additionalProperties"] != false {
+			violations = append(violations, path+": additionalProperties must be false")
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		required := map[string]bool{}
+		if names, ok := schema["required"].([]any); ok {
+			for _, name := range names {
+				if s, ok := name.(string); ok {
+					required[s] = true
+				}
+			}
+		}
+		for name := range properties {
+			if !required[name] {
+				violations = append(violations, path+": required must name property "+name)
+			}
+		}
+	}
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		for name, property := range properties {
+			violations = append(violations, strictPiToolViolations(property, path+"/properties/"+name)...)
+		}
+	}
+	if items, ok := schema["items"]; ok {
+		violations = append(violations, strictPiToolViolations(items, path+"/items")...)
+	}
+	return violations
+}
+
+// piDeclaredToolSchema reads the parameters the generated output extension
+// declares, the exact schema Pi forwards to the provider.
+func piDeclaredToolSchema(t *testing.T, path string) map[string]any {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tail, found := strings.Cut(string(content), "const parameters = ")
+	if !found {
+		t.Fatal("extension declares no tool parameters")
+	}
+	line, _, _ := strings.Cut(tail, "\n")
+	var declaration map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimRight(line, "\r"), ";")), &declaration); err != nil {
+		t.Fatal(err)
+	}
+	return declaration
+}
+
+func TestPreparePiOutputDeclaresAStrictValidSchema(t *testing.T) {
+	t.Parallel()
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"findings": {"type": "array", "items": {"type": "object",
+				"properties": {"id": {"type": "string"}, "severity": {"type": "string", "enum": ["error", "warning"]}},
+				"required": ["severity"]}},
+			"note": {"type": "string", "description": "optional remark"}
+		},
+		"required": ["findings"]
+	}`)
+	path, cleanup, err := preparePiOutput(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	declaration := piDeclaredToolSchema(t, path)
+	if violations := strictPiToolViolations(declaration, "/"); len(violations) > 0 {
+		t.Fatalf("strict declaration violates the function contract: %s", strings.Join(violations, "; "))
+	}
+
+	properties := declaration["properties"].(map[string]any)
+	note := properties["note"].(map[string]any)
+	if note["description"] != "optional remark" {
+		t.Fatalf("optional property lost its description: %v", note)
+	}
+	if types, _ := note["type"].([]any); len(types) != 2 || types[0] != "string" || types[1] != "null" {
+		t.Fatalf("optional property must accept null: %v", note)
+	}
+	items := properties["findings"].(map[string]any)["items"].(map[string]any)
+	itemProperties := items["properties"].(map[string]any)
+	id := itemProperties["id"].(map[string]any)
+	if types, _ := id["type"].([]any); len(types) != 2 || types[0] != "string" || types[1] != "null" {
+		t.Fatalf("optional item property must accept null: %v", id)
+	}
+	severity := itemProperties["severity"].(map[string]any)
+	if enum, _ := severity["enum"].([]any); len(enum) != 2 || enum[0] != "error" || enum[1] != "warning" {
+		t.Fatalf("required enum property must stay unchanged: %v", severity)
 	}
 }
 
