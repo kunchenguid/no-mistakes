@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS runs (
     pr_base_branch       TEXT,
     omit_intent          INTEGER NOT NULL DEFAULT 0,
     pi_profile           TEXT,
+	 reviewer_profile     TEXT,
     verification_plan    TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
@@ -259,6 +260,8 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,
+	`ALTER TABLE runs ADD COLUMN reviewer_profile TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_reviewer_profile_immutable BEFORE UPDATE OF reviewer_profile ON runs WHEN NEW.reviewer_profile IS NOT OLD.reviewer_profile BEGIN SELECT RAISE(ABORT, 'run reviewer profile is immutable'); END`,
 	// quota_routing records one run's quota-aware agent ordering (the
 	// quotarouting.Record JSON). Unlike pi_profile it is intentionally
 	// mutable: a mid-run quota switch appends to the record's switch list.

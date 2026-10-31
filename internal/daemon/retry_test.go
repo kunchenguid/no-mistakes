@@ -201,6 +201,7 @@ type retryFixture struct {
 type retryFixtureOptions struct {
 	beforeSource func(t *testing.T, f *retryFixture)
 	profile      *agentcfg.PiProfile
+	reviewer     *agentcfg.ReviewerProfile
 	plan         *verificationplan.Snapshot
 	failInTest   bool
 	twoHop       bool
@@ -225,9 +226,12 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.beforeSource != nil {
 		opts.beforeSource(t, f)
 	}
-	var profiles []*agentcfg.PiProfile
+	var profiles []agentcfg.RunSelection
 	if opts.profile != nil {
 		profiles = append(profiles, opts.profile)
+	}
+	if opts.reviewer != nil {
+		profiles = append(profiles, opts.reviewer)
 	}
 	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, profiles...)
 	if err != nil {

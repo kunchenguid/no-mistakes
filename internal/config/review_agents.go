@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -32,6 +33,8 @@ var baseRoleFor = map[string]string{
 // ReviewAgent pins one review-loop role to an explicit harness. Empty model or
 // effort inherits agent_config for that harness; native argument overrides win.
 type ReviewAgent struct {
+	// Pinned is runtime-only and cannot be selected through configuration.
+	Pinned bool            `yaml:"-"`
 	Agent  types.AgentName `yaml:"agent"`
 	Model  string          `yaml:"model"`
 	Effort agentcfg.Effort `yaml:"effort"`
@@ -122,5 +125,16 @@ func (c *Config) ForReviewAgent(entry ReviewAgent) *Config {
 	}
 	role.AgentConfig = map[string]agentcfg.Profile{string(entry.Agent): profile}
 	role.ReviewAgents = nil
+	if entry.Pinned {
+		// A later global edit cannot displace a run's typed reviewer selection.
+		role.AgentArgsOverride = maps.Clone(c.AgentArgsOverride)
+		delete(role.AgentArgsOverride, string(entry.Agent))
+		if entry.Agent == types.AgentPi {
+			if role.AgentArgsOverride == nil {
+				role.AgentArgsOverride = make(map[string][]string)
+			}
+			role.AgentArgsOverride[string(entry.Agent)] = (&agentcfg.PiProfile{Model: entry.Model, Effort: entry.Effort}).PinnedBaseArgs(nil)
+		}
+	}
 	return &role
 }

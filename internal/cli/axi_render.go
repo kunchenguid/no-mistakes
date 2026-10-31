@@ -116,6 +116,7 @@ type stepView struct {
 // runView is a render-ready view of a pipeline run.
 type runView struct {
 	PiProfile        *agentcfg.PiProfile
+	ReviewerProfile  *agentcfg.ReviewerProfile
 	VerificationPlan *verificationplan.Snapshot
 	// QuotaRouting is the run's parsed quota-aware ordering record, nil when
 	// the feature was off for this run.
@@ -154,6 +155,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		CIOverrideReason:   r.CIOverrideReason,
 		TestOverrideReason: r.TestOverrideReason,
 		PiProfile:          r.PiProfile,
+		ReviewerProfile:    r.ReviewerProfile,
 		VerificationPlan:   r.VerificationPlan,
 		RetryOf:            r.RetryOf,
 		RetriedBy:          r.RetriedBy,
@@ -200,6 +202,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 	rv := runView{
 		PiProfile:          r.PiProfile,
+		ReviewerProfile:    r.ReviewerProfile,
 		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
 		Branch:             r.Branch,
@@ -536,7 +539,15 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		)})
 	}
 	if rv.QuotaRouting != nil {
+		// The primary's quota selection remains independent of the reviewer.
 		fields = append(fields, quotaRoutingField(rv.QuotaRouting))
+	}
+	if rv.ReviewerProfile != nil {
+		fields = append(fields, toon.Field{Key: "reviewer_profile", Value: toon.NewObject(
+			toon.Field{Key: "agent", Value: string(rv.ReviewerProfile.Agent)},
+			toon.Field{Key: "model", Value: rv.ReviewerProfile.Model},
+			toon.Field{Key: "effort", Value: string(rv.ReviewerProfile.Effort)},
+		)})
 	}
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})

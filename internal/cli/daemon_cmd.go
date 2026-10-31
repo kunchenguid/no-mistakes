@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -71,8 +72,20 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 				return fmt.Errorf("connect to daemon: %w", err)
 			}
 			defer client.Close()
+			count, err := strconv.Atoi(os.Getenv("GIT_PUSH_OPTION_COUNT"))
+			if err != nil && os.Getenv("GIT_PUSH_OPTION_COUNT") != "" || count < 0 {
+				return fmt.Errorf("invalid push option count")
+			}
+			var options []string
+			for i := 0; i < count; i++ {
+				options = append(options, os.Getenv(fmt.Sprintf("GIT_PUSH_OPTION_%d", i)))
+			}
+			reviewer, err := parseReviewerPushOptions(options)
+			if err != nil {
+				return err
+			}
 			var result ipc.AdmitPushResult
-			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath}, &result); err != nil {
+			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, ReviewerProfile: reviewer}, &result); err != nil {
 				return err
 			}
 			if !result.Context.Nested {
@@ -138,6 +151,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			reviewer, err := parseReviewerPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			verificationPlanID, err := parseVerificationPlanPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -181,6 +198,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				PRBaseBranch:           prBaseBranch,
 				OmitIntent:             omitIntent,
 				PiProfile:              piProfile,
+				ReviewerProfile:        reviewer,
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,

@@ -295,7 +295,7 @@ An entry may also declare `quota_provider`, the quota-axi provider ID used as ro
 
 `agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored. For first-class ACP aliases, `cursor` and `acp:cursor` share a profile, as do `devin` and `acp:devin`: the selected spelling's entry wins when both are configured; otherwise the other spelling's entry applies. This also applies to review-agent profiles.
 
-**Precedence for unpinned runs.** `agent_args_override` wins. Opt-in [per-run Pi profiles](#per-run-pi-profiles) have a separate, immutable selection contract. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
+**Precedence for unpinned runs.** `agent_args_override` wins. Opt-in [per-run Pi profiles](#per-run-pi-profiles) and [reviewer profiles](#per-run-reviewer-profiles) have separate, immutable selection contracts. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
 
 ```yaml
 agent_config:
@@ -307,6 +307,46 @@ agent_args_override:
     - -m
     - o3
 ```
+
+### Per-run reviewer profiles
+
+Choose a reviewer independently of the primary author/fixer:
+
+```sh
+no-mistakes axi run --intent "the user's goal" \
+  --reviewer codex --reviewer-model gpt-5.4 --reviewer-effort high
+```
+
+`--reviewer` requires an explicit harness. Omitted model and effort fields
+inherit `agent_config` for that harness, and both must resolve before launch.
+Unsupported tuning, unavailable binaries, and raw `agent_args_override` for
+the selected reviewer harness are refused before an active run is cancelled.
+For ordinary and proof-mode launches, reviewer availability and trusted
+instruction-suppression policy are checked before a push changes private-gate
+refs or takes custody. Direct pushes carrying a reviewer selection receive
+the same check at push admission. An older daemon without reviewer-resolution
+support is refused before submission.
+Model availability and authentication remain the harness's responsibility.
+
+The resolved harness, model and effort are stored atomically in
+`runs.reviewer_profile` and cannot be replaced or cleared. They override
+`review_agents.reviewer`, `reviewer_after_round`, and the reviewer portion of a
+Pi run pin. The primary and fixer keep their existing selection. Each run has
+its own pin, so concurrent runs can choose different reviewers. Later global
+profiles, raw arguments and reviewer routing cannot replace it during recovery.
+Trusted instruction-suppression policy still applies, and a missing reviewer
+fails closed rather than falling back to the primary.
+
+Omit the reviewer flags to reattach. Explicit selections must match the stored
+pin, including on nonce replay and receipt claims. Retries preserve the pin and
+retain the ordinary retry configuration checks. `rerun` inherits the resolved
+reviewer unless `--reviewer` explicitly selects a replacement for the new run.
+A fresh `axi run` without reviewer flags uses current configuration, including
+any newly requested Pi profile, and never inherits the previous run's reviewer
+pin, even when the push is up to date. Requested profiles are visible in
+[`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status) and
+[`stats --run <id>`](/no-mistakes/reference/cli/#no-mistakes-stats).
+This does not infer model families or select a fallback reviewer.
 
 ### Per-run Pi profiles
 
@@ -326,9 +366,11 @@ Availability, authentication, and model-specific reasoning support remain Pi's
 responsibility. For optional quota evidence at run start, see
 [quota-aware routing](#quota_routing).
 
-A pin applies to **every pipeline duty**, including reviewer and fixer roles.
+A pin applies to **every pipeline duty**, including reviewer and fixer roles,
+unless an explicit per-run reviewer profile overrides the reviewer.
 The effective agent selection must be Pi-only (no `auto`, non-Pi fallbacks, or
-non-Pi `review_agents`). Under the default trust policy, a nonempty `agent` in
+non-Pi `review_agents`, except reviewer entries replaced by an explicit per-run
+reviewer). Under the default trust policy, a nonempty `agent` in
 the freshly fetched, trusted default-branch `.no-mistakes.yaml` replaces the
 global scalar or fallback list for this check, just as it does for an ordinary
 run. This lets one project opt into Pi profiles with trusted `agent: pi` while
@@ -466,8 +508,10 @@ Both roles can use the same harness with different models. Reviews and rereviews
 always run fresh; only review fixes reuse the fixer's session when
 `session_reuse` is enabled and the fixer supports it. These settings do not
 select the agents repairing tests, documentation, or CI. An opt-in
-[per-run Pi profile](#per-run-pi-profiles) supersedes these role values for
-that run. Eval capture strips these profiles so replay candidates remain
+[per-run Pi profile](#per-run-pi-profiles) supersedes these configured role
+values for that run. See [per-run reviewer profiles](#per-run-reviewer-profiles)
+for independent reviewer selection and its precedence over both mechanisms.
+Eval capture strips these profiles so replay candidates remain
 authoritative.
 
 ### agent_args_override

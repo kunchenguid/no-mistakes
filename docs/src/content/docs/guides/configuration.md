@@ -65,7 +65,7 @@ The rest of this page covers only the cross-cutting rules that involve both file
 - The [Repo Config Reference](/no-mistakes/reference/repo-config/) security note owns the repository-only fields and their trust rules.
   Repository `commands` and `agent` are read from the trusted default branch unless trusted `allow_repo_commands: true` permits their pushed-branch values; that opt-in does not apply to every gate-control field.
   Matching machine-local `repository_overrides.commands` supplements those commands without replacing them, and cannot be supplied by the pushed branch.
-- no-mistakes reloads global config while setting up each run, so edits made before starting a run apply to it. [Per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) are the exception for model and effort. For repeatable profiles (for example fast versus deep Codex settings), use separately initialized `NM_HOME` roots; `NM_HOME` moves all no-mistakes state, not just config.
+- no-mistakes reloads global config while setting up each run, so edits made before starting a run apply to it. See [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) and [reviewer profiles](/no-mistakes/reference/global-config/#per-run-reviewer-profiles) for immutable selection exceptions. For repeatable profiles (for example fast versus deep Codex settings), use separately initialized `NM_HOME` roots; `NM_HOME` moves all no-mistakes state, not just config.
 
 ## House rules for part of the tree
 

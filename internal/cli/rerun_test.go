@@ -211,9 +211,9 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				}
 				return &ipc.GetActiveRunResult{}, nil
 			})
-			requests := make(chan map[string]string, 1)
+			requests := make(chan map[string]any, 1)
 			srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
-				var params map[string]string
+				var params map[string]any
 				if err := json.Unmarshal(raw, &params); err != nil {
 					return nil, err
 				}
@@ -241,7 +241,10 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				t.Fatal(err)
 			}
 			params := <-requests
-			if params["caller_head_sha"] != wantHead || params["repo_id"] != repo.ID || params["intent"] != "keep the caller's changes" {
+			if params["fresh_launch"] != nil {
+				t.Fatal("explicit rerun marked as a fresh launch")
+			}
+			if (!dirty && params["caller_head_sha"] != wantHead) || params["repo_id"] != repo.ID || params["intent"] != "keep the caller's changes" {
 				t.Fatalf("rerun request = %v, want caller head %q and original repo/intent", params, wantHead)
 			}
 			if !strings.Contains(out.String(), "Rerun started") {
@@ -270,8 +273,8 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
 				params = <-requests
-				if params["caller_head_sha"] != wantHead {
-					t.Fatalf("AXI omitted known head: %v", params)
+				if params["caller_head_sha"] != wantHead || params["fresh_launch"] != true {
+					t.Fatalf("AXI omitted fresh-launch identity or known head: %v", params)
 				}
 				t.Logf("AXI no-op push fallback IPC request: %v; run_id=%s", params, runID)
 

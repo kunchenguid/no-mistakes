@@ -147,6 +147,9 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
+| `--reviewer` | `string` | (none) | Independent immutable [reviewer harness](/no-mistakes/reference/global-config/#per-run-reviewer-profiles) |
+| `--reviewer-model` | `string` | (none) | Reviewer model; requires `--reviewer`, defaults to its `agent_config` profile |
+| `--reviewer-effort` | `string` | (none) | Reviewer effort; requires `--reviewer`, defaults to its `agent_config` profile |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
 | `--launch-nonce` | `string` | (none) | Non-secret correlation identifier for a durable pre-drive receipt; requires `--validation-generation` |
 | `--validation-generation` | `string` | (none) | Caller-selected validation generation bound to `--launch-nonce`; requires that flag |
@@ -402,6 +405,7 @@ no-mistakes axi status --run <id>
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 A pinned run also includes `pi_profile` with `model` and `effort`; see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles).
+A run with an independent [reviewer pin](/no-mistakes/reference/global-config/#per-run-reviewer-profiles) includes `reviewer_profile` with `agent`, `model`, and `effort`.
 Status offers branch-scoped `axi respond` commands only for the current branch's implicitly resolved run. An explicitly selected gate stays inspection-only even when its branch matches, because a newer active run on that branch could receive the bare response command instead; the gate remains visible, its log commands retain `--run <id>`, and it names `axi respond --run <id>` as the response command.
 When a repository has no configured lint command and Document performs the combined Document/Lint housekeeping invocation, the run object includes `shared_work` evidence naming its `document+lint housekeeping` scope and the duration attributed to Document; Lint's own duration remains the cached-result handoff time.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
@@ -626,7 +630,7 @@ The retry starts a new run at the failed run's preserved head, so every correcti
 - Every later step runs normally. Per-run skips of steps that never ran are kept.
 
 The failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
-The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, and Pi profile; retry takes none of the flags that would change them.
+The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, Pi profile, and [reviewer pin](/no-mistakes/reference/global-config/#per-run-reviewer-profiles); retry takes none of the flags that would change them.
 
 `--run` names the failed run, as `axi status` shows it.
 It does not select a run: the retried run is always the current branch's latest run, and a `--run` that names any other run is refused.
@@ -744,6 +748,9 @@ failed step instead of repeating every completed step.
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
+| `--reviewer` | `string` | inherited | Reviewer harness for the new run; omission inherits the previous run's resolved reviewer pin |
+| `--reviewer-model` | `string` | (none) | Reviewer model; requires `--reviewer`, defaults to its `agent_config` profile |
+| `--reviewer-effort` | `string` | (none) | Reviewer effort; requires `--reviewer`, defaults to its `agent_config` profile |
 
 ## no-mistakes sync
 
@@ -821,7 +828,7 @@ Runs with [quota-aware routing](/no-mistakes/reference/global-config/#quota_rout
 
 Use `--agents` for local, per-purpose agent performance aggregates: duration and the subprocess-vs-model time split, session mode, errors, the token totals (input, output, cache-read, cache-creation, fresh input, reasoning), and the model round-trip and tool-category activity histogram, with a `METRICS` coverage count that tells a real zero apart from missing instrumentation.
 Use `--run <id>` to inspect the individual agent invocations for one run - including each invocation's per-round token deltas next to the adapter counters, tool-category breakdown, workload size, finding count, and fallback reason - plus the total time parked at approval gates; it implies `--agents`.
-Pinned runs also print the requested [Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) above that table; `MODEL` there is served evidence, not the pin.
+Pinned runs also print the requested [Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) and independent [reviewer profile](/no-mistakes/reference/global-config/#per-run-reviewer-profiles), when present, above that table. When both are present, the Pi profile is labeled as the primary selection and the reviewer is listed separately. `MODEL` in the invocation table is served evidence, not the pin.
 The combined Document/Lint invocation is labeled `housekeeping (document+lint)` and attributed to `document+lint`, making its shared duration and tokens explicit without adding a second agent call.
 See [local telemetry](/no-mistakes/reference/environment/#what-stays-local-and-what-leaves-the-machine) for token definitions and missing-value semantics.
 A `--agents` token total is all-or-nothing: it reads `-` for the whole purpose unless every invocation in it reported that field, so one failed round that reported no usage leaves the group's total unknown instead of silently under-counted.
