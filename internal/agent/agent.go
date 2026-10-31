@@ -77,10 +77,7 @@ type RunOpts struct {
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
-	OnAttempt func(Attempt)
-	// FormatRecovery, when enforceable, may restate a rejected terminal result.
-	// Adapters leave it nil. A nil or effectful recovery never runs the task again.
-	FormatRecovery  *FormatRecovery
+	OnAttempt       func(Attempt)
 	ConfiguredModel string
 }
 
@@ -405,7 +402,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
 		parseErr := RejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
-		return resultFromUsage(usage), attachTerminalResult(parseErr, text)
+		return resultFromUsage(usage), parseErr
 	}
 
 	res := textResult(text, usage)

@@ -111,8 +111,7 @@ func runWithRetry(
 			return result, nil
 		}
 		if isResultFormatError(err) {
-			text, _ := terminalResultText(err)
-			return recoverResultFormat(ctx, opts, result, text, err)
+			return keptFormatResult(result), formatKept(err)
 		}
 		lastResult = result
 		label, retry := classify(err)
@@ -152,15 +151,11 @@ func cloneSessionRef(session *SessionRef) *SessionRef {
 	return &copy
 }
 
-// claudeRetryClassifier retries both transient API errors and the
-// no-structured-output case that the existing loop already handled. When the
-// CLI reported the API error it ended on, that record alone decides: the
-// reported HTTP status takes precedence; without one, only the record's
-// terminal diagnostic is classified, never surrounding assistant or stderr text.
+// claudeRetryClassifier retries transient API errors. When the CLI reported
+// the API error it ended on, that record alone decides: the reported HTTP
+// status takes precedence; without one, only the record's terminal diagnostic
+// is classified, never surrounding assistant or stderr text.
 func claudeRetryClassifier(err error) (string, bool) {
-	if errors.Is(err, errNoStructuredOutput) {
-		return "missing structured output", true
-	}
 	var apiErr *claudeAPIError
 	if errors.As(err, &apiErr) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -203,10 +198,9 @@ var transientNeedles = []struct {
 	{"etimedout", "i/o timeout"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
-	// A finished turn whose terminal text fails the result schema is not listed
-	// here. Re-running the task replays edits and tests that already finished.
-	// result_format.go owns that failure: bounded format-only recovery, or a
-	// clear error that keeps the completed work.
+	// A finished turn whose structured result is rejected is not listed here.
+	// Re-running the task replays edits and tests that already finished;
+	// result_format.go owns the clear error that keeps the completed work.
 	// agy's strict tool-call validation kills the whole run when the model
 	// emits one malformed call; the step work is usually already complete.
 	{"declaring permissions", "agy permission declaration"},
@@ -246,14 +240,6 @@ func classifyTransient(err error) (string, bool) {
 	msg := strings.ToLower(err.Error())
 	if isTerminalRetryError(msg) {
 		return "", false
-	}
-	const piMissingOutputPrefix = "pi did not finish by calling no_mistakes_output alone"
-	if strings.HasPrefix(msg, piMissingOutputPrefix) {
-		stderr := strings.TrimSpace(strings.TrimPrefix(msg[len(piMissingOutputPrefix):], ":"))
-		if isPiPermanentStderr(stderr) {
-			return "", false
-		}
-		return "pi missing output tool", true
 	}
 	const piExitPrefix = "pi exited: "
 	if strings.HasPrefix(msg, piExitPrefix) {

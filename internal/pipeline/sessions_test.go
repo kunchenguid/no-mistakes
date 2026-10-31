@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -101,16 +100,13 @@ type formatFailureSessionAgent struct {
 func (a *formatFailureSessionAgent) Name() string                { return "format-fail" }
 func (a *formatFailureSessionAgent) SupportsSessionResume() bool { return true }
 func (a *formatFailureSessionAgent) Close() error                { return nil }
-func (a *formatFailureSessionAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+func (a *formatFailureSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	a.calls = append(a.calls, opts)
 	if opts.Session == nil || opts.Session.ID == "" {
 		return &agent.Result{SessionID: "fixer-session", Text: "started"}, nil
 	}
-	return agent.ConsumeStructuredResult(ctx, agent.RunOpts{
-		JSONSchema: json.RawMessage(`{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"]}`),
-	}, func(context.Context) (string, error) {
-		return "{\"done\":true}\nalready complete", nil
-	})
+	retryable := false
+	return &agent.Result{SessionID: opts.Session.ID, ResumeRetryable: &retryable}, agent.RejectStructuredOutput(errors.New("completed turn returned malformed structured output"))
 }
 
 func TestRunSessions_FormatFailureDoesNotRerunTheFixer(t *testing.T) {
