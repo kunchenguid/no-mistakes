@@ -706,8 +706,11 @@ func TestExecutor_ReviewCarryForward_OperatorFindingKeepsItsGateRound(t *testing
 	if err := respondFixPartialWithOverrides(t, exec, types.StepReview, []string{"review-1"}, nil, added); err != nil {
 		t.Fatalf("fix with added finding: %v", err)
 	}
-	steps := waitForFindings(t, database, run.ID, "fix leaks the handle")
-	rounds := waitForRounds(t, database, steps[0].ID, 2)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds := waitForRounds(t, database, steps[0].ID, 2, types.StepStatusFixReview)
 	operatorFinding := func(raw *string) types.Finding {
 		t.Helper()
 		if raw == nil {
@@ -746,7 +749,7 @@ func TestExecutor_ReviewCarryForward_OperatorFindingKeepsItsGateRound(t *testing
 	if err := respondFixPartial(t, exec, types.StepReview, leakID); err != nil {
 		t.Fatal(err)
 	}
-	rounds = waitForRounds(t, database, steps[0].ID, 3)
+	rounds = waitForRounds(t, database, steps[0].ID, 3, types.StepStatusFixReview)
 	item := operatorFinding(rounds[2].FindingsJSON)
 	if got, want := item.CarriedNote(), "added by the operator at round 1, not cleared: "+carryReasonFileNotReviewed; got != want {
 		t.Errorf("round 3 labels the operator's finding %q, want %q", got, want)
