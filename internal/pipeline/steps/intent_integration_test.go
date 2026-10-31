@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
@@ -150,6 +151,30 @@ func TestIntentStep_Integration_AttachesSummaryToRun(t *testing.T) {
 	}
 	if got.IntentScore == nil || *got.IntentScore <= 0 {
 		t.Errorf("IntentScore = %v", got.IntentScore)
+	}
+}
+
+func TestIntentStep_RejectsInferredIntentWithoutPersistingOrEchoingIt(t *testing.T) {
+	repoDir, _, base, head := initIntentRepo(t)
+	cfg := &config.Config{Intent: config.Intent{
+		Enabled: true,
+		Check:   config.IntentCheck{Mode: config.IntentCheckReject, Terms: []string{"secret-title"}},
+	}}
+	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
+	step := &IntentStep{runIntent: func(context.Context, *pipeline.StepContext) (*intent.Result, error) {
+		return &intent.Result{Summary: "secret-title from the operator"}, nil
+	}}
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("matched inferred intent was accepted")
+	} else if strings.Contains(err.Error(), "secret-title") || !strings.Contains(err.Error(), "terms[0]") {
+		t.Fatalf("rejection disclosed input or omitted rule index: %v", err)
+	}
+	got, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Intent != nil {
+		t.Fatalf("rejected inferred intent was persisted: %q", *got.Intent)
 	}
 }
 

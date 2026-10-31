@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -304,6 +305,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.MergeForRemote(globalCfg, effectiveRepoCfg, repo.UpstreamURL)
+	if err := applyPinnedIntentCheck(cfg, run); err != nil {
+		return nil, err
+	}
 	if err := cfg.Review.ValidatePathInstructionsBudget(); err != nil {
 		return nil, err
 	}
@@ -1409,6 +1413,8 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // caller-owned private ref on the gate. It does not rewrite origin tracking
 // refs, FETCH_HEAD, or any shared worktree ref, so a refused Pi pin cannot
 // perturb an in-flight validation that must stay running.
+var fetchIntentTrustedDefaultBranchSHA = fetchTrustedDefaultBranchSHA
+
 func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.Repo, purpose string) (string, error) {
 	if strings.TrimSpace(repo.DefaultBranch) == "" {
 		return "", fmt.Errorf("cannot evaluate %s: repository has no known default branch to read trusted config from", purpose)
@@ -1447,6 +1453,45 @@ func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, re
 		return err
 	}
 	return cfg.ValidatePiProfileAgents()
+}
+
+// applyPinnedIntentCheck makes an existing run keep the policy under which it
+// was admitted. Historical rows without a snapshot remain off rather than
+// acquiring a new admission rule during recovery.
+func applyPinnedIntentCheck(cfg *config.Config, run *db.Run) error {
+	if cfg == nil || run == nil {
+		return fmt.Errorf("cannot restore intent check without run configuration")
+	}
+	if run.IntentCheckJSON == nil {
+		cfg.Intent.Check = config.IntentCheck{Mode: config.IntentCheckOff}
+		return nil
+	}
+	check, err := config.ParseIntentCheckJSON([]byte(*run.IntentCheckJSON))
+	if err != nil {
+		return err
+	}
+	cfg.Intent.Check = check
+	return nil
+}
+
+func (m *RunManager) effectiveIntentCheckBeforeRun(ctx context.Context, repo *db.Repo, global *config.GlobalConfig, trustedSHA string) (config.IntentCheck, error) {
+	gateDir := m.paths.RepoDir(repo.ID)
+	entry, err := git.Run(ctx, gateDir, "ls-tree", trustedSHA, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return config.IntentCheck{}, fmt.Errorf("cannot evaluate intent check: trusted tree is unreadable: %w", err)
+	}
+	trusted := config.IntentCheck{Mode: config.IntentCheckOff}
+	if entry != "" {
+		content, err := git.ShowFile(ctx, gateDir, trustedSHA, ".no-mistakes.yaml")
+		if err != nil {
+			return config.IntentCheck{}, fmt.Errorf("cannot evaluate intent check: trusted config is unreadable: %w", err)
+		}
+		trusted, err = config.ParseIntentCheckYAML([]byte(content))
+		if err != nil {
+			return config.IntentCheck{}, fmt.Errorf("cannot evaluate intent check: trusted .no-mistakes.yaml is invalid: %w", err)
+		}
+	}
+	return config.MergeIntentChecks(global.Intent.Check, trusted), nil
 }
 
 // effectiveConfigBeforeRun resolves the configuration a run at headSHA would
@@ -1572,7 +1617,61 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// stamp back instead of a since-changed config file. Legacy launches keep
 	// their failed-row diagnostics on a bad global config: the load error is
 	// held until the row exists.
+	storedIntent := intent
+	if source != db.RunIntentSourceRerun && launchNonce == "" && planID == "" {
+		storedIntent = strings.TrimSpace(storedIntent)
+	}
 	globalCfg, globalCfgErr := config.LoadGlobal(m.paths.ConfigFile())
+	if globalCfgErr != nil && strings.Contains(globalCfgErr.Error(), "intent.check") {
+		trackStartFailure("intent_check_config")
+		return "", fmt.Errorf("load intent check policy: %w", globalCfgErr)
+	}
+	var intentCheckJSON string
+	var trustedSHA string
+	var trustedFetchErr error
+	var err error
+	trustedFetchAttempted := false
+	if globalCfgErr == nil {
+		check := globalCfg.Intent.Check
+		trustedSHA, trustedFetchErr = fetchIntentTrustedDefaultBranchSHA(ctx, m.paths.RepoDir(repo.ID), repo, "intent check")
+		trustedFetchAttempted = true
+		if trustedFetchErr == nil {
+			check, err = m.effectiveIntentCheckBeforeRun(ctx, repo, globalCfg, trustedSHA)
+			if err != nil {
+				trackStartFailure("intent_check_config")
+				return "", err
+			}
+		} else {
+			// Keep intent checks unavailable when their trusted policy cannot be
+			// read; the same failed fetch is reused by trusted-config loading.
+			trustedSHA = ""
+			check = config.IntentCheck{Mode: config.IntentCheckOff}
+		}
+		// Resolve the effective policy, not just the global mode: a trusted
+		// repository rule must reject before cancelActiveRuns, including retries.
+		if check.Mode != config.IntentCheckOff {
+			policyIntent := storedIntent
+			if retry != nil && retry.source != nil && retry.source.Intent != nil {
+				policyIntent = *retry.source.Intent
+			}
+			if matches := check.Match(policyIntent); len(matches) > 0 {
+				switch check.Mode {
+				case config.IntentCheckReject:
+					trackStartFailure("intent_check_rejected")
+					return "", fmt.Errorf("intent rejected by configured rules: %s", strings.Join(matches, ", "))
+				case config.IntentCheckWarn:
+					slog.Warn("run intent matched configured rules", "rules", strings.Join(matches, ", "))
+				}
+			}
+		}
+		policy, err := json.Marshal(check)
+		if err != nil {
+			trackStartFailure("intent_check_snapshot")
+			return "", fmt.Errorf("serialize intent check policy: %w", err)
+		}
+		intentCheckJSON = string(policy)
+	}
+
 	var pin *agentcfg.PiProfile
 	if request := agentcfg.OptionalPiProfile(profiles); request != nil {
 		if globalCfgErr != nil {
@@ -1613,10 +1712,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
-	storedIntent := intent
-	if source != db.RunIntentSourceRerun && launchNonce == "" && plan == nil {
-		storedIntent = strings.TrimSpace(storedIntent)
-	}
 	var runIntent *db.RunIntent
 	if strings.TrimSpace(storedIntent) != "" {
 		if source == "" {
@@ -1640,6 +1735,14 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if intentCheckJSON != "" {
+		if err := m.db.SetRunIntentCheck(run.ID, intentCheckJSON); err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("pin intent check: %s", err))
+			trackStartFailure("pin_intent_check")
+			return "", fmt.Errorf("pin intent check: %w", err)
+		}
+		run.IntentCheckJSON = &intentCheckJSON
 	}
 	if inherited := strings.TrimSpace(inheritedPRURL); inherited != "" {
 		if err := m.db.UpdateRunPRURL(run.ID, inherited); err != nil {
@@ -1729,8 +1832,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// the resolve, a stale origin/<defaultBranch> left in the shared bare
 	// repo by a previous run could serve a trusted copy that the live default
 	// branch has already removed - silently running stale shell.
-	var trustedSHA string
-	if repo.DefaultBranch != "" {
+	if !trustedFetchAttempted && repo.DefaultBranch != "" {
 		fetchErr := fetchRunDefaultBranch(ctx, wtDir, repo)
 		if fetchErr != nil {
 			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
@@ -1763,6 +1865,9 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// commands/agent empty. An unreadable trusted tree aborts below.
 	// SECURITY: a trusted-config fetch failure must abort, not silently disable
 	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
+	if trustedFetchErr != nil {
+		slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", trustedFetchErr)
+	}
 	if err := assertGateTrustedConfigReadable(ctx, wtDir, repo.DefaultBranch, trustedSHA); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("trusted_config_unreadable")
@@ -1780,6 +1885,38 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.MergeForRemote(globalCfg, effectiveRepoCfg, repo.UpstreamURL)
+	if run.IntentCheckJSON == nil {
+		policy, err := json.Marshal(cfg.Intent.Check)
+		if err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("serialize intent check policy: %s", err))
+			return "", err
+		}
+		if err := m.db.SetRunIntentCheck(run.ID, string(policy)); err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("pin intent check: %s", err))
+			return "", fmt.Errorf("pin intent check: %w", err)
+		}
+		policyJSON := string(policy)
+		run.IntentCheckJSON = &policyJSON
+	}
+	if err := applyPinnedIntentCheck(cfg, run); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("pinned_intent_check")
+		return "", err
+	}
+	policyIntent := ""
+	if run.Intent != nil {
+		policyIntent = *run.Intent
+	}
+	if matches := cfg.Intent.Check.Match(policyIntent); len(matches) > 0 {
+		switch cfg.Intent.Check.Mode {
+		case config.IntentCheckReject:
+			m.db.UpdateRunError(run.ID, "intent rejected by configured rules")
+			trackStartFailure("intent_check_rejected")
+			return "", fmt.Errorf("intent rejected by configured rules: %s", strings.Join(matches, ", "))
+		case config.IntentCheckWarn:
+			slog.Warn("run intent matched configured rules", "rules", strings.Join(matches, ", "))
+		}
+	}
 	if err := cfg.Review.ValidatePathInstructionsBudget(); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("review_path_instructions_budget")

@@ -27,10 +27,11 @@ import (
 // continues: the run itself, whose record the executor re-proves and carries,
 // and the audit link written before the continuation can execute anything.
 type retryLaunch struct {
-	source     *db.Run
-	link       db.RunRetry
-	gates      []config.Gate
-	checkpoint *pipeline.RetryCheckpoint
+	source      *db.Run
+	link        db.RunRetry
+	gates       []config.Gate
+	checkpoint  *pipeline.RetryCheckpoint
+	intentCheck config.IntentCheck
 }
 
 // record writes the audit link and the failed run's exact intent onto the
@@ -103,10 +104,15 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 		if err != nil {
 			return "", err
 		}
+		source := launch.source
+		if source.Intent != nil && launch.intentCheck.Mode == config.IntentCheckReject {
+			if matches := launch.intentCheck.Match(*source.Intent); len(matches) > 0 {
+				return "", fmt.Errorf("retry intent rejected by configured rules: %s", strings.Join(matches, ", "))
+			}
+		}
 		if m.afterRetryProof != nil {
 			m.afterRetryProof()
 		}
-		source := launch.source
 		prBaseBranch := ""
 		if source.PRBaseBranch != nil {
 			prBaseBranch = strings.TrimSpace(*source.PRBaseBranch)
@@ -185,7 +191,8 @@ func (m *RunManager) proveRetry(ctx context.Context, repo *db.Repo, branch, runI
 	default:
 		return nil, refuseRetry(runID, "matching head", "the clean local head %s is not the run's preserved head %s; inspect `no-mistakes axi status` and follow `branch_sync.next_action.command` (`no-mistakes axi sync --recover` adopts the preserved head) before retrying", callerHeadSHA, source.HeadSHA)
 	}
-	if err := m.proveRetryConfiguration(ctx, repo, source, gates, checkpoint); err != nil {
+	intentCheck, err := m.proveRetryConfiguration(ctx, repo, source, gates, checkpoint)
+	if err != nil {
 		return nil, refuseRetry(runID, "compatible configuration", "%v", err)
 	}
 	failed := checkpoint.Failed()
@@ -193,7 +200,7 @@ func (m *RunManager) proveRetry(ctx context.Context, repo *db.Repo, branch, runI
 	if failed.Error != nil {
 		sourceError = *failed.Error
 	}
-	return &retryLaunch{source: source, gates: gates, checkpoint: checkpoint, link: db.RunRetry{
+	return &retryLaunch{source: source, gates: gates, checkpoint: checkpoint, intentCheck: intentCheck, link: db.RunRetry{
 		SourceRunID:       source.ID,
 		StepName:          failed.StepName,
 		SourceRound:       checkpoint.Round,
@@ -240,25 +247,28 @@ func (m *RunManager) provePreservedHead(ctx context.Context, repo *db.Repo, sour
 // configuration that produced every carried step result to be the one a new
 // run would use: the repository configuration the carried Review rounds
 // recorded, and the agent that served the carried steps.
-func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo, source *db.Run, pinned []config.Gate, checkpoint *pipeline.RetryCheckpoint) error {
+func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo, source *db.Run, pinned []config.Gate, checkpoint *pipeline.RetryCheckpoint) (config.IntentCheck, error) {
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
-		return fmt.Errorf("load global config: %w", err)
+		return config.IntentCheck{}, fmt.Errorf("load global config: %w", err)
 	}
 	if source.PiProfile != nil {
 		resolved, err := globalCfg.ResolvePiProfile(source.PiProfile)
 		if err != nil {
-			return fmt.Errorf("the run's model profile no longer resolves: %w", err)
+			return config.IntentCheck{}, fmt.Errorf("the run's model profile no longer resolves: %w", err)
 		}
 		if *resolved != *source.PiProfile {
-			return fmt.Errorf("the run's model profile now resolves to %s/%s instead of %s/%s", resolved.Model, resolved.Effort, source.PiProfile.Model, source.PiProfile.Effort)
+			return config.IntentCheck{}, fmt.Errorf("the run's model profile now resolves to %s/%s instead of %s/%s", resolved.Model, resolved.Effort, source.PiProfile.Model, source.PiProfile.Effort)
 		}
 	}
 	cfg, currentRepoCfg, err := m.effectiveConfigBeforeRun(ctx, repo, source.HeadSHA, globalCfg, "retry configuration")
 	if err != nil {
-		return err
+		return config.IntentCheck{}, err
 	}
-	return m.proveConfigurationMatches(ctx, source, globalCfg, cfg, currentRepoCfg, pinned, checkpoint)
+	if err := m.proveConfigurationMatches(ctx, source, globalCfg, cfg, currentRepoCfg, pinned, checkpoint); err != nil {
+		return config.IntentCheck{}, err
+	}
+	return cfg.Intent.Check, nil
 }
 
 // proveConfigurationMatches compares a resolved configuration with the one the

@@ -281,6 +281,11 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
+	// Immutable admission policy snapshot: inferred intent may be extracted
+	// after launch or after recovery, so it must use the policy admitted before
+	// this run superseded any earlier one.
+	`ALTER TABLE runs ADD COLUMN intent_check_json TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_intent_check_immutable BEFORE UPDATE OF intent_check_json ON runs WHEN OLD.intent_check_json IS NOT NULL AND NEW.intent_check_json IS NOT OLD.intent_check_json BEGIN SELECT RAISE(ABORT, 'run intent check is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	// The CI step's per-check rerun budget. It is durable because a run

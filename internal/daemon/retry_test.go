@@ -224,6 +224,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	f := &retryFixture{p: p, d: d, repo: repo, submitted: submitted, callerHead: submitted, executions: &executions}
 	if opts.beforeSource != nil {
 		opts.beforeSource(t, f)
+		submitted = f.submitted
 	}
 	var profiles []*agentcfg.PiProfile
 	if opts.profile != nil {
@@ -372,6 +373,25 @@ func (f *retryFixture) stepRow(t *testing.T, name types.StepName) *db.StepResult
 	}
 	t.Fatalf("source run has no %s step", name)
 	return nil
+}
+
+func TestRetryRejectsTrustedRepoIntentBeforeAdmission(t *testing.T) {
+	f := newRetryFixture(t, retryFixtureOptions{beforeSource: func(t *testing.T, f *retryFixture) {
+		f.submitted = commitTrustedRepoConfig(t, f.repo, "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nintent:\n  check:\n    mode: reject\n    terms: [\"keep it\"]\n")
+		f.callerHead = f.submitted
+	}})
+
+	_, err := f.retry(t, f.source.ID)
+	if err == nil || !strings.Contains(err.Error(), "intent rejected by configured rules: terms[0]") || strings.Contains(err.Error(), "keep it") {
+		t.Fatalf("retry rejection = %v, want trusted rule index without inherited intent", err)
+	}
+	runs, err := f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("rejected retry created a run: count=%d err=%v", len(runs), err)
+	}
+	if f.executions.Load() != 0 {
+		t.Fatalf("rejected retry executed %d pipeline steps", f.executions.Load())
+	}
 }
 
 func TestRetryRefusesUnlessEveryProofHolds(t *testing.T) {

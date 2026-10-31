@@ -13,7 +13,70 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
+
+func TestStartRunTrustedFetchFailureAdmitsThenFailsBeforeAgent(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return nil })
+	repo, head := setupTestGitRepo(t, p, d, "intent-fetch-failure")
+
+	oldFetch := fetchIntentTrustedDefaultBranchSHA
+	calls := 0
+	fetchIntentTrustedDefaultBranchSHA = func(context.Context, string, *db.Repo, string) (string, error) {
+		calls++
+		return "", errors.New("fetch unavailable")
+	}
+	t.Cleanup(func() { fetchIntentTrustedDefaultBranchSHA = oldFetch })
+
+	_, err := NewRunManager(d, p, nil).startRun(context.Background(), repo, "main", head, head, "push", nil, "", "", false, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "disable_project_settings") {
+		t.Fatalf("startRun after trusted fetch failure = %v, want trusted-config refusal", err)
+	}
+	if calls != 1 {
+		t.Fatalf("trusted default fetch calls = %d, want exactly 1", calls)
+	}
+	runs, err := d.GetRunsByRepo(repo.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("admitted runs = %d, err=%v; want the failed-fetch run recorded", len(runs), err)
+	}
+}
+
+func TestLoadRecoveredConfigUsesPinnedIntentCheck(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return nil })
+	repo, head := setupTestGitRepo(t, p, d, "recovered-intent-check")
+	gitCmd(t, repo.WorkingPath, "remote", "add", "origin", p.RepoDir(repo.ID))
+	global, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	global = append(global, []byte("\nintent:\n  check:\n    mode: reject\n    terms: [current-policy]\n")...)
+	if err := os.WriteFile(p.ConfigFile(), global, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "main", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pinned = `{"mode":"warn","terms":["launch-policy"]}`
+	if err := d.SetRunIntentCheck(run.ID, pinned); err != nil {
+		t.Fatal(err)
+	}
+	run, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := NewRunManager(d, p, nil).loadRecoveredConfig(context.Background(), run, repo, repo.WorkingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Intent.Check.Mode != config.IntentCheckWarn || len(cfg.Intent.Check.Match("launch-policy")) != 1 {
+		t.Fatalf("recovery lost the launch policy: %#v", cfg.Intent.Check)
+	}
+	if got := cfg.Intent.Check.Match("current-policy"); len(got) != 0 {
+		t.Fatalf("recovery adopted changed live policy: %v", got)
+	}
+}
 
 func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	oldTimeout := recoveredConfigFetchTimeout

@@ -2266,11 +2266,12 @@ func TestPRStep_PromptUsesWhatChanged(t *testing.T) {
 
 	env, _ := fakeGH(t, "")
 
-	var capturedPrompt string
+	var capturedPrompt, capturedSchema string
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
+			capturedSchema = string(opts.JSONSchema)
 			payload := json.RawMessage(`{"title":"feat: add bar","body":"## What Changed\n\n- add Bar()"}`)
 			return &agent.Result{Output: payload}, nil
 		},
@@ -2285,6 +2286,15 @@ func TestPRStep_PromptUsesWhatChanged(t *testing.T) {
 
 	if !strings.Contains(capturedPrompt, "## What Changed") {
 		t.Errorf("expected prompt to instruct agent to write ## What Changed, got:\n%s", capturedPrompt)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(capturedSchema), &schema); err != nil {
+		t.Fatalf("unparseable PR output schema: %v", err)
+	}
+	if _, ok := schema.Properties["intent_brief"]; ok {
+		t.Errorf("default raw mode changed the PR output schema: %s", capturedSchema)
 	}
 }
 

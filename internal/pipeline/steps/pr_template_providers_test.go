@@ -34,7 +34,12 @@ func TestPRTemplateProviderCompositionUpdateAndRestamp(t *testing.T) {
 			if provider == scm.ProviderBitbucket && (!strings.Contains(original.appendix, "```text\n"+pipelineAttestationCommentPrefix) || strings.Contains(original.appendix, "<details>")) {
 				t.Fatal("Bitbucket evidence lost Markdown skin or visible exact declaration")
 			}
-			// Human edits survive a later template removal, with no new agent draft.
+			// Human edits survive a later template removal while the managed Intent
+			// appendix can switch to the configured brief across every forge skin.
+			sctx.UserIntent = "private source context is not the public Intent rendering"
+			sctx.Config.PR.Intent.Format = "brief"
+			sctx.Config.PR.Intent.Sections = []string{"why"}
+			sctx.PublicIntentBrief = "Preserve the author's review context\n\n### Why\n- Keep the author narrative stable"
 			sctx.Config.PR.Template = ""
 			author := "# Human heading\n\n- [x] Human signed off\n😀 café\nCloses https://example.test/issues/7\n\n"
 			host := &attestationTestHost{provider: provider, title: "Draft: Author's title", body: author + wrapPRAppendix(original.appendix) + "\nAfter appendix: human note"}
@@ -42,6 +47,9 @@ func TestPRTemplateProviderCompositionUpdateAndRestamp(t *testing.T) {
 			appendix, err := step.buildPRAppendix(sctx, provider)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !strings.Contains(appendix, "## Intent\n\n"+sctx.PublicIntentBrief) || strings.Contains(appendix, "private source context") || strings.Count(appendix, pipelineAttestationCommentPrefix) != 1 {
+				t.Fatalf("owned brief appendix lost Intent or duplicated attestation for %s:\n%s", provider, appendix)
 			}
 			if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: old}, "", "", appendix+"\nNew recorded fact.", budget); err != nil {
 				t.Fatal(err)
