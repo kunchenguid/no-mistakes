@@ -221,11 +221,14 @@ type Finding struct {
 	// CarriedFromRound and CarriedReason are pipeline-written: a Review round
 	// keeps every outstanding finding it did not positively verify, so they
 	// tell a reader that this round's reviewer did not submit the finding, the
-	// last round that did (for an operator-added finding, the round at whose
-	// gate it was added), and why this round did not clear it. Both are empty
+	// last round that did, and why this round did not clear it. Both are empty
 	// on a finding the round itself reported.
 	CarriedFromRound int    `json:"carried_from_round,omitempty"`
 	CarriedReason    string `json:"carried_reason,omitempty"`
+	// AddedAtRound is the pipeline-written round at whose gate the operator
+	// added this finding. Unlike CarriedFromRound, a later round restating the
+	// finding does not clear it, so the operator's gate stays the origin.
+	AddedAtRound int `json:"added_at_round,omitempty"`
 }
 
 // CarriedNote renders the carry provenance for a human reader, or "" for a
@@ -236,7 +239,12 @@ func (f Finding) CarriedNote() string {
 	}
 	note := "carried from round " + itoa(f.CarriedFromRound)
 	if f.Source == FindingSourceUser {
-		note = "added by the operator at round " + itoa(f.CarriedFromRound)
+		addedAt := f.AddedAtRound
+		if addedAt == 0 {
+			// A round stored before AddedAtRound existed only knows the carry round.
+			addedAt = f.CarriedFromRound
+		}
+		note = "added by the operator at round " + itoa(addedAt)
 	}
 	if f.CarriedReason != "" {
 		note += ", not cleared: " + f.CarriedReason
@@ -315,6 +323,7 @@ type findingWire struct {
 	CheckID             string `json:"check_id,omitempty"`
 	CarriedFromRound    int    `json:"carried_from_round,omitempty"`
 	CarriedReason       string `json:"carried_reason,omitempty"`
+	AddedAtRound        int    `json:"added_at_round,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -705,6 +714,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.CheckID = wire.CheckID
 	f.CarriedFromRound = wire.CarriedFromRound
 	f.CarriedReason = wire.CarriedReason
+	f.AddedAtRound = wire.AddedAtRound
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

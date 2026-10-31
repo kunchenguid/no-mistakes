@@ -601,3 +601,18 @@ func TestFindingCarriedNoteNamesAnOperatorAddedFindingsGate(t *testing.T) {
 		t.Errorf("CarriedNote() = %q, want %q", got, want)
 	}
 }
+
+// A restatement clears the carry marker but not the gate an operator added the
+// finding at, so a later carry names that gate rather than the carry round.
+func TestFindingCarriedNotePrefersTheOperatorsGateRound(t *testing.T) {
+	parsed, err := ParseFindingsJSON(`{"findings":[{"id":"user-1","severity":"warning","file":"cache.go","description":"stale entry","action":"auto-fix","source":"user","added_at_round":1,"carried_from_round":2,"carried_reason":"file not in reviewed_paths"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Items[0].AddedAtRound; got != 1 {
+		t.Fatalf("AddedAtRound dropped on parse: got %d, want 1", got)
+	}
+	if got, want := parsed.Items[0].CarriedNote(), "added by the operator at round 1, not cleared: file not in reviewed_paths"; got != want {
+		t.Errorf("CarriedNote() = %q, want %q", got, want)
+	}
+}

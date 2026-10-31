@@ -658,6 +658,107 @@ func TestExecutor_ReviewCarryForward_StoredRoundMarksWhatItCarried(t *testing.T)
 	waitExecutorDone(t, done)
 }
 
+// TestExecutor_ReviewCarryForward_OperatorFindingKeepsItsGateRound is the
+// three-round case where the carry marker alone names the wrong origin: the
+// operator adds a finding at the round-1 gate, round 2 restates it (which
+// clears its carry marker), and round 3 omits its file. The label must still
+// name the round-1 gate it was added at, not the round that restated it.
+func TestExecutor_ReviewCarryForward_OperatorFindingKeepsItsGateRound(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			round++
+			switch round {
+			case 1:
+				return &StepOutcome{
+					NeedsApproval:   true,
+					Findings:        `{"findings":[{"id":"review-1","severity":"error","file":"service.go","line":10,"description":"nil deref on the error path","action":"ask-user"}],"summary":"1 finding"}`,
+					ReviewedPaths:   []string{"service.go", "cache.go"},
+					ReviewablePaths: []string{"service.go", "cache.go"},
+				}, nil
+			case 2:
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings: `{"findings":[` +
+						`{"id":"review-1","severity":"warning","file":"cache.go","line":7,"description":"stale entry survives eviction","action":"auto-fix"},` +
+						`{"id":"review-2","severity":"warning","file":"service.go","line":30,"description":"fix leaks the handle","action":"ask-user"}],"summary":"2 findings"}`,
+					ReviewedPaths:   []string{"service.go", "cache.go"},
+					ReviewablePaths: []string{"service.go", "cache.go"},
+				}, nil
+			}
+			return &StepOutcome{
+				NeedsApproval:   true,
+				ReviewedPaths:   []string{"service.go"},
+				ReviewablePaths: []string{"service.go", "cache.go"},
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	added := []types.Finding{{Severity: types.FindingSeverityWarning, File: "cache.go", Line: 7, Description: "stale entry survives eviction", Action: types.ActionAutoFix}}
+	if err := respondFixPartialWithOverrides(t, exec, types.StepReview, []string{"review-1"}, nil, added); err != nil {
+		t.Fatalf("fix with added finding: %v", err)
+	}
+	steps := waitForFindings(t, database, run.ID, "fix leaks the handle")
+	rounds := waitForRounds(t, database, steps[0].ID, 2)
+	operatorFinding := func(raw *string) types.Finding {
+		t.Helper()
+		if raw == nil {
+			t.Fatal("round stored no findings")
+		}
+		parsed, err := types.ParseFindingsJSON(*raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range parsed.Items {
+			if item.Source == types.FindingSourceUser {
+				return item
+			}
+		}
+		t.Fatalf("the operator's finding is missing from the round: %s", *raw)
+		return types.Finding{}
+	}
+	if item := operatorFinding(rounds[1].FindingsJSON); item.CarriedFromRound != 0 || item.AddedAtRound != 1 {
+		t.Fatalf("round 2 restated the operator's finding: carried from round %d, added at round %d; want not carried, added at round 1", item.CarriedFromRound, item.AddedAtRound)
+	}
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	exec.mu.Lock()
+	gate := exec.waitingFindings
+	exec.mu.Unlock()
+	parsedGate, err := types.ParseFindingsJSON(gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var leakID string
+	for _, item := range parsedGate.Items {
+		if item.Description == "fix leaks the handle" {
+			leakID = item.ID
+		}
+	}
+	if err := respondFixPartial(t, exec, types.StepReview, leakID); err != nil {
+		t.Fatal(err)
+	}
+	rounds = waitForRounds(t, database, steps[0].ID, 3)
+	item := operatorFinding(rounds[2].FindingsJSON)
+	if got, want := item.CarriedNote(), "added by the operator at round 1, not cleared: "+carryReasonFileNotReviewed; got != want {
+		t.Errorf("round 3 labels the operator's finding %q, want %q", got, want)
+	}
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	waitExecutorDone(t, done)
+}
+
 // TestExecutor_ReviewCarryForward_AnOpenQuestionDoesNotBlockVerification pins
 // the boundary between the two mechanisms. A review question is not a report
 // about the code, so it must not take part in verification: a question's file

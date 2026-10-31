@@ -72,6 +72,7 @@ func findingKey(item types.Finding) types.Finding {
 	item.DriverInstructions = ""
 	item.CarriedFromRound = 0
 	item.CarriedReason = ""
+	item.AddedAtRound = 0
 	return item
 }
 
@@ -117,6 +118,7 @@ func normalizeFindingsJSON(raw string, prefix string) string {
 	for i := range normalized.Items {
 		normalized.Items[i].CarriedFromRound = 0
 		normalized.Items[i].CarriedReason = ""
+		normalized.Items[i].AddedAtRound = 0
 	}
 	normalizedRaw, err := types.MarshalFindingsJSON(normalized)
 	if err != nil {
@@ -754,7 +756,8 @@ func carriedFindingReasons(outstandingRaw string, pendingIDs []string, reviewedP
 // carries none, even when an earlier round carried it, and every other finding
 // is one the round kept, marked with the last round that reported it and the
 // reason carriedFindingReasons gave. A finding already carried keeps its
-// original round.
+// original round. An operator-added finding the round kept also records the
+// gate it was added at, which a later restatement leaves in place.
 func markCarriedFindingsJSON(mergedRaw, thisRoundRaw string, reasons map[string]string, previousRound int) string {
 	if mergedRaw == "" {
 		return mergedRaw
@@ -773,6 +776,9 @@ func markCarriedFindingsJSON(mergedRaw, thisRoundRaw string, reasons map[string]
 	for i := range merged.Items {
 		item := &merged.Items[i]
 		reason, kept := reasons[item.ID]
+		if kept && item.Source == types.FindingSourceUser && item.AddedAtRound == 0 {
+			item.AddedAtRound = previousRound
+		}
 		if !kept || hasFindingMatch(*item, reported, mergedCounts, thisRoundCounts) {
 			item.CarriedFromRound = 0
 			item.CarriedReason = ""
