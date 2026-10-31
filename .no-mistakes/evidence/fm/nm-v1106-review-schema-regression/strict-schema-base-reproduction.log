@@ -1,0 +1,13 @@
+=== RUN   TestPhaseLiveStrict
+=== RUN   TestPhaseLiveStrict/review
+    phase_live_strict_test.go:88: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:88: Pi lifecycle: start pi started pid=53140
+    phase_live_strict_test.go:88: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:65: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[/: additionalProperties must be false /: required must name property tested /: required must name property testing_summary /: required must name property reviewed_paths //properties/findings/items: additionalProperties must be false //properties/findings/items: required must name property file //properties/findings/items: required must name property id //properties/findings/items: required must name property line]
+    phase_live_strict_test.go:88: Pi lifecycle: exit pi exited pid=53140 error=pi reported error: Invalid schema for function 'no_mistakes_output': additionalProperties must be false
+    phase_live_strict_test.go:90: pi reported error: Invalid schema for function 'no_mistakes_output': additionalProperties must be false
+--- FAIL: TestPhaseLiveStrict (1.04s)
+    --- FAIL: TestPhaseLiveStrict/review (1.04s)
+FAIL
+FAIL	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	1.793s
+FAIL

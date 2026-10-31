@@ -1,0 +1,12 @@
+=== RUN   TestPhaseLiveStrict
+=== RUN   TestPhaseLiveStrict/nested-finding
+    phase_live_strict_test.go:90: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:90: Pi lifecycle: start pi started pid=93683
+    phase_live_strict_test.go:90: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:66: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:90: Pi lifecycle: exit pi exited pid=93683 status=success
+    phase_live_strict_test.go:95: Validated product output: {"findings":[{"action":"no-op","description":"Disposable review completed","file":"Disposable review completed","id":"Disposable review completed","line":1,"review_scope":"source","severity":"error"}],"reviewed_paths":[],"risk_level":"low","risk_rationale":"Disposable review completed","risk_scope":"source-or-external","tested":[],"testing_summary":"Disposable review completed"}
+--- PASS: TestPhaseLiveStrict (0.96s)
+    --- PASS: TestPhaseLiveStrict/nested-finding (0.96s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	1.694s

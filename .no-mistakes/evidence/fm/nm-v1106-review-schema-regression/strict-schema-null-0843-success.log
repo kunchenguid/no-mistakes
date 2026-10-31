@@ -1,0 +1,12 @@
+=== RUN   TestPhaseLiveStrict
+=== RUN   TestPhaseLiveStrict/nullable-optionals
+    phase_live_strict_test.go:88: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:88: Pi lifecycle: start pi started pid=23262
+    phase_live_strict_test.go:88: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:65: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:88: Pi lifecycle: exit pi exited pid=23262 status=success
+    phase_live_strict_test.go:93: Validated product output: {"findings":[],"reviewed_paths":null,"risk_level":"low","risk_rationale":"Disposable review completed","risk_scope":"source-or-external","tested":null,"testing_summary":null}
+--- PASS: TestPhaseLiveStrict (0.52s)
+    --- PASS: TestPhaseLiveStrict/nullable-optionals (0.52s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	1.236s

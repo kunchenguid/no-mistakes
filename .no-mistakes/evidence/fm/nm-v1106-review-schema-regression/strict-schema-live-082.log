@@ -1,0 +1,119 @@
+=== RUN   TestPhaseLiveStrict
+=== RUN   TestPhaseLiveStrict/review
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=74736
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=74736 status=success
+    phase_live_strict_test.go:91: Validated product output: {"findings":[],"reviewed_paths":[],"risk_level":"low","risk_rationale":"Disposable review completed","risk_scope":"source-or-external","tested":[],"testing_summary":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/lint
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=75466
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=75466 status=success
+    phase_live_strict_test.go:91: Validated product output: {"findings":[],"summary":"Disposable review completed","tested":[],"testing_summary":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/fix
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=76936
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=76936 status=success
+    phase_live_strict_test.go:91: Validated product output: {"summary":"Disposable review completed","verification_blocked":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/ci-fix
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=78365
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=78365 status=success
+    phase_live_strict_test.go:91: Validated product output: {"code_change_needed":true,"summary":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/pr-title
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=79702
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=79702 status=success
+    phase_live_strict_test.go:91: Validated product output: {"title":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/review-finalize
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=80941
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=80941 status=success
+    phase_live_strict_test.go:91: Validated product output: {"findings":[],"reviewed_paths":[],"risk_level":"low","risk_rationale":"Disposable review completed","risk_scope":"source-or-external","tested":[],"testing_summary":"Disposable review completed","withdrawn_findings":[]}
+=== RUN   TestPhaseLiveStrict/test
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=82311
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=82311 status=success
+    phase_live_strict_test.go:91: Validated product output: {"artifacts":[],"findings":[],"scenarios":[],"summary":"Disposable review completed","tested":[],"testing_summary":"Disposable review completed","verdict":"go"}
+=== RUN   TestPhaseLiveStrict/commit
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=83775
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=83775 status=success
+    phase_live_strict_test.go:91: Validated product output: {"summary":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/housekeeping
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=85498
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=85498 status=success
+    phase_live_strict_test.go:91: Validated product output: {"findings":[],"summary":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/pr
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=86887
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=86887 status=success
+    phase_live_strict_test.go:91: Validated product output: {"body":"Disposable review completed","title":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/pr-template
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=88172
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=88172 status=success
+    phase_live_strict_test.go:91: Validated product output: {"body":"Disposable review completed","title":"Disposable review completed"}
+=== RUN   TestPhaseLiveStrict/reject-extra-key
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=89553
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=89553 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:86: Pi lifecycle: retry pi retrying after transient error "pi missing output tool" (attempt 2/4)
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=92070
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=92070 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:86: Pi lifecycle: retry pi retrying after transient error "pi missing output tool" (attempt 3/4)
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=99672
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=99672 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:86: Pi lifecycle: retry pi retrying after transient error "pi missing output tool" (attempt 4/4)
+    phase_live_strict_test.go:86: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:86: Pi lifecycle: start pi started pid=17985
+    phase_live_strict_test.go:86: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:64: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:86: Pi lifecycle: exit pi exited pid=17985 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:87: Invalid output rejected by live Pi/tool+adapter validation: pi did not finish by calling no_mistakes_output alone
+--- PASS: TestPhaseLiveStrict (31.63s)
+    --- PASS: TestPhaseLiveStrict/review (0.84s)
+    --- PASS: TestPhaseLiveStrict/lint (0.89s)
+    --- PASS: TestPhaseLiveStrict/fix (0.77s)
+    --- PASS: TestPhaseLiveStrict/ci-fix (0.79s)
+    --- PASS: TestPhaseLiveStrict/pr-title (0.86s)
+    --- PASS: TestPhaseLiveStrict/review-finalize (0.75s)
+    --- PASS: TestPhaseLiveStrict/test (0.77s)
+    --- PASS: TestPhaseLiveStrict/commit (0.90s)
+    --- PASS: TestPhaseLiveStrict/housekeeping (0.77s)
+    --- PASS: TestPhaseLiveStrict/pr (0.77s)
+    --- PASS: TestPhaseLiveStrict/pr-template (0.83s)
+    --- PASS: TestPhaseLiveStrict/reject-extra-key (22.70s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	32.133s

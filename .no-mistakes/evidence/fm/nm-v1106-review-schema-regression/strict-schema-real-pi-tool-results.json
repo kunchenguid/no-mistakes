@@ -1,0 +1,356 @@
+[
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Cannot read properties of null (reading 'every')"
+        }
+      ],
+      "details": {}
+    },
+    "isError": true
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"findings\":[],\"reviewed_paths\":[],\"risk_level\":\"low\",\"risk_rationale\":\"Disposable review completed\",\"risk_scope\":\"source-or-external\",\"tested\":[],\"testing_summary\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "findings": [],
+          "reviewed_paths": [],
+          "risk_level": "low",
+          "risk_rationale": "Disposable review completed",
+          "risk_scope": "source-or-external",
+          "tested": [],
+          "testing_summary": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"findings\":[],\"reviewed_paths\":[],\"risk_level\":\"low\",\"risk_rationale\":\"Disposable review completed\",\"risk_scope\":\"source-or-external\",\"tested\":[],\"testing_summary\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "findings": [],
+          "reviewed_paths": [],
+          "risk_level": "low",
+          "risk_rationale": "Disposable review completed",
+          "risk_scope": "source-or-external",
+          "tested": [],
+          "testing_summary": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"findings\":[],\"summary\":\"Disposable review completed\",\"tested\":[],\"testing_summary\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "findings": [],
+          "summary": "Disposable review completed",
+          "tested": [],
+          "testing_summary": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"summary\":\"Disposable review completed\",\"verification_blocked\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "summary": "Disposable review completed",
+          "verification_blocked": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"code_change_needed\":true,\"summary\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "code_change_needed": true,
+          "summary": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"title\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "title": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"findings\":[],\"reviewed_paths\":[],\"risk_level\":\"low\",\"risk_rationale\":\"Disposable review completed\",\"risk_scope\":\"source-or-external\",\"tested\":[],\"testing_summary\":\"Disposable review completed\",\"withdrawn_findings\":[]}"
+        }
+      ],
+      "details": {
+        "output": {
+          "findings": [],
+          "reviewed_paths": [],
+          "risk_level": "low",
+          "risk_rationale": "Disposable review completed",
+          "risk_scope": "source-or-external",
+          "tested": [],
+          "testing_summary": "Disposable review completed",
+          "withdrawn_findings": []
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"artifacts\":[],\"findings\":[],\"scenarios\":[],\"summary\":\"Disposable review completed\",\"tested\":[],\"testing_summary\":\"Disposable review completed\",\"verdict\":\"go\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "artifacts": [],
+          "findings": [],
+          "scenarios": [],
+          "summary": "Disposable review completed",
+          "tested": [],
+          "testing_summary": "Disposable review completed",
+          "verdict": "go"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"summary\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "summary": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"findings\":[],\"summary\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "findings": [],
+          "summary": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"body\":\"Disposable review completed\",\"title\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "body": "Disposable review completed",
+          "title": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"body\":\"Disposable review completed\",\"title\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "body": "Disposable review completed",
+          "title": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Validation failed for tool \"no_mistakes_output\":\n  - root: must not have additional properties\n\nReceived arguments:\n{\n  \"findings\": [],\n  \"reviewed_paths\": [],\n  \"risk_level\": \"low\",\n  \"risk_rationale\": \"Disposable review completed\",\n  \"risk_scope\": \"source-or-external\",\n  \"tested\": [],\n  \"testing_summary\": \"Disposable review completed\",\n  \"unexpected-property\": true\n}"
+        }
+      ],
+      "details": {}
+    },
+    "isError": true
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Cannot read properties of null (reading 'every')"
+        }
+      ],
+      "details": {}
+    },
+    "isError": true
+  },
+  {
+    "type": "tool_execution_end",
+    "toolCallId": "call_disposable|fc_disposable",
+    "toolName": "no_mistakes_output",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"findings\":[{\"action\":\"no-op\",\"description\":\"Disposable review completed\",\"file\":\"Disposable review completed\",\"id\":\"Disposable review completed\",\"line\":1,\"review_scope\":\"source\",\"severity\":\"error\"}],\"reviewed_paths\":[],\"risk_level\":\"low\",\"risk_rationale\":\"Disposable review completed\",\"risk_scope\":\"source-or-external\",\"tested\":[],\"testing_summary\":\"Disposable review completed\"}"
+        }
+      ],
+      "details": {
+        "output": {
+          "findings": [
+            {
+              "action": "no-op",
+              "description": "Disposable review completed",
+              "file": "Disposable review completed",
+              "id": "Disposable review completed",
+              "line": 1,
+              "review_scope": "source",
+              "severity": "error"
+            }
+          ],
+          "reviewed_paths": [],
+          "risk_level": "low",
+          "risk_rationale": "Disposable review completed",
+          "risk_scope": "source-or-external",
+          "tested": [],
+          "testing_summary": "Disposable review completed"
+        }
+      },
+      "terminate": true
+    },
+    "isError": false
+  }
+]

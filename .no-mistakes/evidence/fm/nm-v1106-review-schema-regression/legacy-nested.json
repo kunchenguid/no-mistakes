@@ -1,0 +1,142 @@
+{
+  "name": "legacy-nested",
+  "version": "legacy",
+  "payload": {
+    "findings": [
+      {
+        "id": "local-1",
+        "severity": "warning",
+        "file": "",
+        "line": 0,
+        "description": "Disposable finding exercising all nested concrete fields",
+        "action": "ask-user",
+        "review_scope": "source"
+      }
+    ],
+    "reviewed_paths": [],
+    "tested": [],
+    "testing_summary": "",
+    "risk_level": "low",
+    "risk_rationale": "Local schema validation exercise",
+    "risk_scope": "source-or-external"
+  },
+  "requests": [
+    {
+      "path": "/codex/responses",
+      "model": "gpt-6.1-sol",
+      "tool": {
+        "type": "function",
+        "name": "no_mistakes_output",
+        "description": "Submit the final result matching the requested schema. Call this as your final and only remaining tool call, instead of writing a final assistant response.",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "findings": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "no-op",
+                      "auto-fix",
+                      "ask-user"
+                    ],
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "review_scope": {
+                    "enum": [
+                      "source",
+                      "pipeline-owned-delivery",
+                      "external-delivery"
+                    ],
+                    "type": "string"
+                  },
+                  "severity": {
+                    "enum": [
+                      "error",
+                      "warning",
+                      "info"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "action",
+                  "description",
+                  "file",
+                  "id",
+                  "line",
+                  "review_scope",
+                  "severity"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "reviewed_paths": {
+              "description": "Exact set of changed files this pass actually read and judged; a file omitted here is treated as unverified",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "risk_level": {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            "risk_rationale": {
+              "type": "string"
+            },
+            "risk_scope": {
+              "enum": [
+                "source-or-external",
+                "pipeline-owned-delivery"
+              ],
+              "type": "string"
+            },
+            "tested": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "testing_summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "findings",
+            "reviewed_paths",
+            "risk_level",
+            "risk_rationale",
+            "risk_scope",
+            "tested",
+            "testing_summary"
+          ],
+          "type": "object"
+        },
+        "strict": true
+      },
+      "toolResults": []
+    }
+  ],
+  "code": 0,
+  "stdout": "{\"result\":{\"Output\":{\"findings\":[{\"action\":\"ask-user\",\"description\":\"Disposable finding exercising all nested concrete fields\",\"file\":\"\",\"id\":\"local-1\",\"line\":0,\"review_scope\":\"source\",\"severity\":\"warning\"}],\"reviewed_paths\":[],\"risk_level\":\"low\",\"risk_rationale\":\"Local schema validation exercise\",\"risk_scope\":\"source-or-external\",\"tested\":[],\"testing_summary\":\"\"},\"Text\":\"{\\\"findings\\\":[{\\\"action\\\":\\\"ask-user\\\",\\\"description\\\":\\\"Disposable finding exercising all nested concrete fields\\\",\\\"file\\\":\\\"\\\",\\\"id\\\":\\\"local-1\\\",\\\"line\\\":0,\\\"review_scope\\\":\\\"source\\\",\\\"severity\\\":\\\"warning\\\"}],\\\"reviewed_paths\\\":[],\\\"risk_level\\\":\\\"low\\\",\\\"risk_rationale\\\":\\\"Local schema validation exercise\\\",\\\"risk_scope\\\":\\\"source-or-external\\\",\\\"tested\\\":[],\\\"testing_summary\\\":\\\"\\\"}\",\"Usage\":{\"InputTokens\":10,\"OutputTokens\":5,\"CacheReadTokens\":0,\"CacheCreationTokens\":0,\"ReasoningTokens\":0,\"ReasoningReported\":false,\"Reported\":true,\"CacheCreationReported\":true},\"UsageReported\":true,\"SessionID\":\"\",\"Resumed\":false,\"ResumeRetryable\":null,\"Model\":\"gpt-6.1-sol\",\"ModelProvider\":\"openai-codex\",\"Provider\":\"\",\"Metrics\":null,\"CacheCreationReported\":true,\"SessionUsageCumulative\":false},\"structured_output_rejected\":false}\n",
+  "stderr": "structured_output: pi structured output: strict schema-constrained no_mistakes_output tool\nstart: pi started pid=79907\nactivity: pi producing output\nexit: pi exited pid=79907 status=success\n"
+}

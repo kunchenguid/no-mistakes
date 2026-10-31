@@ -1,0 +1,43 @@
+Real no-mistakes Pi adapter with real Pi 0.82.0 and 0.84.4, isolated homes and local Codex SSE endpoint.
+No production provider or OAuth account was accessed.
+Both outgoing no_mistakes_output tools use strict=true; root and nested finding objects forbid additional properties and require every concrete-typed field.
+Pi 0.84.4 normalization leaves the legacy wire schema unchanged.
+Empty and nested concrete reviews survive real Pi tool validation and no-mistakes output validation unchanged on both versions.
+Forced null arrays receive ordinary "must be array" errors on both versions; no legacy every() crash and no accepted review.
+
+Legacy refusal returned by real Pi:
+Validation failed for tool "no_mistakes_output":
+  - reviewed_paths: must be array
+  - tested: must be array
+
+Received arguments:
+{
+  "findings": [],
+  "reviewed_paths": null,
+  "tested": null,
+  "testing_summary": null,
+  "risk_level": "low",
+  "risk_rationale": "Local schema validation exercise",
+  "risk_scope": "source-or-external"
+}
+
+Accepted nested review returned by no-mistakes:
+{
+  "findings": [
+    {
+      "action": "ask-user",
+      "description": "Disposable finding exercising all nested concrete fields",
+      "file": "",
+      "id": "local-1",
+      "line": 0,
+      "review_scope": "source",
+      "severity": "warning"
+    }
+  ],
+  "reviewed_paths": [],
+  "risk_level": "low",
+  "risk_rationale": "Local schema validation exercise",
+  "risk_scope": "source-or-external",
+  "tested": [],
+  "testing_summary": ""
+}

@@ -1,0 +1,32 @@
+=== RUN   TestPhaseLiveStrict
+=== RUN   TestPhaseLiveStrict/nullable-optionals
+    phase_live_strict_test.go:88: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:88: Pi lifecycle: start pi started pid=56289
+    phase_live_strict_test.go:88: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:65: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:65: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:88: Pi lifecycle: exit pi exited pid=56289 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:88: Pi lifecycle: retry pi retrying after transient error "pi missing output tool" (attempt 2/4)
+    phase_live_strict_test.go:88: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:88: Pi lifecycle: start pi started pid=59532
+    phase_live_strict_test.go:88: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:65: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:88: Pi lifecycle: exit pi exited pid=59532 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:88: Pi lifecycle: retry pi retrying after transient error "pi missing output tool" (attempt 3/4)
+    phase_live_strict_test.go:88: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:88: Pi lifecycle: start pi started pid=65100
+    phase_live_strict_test.go:88: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:65: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:88: Pi lifecycle: exit pi exited pid=65100 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:88: Pi lifecycle: retry pi retrying after transient error "pi missing output tool" (attempt 4/4)
+    phase_live_strict_test.go:88: Pi lifecycle: structured_output pi structured output: strict schema-constrained no_mistakes_output tool
+    phase_live_strict_test.go:88: Pi lifecycle: start pi started pid=70029
+    phase_live_strict_test.go:88: Pi lifecycle: activity pi producing output
+    phase_live_strict_test.go:65: Codex request /codex/responses: model=gpt-6.1-sol strict=true violations=[]
+    phase_live_strict_test.go:88: Pi lifecycle: exit pi exited pid=70029 error=pi did not finish by calling no_mistakes_output alone
+    phase_live_strict_test.go:90: pi did not finish by calling no_mistakes_output alone
+--- FAIL: TestPhaseLiveStrict (25.51s)
+    --- FAIL: TestPhaseLiveStrict/nullable-optionals (25.51s)
+FAIL
+FAIL	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	25.977s
+FAIL
