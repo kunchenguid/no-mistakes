@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -185,6 +186,17 @@ func piStrictToolSchema(value any) any {
 			declared[keyword] = child
 		}
 	}
+	if declared["type"] == "object" {
+		declared["additionalProperties"] = false
+		if properties, ok := declared["properties"].(map[string]any); ok {
+			names := make([]string, 0, len(properties))
+			for name := range properties {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			declared["required"] = names
+		}
+	}
 	return declared
 }
 
@@ -198,9 +210,10 @@ func preparePiOutput(schema json.RawMessage) (string, func(), error) {
 	}
 	// The strict tool must already satisfy the provider's strict function
 	// schema: pi-ai only normalizes it from 0.84.4 on, and older strict-capable
-	// releases send these parameters verbatim.
+	// releases send these parameters verbatim. Keep concrete property types:
+	// legacy Pi's tool validation can crash on nullable arrays, so unlike Codex
+	// we require real values for optional fields instead of adding null unions.
 	strict := piStrictToolSchema(declared)
-	addAdditionalPropertiesFalse(strict)
 	parameters, err := json.Marshal(strict)
 	if err != nil {
 		return "", nil, fmt.Errorf("pi output schema: %w", err)

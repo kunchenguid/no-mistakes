@@ -257,7 +257,7 @@ func TestPreparePiOutputKeepsTheSchemaContract(t *testing.T) {
 	line, _, _ := strings.Cut(tail, "\n")
 	parameters := strings.TrimSuffix(strings.TrimRight(line, "\r"), ";")
 	// The declaration is the provider's strict function contract: every
-	// property is required (optionals arrive as null) and extra keys are
+	// property is required with its concrete type and extra keys are
 	// refused. The run's own validation schema still accepts a missing
 	// optional field, but output conforming to the declaration must too.
 	for _, tc := range []struct {
@@ -265,7 +265,8 @@ func TestPreparePiOutputKeepsTheSchemaContract(t *testing.T) {
 		valid  bool
 	}{
 		{`{"required":"yes"}`, false},
-		{`{"required":"yes","optional":null}`, true},
+		{`{"required":"yes","optional":null}`, false},
+		{`{"required":"yes","optional":[]}`, true},
 		{`{"required":"yes","optional":[1]}`, true},
 		{`{"required":"yes","optional":null,"surprise":1}`, false},
 		{`{}`, false},
@@ -405,14 +406,39 @@ func TestPreparePiOutputDeclaresAStrictValidSchema(t *testing.T) {
 	if note["description"] != "optional remark" {
 		t.Fatalf("optional property lost its description: %v", note)
 	}
-	if types, _ := note["type"].([]any); len(types) != 2 || types[0] != "string" || types[1] != "null" {
-		t.Fatalf("optional property must accept null: %v", note)
+	if note["type"] != "string" {
+		t.Fatalf("optional property must keep its concrete type for legacy Pi: %v", note)
 	}
 	items := properties["findings"].(map[string]any)["items"].(map[string]any)
 	itemProperties := items["properties"].(map[string]any)
 	id := itemProperties["id"].(map[string]any)
-	if types, _ := id["type"].([]any); len(types) != 2 || types[0] != "string" || types[1] != "null" {
-		t.Fatalf("optional item property must accept null: %v", id)
+	if id["type"] != "string" {
+		t.Fatalf("optional item property must keep its concrete type for legacy Pi: %v", id)
+	}
+	parameters, err := json.Marshal(declaration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise both the emitted tool contract and the run's validation schema.
+	// Legacy Pi cannot validate null array arguments safely; never invite them.
+	for _, output := range []string{
+		`{"findings":[],"note":""}`,
+		`{"findings":[{"id":"","severity":"warning"}],"note":""}`,
+	} {
+		for _, contract := range []json.RawMessage{parameters, schema} {
+			if err := validateStructuredOutput(json.RawMessage(output), contract); err != nil {
+				t.Fatalf("concrete output %s rejected: %v", output, err)
+			}
+		}
+	}
+	for _, output := range []string{
+		`{"findings":null,"note":""}`,
+		`{"findings":[],"note":null}`,
+		`{"findings":[{"id":null,"severity":"warning"}],"note":""}`,
+	} {
+		if err := validateStructuredOutput(json.RawMessage(output), parameters); err == nil {
+			t.Fatalf("legacy Pi declaration must reject null: %s", output)
+		}
 	}
 	severity := itemProperties["severity"].(map[string]any)
 	if enum, _ := severity["enum"].([]any); len(enum) != 2 || enum[0] != "error" || enum[1] != "warning" {
