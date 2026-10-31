@@ -1314,6 +1314,227 @@ func TestCIStep_FixPromptDistinguishesCodeDefectFromExternalFailure(t *testing.T
 	}
 }
 
+func TestCIStep_FixPromptForbidsWeakeningBaseBranchAssertions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
+	for _, want := range []string{
+		"Do not weaken, invert, delete, or rewrite it so a test accepts behavior the base forbids",
+		"When a failing check comes from a base-branch assertion, change the code under review so the assertion holds",
+		"set code_change_needed to false and report the conflict in summary instead of editing the assertion",
+		"That parks the selected findings as ask-user",
+		"Base-branch test assertions",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("CI fix prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	conflictOnly := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor(nil, true))
+	if strings.Contains(conflictOnly, "Base-branch test assertions") {
+		t.Errorf("merge-conflict-only repair prompt should not carry the failing-check assertion section:\n%s", conflictOnly)
+	}
+	if strings.Contains(conflictOnly, "Do not weaken, invert, delete, or rewrite it") {
+		t.Errorf("merge-conflict-only repair prompt should not carry the failing-check assertion rule:\n%s", conflictOnly)
+	}
+}
+
+func TestCIStep_FixPromptClassifiesBaseBranchTestAssertions(t *testing.T) {
+	t.Parallel()
+	t.Run("pr_added_lines", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := ciAssertionFixture(t, true)
+		prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
+		for _, want := range []string{
+			"Base-branch test assertions (commit " + baseSHA + ")",
+			"A \"+\" line is an assertion this PR added",
+			"a line absent from the diff is unchanged from the merge-base",
+			"+assert_pr_owns this",
+			"+func TestPRAdded(",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing %q:\n%s", want, prompt)
+			}
+		}
+		if strings.Contains(prompt, "+assert_forbid shortcut") {
+			t.Errorf("base assertion was classified as PR-added:\n%s", prompt)
+		}
+		if strings.Contains(prompt, "readme-not-test") {
+			t.Errorf("non-test diff leaked into the CI fix prompt:\n%s", prompt)
+		}
+		combined := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, true))
+		if !strings.Contains(combined, "+assert_pr_owns this") {
+			t.Errorf("failing-check plus conflict repair dropped the test-file diff:\n%s", combined)
+		}
+	})
+	t.Run("unchanged_tests", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := ciAssertionFixture(t, false)
+		prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
+		for _, want := range []string{
+			"No file with a test-looking path differs from the merge-base.",
+			"check a failing test file with the git diff command above",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing %q:\n%s", want, prompt)
+			}
+		}
+		if strings.Contains(prompt, "readme-not-test") {
+			t.Errorf("non-test diff leaked into the CI fix prompt:\n%s", prompt)
+		}
+		if strings.Contains(prompt, "+assert_forbid shortcut") {
+			t.Errorf("unchanged base assertion was shown as a PR addition:\n%s", prompt)
+		}
+	})
+}
+
+func TestCIStep_FixPromptTestDiffIgnoresBaseTipCommits(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := ciAssertionFixture(t, true)
+	gitCmd(t, dir, "checkout", "main")
+	writeCIFixFixtureFile(t, dir, "tests/late.test.sh", "assert_main_added_later\n")
+	gitCmd(t, dir, "add", "tests/late.test.sh")
+	gitCmd(t, dir, "commit", "-m", "main moves on")
+	gitCmd(t, dir, "push", "origin", "main")
+	prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, true))
+	if strings.Contains(prompt, "assert_main_added_later") {
+		t.Errorf("a base-tip-only assertion was shown as a PR change:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "+assert_pr_owns this") {
+		t.Errorf("PR-added assertion missing from the test-file diff:\n%s", prompt)
+	}
+}
+
+func TestCIStep_FixPromptListsNonASCIITestPath(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := ciAssertionFixture(t, false)
+	writeCIFixFixtureFile(t, dir, "tests/über.test.sh", "assert_umlaut_added\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "umlaut test")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
+	if !strings.Contains(prompt, "+assert_umlaut_added") {
+		t.Errorf("non-ASCII test path missing from the test-file diff:\n%s", prompt)
+	}
+}
+
+func TestCIStep_FixPromptKeepsBaseLinesOfARenamedTestFile(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := ciAssertionFixture(t, false)
+	gitCmd(t, dir, "checkout", "feature")
+	if err := os.MkdirAll(filepath.Join(dir, "tests", "unit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "mv", "tests/guard.test.sh", "tests/unit/guard.test.sh")
+	writeCIFixFixtureFile(t, dir, "tests/unit/guard.test.sh", "assert_forbid shortcut\nassert_pr_owns renamed\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "move guard into tests/unit")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	prompt := captureCIFixPrompt(t, dir, baseSHA, headSHA, ciTargetsFor([]string{"test"}, false))
+	if !strings.Contains(prompt, "+assert_pr_owns renamed") {
+		t.Errorf("PR-added line missing from the renamed file's diff:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "+assert_forbid shortcut") {
+		t.Errorf("base assertion in a moved test file was classified as PR-added:\n%s", prompt)
+	}
+}
+
+func TestCIStep_AssertionConflictParksAskUserWhenRepairAlsoRebases(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := ciAssertionFixture(t, true)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"summary":"the change conflicts with the base guard","code_change_needed":false}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = gitCmd(t, dir, "remote", "get-url", "origin")
+	targets := ciTargetsFor([]string{"test"}, true)
+	encoded, err := types.MarshalFindingsJSON(targets.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.PreviousFindings = encoded
+	host := &completionSnapshotHost{checks: []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}}
+
+	outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable {
+		t.Fatalf("outcome = %#v, want the assertion conflict parked as ask-user", outcome)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if findings.Summary != "the change conflicts with the base guard" {
+		t.Fatalf("reported conclusion = %q", findings.Summary)
+	}
+}
+
+func captureCIFixPrompt(t *testing.T, dir, baseSHA, headSHA string, targets ciFixTargets) string {
+	t.Helper()
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	var captured string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			captured = opts.Prompt
+			return &agent.Result{}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = gitCmd(t, dir, "remote", "get-url", "origin")
+	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+	if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, targets); err != nil {
+		t.Fatal(err)
+	}
+	if captured == "" {
+		t.Fatal("expected the CI fixer prompt")
+	}
+	return captured
+}
+
+func ciAssertionFixture(t *testing.T, changeTests bool) (string, string, string) {
+	t.Helper()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	writeCIFixFixtureFile(t, dir, "tests/guard.test.sh", "assert_forbid shortcut\n")
+	writeCIFixFixtureFile(t, dir, "app.txt", "app\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	writeCIFixFixtureFile(t, dir, "app.txt", "app changed\n")
+	writeCIFixFixtureFile(t, dir, "README.md", "readme-not-test\n")
+	if changeTests {
+		writeCIFixFixtureFile(t, dir, "tests/guard.test.sh", "assert_forbid shortcut\nassert_pr_owns this\n")
+		writeCIFixFixtureFile(t, dir, "pkg/foo_test.go", "package pkg\n\nfunc TestPRAdded(t *testing.T) {}\n")
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+	return dir, baseSHA, headSHA
+}
+
+func writeCIFixFixtureFile(t *testing.T, dir, rel, body string) {
+	t.Helper()
+	path := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCIStep_HangingFixAgentFailsAfterTimeout(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
