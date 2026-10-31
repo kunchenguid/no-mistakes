@@ -210,7 +210,8 @@ type GlobalConfig struct {
 	// run's quota evidence is read from.
 	QuotaProviders map[string]string `yaml:"-"`
 	// ReviewAgents selects independent review-loop harnesses and profiles.
-	// Global-only: repository input must not select credential/model profiles.
+	// Operator-only: a repository_overrides entry may replace roles for its
+	// remote, but repository config can never select credential/model profiles.
 	ReviewAgents map[string]ReviewAgent `yaml:"review_agents"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
@@ -377,13 +378,15 @@ func SplitForgeProfileKey(key string) (host, owner string) {
 // RepositoryOverride contains machine-local settings for one normalized remote.
 // Review, Document, and Test are additive guidance only: they are rendered
 // alongside the repository's trusted rules and can never replace or remove them.
+// ReviewAgents replaces the global review_agents entry for each role it names.
 type RepositoryOverride struct {
-	Commit   GlobalCommitRaw            `yaml:"commit"`
-	PR       RepositoryPRRaw            `yaml:"pr"`
-	Commands map[string]CommandOverride `yaml:"commands"`
-	Review   OperatorReviewRaw          `yaml:"review"`
-	Document DocumentRaw                `yaml:"document"`
-	Test     RepositoryTestRaw          `yaml:"test"`
+	Commit       GlobalCommitRaw            `yaml:"commit"`
+	PR           RepositoryPRRaw            `yaml:"pr"`
+	Commands     map[string]CommandOverride `yaml:"commands"`
+	Review       OperatorReviewRaw          `yaml:"review"`
+	Document     DocumentRaw                `yaml:"document"`
+	Test         RepositoryTestRaw          `yaml:"test"`
+	ReviewAgents map[string]ReviewAgent     `yaml:"review_agents"`
 }
 
 // RepositoryTestRaw is the test block a repository_overrides entry may set:
@@ -4244,6 +4247,13 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		cfg.Review.RepositoryPathInstructions = resolvePathInstructions(override.Review.PathInstructions)
 		cfg.Document.RepositoryInstructions = strings.TrimSpace(override.Document.Instructions)
 		cfg.Test.RepositoryInstructions = strings.TrimSpace(override.Test.Instructions)
+		if len(override.ReviewAgents) > 0 {
+			// Per role: a named role replaces the global entry, the rest keep it.
+			roles := make(map[string]ReviewAgent, len(global.ReviewAgents)+len(override.ReviewAgents))
+			maps.Copy(roles, global.ReviewAgents)
+			maps.Copy(roles, override.ReviewAgents)
+			cfg.ReviewAgents = roles
+		}
 	}
 
 	if repo.Agent != "" {
