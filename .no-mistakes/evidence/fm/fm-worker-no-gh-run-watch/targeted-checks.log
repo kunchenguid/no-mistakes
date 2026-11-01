@@ -1,0 +1,48 @@
+=== RUN   TestCIStep_AutoFixPromptIncludesMustFixInstruction
+=== PAUSE TestCIStep_AutoFixPromptIncludesMustFixInstruction
+=== RUN   TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun
+=== PAUSE TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun
+=== RUN   TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth
+=== PAUSE TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth
+=== RUN   TestCIStep_MergeConflictOnly_AutoFix
+=== PAUSE TestCIStep_MergeConflictOnly_AutoFix
+=== RUN   TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery
+=== PAUSE TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery
+=== CONT  TestCIStep_AutoFixPromptIncludesMustFixInstruction
+=== CONT  TestCIStep_MergeConflictOnly_AutoFix
+=== CONT  TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun
+=== CONT  TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth
+=== CONT  TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery
+=== RUN   TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/default_publishes_the_repair_and_keeps_monitoring
+=== PAUSE TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/default_publishes_the_repair_and_keeps_monitoring
+=== RUN   TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/opt_in_holds_the_repair_and_restarts_at_review
+=== PAUSE TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/opt_in_holds_the_repair_and_restarts_at_review
+=== CONT  TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/default_publishes_the_repair_and_keeps_monitoring
+=== CONT  TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/opt_in_holds_the_repair_and_restarts_at_review
+    ci_revalidate_repairs_test.go:220: observable delivery: revalidate=true prior_head=7de7df7c77f101561472bde4f8567c08f981167d local_head=73c5daa5cb2a0ee459297927964168eb1f672f70 remote_head=7de7df7c77f101561472bde4f8567c08f981167d approval_retained=false published_head=7de7df7c77f101561472bde4f8567c08f981167d
+        CI log:
+        committed CI repair for revalidation
+=== NAME  TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/default_publishes_the_repair_and_keeps_monitoring
+    ci_revalidate_repairs_test.go:220: observable delivery: revalidate=false prior_head=7de7df7c77f101561472bde4f8567c08f981167d local_head=73c5daa5cb2a0ee459297927964168eb1f672f70 remote_head=73c5daa5cb2a0ee459297927964168eb1f672f70 approval_retained=true published_head=73c5daa5cb2a0ee459297927964168eb1f672f70
+        CI log:
+        pushing to /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestCIStep_RevalidateRepairsPolicySelectsRepairDeliverydefault_2635073120/001 (refs/heads/feature)...
+        skipping attestation rebind: pull request body carries no attestation marker
+        committed and pushed CI repair
+--- PASS: TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery (0.00s)
+    --- PASS: TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/opt_in_holds_the_repair_and_restarts_at_review (0.43s)
+    --- PASS: TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery/default_publishes_the_repair_and_keeps_monitoring (0.70s)
+2026/11/01 11:13:47 WARN failed to fetch CI logs err="list GitHub runs for selected logs: exit status 1"
+2026/11/01 11:13:47 WARN failed to fetch CI logs check=test check_id="" err="list GitHub runs for selected logs: exit status 1"
+2026/11/01 11:13:47 WARN failed to fetch CI logs err="list GitHub runs for selected logs: exit status 1"
+2026/11/01 11:13:47 WARN failed to fetch CI logs check=test check_id="" err="list GitHub runs for selected logs: exit status 1"
+2026/11/01 11:13:47 WARN failed to fetch CI logs err="list GitHub runs for selected logs: exit status 1"
+2026/11/01 11:13:47 WARN failed to fetch CI logs check=test check_id="" err="list GitHub runs for selected logs: exit status 1"
+2026/11/01 11:13:47 WARN failed to persist uncertified pipeline range run_id=run-1 error="upsert uncertified pipeline range: constraint failed: FOREIGN KEY constraint failed (787)"
+--- PASS: TestCIStep_MergeConflictOnly_AutoFix (0.90s)
+2026/11/01 11:13:47 WARN failed to persist uncertified pipeline range run_id=run-1 error="upsert uncertified pipeline range: constraint failed: FOREIGN KEY constraint failed (787)"
+2026/11/01 11:13:47 WARN failed to persist uncertified pipeline range run_id=run-1 error="upsert uncertified pipeline range: constraint failed: FOREIGN KEY constraint failed (787)"
+--- PASS: TestCIStep_AutoFixPromptIncludesMustFixInstruction (0.99s)
+--- PASS: TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth (0.99s)
+--- PASS: TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun (1.28s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	1.875s
