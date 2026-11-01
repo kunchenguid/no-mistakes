@@ -231,8 +231,8 @@ type GlobalConfig struct {
 	AgentCrashRetries int           `yaml:"-"`
 	// MaxConcurrentRuns caps how many pipeline runs may execute at once on
 	// this machine. A newly submitted run past the cap waits in the pending
-	// queue in submission order until a running run finishes, fails, or is
-	// cancelled. Zero (the default) means unlimited. Global-only: it admits
+	// queue, by run priority and then in submission order, until a running
+	// run finishes, fails, or is cancelled. Zero (the default) means unlimited. Global-only: it admits
 	// this machine's daemon-wide execution, so no pushed branch may set it.
 	MaxConcurrentRuns         int           `yaml:"-"`
 	AgentTimeoutsConfigured   bool          `yaml:"-"`
@@ -1618,8 +1618,9 @@ agent_timeout: "30m"
 agent_crash_retries: 0
 
 # Optional cap on how many pipeline runs execute at once on this machine.
-# Past the cap, newly submitted runs wait in submission order (pending)
-# until a running run finishes, fails, or is cancelled. 0 means unlimited.
+# Past the cap, newly submitted runs wait (pending) by axi run --priority,
+# then in submission order, until a running run finishes, fails, or is
+# cancelled. 0 means unlimited.
 # max_concurrent_runs: 1
 
 # Optional cap for a turn that is still producing output or waiting on a live

@@ -112,18 +112,28 @@ type Run struct {
 	// ClosingIssueRefsLockedAt is non-nil once a PR body composition has sampled
 	// ClosingIssueRefs, after which a reattach can no longer add to them.
 	ClosingIssueRefsLockedAt *int64
-	CreatedAt                int64
-	UpdatedAt                int64
+	// Priority orders this run among pending runs waiting for an execution
+	// slot (higher first, then submission order); 0 is an ordinary run. It is
+	// set at submission and inherited by rerun and retry.
+	Priority  int
+	CreatedAt int64
+	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, %s, created_at, updated_at`
 
 func (d *DB) runColumns() string {
 	intentCheck := "NULL"
 	if d.hasColumn("runs", "intent_check_json") {
 		intentCheck = "intent_check_json"
 	}
-	return fmt.Sprintf(runColumns, intentCheck)
+	// The priority column is read only when it exists, like intent_check_json:
+	// read-only surfaces open the database without migrating it.
+	priority := "0"
+	if d.hasColumn("runs", "priority") {
+		priority = "COALESCE(priority, 0)"
+	}
+	return fmt.Sprintf(runColumns, intentCheck, priority)
 }
 
 func scanRun(row interface {
@@ -139,7 +149,7 @@ func scanRun(row interface {
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentCheckJSON,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
-		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
+		&storedClosingIssues, &r.ClosingIssueRefsLockedAt, &r.Priority,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -1020,6 +1030,24 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update run intent: %w", err)
+	}
+	return nil
+}
+
+// UpdateRunPriority records a run's admission priority. The daemon writes it
+// once, right after creating the row and before the run can start, so it
+// always describes the queue order the run was submitted with.
+func (d *DB) UpdateRunPriority(id string, priority int) error {
+	res, err := d.sql.Exec(`UPDATE runs SET priority = ?, updated_at = ? WHERE id = ?`, priority, now(), id)
+	if err != nil {
+		return fmt.Errorf("update run priority: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update run priority: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("update run priority: run not found: %s", id)
 	}
 	return nil
 }

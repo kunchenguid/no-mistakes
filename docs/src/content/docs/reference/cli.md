@@ -133,6 +133,7 @@ no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
 no-mistakes axi run --intent "the user's goal" --no-publish-intent
 no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#12
+no-mistakes axi run --intent "the user's goal" --priority 20
 ```
 
 | Flag            | Type     | Default | Description                                                                                          |
@@ -145,6 +146,7 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
+| `--priority` | `int` | `0` | Admission priority of a new run among pending runs, `0` (ordinary) to `100`; see [Run priority](#run-priority) |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
@@ -202,6 +204,12 @@ Reattaching with a `--base-branch` that differs from the active run's stored tar
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
 The same omit-to-reattach rule applies to `--model`/`--effort` against an active run's [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles); a different selection cannot change that pin.
+
+### Run priority
+
+`--priority N` orders a new run among the pending runs that wait for a [`max_concurrent_runs`](/no-mistakes/reference/global-config/#max_concurrent_runs) slot. When a slot frees, the highest-priority pending run starts first; runs of equal priority keep submission order, so a machine where nobody sets a priority behaves exactly as before. `N` is an integer from `0` (ordinary, the default) to `100`; a value outside that range is rejected before anything is pushed. Priority only changes the order of waiting runs: it never raises the cap, and it never pre-empts, pauses, or cancels a run that already holds a slot, including one parked at an approval gate. Without a cap every run starts at once and priority has no effect.
+
+The priority is persisted on the run and shown as `priority` in `axi status` and the run's IPC representation (omitted for an ordinary run). Recovered parked runs wait for a slot in priority order after a daemon restart, and `no-mistakes rerun` and `axi retry` inherit the selected run's priority. It can also be passed on a plain gate push as the `-o no-mistakes.priority=N` push option. Reattaching with a `--priority` that differs from the active run's is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 
 ### Closing issues
 

@@ -16,7 +16,10 @@ import (
 )
 
 type queuedRun struct {
-	sequence  uint64
+	sequence uint64
+	// priority is the run's admission priority (types.RunPriorityOrdinary
+	// unless the submission set one). It is fixed at reservation.
+	priority  int
 	recovered *db.Run
 	runID     string
 	repoID    string
@@ -56,13 +59,22 @@ func (m *RunManager) executionCapLocked() int {
 	return m.maxConcurrentRuns
 }
 
-func (m *RunManager) reserveAdmission() uint64 {
+// reserveAdmission takes a run's place in the queue at submission. The queue
+// stays ordered by priority, highest first, and by submission within a
+// priority: the reservation goes after every entry of the same or a higher
+// priority. pumpQueue starts from the head, so this order is the admission
+// order; nothing that already holds a slot is affected.
+func (m *RunManager) reserveAdmission(priority int) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.executionCapLocked()
 	m.nextAdmission++
 	sequence := m.nextAdmission
-	m.runQueue = append(m.runQueue, queuedRun{sequence: sequence})
+	at := len(m.runQueue)
+	for at > 0 && m.runQueue[at-1].priority < priority {
+		at--
+	}
+	m.runQueue = slices.Insert(m.runQueue, at, queuedRun{sequence: sequence, priority: priority})
 	return sequence
 }
 
@@ -89,6 +101,7 @@ func (m *RunManager) admitRun(sequence uint64, qe queuedRun) {
 	for i := range m.runQueue {
 		if m.runQueue[i].sequence == sequence {
 			qe.sequence = sequence
+			qe.priority = m.runQueue[i].priority
 			m.runQueue[i] = qe
 			break
 		}
