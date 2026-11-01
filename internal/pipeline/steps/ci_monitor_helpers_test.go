@@ -56,7 +56,8 @@ func TestCICheckReadFailureOutcome_GHVersionHintOnlyForJSONFlagRejection(t *test
 		wantHint bool
 	}{
 		{"old gh unknown flag", "gh pr checks: unknown flag: --json (exit 1)", true},
-		{"old gh flag needs argument", "gh pr checks: flag needs an argument: --json", true},
+		{"forgejo-axi unknown json flag", "forgejo-axi pr checks: unknown flag: --json (exit 1)", false},
+		{"provider plugin unknown json flag", "provider plugin pr checks: unknown flag: --json", false},
 		{"no pull requests found", "gh pr view: no pull requests found for branch 0123abcd (exit 1)", false},
 		{"auth failure", "gh: HTTP 401: Bad credentials", false},
 		{"unrelated unknown flag", "gh: unknown flag: --repo", false},

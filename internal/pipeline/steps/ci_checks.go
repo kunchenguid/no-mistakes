@@ -393,10 +393,7 @@ func terminalCheckTargetsForNames(checks []scm.Check, names []string) []scm.Chec
 // nothing about the gh version, so it must not be blamed on it.
 func ghChecksJSONUnsupported(err error) bool {
 	msg := strings.ToLower(err.Error())
-	if !strings.Contains(msg, "--json") {
-		return false
-	}
-	return strings.Contains(msg, "unknown flag") || strings.Contains(msg, "flag needs an argument")
+	return strings.Contains(msg, "gh pr checks:") && strings.Contains(msg, "unknown flag: --json")
 }
 
 func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
