@@ -1167,7 +1167,8 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	for _, want := range []string{
 		"Never run gh run watch (including --exit-status), gh-axi run watch, or an equivalent command.",
 		"Never repeatedly query run, job, or check status in a polling loop.",
-		"After you push a fix, the no-mistakes daemon's CI monitoring takes over; your job ends at the fix and push.",
+		"Finish with your fix as local changes in the worktree and return.",
+		"Never push, force-push, or otherwise publish: the no-mistakes pipeline commits and publishes the repair through its guarded path, and its own CI monitoring then takes over.",
 		"You may retrieve a failing job's logs once when that helps diagnose the failure.",
 	} {
 		if !strings.Contains(capturedPrompt, want) {
