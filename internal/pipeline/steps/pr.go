@@ -554,13 +554,8 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
 	inventory := prPromptInventory(sctx, finalDiff, baseSHA)
-	var pipelineMD, riskLine, testingMD, keptEvidence string
-	if keepsPRUpdateText(sctx) {
-		keptEvidence, err = s.recordedPREvidence(sctx, provider)
-		if err != nil {
-			return prContent{}, err
-		}
-	} else {
+	var pipelineMD, riskLine, testingMD string
+	if !keepsPRUpdateText(sctx) {
 		pipelineMD, riskLine, testingMD = s.buildPipelineSection(sctx, provider)
 		if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" &&
 			((bodyLimit > 0 && scm.PRBodyLen(marker) > bodyLimit) || len(marker) > maxPullRequestBodyBytes) {
@@ -608,7 +603,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		fallback, fallbackErr := s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, keptEvidence, bodyLimit, provider)
+		fallback, fallbackErr := s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 		return fallback, fallbackErr
 	}
 
@@ -633,11 +628,7 @@ Final diff paths and statuses:
 					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
 				if keepsPRUpdateText(sctx) {
-					keptEvidence, err = s.buildPRAppendix(sctx, provider)
-					if err != nil {
-						return prContent{}, err
-					}
-					return publishKeptDraft(sctx, content.Title, content.Body, keptEvidence, bodyLimit)
+					return s.publishKeptDraft(sctx, provider, content.Title, content.Body, bodyLimit)
 				}
 				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 				return content, nil
@@ -648,7 +639,7 @@ Final diff paths and statuses:
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid configured public Intent brief")
 	}
-	return s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, keptEvidence, bodyLimit, provider)
+	return s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 }
 
 func (s *PRStep) draftConfiguredPRTitle(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string) (string, error) {
@@ -1783,7 +1774,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, keptEvidence string, bodyLimit int, provider scm.Provider) (prContent, error) {
+func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
 	}
@@ -1798,7 +1789,7 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 	}
 	body = neutralizeAttestationMarkers(provider, body)
 	if keepsPRUpdateText(sctx) {
-		return publishKeptDraft(sctx, title, body, keptEvidence, bodyLimit)
+		return s.publishKeptDraft(sctx, provider, title, body, bodyLimit)
 	}
 	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 	return prContent{

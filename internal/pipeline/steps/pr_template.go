@@ -241,9 +241,14 @@ func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Pro
 	return appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider), nil
 }
 
-// publishKeptDraft stores the ordinary narrative above an owned appendix.
+// publishKeptDraft stores the ordinary narrative above the full owned appendix
+// (Intent included), whichever drafting path produced the narrative.
 // A later update refreshes that appendix through the template preservation path.
-func publishKeptDraft(sctx *pipeline.StepContext, title, narrative, evidence string, bodyLimit int) (prContent, error) {
+func (s *PRStep) publishKeptDraft(sctx *pipeline.StepContext, provider scm.Provider, title, narrative string, bodyLimit int) (prContent, error) {
+	evidence, err := s.buildPRAppendix(sctx, provider)
+	if err != nil {
+		return prContent{}, err
+	}
 	narrative = neutralizeAttestationMarkers(resolvedProviderForBody(sctx), stripGeneratedSections(narrative))
 	evidence = appendIssuesSection(evidence, issuesSection(sctx, narrative))
 	return composeOwnedPRContent(prOwnedBody{before: narrative}, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())

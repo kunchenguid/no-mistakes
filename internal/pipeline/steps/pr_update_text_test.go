@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -372,4 +373,51 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// Keep mode with no template owns the created body's appendix, so the public
+// Intent section must survive whichever drafting path produced the narrative.
+func TestPRUpdateTextKeepOnCreatePublishesIntentOnEveryDraftPath(t *testing.T) {
+	t.Parallel()
+	const intent = "Keep the published intent on every path."
+	for name, run := range map[string]func(context.Context, agent.RunOpts) (*agent.Result, error){
+		"valid draft": func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			data, _ := json.Marshal(prContent{Title: "feat: x", Body: "## What Changed\n\n- x"})
+			return &agent.Result{Output: data}, nil
+		},
+		"agent error": func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return nil, errors.New("agent crashed")
+		},
+		"invalid draft": func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"title":"","body":""}`)}, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			env, _ := fakeGH(t, "")
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test", runFn: run}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+			sctx.UserIntent = intent
+			sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.UpdateStepStatus(sr.ID, types.StepStatusCompleted); err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.SetStepFindings(sr.ID, keptRiskJSON); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (&PRStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			body := string(mustRead(t, envEntry(env, "FAKE_CLI_PR_BODY_FILE")))
+			if n := strings.Count(body, "## Intent\n\n"+intent); n != 1 {
+				t.Fatalf("created body has %d Intent sections:\n%s", n, body)
+			}
+			assertKeptEvidence(t, body, config.PRAppendixFull, keptRiskLine)
+		})
+	}
 }
