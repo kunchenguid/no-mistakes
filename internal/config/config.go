@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/cloudflare"
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
@@ -1266,6 +1267,11 @@ type EvidenceRaw struct {
 	// CommitMessage templates the evidence-branch commit subject. Like
 	// commit.fix_message it only shapes a message, so it is pushed-readable.
 	CommitMessage *string `yaml:"commit_message"`
+	// CloudflarePages deploys with the operator's Cloudflare credentials and
+	// makes a private repository's screenshots reachable by anyone holding the
+	// link, so it is honored ONLY from global config and the trusted
+	// default-branch copy (see EffectiveRepoConfig).
+	CloudflarePages CloudflarePagesRaw `yaml:"cloudflare_pages"`
 	// LocalRoot, Retention, and MaxRuns describe this MACHINE's evidence
 	// storage: where the daemon writes artifacts on local disk and how long it
 	// keeps them. They are global-only - Merge resolves them straight from
@@ -1279,6 +1285,11 @@ type EvidenceRaw struct {
 	LocalRoot *string `yaml:"local_root"`
 	Retention *string `yaml:"retention"`
 	MaxRuns   *int    `yaml:"max_runs"`
+}
+
+type CloudflarePagesRaw struct {
+	// Project set to "" turns off a project the global config named.
+	Project *string `yaml:"project"`
 }
 
 // Test is the resolved test-step config. Prepare, BaseAttribution,
@@ -1314,6 +1325,9 @@ type Evidence struct {
 	// CommitMessage is the configured subject template; empty keeps the
 	// built-in subject (see RenderCommitMessage).
 	CommitMessage string
+	// CloudflarePagesProject is empty unless image and video evidence goes to
+	// that Pages project ahead of GitHub user-attachments.
+	CloudflarePagesProject string
 	// LocalRoot overrides the app-root default for on-disk evidence; empty
 	// means paths.EvidenceDir(). Retention and MaxRuns bound how much of it
 	// survives: no-mistakes reaps its own evidence rather than leaving that to
@@ -3518,6 +3532,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// file, and the upload client refuses Actions/App installation tokens,
 		// so this is defense in depth.
 		effective.Test.Evidence.Branch = trusted.Test.Evidence.Branch
+		effective.Test.Evidence.CloudflarePages = trusted.Test.Evidence.CloudflarePages
 		// test.instructions is the runbook injected into the test gate's own
 		// prompt, so it is trusted-only for exactly the reasons
 		// document.instructions and review.path_instructions are: a contributor
@@ -3560,6 +3575,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.CI = CIRaw{}
 		effective.Rebase = RebaseRaw{}
 		effective.Test.Evidence.Branch = nil
+		effective.Test.Evidence.CloudflarePages = CloudflarePagesRaw{}
 		effective.Test.Instructions = ""
 		effective.Test.Prepare = false
 		effective.Test.BaseAttribution = false
@@ -3682,6 +3698,9 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 	if src.Evidence.CommitMessage != nil {
 		dst.Evidence.CommitMessage = *src.Evidence.CommitMessage
+	}
+	if src.Evidence.CloudflarePages.Project != nil {
+		dst.Evidence.CloudflarePagesProject = strings.TrimSpace(*src.Evidence.CloudflarePages.Project)
 	}
 }
 
@@ -3867,6 +3886,13 @@ func validateTestRaw(test TestRaw) error {
 	if test.Evidence.CommitMessage != nil {
 		if _, err := renderEvidenceMessage(*test.Evidence.CommitMessage, "branch", "run"); err != nil {
 			return err
+		}
+	}
+	if test.Evidence.CloudflarePages.Project != nil {
+		if project := strings.TrimSpace(*test.Evidence.CloudflarePages.Project); project != "" {
+			if err := cloudflare.ValidateProjectName(project); err != nil {
+				return fmt.Errorf("test.evidence.cloudflare_pages.project: %w", err)
+			}
 		}
 	}
 	// local_root must be absolute. The daemon's working directory is a bare

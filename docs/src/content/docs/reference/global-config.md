@@ -117,6 +117,8 @@ test:
   evidence:
     store_in_repo: false
     attach_media: true
+    # cloudflare_pages:
+    #   project: my-evidence # Publish screenshots to this Cloudflare Pages project
     compact: true
     dir: .no-mistakes/evidence
     branch: no-mistakes/evidence
@@ -1580,6 +1582,7 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On 
 | ----------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
 | `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence artifacts to the repository's orphan evidence branch |
 | `test.evidence.attach_media`  | `bool`   | `true`                   | Upload image and video evidence to GitHub user-attachments when the PR is rendered |
+| `test.evidence.cloudflare_pages.project` | `string` | unset | Publish image and video evidence to this Cloudflare Pages project and link it from the PR body |
 | `test.evidence.compact`       | `bool`   | `true`                   | Keep the PR Testing section compact; set `false` for inline previews and expanded details |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
 | `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
@@ -1608,6 +1611,31 @@ Publication is also refused when the remote cannot be read or pushed, an artifac
 Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
 Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
 
+#### Cloudflare Pages
+
+On a private repository, GitHub serves a user-attachment through a `private-user-images.githubusercontent.com` URL signed for five minutes, so an image fetched after that from an already open page breaks.
+Set `cloudflare_pages.project` to publish image and video evidence to a Cloudflare Pages project instead.
+The PR body then links the deployment URL, `https://<deployment>.<project>.pages.dev/...`, which keeps serving the same bytes after later deploys.
+
+- The PR step runs `wrangler pages deploy` once per render for files not already published, using wrangler on `PATH` or else `npx --yes wrangler@4.156.0`.
+- It deploys to the Pages branch `no-mistakes-evidence`, so a project that also serves site previews keeps them.
+- It runs outside the repository, so a wrangler config there cannot reshape the deploy.
+- `CLOUDFLARE_API_TOKEN`, with Cloudflare Pages edit permission, and `CLOUDFLARE_ACCOUNT_ID` must both be in the daemon's environment.
+- Credentials are never read from config, and the Pages project must already exist.
+- Only png, jpg, jpeg, gif, webp, svg, mp4, mov, and webm files up to 25 MiB are deployed, together with a `_headers` file that sets `X-Robots-Tag: noindex`.
+- Pages publishing works on every forge, not only GitHub.
+- Anything Pages does not publish falls back to GitHub user-attachments and then to the local rendering, and the step log says why.
+- A missing credential, a failed deploy, and an ineligible file all take that fallback.
+- `attach_media: false` turns Pages publishing off too.
+
+**Trade-off:** a pages.dev deployment URL is reachable by anyone holding it, so a private repository's screenshots become link-public.
+A Cloudflare Access gate does not fit, because GitHub fetches external images through its anonymizing camo proxy without the viewer's cookies, so a gated image never renders.
+Leave the project unset for repositories whose screenshots must not leave GitHub.
+
+`cloudflare_pages.project` is read from global config and, for a repository, only from the trusted default-branch copy of `.no-mistakes.yaml`, because it chooses where the operator's Cloudflare credentials publish files.
+A trusted empty string turns a global project off for that repository.
+It must be a DNS label of at most 63 lowercase letters, digits, and inner hyphens, and anything else fails the config.
+
 #### Local storage and cleanup
 
 Evidence lives under the app root rather than the system temp directory. On Linux the daemon runs from a service unit that does not export `TMPDIR`, so the old temp-directory default resolved to the shared `/tmp`, which current Ubuntu mounts as a RAM-backed `tmpfs`. The app root is disk backed on macOS, Linux, and Windows alike.
@@ -1623,7 +1651,10 @@ Reaping runs after each finished run and again at daemon startup. An upgraded da
 
 `local_root` must be an absolute path outside `<NM_HOME>/worktrees`; a relative or managed-worktree path fails daemon startup and prevents new or recovered runs from starting. Because `retention` bounds how long a PR body's local artifact links keep resolving, raise it rather than lowering it if your reviews run long.
 
-The publication fields are global defaults. Repo config can override `store_in_repo`, `attach_media`, `compact`, `dir`, and `commit_message`; it can override `branch` only through the trusted default-branch copy. `local_root`, `retention`, and `max_runs` are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, or set the retention budget for a directory every repository on the machine shares.
+The publication fields are global defaults.
+Repo config can override `store_in_repo`, `attach_media`, `compact`, `dir`, and `commit_message`.
+It can override `branch` and `cloudflare_pages.project` only through the trusted default-branch copy.
+`local_root`, `retention`, and `max_runs` are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, or set the retention budget for a directory every repository on the machine shares.
 
 `test.evidence.retention` and `test.evidence.max_runs` also bound `<NM_HOME>/logs/<run-id>` (per-run step logs), reaped on the same cadence rather than through a second config surface for the same kind of per-run diagnostic artifact. A failed or cancelled run's step logs are the record of why it stopped, so they survive 14 days regardless of either bound and do not count toward `max_runs`; after that they are reaped like any other run's.
 

@@ -33,6 +33,9 @@ func main() {
 	if isFakeProviderPlugin(os.Args[0]) {
 		os.Exit(fakeplugin.Main(os.Args[1:], os.Stdin, os.Stdout, os.Getenv(fakeplugin.EnvState), os.Getenv(fakeplugin.EnvLog)))
 	}
+	if isFakeWrangler(os.Args[0]) {
+		os.Exit(fakeWranglerMain(os.Args[1:]))
+	}
 	mode := os.Getenv("FAKE_CLI_MODE")
 	if mode == "" {
 		os.Exit(1)

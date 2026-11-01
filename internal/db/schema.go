@@ -425,4 +425,6 @@ var migrationStatements = []string{
 	// The carried row has no rounds of its own; readers that render what the
 	// step did follow this to the source row's rounds.
 	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	// Every row written before the column existed came from GitHub user-attachments.
+	`ALTER TABLE run_media_attachments ADD COLUMN publisher TEXT NOT NULL DEFAULT 'github-user-attachments'`,
 }

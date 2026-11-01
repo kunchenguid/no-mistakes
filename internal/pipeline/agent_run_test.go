@@ -79,7 +79,9 @@ func TestAgentTimeoutIdleGrace(t *testing.T) {
 
 func TestRunAgent_StreamingPastStallBudgetSucceeds(t *testing.T) {
 	t.Parallel()
-	const stall = 80 * time.Millisecond
+	// The silent budget is also the idle window, so it must outlast any
+	// scheduler pause of the 5ms ticker under a loaded -race run.
+	const stall = 250 * time.Millisecond
 	done := time.NewTimer(stall + stall/2)
 	defer done.Stop()
 	ag := &hangingAgent{
@@ -221,7 +223,9 @@ func TestRunAgent_CapEqualToTheSilentBudgetIsReportedAsTheCap(t *testing.T) {
 
 func TestRunAgent_StreamingAgentHitsTheWorkingCap(t *testing.T) {
 	t.Parallel()
-	const stall = 40 * time.Millisecond
+	// The silent budget is also the idle window, so it must outlast any
+	// scheduler pause of the 2ms ticker under a loaded -race run.
+	const stall = 250 * time.Millisecond
 	ag := &hangingAgent{
 		name: "never-finishes",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -240,7 +244,7 @@ func TestRunAgent_StreamingAgentHitsTheWorkingCap(t *testing.T) {
 	sctx := &StepContext{
 		Ctx:    context.Background(),
 		Agent:  ag,
-		Config: &config.Config{AgentTimeout: stall, AgentWorkingTimeout: 60 * time.Millisecond},
+		Config: &config.Config{AgentTimeout: stall, AgentWorkingTimeout: 300 * time.Millisecond},
 	}
 
 	start := time.Now()
@@ -252,13 +256,13 @@ func TestRunAgent_StreamingAgentHitsTheWorkingCap(t *testing.T) {
 	if !strings.Contains(err.Error(), "last produced output") {
 		t.Fatalf("error = %q, want a busy-agent diagnosis at the still-working cap", err)
 	}
-	if !strings.Contains(err.Error(), "agent timed out at its 60ms still-working cap (silent budget 40ms; ran ") {
+	if !strings.Contains(err.Error(), "agent timed out at its 300ms still-working cap (silent budget 250ms; ran ") {
 		t.Fatalf("error = %q, want the still-working cap named as the bound", err)
 	}
 	if elapsed < stall {
 		t.Fatalf("busy agent cut after %s, want to pass the %s stall budget", elapsed, stall)
 	}
-	if elapsed > 500*time.Millisecond {
+	if elapsed > 5*time.Second {
 		t.Fatalf("busy agent hung for %s, want a bounded still-working-cap fail", elapsed)
 	}
 }

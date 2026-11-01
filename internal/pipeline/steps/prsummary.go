@@ -105,9 +105,7 @@ type testingSummaryOptions struct {
 	// branch. It is nil when nothing was published, and the artifacts then
 	// render as local paths rather than as links that would not resolve.
 	evidence *evidenceLinks
-	// attachments maps a local evidence path to a GitHub user-attachments URL
-	// uploaded at PR render time. Nil means nothing was uploaded; the renderer
-	// then keeps today's local-path or commit-pinned link.
+	// Nil keeps the local-path or commit-pinned link.
 	attachments map[string]string
 }
 

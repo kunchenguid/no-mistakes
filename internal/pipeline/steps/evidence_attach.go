@@ -82,12 +82,27 @@ func collectPRTestingArtifacts(sctx *pipeline.StepContext, steps []*db.StepResul
 	return nil
 }
 
-// attachRunEvidenceMedia uploads image/video evidence at PR render time and
-// returns a map of local path -> user-attachments URL. Any failure for a file
-// leaves that file out of the map so the PR body keeps today's rendering
-// rather than a dead link.
+// A file that failed to publish is left out of the returned map, so the PR body
+// keeps the local-path rendering rather than a dead link.
 func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm.Provider, steps []*db.StepResult, rounds map[string][]*db.StepRound) map[string]string {
 	artifacts := collectPRTestingArtifacts(sctx, steps, rounds)
+	published := publishPagesMedia(sctx, artifacts)
+	if len(published) == 0 {
+		return s.attachGitHubMedia(sctx, provider, artifacts)
+	}
+	var rest []types.TestArtifact
+	for _, artifact := range artifacts {
+		if artifact.Path == "" || published[filepath.Clean(artifact.Path)] == "" {
+			rest = append(rest, artifact)
+		}
+	}
+	for path, url := range s.attachGitHubMedia(sctx, provider, rest) {
+		published[path] = url
+	}
+	return published
+}
+
+func (s *PRStep) attachGitHubMedia(sctx *pipeline.StepContext, provider scm.Provider, artifacts []types.TestArtifact) map[string]string {
 	var eligible []types.TestArtifact
 	var skipped []string
 	seenPaths := make(map[string]bool)
@@ -138,7 +153,7 @@ func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm
 			sctx.Log(fmt.Sprintf("GitHub media attachment failed for %s, keeping today's rendering: fingerprint file: %v", artifactLabel(artifact), err))
 			continue
 		}
-		cached, found, err := sctx.DB.GetRunMediaAttachment(sctx.Run.ID, artifact.Path, digest)
+		cached, found, err := sctx.DB.GetRunMediaAttachment(sctx.Run.ID, artifact.Path, digest, db.MediaPublisherGitHub)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("GitHub media attachment cache failed for %s, keeping today's rendering: %v", artifactLabel(artifact), err))
 			continue
@@ -180,7 +195,7 @@ func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm
 			sctx.Log(fmt.Sprintf("GitHub media attachment returned no URL for %s, keeping today's rendering", artifactLabel(artifact)))
 			continue
 		}
-		if err := sctx.DB.UpsertRunMediaAttachment(sctx.Run.ID, db.RunMediaAttachment{Path: artifact.Path, Digest: item.digest, URL: url}); err != nil {
+		if err := sctx.DB.UpsertRunMediaAttachment(sctx.Run.ID, db.RunMediaAttachment{Path: artifact.Path, Digest: item.digest, Publisher: db.MediaPublisherGitHub, URL: url}); err != nil {
 			sctx.Log(fmt.Sprintf("warning: failed to cache GitHub media attachment for %s: %v", artifactLabel(artifact), err))
 		}
 		attached[artifact.Path] = url
