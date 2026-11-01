@@ -122,10 +122,15 @@ If survival cannot be proven, the whole private-only range is reported as at
 risk.
 
 **Recovery-anchor preservation credit (issue #1233):** a private-only commit
-that a `refs/no-mistakes/recover/<run>` anchor reaches is *preserved*, so it is
-re-derived out of the at-risk set. Those anchors are the tool's own sanctioned
-preservation record - terminalization pins every verified unpublished head at
-that ref before the managed worktree can be removed, and
+that a `refs/no-mistakes/recover/<run>` or
+`refs/no-mistakes/recover-rewritten/<run>/<generation>` anchor reaches is
+*preserved*, so it is re-derived out of the at-risk set. Those anchors are the
+tool's own sanctioned preservation record - terminalization pins every verified
+unpublished head under `recover/` before the managed worktree can be removed;
+rewritten-remote recovery pins each superseded push under `recover-rewritten/`
+in the invoking worktree or gate. Reconciliation consults both locations for
+rewritten recovery anchors, staging their verified objects in the gate without
+creating or replacing durable refs during planning.
 `custody.PreserveRecoveryAnchor` never replaces evidence (a conflicting or
 symbolic anchor fails closed and is never dereferenced). The credit exists so
 the sanctioned `sync --recover` -> rerun -> push loop cannot deadlock against
