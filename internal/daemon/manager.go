@@ -1250,6 +1250,15 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 	}, nil
 }
 
+// rerunPriority turns the wire fields into HandleRerun's "named or not": nil
+// inherits the selected run's priority, a pointer (even to 0) replaces it.
+func rerunPriority(p ipc.RerunParams) *int {
+	if p.Priority == types.RunPriorityOrdinary && !p.PrioritySet {
+		return nil
+	}
+	return &p.Priority
+}
+
 // HandleRerun creates a new run for the latest recoverable head on a branch:
 // normally the gate branch, or the latest terminal run's verified unpublished
 // head while custody remains outstanding. An explicit intent overrides the
@@ -1259,7 +1268,7 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 // retarget can prove it is moving the same still-open review object.
 // A supplied clean caller head must match the selected head before any run
 // starts or is superseded. It never changes head selection.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, priority int, profiles ...*agentcfg.PiProfile) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, priority *int, profiles ...*agentcfg.PiProfile) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -1344,11 +1353,13 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	// explicit request is added to, never replaces, what the selected run carried.
 	closingIssues = append(append([]string(nil), selectedRun.ClosingIssueRefs...), closingIssues...)
 	// A rerun re-validates the same work, so it keeps the selected run's
-	// admission priority unless the caller names one.
-	if priority == types.RunPriorityOrdinary {
-		priority = selectedRun.Priority
+	// admission priority unless the caller names one; an explicit ordinary
+	// priority is a name like any other and does not inherit.
+	runPriority := selectedRun.Priority
+	if priority != nil {
+		runPriority = *priority
 	}
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, priority, profiles...)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, runPriority, profiles...)
 }
 
 func inheritablePRURL(run *db.Run) string {

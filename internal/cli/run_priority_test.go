@@ -252,7 +252,7 @@ func TestTriggerRunSendsThePriorityPushOption(t *testing.T) {
 			env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if _, err := triggerRun(ctx, env, "main", nil, "repair red main", "", false, "", nil, tc.priority); err == nil || !strings.Contains(err.Error(), "submission-recorded") {
+			if _, err := triggerRun(ctx, env, "main", nil, "repair red main", "", false, "", nil, tc.priority, tc.priority != 0); err == nil || !strings.Contains(err.Error(), "submission-recorded") {
 				t.Fatalf("triggerRun error = %v, want the recording hook's refusal", err)
 			}
 			raw, err := os.ReadFile(optionsFile)
@@ -274,6 +274,97 @@ func TestTriggerRunSendsThePriorityPushOption(t *testing.T) {
 			}
 			if len(priorityOptions) != 1 || priorityOptions[0] != tc.want {
 				t.Fatalf("priority push options = %v (all: %v), want [%s]", priorityOptions, options, tc.want)
+			}
+		})
+	}
+}
+
+// A no-op push reaches AXI's rerun fallback. An explicit `--priority 0` must
+// travel as set so the daemon does not inherit the previous run's urgency; an
+// omitted priority must not claim it was set.
+func TestTriggerRunRerunFallbackCarriesAnExplicitOrdinaryPriority(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		priority     int
+		set          bool
+		wantPriority int
+		wantSet      bool
+	}{
+		{"explicit ordinary", 0, true, 0, true},
+		{"omitted", 0, false, 0, false},
+		{"explicit urgent", 20, true, 20, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := paths.WithRoot(makeSocketSafeTempDir(t))
+			t.Setenv("NM_HOME", p.Root())
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			d, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			cliGit(t, dir, "init", "-b", "main")
+			cliGit(t, dir, "config", "user.name", "Test")
+			cliGit(t, dir, "config", "user.email", "test@example.com")
+			cliGit(t, dir, "commit", "--allow-empty", "-m", "base")
+			repo, err := d.InsertRepo(dir, "https://example.com/repo.git", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gateDir := p.RepoDir(repo.ID)
+			cliGit(t, dir, "clone", "--bare", dir, gateDir)
+			cliGit(t, gateDir, "config", "receive.advertisePushOptions", "true")
+			cliGit(t, dir, "remote", "add", gate.RemoteName, gateDir)
+
+			srv := ipc.NewServer()
+			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.HealthResult{Status: "ok"}, nil
+			})
+			srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.GetRunsResult{}, nil
+			})
+			srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.GetActiveRunResult{}, nil
+			})
+			requests := make(chan ipc.RerunParams, 1)
+			srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+				var params ipc.RerunParams
+				if err := json.Unmarshal(raw, &params); err != nil {
+					return nil, err
+				}
+				requests <- params
+				return &ipc.RerunResult{RunID: "rerun-1"}, nil
+			})
+			done := make(chan error, 1)
+			go func() { done <- srv.Serve(p.Socket()) }()
+			t.Cleanup(func() { srv.Close(); <-done })
+			var client *ipc.Client
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				client, err = ipc.Dial(p.Socket())
+				if err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal(err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			defer client.Close()
+			chdir(t, dir)
+			env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			runID, err := triggerRun(ctx, env, "main", nil, "repair red main", "", false, "", nil, tc.priority, tc.set)
+			if err != nil || runID != "rerun-1" {
+				t.Fatalf("no-op push fallback: run=%q err=%v", runID, err)
+			}
+			got := <-requests
+			if got.Priority != tc.wantPriority || got.PrioritySet != tc.wantSet {
+				t.Fatalf("rerun priority = %d (set=%v), want %d (set=%v)", got.Priority, got.PrioritySet, tc.wantPriority, tc.wantSet)
 			}
 		})
 	}

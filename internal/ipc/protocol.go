@@ -248,9 +248,13 @@ type RerunParams struct {
 	// ClosingIssueRefs are added to the references the selected run carried;
 	// a rerun never drops an inherited closing reference.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
-	// Priority, when non-zero, replaces the admission priority the new run
-	// would otherwise inherit from the selected run.
-	Priority int `json:"priority,omitempty"`
+	// Priority replaces the admission priority the new run would otherwise
+	// inherit from the selected run when it is non-zero or PrioritySet is
+	// true. PrioritySet makes an explicit priority 0 (an ordinary run) distinct
+	// from an omitted priority, which inherits; a daemon that predates it
+	// ignores the field and keeps inheriting.
+	Priority    int  `json:"priority,omitempty"`
+	PrioritySet bool `json:"priority_set,omitempty"`
 }
 
 // RetryRunParams asks the daemon to continue a failed run from its failed

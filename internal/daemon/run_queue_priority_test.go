@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
@@ -476,5 +477,44 @@ func TestRerunInheritsPriorityUnlessTheCallerNamesOne(t *testing.T) {
 	}
 	if got := waitForRunTerminalState(t, d, named.RunID); got.Priority != 10 {
 		t.Fatalf("rerun priority = %d, want the named 10", got.Priority)
+	}
+}
+
+// An explicit priority 0 on a rerun is a request for an ordinary run, not
+// "unspecified": it must not inherit the selected run's urgency.
+func TestRerunExplicitOrdinaryPriorityDoesNotInherit(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	_, headSHA := setupTestGitRepo(t, p, d, "priority-rerun-zero-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:     p.RepoDir("priority-rerun-zero-repo"),
+		Ref:      "refs/heads/main",
+		Old:      "0000000000000000000000000000000000000000",
+		New:      headSHA,
+		Priority: 20,
+	}, &first); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForRunTerminalState(t, d, first.RunID); got.Priority != 20 {
+		t.Fatalf("first run priority = %d, want 20", got.Priority)
+	}
+
+	// Raw params so the request reads as the CLI's explicit --priority 0.
+	explicit := json.RawMessage(fmt.Sprintf(`{"repo_id":"priority-rerun-zero-repo","branch":"main","previous_run_id":%q,"priority":0,"priority_set":true}`, first.RunID))
+	var ordinary ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, explicit, &ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitForRunTerminalState(t, d, ordinary.RunID); got.Priority != 0 {
+		t.Fatalf("rerun with explicit --priority 0 got priority %d, want 0", got.Priority)
 	}
 }
