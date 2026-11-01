@@ -1164,17 +1164,6 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "you MAY conclude that no code change is warranted") {
 		t.Errorf("prompt should allow no-edit when the failing check is not a code defect, got:\n%s", capturedPrompt)
 	}
-	for _, want := range []string{
-		"Never run gh run watch (including --exit-status), gh-axi run watch, or an equivalent command.",
-		"Never repeatedly query run, job, or check status in a polling loop.",
-		"Finish with your fix as local changes in the worktree and return.",
-		"Never push, force-push, or otherwise publish: the no-mistakes pipeline commits and publishes the repair through its guarded path, and its own CI monitoring then takes over.",
-		"You may retrieve a failing job's logs once when that helps diagnose the failure.",
-	} {
-		if !strings.Contains(capturedPrompt, want) {
-			t.Errorf("CI fix prompt missing watch prohibition or daemon handoff %q:\n%s", want, capturedPrompt)
-		}
-	}
 	if strings.Contains(capturedPrompt, "Do not conclude that nothing needs to change") {
 		t.Errorf("prompt should not force an edit for every red check, got:\n%s", capturedPrompt)
 	}
@@ -1199,6 +1188,60 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	}
 	if !strings.Contains(capturedPrompt, dir) || !strings.Contains(capturedPrompt, "Path contract:") {
 		t.Errorf("prompt should include execution context with workdir, got:\n%s", capturedPrompt)
+	}
+}
+
+// The emitted agent prompt is the owned contract here, not evidence of model
+// compliance. The author's no-watch requirement and the local-only publication
+// decision apply to every repair, including those without a failing check.
+// Omitting the shared rule from either prompt family must fail this test.
+func TestCIStep_FixPromptLeavesPublicationAndMonitoringToPipeline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		targets ciFixTargets
+	}{
+		{name: "failing_check", targets: ciTargetsFor([]string{"test"}, false)},
+		{name: "check_and_conflict", targets: ciTargetsFor([]string{"test"}, true)},
+		{name: "conflict_only", targets: ciTargetsFor(nil, true)},
+		{name: "behind_base", targets: ciFixTargets{BehindBase: true}},
+		{name: "selected_finding", targets: ciFixTargetsFromFindings(Findings{Items: []Finding{{
+			ID: "ci-1", Category: types.FindingCategoryCIReviewBot,
+			Check: "Greptile Review", Description: "Repair the selected finding",
+		}}})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+			var capturedPrompt string
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					capturedPrompt = opts.Prompt
+					return &agent.Result{}, nil
+				},
+			}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+			if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, tc.targets); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				"Do not watch or poll CI runs.",
+				"Never run gh run watch (including --exit-status), gh-axi run watch, or an equivalent command.",
+				"Never repeatedly query run, job, or check status in a polling loop.",
+				"Do not wait for CI to finish.",
+				"Finish with your fix as local changes in the worktree and return.",
+				"Never push, force-push, or otherwise publish: the no-mistakes pipeline commits and publishes the repair through its guarded path, and its own CI monitoring then takes over.",
+				"You may retrieve a failing job's logs once when that helps diagnose the failure.",
+			} {
+				if !strings.Contains(capturedPrompt, want) {
+					t.Errorf("emitted CI repair prompt missing monitoring/publication contract %q:\n%s", want, capturedPrompt)
+				}
+			}
+		})
 	}
 }
 
