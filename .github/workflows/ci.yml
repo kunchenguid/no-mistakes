@@ -49,6 +49,9 @@ jobs:
           - os: windows-latest
             name: test (windows-git)
             shard: git
+          - os: windows-latest
+            name: test (windows-daemon)
+            shard: daemon
           # pipeline/steps is split by test name. The last row skips the union
           # of the other rows' patterns, so a new test always lands in exactly
           # one shard; rebalance the ranges against the shards' -v timings.
@@ -118,14 +121,20 @@ jobs:
         run: go test -race ./...
 
       # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
-      # on the core shard is the union of the git and steps shards; the workflow
-      # tests resolve every shard through `go list` and fail if they drift or
-      # overlap. pipeline/steps is its own shard so it runs in parallel with
-      # the remaining git-heavy packages instead of setting a ~21 min serial
-      # floor.
+      # on the core shard is the union of the git, daemon and steps shards; the
+      # workflow tests resolve every shard through `go list` and fail if they
+      # drift or overlap. pipeline/steps is its own shard so it runs in parallel
+      # with the remaining git-heavy packages instead of setting a ~21 min
+      # serial floor. internal/daemon is mostly serial and reached the 15m
+      # -timeout while sharing a 4-core runner with branchsync and gate, so it
+      # runs with eval on its own shard.
       - name: Test on Windows (git-heavy)
         if: runner.os == 'Windows' && matrix.shard == 'git'
-        run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
+        run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence
+
+      - name: Test on Windows (daemon)
+        if: runner.os == 'Windows' && matrix.shard == 'daemon'
+        run: go test -v -timeout=15m ./internal/daemon ./internal/eval
 
       - name: Test on Windows (pipeline/steps)
         if: runner.os == 'Windows' && matrix.shard == 'steps'

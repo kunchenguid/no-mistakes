@@ -22,10 +22,10 @@ import (
 // one. Untuned, a single ./... job compiled every binary and then ran those
 // packages sequentially until timeout-minutes cancelled it with no verdict.
 // These tests pin the properties that keep that from silently coming back - the
-// scan-exclusion step, a three-way shard split (core remainder, git-heavy
-// packages without pipeline/steps, and pipeline/steps alone, itself split by
-// test name across several matrix rows) so each job's wall stays inside the
-// cap, and a per-binary Go timeout well inside that cap so a genuine hang lands
+// scan-exclusion step, a shard split (core remainder, git-heavy packages
+// without pipeline/steps split across two rows, and pipeline/steps alone,
+// itself split by test name across several matrix rows) so each job's wall
+// stays inside the cap, and a per-binary Go timeout well inside that cap so a genuine hang lands
 // as a goroutine dump instead of an opaque job cancellation.
 //
 // The workflow cannot be exercised from `go test` (it needs a Windows runner),
@@ -216,7 +216,7 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 		t.Fatalf("test job timeout-minutes = %d, want 40 so a wedged runner cannot burn a full six-hour budget", job.TimeoutMinutes)
 	}
 
-	wantWindowsShards := []string{"core", "git", "steps"}
+	wantWindowsShards := []string{"core", "daemon", "git", "steps"}
 	var matrixShards []string
 	for _, row := range job.Strategy.Matrix.Include {
 		if row["os"] != "windows-latest" {
@@ -235,8 +235,8 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 	}
 
 	tests := windowsGoTestCommands(t)
-	if len(tests) < 3 {
-		t.Fatalf("Windows tests must be split across core, git, and steps shards so one ./... job cannot exceed the cap without a binary hitting -timeout, got %d go test invocations", len(tests))
+	if len(tests) < 4 {
+		t.Fatalf("Windows tests must be split across core, git, daemon, and steps shards so one ./... job cannot exceed the cap without a binary hitting -timeout, got %d go test invocations", len(tests))
 	}
 
 	jobTimeout := time.Duration(job.TimeoutMinutes) * time.Minute
@@ -269,8 +269,8 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 	if coreCommand.name == "" {
 		t.Fatal("Windows tests must keep a go-list remainder shard")
 	}
-	if len(explicit) != 2 {
-		t.Fatalf("Windows tests must list exactly two explicit package shards (git-heavy remainder and pipeline/steps), got %d", len(explicit))
+	if len(explicit) != 3 {
+		t.Fatalf("Windows tests must list exactly three explicit package shards (two git-heavy remainder shards and pipeline/steps), got %d", len(explicit))
 	}
 	for _, shard := range wantWindowsShards {
 		if _, ok := stepShards[shard]; !ok {
@@ -284,8 +284,9 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 	}
 
 	stepsWant := goListPackages(t, "./internal/pipeline/steps/...")
-	var stepsCommand, gitCommand workflowCommand
+	var stepsCommand workflowCommand
 	var stepsFromArgs, gitFromArgs []string
+	gitShards := 0
 	for _, command := range explicit {
 		pkgs := goListPackages(t, goTestPackagePatterns(command)...)
 		if slices.Equal(pkgs, stepsWant) {
@@ -296,17 +297,18 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 			stepsFromArgs = pkgs
 			continue
 		}
-		if gitCommand.name != "" {
-			t.Fatalf("extra explicit Windows shard packages %v; want one git-heavy remainder besides pipeline/steps", pkgs)
+		if overlap := packagesOverlap(gitFromArgs, pkgs); len(overlap) > 0 {
+			t.Fatalf("git-heavy remainder shards must not overlap, also ran %v", overlap)
 		}
-		gitCommand = command
-		gitFromArgs = pkgs
+		gitShards++
+		gitFromArgs = append(gitFromArgs, pkgs...)
 	}
+	slices.Sort(gitFromArgs)
 	if stepsCommand.name == "" {
 		t.Fatal("Windows tests must run ./internal/pipeline/steps/... on its own shard")
 	}
-	if gitCommand.name == "" {
-		t.Fatal("Windows tests must keep a git-heavy remainder shard besides pipeline/steps")
+	if gitShards != 2 {
+		t.Fatalf("Windows tests must split the git-heavy remainder across two shards besides pipeline/steps, got %d", gitShards)
 	}
 	if overlap := packagesOverlap(stepsFromArgs, gitFromArgs); len(overlap) > 0 {
 		t.Fatalf("git and steps shards must not overlap, also ran %v", overlap)
