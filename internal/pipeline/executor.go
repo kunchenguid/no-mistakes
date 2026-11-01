@@ -384,6 +384,17 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, refusal
 		}
+		if step == types.StepReview && e.db != nil && e.waitingStepResultID != "" {
+			limit, err := e.reviewFixRoundLimit(e.waitingStepResultID)
+			if err != nil {
+				e.mu.Unlock()
+				return RespondDispositions{}, fmt.Errorf("read Review fix-round budget: %w", err)
+			}
+			if used := reviewFixRoundCount(rounds); limit > 0 && used >= limit {
+				e.mu.Unlock()
+				return RespondDispositions{}, reviewFixRoundLimitRefusal(used, limit)
+			}
+		}
 		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
 		if err != nil {
 			e.mu.Unlock()
@@ -1244,6 +1255,28 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
 	autoFixLimit := e.autoFixLimit(stepName)
+	maxReviewFixRounds, reviewFixRounds := 0, 0
+	if stepName == types.StepReview {
+		// Resolve once before any agent runs. Legacy/recovered steps retain
+		// their old unbounded contract; existing pins never change.
+		limit := 0
+		if state.roundNum == 0 && !state.fixing && e.config != nil {
+			limit = e.config.Review.MaxFixRounds
+		}
+		if err := e.db.PinReviewMaxFixRounds(sr.ID, limit); err != nil {
+			return false, "", err
+		}
+		var err error
+		maxReviewFixRounds, err = e.reviewFixRoundLimit(sr.ID)
+		if err != nil {
+			return false, "", err
+		}
+		rounds, err := e.db.GetRoundsByStep(sr.ID)
+		if err != nil {
+			return false, "", err
+		}
+		reviewFixRounds = reviewFixRoundCount(rounds)
+	}
 
 	if !state.fixing {
 		if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
@@ -1369,16 +1402,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// for, so a finding the operator selected for a fix stays outstanding until
 	// a later round positively verifies it (outcome.ReviewedPaths) or the
 	// operator resolves it at a gate. pendingVerificationIDs names the
-	// selection that later rounds may verify. The loop itself is bounded only by
-	// auto_fix.review (the automatic-round budget) and the human/agent gate,
-	// same as upstream. Repeated user selections remain operator/driver-owned,
-	// rather than receiving a separate code-level round cap. Unused by every other step.
+	// selection that later rounds may verify. auto_fix.review bounds automatic
+	// rounds; opt-in review.max_fix_rounds bounds automatic and explicit fix
+	// rounds together. Unused by every other step.
 	carryFindings := stepName == types.StepReview
 	outstandingFindings := ""
 	var pendingVerificationIDs []string
 	selectedOutstandingIDs := state.selectedOutstandingIDs
 	if carryFindings {
-		outstandingFindings = state.outstandingFindings
+		outstandingFindings = excludeFindingsJSON(state.outstandingFindings, []string{reviewFixRoundLimitFindingID})
 		pendingVerificationIDs = append([]string(nil), state.selectedOutstandingIDs...)
 		// An answer round is a round type the append-only set was not written
 		// for, and it does NOT earn pending-verification entries. A fix round
@@ -1644,6 +1676,9 @@ rounds:
 			// that has nothing to do with it.
 			verificationFindings := dropReviewQuestionFindingsJSON(roundFindings)
 			outstandingFindings = dropReviewQuestionFindingsJSON(outstandingFindings)
+			// The budget notice is re-derived, never a code finding whose
+			// absent file anchor can prevent positive verification.
+			outstandingFindings = excludeFindingsJSON(outstandingFindings, []string{reviewFixRoundLimitFindingID})
 			// An answer round retracts by naming ids, never by silence - and
 			// ONLY an answer round. A fix round is held to the coverage rule,
 			// so a retraction it claimed would clear a selected finding no
@@ -1665,6 +1700,20 @@ rounds:
 			effectiveFindings = mergeOutstandingFindingsJSON(outstandingFindings, roundFindings, outcome.ReviewedPaths)
 			outstandingFindings = effectiveFindings
 			effectiveFindings = recordWithdrawnFindingsJSON(effectiveFindings, withdrawn)
+		}
+
+		if stepName == types.StepReview && (nextTrigger == "auto_fix" || nextTrigger == "user_fix") {
+			reviewFixRounds++
+		}
+		reviewBudgetExhausted := maxReviewFixRounds > 0 && reviewFixRounds >= maxReviewFixRounds
+		if reviewBudgetExhausted && (outcome.NeedsApproval || findingsCount(effectiveFindings) > 0) {
+			var err error
+			effectiveFindings, err = appendReviewFixRoundLimit(effectiveFindings, reviewFixRounds, maxReviewFixRounds)
+			if err != nil {
+				return false, "", fmt.Errorf("report exhausted Review budget: %w", err)
+			}
+			outcome.NeedsApproval = true
+			writeLog(reviewFixRoundLimitRefusal(reviewFixRounds, maxReviewFixRounds).Error())
 		}
 
 		if effectiveFindings != "" {
@@ -1700,6 +1749,9 @@ rounds:
 			inserted, dbErr = e.db.InsertStepRoundWithRepair(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, outcome.RepairPublished, roundDuration)
 		}
 		if dbErr != nil {
+			if maxReviewFixRounds > 0 {
+				return false, "", fmt.Errorf("persist bounded Review round: %w", dbErr)
+			}
 			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)
 			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
 		} else {
@@ -1720,7 +1772,7 @@ rounds:
 		if stepName.IsCustomGate() {
 			autoFixable = gateAutoFixEligible(roundFindings, sctx.PreviousFindings, sctx.DeferredFindings, sctx.Fixing)
 		}
-		if autoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
+		if autoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit && !reviewBudgetExhausted {
 			fixableFindings := autoFixableFindingsJSON(roundFindings)
 			if carryFindings {
 				fixableFindings = remapFindingIDsJSON(effectiveFindings, fixableFindings)

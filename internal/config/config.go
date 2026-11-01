@@ -519,8 +519,27 @@ type DocumentRaw struct {
 	Instructions string `yaml:"instructions"`
 }
 
+// reviewFixRoundLimit rejects fractional YAML numbers instead of silently
+// truncating them to an integer budget.
+type reviewFixRoundLimit int
+
+func (l *reviewFixRoundLimit) UnmarshalYAML(node *yaml.Node) error {
+	if node.Tag != "!!int" {
+		return fmt.Errorf("review.max_fix_rounds must be a non-negative integer")
+	}
+	var value int
+	if err := node.Decode(&value); err != nil {
+		return fmt.Errorf("review.max_fix_rounds: %w", err)
+	}
+	*l = reviewFixRoundLimit(value)
+	return nil
+}
+
 // ReviewRaw is the YAML representation of review-step settings.
 type ReviewRaw struct {
+	// MaxFixRounds bounds all Review fix rounds, automatic and explicit.
+	// Zero preserves the unbounded default. Trusted repository config only.
+	MaxFixRounds reviewFixRoundLimit `yaml:"max_fix_rounds"`
 	// Conversation turns the review conversation on: the reviewer may emit the
 	// larger questions it cannot settle itself, keep reviewing while they are
 	// open, and be resumed with the answers. Off (the default), the review step
@@ -1128,6 +1147,8 @@ type Document struct {
 // decides whether the reviewer may ask questions while it works. The two
 // operator lists come from the global config and only ever add rules.
 type Review struct {
+	// MaxFixRounds is the opt-in total Review fix-round budget (0 = unlimited).
+	MaxFixRounds int
 	// Conversation is true when the reviewer may ask the operator questions
 	// mid-pass. It gates the whole protocol: the prompt section, the
 	// conversation files, the question findings that park the gate, the
@@ -3315,6 +3336,9 @@ func validatePRIntent(intent PRIntentRaw) error {
 // invalid block has to fail here, before it merges, rather than brick the
 // repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
+	if review.MaxFixRounds < 0 {
+		return fmt.Errorf("review.max_fix_rounds must be non-negative (0 means unlimited)")
+	}
 	if review.AgentTimeout != "" {
 		if _, err := parsePositiveDuration("review.agent_timeout", review.AgentTimeout); err != nil {
 			return err
@@ -4270,6 +4294,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// separate sources rather than overlaid: they can only add rules, never
 		// replace or remove the repository's.
 		Review: Review{
+			MaxFixRounds:           int(repo.Review.MaxFixRounds),
 			Conversation:           repo.Review.Conversation,
 			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
 			GlobalPathInstructions: resolvePathInstructions(global.Review.PathInstructions),

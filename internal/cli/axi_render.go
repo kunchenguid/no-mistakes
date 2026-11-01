@@ -664,6 +664,12 @@ func gateFieldsForRun(gate stepView, runID string) []toon.Field {
 		"Run `" + respond + " --action approve` to accept this step and continue",
 		"Run `" + respond + " --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response",
 	}
+	if pipeline.HasReviewFixRoundLimit(gate.FindingsJSON) {
+		help = []string{
+			"The total Review fix-round budget is exhausted; further fix requests are refused and automatic resolvers leave this gate parked. Remaining findings are unchanged.",
+			"Inspect the remaining findings, then explicitly run `" + respond + " --action approve` to accept them, or abort the run. A new run gets a new budget; changing config does not extend this run.",
+		}
+	}
 	if pipeline.CanContinueReviewCoverage(types.StepName(gate.Name), gate.FindingsJSON) {
 		help = append([]string{coverageHelp}, help...)
 	}

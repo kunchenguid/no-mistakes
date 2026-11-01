@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity    TEXT,
     agent_pid        INTEGER,
     auto_fix_limit              INTEGER,
+    review_max_fix_rounds        INTEGER,
     ci_fix_attempts             INTEGER NOT NULL DEFAULT 0,
     override_reason             TEXT,
     response_origin             TEXT NOT NULL DEFAULT 'unknown'
@@ -424,4 +425,7 @@ var migrationStatements = []string{
 	// The carried row has no rounds of its own; readers that render what the
 	// step did follow this to the source row's rounds.
 	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	// Pin the opt-in total Review fix budget across recovery and restarts.
+	// NULL identifies a step started before this policy existed (unbounded).
+	`ALTER TABLE step_results ADD COLUMN review_max_fix_rounds INTEGER`,
 }

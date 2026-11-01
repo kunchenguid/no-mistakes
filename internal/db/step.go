@@ -27,6 +27,9 @@ type StepResult struct {
 	LastActivity   *string
 	AgentPID       *int
 	AutoFixLimit   *int
+	// ReviewMaxFixRounds pins the total Review fix budget. NULL is a legacy,
+	// unbounded step; zero explicitly records the unbounded default.
+	ReviewMaxFixRounds *int
 	// OverrideReason is non-nil exactly when a human answered ActionApprove on
 	// this step's gate despite an unresolved condition (currently: the CI
 	// step's live checks were still failing, or the Test step's configured
@@ -65,7 +68,7 @@ const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code,
 // append-only.
 func (d *DB) readableStepResultColumns() string {
 	columns := stepResultColumns
-	for _, column := range []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit", "round_started_at", "override_reason", "skip_reason", "approval_reason", "failure_cause", "carried_from"} {
+	for _, column := range []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit", "round_started_at", "override_reason", "skip_reason", "approval_reason", "failure_cause", "carried_from", "review_max_fix_rounds"} {
 		if d.hasColumn("step_results", column) {
 			columns += ", " + column
 		} else {
@@ -151,7 +154,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ResponseOrigin)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -181,7 +184,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ResponseOrigin); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -276,6 +279,18 @@ func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, round_started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, auto_fix_limit = ? WHERE id = ?`, types.StepStatusRunning, ts, ts, ts, "step started", autoFixLimitDBValue(autoFixLimit), id)
 	if err != nil {
 		return fmt.Errorf("start step: %w", err)
+	}
+	return nil
+}
+
+// PinReviewMaxFixRounds records a Review step's budget once, before execution.
+// Recovery and validation restarts keep the original pin, including zero.
+func (d *DB) PinReviewMaxFixRounds(id string, limit int) error {
+	if limit < 0 {
+		return fmt.Errorf("review.max_fix_rounds must be non-negative")
+	}
+	if _, err := d.sql.Exec(`UPDATE step_results SET review_max_fix_rounds = COALESCE(review_max_fix_rounds, ?) WHERE id = ? AND step_name = 'review'`, limit, id); err != nil {
+		return fmt.Errorf("pin Review fix-round limit: %w", err)
 	}
 	return nil
 }
