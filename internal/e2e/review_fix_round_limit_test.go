@@ -452,3 +452,143 @@ func TestReviewFixRoundLimit_TUIYoloStandsAside(t *testing.T) {
 		t.Fatalf("yolo started another fix: turns=%d", got)
 	}
 }
+
+// protectedFixScenario is fixRoundLimitScenario's persistent reviewer with a
+// fixer that also edits a protected file, so the one allowed fix round's
+// commit is refused by protected_paths.
+func protectedFixScenario(t *testing.T) string {
+	t.Helper()
+	body := fmt.Sprintf(`actions:
+  - match: "Fix-round provenance:"
+    structured:
+      findings:
+        - id: still-broken
+          severity: warning
+          file: service.txt
+          description: "Service is still broken after the fix"
+          action: auto-fix
+      summary: "rereview"
+      risk_level: low
+      risk_rationale: "rereviewed"
+      risk_scope: source-or-external
+  - match: %q
+    edits:
+      - path: service.txt
+        old: "end\n"
+        new: "fixed\nend\n"
+      - path: secret.txt
+        old: "token\n"
+        new: "rotated-token\n"
+    structured:
+      findings: []
+      summary: "fix applied"
+  - match: "Review the code changes and return structured findings"
+    structured:
+      findings:
+        - id: broken-service
+          severity: warning
+          file: service.txt
+          description: "Service is broken"
+          action: auto-fix
+      summary: "one finding"
+      risk_level: medium
+      risk_rationale: "broken service"
+      risk_scope: source-or-external
+  - structured:
+      findings: []
+      summary: "clean"
+      risk_level: low
+      risk_rationale: "none"
+      risk_scope: source-or-external
+`, fixRoundLimitFixerMarker)
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// When the last allowed fix round's commit is refused by protected_paths,
+// approve and fix are both refused, and each refusal and the gate help point
+// only at the responses that remain (skip or abort), never at each other.
+// Oracle: docs reference/repo-config.md#protected_paths ("When the refused
+// commit was Review's last allowed fix round ... only skip or abort remain").
+func TestReviewFixRoundLimit_ProtectedPathRefusalOnTheLastRoundOffersOnlySkipOrAbort(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: protectedFixScenario(t)})
+	h.CommitChange("main", "secret.txt", "token\n", "protected file")
+	h.setTrustedConfig("protected_paths:\n  - \"secret.txt\"\nreview:\n  max_fix_rounds: 1\n", "trusted protected budget")
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	branch := "feature/round-limit-protected"
+	h.startFeature(branch)
+
+	if out, err := h.Run("axi", "run", "--intent", "Fix the broken service"); err != nil || !strings.Contains(out, "broken-service") {
+		t.Fatalf("initial review gate: %v\n%s", err, out)
+	}
+	fixed, _ := h.Run("axi", "respond", "--action", "fix", "--findings", "broken-service")
+
+	deadline := time.Now().Add(90 * time.Second)
+	var findings string
+	for time.Now().Before(deadline) {
+		if run := h.ActiveRun(branch); run != nil {
+			if step, ok := findStep(run.Steps, types.StepReview); ok && step.FindingsJSON != nil &&
+				strings.Contains(*step.FindingsJSON, "protected-path-refusal") && reviewGateParked(step.Status) {
+				findings = *step.FindingsJSON
+				break
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if findings == "" {
+		h.dumpDebugState()
+		t.Fatalf("review never parked on a protected-path refusal:\n%s", fixed)
+	}
+	status := axiStatus(t, h)
+	t.Logf("EVIDENCE gate after the refused last fix round:\nrespond:\n%s\nstatus:\n%s", fixed, status)
+	if !strings.Contains(findings, "review-fix-rounds-exhausted") {
+		t.Fatalf("refused last fix round did not exhaust the budget; findings:\n%s", findings)
+	}
+	if !strings.Contains(status, "skip") || !strings.Contains(status, "abort") || strings.Contains(status, "--action fix` to retry") {
+		t.Fatalf("gate help does not offer only skip or abort:\n%s", status)
+	}
+
+	approve, err := h.Run("axi", "respond", "--action", "approve")
+	t.Logf("EVIDENCE approve on protected+exhausted gate: err=%v\n%s", err, approve)
+	if err == nil || !strings.Contains(approve, "skip this step or abort the run") || strings.Contains(approve, "use fix to retry") {
+		t.Fatalf("approve refusal does not point at skip/abort: err=%v\n%s", err, approve)
+	}
+	ids := reviewFindingIDs(t, h, branch)
+	fix, err := h.Run("axi", "respond", "--action", "fix", "--findings", strings.Join(ids, ","))
+	t.Logf("EVIDENCE fix on protected+exhausted gate: err=%v\n%s", err, fix)
+	if err == nil || !strings.Contains(fix, "fix_rounds_exhausted") || !strings.Contains(fix, "skip this step or abort the run") || strings.Contains(fix, "explicitly approve") {
+		t.Fatalf("fix refusal does not point at skip/abort: err=%v\n%s", err, fix)
+	}
+	if got := h.fixerTurns(); got != 1 {
+		t.Fatalf("a refused response ran the fixer: turns=%d", got)
+	}
+
+	// Skip stays available: it releases the gate rather than being refused.
+	// Skipping Review then fails Push closed (pipeline-steps.md: "Pre-skipping
+	// or later skipping Review leaves no approval binding, so Push fails closed
+	// unless Push is also skipped"), which is unchanged by the budget.
+	skipped, err := h.Run("axi", "respond", "--action", "skip")
+	t.Logf("EVIDENCE skip on protected+exhausted gate: err=%v\n%s", err, skipped)
+	if strings.Contains(skipped, "fix_rounds_exhausted") || strings.Contains(skipped, "cannot skip") {
+		t.Fatalf("skip was refused: %v\n%s", err, skipped)
+	}
+	final := h.WaitForRun(branch, 60*time.Second)
+	if step, _ := findStep(final.Steps, types.StepReview); reviewGateParked(step.Status) || step.Status == types.StepStatusCompleted {
+		t.Fatalf("skip did not release the review gate as skipped: %s", step.Status)
+	}
+	if !strings.Contains(deref(final.Error), "review skip prevents push") {
+		t.Fatalf("skipped Review did not end through the documented push guard: %s (error=%s)", final.Status, deref(final.Error))
+	}
+	if got := h.fixerTurns(); got != 1 {
+		t.Fatalf("skip ran the fixer: turns=%d", got)
+	}
+}
+
+func reviewGateParked(status types.StepStatus) bool {
+	return status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview
+}
