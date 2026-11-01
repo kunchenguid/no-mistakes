@@ -1164,6 +1164,16 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "you MAY conclude that no code change is warranted") {
 		t.Errorf("prompt should allow no-edit when the failing check is not a code defect, got:\n%s", capturedPrompt)
 	}
+	for _, want := range []string{
+		"Never run gh run watch (including --exit-status), gh-axi run watch, or an equivalent command.",
+		"Never repeatedly query run, job, or check status in a polling loop.",
+		"After you push a fix, the no-mistakes daemon's CI monitoring takes over; your job ends at the fix and push.",
+		"You may retrieve a failing job's logs once when that helps diagnose the failure.",
+	} {
+		if !strings.Contains(capturedPrompt, want) {
+			t.Errorf("CI fix prompt missing watch prohibition or daemon handoff %q:\n%s", want, capturedPrompt)
+		}
+	}
 	if strings.Contains(capturedPrompt, "Do not conclude that nothing needs to change") {
 		t.Errorf("prompt should not force an edit for every red check, got:\n%s", capturedPrompt)
 	}
