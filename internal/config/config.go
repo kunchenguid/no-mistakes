@@ -549,6 +549,18 @@ type ReviewRaw struct {
 	AgentTimeout string `yaml:"agent_timeout"`
 }
 
+// PRIntentRaw configures the public presentation of the run's unchanged intent.
+type PRIntentRaw struct {
+	Format   string   `yaml:"format"`
+	Sections []string `yaml:"sections"`
+}
+
+// PRIntent is the resolved public Intent presentation.
+type PRIntent struct {
+	Format   string
+	Sections []string
+}
+
 // PRRaw is the YAML representation of pull-request settings.
 type PRRaw struct {
 	// BaseBranch selects the forge branch a PR targets. It is gate-control
@@ -556,12 +568,13 @@ type PRRaw struct {
 	// repository explicitly opts into pushed-branch settings with
 	// allow_repo_commands.
 	BaseBranch string `yaml:"base_branch"`
-	// Template, PublishIntent, and Appendix remain trusted-only even when
-	// allow_repo_commands is enabled. An empty Appendix inherits machine-local
-	// defaults, falling back to full.
-	Template      string `yaml:"template"`
-	PublishIntent *bool  `yaml:"publish_intent"`
-	Appendix      string `yaml:"appendix"`
+	// Template, PublishIntent, Appendix, and Intent remain trusted-only even
+	// when allow_repo_commands is enabled. An empty Appendix inherits
+	// machine-local defaults, falling back to full.
+	Template      string      `yaml:"template"`
+	PublishIntent *bool       `yaml:"publish_intent"`
+	Appendix      string      `yaml:"appendix"`
+	Intent        PRIntentRaw `yaml:"intent"`
 	// TitleFormat controls PR title rendering when set. It is a non-executing
 	// repository convention and is therefore read from the pushed branch.
 	TitleFormat *string `yaml:"title_format"`
@@ -1087,6 +1100,7 @@ type OriginProvider struct {
 type PR struct {
 	BaseBranch string
 	Template   string
+	Intent     PRIntent
 	// Nil preserves the historical default: publish the extracted intent.
 	PublishIntent *bool
 	// Appendix is full, collapsed, or minimal. Empty preserves full.
@@ -1441,10 +1455,11 @@ func warnRetiredJev(raw retiredJev) {
 // IntentRaw is the YAML representation of user-intent extraction settings.
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type IntentRaw struct {
-	Enabled         *bool    `yaml:"enabled"`
-	Threshold       *float64 `yaml:"threshold"`
-	SlackDays       *int     `yaml:"slack_days"`
-	DisabledReaders []string `yaml:"disabled_readers"`
+	Enabled         *bool          `yaml:"enabled"`
+	Threshold       *float64       `yaml:"threshold"`
+	SlackDays       *int           `yaml:"slack_days"`
+	DisabledReaders []string       `yaml:"disabled_readers"`
+	Check           IntentCheckRaw `yaml:"check"`
 }
 
 // GlobalIntentRaw is the global config's `intent:` block. It extends the
@@ -1477,6 +1492,7 @@ type Intent struct {
 	Threshold       float64
 	SlackDays       int
 	DisabledReaders map[string]bool
+	Check           IntentCheck
 }
 
 type agentList []types.AgentName
@@ -2768,6 +2784,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validatePRAppendix(raw.PR.Appendix); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateIntentCheck(&raw.Intent.Check); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 	if err := validateGlobalCommitRaw(raw.Commit); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
@@ -3198,6 +3217,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if err := validateIntentCheck(&cfg.Intent.Check); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	if err := validateGates(cfg.Gates); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
@@ -3251,6 +3273,30 @@ func validatePRRaw(pr PRRaw) error {
 	}
 	if err := validatePRAppendix(pr.Appendix); err != nil {
 		return err
+	}
+	if err := validatePRIntent(pr.Intent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePRIntent(intent PRIntentRaw) error {
+	format := strings.ToLower(strings.TrimSpace(intent.Format))
+	if format != "" && format != "raw" && format != "brief" {
+		return fmt.Errorf("pr.intent.format must be raw or brief")
+	}
+	seen := make(map[string]bool, len(intent.Sections))
+	for i, section := range intent.Sections {
+		section = strings.ToLower(strings.TrimSpace(section))
+		switch section {
+		case "why", "scope", "out_of_scope":
+		default:
+			return fmt.Errorf("pr.intent.sections[%d] must be why, scope, or out_of_scope", i)
+		}
+		if seen[section] {
+			return fmt.Errorf("pr.intent.sections[%d] duplicates %q", i, section)
+		}
+		seen[section] = true
 	}
 	return nil
 }
@@ -3385,8 +3431,8 @@ func validatePathInstructionGlob(pattern string) error {
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
 // budget) is trusted-only because every rerun it authorizes is another
 // provider-side workflow run billed to the repository. These gate-control
-// fields ignore allowRepoCommands, as do pr.template, pr.publish_intent, and
-// pr.appendix.
+// fields ignore allowRepoCommands, as do pr.template, pr.publish_intent,
+// pr.appendix, pr.intent, and intent.check.
 // PR.BaseBranch is the explicit exception: the
 // allowRepoCommands opt-in also permits a pushed PR target because it controls
 // where a maintainer-authorized PR lands, not code execution.
@@ -3400,10 +3446,12 @@ func validatePathInstructionGlob(pattern string) error {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, core-step auto-fix, commit, intent, test,
-// PR title format, and providers) are always taken from the pushed copy, matching prior behavior,
-// since they cannot run arbitrary shell, select a process, or spend the
-// maintainer's CI minutes.
+// Non-executing fields (ignore patterns, core-step auto-fix, commit, most
+// intent and test settings, PR title format, and providers) are always taken
+// from the pushed copy, matching prior behavior, since they cannot run
+// arbitrary shell, select a process, or spend the maintainer's CI minutes.
+// intent.check and pr.intent are exceptions: they control admission and public
+// rendering, so they come only from the trusted default-branch copy.
 // The exceptions inside test are prepare, which eagerly runs setup before an
 // agent-only Test, base_attribution, which re-runs a failing commands.test on
 // the base commit, evidence.branch, which names a git ref the daemon pushes
@@ -3511,6 +3559,8 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.PR.Template = trusted.PR.Template
 		effective.PR.PublishIntent = trusted.PR.PublishIntent
 		effective.PR.Appendix = trusted.PR.Appendix
+		effective.PR.Intent = trusted.PR.Intent
+		effective.Intent.Check = trusted.Intent.Check
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.ProtectedPaths = nil
@@ -3532,6 +3582,8 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.PR.Template = ""
 		effective.PR.PublishIntent = nil
 		effective.PR.Appendix = ""
+		effective.PR.Intent = PRIntentRaw{}
+		effective.Intent.Check = IntentCheckRaw{}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -3574,6 +3626,7 @@ func intentDefaults() Intent {
 		Threshold:       0.2,
 		SlackDays:       3,
 		DisabledReaders: map[string]bool{},
+		Check:           IntentCheck{Mode: IntentCheckOff},
 	}
 }
 
@@ -4080,6 +4133,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	intent := intentDefaults()
 	applyIntentOverrides(&intent, &global.Intent.IntentRaw)
 	applyIntentOverrides(&intent, &repo.Intent)
+	intent.Check = MergeIntentChecks(global.Intent.Check, repo.Intent.Check)
 
 	test := testDefaults()
 	applyTestOverrides(&test, &global.Test)
@@ -4146,6 +4200,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	pr := PR{
 		BaseBranch:    strings.TrimSpace(repo.PR.BaseBranch),
 		Template:      repo.PR.Template,
+		Intent:        PRIntent{Format: repo.PR.Intent.Format, Sections: append([]string(nil), repo.PR.Intent.Sections...)},
 		PublishIntent: repo.PR.PublishIntent,
 		Appendix:      repo.PR.Appendix,
 	}

@@ -8,12 +8,12 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
-If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
+If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, intent extraction settings, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `intent.check`, `pr.intent`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -62,13 +62,17 @@ disable_project_settings: true
 
 # Optional PR settings.
 # base_branch is read from the trusted default branch.
-# template, publish_intent, and appendix are trusted publication policy.
+# template, publish_intent, intent, and appendix are trusted publication policy.
+# intent.check is also trusted and rejects or warns before agent work.
 # See pr.appendix below for presentation modes and inheritance.
 # title_format is a repository convention and is read from this branch.
 pr:
   base_branch: develop
   # template: .github/pull_request_template.md
   # publish_intent: false
+  # intent:
+  #   format: brief # raw (default) | brief
+  #   sections: [why, scope, out_of_scope]
   # appendix: collapsed # full | collapsed | minimal
   # title_format: "{{.Branch}}: {{.Title}}"
 
@@ -269,7 +273,7 @@ The path is read as a literal Git tree entry, never through the pushed worktree 
 
 #### Author-preserving regeneration
 
-A templated PR contains one delimited, integrity-checked generated appendix. Later runs preserve live author text before and after it, including human checkbox choices and explicit issue-closing lines, and refresh only that appendix. They do not re-fill the narrative. An author's title is also preserved unless `pr.title_format` is configured; that explicit repository convention redrafts the bare title and applies the format on every managed update. Changing or removing `pr.template` does not regenerate an already owned narrative; edit it on the PR when it needs updating. The full intent remains available to reviewers. Removing the generated Intent section is controlled separately below.
+A templated PR contains one delimited, integrity-checked generated appendix. Later runs preserve live author text before and after it, including human checkbox choices and explicit issue-closing lines, and refresh only that appendix. They do not re-fill the narrative. An author's title is also preserved unless `pr.title_format` is configured; that explicit repository convention redrafts the bare title and applies the format on every managed update. Changing or removing `pr.template` does not regenerate an already owned narrative; edit it on the PR when it needs updating. The original intent remains review criteria, while the public section follows [`pr.intent`](#printent). Removing the generated Intent section is controlled separately below.
 
 Ownership is never inferred from a heading's name. An existing author-only body can be adopted without model rewriting. **Legacy descriptions containing an unowned attestation require explicit author reconciliation** before template mode can adopt them: separate/remove their obsolete generated evidence while retaining the desired author text and closing references, then retry. Do not manufacture ownership markers by hand. An edited appendix, missing/duplicate/malformed markers, or a competing attestation fails rather than risking discarded author content. Put author additions outside the generated appendix. The integrity guard detects accidental edits; it is not authentication or a cryptographic signature by no-mistakes.
 
@@ -293,11 +297,33 @@ Control publication of the **generated `Intent` section**, independently of inte
 | Default | `true` (missing or `null` also preserves the default) |
 | Trust | Trusted default branch only, regardless of `allow_repo_commands`; the caller-side counterpart is the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default and the per-run `axi run --no-publish-intent` flag |
 
-`false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
+`false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. When intent publication is suppressed, no brief is generated. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
 
 A contributor can keep the section off for their own runs without touching this repository policy: `axi run --no-publish-intent` records a tighten-only omission on the run, and an operator can set the global `intent.publish_intent: false` default. Both compose with this field and can only reduce publication: the trusted repository policy is the ceiling, and a caller can never publish intent on a repository whose trusted config disabled it. Neither signal changes what review, test, document, lint, or CI auto-fix prompts receive. The caller-side omission goes one step further than this repository policy: the PR-drafting turns (ordinary narrative, title-only fallback, and repository-template narrative) receive no intent text at all and draft from the diff and commit messages only, so no paraphrase of the withheld intent can reach the public PR. The intent is withheld, never scanned for: there is no output filter.
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
+
+### pr.intent
+
+Configure the reviewer-facing rendering of the generated `Intent` section. This repository-only setting is read from the trusted default branch, regardless of `allow_repo_commands`. It is not available in global config or `repository_overrides`.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `pr.intent.format` | `string` | `raw` |
+| `pr.intent.sections` | `string[]` | `why`, `scope`, `out_of_scope` when format is `brief` |
+
+```yaml
+pr:
+  intent:
+    format: brief
+    sections: [why, scope, out_of_scope]
+```
+
+`raw` preserves today's Intent rendering. `brief` asks the existing PR-drafting turn for a separate structured value: a one-line goal and selected bullet lists. The code renders the selected sections as `### Why`, `### Scope`, and `### Out of scope` headings, in the configured order. Empty lists are omitted. Valid section names are `why`, `scope`, and `out_of_scope`; duplicates and unknown names fail config loading. If `sections` is empty or omitted, brief mode uses all three in that order.
+
+The original run intent remains unchanged and continues to guide review. The Intent step does not rewrite it. Brief output is drafted as a separate value alongside the PR narrative, then rendered as headings and bullets. It is limited to a 200-character goal, up to three 220-character bullets per section, and 2,500 characters total. A missing or invalid brief fails publication; no path falls back to publishing the raw intent. `pr.publish_intent: false` and caller-side intent omission suppress the section and skip brief generation.
+
+This format structures the Intent section; it is not a general PR-body privacy filter. The separate What Changed narrative and other evidence can still contain sensitive text.
 
 ### pr.appendix
 
@@ -1106,8 +1132,29 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `intent.threshold` | `float` | Inherits from global (default `0.2`) |
 | `intent.slack_days` | `int` | Inherits from global (default `3`) |
 | `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
+| `intent.check` | `object` | Additive with global policy; mode defaults to `off` |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+
+#### intent.check
+
+Configure deterministic checks for explicit, inherited, or inferred run intent. This block is read only from the trusted default branch, regardless of `allow_repo_commands`; other intent-extraction fields keep their existing pushed-branch behavior.
+
+```yaml
+intent:
+  check:
+    mode: reject # off (default) | warn | reject
+    terms:
+      - "internal project label"
+    patterns:
+      - '(?i)run-[a-z0-9-]+'
+```
+
+`terms` match case-insensitive literal substrings. `patterns` use Go RE2 regular expressions and are case-sensitive unless the expression enables `(?i)`. Global and trusted repository rules combine additively; the stronger mode wins, so a repository cannot turn off a global warning or rejection. A pushed-branch policy cannot add, remove, or weaken rules.
+
+`off` performs no checks. `warn` records a private local warning and continues. `reject` stops the run before it can supersede another run or launch an agent. The same policy checks intent inferred later from a transcript before the summary is stored. `--skip intent` does not bypass the check. Warnings, errors, and logs name only rule indexes, never the matched text; warnings are not published as findings.
+
+Each config layer accepts at most 32 terms and patterns combined, at most 256 bytes per rule, and at most 8 KiB of rule text. Invalid modes, empty or oversized rules, over-limit policies, and invalid RE2 expressions fail config loading.
 
 ### test.prepare
 

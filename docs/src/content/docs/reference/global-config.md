@@ -112,6 +112,10 @@ intent:
   slack_days: 3
   disabled_readers: []
   # publish_intent: false # Keep the generated Intent section out of PR bodies by default
+  # check:
+  #   mode: warn # off (default) | warn | reject
+  #   terms: ["internal project label"]
+  #   patterns: ['(?i)run-[a-z0-9-]+']
 
 test:
   evidence:
@@ -1301,7 +1305,7 @@ layer. The pushed branch cannot choose the appendix mode, even with
 All modes retain the pipeline attestation. See the repository
 [`pr.appendix`](/no-mistakes/reference/repo-config/#prappendix) reference for
 rendering behavior and provider caveats. Invalid modes fail config loading.
-`pr.template` and `pr.publish_intent` are not machine-wide settings.
+`pr.template`, `pr.publish_intent`, and `pr.intent` are not machine-wide settings.
 
 ### repository_overrides
 
@@ -1349,7 +1353,7 @@ repository_overrides:
 `pr.appendix` accepts `full`, `collapsed`, or `minimal` and can be set with or without `pr.template`; it uses the same [appendix and attestation behavior](/no-mistakes/reference/repo-config/#prappendix) as the repository setting. When template mode is active, author-edited narrative is preserved on later updates.
 `pr.update_text` accepts `keep` or `regenerate`. The default is `regenerate`, also used when the key is absent. `regenerate` replaces the title and body on update, as today, but only while the live body carries no owned appendix markers. Once `keep` has created or updated a PR, that PR keeps its title and narrative even after the key changes back to `regenerate` or is removed, the same rule that stops removing `pr.template` from switching an owned body back. `keep` leaves the live title unchanged and keeps the narrative above the appendix byte for byte, the same preservation [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate) already uses, including when that repository has no template file. The step still creates the pull request when none exists: the ordinary drafter supplies the title and narrative, and the evidence is stored as that owned appendix. Every later update refreshes the appendix, or the `minimal` risk line, and the attestation, so they match the current head. If that narrative and the evidence cannot fit the publication budget, the step fails instead of truncating them. A configured `pr.title_format` still redrafts the bare title. An existing body that already carries an unowned attestation is refused until that generated evidence is separated from the narrative, the same adoption rule as template mode. To prepare an already open PR that an earlier `regenerate` run published, move its generated evidence out of the body by hand once before enabling `keep`. Any other value fails config loading. A repository `.no-mistakes.yaml` cannot set this key, and it is not a machine-wide `pr` setting.
 For `pr.template`, a non-empty trusted repository value wins over the matching machine-local value. For appendix inheritance, see [`pr.appendix` precedence](#prappendix).
-`pr.template` is available only under `repository_overrides`, not as a machine-wide PR setting. `pr.publish_intent` remains trusted-repository-only.
+`pr.template` is available only under `repository_overrides`, not as a machine-wide PR setting. `pr.publish_intent` and `pr.intent` remain trusted-repository-only.
 
 #### Machine-local review, documentation, and test guidance
 
@@ -1448,10 +1452,31 @@ When enabled and no intent was supplied directly for the run, no-mistakes can re
 | `intent.slack_days`       | `int`      | `3`     | Extra days to look back before the change window           |
 | `intent.disabled_readers` | `string[]` | Empty   | Transcript readers to disable                              |
 | `intent.publish_intent`   | `bool`     | `true`  | Publish the generated Intent section on PR bodies by default |
+| `intent.check`            | `object`   | `off`    | Add deterministic term and pattern checks for run intent       |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
 
 `intent.publish_intent: false` is a global, operator-side default that keeps the generated `## Intent` section out of the PR body for runs started without an explicit override. It is the caller-side counterpart of the repository's trusted [`pr.publish_intent`](/no-mistakes/reference/repo-config/#prpublish_intent): both are tighten-only, the repository's trusted policy remains the ceiling a caller can never exceed, and review, test, document, lint, and CI auto-fix prompts keep the full intent. Under the caller-side omission the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; the intent is withheld from them, never scanned out of their output. A run records the folded decision (the `axi run --no-publish-intent` flag OR this global default) at start; reruns inherit it, and a mid-run config change never re-publishes. This field is global-only: a pushed branch's `.no-mistakes.yaml` cannot express it.
+
+#### intent.check
+
+Configure deterministic rules that warn about or reject run intent before pipeline agents act on it. The same `intent.check` block is available in global config and the repository's trusted default-branch config. Global and trusted repository rules combine additively; the stronger mode wins. A pushed branch cannot add, remove, or weaken rules, even when `allow_repo_commands: true`.
+
+```yaml
+intent:
+  check:
+    mode: reject # off (default) | warn | reject
+    terms:
+      - "internal project label"
+    patterns:
+      - '(?i)run-[a-z0-9-]+'
+```
+
+`terms` match case-insensitive literal substrings. `patterns` use Go RE2 regular expressions and are case-sensitive unless the expression enables `(?i)`. Explicit, inherited, proof, push, rerun, retry, and other supplied intent is checked before it can supersede an active run or start a pipeline agent. Transcript-inferred intent is checked after extraction and before no-mistakes stores or forwards the summary. `--skip intent` does not bypass the policy.
+
+`off` performs no checks. `warn` writes a private local warning and continues. `reject` stops the run. Warning, error, and log messages list matching rule indexes only; they never echo matched text. Warnings are not findings and are never published.
+
+Each config layer accepts at most 32 terms and patterns combined, at most 256 bytes per rule, and at most 8 KiB of rule text. Invalid modes, empty or oversized rules, over-limit policies, and invalid RE2 expressions fail config loading. The default is `off`; leaving `intent.check` unset preserves existing behavior.
 
 The match score is the share of matching files mentioned in a transcript session; deleted files are ignored when the diff also contains non-deleted changes.
 All-deletion diffs still match against the deleted changed files.

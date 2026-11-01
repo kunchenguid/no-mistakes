@@ -77,6 +77,7 @@ type Run struct {
 	ParkedMS        int64
 	Intent          *string
 	IntentSource    *string
+	IntentCheckJSON *string `json:"-"`
 	IntentSessionID *string
 	IntentScore     *float64
 	// LaunchNonce, LaunchValidationGeneration, and LaunchIntentDigest are
@@ -115,7 +116,15 @@ type Run struct {
 	UpdatedAt                int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
+
+func (d *DB) runColumns() string {
+	intentCheck := "NULL"
+	if d.hasColumn("runs", "intent_check_json") {
+		intentCheck = "intent_check_json"
+	}
+	return fmt.Sprintf(runColumns, intentCheck)
+}
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -127,7 +136,7 @@ func scanRun(row interface {
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
-		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
+		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentCheckJSON,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
@@ -342,7 +351,7 @@ func (d *DB) runWorktreesOutside(prefix, statusClause string) ([]RunWorktree, er
 // GetRun returns a run by ID.
 func (d *DB) GetRun(id string) (*Run, error) {
 	r := &Run{}
-	err := scanRun(d.sql.QueryRow(`SELECT `+runColumns+` FROM runs WHERE id = ?`, id), r)
+	err := scanRun(d.sql.QueryRow(`SELECT `+d.runColumns()+` FROM runs WHERE id = ?`, id), r)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -357,7 +366,7 @@ func (d *DB) GetRun(id string) (*Run, error) {
 func (d *DB) GetRunByLaunchNonce(repoID, branch, launchNonce string) (*Run, error) {
 	r := &Run{}
 	err := scanRun(d.sql.QueryRow(
-		`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? AND launch_nonce = ?`,
+		`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND branch = ? AND launch_nonce = ?`,
 		repoID, branch, launchNonce,
 	), r)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -394,7 +403,7 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 			   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
 			   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
 			   AND launch_receipt_claimed_at IS NULL
-			 RETURNING `+runColumns,
+			 RETURNING `+d.runColumns(),
 			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort,
 		), r)
 		if err == nil {
@@ -422,7 +431,7 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 
 // GetRunsByRepo returns all runs for a repo, newest first.
 func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
-	rows, err := d.sql.Query(`SELECT `+runColumns+` FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID)
+	rows, err := d.sql.Query(`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("get runs by repo: %w", err)
 	}
@@ -444,7 +453,7 @@ func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 // history, so the cost stays bounded to the handful of runs for one head.
 func (d *DB) GetRunsByRepoHead(repoID, branch, headSHA string) ([]*Run, error) {
 	rows, err := d.sql.Query(
-		`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? AND head_sha = ? ORDER BY created_at DESC, id DESC`,
+		`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND branch = ? AND head_sha = ? ORDER BY created_at DESC, id DESC`,
 		repoID, branch, headSHA,
 	)
 	if err != nil {
@@ -472,11 +481,11 @@ func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 	var err error
 	if branch == "" {
 		err = scanRun(d.sql.QueryRow(
-			`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID,
+			`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID,
 		), r)
 	} else {
 		err = scanRun(d.sql.QueryRow(
-			`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
+			`SELECT `+d.runColumns()+` FROM runs WHERE repo_id = ? AND branch = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
 		), r)
 	}
 	if err == sql.ErrNoRows {
@@ -491,7 +500,7 @@ func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 // GetActiveRuns returns all pending or running runs across all repos, newest first.
 func (d *DB) GetActiveRuns() ([]*Run, error) {
 	rows, err := d.sql.Query(
-		`SELECT `+runColumns+` FROM runs WHERE status IN (?, ?) ORDER BY created_at DESC, id DESC`,
+		`SELECT `+d.runColumns()+` FROM runs WHERE status IN (?, ?) ORDER BY created_at DESC, id DESC`,
 		types.RunPending, types.RunRunning,
 	)
 	if err != nil {
@@ -986,6 +995,21 @@ type RunIntent struct {
 	Source    string
 	SessionID string
 	Score     float64
+}
+
+// SetRunIntentCheck pins the merged admission policy for the run. It may be
+// written once after insertion and cannot be changed afterward.
+func (d *DB) SetRunIntentCheck(id, policyJSON string) error {
+	result, err := d.sql.Exec(`UPDATE runs SET intent_check_json = ? WHERE id = ? AND intent_check_json IS NULL`, policyJSON, id)
+	if err != nil {
+		return fmt.Errorf("pin run intent check: %w", err)
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("pin run intent check: %w", err)
+	} else if changed != 1 {
+		return fmt.Errorf("pin run intent check: run is missing or policy is already pinned")
+	}
+	return nil
 }
 
 // UpdateRunIntent persists the inferred user intent for a run.
