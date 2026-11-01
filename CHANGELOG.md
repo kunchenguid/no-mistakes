@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.107.0](https://github.com/kunchenguid/no-mistakes/compare/v1.106.1...v1.107.0) (2026-11-01)
+
+
+### Features
+
+* **pipeline:** add trusted intent checks and structured PR briefs ([#1649](https://github.com/kunchenguid/no-mistakes/issues/1649)) ([6c2fd84](https://github.com/kunchenguid/no-mistakes/commit/6c2fd84e957d49684e1f9d06d5ec08081e2e2351))
+
+
+### Bug Fixes
+
+* **agent:** end a Claude turn that stays open after its result ([#1673](https://github.com/kunchenguid/no-mistakes/issues/1673)) ([a768d1b](https://github.com/kunchenguid/no-mistakes/commit/a768d1b24ac2e75ac214c0ee612af2cd2edfe6d5)), closes [#1659](https://github.com/kunchenguid/no-mistakes/issues/1659)
+* **pipeline:** keep published Intent on pr.update_text keep fallbacks ([#1671](https://github.com/kunchenguid/no-mistakes/issues/1671)) ([d3dc208](https://github.com/kunchenguid/no-mistakes/commit/d3dc208c5d7fff7733da4e560cc31e19839dce5e))
+* **pipeline:** stop blaming gh version for unrelated CI check read failures ([#1672](https://github.com/kunchenguid/no-mistakes/issues/1672)) ([37faaf0](https://github.com/kunchenguid/no-mistakes/commit/37faaf0b8895dc9cb380dc3b68599afea19e1f37))
+
 ## [1.106.1](https://github.com/kunchenguid/no-mistakes/compare/v1.106.0...v1.106.1) (2026-10-31)
 
 
