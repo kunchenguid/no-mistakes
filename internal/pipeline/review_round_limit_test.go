@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -120,6 +121,50 @@ func TestExecutor_ReviewFixRoundLimitAutomaticAndMixed(t *testing.T) {
 			waitExecutorDone(t, done)
 		})
 	}
+}
+
+func TestExecutor_ReviewFixRoundLimitWithProtectedPathRefusalOffersOnlySkipOrAbort(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	cfg := &config.Config{Review: config.Review{MaxFixRounds: 1}, AutoFix: config.AutoFix{Review: 1}}
+	parks := make(chan string, 4)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		if !sctx.Fixing {
+			return &StepOutcome{NeedsApproval: true, AutoFixable: true, Findings: roundLimitFinding}, nil
+		}
+		return nil, &ProtectedPathError{Path: "package.lock", Rule: "*.lock"}
+	}}
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, func(event ipc.Event) {
+		if event.Type == ipc.EventStepCompleted && event.Status != nil &&
+			(*event.Status == string(types.StepStatusAwaitingApproval) || *event.Status == string(types.StepStatusFixReview)) {
+			parks <- *event.Findings
+		}
+	})
+	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+	findings := waitReviewBudgetPark(t, parks, done)
+	if !HasProtectedPathRefusal(findings) || !HasReviewFixRoundLimit(findings) {
+		t.Fatalf("refused last fix round should park with both markers: %s", findings)
+	}
+
+	approveErr := exec.Respond(types.StepReview, types.ActionApprove, nil)
+	if approveErr == nil {
+		t.Fatal("approve must stay refused at a protected-path refusal")
+	}
+	_, fixErr := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{protectedPathFindingID}, nil, nil, nil, "")
+	var fixRefusal *RespondRefusal
+	if !errors.As(fixErr, &fixRefusal) || !strings.Contains(fixRefusal.Message, "fix_rounds_exhausted") {
+		t.Fatalf("fix must be refused by the exhausted budget, got %v", fixErr)
+	}
+	for name, text := range map[string]string{"approve refusal": approveErr.Error(), "fix refusal help": fixRefusal.Help} {
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "use fix") || strings.Contains(lower, "approve, skip") || !strings.Contains(lower, "skip") || !strings.Contains(lower, "abort") {
+			t.Errorf("%s must name only skip or abort, the responses this gate accepts: %q", name, text)
+		}
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionSkip, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
 }
 
 func TestExecutor_ReviewFixRoundLimitCleanFinalReviewPasses(t *testing.T) {

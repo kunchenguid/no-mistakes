@@ -101,6 +101,8 @@ func HasUnreadableReviewQuestionHistory(findingsJSON string) bool {
 // accepted.
 func approvalRefusal(step types.StepName, findingsJSON string) string {
 	switch {
+	case HasProtectedPathRefusal(findingsJSON) && HasReviewFixRoundLimit(findingsJSON):
+		return fmt.Sprintf("cannot approve a protected-path refusal, and the Review fix-round budget is exhausted so fix cannot retry %s either; skip this step or abort the run", step)
 	case HasProtectedPathRefusal(findingsJSON):
 		return fmt.Sprintf("cannot approve a protected-path refusal: resolve the reported edit, then use fix to retry %s; approval would skip unfinished work", step)
 	case HasUnvalidatedWorkRefusal(findingsJSON):

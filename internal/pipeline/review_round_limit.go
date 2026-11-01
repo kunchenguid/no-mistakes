@@ -44,11 +44,16 @@ func (e *Executor) reviewFixRoundLimit(stepID string) (int, error) {
 	return *step.ReviewMaxFixRounds, nil
 }
 
-func reviewFixRoundLimitRefusal(used, limit int) *RespondRefusal {
-	return &RespondRefusal{
-		Message: fmt.Sprintf("fix_rounds_exhausted: Review used %d/%d fix rounds; the gate remains parked with its remaining findings", used, limit),
-		Help:    "Inspect the remaining findings and explicitly approve, skip, or abort. A new run gets a new budget; changing config does not extend this run.",
+func reviewFixRoundLimitMessage(used, limit int) string {
+	return fmt.Sprintf("fix_rounds_exhausted: Review used %d/%d fix rounds; the gate remains parked with its remaining findings", used, limit)
+}
+
+func reviewFixRoundLimitRefusal(used, limit int, gateFindings string) *RespondRefusal {
+	help := "Inspect the remaining findings and explicitly approve, skip, or abort. A new run gets a new budget; changing config does not extend this run."
+	if HasProtectedPathRefusal(gateFindings) {
+		help = "Approve is also rejected because this gate holds a protected-path refusal: skip this step or abort the run. A new run gets a new budget; changing config does not extend this run."
 	}
+	return &RespondRefusal{Message: reviewFixRoundLimitMessage(used, limit), Help: help}
 }
 
 func appendReviewFixRoundLimit(raw string, used, limit int) (string, error) {
@@ -60,7 +65,7 @@ func appendReviewFixRoundLimit(raw string, used, limit int) (string, error) {
 		ID:          reviewFixRoundLimitFindingID,
 		Severity:    "warning",
 		Action:      types.ActionAskUser,
-		Description: reviewFixRoundLimitRefusal(used, limit).Error(),
+		Description: reviewFixRoundLimitMessage(used, limit),
 	})
 	return types.MarshalFindingsJSON(findings)
 }

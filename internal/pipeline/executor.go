@@ -392,7 +392,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			}
 			if used := reviewFixRoundCount(rounds); limit > 0 && used >= limit {
 				e.mu.Unlock()
-				return RespondDispositions{}, reviewFixRoundLimitRefusal(used, limit)
+				return RespondDispositions{}, reviewFixRoundLimitRefusal(used, limit, e.waitingFindings)
 			}
 		}
 		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
@@ -1713,7 +1713,7 @@ rounds:
 				return false, "", fmt.Errorf("report exhausted Review budget: %w", err)
 			}
 			outcome.NeedsApproval = true
-			writeLog(reviewFixRoundLimitRefusal(reviewFixRounds, maxReviewFixRounds).Error())
+			writeLog(reviewFixRoundLimitMessage(reviewFixRounds, maxReviewFixRounds))
 		}
 
 		if effectiveFindings != "" {
