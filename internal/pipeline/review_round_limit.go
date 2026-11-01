@@ -7,12 +7,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-const reviewFixRoundLimitFindingID = "review-fix-rounds-exhausted"
-
 // HasReviewFixRoundLimit identifies an exhausted Review budget. Automatic
 // resolvers must leave this gate for an explicit decision, never approve it.
 func HasReviewFixRoundLimit(raw string) bool {
-	return hasFindingID(raw, reviewFixRoundLimitFindingID)
+	return hasFindingID(raw, types.FindingIDReviewFixRoundsExhausted)
 }
 
 func reviewFixRoundCount(rounds []*db.StepRound) int {
@@ -62,7 +60,7 @@ func appendReviewFixRoundLimit(raw string, used, limit int) (string, error) {
 		return "", err
 	}
 	findings.Items = append(findings.Items, types.Finding{
-		ID:          reviewFixRoundLimitFindingID,
+		ID:          types.FindingIDReviewFixRoundsExhausted,
 		Severity:    "warning",
 		Action:      types.ActionAskUser,
 		Description: reviewFixRoundLimitMessage(used, limit),

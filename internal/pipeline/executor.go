@@ -391,8 +391,9 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 				return RespondDispositions{}, fmt.Errorf("read Review fix-round budget: %w", err)
 			}
 			if used := reviewFixRoundCount(rounds); limit > 0 && used >= limit {
+				refusal := reviewFixRoundLimitRefusal(used, limit, e.waitingFindings)
 				e.mu.Unlock()
-				return RespondDispositions{}, reviewFixRoundLimitRefusal(used, limit, e.waitingFindings)
+				return RespondDispositions{}, refusal
 			}
 		}
 		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
@@ -1410,7 +1411,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	var pendingVerificationIDs []string
 	selectedOutstandingIDs := state.selectedOutstandingIDs
 	if carryFindings {
-		outstandingFindings = excludeFindingsJSON(state.outstandingFindings, []string{reviewFixRoundLimitFindingID})
+		outstandingFindings = excludeFindingsJSON(state.outstandingFindings, []string{types.FindingIDReviewFixRoundsExhausted})
 		pendingVerificationIDs = append([]string(nil), state.selectedOutstandingIDs...)
 		// An answer round is a round type the append-only set was not written
 		// for, and it does NOT earn pending-verification entries. A fix round
@@ -1678,7 +1679,7 @@ rounds:
 			outstandingFindings = dropReviewQuestionFindingsJSON(outstandingFindings)
 			// The budget notice is re-derived, never a code finding whose
 			// absent file anchor can prevent positive verification.
-			outstandingFindings = excludeFindingsJSON(outstandingFindings, []string{reviewFixRoundLimitFindingID})
+			outstandingFindings = excludeFindingsJSON(outstandingFindings, []string{types.FindingIDReviewFixRoundsExhausted})
 			// An answer round retracts by naming ids, never by silence - and
 			// ONLY an answer round. A fix round is held to the coverage rule,
 			// so a retraction it claimed would clear a selected finding no
@@ -1706,7 +1707,10 @@ rounds:
 			reviewFixRounds++
 		}
 		reviewBudgetExhausted := maxReviewFixRounds > 0 && reviewFixRounds >= maxReviewFixRounds
-		if reviewBudgetExhausted && (outcome.NeedsApproval || findingsCount(effectiveFindings) > 0) {
+		// Only remaining findings carry the notice. A coverage-only park has
+		// none, and complete-coverage requires an empty findings list, so the
+		// notice there would strand a continuation that spends no fix round.
+		if reviewBudgetExhausted && findingsCount(effectiveFindings) > 0 {
 			var err error
 			effectiveFindings, err = appendReviewFixRoundLimit(effectiveFindings, reviewFixRounds, maxReviewFixRounds)
 			if err != nil {

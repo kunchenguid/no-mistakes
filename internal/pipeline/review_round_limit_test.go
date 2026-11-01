@@ -316,3 +316,102 @@ func TestReviewFixRoundCountExcludesNonFixTurns(t *testing.T) {
 		t.Fatalf("fix count=%d, want 2", got)
 	}
 }
+
+// A clean last rereview that parks only for missing coverage spends no fix
+// round on its continuation (repo-config.md, review.max_fix_rounds), so the
+// exhausted-budget notice must not turn its empty findings list into one that
+// complete-coverage refuses.
+func TestExecutor_ReviewFixRoundLimitCoverageOnlyParkCanCompleteCoverage(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	cfg := &config.Config{TrustedConfigSHA: "fixture-trusted", Review: config.Review{MaxFixRounds: 1}, AutoFix: config.AutoFix{Review: 1}}
+	reviewable := []string{"first.go", "second.go"}
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		switch calls {
+		case 1:
+			return &StepOutcome{NeedsApproval: true, AutoFixable: true,
+				Findings: `{"findings":[{"id":"R1","severity":"error","file":"first.go","description":"broken","action":"auto-fix"}]}`}, nil
+		case 2:
+			if !sctx.Fixing {
+				t.Error("second call should be the one allowed fix round")
+			}
+			// The fix is verified, but second.go is still uncovered.
+			return coverageFixtureOutcome(t, sctx, []string{"first.go"}, reviewable), nil
+		default:
+			if sctx.Fixing {
+				t.Error("coverage continuation dispatched another code fix")
+			}
+			return &StepOutcome{
+				Findings:              `{"findings":[],"reviewed_paths":["first.go","second.go"]}`,
+				ReviewedPaths:         reviewable,
+				ReviewablePaths:       reviewable,
+				ReviewApprovedHeadSHA: sctx.Run.HeadSHA,
+			}, nil
+		}
+	}}
+	parks := make(chan string, 4)
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, func(event ipc.Event) {
+		if event.Type == ipc.EventStepCompleted && event.Status != nil && event.Findings != nil &&
+			(*event.Status == string(types.StepStatusAwaitingApproval) || *event.Status == string(types.StepStatusFixReview)) {
+			parks <- *event.Findings
+		}
+	})
+	workDir := coverageWorkdir(t, database, run)
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+	raw := waitReviewBudgetPark(t, parks, done)
+	if HasReviewFixRoundLimit(raw) || findingsCount(raw) != 0 {
+		t.Fatalf("coverage-only park after the last fix must carry no findings, got %s", raw)
+	}
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionCompleteCoverage, nil, nil, nil, nil, "", ResponseOptions{Coverage: coverageBinding(t, database, run.ID)}); err != nil {
+		t.Fatalf("complete-coverage refused after the fix budget was spent: %v", err)
+	}
+	waitExecutorDone(t, done)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].Status != types.StepStatusCompleted || calls != 3 {
+		t.Fatalf("status=%s calls=%d, want completed after one coverage continuation", steps[0].Status, calls)
+	}
+}
+
+// The refusal is built from the parked gate's findings; it must read them
+// under the executor mutex, because cancellation clears the gate concurrently.
+// Run with -race: the unlocked read is reported as a data race.
+func TestExecutor_ReviewFixRoundLimitRefusalRacingCancellation(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	cfg := &config.Config{Review: config.Review{MaxFixRounds: 1}, AutoFix: config.AutoFix{Review: 3}}
+	parks := make(chan string, 4)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		return &StepOutcome{NeedsApproval: true, AutoFixable: true, Findings: roundLimitFinding}, nil
+	}}
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, func(event ipc.Event) {
+		if event.Type == ipc.EventStepCompleted && event.Status != nil && *event.Status == string(types.StepStatusFixReview) {
+			parks <- *event.Findings
+		}
+	})
+	done, cancel := startExecutor(t, exec, run, repo, t.TempDir())
+	if raw := waitReviewBudgetPark(t, parks, done); !HasReviewFixRoundLimit(raw) {
+		t.Fatalf("expected an exhausted park: %s", raw)
+	}
+	refusals := make(chan int, 1)
+	go func() {
+		n := 0
+		for {
+			_, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1"}, nil, nil, nil, "")
+			var refusal *RespondRefusal
+			if !errors.As(err, &refusal) {
+				refusals <- n
+				return
+			}
+			n++
+		}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if n := <-refusals; n == 0 {
+		t.Fatal("no fix request was refused while the gate was parked")
+	}
+	<-done
+}
