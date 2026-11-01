@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -386,12 +387,28 @@ func terminalCheckTargetsForNames(checks []scm.Check, names []string) []scm.Chec
 	return targets
 }
 
+// ghChecksJSONUnsupported reports whether err looks like gh rejecting the
+// `--json` flag of `pr checks`, which is what a gh older than 2.50 does. Any
+// other check-read failure (auth, network, a missing PR, a parse failure) says
+// nothing about the gh version, so it must not be blamed on it.
+func ghChecksJSONUnsupported(err error) bool {
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "--json") {
+		return false
+	}
+	return strings.Contains(msg, "unknown flag") || strings.Contains(msg, "flag needs an argument")
+}
+
 func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
+	desc := fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command.", err)
+	if ghChecksJSONUnsupported(err) {
+		desc += " The GitHub CLI rejected 'pr checks --json'; gh >= 2.50 is required."
+	}
 	findings := Findings{
 		Summary: "CI checks could not be read from the provider",
 		Items: []Finding{{
 			Severity:    "warning",
-			Description: fmt.Sprintf("CI checks could not be read from the provider: %v. Verify that the provider CLI or credentials are installed, authenticated, and support the required check-reading command. For GitHub errors involving 'pr checks --json', gh >= 2.50 is required.", err),
+			Description: desc,
 			Action:      types.ActionAskUser,
 		}},
 	}
