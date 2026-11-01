@@ -690,7 +690,12 @@ func gateFieldsForRun(gate stepView, runID string) []toon.Field {
 			"Do not approve or fix to get past a review question: that throws away the paused review pass instead of answering it",
 		}, help...)
 	}
-	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
+	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) && pipeline.HasReviewFixRoundLimit(gate.FindingsJSON) {
+		help = []string{
+			"Protected-path refusals require an explicit operator response; Approve is rejected while the reported protected-path edit is present.",
+			"The total Review fix-round budget is exhausted, so a fix request is refused and cannot retry the refused step. Skip this step or run `no-mistakes axi abort" + runFlag(runID) + "` to stop the run. A new run gets a new budget; changing config does not extend this run.",
+		}
+	} else if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
 		help = []string{
 			"Protected-path refusals require an explicit operator response; Approve is rejected.",
 			"Have the operator inspect and resolve the reported protected-path edit through the repository's authorized workflow, then run `" + respond + " --action fix` to retry the refused step, including its commit and publication.",
