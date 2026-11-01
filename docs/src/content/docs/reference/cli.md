@@ -634,7 +634,7 @@ The retry starts a new run at the failed run's preserved head, so every correcti
 - Every later step runs normally. Per-run skips of steps that never ran are kept.
 
 The failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
-The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, and Pi profile; retry takes none of the flags that would change them.
+The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, Pi profile, and [run priority](#run-priority); retry takes none of the flags that would change them.
 
 `--run` names the failed run, as `axi status` shows it.
 It does not select a run: the retried run is always the current branch's latest run, and a `--run` that names any other run is refused.
