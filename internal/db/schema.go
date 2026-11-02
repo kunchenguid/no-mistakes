@@ -432,9 +432,12 @@ var migrationStatements = []string{
 	// WHERE and ORDER BY (GetStepsByRun with its id tie-break, GetRoundsByStep,
 	// and the repo/branch and status run lookups), so the step and round
 	// lookups need no temporary sort. TestHistoryLookupsUseHistoryIndexes
-	// plans the real queries against these.
-	`CREATE INDEX IF NOT EXISTS idx_step_results_run_order_id ON step_results (run_id, step_order, id)`,
-	`CREATE INDEX IF NOT EXISTS idx_step_rounds_step_round ON step_rounds (step_result_id, round)`,
-	`CREATE INDEX IF NOT EXISTS idx_runs_repo_branch_created_id ON runs (repo_id, branch, created_at DESC, id DESC)`,
-	`CREATE INDEX IF NOT EXISTS idx_runs_status_created_id ON runs (status, created_at DESC, id DESC)`,
+	// plans the real queries against these. The four run in one transaction so
+	// a fresh database pays one commit for them instead of four.
+	`BEGIN;
+CREATE INDEX IF NOT EXISTS idx_step_results_run_order_id ON step_results (run_id, step_order, id);
+CREATE INDEX IF NOT EXISTS idx_step_rounds_step_round ON step_rounds (step_result_id, round);
+CREATE INDEX IF NOT EXISTS idx_runs_repo_branch_created_id ON runs (repo_id, branch, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_status_created_id ON runs (status, created_at DESC, id DESC);
+COMMIT;`,
 }
