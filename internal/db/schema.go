@@ -424,4 +424,17 @@ var migrationStatements = []string{
 	// The carried row has no rounds of its own; readers that render what the
 	// step did follow this to the source row's rounds.
 	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	// Run-history lookup indexes. Without them every run snapshot scans the
+	// whole step_results and step_rounds history once per step, and the branch
+	// joins (previous review, branch decisions) start from a full child-table
+	// walk. On the daemon's single connection that cost grows with history and
+	// queues every other request behind it. Column order follows the readers'
+	// WHERE and ORDER BY (GetStepsByRun with its id tie-break, GetRoundsByStep,
+	// and the repo/branch and status run lookups), so the step and round
+	// lookups need no temporary sort. TestHistoryLookupsUseHistoryIndexes
+	// plans the real queries against these.
+	`CREATE INDEX IF NOT EXISTS idx_step_results_run_order_id ON step_results (run_id, step_order, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_step_rounds_step_round ON step_rounds (step_result_id, round)`,
+	`CREATE INDEX IF NOT EXISTS idx_runs_repo_branch_created_id ON runs (repo_id, branch, created_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_runs_status_created_id ON runs (status, created_at DESC, id DESC)`,
 }
