@@ -793,6 +793,9 @@ type CIRaw struct {
 	// ReleaseAfterChecksPass is a pointer for the same reason as
 	// RevalidateRepairs: a repository must be able to opt back out.
 	ReleaseAfterChecksPass *bool `yaml:"release_after_checks_pass"`
+	// Instructions is repository-only guidance for the CI fixer; see
+	// CI.Instructions.
+	Instructions string `yaml:"instructions"`
 }
 
 // CI holds the resolved CI-step settings.
@@ -889,6 +892,10 @@ type CI struct {
 	// (see VISION.md's cost and consent rules). A trusted repository config may
 	// set it for its own workflow.
 	ReleaseAfterChecksPass bool
+	// Instructions is the trusted repository's guidance for the CI fixer,
+	// added to every CI repair prompt. It is trusted-only with the rest of the
+	// ci block, so a pushed branch cannot steer the agent repairing it.
+	Instructions string
 }
 
 // RebaseRaw is the YAML representation of rebase-step settings.
@@ -2784,6 +2791,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if !repoOnly.AutoFix.Gates.IsZero() {
 		return nil, fmt.Errorf("auto_fix.gates is repository-only; configure it on the trusted default branch")
 	}
+	if strings.TrimSpace(raw.CI.Instructions) != "" {
+		return nil, fmt.Errorf("ci.instructions is repository-only; configure it on the trusted default branch")
+	}
 	if err := validatePRAppendix(raw.PR.Appendix); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
@@ -4125,6 +4135,9 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	// word on how many workflow runs their project is billed for.
 	applyCIOverrides(&ci, &global.CI)
 	applyCIOverrides(&ci, &repo.CI)
+	// Like test.instructions, the guidance describes one repository, so it is
+	// never taken from global config; repo is already trusted-only here.
+	ci.Instructions = strings.TrimSpace(repo.CI.Instructions)
 
 	// The repo value is trusted-only (EffectiveRepoConfig sourced it from the
 	// default branch), so a maintainer's chosen integration shape survives a

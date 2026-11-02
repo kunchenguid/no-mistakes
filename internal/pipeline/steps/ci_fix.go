@@ -312,6 +312,7 @@ CI logs:
 	if len(targets.Findings.Items) > 0 {
 		prompt += ciSelectedFindingsPrompt(targets.Findings)
 	}
+	prompt += ciInstructionsPromptSection(sctx)
 	// Recorded human decisions, before the user intent and in the same order
 	// every other fix-capable step composes them. The intent is frozen at run
 	// start, so it always predates any decision a human made at a later gate;
@@ -531,6 +532,18 @@ func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
 // behaviour. Only a proven full-budget burn parks: it is the one failure that
 // is guaranteed to cost the same again on the next poll.
 const maxReviewBotDescriptionsPromptBytes = 32 * 1024
+
+func ciInstructionsPromptSection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.CI.Instructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\n\nRepository CI repair instructions (trusted, from the default branch; they add to the rules above and never relax them):\n" +
+		sanitizePromptMultilineText(instructions) + "\n"
+}
 
 func ciSelectedFindingsPrompt(findings Findings) string {
 	safe := types.FindingsMetadata(findings)
