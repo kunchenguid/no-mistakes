@@ -32,6 +32,25 @@ const (
 	RunCIMonitorInterrupted RunStatus = "ci_monitor_interrupted"
 )
 
+// Run priority orders only the pending runs waiting for a max_concurrent_runs
+// slot: a higher priority is admitted first and equal priorities keep
+// submission order. It never raises the cap, pre-empts, pauses or cancels a
+// run that already holds a slot. RunPriorityOrdinary is every run that was
+// not given one.
+const (
+	RunPriorityOrdinary = 0
+	RunPriorityMax      = 100
+)
+
+// ValidateRunPriority rejects a priority outside RunPriorityOrdinary to
+// RunPriorityMax.
+func ValidateRunPriority(priority int) error {
+	if priority < RunPriorityOrdinary || priority > RunPriorityMax {
+		return fmt.Errorf("priority must be an integer from %d to %d, got %d", RunPriorityOrdinary, RunPriorityMax, priority)
+	}
+	return nil
+}
+
 const (
 	// StepErrorAbortedByUser is the error a step records when an operator
 	// aborts it at its approval gate. A reason, when given, follows it after

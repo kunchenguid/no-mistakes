@@ -107,6 +107,10 @@ type PushReceivedParams struct {
 	// ClosingIssueRefs are the explicit issues (axi run --closes) the
 	// generated PR should close.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
+	// Priority is the run's admission priority (axi run --priority, push
+	// option no-mistakes.priority); 0 is an ordinary run. It orders only the
+	// pending queue under max_concurrent_runs.
+	Priority int `json:"priority,omitempty"`
 }
 
 // StartFreshRunParams requests a nonce-bound fresh launch for one exact gate
@@ -126,6 +130,7 @@ type StartFreshRunParams struct {
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
 	OmitIntent           bool             `json:"omit_intent,omitempty"`
 	ClosingIssueRefs     []string         `json:"closing_issue_refs,omitempty"`
+	Priority             int              `json:"priority,omitempty"`
 }
 
 // CaptureVerificationPlanParams requests a snapshot before the caller pushes.
@@ -243,6 +248,13 @@ type RerunParams struct {
 	// ClosingIssueRefs are added to the references the selected run carried;
 	// a rerun never drops an inherited closing reference.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
+	// Priority replaces the admission priority the new run would otherwise
+	// inherit from the selected run when it is non-zero or PrioritySet is
+	// true. PrioritySet makes an explicit priority 0 (an ordinary run) distinct
+	// from an omitted priority, which inherits; a daemon that predates it
+	// ignores the field and keeps inheriting.
+	Priority    int  `json:"priority,omitempty"`
+	PrioritySet bool `json:"priority_set,omitempty"`
 }
 
 // RetryRunParams asks the daemon to continue a failed run from its failed
@@ -522,6 +534,9 @@ type RunInfo struct {
 	// tighten-only request to keep the generated Intent section out of the
 	// PR body (see runs.omit_intent).
 	OmitIntent bool `json:"omit_intent,omitempty"`
+	// Priority is the run's admission priority among pending runs (higher
+	// first, then submission order); omitted for an ordinary run.
+	Priority int `json:"priority,omitempty"`
 	// QuotaRouting is the run's quota-aware agent-ordering record (the raw
 	// quotarouting.Record JSON) when the feature is on for this run, empty
 	// otherwise. Local-only observability; see internal/quotarouting.

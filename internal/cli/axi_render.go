@@ -140,6 +140,9 @@ type runView struct {
 	TestOverrideReason string
 	RetryOf            *ipc.RunRetryInfo
 	RetriedBy          string
+	// Priority is the run's admission priority among pending runs; 0 is an
+	// ordinary run and is not rendered.
+	Priority int
 }
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
@@ -157,6 +160,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		VerificationPlan:   r.VerificationPlan,
 		RetryOf:            r.RetryOf,
 		RetriedBy:          r.RetriedBy,
+		Priority:           r.Priority,
 	}
 	if payload, err := quotarouting.ParseRecord(r.QuotaRouting); err != nil {
 		slog.Warn("run carries an unreadable quota routing record", "run", r.ID, "error", err)
@@ -206,6 +210,7 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
+		Priority:           r.Priority,
 	}
 	if payload, err := quotarouting.ParseRecord(r.QuotaRouting); err != nil {
 		slog.Warn("run carries an unreadable quota routing record", "run", r.ID, "error", err)
@@ -502,6 +507,11 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	// while genuinely parked (non-nil marker on a non-terminal run).
 	if rv.AwaitingAgentSince != nil && !terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
+	}
+	// A non-ordinary admission priority sits next to status, where a pending
+	// run's place in the queue is read.
+	if rv.Priority != types.RunPriorityOrdinary {
+		fields = append(fields, toon.Field{Key: "priority", Value: rv.Priority})
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})

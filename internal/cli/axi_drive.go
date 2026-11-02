@@ -209,6 +209,12 @@ func newAxiRunCmd() *cobra.Command {
 			"the PR body fails the step instead of publishing a reference that would\n" +
 			"close nothing. Reattaching may add references until the PR body has been\n" +
 			"composed. It cannot be combined with --skip pr.\n\n" +
+			"--priority N (0-100, default 0) orders a new run among pending runs\n" +
+			"waiting for a max_concurrent_runs slot: a higher priority starts first\n" +
+			"and equal priorities keep submission order. It never raises the cap or\n" +
+			"displaces, pauses or cancels a run that already holds a slot. It is\n" +
+			"persisted on the run and inherited by rerun and retry; reattaching with\n" +
+			"a different --priority is refused.\n\n" +
 			"--model and/or --effort opt into an immutable Pi profile for a new run.\n" +
 			"An omitted field comes from agent_config.pi; both must resolve. Requires\n" +
 			"Pi-only agents; raw native selection flags conflict. The pin outranks\n" +
@@ -259,6 +265,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this run (tighten-only; full intent still reaches every step prompt except PR drafting)")
 	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "issue this PR closes when merged; repeat for multiple issues (42, owner/repo#42, or a nested GitLab project path)")
 	cmd.Flags().String("verification-plan", "", "capture a nonempty UTF-8 verification plan as separate run evidence (new runs only)")
+	bindRunPriorityFlag(cmd)
 	bindAxiWaitFlag(cmd, &wait)
 	bindPiProfileFlags(cmd, &model, &effort)
 	return cmd
@@ -292,6 +299,10 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 	}
 	if len(closesIssues) > 0 && slices.Contains(skipSteps, types.StepPR) {
 		return emitError(cmd, 2, "--closes cannot be combined with --skip pr: skipping the PR step publishes no closing reference", "Drop pr from --skip, or drop --closes.")
+	}
+	priority, prioritySet, err := runPriorityFromFlags(cmd)
+	if err != nil {
+		return emitError(cmd, 2, err.Error())
 	}
 	ctx := cmd.Context()
 	driveCtx, cancel, err := boundAxiWait(ctx, wait)
@@ -378,6 +389,10 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 				return emitError(cmd, 2, err.Error(),
 					"Omit --no-publish-intent to reattach, or abort the active run before starting a new one")
 			}
+			if err := conflictingActiveRunPriority(active, priority, prioritySet); err != nil {
+				return emitError(cmd, 2, err.Error(),
+					"Omit --priority to reattach, or abort the active run before starting a new one")
+			}
 			runID = active.ID
 		}
 	}
@@ -440,12 +455,12 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		}
 		var err error
 		if launchNonce != "" {
-			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, profile)
+			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, omitIntent, launchNonce, validationGeneration, planID, closesIssues, priority, profile)
 			if err == nil {
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, profile)
+			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch, omitIntent, planID, closesIssues, priority, prioritySet, profile)
 		}
 		if err == nil && planID != "" && runID != planID {
 			err = fmt.Errorf("launched run does not own the captured verification plan")
@@ -756,11 +771,14 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, priority int, prioritySet bool, profiles ...*agentcfg.PiProfile) (string, error) {
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
+	if opt := formatPriorityPushOption(priority); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
@@ -846,6 +864,8 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	params.OmitIntent = omitIntent
 	params.PiProfile = profile
 	params.ClosingIssueRefs = closesIssues
+	params.Priority = priority
+	params.PrioritySet = prioritySet
 	params.VerificationPlanID = planID
 	params.CallerHeadSHA, err = rerunCallerHead(ctx)
 	if err != nil {
@@ -877,11 +897,14 @@ func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submitt
 // triggerProofRun captures the immutable submitted commit and waits only for
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
-func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, priority int, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
+	if opt := formatPriorityPushOption(priority); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
 	pushOptions = append(pushOptions,
 		formatIntentPushOption(intent),
 		formatLaunchNoncePushOption(launchNonce),
@@ -912,7 +935,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		RepoID: env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
 		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration, PRBaseBranch: baseBranch, OmitIntent: omitIntent, PiProfile: profile, VerificationPlanID: planID,
-		ClosingIssueRefs: closesIssues,
+		ClosingIssueRefs: closesIssues, Priority: priority,
 	}, &result); err != nil {
 		return nil, fmt.Errorf("start fresh run: %w", err)
 	}

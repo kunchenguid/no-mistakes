@@ -94,7 +94,7 @@ func TestTriggerRunAfterRemoteRewrittenRecovery(t *testing.T) {
 	env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	runID, err := triggerRun(ctx, env, "feature/sync", nil, "Validate rewritten branch", "", false, "", nil)
+	runID, err := triggerRun(ctx, env, "feature/sync", nil, "Validate rewritten branch", "", false, "", nil, 0, false)
 	if err != nil || runID == "" {
 		t.Fatalf("submission after successful recovery refused: run=%q err=%v\n%s", runID, err, out)
 	}

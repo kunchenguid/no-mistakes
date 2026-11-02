@@ -691,7 +691,7 @@ Fix rounds, review-answer/coverage continuations, conflict resolution, custom ga
 
 ### max_concurrent_runs
 
-Opt-in cap on how many pipeline runs execute at once on this machine. When the cap is reached, newly submitted runs wait in the queue in submission order with their run row pending, and start as running runs finish, fail, or are cancelled, instead of all starting at once and competing for host memory and CPU.
+Opt-in cap on how many pipeline runs execute at once on this machine. When the cap is reached, newly submitted runs wait in the queue with their run row pending, and start as running runs finish, fail, or are cancelled, instead of all starting at once and competing for host memory and CPU. Waiting runs start in submission order, except that a run submitted with a higher [`--priority`](/no-mistakes/reference/cli/#run-priority) starts before lower-priority ones; priority never raises the cap or displaces a run that already holds a slot.
 
 |         |                        |
 | ------- | ---------------------- |

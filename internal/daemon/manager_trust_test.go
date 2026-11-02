@@ -28,7 +28,7 @@ func TestStartRunTrustedFetchFailureAdmitsThenFailsBeforeAgent(t *testing.T) {
 	}
 	t.Cleanup(func() { fetchIntentTrustedDefaultBranchSHA = oldFetch })
 
-	_, err := NewRunManager(d, p, nil).startRun(context.Background(), repo, "main", head, head, "push", nil, "", "", false, "", nil)
+	_, err := NewRunManager(d, p, nil).startRun(context.Background(), repo, "main", head, head, "push", nil, "", "", false, "", nil, 0)
 	if err == nil || !strings.Contains(err.Error(), "disable_project_settings") {
 		t.Fatalf("startRun after trusted fetch failure = %v, want trusted-config refusal", err)
 	}
