@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.0](https://github.com/kunchenguid/no-mistakes/compare/v1.107.1...v1.108.0) (2026-11-02)
+
+
+### Features
+
+* **config:** per-repository review_agents in repository_overrides ([#1661](https://github.com/kunchenguid/no-mistakes/issues/1661)) ([fe171ea](https://github.com/kunchenguid/no-mistakes/commit/fe171eaa2ae29babdd81ec7fafd6614f89333bfd))
+
 ## [1.107.1](https://github.com/kunchenguid/no-mistakes/compare/v1.107.0...v1.107.1) (2026-11-01)
 
 
