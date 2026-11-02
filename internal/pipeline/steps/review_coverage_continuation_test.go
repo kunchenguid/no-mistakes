@@ -21,6 +21,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// coverageContinuationProgressBudget bounds each wait on the real ReviewStep's
+// git-backed progress. Every wait returns as soon as its state appears, so the
+// budget only decides how long a broken run takes to fail. It must cover a
+// loaded 4-core Windows runner, where git spawns cost roughly 10x their Linux
+// time: a 5s budget expired there before the step parked.
+const coverageContinuationProgressBudget = 2 * time.Minute
+
 type coverageContinuationTestGate struct{}
 
 func (*coverageContinuationTestGate) Name() types.StepName { return types.StepTest }
@@ -165,11 +172,11 @@ func testRetainedCoverageCase(t *testing.T, recovered bool, mode string) {
 		cancel(pipeline.ErrDaemonShutdown)
 		select {
 		case <-finished:
-		case <-time.After(5 * time.Second):
+		case <-time.After(coverageContinuationProgressBudget):
 			t.Error("disposable review executor did not exit")
 		}
 	})
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(coverageContinuationProgressBudget)
 	var binding *ipc.CoverageBinding
 	for time.Now().Before(deadline) {
 		steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
@@ -225,7 +232,7 @@ func testRetainedCoverageCase(t *testing.T, recovered bool, mode string) {
 		done = make(chan error, 1)
 		finished = make(chan struct{})
 		go func() { defer close(finished); done <- executor.Resume(ctx, sctx.Run, sctx.Repo, dir) }()
-		deadline = time.Now().Add(5 * time.Second)
+		deadline = time.Now().Add(coverageContinuationProgressBudget)
 	}
 	expectRefusal := false
 	expectScopePark := mode == "scope change" || mode == "base change" || mode == "record:scope"
@@ -318,7 +325,7 @@ func testRetainedCoverageCase(t *testing.T, recovered bool, mode string) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(coverageContinuationProgressBudget)
 	for time.Now().Before(deadline) {
 		steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 		if err != nil {
