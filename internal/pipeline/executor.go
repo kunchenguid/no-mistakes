@@ -135,6 +135,7 @@ type Executor struct {
 	ciMonitorLifecycle      func(runID string, active bool)
 	ciWake                  func(runID string) <-chan struct{}
 	handoffPending          func(runID string) bool
+	gateClaimGuard          func() (release func(), ok bool)
 }
 
 // SetOnPRMerged registers a best-effort hook invoked after a merged PR state
@@ -172,6 +173,13 @@ func (e *Executor) SetCIWake(fn func(runID string) <-chan struct{}) {
 
 func (e *Executor) SetHandoffPending(fn func(runID string) bool) {
 	e.handoffPending = fn
+}
+
+// SetGateClaimGuard orders a parked gate's own resume or reconciliation
+// against the daemon: when fn refuses, the gate stays parked and is checked
+// again later; when it allows, release is called once the gate is claimed.
+func (e *Executor) SetGateClaimGuard(fn func() (release func(), ok bool)) {
+	e.gateClaimGuard = fn
 }
 
 // SetForgeContext configures the immutable provider context used by every
@@ -2480,8 +2488,13 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 			// race guard reconciliation uses: an operator response that landed
 			// first wins.
 			if action, resume, err := e.resumeApprovalGate(ctx, step, sctx, findings); resume {
-				if e.claimGateReconciliation() {
+				claimed, deferred := e.claimGateReconciliationGuarded()
+				if claimed {
 					return approvalResponse{action: action}, false, nil
+				}
+				if deferred {
+					timer.Reset(e.gateReconcileInterval)
+					continue
 				}
 				return <-e.approvalCh, false, nil
 			} else if err != nil && ctx.Err() == nil {
@@ -2493,8 +2506,13 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 			}
 			resolved, err := e.reconcileApprovalGate(ctx, step, sctx, findings)
 			if resolved {
-				if e.claimGateReconciliation() {
+				claimed, deferred := e.claimGateReconciliationGuarded()
+				if claimed {
 					return approvalResponse{}, true, nil
+				}
+				if deferred {
+					timer.Reset(e.gateReconcileInterval)
+					continue
 				}
 				return <-e.approvalCh, false, nil
 			}
@@ -2511,6 +2529,19 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 			timer.Reset(e.gateReconcileInterval)
 		}
 	}
+}
+
+// claimGateReconciliationGuarded claims the gate unless the gate claim guard
+// defers it, in which case the gate stays parked.
+func (e *Executor) claimGateReconciliationGuarded() (claimed, deferred bool) {
+	if e.gateClaimGuard != nil {
+		release, ok := e.gateClaimGuard()
+		if !ok {
+			return false, true
+		}
+		defer release()
+	}
+	return e.claimGateReconciliation(), false
 }
 
 func (e *Executor) claimGateReconciliation() bool {

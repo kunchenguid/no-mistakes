@@ -50,6 +50,9 @@ type restartState struct {
 	pending atomic.Bool
 	// due is set when the daemon has decided to stop for the restart.
 	due atomic.Bool
+	// replaying is set while the pushes an earlier daemon held are started;
+	// fresh pushes are held behind them so arrival order is kept.
+	replaying atomic.Bool
 	// gate orders gate responses against the due mark: a response holds the
 	// read side from its due check through its dispatch, and the poller holds
 	// the write side while it marks the restart due and recounts.
@@ -58,6 +61,9 @@ type restartState struct {
 	trigger func() // stops the daemon; set by the serve loop
 	poll    time.Duration
 	heldMu  sync.Mutex
+	// beforeStartRun is a test seam: it runs between a plain push's restart
+	// check and its launch, where a restart can be scheduled.
+	beforeStartRun func()
 }
 
 // ScheduleRestartWhenIdle schedules a restart through the executable file for
@@ -175,15 +181,41 @@ func (m *RunManager) busyRunCount() int {
 	return busy
 }
 
+// holdPushIfDeferred holds a plain push, or refuses a proof-mode launch,
+// while a restart is scheduled or the pushes an earlier daemon held are still
+// replaying: a push held during the replay is appended behind the backlog, so
+// pushes keep their arrival order and an older held push never replaces the
+// run of a newer one. fromReplay marks the replay's own pushes, which are
+// deferred only by a newly scheduled restart. It reports whether the push was
+// deferred.
+func (m *RunManager) holdPushIfDeferred(params *ipc.PushReceivedParams, fromReplay bool) (bool, error) {
+	m.restart.heldMu.Lock()
+	defer m.restart.heldMu.Unlock()
+	if !m.restart.pending.Load() && (fromReplay || !m.restart.replaying.Load()) {
+		return false, nil
+	}
+	if params.LaunchNonce != "" {
+		return true, errRestartPending
+	}
+	if err := m.appendHeldPushLocked(params); err != nil {
+		return true, fmt.Errorf("hold push until the daemon restarts: %w", err)
+	}
+	return true, nil
+}
+
 // holdPush records a push received while a restart is scheduled, for the
 // restarted daemon to start on the new version.
 func (m *RunManager) holdPush(params *ipc.PushReceivedParams) error {
+	m.restart.heldMu.Lock()
+	defer m.restart.heldMu.Unlock()
+	return m.appendHeldPushLocked(params)
+}
+
+func (m *RunManager) appendHeldPushLocked(params *ipc.PushReceivedParams) error {
 	line, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
-	m.restart.heldMu.Lock()
-	defer m.restart.heldMu.Unlock()
 	f, err := os.OpenFile(m.paths.HeldPushesFile(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -203,45 +235,63 @@ func (m *RunManager) holdPush(params *ipc.PushReceivedParams) error {
 	return nil
 }
 
+// heldPushesWaiting reports whether an earlier daemon left held pushes to
+// replay. The serve loop marks the replay started before it accepts pushes.
+func heldPushesWaiting(heldPath string) bool {
+	for _, path := range []string{heldPath, heldPath + ".replay"} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // replayHeldPushes starts the pushes an earlier daemon held while waiting to
-// restart, in the order they arrived. The file is removed only after every
-// push was handed over, so a crash part-way replays the rest next time; a
-// push replayed twice is superseded like any repeated push to a branch.
+// restart, in the order they arrived, then the pushes held while it ran,
+// until none is left; only then does a fresh push start a run directly. Each
+// batch is claimed by renaming the file, and its replay file is removed only
+// after every push in it was handed over, so a crash part-way replays the
+// rest next time; a push replayed twice is superseded like any repeated push
+// to a branch. A restart scheduled meanwhile leaves the rest for the next
+// daemon.
 func (m *RunManager) replayHeldPushes(ctx context.Context) {
 	path := m.paths.HeldPushesFile()
 	replayPath := path + ".replay"
-	m.restart.heldMu.Lock()
-	// A replay file left by a crash is replayed first; pushes held meanwhile
-	// are appended to it so none is dropped.
-	if _, statErr := os.Stat(replayPath); errors.Is(statErr, fs.ErrNotExist) {
-		if err := os.Rename(path, replayPath); err != nil {
-			m.restart.heldMu.Unlock()
-			if !errors.Is(err, fs.ErrNotExist) {
-				slog.Error("failed to claim held pushes; they were not started", "path", path, "error", err)
+	defer m.restart.replaying.Store(false)
+	for ctx.Err() == nil && !m.restart.pending.Load() {
+		m.restart.heldMu.Lock()
+		if _, err := os.Stat(replayPath); errors.Is(err, fs.ErrNotExist) {
+			if err := os.Rename(path, replayPath); err != nil {
+				// Nothing is left to replay: fresh pushes start directly from
+				// here on, released under the same lock that holds them.
+				m.restart.replaying.Store(false)
+				m.restart.heldMu.Unlock()
+				if !errors.Is(err, fs.ErrNotExist) {
+					slog.Error("failed to claim held pushes; they were not started", "path", path, "error", err)
+				}
+				return
 			}
+		}
+		m.restart.heldMu.Unlock()
+		if !m.replayHeldPushFile(ctx, replayPath) {
 			return
 		}
-	} else if data, err := os.ReadFile(path); err == nil {
-		if f, err := os.OpenFile(replayPath, os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
-			_, werr := f.Write(data)
-			_ = f.Close()
-			if werr == nil {
-				_ = os.Remove(path)
-			}
-		}
 	}
-	m.restart.heldMu.Unlock()
-	path = replayPath
+}
+
+// replayHeldPushFile hands every push in one claimed file to the push
+// handler and removes the file. It reports whether the replay may go on.
+func (m *RunManager) replayHeldPushFile(ctx context.Context, path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		slog.Error("failed to read held pushes; they were not started", "path", path, "error", err)
-		return
+		return false
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), ipc.MaxFrameBytes)
 	for scanner.Scan() {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -252,7 +302,7 @@ func (m *RunManager) replayHeldPushes(ctx context.Context) {
 			slog.Error("skipping unreadable held push", "error", err)
 			continue
 		}
-		runID, err := m.HandlePushReceived(ctx, &params)
+		runID, err := m.handlePushReceived(ctx, &params, true)
 		if err != nil {
 			slog.Error("held push could not be started after restart", "ref", params.Ref, "new", params.New, "error", err)
 			continue
@@ -261,11 +311,25 @@ func (m *RunManager) replayHeldPushes(ctx context.Context) {
 	}
 	if err := scanner.Err(); err != nil {
 		slog.Error("failed to read held pushes; the rest were not started", "path", path, "error", err)
-		return
+		return false
 	}
 	if err := os.Remove(path); err != nil {
 		slog.Error("failed to remove replayed held pushes", "path", path, "error", fmt.Errorf("remove: %w", err))
+		return false
 	}
+	return true
+}
+
+// gateClaimGuard orders an automatic gate resume (a parked gate that
+// reconciles or resumes on its own) against the restart's due mark, exactly
+// like an operator's response: refused once the restart is due, so the run
+// stays parked and resumes on the restarted daemon.
+func (m *RunManager) gateClaimGuard() (func(), bool) {
+	release, err := m.beginGateResponse()
+	if err != nil {
+		return nil, false
+	}
+	return release, true
 }
 
 func countHeldPushes(path string) int {

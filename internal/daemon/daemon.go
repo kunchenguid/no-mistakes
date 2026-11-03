@@ -308,6 +308,8 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 	logStartupPhase("ipc_bind", bindStarted)
 
 	serveErrCh := make(chan error, 1)
+	// Held pushes from before a restart start ahead of any fresh push.
+	mgr.restart.replaying.Store(heldPushesWaiting(p.HeldPushesFile()))
 	go func() { serveErrCh <- srv.ServeReady() }()
 	healthStarted := time.Now()
 	if err := confirmLocalIPCHealth(p, 2*time.Second); err != nil {

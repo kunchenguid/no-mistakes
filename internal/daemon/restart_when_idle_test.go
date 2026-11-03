@@ -267,3 +267,57 @@ func TestRestartDueWaitsForAGateResponseInFlight(t *testing.T) {
 		t.Fatalf("response after the due mark = %v, want the restart refusal", err)
 	}
 }
+
+// Greptile on #1697: while the pushes an earlier daemon held are replaying, a
+// fresh push is held behind them, so an older held push can never replace the
+// run of a newer push to the same branch.
+func TestFreshPushDuringReplayIsHeldBehindTheBacklog(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "replay-order")
+	m := NewRunManager(d, p, nil)
+	gate := p.RepoDir(repo.ID)
+	older := &ipc.PushReceivedParams{Gate: gate, Ref: "refs/heads/feature-a", Old: zeroSHA, New: zeroSHA[:39] + "1"}
+	if err := m.holdPush(older); err != nil {
+		t.Fatal(err)
+	}
+	m.restart.replaying.Store(heldPushesWaiting(p.HeldPushesFile()))
+	if !m.restart.replaying.Load() {
+		t.Fatal("held pushes on disk should mark the replay started")
+	}
+
+	newer := &ipc.PushReceivedParams{Gate: gate, Ref: "refs/heads/feature-a", Old: zeroSHA, New: headSHA}
+	runID, err := m.HandlePushReceived(t.Context(), newer)
+	if err != nil || runID != "" {
+		t.Fatalf("fresh push during replay = %q, %v; want it held", runID, err)
+	}
+	data, err := os.ReadFile(p.HeldPushesFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], older.New) || !strings.Contains(lines[1], headSHA) {
+		t.Fatalf("held pushes = %q, want the older push first and the fresh push behind it", lines)
+	}
+	if run, err := d.GetActiveRun(repo.ID, "feature-a"); err != nil || run != nil {
+		t.Fatalf("fresh push started a run ahead of the replay: %+v, %v", run, err)
+	}
+}
+
+// Greptile on #1697: a plain push that passed the first check and was then
+// refused because a restart was scheduled meanwhile is held, not dropped: the
+// hook never retries it.
+func TestPushRefusedByALateRestartIsHeld(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "late-restart")
+	m := NewRunManager(d, p, nil)
+	m.restart.beforeStartRun = func() { m.restart.pending.Store(true) }
+
+	params := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/feature-a", Old: zeroSHA, New: headSHA}
+	runID, err := m.HandlePushReceived(t.Context(), params)
+	if err != nil || runID != "" {
+		t.Fatalf("push refused by a late restart = %q, %v; want it held", runID, err)
+	}
+	if got := countHeldPushes(p.HeldPushesFile()); got != 1 {
+		t.Fatalf("held pushes = %d, want the refused push held", got)
+	}
+}

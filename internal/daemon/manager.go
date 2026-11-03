@@ -534,6 +534,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	executor.SetCIMonitorLifecycle(m.transitionCIMonitorLifecycle)
 	executor.SetCIWake(m.ciWake)
 	executor.SetHandoffPending(m.handoffPending)
+	executor.SetGateClaimGuard(m.gateClaimGuard)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
 		go func() {
@@ -979,6 +980,12 @@ func assertTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, trus
 // A proof-mode push creates an unclaimed row: the first matching observer
 // receives the sole `created` disposition by atomically claiming it.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
+	return m.handlePushReceived(ctx, params, false)
+}
+
+// handlePushReceived is HandlePushReceived; fromReplay marks a push an
+// earlier daemon held, which replayHeldPushes starts ahead of fresh pushes.
+func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushReceivedParams, fromReplay bool) (string, error) {
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
 	if git.IsZeroSHA(params.New) {
@@ -996,17 +1003,12 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	if repo == nil {
 		return "", fmt.Errorf("unknown repo for gate %s", params.Gate)
 	}
-	// While a restart for an update is scheduled, a plain push is held and
-	// started by the restarted daemon, so it runs on the new version. A
-	// proof-mode launch waits for its receipt, so it is refused instead.
-	if m.restartPending() {
-		if params.LaunchNonce != "" {
-			return "", errRestartPending
-		}
-		if err := m.holdPush(params); err != nil {
-			return "", fmt.Errorf("hold push until the daemon restarts: %w", err)
-		}
-		return "", nil
+	// While a restart for an update is scheduled, or held pushes are still
+	// replaying, a plain push is held and started by the restarted daemon, so
+	// it runs on the new version in arrival order. A proof-mode launch waits
+	// for its receipt, so it is refused instead.
+	if held, err := m.holdPushIfDeferred(params, fromReplay); held {
+		return "", err
 	}
 
 	branch := branchFromRef(params.Ref)
@@ -1026,7 +1028,19 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		}
 		return receipt.RunID, nil
 	}
-	return m.startRun(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, params.PiProfile)
+	if m.restart.beforeStartRun != nil {
+		m.restart.beforeStartRun()
+	}
+	runID, err := m.startRun(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, params.PiProfile)
+	if errors.Is(err, errRestartPending) {
+		// The restart was scheduled while this push waited for its branch:
+		// hold it rather than drop it, since the hook never retries.
+		if err := m.holdPush(params); err != nil {
+			return "", fmt.Errorf("hold push until the daemon restarts: %w", err)
+		}
+		return "", nil
+	}
+	return runID, err
 }
 
 // HandleStartFreshRun creates or replays a proof-mode launch only after
@@ -2042,6 +2056,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	executor.SetCIMonitorLifecycle(m.transitionCIMonitorLifecycle)
 	executor.SetCIWake(m.ciWake)
 	executor.SetHandoffPending(m.handoffPending)
+	executor.SetGateClaimGuard(m.gateClaimGuard)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
 	if retry != nil {
