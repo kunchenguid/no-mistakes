@@ -140,6 +140,9 @@ type bitbucketPullRequest struct {
 		} `json:"html"`
 	} `json:"links"`
 	Source struct {
+		Branch struct {
+			Name string `json:"name"`
+		} `json:"branch"`
 		Commit struct {
 			Hash string `json:"hash"`
 		} `json:"commit"`
@@ -147,6 +150,11 @@ type bitbucketPullRequest struct {
 			FullName string `json:"full_name"`
 		} `json:"repository"`
 	} `json:"source"`
+	Destination struct {
+		Branch struct {
+			Name string `json:"name"`
+		} `json:"branch"`
+	} `json:"destination"`
 }
 
 func (pr bitbucketPullRequest) toPR(repo RepoRef) *scm.PR {
@@ -157,7 +165,21 @@ func (pr bitbucketPullRequest) toPR(repo RepoRef) *scm.PR {
 }
 
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
-	args := []string{"bb", "pull-requests", "query", "--source", branch, "--state", "OPEN"}
+	items, err := h.queryPRs(ctx, "OPEN", branch, base)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return items[0].toPR(h.repo), nil
+}
+
+// queryPRs lists PRs from branch in one state. It returns an error for any
+// lookup, decoding or validation failure so no caller can read an
+// indeterminate answer as "there is no such PR".
+func (h *Host) queryPRs(ctx context.Context, state, branch, base string) ([]bitbucketPullRequest, error) {
+	args := []string{"bb", "pull-requests", "query", "--source", branch, "--state", state}
 	if strings.TrimSpace(base) != "" {
 		args = append(args, "--dest", base)
 	}
@@ -188,9 +210,6 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err := json.Unmarshal(trimmed, &items); err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests query: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
-	if len(items) == 0 {
-		return nil, nil
-	}
 	for i := range items {
 		if items[i].ID <= 0 {
 			return nil, fmt.Errorf("twg bb pull-requests query: entry %d missing positive id", i)
@@ -205,12 +224,13 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	// happens to use the same branch name must not be bound. Only a PR whose
 	// source repository is this repository counts.
 	wantRepo := h.repo.Workspace + "/" + h.repo.RepoSlug
-	for i := range items {
-		if strings.EqualFold(items[i].Source.Repository.FullName, wantRepo) {
-			return items[i].toPR(h.repo), nil
+	sameRepo := items[:0]
+	for _, item := range items {
+		if strings.EqualFold(item.Source.Repository.FullName, wantRepo) {
+			sameRepo = append(sameRepo, item)
 		}
 	}
-	return nil, nil
+	return sameRepo, nil
 }
 
 // outputSummaryFlag turns off twg's default `--output-summary auto`, which
