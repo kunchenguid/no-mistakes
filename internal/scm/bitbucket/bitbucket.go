@@ -143,6 +143,9 @@ type bitbucketPullRequest struct {
 		Commit struct {
 			Hash string `json:"hash"`
 		} `json:"commit"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
 	} `json:"source"`
 }
 
@@ -192,8 +195,22 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if items[i].ID <= 0 {
 			return nil, fmt.Errorf("twg bb pull-requests query: entry %d missing positive id", i)
 		}
+		// An entry without its source repository cannot be told apart from a
+		// fork PR, so it is an incomplete response, not an absence.
+		if strings.TrimSpace(items[i].Source.Repository.FullName) == "" {
+			return nil, fmt.Errorf("twg bb pull-requests query: entry %d missing source repository full_name", i)
+		}
 	}
-	return items[0].toPR(h.repo), nil
+	// twg's query matches by source branch name alone, so a fork PR that
+	// happens to use the same branch name must not be bound. Only a PR whose
+	// source repository is this repository counts.
+	wantRepo := h.repo.Workspace + "/" + h.repo.RepoSlug
+	for i := range items {
+		if strings.EqualFold(items[i].Source.Repository.FullName, wantRepo) {
+			return items[i].toPR(h.repo), nil
+		}
+	}
+	return nil, nil
 }
 
 // outputSummaryFlag turns off twg's default `--output-summary auto`, which
