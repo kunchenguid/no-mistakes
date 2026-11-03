@@ -73,6 +73,7 @@ type updater struct {
 	// now.
 	whenIdle        bool
 	restartWhenIdle bool
+	runsWereActive  bool
 }
 
 type RunOptions struct {

@@ -19,6 +19,8 @@ func (u *updater) confirmActiveRunsBeforeUpdate() error {
 		return fmt.Errorf("check active pipeline runs: %w", err)
 	}
 
+	u.runsWereActive = len(runs) > 0
+
 	// --when-idle schedules the restart whenever the running daemon can wait,
 	// even with no run active now: a run started during the download must
 	// not be stopped by an immediate restart either.

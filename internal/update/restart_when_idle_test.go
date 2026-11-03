@@ -137,6 +137,58 @@ func TestUpdaterRunWhenIdleWithNoActiveRunStillSchedulesTheRestart(t *testing.T)
 	}
 }
 
+// The daemon restarts through its own executable, so a daemon started from
+// another binary would miss the update. With runs active that is refused; with
+// none, the plain takeover path (replace the daemon now) applies as without
+// --when-idle.
+func stubDaemonFromAnotherBinary(t *testing.T) {
+	t.Helper()
+	origRunning, origPath := daemonIsRunning, daemonExecutablePath
+	t.Cleanup(func() { daemonIsRunning, daemonExecutablePath = origRunning, origPath })
+	daemonIsRunning = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonExecutablePath = func(*paths.Paths) (string, error) { return "/opt/other/no-mistakes", nil }
+}
+
+func TestUpdaterRunWhenIdleRefusesADaemonFromAnotherBinaryWhileRunsAreActive(t *testing.T) {
+	stubDaemonFromAnotherBinary(t)
+	u, execPath, _, _ := newActiveRunUpdater(t)
+	u.whenIdle = true
+	u.assumeYes = true
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return &ipc.RestartStatusResult{}, nil }
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
+	u.resetDaemon = func(bool) error { t.Fatal("reset must not run"); return nil }
+
+	err := u.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "with active runs") {
+		t.Fatalf("update should refuse, got %v", err)
+	}
+	if content, _ := os.ReadFile(execPath); string(content) != "old-binary" {
+		t.Fatalf("a refused update must leave the executable alone, got %q", content)
+	}
+}
+
+func TestUpdaterRunWhenIdleWithNoActiveRunFallsBackToTheTakeoverReset(t *testing.T) {
+	stubDaemonFromAnotherBinary(t)
+	u, _, stdout, _ := newActiveRunUpdater(t)
+	finishActiveRuns(t, u.paths)
+	u.whenIdle = true
+	u.assumeYes = true
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return &ipc.RestartStatusResult{}, nil }
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
+	reset := false
+	u.resetDaemon = func(bool) error { reset = true; return nil }
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("update should take over the daemon when no run is active, got %v", err)
+	}
+	if !reset {
+		t.Fatal("update should reset the daemon through the plain takeover path")
+	}
+	if !strings.Contains(stdout.String(), "updated no-mistakes from v1.2.2 to v1.2.3") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
 func finishActiveRuns(t *testing.T, p *paths.Paths) {
 	t.Helper()
 	database, err := db.Open(p.DB())
