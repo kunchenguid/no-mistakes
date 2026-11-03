@@ -271,7 +271,8 @@ func (s *parkingReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepO
 	default:
 	}
 	return &pipeline.StepOutcome{
-		Findings: `{"findings":[{"id":"review-1","severity":"warning","description":"needs an operator decision","action":"ask-user"}],"summary":"one issue"}`,
+		Findings:              `{"findings":[{"id":"review-1","severity":"warning","description":"needs an operator decision","action":"ask-user"}],"summary":"one issue"}`,
+		ReviewApprovedHeadSHA: sctx.Run.HeadSHA,
 	}, nil
 }
 

@@ -23,12 +23,11 @@ import (
 
 // mockStep is a test step that returns a configurable outcome.
 type mockStep struct {
-	approveReview bool
-	name          types.StepName
-	outcome       *StepOutcome
-	err           error
-	calls         int
-	mu            sync.Mutex
+	name    types.StepName
+	outcome *StepOutcome
+	err     error
+	calls   int
+	mu      sync.Mutex
 }
 
 func (m *mockStep) Name() types.StepName { return m.name }
@@ -40,7 +39,7 @@ func (m *mockStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	if sctx.Log != nil {
 		sctx.Log(fmt.Sprintf("executing %s", m.name))
 	}
-	if m.approveReview && m.outcome != nil && m.err == nil {
+	if m.name == types.StepReview && m.outcome != nil && m.err == nil && m.outcome.ReviewApprovedHeadSHA == "" {
 		outcome := *m.outcome
 		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
 		return &outcome, nil
@@ -55,11 +54,11 @@ func (m *mockStep) callCount() int {
 }
 
 func newPassStep(name types.StepName) *mockStep {
-	return &mockStep{name: name, outcome: &StepOutcome{ExitCode: 0}, approveReview: name == types.StepReview}
+	return &mockStep{name: name, outcome: &StepOutcome{ExitCode: 0}}
 }
 
 func newApprovalStep(name types.StepName, findings string) *mockStep {
-	return &mockStep{name: name, outcome: &StepOutcome{NeedsApproval: true, Findings: findings}, approveReview: name == types.StepReview}
+	return &mockStep{name: name, outcome: &StepOutcome{NeedsApproval: true, Findings: findings}}
 }
 
 func newFailStep(name types.StepName, err error) *mockStep {
@@ -229,7 +228,15 @@ type adaptiveCallStep struct {
 
 func (a *adaptiveCallStep) Name() types.StepName { return a.name }
 func (a *adaptiveCallStep) Execute(sctx *StepContext) (*StepOutcome, error) {
-	return a.fn(sctx)
+	outcome, err := a.fn(sctx)
+	// Simulated review turns provide the same approval candidate as ReviewStep.
+	// The executor still owns whether a parked or failed turn may persist it.
+	if a.name == types.StepReview && outcome != nil && err == nil && outcome.ReviewApprovedHeadSHA == "" {
+		copy := *outcome
+		copy.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+		return &copy, nil
+	}
+	return outcome, err
 }
 
 // waitForStepEvent polls the event collector until an event with the given type and step name appears.

@@ -98,7 +98,7 @@ func TestExecutor_RecoveredGateResumerReceivesTheRunsEvidenceDir(t *testing.T) {
 			return nil, fmt.Errorf("the resumed gate did not re-enter the step as a finalize turn")
 		}
 		close(resumed)
-		return &StepOutcome{}, nil
+		return &StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 	}
 
 	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 2}}, newFakeSessionAgent(), []Step{step}, nil)

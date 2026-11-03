@@ -238,9 +238,13 @@ type mockPassStep struct {
 }
 
 func (s *mockPassStep) Name() types.StepName { return s.name }
-func (s *mockPassStep) Execute(_ *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+func (s *mockPassStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	s.execCnt.Add(1)
-	return &pipeline.StepOutcome{}, nil
+	outcome := &pipeline.StepOutcome{}
+	if s.name == types.StepReview {
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+	}
+	return outcome, nil
 }
 
 // mockApprovalStep pauses for approval every time.
@@ -249,8 +253,12 @@ type mockApprovalStep struct {
 }
 
 func (s *mockApprovalStep) Name() types.StepName { return s.name }
-func (s *mockApprovalStep) Execute(_ *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	return &pipeline.StepOutcome{NeedsApproval: true, Findings: `{"findings":[],"summary":"needs review"}`}, nil
+func (s *mockApprovalStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	outcome := &pipeline.StepOutcome{NeedsApproval: true, Findings: `{"findings":[],"summary":"needs review"}`}
+	if s.name == types.StepReview {
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+	}
+	return outcome, nil
 }
 
 // mockSlowStep blocks until context is cancelled.

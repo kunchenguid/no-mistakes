@@ -33,7 +33,11 @@ func (s *mockWorkDirStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOut
 	case s.workDir <- sctx.WorkDir:
 	default:
 	}
-	return &pipeline.StepOutcome{}, nil
+	outcome := &pipeline.StepOutcome{}
+	if s.name == types.StepReview {
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+	}
+	return outcome, nil
 }
 
 // yamlPath quotes a path for YAML so a Windows drive letter is not read as a

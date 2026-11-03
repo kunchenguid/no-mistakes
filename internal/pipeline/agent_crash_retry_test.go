@@ -547,7 +547,7 @@ func seedRecoveredTestGate(t *testing.T, database *db.DB, run *db.Run) *db.Run {
 	if err := database.StartStep(review.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.CompleteStepWithStatus(review.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
+	if err := database.CompleteReviewStep(review.ID, run.ID, run.HeadSHA, 0, 0, ""); err != nil {
 		t.Fatal(err)
 	}
 	testStep, err := database.InsertStepResult(run.ID, types.StepTest)
