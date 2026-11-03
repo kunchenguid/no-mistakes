@@ -63,7 +63,7 @@ func (s *correctingReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.St
 	if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "review", CWD: sctx.WorkDir}); err != nil {
 		return nil, fmt.Errorf("review agent: %w", err)
 	}
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 }
 
 func (s *correctingReviewStep) seenHeads() []string {
@@ -251,7 +251,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 		case name == types.StepRebase:
 			err = d.CompleteStepWithStatus(sr.ID, types.StepStatusCompleted, 0, 1, "")
 		case name == types.StepReview && opts.failInTest:
-			if err = d.CompleteStepWithStatus(sr.ID, types.StepStatusCompleted, 0, 1, ""); err == nil {
+			if err = d.CompleteReviewStep(sr.ID, source.ID, submitted, 0, 1, ""); err == nil {
 				recorded := []byte(opts.repoYAML)
 				if opts.repoYAML == "" {
 					var effective *config.RepoConfig
@@ -297,6 +297,10 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 // in Test too, so its Review row holds no invocations of its own.
 func (f *retryFixture) continuationOf(t *testing.T, source *db.Run) *db.Run {
 	t.Helper()
+	source, err := f.d.GetRun(source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sourceRows, err := f.d.GetStepsByRun(source.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +329,11 @@ func (f *retryFixture) continuationOf(t *testing.T, source *db.Run) *db.Run {
 		}
 		if _, err := f.d.InsertCarriedStepResult(next.ID, row); err != nil {
 			t.Fatal(err)
+		}
+		if row.StepName == types.StepReview && source.ReviewApprovedHeadSHA != nil {
+			if err := f.d.UpdateRunReviewApprovedHeadSHA(next.ID, *source.ReviewApprovedHeadSHA); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if err := f.d.UpdateRunErrorStatusWithVerifiedHead(next.ID, "step test failed", types.RunFailed, f.submitted); err != nil {
@@ -357,9 +366,13 @@ type countingStep struct {
 
 func (s *countingStep) Name() types.StepName { return s.name }
 
-func (s *countingStep) Execute(*pipeline.StepContext) (*pipeline.StepOutcome, error) {
+func (s *countingStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	s.count.Add(1)
-	return &pipeline.StepOutcome{}, nil
+	outcome := &pipeline.StepOutcome{}
+	if s.name == types.StepReview {
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+	}
+	return outcome, nil
 }
 
 func (f *retryFixture) retry(t *testing.T, runID string) (ipc.RetryRunResult, error) {

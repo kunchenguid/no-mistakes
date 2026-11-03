@@ -162,7 +162,7 @@ func (s *reviewRoleProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.Ste
 	if _, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Purpose: "review-fix", Prompt: "fix", CWD: sctx.WorkDir}); err != nil {
 		return nil, err
 	}
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 }
 
 // writeCapturingPiAgent writes a fake pi binary that appends its argv to

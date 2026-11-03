@@ -564,7 +564,7 @@ func (s *captureForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline
 		env:      testEnvMap(sctx.ForgeContext.Environment.Apply([]string{"GH_TOKEN=ambient"})),
 		gitEnv:   gitEnv,
 	}
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 }
 
 type barrierForgeContextStep struct {
@@ -589,7 +589,7 @@ func (s *barrierForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline
 	}
 	select {
 	case <-s.release:
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 	case <-sctx.Ctx.Done():
 		return nil, sctx.Ctx.Err()
 	}
