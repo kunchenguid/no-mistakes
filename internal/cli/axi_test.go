@@ -364,6 +364,31 @@ func TestGateHelpForUnvalidatedTestWorkDoesNotOfferSkip(t *testing.T) {
 	}
 }
 
+func TestGateHelpForProtectedPathRefusalWithExhaustedReviewBudget(t *testing.T) {
+	protected, err := types.ParseFindingsJSON(pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "package.lock", Rule: "*.lock"}).Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protectedOnly := stepView{Name: "review", Status: "fix_review", FindingsJSON: findingsJSON(t, protected.Items, protected.Summary)}
+	if out := axiDoc(gateFields(protectedOnly)...); !strings.Contains(out, "--action fix") {
+		t.Fatalf("protected-path refusal with budget left lost its fix retry:\n%s", out)
+	}
+
+	exhausted := append(protected.Items, types.Finding{ID: "review-fix-rounds-exhausted", Severity: "warning", Action: types.ActionAskUser, Description: "Review used 1/1 fix rounds"})
+	gate := stepView{Name: "review", Status: "fix_review", FindingsJSON: findingsJSON(t, exhausted, protected.Summary)}
+	for _, runID := range []string{"", "run-7"} {
+		out := axiDoc(gateFieldsForRun(gate, runID)...)
+		if strings.Contains(out, "--action fix") || strings.Contains(out, "--action approve") {
+			t.Fatalf("gate help offers a response the executor refuses (fix: budget exhausted, approve: protected path):\n%s", out)
+		}
+		for _, want := range []string{"--action skip", "`no-mistakes axi abort" + runFlag(runID) + "`", "Approve is rejected", "fix-round budget is exhausted"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("gate help missing %q:\n%s", want, out)
+			}
+		}
+	}
+}
+
 func TestWriteGateShape(t *testing.T) {
 	gate := stepView{
 		Name:   "review",

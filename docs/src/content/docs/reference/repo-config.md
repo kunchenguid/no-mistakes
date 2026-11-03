@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -476,6 +476,29 @@ review:
 
 The trade-off is latency against precision. A question costs the run a park - tens of minutes to hours of wall clock, waiting on you - and buys a review that decided the point instead of handing you a finding to rule on. Repositories whose changes rarely turn on product intent will not get much for that wait; repositories where the reviewer regularly cannot tell deliberate from accidental will.
 
+### review.max_fix_rounds
+
+An opt-in limit on **total Review fix rounds per run**, counting automatic fixes and explicit `axi respond --action fix` requests together. The initial review does not spend a fix round; each allowed fix includes its full rereview. Schema retries, review-question answers, and coverage-only continuations do not spend another fix round.
+
+| | |
+|---|---|
+| Type | non-negative integer |
+| Default | `0` (unlimited, preserving existing behavior) |
+| Source | trusted default-branch repository config only |
+
+```yaml
+review:
+  max_fix_rounds: 2
+```
+
+`auto_fix.review` still limits automatic fixes independently. For example, `auto_fix.review: 1` and `review.max_fix_rounds: 2` allow one automatic fix and one further explicitly requested fix. With `auto_fix.review: 0`, both allowed fixes must be requested explicitly.
+
+When the final allowed rereview leaves findings, Review **parks** with every remaining finding and a `review-fix-rounds-exhausted` notice showing the used/maximum fix rounds. Further fix requests return `fix_rounds_exhausted` without releasing the gate or recording a selection. `axi --yes` and TUI yolo leave this gate for an explicit decision. Inspect the findings, then explicitly approve, skip, or abort; when the same gate also holds a [protected-path refusal](#protected_paths), approve is rejected too, so only skip or abort remain. The limit never approves, lowers severity, drops findings, or starts another fix by itself. A clean, fully covered final rereview still passes normally, and a clean one that parks only for missing coverage carries no notice, so `complete-coverage` can still continue it.
+
+The limit is pinned before Review starts and survives daemon recovery and validation restarts in that run. Editing config does not extend or reduce an active run's budget. A new run gets a fresh budget; a run already in Review before this feature remains unbounded. The pushed branch cannot set, change, or remove the limit, even with `allow_repo_commands: true`. Negative and non-integer values fail configuration loading.
+
+This is a round-count budget, not a cumulative time or token budget, a change to rereview scope, or a cancellation/custody mechanism. Other steps are unaffected.
+
 ### review.agent_timeout
 
 A shorter stall budget for each Review-step agent invocation in this repository, so small, low-risk changes can be bounded more tightly than the machine-wide default.
@@ -699,7 +722,7 @@ Patterns use the same syntax as [`ignore_patterns`](#ignore_patterns). Empty or 
 
 Before staging an automatic Review, Test, Document, Lint, or CI repair, an operator-authorized repository gate repair, or a Push leftover commit, the pipeline checks the index and worktree for dirty protected paths. This includes staged and unstaged modifications, deletions, both ends of renames, and individual untracked files inside new directories. A match refuses the entire commit and parks the step at an operator approval gate naming the path and rule. The index and all working files stay as they were; nothing is restored, unstaged, discarded, or partially committed. The Push check also covers formatter changes and residue from earlier steps. [Daemon & Worktrees](/no-mistakes/concepts/daemon/#what-it-does) owns retention across terminal cleanup and crash recovery.
 
-A protected-path refusal always requires an explicit response, including under AXI `--yes` and TUI yolo mode. CI does not retry its fixer, and automatic gate reconciliation cannot clear the refusal, even if the PR closes. Approval is rejected because it would skip unfinished work: inspect and resolve the reported edit, then use `no-mistakes axi respond --action fix` to retry the step, including its commit and publication. Deliberate skip and abort behavior is unchanged.
+A protected-path refusal always requires an explicit response, including under AXI `--yes` and TUI yolo mode. CI does not retry its fixer, and automatic gate reconciliation cannot clear the refusal, even if the PR closes. Approval is rejected because it would skip unfinished work: inspect and resolve the reported edit, then use `no-mistakes axi respond --action fix` to retry the step, including its commit and publication. When the refused commit was Review's last allowed fix round under [`review.max_fix_rounds`](#reviewmax_fix_rounds), fix is refused too, so only skip or abort remain. Deliberate skip and abort behavior is unchanged.
 
 For CI, that explicit fix finishes the retained repair before normal monitoring can report `checks-passed`, even if forge checks turned green while parked or the response selects only an added finding. It uses the existing [repair revalidation policy](#cirevalidate_repairs), including mandatory revalidation from Review for a rebased conflict repair, and the existing publication guards. If the retained repair cannot finish, the refusal remains available for another explicit fix response.
 

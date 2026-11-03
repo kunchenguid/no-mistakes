@@ -136,6 +136,11 @@ const FindingIDTestAgentTimeout = "test-agent-timeout"
 // publish the work.
 const FindingIDTestAgentUnvalidatedWork = "test-agent-unvalidated-work"
 
+// FindingIDReviewFixRoundsExhausted is the Review-step notice that the
+// trusted review.max_fix_rounds budget is spent. Like the Test budget cuts it
+// records an operator's budget, not a code mistake.
+const FindingIDReviewFixRoundsExhausted = "review-fix-rounds-exhausted"
+
 // Test scenario result constants: the vocabulary the test step's evidence
 // prompt instructs the agent to use for each derived scenario.
 //
