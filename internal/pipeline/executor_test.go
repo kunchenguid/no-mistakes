@@ -895,3 +895,83 @@ func TestExecutor_SkipRemainingPastPRStepWithClosingIssueRefsFails(t *testing.T)
 		})
 	}
 }
+
+func TestExecutor_RecoveredCIGateApprovalRestartsRevokedReview(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	const reviewed, replayed = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, reviewed); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{HeadSHA: reviewed, TargetKind: "upstream", TargetFingerprint: "test", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHAForRevalidation(run.ID, replayed); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []types.StepName
+	record := func(name types.StepName) Step {
+		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+			order = append(order, name)
+			if name == types.StepReview {
+				return &StepOutcome{ReviewApprovedHeadSHA: replayed}, nil
+			}
+			return &StepOutcome{}, nil
+		}}
+	}
+	names := []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	steps := make([]Step, 0, len(names))
+	findings := `{"findings":[{"id":"ci-1","severity":"warning","description":"review bot comment","action":"ask-user"}],"summary":"1 finding"}`
+	for _, name := range names {
+		steps = append(steps, record(name))
+		sr, err := database.InsertStepResult(run.ID, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name != types.StepCI {
+			if err := database.CompleteStepWithStatus(sr.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := database.StartStep(sr.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.SetStepFindings(sr.ID, findings); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.InsertStepRound(sr.ID, 1, "initial", &findings, nil, 10); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateStepStatusWithDuration(sr.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(database, p, &config.Config{}, nil, steps, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for exec.Respond(types.StepCI, types.ActionApprove, nil) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("recovered CI gate never accepted approval")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if want := names; !slices.Equal(order, want) {
+		t.Fatalf("after approval ran %v, want %v", order, want)
+	}
+}

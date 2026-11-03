@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -27,6 +28,15 @@ var ErrHandoff = errors.New("green PR handed off for human review")
 // fully recorded as waiting at an approval gate. The run keeps that record so
 // the next start resumes it, as it would after a crash.
 var ErrParkedAtShutdown = errors.New("run left parked at an approval gate by daemon shutdown")
+
+func CIReviewRestartPending(database *db.DB, runID string) (bool, error) {
+	run, err := database.GetRun(runID)
+	if err != nil {
+		return false, err
+	}
+	return run != nil && run.LastPushedSHA != nil && strings.TrimSpace(*run.LastPushedSHA) != "" &&
+		(run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == ""), nil
+}
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {

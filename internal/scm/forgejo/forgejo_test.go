@@ -831,3 +831,15 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
+
+func TestMergedProofRejectsMissingMergingIdentity(t *testing.T) {
+	for _, identity := range []string{"null", `""`} {
+		t.Run(identity, func(t *testing.T) {
+			proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":` + identity + `}`
+			host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
+			if _, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA}); err == nil {
+				t.Fatal("merged proof without merging identity was accepted")
+			}
+		})
+	}
+}
