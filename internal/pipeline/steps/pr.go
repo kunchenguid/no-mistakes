@@ -196,10 +196,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
-	if existing != nil && observedBaseBranch(sctx) != "" {
-		baseBranch = observedBaseBranch(sctx)
-		if liveBase := strings.TrimSpace(existing.BaseBranch); liveBase != "" {
-			baseBranch = liveBase
+	if existing != nil && !sctx.EvalReplay {
+		liveBase := strings.TrimSpace(existing.BaseBranch)
+		if liveBase != "" && liveBase != baseBranch {
+			sha, err := git.LsRemote(ctx, sctx.WorkDir, resolveUpstreamURL(sctx), "refs/heads/"+baseBranch)
+			if err != nil {
+				return nil, fmt.Errorf("look up PR base branch %q: %w", baseBranch, err)
+			}
+			if sha == "" {
+				baseBranch = liveBase
+			}
 		}
 	}
 	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
