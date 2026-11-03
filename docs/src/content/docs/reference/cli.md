@@ -77,6 +77,18 @@ With that rewrite in your own global git config, `init` leaves the shared remote
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
 Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place. Passing `--skip-user-skill` is not a failure: the installer never runs and the gate is set up as usual.
 
+## no-mistakes skill install
+
+Install or refresh the `/no-mistakes` agent skill independently of repository setup.
+
+```sh
+no-mistakes skill install
+```
+
+Writes the skill bundled with the current binary to `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, using the same installer as `init` and following the same symlink layouts. Re-running the command overwrites stale skill content. Installation errors return a nonzero exit status.
+
+This command works outside a Git repository and does not register a gate or start the daemon. To control when the user-level skill is installed, run `init --skip-user-skill` for repository setup and `skill install` separately when wanted.
+
 ## no-mistakes ci-workflow
 
 Generate `.github/workflows/ci.yml` from the repository's `.no-mistakes.yaml` commands, so GitHub Actions registers real checks that the gate's CI step can monitor.
