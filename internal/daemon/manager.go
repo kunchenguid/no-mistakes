@@ -2355,9 +2355,11 @@ func (m *RunManager) HandleRespond(runID string, step types.StepName, action typ
 // declines, user instructions, and user-authored findings to the executor, and
 // returns the dispositions the response recorded.
 func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions *pipeline.FixInstructions, addedFindings []types.Finding, approvalReason string, options ...pipeline.ResponseOptions) (pipeline.RespondDispositions, error) {
-	if err := m.refuseWhileRestartDue(); err != nil {
+	release, err := m.beginGateResponse()
+	if err != nil {
 		return pipeline.RespondDispositions{}, err
 	}
+	defer release()
 	m.mu.Lock()
 	exec, ok := m.executors[runID]
 	m.mu.Unlock()
@@ -2399,9 +2401,11 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 // The write happens before the release decision, so a failure to resume never
 // loses the answer - the next answer, or a recovered gate, finds it on disk.
 func (m *RunManager) HandleAnswerReviewQuestion(runID, questionID, answer, answeredBy string) (*ipc.AnswerReviewQuestionResult, error) {
-	if err := m.refuseWhileRestartDue(); err != nil {
+	release, err := m.beginGateResponse()
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	questionID = strings.TrimSpace(questionID)
 	answer = strings.TrimSpace(answer)
 	if questionID == "" || answer == "" {

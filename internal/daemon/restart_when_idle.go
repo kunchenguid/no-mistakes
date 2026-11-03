@@ -48,7 +48,11 @@ type restartState struct {
 	// process that scheduled it exits into the new image.
 	pending atomic.Bool
 	// due is set when the daemon has decided to stop for the restart.
-	due     atomic.Bool
+	due atomic.Bool
+	// gate orders gate responses against the due mark: a response holds the
+	// read side from its due check through its dispatch, and the poller holds
+	// the write side while it marks the restart due and recounts.
+	gate    sync.RWMutex
 	once    sync.Once
 	trigger func() // stops the daemon; set by the serve loop
 	poll    time.Duration
@@ -118,14 +122,18 @@ func (m *RunManager) restartWhenIdle() {
 	}
 }
 
-// refuseWhileRestartDue refuses a gate response in the moment between the
-// daemon deciding to restart and its stop: the run stays parked and resumes
-// on the restarted daemon, where the response can be sent again.
-func (m *RunManager) refuseWhileRestartDue() error {
+// beginGateResponse refuses a gate response in the moment between the daemon
+// deciding to restart and its stop: the run stays parked and resumes on the
+// restarted daemon, where the response can be sent again. A response that is
+// let through holds off the due mark until the returned release is called, so
+// the poller's recount cannot run between the check and the dispatch.
+func (m *RunManager) beginGateResponse() (release func(), err error) {
+	m.restart.gate.RLock()
 	if m.restart.due.Load() {
-		return errRestartPending
+		m.restart.gate.RUnlock()
+		return nil, errRestartPending
 	}
-	return nil
+	return m.restart.gate.RUnlock, nil
 }
 
 // busyRunCount counts runs a restart must wait for: every executing run that
@@ -188,10 +196,30 @@ func (m *RunManager) holdPush(params *ipc.PushReceivedParams) error {
 // push replayed twice is superseded like any repeated push to a branch.
 func (m *RunManager) replayHeldPushes(ctx context.Context) {
 	path := m.paths.HeldPushesFile()
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return
+	replayPath := path + ".replay"
+	m.restart.heldMu.Lock()
+	// A replay file left by a crash is replayed first; pushes held meanwhile
+	// are appended to it so none is dropped.
+	if _, statErr := os.Stat(replayPath); errors.Is(statErr, fs.ErrNotExist) {
+		if err := os.Rename(path, replayPath); err != nil {
+			m.restart.heldMu.Unlock()
+			if !errors.Is(err, fs.ErrNotExist) {
+				slog.Error("failed to claim held pushes; they were not started", "path", path, "error", err)
+			}
+			return
+		}
+	} else if data, err := os.ReadFile(path); err == nil {
+		if f, err := os.OpenFile(replayPath, os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+			_, werr := f.Write(data)
+			_ = f.Close()
+			if werr == nil {
+				_ = os.Remove(path)
+			}
+		}
 	}
+	m.restart.heldMu.Unlock()
+	path = replayPath
+	data, err := os.ReadFile(path)
 	if err != nil {
 		slog.Error("failed to read held pushes; they were not started", "path", path, "error", err)
 		return

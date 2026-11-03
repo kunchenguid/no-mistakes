@@ -206,3 +206,31 @@ func errText(s *string) string {
 	}
 	return *s
 }
+
+// A push held while a replay is running belongs to the next restart: the
+// replay must never delete it along with the pushes it just handed over.
+func TestReplayHeldPushesKeepsAPushHeldWhileReplaying(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "replay-keeps-held")
+	m := NewRunManager(d, p, nil)
+	m.restart.pending.Store(true)
+
+	// With a restart pending, replaying a held push holds it again, exactly
+	// as a push arriving mid-replay would be held.
+	params := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/feature-a", Old: zeroSHA, New: headSHA}
+	if err := m.holdPush(params); err != nil {
+		t.Fatal(err)
+	}
+	if got := countHeldPushes(p.HeldPushesFile()); got != 1 {
+		t.Fatalf("held pushes before replay = %d, want 1", got)
+	}
+
+	m.replayHeldPushes(t.Context())
+
+	if got := countHeldPushes(p.HeldPushesFile()); got != 1 {
+		t.Fatalf("held pushes after replay = %d, want the push held during replay kept", got)
+	}
+	if _, err := os.Stat(p.HeldPushesFile() + ".replay"); !os.IsNotExist(err) {
+		t.Fatalf("claimed replay file should be removed, stat err = %v", err)
+	}
+}
