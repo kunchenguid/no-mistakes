@@ -15,10 +15,10 @@ type reboundHeadExecer interface {
 // recordUnvalidatedReboundHead durably marks ref's rebound head as one no run
 // has validated. The rewritten-remote recovery's compare-and-swap is the only
 // writer, and it writes inside that transaction (RebindRunPushedHead), so the
-// row exists exactly while the branch's push binding names a head the pipeline
-// never validated. A later publication of the exact head by any run clears it
-// (ClearUnvalidatedReboundHeadOnPublication); rebinding the same ref again
-// replaces the row.
+// binding cannot advance without recording its unvalidated head. A later
+// publication of the exact head by any run attempts to clear the marker
+// (ClearUnvalidatedReboundHeadOnPublication); a failed clear retains it
+// conservatively. Rebinding the same ref again replaces the row.
 func recordUnvalidatedReboundHead(ex reboundHeadExecer, repoID, ref, head string) error {
 	if repoID == "" || ref == "" || head == "" {
 		return errors.New("record unvalidated rebound head: repo, ref, and head are required")
