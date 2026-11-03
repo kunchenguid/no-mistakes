@@ -783,6 +783,58 @@ func TestFinalizeTextResult_ACPAgentAcceptsTrailingProseAfterBareJSON(t *testing
 	}
 }
 
+func TestFinalizeTextResult_ACPAgentTakesLastFusedSplitRun(t *testing.T) {
+	// preferTerminal must not return the first fusable draft pair when a later
+	// final pair is also eligible. Each half fails the full schema alone, so
+	// the parser fuses adjacent objects; taking the first pair would discard
+	// the final answer.
+	text := `Draft: {"a":1}{"b":2} Final: {"a":3}{"b":4}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"a":{"type":"number"},
+			"b":{"type":"number"}
+		},
+		"required":["a","b"]
+	}`)
+	result, err := finalizeTextResult("acp:cursor", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["a"] != float64(3) || output["b"] != float64(4) {
+		t.Fatalf("expected final fused values a=3 b=4, got %v", output)
+	}
+}
+
+func TestFinalizeTextResult_ACPAgentKeepsFinalFusedSplitAfterIncompleteDraft(t *testing.T) {
+	// An incomplete first pair (missing required keys even when fused) must not
+	// surface errSplitBareObjects and reject a later valid final pair.
+	text := `Draft: {"a":1}{"c":9} Final: {"a":3}{"b":4}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"a":{"type":"number"},
+			"b":{"type":"number"}
+		},
+		"required":["a","b"]
+	}`)
+	result, err := finalizeTextResult("acp:cursor", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["a"] != float64(3) || output["b"] != float64(4) {
+		t.Fatalf("expected final fused values a=3 b=4, got %v", output)
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaRejectsBareJSONMissingRequiredKeys(t *testing.T) {
 	text := `I inspected the diff and found no issues. {"foo":"bar"}`
 	schema := json.RawMessage(`{

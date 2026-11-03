@@ -830,12 +830,18 @@ var errDuplicateBareObjectKey = errors.New("adjacent bare JSON objects share a t
 // A run counts only when it is concluding, on the same rule as the
 // single-object path: anything other than protocol residue after the run means
 // the objects were quoted mid-answer, not answered - unless preferTerminal
-// (ACP), which accepts a concluding fused run even when ordinary prose
-// follows. A concluding run that cannot be fused reports errSplitBareObjects
-// rather than the generic schema error. A run whose keys repeat is competing
-// values, not a recoverable split, and falls through to the generic schema
-// error so it stays terminal.
+// (ACP), which accepts a fused run even when ordinary prose follows. When
+// preferTerminal finds more than one eligible split run (a draft pair then a
+// final pair), it keeps the last successful fuse so an earlier draft cannot
+// discard later findings, matching ACP's preference for the last complete
+// object. A non-ACP concluding run that cannot be fused reports
+// errSplitBareObjects rather than the generic schema error. A run whose keys
+// repeat is competing values, not a recoverable split: without preferTerminal
+// it falls through to the generic schema error and stays terminal; with
+// preferTerminal the scanner keeps looking for a later eligible run.
 func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage, preferTerminal bool) (json.RawMessage, error) {
+	var lastFused json.RawMessage
+	var lastSplitErr error
 	for i := 0; i < len(objects); {
 		j := i
 		for j+1 < len(objects) && isBareObjectSeparator(text[objects[j].endIndex:objects[j+1].startIndex]) {
@@ -843,18 +849,38 @@ func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawM
 		}
 		if j > i && (preferTerminal || trailingNonJSONResidue(text[objects[j].endIndex:])) {
 			fused, err := fuseBareObjects(objects[i:j+1], schema)
-			if err == nil {
-				return fused, nil
+			switch {
+			case err == nil:
+				if !preferTerminal {
+					return fused, nil
+				}
+				lastFused = fused
+				lastSplitErr = nil
+			case errors.Is(err, errSplitBareObjects):
+				if !preferTerminal {
+					return nil, errSplitBareObjects
+				}
+				// Incomplete draft pair must not reject a later valid final.
+				if lastFused == nil {
+					lastSplitErr = errSplitBareObjects
+				}
+			default:
+				// Competing values for one key, or a span that is not a JSON
+				// object at all: not a recoverable split. Without preferTerminal
+				// fall through to the generic schema error; with it, keep
+				// scanning for a later eligible run.
+				if !preferTerminal {
+					return nil, nil
+				}
 			}
-			if errors.Is(err, errSplitBareObjects) {
-				return nil, errSplitBareObjects
-			}
-			// Competing values for one key, or a span that is not a JSON object
-			// at all: not a recoverable split, so fall through to the generic
-			// schema error and stay terminal.
-			return nil, nil
 		}
 		i = j + 1
+	}
+	if lastFused != nil {
+		return lastFused, nil
+	}
+	if lastSplitErr != nil {
+		return nil, lastSplitErr
 	}
 	return nil, nil
 }
