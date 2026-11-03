@@ -161,6 +161,40 @@ func TestReviewerCandidatesSkipRefusedAccountAndRecordTrace(t *testing.T) {
 	}
 }
 
+func TestReviewerCandidatesExpiredLoginDoesNotStopTheChainBeforeTheNextEntry(t *testing.T) {
+	quota := &roleRecorder{name: "codex-sub", err: errors.New("pi reported error: The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead.")}
+	expired := &roleRecorder{name: "claude-second", err: errors.New("pi reported error: Failed to authenticate: OAuth session expired and could not be refreshed")}
+	main := &roleRecorder{name: "claude-main"}
+	candidates := []ReviewerCandidate{
+		{Agent: quota, Label: "Codex", Name: "codex-sub"},
+		{Agent: expired, Label: "Claude second", Name: "claude-second"},
+		{Agent: main, Label: "Claude main", Name: "claude-main"},
+	}
+	result, err, selected, label := runReviewerCandidates(context.Background(), RunOpts{Purpose: "review"}, candidates)
+	if err != nil || selected != main || label != "Claude main" || len(quota.calls) != 1 || len(expired.calls) != 1 || len(main.calls) != 1 {
+		t.Fatalf("err=%v label=%q calls=%d/%d/%d", err, label, len(quota.calls), len(expired.calls), len(main.calls))
+	}
+	trace, ok := ParseReviewerTrace(result.ReviewerChainTrace)
+	if !ok || trace.Selected != 2 || trace.Name != "claude-main" || len(trace.Skipped) != 2 || trace.Skipped[0].Entry != 0 || trace.Skipped[1].Entry != 1 ||
+		!strings.Contains(trace.Skipped[0].Reason, "Subscription Sharing usage limit") || !strings.Contains(trace.Skipped[1].Reason, "OAuth session expired") {
+		t.Fatalf("trace = %q", result.ReviewerChainTrace)
+	}
+}
+
+func TestReviewerCandidatesLastEntryExpiredLoginIsNotSwallowed(t *testing.T) {
+	quota := &roleRecorder{name: "codex-sub", err: errors.New("pi reported error: The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead.")}
+	loginErr := errors.New("pi reported error: Failed to authenticate: OAuth session expired and could not be refreshed")
+	expired := &roleRecorder{name: "claude-main", err: loginErr}
+	candidates := []ReviewerCandidate{
+		{Agent: quota, Label: "Codex"},
+		{Agent: expired, Label: "Claude main"},
+	}
+	_, err, selected, _ := runReviewerCandidates(context.Background(), RunOpts{Purpose: "review"}, candidates)
+	if !errors.Is(err, loginErr) || selected != expired || !strings.Contains(err.Error(), "Subscription Sharing usage limit") {
+		t.Fatalf("err=%v selected=%v, want the last entry's login error with the skipped reason", err, selected)
+	}
+}
+
 func TestReviewerCandidatesUnavailableEntryIsNeverRunAndTheServerIsNamed(t *testing.T) {
 	token := &roleRecorder{name: "run-token"}
 	named := &roleRecorder{name: "second"}

@@ -290,7 +290,9 @@ func classifyTransient(err error) (string, bool) {
 }
 
 // IsReviewerUnusableError reports whether an agent error means the account
-// behind this chain link cannot serve: refused or unauthenticated. Adapters
+// behind this chain link cannot serve: refused, unauthenticated, or holding a
+// login that expired and cannot refresh. A needle that also matches a network
+// failure does not belong here, since that link may serve on the next try. Adapters
 // surface subprocess stderr as plain errors, so no typed auth signal crosses
 // the agent boundary and the chain matches text.
 func IsReviewerUnusableError(err error) bool {
@@ -298,7 +300,7 @@ func IsReviewerUnusableError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	for _, needle := range []string{"organization has disabled", "authentication_error", "authentication required", "unauthenticated", "not authenticated", "not logged in", "invalid x-api-key", "invalid api key"} {
+	for _, needle := range []string{"organization has disabled", "authentication_error", "authentication required", "unauthenticated", "not authenticated", "not logged in", "invalid x-api-key", "invalid api key", "oauth session expired", "oauth token revoked", "your access token could not be refreshed"} {
 		if strings.Contains(msg, needle) {
 			return true
 		}
