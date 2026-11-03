@@ -280,7 +280,10 @@ func (m *RunManager) replayHeldPushes(ctx context.Context) {
 }
 
 // replayHeldPushFile hands every push in one claimed file to the push
-// handler and removes the file. It reports whether the replay may go on.
+// handler and removes the file. A push that fails because the daemon is
+// stopping keeps the file, so it and the rest replay on the next start; any
+// other failure is logged and skipped so a bad push cannot loop forever. It
+// reports whether the replay may go on.
 func (m *RunManager) replayHeldPushFile(ctx context.Context, path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -304,6 +307,10 @@ func (m *RunManager) replayHeldPushFile(ctx context.Context, path string) bool {
 		}
 		runID, err := m.handlePushReceived(ctx, &params, true)
 		if err != nil {
+			if ctx.Err() != nil || m.shuttingDown.Load() {
+				slog.Warn("daemon stopping during held push replay; the rest replay on the next start", "ref", params.Ref, "new", params.New, "error", err)
+				return false
+			}
 			slog.Error("held push could not be started after restart", "ref", params.Ref, "new", params.New, "error", err)
 			continue
 		}

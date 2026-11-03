@@ -235,6 +235,31 @@ func TestReplayHeldPushesKeepsAPushHeldWhileReplaying(t *testing.T) {
 	}
 }
 
+// A held push that fails only because the daemon is stopping must survive for
+// the next start; dropping it would lose a push the hook never retries.
+func TestReplayHeldPushFileKeepsTheFileWhenTheDaemonIsStopping(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "replay-stopping")
+	m := NewRunManager(d, p, nil)
+	m.shuttingDown.Store(true)
+
+	params := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/feature-a", Old: zeroSHA, New: headSHA}
+	if err := m.holdPush(params); err != nil {
+		t.Fatal(err)
+	}
+	replayPath := p.HeldPushesFile() + ".replay"
+	if err := os.Rename(p.HeldPushesFile(), replayPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if m.replayHeldPushFile(t.Context(), replayPath) {
+		t.Fatal("replay should stop when the daemon is stopping")
+	}
+	if got := countHeldPushes(replayPath); got != 1 {
+		t.Fatalf("held pushes kept = %d, want 1", got)
+	}
+}
+
 // A gate response that passed its due check must finish dispatching before the
 // restart is marked due and recounted; otherwise the stop cancels the run the
 // response just resumed.
