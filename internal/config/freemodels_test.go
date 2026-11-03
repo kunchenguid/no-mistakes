@@ -12,7 +12,7 @@ minimax_extra_review:
   fallback_model: opencode-go/muse-spark
   mode: advisory
   steps: [review]
-  repos: [skills, checks, fleet-dash, tui-dash, ru-compliance]
+  repos: [skills, checks, tui-dash, ru-compliance]
 beam_drafts:
   enabled: false
   model: opencode-go/beam-free
@@ -20,7 +20,7 @@ beam_drafts:
   steps: [commit, document]
   empty_retries: 1
   apply_check: true
-  repos: [skills, checks, fleet-dash, tui-dash, ru-compliance]
+  repos: [skills, checks, tui-dash, ru-compliance]
 `
 
 const freeModelAllowYAML = `
