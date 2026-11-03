@@ -46,6 +46,28 @@ func ExecuteWithAutoFix(t *testing.T, step pipeline.Step, sctx *pipeline.StepCon
 		if err != nil || outcome == nil {
 			return outcome, err
 		}
+		if outcome.RestartFrom != "" && !outcome.NeedsApproval {
+			var findings types.Findings
+			if outcome.Findings != "" {
+				var err error
+				findings, err = types.ParseFindingsJSON(outcome.Findings)
+				if err != nil {
+					return nil, err
+				}
+			}
+			blocked := false
+			for _, item := range findings.Items {
+				blocked = blocked || item.Action == types.ActionAskUser || item.Severity == types.FindingSeverityError
+			}
+			if !blocked {
+				if preparer, ok := step.(pipeline.RestartPreparer); ok {
+					if err := preparer.PrepareRestart(sctx, outcome.RestartFrom); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+
 		if !outcome.AutoFixable || limit <= 0 || attempts >= limit {
 			return outcome, nil
 		}

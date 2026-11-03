@@ -34,8 +34,19 @@ func CIReviewRestartPending(database *db.DB, runID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return run != nil && run.LastPushedSHA != nil && strings.TrimSpace(*run.LastPushedSHA) != "" &&
-		(run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == ""), nil
+	if run == nil || (run.ReviewApprovedHeadSHA != nil && strings.TrimSpace(*run.ReviewApprovedHeadSHA) != "") {
+		return false, nil
+	}
+	steps, err := database.GetStepsByRun(runID)
+	if err != nil {
+		return false, err
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepReview && step.Status == types.StepStatusCompleted {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // StepContext provides shared resources to pipeline steps during execution.
@@ -246,6 +257,10 @@ type Step interface {
 	// A step that returns NeedsApproval=true will pause the pipeline
 	// until the user responds with an approval action.
 	Execute(sctx *StepContext) (*StepOutcome, error)
+}
+
+type RestartPreparer interface {
+	PrepareRestart(sctx *StepContext, restartFrom types.StepName) error
 }
 
 // ApprovalGateReconciler is implemented by a step whose parked approval gate

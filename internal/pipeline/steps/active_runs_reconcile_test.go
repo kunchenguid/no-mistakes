@@ -30,6 +30,14 @@ func (s reconcileEnvStep) ReconcileApprovalGate(ctx *pipeline.StepContext) (bool
 	return s.step.(pipeline.ApprovalGateReconciler).ReconcileApprovalGate(ctx)
 }
 
+func (s reconcileEnvStep) PrepareRestart(ctx *pipeline.StepContext, restartFrom types.StepName) error {
+	ctx.Env = s.env
+	if preparer, ok := s.step.(pipeline.RestartPreparer); ok {
+		return preparer.PrepareRestart(ctx, restartFrom)
+	}
+	return nil
+}
+
 func TestCIGateReconciliationClearsActiveRunAfterPRBecomesTerminal(t *testing.T) {
 	t.Parallel()
 	for _, terminalState := range []string{"MERGED", "CLOSED"} {

@@ -842,31 +842,27 @@ func (h *liveBaseTestHost) GetPRBaseBranch(context.Context, *scm.PR) (string, er
 
 func TestCIStep_RepairRefreshesTheBaseAfterTheFixer(t *testing.T) {
 	t.Parallel()
-	base := "layer1"
+	baseFile := filepath.Join(t.TempDir(), "live-base")
+	if err := os.WriteFile(baseFile, []byte("layer1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	f := newCIRepairFixture(t, true, func(workDir string) {
 		writeCIFix(workDir)
-		base = "main"
+		if err := os.WriteFile(baseFile, []byte("main"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	})
 	gitCmd(t, f.dir, "branch", "layer1", "main")
 	gitCmd(t, f.dir, "push", "origin", "layer1")
 	initialBase := "layer1"
 	f.sctx.Run.PRBaseBranch = &initialBase
-	f.sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"test failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
-	host, reason := buildHost(f.sctx, scm.ProviderGitHub)
-	if host == nil {
-		t.Fatal(reason)
-	}
-	reads := 0
-	liveHost := &liveBaseTestHost{Host: host, readBase: func() (string, error) {
-		reads++
-		return base, nil
-	}}
-	outcome, err := (&CIStep{}).repairFromFindings(f.sctx, liveHost, &scm.PR{Number: "42", URL: *f.sctx.Run.PRURL})
+	f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_BASE_FILE="+baseFile)
+	outcome, err := f.run(t)
 	if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview {
 		t.Fatalf("repair = %#v, %v; want Review restart\n%s", outcome, err, f.log())
 	}
-	if reads != 2 || effectivePRBaseBranch(f.sctx) != "main" {
-		t.Fatalf("base = %s after %d reads; want current main base", effectivePRBaseBranch(f.sctx), reads)
+	if effectivePRBaseBranch(f.sctx) != "main" {
+		t.Fatalf("restart base = %s, want main", effectivePRBaseBranch(f.sctx))
 	}
 	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
 	if err != nil || run.PRBaseBranch == nil || *run.PRBaseBranch != "main" {
@@ -966,6 +962,20 @@ func TestCIStep_RevokedApprovalRestartsInsteadOfCompletingAMerge(t *testing.T) {
 	for _, fixing := range []bool{false, true} {
 		t.Run(map[bool]string{true: "fix reentry", false: "poll reentry"}[fixing], func(t *testing.T) {
 			f := newCIRepairFixture(t, false, nil)
+			unpublished, err := f.sctx.DB.InsertRun(f.sctx.Repo.ID, f.sctx.Run.Branch, f.headSHA, f.sctx.Run.BaseSHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unpublished.PRURL = f.sctx.Run.PRURL
+			f.sctx.Run = unpublished
+			review, err := f.sctx.DB.InsertStepResult(unpublished.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.sctx.DB.CompleteReviewStep(review.ID, unpublished.ID, f.headSHA, 0, 0, ""); err != nil {
+				t.Fatal(err)
+			}
+
 			target := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}"), "-p", f.headSHA, "-m", "adopted head")
 			step := &CIStep{}
 			if _, err := step.recordRevalidationHead(f.sctx, target, "", false); err != nil {
@@ -982,6 +992,10 @@ func TestCIStep_RevokedApprovalRestartsInsteadOfCompletingAMerge(t *testing.T) {
 			if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview {
 				t.Fatalf("CI = %#v, %v; want Review restart", outcome, err)
 			}
+			if err := step.PrepareRestart(f.sctx, outcome.RestartFrom); err != nil {
+				t.Fatal(err)
+			}
+
 			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
 			if err != nil || run.PRState != nil && *run.PRState == "merged" || run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
 				t.Fatalf("CI finalized or missed base alignment: %+v, %v", run, err)
@@ -992,11 +1006,16 @@ func TestCIStep_RevokedApprovalRestartsInsteadOfCompletingAMerge(t *testing.T) {
 
 func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ name, local, target string }{
-		{"exact", "private.env", "private.env"},
-		{"local file blocks directory", "private", "private/file"},
-		{"local directory blocks file", "private/file", "private"},
-		{"leading whitespace", " private.env", " private.env"},
+	for _, tc := range []struct {
+		name, local, target string
+		refuse              bool
+	}{
+		{"exact", "private.env", "private.env", true},
+		{"local file blocks directory", "private", "private/file", true},
+		{"local directory blocks file", "private/file", "private", true},
+		{"leading whitespace", " private.env", " private.env", true},
+		{"separate siblings", "private/cache/file", "private/src/file", false},
+		{"prefix lookalike", "private.env", "private.env-example", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCIRepairFixture(t, false, nil)
@@ -1022,15 +1041,18 @@ func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
 			}
 			gitCmd(t, f.dir, "push", "origin", target+":refs/heads/feature")
 			outcome, err := (&CIStep{}).Execute(f.sctx)
-			if err != nil || outcome == nil || !outcome.NeedsApproval || outcome.RestartFrom != "" {
-				t.Fatalf("adoption = %#v, %v; want refusal", outcome, err)
+			if err != nil || outcome == nil || outcome.NeedsApproval != tc.refuse {
+				t.Fatalf("adoption = %#v, %v; refusal want %v", outcome, err, tc.refuse)
+			}
+			if !tc.refuse && outcome.RestartFrom != types.StepReview {
+				t.Fatalf("noncolliding adoption did not restart: %#v", outcome)
 			}
 			data, err := os.ReadFile(localPath)
 			if err != nil || string(data) != "local secret" {
 				t.Fatalf("local content = %q, %v", data, err)
 			}
 			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-			if err != nil || run.HeadSHA != f.headSHA || run.ReviewApprovedHeadSHA == nil || f.localHead(t) != f.headSHA {
+			if tc.refuse && (err != nil || run.HeadSHA != f.headSHA || run.ReviewApprovedHeadSHA == nil || f.localHead(t) != f.headSHA) {
 				t.Fatalf("adoption mutated state: %+v, %v", run, err)
 			}
 		})

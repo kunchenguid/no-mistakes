@@ -23,11 +23,12 @@ import (
 
 // mockStep is a test step that returns a configurable outcome.
 type mockStep struct {
-	name    types.StepName
-	outcome *StepOutcome
-	err     error
-	calls   int
-	mu      sync.Mutex
+	approveReview bool
+	name          types.StepName
+	outcome       *StepOutcome
+	err           error
+	calls         int
+	mu            sync.Mutex
 }
 
 func (m *mockStep) Name() types.StepName { return m.name }
@@ -39,6 +40,11 @@ func (m *mockStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	if sctx.Log != nil {
 		sctx.Log(fmt.Sprintf("executing %s", m.name))
 	}
+	if m.approveReview && m.outcome != nil && m.err == nil {
+		outcome := *m.outcome
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+		return &outcome, nil
+	}
 	return m.outcome, m.err
 }
 
@@ -49,7 +55,7 @@ func (m *mockStep) callCount() int {
 }
 
 func newPassStep(name types.StepName) *mockStep {
-	return &mockStep{name: name, outcome: &StepOutcome{ExitCode: 0}}
+	return &mockStep{name: name, outcome: &StepOutcome{ExitCode: 0}, approveReview: name == types.StepReview}
 }
 
 func newApprovalStep(name types.StepName, findings string) *mockStep {

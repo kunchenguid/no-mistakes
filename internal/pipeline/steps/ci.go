@@ -569,15 +569,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		retryRefusal = false
 		if repair.Revalidate {
-			if repair.restartFrom() == types.StepReview {
-				liveBase, err := resolveLivePRBase(sctx, host, pr)
-				if err != nil {
-					return nil, err
-				}
-				if err := applyRunPRBase(sctx, liveBase); err != nil {
-					return nil, err
-				}
-			}
+
 			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom()}, nil
 		}
 	}
@@ -630,8 +622,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 	}
 
-	if outcome, err := restartCIReviewIfPending(sctx, host, pr); err != nil || outcome != nil {
-		return outcome, err
+	if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil {
+		return nil, err
+	} else if pending {
+		if err := clearCIMonitorReady(sctx); err != nil {
+			return nil, err
+		}
+		return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: sctx.DeferredFindings}, nil
 	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
