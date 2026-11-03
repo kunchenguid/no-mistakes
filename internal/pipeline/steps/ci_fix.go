@@ -200,15 +200,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			// supersede findings that were left unselected for this repair.
 			// Carry them on the restart outcome: ask-user findings park before
 			// the restart, while an empty or informational set proceeds.
-			if repair.restartFrom() == types.StepReview {
-				liveBase, err := resolveLivePRBase(sctx, host, pr)
-				if err != nil {
-					return nil, err
-				}
-				if err := applyRunPRBase(sctx, liveBase); err != nil {
-					return nil, err
-				}
-			}
+
 			return &pipeline.StepOutcome{
 				RestartFrom: repair.restartFrom(),
 				Findings:    sctx.DeferredFindings,

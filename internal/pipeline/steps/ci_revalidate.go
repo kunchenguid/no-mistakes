@@ -3,6 +3,7 @@ package steps
 import (
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -81,15 +82,30 @@ func adoptableHeadRefusal(sctx *pipeline.StepContext, liveHead string) string {
 	if err != nil {
 		return fmt.Sprintf("the adopted tree could not be read: %v", err)
 	}
-	for _, local := range strings.Split(localPaths, "\x00") {
+	targetFiles := make(map[string]bool)
+	for target := range strings.SplitSeq(targetPaths, "\x00") {
+		if target == "" {
+			continue
+		}
+		targetFiles[target] = true
+		for parent := path.Dir(target); parent != "."; parent = path.Dir(parent) {
+			if _, exists := targetFiles[parent]; exists {
+				break
+			}
+			targetFiles[parent] = false
+		}
+	}
+	for local := range strings.SplitSeq(localPaths, "\x00") {
 		local = strings.TrimSuffix(local, "/")
 		if local == "" {
 			continue
 		}
-		for _, target := range strings.Split(targetPaths, "\x00") {
-			if target != "" && (local == target || strings.HasPrefix(local, target+"/") || strings.HasPrefix(target, local+"/")) {
-				return fmt.Sprintf("local untracked or ignored path %q collides with the adopted tree", local)
-			}
+		_, collision := targetFiles[local]
+		for parent := path.Dir(local); !collision && parent != "."; parent = path.Dir(parent) {
+			collision = targetFiles[parent]
+		}
+		if collision {
+			return fmt.Sprintf("local untracked or ignored path %q collides with the adopted tree", local)
 		}
 	}
 	worktreeHead, err := stepGitHeadSHA(sctx)
@@ -144,7 +160,7 @@ func parkPublishedHeadRewrite(recorded, worktreeHead, liveHead, reason string) *
 // durably and clears the review approval BEFORE the worktree moves (a durable
 // write that fails must leave the branch and worktree on the reviewed head,
 // since the worktree head is one of the heads the run is credited with owning),
-// that base is persisted, and the outcome restarts the run at Review. Intent and
+// the outcome restarts the run at Review. Intent and
 // Rebase are deliberately skipped (their content is base-relative and the
 // restart re-decides it), and the PR step will only refresh the body of the
 // existing pull request.
@@ -178,7 +194,7 @@ func (s *CIStep) adoptPublishedHeadRewrite(sctx *pipeline.StepContext, host scm.
 		park := parkPublishedHeadRewrite(recorded, worktreeHead, target, reason)
 		return ciTerminalRepairOutcome(park, Findings{}, sctx.DeferredFindings), nil
 	}
-	liveBase, err := resolveLivePRBase(sctx, host, pr)
+	_, err = resolveLivePRBase(sctx, host, pr)
 	if errors.Is(err, errLivePRBaseUnread) && !pluginContractBroken(err) {
 		sctx.Log(fmt.Sprintf("warning: not adopting %s this poll: %v", shortSHA(target), err))
 		return nil, nil
@@ -192,31 +208,40 @@ func (s *CIStep) adoptPublishedHeadRewrite(sctx *pipeline.StepContext, host scm.
 	if _, err := stepGitRun(sctx, "reset", "--hard", target); err != nil {
 		return nil, fmt.Errorf("move the run worktree to the adopted head %s: %w", shortSHA(target), err)
 	}
-	if err := applyRunPRBase(sctx, liveBase); err != nil {
-		return nil, err
-	}
+
 	return &pipeline.StepOutcome{
 		RestartFrom: types.StepReview,
 		Findings:    sctx.DeferredFindings,
 	}, nil
 }
 
-func restartCIReviewIfPending(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (*pipeline.StepOutcome, error) {
-	pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID)
-	if err != nil || !pending {
-		return nil, err
+func (s *CIStep) PrepareRestart(sctx *pipeline.StepContext, restartFrom types.StepName) error {
+	if restartFrom != types.StepReview {
+		return nil
 	}
-	liveBase, err := resolveLivePRBase(sctx, host, pr)
+	host, reason := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil {
+		return fmt.Errorf("cannot align the pull request's live base before Review: %s", reason)
+	}
+	if _, ok := host.(scm.PRBaseBranchReader); !ok {
+		return nil
+	}
+	if err := host.Available(sctx.Ctx); err != nil {
+		return err
+	}
+	if sctx.Run.PRURL == nil || strings.TrimSpace(*sctx.Run.PRURL) == "" {
+		return fmt.Errorf("cannot align the pull request's live base before Review: run has no PR URL")
+	}
+	prURL := strings.TrimSpace(*sctx.Run.PRURL)
+	number, err := scm.ExtractPRNumber(prURL)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := applyRunPRBase(sctx, liveBase); err != nil {
-		return nil, err
+	liveBase, err := resolveLivePRBase(sctx, host, &scm.PR{Number: number, URL: prURL})
+	if err != nil {
+		return err
 	}
-	if err := clearCIMonitorReady(sctx); err != nil {
-		return nil, err
-	}
-	return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: sctx.DeferredFindings}, nil
+	return applyRunPRBase(sctx, liveBase)
 }
 
 // fetchVerifiedPublishedHead fetches the pull request branch from the push
@@ -259,10 +284,7 @@ func fetchVerifiedPublishedHead(sctx *pipeline.StepContext) (string, error) {
 // no base, or an unusable branch name, is permanent and still fails closed.
 var errLivePRBaseUnread = errors.New("the pull request's live base branch could not be read")
 
-// resolveLivePRBase reads the pull request's live forge base. Every CI path
-// that can restart at Review resolves it BEFORE it mutates anything, so a base
-// the forge will not report fails the step closed while the run still sits on
-// its validated head; applyRunPRBase then persists it at the restart itself. A
+// resolveLivePRBase reads the pull request's live forge base. A
 // host that cannot report a base at all resolves to "" and persists nothing.
 func resolveLivePRBase(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (string, error) {
 	reader, ok := host.(scm.PRBaseBranchReader)

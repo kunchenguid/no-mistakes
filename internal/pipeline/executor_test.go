@@ -98,8 +98,11 @@ func TestExecutor_RestartFromTestKeepsTheCompletedReview(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	var order []types.StepName
 	pass := func(name types.StepName) Step {
-		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+		return &adaptiveCallStep{name: name, fn: func(sctx *StepContext) (*StepOutcome, error) {
 			order = append(order, name)
+			if name == types.StepReview {
+				return &StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
+			}
 			return &StepOutcome{}, nil
 		}}
 	}
@@ -232,8 +235,11 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 
 	var order []types.StepName
 	pass := func(name types.StepName) Step {
-		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+		return &adaptiveCallStep{name: name, fn: func(sctx *StepContext) (*StepOutcome, error) {
 			order = append(order, name)
+			if name == types.StepReview {
+				return &StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
+			}
 			return &StepOutcome{}, nil
 		}}
 	}
@@ -332,15 +338,15 @@ func TestExecutor_RevalidationClearsReviewCarry(t *testing.T) {
 	workDir := t.TempDir()
 
 	reviewCalls := 0
-	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
 		reviewCalls++
 		if reviewCalls == 1 {
 			return &StepOutcome{
-				NeedsApproval: true,
-				Findings:      `{"findings":[{"id":"review-1","severity":"warning","description":"review needed","action":"ask-user"}],"summary":"review needed"}`,
+				NeedsApproval: true, ReviewApprovedHeadSHA: sctx.Run.HeadSHA,
+				Findings: `{"findings":[{"id":"review-1","severity":"warning","description":"review needed","action":"ask-user"}],"summary":"review needed"}`,
 			}, nil
 		}
-		return &StepOutcome{}, nil
+		return &StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 	}}
 	ciCalls := 0
 	ci := &adaptiveCallStep{name: types.StepCI, fn: func(*StepContext) (*StepOutcome, error) {
@@ -376,15 +382,15 @@ func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	workDir := t.TempDir()
 
 	reviewCalls := 0
-	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
 		reviewCalls++
 		if reviewCalls == 2 {
 			return &StepOutcome{
-				NeedsApproval: true,
-				Findings:      `{"findings":[{"id":"review-1","severity":"warning","description":"review needed","action":"ask-user"}],"summary":"review needed"}`,
+				NeedsApproval: true, ReviewApprovedHeadSHA: sctx.Run.HeadSHA,
+				Findings: `{"findings":[{"id":"review-1","severity":"warning","description":"review needed","action":"ask-user"}],"summary":"review needed"}`,
 			}, nil
 		}
-		return &StepOutcome{}, nil
+		return &StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 	}}
 	ciCalls := 0
 	ci := &adaptiveCallStep{name: types.StepCI, fn: func(*StepContext) (*StepOutcome, error) {
@@ -905,9 +911,7 @@ func TestExecutor_RecoveredCIGateApprovalRestartsRevokedReview(t *testing.T) {
 	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, reviewed); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{HeadSHA: reviewed, TargetKind: "upstream", TargetFingerprint: "test", Ref: "refs/heads/feature"}); err != nil {
-		t.Fatal(err)
-	}
+
 	if err := database.UpdateRunHeadSHAForRevalidation(run.ID, replayed); err != nil {
 		t.Fatal(err)
 	}

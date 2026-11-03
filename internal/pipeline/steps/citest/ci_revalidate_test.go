@@ -86,6 +86,10 @@ func TestCIStep_AdoptsAPublishedHeadRewriteAndRestartsAtReview(t *testing.T) {
 	if outcome.RestartFrom != types.StepReview {
 		t.Fatalf("RestartFrom = %q, want review", outcome.RestartFrom)
 	}
+	if err := (&steps.CIStep{}).PrepareRestart(sctx, outcome.RestartFrom); err != nil {
+		t.Fatal(err)
+	}
+
 	joined := strings.Join(*logs, "\n")
 	for _, want := range []string{
 		"pull request branch head moved outside the run (",

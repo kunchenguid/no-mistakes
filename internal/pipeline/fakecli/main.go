@@ -745,6 +745,15 @@ func fakeGHPRBaseBranch(joined string) {
 		}
 	}
 	base := os.Getenv("FAKE_CLI_PR_BASE")
+	if file := os.Getenv("FAKE_CLI_PR_BASE_FILE"); file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		base = strings.TrimSpace(string(data))
+	}
+
 	switch base {
 	case "":
 		base = "main"
