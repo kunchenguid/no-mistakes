@@ -495,12 +495,11 @@ func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) 
 }
 
 // GetMergedProof proves which exact head of this pull request was merged.
-// expectedHead is the run's recorded head and is always accepted; ownHeads
-// lists every head the run owns (its recorded head first, then its durable
-// last-pushed head and the caller worktree's HEAD), any of which may carry the
-// merge when the branch was rewritten outside the run and then merged. A merge at any other head is a
-// foreign merge: it is refused with scm.ErrHeadChanged rather than reported
-// as the run's own outcome. The merge commit and timestamp are required
+// ownHeads lists every head the run owns (its recorded head first, then its
+// durable last-pushed head and the caller worktree's HEAD). Any can carry the
+// merge when the branch was rewritten outside the run and then merged.
+// A merge at any other head is foreign: it is refused with scm.ErrHeadChanged
+// rather than reported as the run's own outcome. The merge commit and timestamp are required
 // whenever the PR is merged, so an attestation written from this proof always
 // names both; the merging identity is optional, because an app identity or a
 // deleted account leaves it empty.
