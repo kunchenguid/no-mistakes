@@ -38,6 +38,8 @@ const (
 	MethodHealth                    = "health"
 	MethodShutdown                  = "shutdown"
 	MethodUpdateRunClosingIssueRefs = "update_run_closing_issue_refs"
+	MethodScheduleRestart           = "schedule_restart"
+	MethodRestartStatus             = "restart_status"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -328,6 +330,22 @@ type HealthParams struct{}
 
 // ShutdownParams has no fields but exists for consistency.
 type ShutdownParams struct{}
+
+// ScheduleRestartParams asks the daemon to restart through its own executable
+// file once no run is executing. It is how `no-mistakes update` installs a new
+// version without failing runs already in progress.
+type ScheduleRestartParams struct{}
+
+// RestartStatusResult reports a restart scheduled by schedule_restart.
+// WaitingRuns counts runs still executing or queued to execute; runs parked at
+// an approval gate are not counted, because a clean restart keeps them.
+// HeldPushes counts pushes received while waiting, which the restarted daemon
+// starts on the new version.
+type RestartStatusResult struct {
+	Pending     bool `json:"pending"`
+	WaitingRuns int  `json:"waiting_runs"`
+	HeldPushes  int  `json:"held_pushes"`
+}
 
 // UpdateRunClosingIssueRefsParams updates the closing issue references on an existing run.
 type UpdateRunClosingIssueRefsParams struct {

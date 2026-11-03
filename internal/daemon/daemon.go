@@ -17,6 +17,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -79,7 +80,7 @@ func Run() (retErr error) {
 	defer lifecycleLog.Close()
 	initLogger(lifecycleLog, "info")
 	defer func() {
-		if retErr != nil {
+		if retErr != nil && !errors.Is(retErr, ErrRestartForUpdate) {
 			slog.Error("daemon failed", "error", retErr)
 		}
 	}()
@@ -264,7 +265,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 			}
 		}
 	}()
-	slog.Info("daemon process launched", "pid", pidRecord.PID)
+	slog.Info("daemon process launched", "pid", pidRecord.PID, "version", buildinfo.CurrentVersion())
 
 	// Recovery remains exclusive and completes before IPC is bound.
 	recoverOnStartup(d, p, mgr, layout)
@@ -284,6 +285,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 		})
 	}
 
+	mgr.restart.trigger = func() { doShutdown("restart for update") }
 	registerHandlers(srv, mgr, d, func() { doShutdown("ipc request") })
 
 	// Handle OS signals
@@ -315,6 +317,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 	}
 	logStartupPhase("ipc_health", healthStarted)
 	slog.Info("daemon ready", "socket", socketPath, "pid", os.Getpid(), "startup_ms", time.Since(startupStarted).Milliseconds())
+	go mgr.replayHeldPushes(ctx)
 
 	if err := <-serveErrCh; err != nil {
 		return fmt.Errorf("serve: %w", err)
@@ -328,6 +331,10 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 			os.Remove(pidPath)
 			os.Remove(socketPath)
 		}
+	}
+	if mgr.restart.due.Load() {
+		slog.Info("daemon stopped; restarting through its executable for an update")
+		return ErrRestartForUpdate
 	}
 	slog.Info("daemon stopped")
 	return nil
@@ -1167,6 +1174,17 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 
 	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
 		return &ipc.HealthResult{Status: "ok"}, nil
+	})
+
+	srv.Handle(ipc.MethodScheduleRestart, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		return mgr.ScheduleRestartWhenIdle()
+	})
+
+	srv.Handle(ipc.MethodRestartStatus, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return mgr.RestartStatus(), nil
 	})
 
 	srv.Handle(ipc.MethodShutdown, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {

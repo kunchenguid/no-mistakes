@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
@@ -57,6 +58,8 @@ type updater struct {
 	now                func() time.Time
 	spawnBackground    func(currentVersion string) error
 	resetDaemon        func(daemonExpected bool) error
+	restartStatus      func() (*ipc.RestartStatusResult, error)
+	scheduleRestart    func() (*ipc.RestartStatusResult, error)
 	paths              *paths.Paths
 	disableBackground  bool
 	nixStoreInstall    bool
@@ -64,6 +67,10 @@ type updater struct {
 	includePrereleases bool
 	assumeYes          bool
 	force              bool
+	// restartWhenIdle is set when runs are active and the running daemon can
+	// wait for them: the update then installs the new version and schedules
+	// the daemon's restart instead of restarting it now.
+	restartWhenIdle bool
 }
 
 type RunOptions struct {
@@ -142,6 +149,8 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		resetDaemon: func(daemonExpected bool) error {
 			return defaultResetDaemon(p, daemonExpected, execPath)
 		},
+		restartStatus:   func() (*ipc.RestartStatusResult, error) { return daemon.RestartStatus(p) },
+		scheduleRestart: func() (*ipc.RestartStatusResult, error) { return daemon.ScheduleRestart(p) },
 	}, nil
 }
 
@@ -252,6 +261,14 @@ func (u *updater) run(ctx context.Context) error {
 	}
 	if err := replaceExecutable(u.executablePath, binaryData); err != nil {
 		return err
+	}
+	if u.restartWhenIdle {
+		status, err := u.scheduleRestart()
+		if err != nil {
+			return fmt.Errorf("updated %s to %s, but could not schedule the daemon restart: %w; run `%s daemon restart --when-idle`", u.appName, plan.LatestVersion, err, u.appName)
+		}
+		fmt.Fprintf(u.stdoutWriter(), "updated %s from %s to %s; %s\n", u.appName, u.currentVersion, plan.LatestVersion, daemon.DescribeScheduledRestart(status))
+		return nil
 	}
 	if u.resetDaemon != nil {
 		if err := u.resetDaemon(daemonExpected); err != nil {

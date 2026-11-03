@@ -46,6 +46,11 @@ func (u *updater) ensureDaemonUsesCurrentExecutable() error {
 	if executablePathsMatch(currentPath, runningPath) {
 		return nil
 	}
+	if u.restartWhenIdle {
+		// The daemon restarts through its own executable file, which this
+		// update would not replace.
+		return fmt.Errorf("daemon is running from %s, but update is running from %s; with active runs, run update using the binary that started the daemon, or pass --force", runningPath, currentPath)
+	}
 	if u.confirmDaemonTakeover(runningPath, currentPath) {
 		return nil
 	}

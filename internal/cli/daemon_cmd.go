@@ -20,10 +20,11 @@ import (
 )
 
 var (
-	daemonRun                  = daemon.Run
+	daemonRun                  = daemon.RunRestartable
 	daemonStartFn              = daemon.Start
 	daemonStartGuardedFn       = daemon.StartGuarded
 	daemonStopFn               = daemon.Stop
+	daemonScheduleRestartFn    = daemon.ScheduleRestart
 	daemonUninstallFn          = daemon.Uninstall
 	daemonUninstallSupportedFn = daemon.UninstallSupported
 	daemonLaunchAgentPathFn    = daemon.InstalledLaunchAgentPath
@@ -646,7 +647,7 @@ func newDaemonUninstallCmd() *cobra.Command {
 }
 
 func newDaemonRestartCmd() *cobra.Command {
-	var force bool
+	var force, whenIdle bool
 	cmd := &cobra.Command{
 		Use:   "restart",
 		Short: "Restart the daemon (stop if running, then start)",
@@ -663,6 +664,20 @@ func newDaemonRestartCmd() *cobra.Command {
 				if err := p.EnsureDirs(); err != nil {
 					return err
 				}
+				if whenIdle && !force {
+					alive, err := daemonIsRunningFn(p)
+					if err != nil {
+						return err
+					}
+					if alive {
+						status, err := daemonScheduleRestartFn(p)
+						if err != nil {
+							return err
+						}
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", sGreen.Render("✓"), daemon.DescribeScheduledRestart(status))
+						return nil
+					}
+				}
 				if err := guardDestructiveDaemonLifecycle(p, cmd.ErrOrStderr(), "daemon restart", force); err != nil {
 					return err
 				}
@@ -678,6 +693,7 @@ func newDaemonRestartCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "restart the daemon even when pipeline runs are active")
+	cmd.Flags().BoolVar(&whenIdle, "when-idle", false, "let executing runs finish first, holding new pushes, then restart through the executable file")
 	return cmd
 }
 
@@ -720,6 +736,9 @@ func newDaemonStatusCmd() *cobra.Command {
 						fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running %s\n", sGreen.Render("●"), sDim.Render(fmt.Sprintf("(pid %d)", pid)))
 					} else {
 						fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running\n", sGreen.Render("●"))
+					}
+					if status, err := daemon.RestartStatus(p); err == nil && status.Pending {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s restart pending: waiting for %d active runs; %d pushes held\n", sDim.Render("↻"), status.WaitingRuns, status.HeldPushes)
 					}
 				} else {
 					fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon not running\n", sDim.Render("○"))

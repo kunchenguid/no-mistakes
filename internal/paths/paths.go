@@ -72,6 +72,10 @@ func (p *Paths) Socket() string     { return filepath.Join(p.root, "socket") }
 func (p *Paths) PIDFile() string    { return filepath.Join(p.root, "daemon.pid") }
 func (p *Paths) ConfigFile() string { return filepath.Join(p.root, "config.yaml") }
 
+// HeldPushesFile records pushes received while a daemon waits to restart for
+// an update. The restarted daemon starts them and removes the file.
+func (p *Paths) HeldPushesFile() string { return filepath.Join(p.root, "held-pushes.jsonl") }
+
 // RunInputsDir holds private immutable input snapshots, separate from publishable evidence.
 func (p *Paths) RunInputsDir() string { return filepath.Join(p.root, "run-inputs") }
 

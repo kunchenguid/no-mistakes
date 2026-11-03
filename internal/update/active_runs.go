@@ -2,11 +2,13 @@ package update
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 )
@@ -20,13 +22,46 @@ func (u *updater) confirmActiveRunsBeforeUpdate() error {
 		return nil
 	}
 
-	u.writeActiveRunWarning(runs)
-	if u.force {
-		fmt.Fprintln(u.stderrWriter(), "FORCE: continuing update and daemon restart despite active pipeline runs")
-		return nil
+	if !u.force {
+		waitErr := u.daemonCanRestartWhenIdle()
+		if waitErr == nil {
+			u.restartWhenIdle = true
+			fmt.Fprintf(u.stderrWriter(), "%d active pipeline %s will finish on the current version; the daemon restarts on the new version once no run is executing\n", len(runs), runNoun(len(runs)))
+			fmt.Fprint(u.stderrWriter(), lifecycle.RunList(runs))
+			return nil
+		}
+		u.writeActiveRunWarning(runs)
+		return fmt.Errorf("refusing update because %d active pipeline runs are in progress and %v; pass --force to stop/restart the daemon anyway", len(runs), waitErr)
 	}
 
-	return fmt.Errorf("refusing update because %d active pipeline runs are in progress; pass --force to stop/restart the daemon anyway", len(runs))
+	u.writeActiveRunWarning(runs)
+	fmt.Fprintln(u.stderrWriter(), "FORCE: continuing update and daemon restart despite active pipeline runs")
+	return nil
+}
+
+// daemonCanRestartWhenIdle reports why the running daemon cannot wait for
+// active runs before restarting, or nil when it can.
+func (u *updater) daemonCanRestartWhenIdle() error {
+	if currentGOOS != "linux" && currentGOOS != "darwin" {
+		return errors.New("waiting for them is not supported on this platform")
+	}
+	if u.restartStatus == nil || u.scheduleRestart == nil {
+		return errors.New("the running daemon cannot wait for them")
+	}
+	if _, err := u.restartStatus(); err != nil {
+		if errors.Is(err, daemon.ErrRestartWhenIdleUnsupported) {
+			return errors.New("the running daemon is too old to wait for them")
+		}
+		return fmt.Errorf("the running daemon could not be asked to wait for them: %w", err)
+	}
+	return nil
+}
+
+func runNoun(n int) string {
+	if n == 1 {
+		return "run"
+	}
+	return "runs"
 }
 
 func (u *updater) writeActiveRunWarning(runs []*db.Run) {
