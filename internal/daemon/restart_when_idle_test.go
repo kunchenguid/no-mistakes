@@ -234,3 +234,36 @@ func TestReplayHeldPushesKeepsAPushHeldWhileReplaying(t *testing.T) {
 		t.Fatalf("claimed replay file should be removed, stat err = %v", err)
 	}
 }
+
+// A gate response that passed its due check must finish dispatching before the
+// restart is marked due and recounted; otherwise the stop cancels the run the
+// response just resumed.
+func TestRestartDueWaitsForAGateResponseInFlight(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	m := NewRunManager(d, p, nil)
+
+	release, err := m.beginGateResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := make(chan bool, 1)
+	go func() { marked <- m.markRestartDue() }()
+
+	select {
+	case <-marked:
+		t.Fatal("restart was marked due while a gate response was still dispatching")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case idle := <-marked:
+		if !idle {
+			t.Fatal("idle daemon should be marked due once the response finished")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart never marked due after the response finished")
+	}
+	if _, err := m.beginGateResponse(); !errors.Is(err, errRestartPending) {
+		t.Fatalf("response after the due mark = %v, want the restart refusal", err)
+	}
+}

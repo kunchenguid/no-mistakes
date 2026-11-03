@@ -105,21 +105,29 @@ func (m *RunManager) restartWhenIdle() {
 		if m.shuttingDown.Load() {
 			return
 		}
-		if m.busyRunCount() == 0 {
-			// Mark the restart due, then count again: a gate response that
-			// resumed a parked run before the mark is seen here, and one after
-			// it is refused (refuseWhileRestartDue) instead of resuming a run
-			// the stop would cancel.
-			m.restart.due.Store(true)
-			if m.busyRunCount() == 0 {
-				slog.Info("restarting for update: no run is executing")
-				m.restart.trigger()
-				return
-			}
-			m.restart.due.Store(false)
+		if m.busyRunCount() == 0 && m.markRestartDue() {
+			slog.Info("restarting for update: no run is executing")
+			m.restart.trigger()
+			return
 		}
 		<-ticker.C
 	}
+}
+
+// markRestartDue marks the restart due and counts again, with the write side
+// of the gate held: a gate response already dispatched is finished before the
+// recount sees it, and one arriving after the mark is refused by
+// beginGateResponse instead of resuming a run the stop would cancel. It
+// reports whether the daemon is still idle; if not, the mark is rolled back.
+func (m *RunManager) markRestartDue() bool {
+	m.restart.gate.Lock()
+	defer m.restart.gate.Unlock()
+	m.restart.due.Store(true)
+	if m.busyRunCount() == 0 {
+		return true
+	}
+	m.restart.due.Store(false)
+	return false
 }
 
 // beginGateResponse refuses a gate response in the moment between the daemon
