@@ -59,7 +59,7 @@ func newPassStep(name types.StepName) *mockStep {
 }
 
 func newApprovalStep(name types.StepName, findings string) *mockStep {
-	return &mockStep{name: name, outcome: &StepOutcome{NeedsApproval: true, Findings: findings}}
+	return &mockStep{name: name, outcome: &StepOutcome{NeedsApproval: true, Findings: findings}, approveReview: name == types.StepReview}
 }
 
 func newFailStep(name types.StepName, err error) *mockStep {
