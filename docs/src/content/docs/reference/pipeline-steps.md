@@ -445,18 +445,12 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - If a fix attempt produces no changes and does not carry that conclusion: the step re-observes the settled checks and reports the same findings again, so the executor retries while `auto_fix.ci` attempts remain and parks when they are spent - the same follow-up every other step's fix round gets
 - Refuses to stage or commit while a merge or rebase is in progress. The step parks with a finding that tells the operator to finish or abort the merge, or to abort the rebase with `git rebase --abort`, before selecting fix. The index and the unfinished operation stay as the agent left them
 - The executor counts each automatic fix attempt durably in the step's round history when it starts, so revalidation or a daemon restart cannot reset the configured limit
-- Exits cleanly when the PR is merged, closed, declined, or explicitly handed off after checks-passed readiness, or at readiness under `ci.release_after_checks_pass` On a provider that can prove which head was merged (GitHub and Forgejo), the merged exit proves it: a merge at the run's recorded head or another head the run owns (its durable last-pushed head or worktree HEAD) is the run's own outcome, while a merge at a head the run owns nowhere is refused as a foreign merge instead of being reported as the run's own outcome
+- Exits cleanly when the PR is merged, closed, declined, or explicitly handed off after checks-passed readiness, or at readiness under `ci.release_after_checks_pass`. On a provider that can prove which head was merged (GitHub and Forgejo), the merged exit proves it: a merge at the run's recorded head or another head the run owns (its durable last-pushed head or worktree HEAD) is the run's own outcome, while a merge at a head the run owns nowhere is refused as a foreign merge instead of being reported as the run's own outcome
 - If the idle timeout is reached while the PR is still open: pauses for user approval, even when CI checks are currently healthy; use `no-mistakes axi handoff` instead when the green PR is being handed to human reviewers
 - If the idle timeout is reached while CI failures or a merge conflict are still known: pauses for user approval with findings for the remaining issues
 - If the idle timeout is reached while provider PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
 - If CI failures or a merge conflict persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
 - Discards remembered timeout failures when the provider reports stale-head evidence (`ErrHeadChanged`) or actually observes a different head, including when a later check read fails. A failed head lookup alone preserves the latest remembered evidence; the requested head is never treated as an observation
-||||||| base
-- Exits cleanly when the PR is merged, closed, or declined
-- If the idle timeout is reached while the PR is still open: pauses for user approval, even when CI checks are currently healthy
-- If the idle timeout is reached while CI failures or, on GitHub, GitLab, Forgejo, or Azure DevOps, a merge conflict are still known: pauses for user approval with findings for the remaining issues
-- If the idle timeout is reached while GitHub, GitLab, Forgejo, or Azure DevOps PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
-- If CI failures or a GitHub, GitLab, Forgejo, or Azure DevOps merge conflict persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
 
 **Default auto-fix limit:** `3` total CI auto-fix attempts.
 
