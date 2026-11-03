@@ -110,6 +110,82 @@ func TestCopilotAgent_BuildArgs_UserAskUserSuppressesDefault(t *testing.T) {
 	}
 }
 
+func TestCopilotAgent_BuildArgs_OptOutAddsNoCustomInstructions(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot", extraArgs: []string{"--model", "gpt-5.4"}, disableProjectSettings: true}
+	args := ca.buildArgs()
+
+	expected := []string{
+		"--no-custom-instructions",
+		"--model", "gpt-5.4",
+		"--output-format", "json",
+		"--no-color",
+		"--no-ask-user",
+		"--allow-all-tools",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestCopilotAgent_BuildArgs_OptOutDoesNotDuplicateNoCustomInstructions(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot", extraArgs: []string{"--no-custom-instructions"}, disableProjectSettings: true}
+	args := ca.buildArgs()
+
+	count := 0
+	for _, a := range args {
+		if a == "--no-custom-instructions" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected single --no-custom-instructions, got %d: %v", count, args)
+	}
+}
+
+func TestCopilotAgent_BuildArgs_NoOptOutOmitsNoCustomInstructions(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot"}
+	for _, arg := range ca.buildArgs() {
+		if arg == "--no-custom-instructions" {
+			t.Fatalf("copilot must not neutralize when the repo did not opt out: %v", ca.buildArgs())
+		}
+	}
+}
+
+func TestCopilotAgent_NeutralizesGateInstructions(t *testing.T) {
+	if NeutralizesGateInstructions(&copilotAgent{bin: "copilot"}) {
+		t.Error("copilot must not report neutralized without the opt-out")
+	}
+	if !NeutralizesGateInstructions(&copilotAgent{bin: "copilot", disableProjectSettings: true}) {
+		t.Error("copilot must report neutralized under the opt-out")
+	}
+}
+
+func TestNewWithOptions_CopilotForwardsDisableProjectSettings(t *testing.T) {
+	created, err := NewWithOptions("copilot", "copilot", nil, Options{DisableProjectSettings: true})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	ca, ok := created.(*copilotAgent)
+	if !ok {
+		t.Fatalf("agent type = %T, want *copilotAgent", created)
+	}
+	if !ca.NeutralizesGateInstructions() {
+		t.Fatal("copilot lost project-instruction neutralization through NewWithOptions")
+	}
+	found := false
+	for _, arg := range ca.buildArgs() {
+		found = found || arg == "--no-custom-instructions"
+	}
+	if !found {
+		t.Errorf("copilot argv is missing --no-custom-instructions: %v", ca.buildArgs())
+	}
+}
+
 func TestBuildCopilotPrompt_InlinesSchema(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)
 	prompt := buildCopilotPrompt("do the thing", schema)
