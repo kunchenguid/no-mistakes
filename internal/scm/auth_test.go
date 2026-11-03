@@ -14,7 +14,7 @@ func TestAuthCheckCommand(t *testing.T) {
 	}{
 		{ProviderGitHub, []string{"gh", "auth", "status"}},
 		{ProviderGitLab, []string{"glab", "auth", "status"}},
-		{ProviderBitbucket, []string{"bb", "profile", "which"}},
+		{ProviderBitbucket, []string{"twg", "whoami"}},
 		{ProviderAzureDevOps, []string{"az", "account", "show"}},
 		{ProviderGitea, []string{"tea", "api", "/user"}},
 		{ProviderOrigin, []string{"origin", "auth", "status"}},
@@ -35,7 +35,7 @@ func TestAuthCheckCommand(t *testing.T) {
 
 func TestCLIAvailable(t *testing.T) {
 	binDir := t.TempDir()
-	for _, name := range []string{"gh", "bb"} {
+	for _, name := range []string{"gh", "twg"} {
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
