@@ -744,6 +744,45 @@ func TestFinalizeTextResult_ACPAgentTakesTerminalBareJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_ACPAgentAcceptsTrailingProseAfterBareJSON(t *testing.T) {
+	// Cursor ACP streams progress prose, emits the required verdict JSON, then
+	// often closes with a human summary. That trailing chatter used to surface
+	// as "prose final turn" and force a full re-run even when the JSON was valid.
+	text := `I'll validate the change live.Next I'll stand up the app.` +
+		`{"findings":[],"summary":"Live Order Summary validation passed","verdict":"go"}` +
+		"Live Order Summary validation finished with a **go**.\n\n" +
+		"Creator licence rail and Details accordion all passed."
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"},
+			"verdict":{"type":"string"}
+		},
+		"required":["findings","summary","verdict"]
+	}`)
+	result, err := finalizeTextResult("acp:cursor", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["verdict"] != "go" {
+		t.Errorf("expected verdict=go, got %v", output["verdict"])
+	}
+	if output["summary"] != "Live Order Summary validation passed" {
+		t.Errorf("unexpected summary: %v", output["summary"])
+	}
+
+	// Non-ACP adapters must still reject the same shape so mid-answer JSON
+	// quoted before more work cannot be treated as a verdict.
+	if _, err := finalizeTextResult("pi", text, schema, TokenUsage{}); err == nil {
+		t.Fatal("expected non-ACP adapter to reject trailing prose after bare JSON")
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaRejectsBareJSONMissingRequiredKeys(t *testing.T) {
 	text := `I inspected the diff and found no issues. {"foo":"bar"}`
 	schema := json.RawMessage(`{

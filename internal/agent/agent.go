@@ -471,7 +471,7 @@ func parseStructuredTextOutput(text string, schema json.RawMessage, preferTermin
 		fenced = openParsed[0]
 	}
 
-	bareParsed, bareErr := bareJSONObjects(text, validationSchema)
+	bareParsed, bareErr := bareJSONObjects(text, validationSchema, preferTerminal)
 	if len(bareParsed) > 1 {
 		if !preferTerminal {
 			return nil, fmt.Errorf("multiple bare JSON objects found in output")
@@ -676,11 +676,15 @@ type bareObject struct {
 // bareJSONObjects scans text for balanced {...} substrings outside code fences
 // that parse as JSON and validate against the schema. Only concluding objects
 // are candidates; an incidental object followed by substantive prose is not a
-// verdict, and provider protocol residue after a complete object is. A single
+// verdict, and provider protocol residue after a complete object is. When
+// preferTerminal is set (ACP adapters), the last schema-valid object is kept
+// even if ordinary prose follows it: Cursor and other ACP targets stream
+// progress as prose, emit the required JSON, then often add a short closing
+// sentence, and that trailing chatter must not force a full re-run. A single
 // answer split across adjacent objects - nothing between them but whitespace or
 // a single comma - is returned as their union when their keys are disjoint and
 // the union validates (see fuseAdjacentBareObjects).
-func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
+func bareJSONObjects(text string, schema json.RawMessage, preferTerminal bool) ([]json.RawMessage, error) {
 	var valid []bareObject
 	var objects []bareObject
 	var lastErr error
@@ -725,11 +729,11 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 		}
 		return parsed, nil
 	}
-	if len(valid) == 1 && trailingNonJSONResidue(text[valid[0].endIndex:]) {
+	if len(valid) == 1 && (preferTerminal || trailingNonJSONResidue(text[valid[0].endIndex:])) {
 		return []json.RawMessage{valid[0].obj}, nil
 	}
 	if len(valid) == 0 {
-		fused, err := fuseAdjacentBareObjects(text, objects, schema)
+		fused, err := fuseAdjacentBareObjects(text, objects, schema, preferTerminal)
 		if err != nil {
 			return nil, err
 		}
@@ -825,17 +829,19 @@ var errDuplicateBareObjectKey = errors.New("adjacent bare JSON objects share a t
 // across the run, so two competing verdicts embedded in prose are never fused.
 // A run counts only when it is concluding, on the same rule as the
 // single-object path: anything other than protocol residue after the run means
-// the objects were quoted mid-answer, not answered. A concluding run that
-// cannot be fused reports errSplitBareObjects rather than the generic schema
-// error. A run whose keys repeat is competing values, not a recoverable split,
-// and falls through to the generic schema error so it stays terminal.
-func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage) (json.RawMessage, error) {
+// the objects were quoted mid-answer, not answered - unless preferTerminal
+// (ACP), which accepts a concluding fused run even when ordinary prose
+// follows. A concluding run that cannot be fused reports errSplitBareObjects
+// rather than the generic schema error. A run whose keys repeat is competing
+// values, not a recoverable split, and falls through to the generic schema
+// error so it stays terminal.
+func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage, preferTerminal bool) (json.RawMessage, error) {
 	for i := 0; i < len(objects); {
 		j := i
 		for j+1 < len(objects) && isBareObjectSeparator(text[objects[j].endIndex:objects[j+1].startIndex]) {
 			j++
 		}
-		if j > i && trailingNonJSONResidue(text[objects[j].endIndex:]) {
+		if j > i && (preferTerminal || trailingNonJSONResidue(text[objects[j].endIndex:])) {
 			fused, err := fuseBareObjects(objects[i:j+1], schema)
 			if err == nil {
 				return fused, nil
