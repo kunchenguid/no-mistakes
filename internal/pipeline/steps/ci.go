@@ -800,7 +800,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 		} else if state == scm.PRStateMerged {
-			if _, err := verifyMergedProof(ctx, host, pr, s.ownValidatedHeads(sctx)); err != nil {
+			mergedHead, err := verifyMergedProof(ctx, host, pr, s.ownValidatedHeads(sctx))
+			if err != nil {
+				return nil, err
+			}
+			if err := s.recordHeadRewriteOverride(sctx, mergedHead); err != nil {
 				return nil, err
 			}
 			if err := setCIMonitorPRState(sctx, "merged"); err != nil {
@@ -810,6 +814,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
+			if err := s.recordHeadRewriteOverride(sctx, ""); err != nil {
+				return nil, err
+			}
 			if err := setCIMonitorPRState(sctx, "closed"); err != nil {
 				return nil, err
 			}
