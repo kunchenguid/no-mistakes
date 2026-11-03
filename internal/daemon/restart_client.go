@@ -51,3 +51,16 @@ func DescribeScheduledRestart(status *ipc.RestartStatusResult) string {
 	}
 	return fmt.Sprintf("the daemon restarts after %d active %s; new pushes wait and then run on the restarted daemon", status.WaitingRuns, runs)
 }
+
+// DescribePendingRestart words a pending restart for `daemon status` and
+// `doctor`, so a daemon holding work never looks idle.
+func DescribePendingRestart(status *ipc.RestartStatusResult) string {
+	return fmt.Sprintf("restart pending for an update: waiting for %d active %s; %d %s held", status.WaitingRuns, plural(status.WaitingRuns, "run", "runs"), status.HeldPushes, plural(status.HeldPushes, "push", "pushes"))
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}

@@ -738,7 +738,7 @@ func newDaemonStatusCmd() *cobra.Command {
 						fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running\n", sGreen.Render("●"))
 					}
 					if status, err := daemon.RestartStatus(p); err == nil && status.Pending {
-						fmt.Fprintf(cmd.OutOrStdout(), "  %s restart pending: waiting for %d active runs; %d pushes held\n", sDim.Render("↻"), status.WaitingRuns, status.HeldPushes)
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", sDim.Render("↻"), daemon.DescribePendingRestart(status))
 					}
 				} else {
 					fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon not running\n", sDim.Render("○"))

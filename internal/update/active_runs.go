@@ -18,25 +18,36 @@ func (u *updater) confirmActiveRunsBeforeUpdate() error {
 	if err != nil {
 		return fmt.Errorf("check active pipeline runs: %w", err)
 	}
+
+	// --when-idle schedules the restart whenever the running daemon can wait,
+	// even with no run active now: a run started during the download must
+	// not be stopped by an immediate restart either.
+	if u.whenIdle && !u.force {
+		waitErr := u.daemonCanRestartWhenIdle()
+		if waitErr == nil {
+			u.restartWhenIdle = true
+			if len(runs) > 0 {
+				fmt.Fprintf(u.stderrWriter(), "%d active pipeline %s will finish on the current version; the daemon restarts on the new version once no run is executing\n", len(runs), runNoun(len(runs)))
+				fmt.Fprint(u.stderrWriter(), lifecycle.RunList(runs))
+			}
+			return nil
+		}
+		if len(runs) > 0 {
+			u.writeActiveRunWarning(runs)
+			return fmt.Errorf("refusing update because %d active pipeline runs are in progress and %v; pass --force to stop/restart the daemon anyway", len(runs), waitErr)
+		}
+	}
 	if len(runs) == 0 {
 		return nil
 	}
 
-	if !u.force {
-		waitErr := u.daemonCanRestartWhenIdle()
-		if waitErr == nil {
-			u.restartWhenIdle = true
-			fmt.Fprintf(u.stderrWriter(), "%d active pipeline %s will finish on the current version; the daemon restarts on the new version once no run is executing\n", len(runs), runNoun(len(runs)))
-			fmt.Fprint(u.stderrWriter(), lifecycle.RunList(runs))
-			return nil
-		}
-		u.writeActiveRunWarning(runs)
-		return fmt.Errorf("refusing update because %d active pipeline runs are in progress and %v; pass --force to stop/restart the daemon anyway", len(runs), waitErr)
+	u.writeActiveRunWarning(runs)
+	if u.force {
+		fmt.Fprintln(u.stderrWriter(), "FORCE: continuing update and daemon restart despite active pipeline runs")
+		return nil
 	}
 
-	u.writeActiveRunWarning(runs)
-	fmt.Fprintln(u.stderrWriter(), "FORCE: continuing update and daemon restart despite active pipeline runs")
-	return nil
+	return fmt.Errorf("refusing update because %d active pipeline runs are in progress; pass --force to stop/restart the daemon anyway", len(runs))
 }
 
 // daemonCanRestartWhenIdle reports why the running daemon cannot wait for

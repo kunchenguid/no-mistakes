@@ -17,15 +17,19 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// Issue #1691: with runs active, update installs the new version and lets the
-// daemon restart once they finish, instead of refusing or failing them.
+// Issue #1691: with --when-idle and runs active, update installs the new
+// version and lets the daemon restart once they finish, instead of refusing or
+// failing them. The maintainer's triage asked for it opt-in: a plain update
+// still refuses.
 
 func TestUpdaterRunWithActiveRunsInstallsAndSchedulesTheRestart(t *testing.T) {
 	u, execPath, stdout, stderr := newActiveRunUpdater(t)
+	u.whenIdle = true
 	resetCalled := false
 	u.resetDaemon = func(bool) error { resetCalled = true; return nil }
 	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return &ipc.RestartStatusResult{}, nil }
@@ -59,6 +63,7 @@ func TestUpdaterRunWithActiveRunsInstallsAndSchedulesTheRestart(t *testing.T) {
 
 func TestUpdaterRunWithActiveRunsRefusesWhenTheDaemonIsTooOldToWait(t *testing.T) {
 	u, execPath, _, _ := newActiveRunUpdater(t)
+	u.whenIdle = true
 	u.resetDaemon = func(bool) error { t.Fatal("reset must not run"); return nil }
 	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return nil, daemon.ErrRestartWhenIdleUnsupported }
 	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
@@ -74,6 +79,7 @@ func TestUpdaterRunWithActiveRunsRefusesWhenTheDaemonIsTooOldToWait(t *testing.T
 
 func TestUpdaterRunWithActiveRunsReportsAFailedSchedule(t *testing.T) {
 	u, execPath, _, _ := newActiveRunUpdater(t)
+	u.whenIdle = true
 	u.resetDaemon = func(bool) error { t.Fatal("reset must not run"); return nil }
 	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return &ipc.RestartStatusResult{}, nil }
 	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { return nil, fmt.Errorf("connect to daemon: refused") }
@@ -84,6 +90,68 @@ func TestUpdaterRunWithActiveRunsReportsAFailedSchedule(t *testing.T) {
 	}
 	if content, _ := os.ReadFile(execPath); string(content) != "new-binary" {
 		t.Fatalf("executable = %q, want the installed new binary", content)
+	}
+}
+
+func TestUpdaterRunWithActiveRunsStillRefusesWithoutWhenIdle(t *testing.T) {
+	u, execPath, _, _ := newActiveRunUpdater(t)
+	u.resetDaemon = func(bool) error { t.Fatal("reset must not run"); return nil }
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return &ipc.RestartStatusResult{}, nil }
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
+
+	err := u.run(context.Background())
+	if err == nil || err.Error() != "refusing update because 1 active pipeline runs are in progress; pass --force to stop/restart the daemon anyway" {
+		t.Fatalf("a plain update should refuse exactly as before, got %v", err)
+	}
+	if content, _ := os.ReadFile(execPath); string(content) != "old-binary" {
+		t.Fatalf("a refused update must leave the executable alone, got %q", content)
+	}
+}
+
+// Greptile on #1697: a run can start while the archive downloads, so with
+// --when-idle an idle daemon is restarted through the scheduled restart too,
+// never by an immediate reset that would stop that run.
+func TestUpdaterRunWhenIdleWithNoActiveRunStillSchedulesTheRestart(t *testing.T) {
+	u, _, stdout, _ := newActiveRunUpdater(t)
+	finishActiveRuns(t, u.paths)
+	u.whenIdle = true
+	u.resetDaemon = func(bool) error {
+		t.Fatal("an immediate reset could stop a run started during the download")
+		return nil
+	}
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return &ipc.RestartStatusResult{}, nil }
+	scheduled := false
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) {
+		scheduled = true
+		return &ipc.RestartStatusResult{Pending: true, WaitingRuns: 1}, nil
+	}
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("update --when-idle should install and schedule, got %v", err)
+	}
+	if !scheduled {
+		t.Fatal("update --when-idle should schedule the restart even when no run was active at the start")
+	}
+	if !strings.Contains(stdout.String(), "the daemon restarts after 1 active run finishes") {
+		t.Fatalf("stdout should report the run the restart now waits for, got %q", stdout.String())
+	}
+}
+
+func finishActiveRuns(t *testing.T, p *paths.Paths) {
+	t.Helper()
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	runs, err := lifecycle.ActiveRuns(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range runs {
+		if err := database.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

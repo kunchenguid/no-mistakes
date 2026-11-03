@@ -67,9 +67,11 @@ type updater struct {
 	includePrereleases bool
 	assumeYes          bool
 	force              bool
-	// restartWhenIdle is set when runs are active and the running daemon can
-	// wait for them: the update then installs the new version and schedules
-	// the daemon's restart instead of restarting it now.
+	// whenIdle is the --when-idle request. restartWhenIdle is set when it was
+	// requested and the running daemon can wait: the update then installs the
+	// new version and schedules the daemon's restart instead of restarting it
+	// now.
+	whenIdle        bool
 	restartWhenIdle bool
 }
 
@@ -77,7 +79,10 @@ type RunOptions struct {
 	Beta  bool
 	Yes   bool
 	Force bool
-	Stdin io.Reader
+	// WhenIdle lets active runs finish on the current version and restarts
+	// the daemon on the new one once no run is executing.
+	WhenIdle bool
+	Stdin    io.Reader
 }
 
 func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
@@ -88,6 +93,7 @@ func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
 	u.includePrereleases = opts.Beta
 	u.assumeYes = opts.Yes
 	u.force = opts.Force
+	u.whenIdle = opts.WhenIdle
 	if opts.Stdin != nil {
 		u.stdin = opts.Stdin
 	}
