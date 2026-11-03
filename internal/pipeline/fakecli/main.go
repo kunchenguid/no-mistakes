@@ -1726,7 +1726,22 @@ func fakeTWGPullRequests(args []string) {
 			fmt.Println("[]")
 			os.Exit(0)
 		}
-		fmt.Println("[" + fakeTWGPRJSON(state) + "]")
+		// Real twg reports the PR's source repository; the adapter requires it
+		// to match the queried repository, so mirror the --workspace/--repo flags.
+		workspace, _ := fakeCLIFlagValue(rest, "--workspace")
+		repoSlug, _ := fakeCLIFlagValue(rest, "--repo")
+		var pr map[string]any
+		if err := json.Unmarshal([]byte(fakeTWGPRJSON(state)), &pr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		pr["source"] = map[string]any{"repository": map[string]string{"full_name": workspace + "/" + repoSlug}}
+		encoded, err := json.Marshal(pr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("[" + string(encoded) + "]")
 		os.Exit(0)
 	case "get":
 		if len(rest) == 0 {
