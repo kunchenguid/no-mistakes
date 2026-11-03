@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.109.0](https://github.com/kunchenguid/no-mistakes/compare/v1.108.0...v1.109.0) (2026-11-03)
+
+
+### Features
+
+* **config:** add opt-in ci.instructions for the CI fixer prompt ([#1683](https://github.com/kunchenguid/no-mistakes/issues/1683)) ([61e8c69](https://github.com/kunchenguid/no-mistakes/commit/61e8c69ab4692b5487d87ec93839429add3a7f6b)), closes [#1609](https://github.com/kunchenguid/no-mistakes/issues/1609)
+* **review:** add an opt-in total fix-round limit ([#1677](https://github.com/kunchenguid/no-mistakes/issues/1677)) ([67ccc02](https://github.com/kunchenguid/no-mistakes/commit/67ccc0299f049009463338fbaa586b2d23d8c350))
+
+
+### Bug Fixes
+
+* **branchsync:** offer keep-local recovery when a verified head is pinned ([#1692](https://github.com/kunchenguid/no-mistakes/issues/1692)) ([bb20a71](https://github.com/kunchenguid/no-mistakes/commit/bb20a71e709e9de4c1facd203b05666b60960b59))
+
+
+### Performance Improvements
+
+* **db:** index run history lookups ([#1685](https://github.com/kunchenguid/no-mistakes/issues/1685)) ([d6e52a7](https://github.com/kunchenguid/no-mistakes/commit/d6e52a7acc93a1ffa9a634f7ae8a13b79a25e730))
+
 ## [1.108.0](https://github.com/kunchenguid/no-mistakes/compare/v1.107.1...v1.108.0) (2026-11-02)
 
 
