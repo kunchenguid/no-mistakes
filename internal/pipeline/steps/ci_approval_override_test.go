@@ -493,43 +493,76 @@ func TestCIStep_ReconcileApprovalGate_TransientMergedProofKeepsTheGate(t *testin
 
 func TestCIStep_PersistsOverrideBeforeTerminalState(t *testing.T) {
 	for _, entry := range []string{"reconciliation", "polling"} {
-		for _, terminal := range []string{"closed", "merged without proof"} {
-			t.Run(entry+"/"+terminal, func(t *testing.T) {
-				sctx, _, _ := headRewriteParkFixture(t, "CLOSED")
-				want := "closed"
-				if terminal == "merged without proof" {
-					want = "merged"
-					prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
-					sctx.Run.PRURL = &prURL
-					sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
-					sctx.Env, _ = fakeGlab(t, `{"state":"merged"}`)
+		t.Run(entry+"/closed", func(t *testing.T) {
+			sctx, _, _ := headRewriteParkFixture(t, "CLOSED")
+			observed := false
+			sctx.SetPRState = func(state string) error {
+				observed = true
+				if state != "closed" {
+					t.Errorf("terminal state = %q, want closed", state)
 				}
-				observed := false
-				sctx.SetPRState = func(state string) error {
-					observed = true
-					if state != want {
-						t.Errorf("terminal state = %q, want %q", state, want)
-					}
-					step, err := sctx.DB.GetStepResult(sctx.StepResultID)
-					if err != nil || step.OverrideReason == nil || !strings.Contains(*step.OverrideReason, "owns nowhere") {
-						t.Errorf("terminal transition preceded the override: %+v, %v", step, err)
-					}
-					return sctx.DB.UpdateRunPRState(sctx.Run.ID, state)
+				step, err := sctx.DB.GetStepResult(sctx.StepResultID)
+				if err != nil || step.OverrideReason == nil || !strings.Contains(*step.OverrideReason, "owns nowhere") {
+					t.Errorf("terminal transition preceded the override: %+v, %v", step, err)
 				}
-				step := &CIStep{}
-				if entry == "reconciliation" {
-					resolved, err := step.ReconcileApprovalGate(sctx)
-					if err != nil || !resolved || !observed {
-						t.Fatalf("reconcile = %v, %v; terminal transition observed %v", resolved, err, observed)
-					}
-				} else {
-					outcome, err := step.Execute(sctx)
-					if err != nil || outcome == nil || !observed {
-						t.Fatalf("poll = %#v, %v; terminal transition observed %v", outcome, err, observed)
-					}
+				return sctx.DB.UpdateRunPRState(sctx.Run.ID, state)
+			}
+			step := &CIStep{}
+			if entry == "reconciliation" {
+				resolved, err := step.ReconcileApprovalGate(sctx)
+				if err != nil || !resolved || !observed {
+					t.Fatalf("reconcile = %v, %v; terminal transition observed %v", resolved, err, observed)
 				}
-			})
-		}
+				return
+			}
+			outcome, err := step.Execute(sctx)
+			if err != nil || outcome == nil || !observed {
+				t.Fatalf("poll = %#v, %v; terminal transition observed %v", outcome, err, observed)
+			}
+		})
+	}
+}
+
+// A merge on a provider that cannot name the merged head is never a clean
+// completion: an external rewrite to B followed by a merge before the next poll
+// used to record the run as validated at a head no step ever saw. Both entries
+// refuse before touching terminal state, so nothing can be replayed as a merge
+// the run produced.
+func TestCIStep_MergedWithoutProofRefusesWithoutTerminalState(t *testing.T) {
+	for _, entry := range []string{"reconciliation", "polling"} {
+		t.Run(entry, func(t *testing.T) {
+			sctx, _, _ := headRewriteParkFixture(t, "CLOSED")
+			prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+			sctx.Run.PRURL = &prURL
+			sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+			sctx.Env, _ = fakeGlab(t, `{"state":"merged"}`)
+			observed := false
+			sctx.SetPRState = func(state string) error {
+				observed = true
+				return sctx.DB.UpdateRunPRState(sctx.Run.ID, state)
+			}
+			step := &CIStep{}
+			if entry == "reconciliation" {
+				resolved, err := step.ReconcileApprovalGate(sctx)
+				if resolved {
+					t.Fatal("ReconcileApprovalGate() resolved a merge nobody can attribute")
+				}
+				if !errors.Is(err, pipeline.ErrFatalGateReconciliation) || !errors.Is(err, errMergedHeadUnproven) {
+					t.Fatalf("error = %v, want the unproven merge refused fatally", err)
+				}
+			} else {
+				outcome, err := step.Execute(sctx)
+				if outcome != nil {
+					t.Fatalf("outcome = %#v, want no completed outcome", outcome)
+				}
+				if !errors.Is(err, errMergedHeadUnproven) {
+					t.Fatalf("error = %v, want the unproven merge refused", err)
+				}
+			}
+			if observed {
+				t.Fatal("terminal PR state recorded for a merge nobody can attribute")
+			}
+		})
 	}
 }
 

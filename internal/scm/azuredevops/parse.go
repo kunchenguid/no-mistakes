@@ -16,8 +16,13 @@ type azPR struct {
 	MergeStatus   string  `json:"mergeStatus"` // notSet | queued | conflicts | succeeded | rejectedByPolicy | failure
 	SourceRefName string  `json:"sourceRefName"`
 	TargetRefName string  `json:"targetRefName"`
-	URL           string  `json:"url"` // _apis/... endpoint - NOT browsable
-	Repository    struct {
+	// LastMergeSourceCommit is the source commit the pull request merged (or
+	// would merge). The CI step uses it to name the head a merge landed on.
+	LastMergeSourceCommit struct {
+		CommitID string `json:"commitId"`
+	} `json:"lastMergeSourceCommit"`
+	URL        string `json:"url"` // _apis/... endpoint - NOT browsable
+	Repository struct {
 		Name    string `json:"name"`
 		WebURL  string `json:"webUrl"` // .../_git/{repo} - browsable base
 		Project struct {

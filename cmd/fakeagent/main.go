@@ -252,9 +252,17 @@ func runTeaStub(args []string) int {
 	if len(args) >= 2 && args[0] == "pulls" {
 		// `tea pulls <idx> --output json` (view a single PR by index). Merged
 		// on the first poll so the CI step's GetPRState exits without needing
-		// to model Gitea Actions runs.
+		// to model Gitea Actions runs. The merged head is the invoking
+		// worktree's HEAD, which is the only head the run can prove it owns; a
+		// merge the provider cannot attribute to one of the run's heads is
+		// refused rather than completed.
 		if _, err := strconv.Atoi(args[1]); err == nil {
-			fmt.Println(`{"index":99,"state":"closed","hasMerged":true,"head":"","base":"main"}`)
+			head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "fakeagent tea: merged head could not resolve the worktree head: %v\n", err)
+				return 1
+			}
+			fmt.Printf(`{"index":99,"state":"closed","hasMerged":true,"head":"","headSha":%q,"base":"main"}`+"\n", strings.TrimSpace(string(head)))
 			return 0
 		}
 	}

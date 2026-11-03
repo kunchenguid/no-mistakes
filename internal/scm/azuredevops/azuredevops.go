@@ -396,6 +396,21 @@ func (h *Host) FetchFailedCheckLogs(_ context.Context, _ *scm.PR, _ string, _ st
 	return "", scm.ErrUnsupported
 }
 
+// GetPRHeadSHA reads the source commit the pull request merged or would merge,
+// from the same `az repos pr show` read the adapter already uses. The CI step
+// uses it to name the head a merge landed on when no merged proof exists.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	got, err := h.showPR(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(got.LastMergeSourceCommit.CommitID)
+	if head == "" {
+		return "", errors.New("az repos pr show: pull request reports no source commit")
+	}
+	return head, nil
+}
+
 func (h *Host) showPR(ctx context.Context, pr *scm.PR) (*azPR, error) {
 	id := h.prID(pr)
 	if id == "" {

@@ -129,7 +129,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	baseBranch := effectivePRBaseBranch(sctx)
+	baseBranch := targetPRBaseBranch(sctx)
 	if branch == baseBranch {
 		if err := refuseSkipWithClosingIssues(sctx, fmt.Sprintf("the branch is the PR base branch %s", branch)); err != nil {
 			return nil, err

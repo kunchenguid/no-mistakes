@@ -1259,8 +1259,15 @@ func fakeCIGlabMRViewJSON(state, conflicts, mergeStatus, pipelineStatus string) 
 		pipeline = fmt.Sprintf(`{"id":7,"sha":%q,"ref":%q,"status":%q,"web_url":"https://gitlab.com/test/repo/-/pipelines/7"}`,
 			pipelineSHA, pipelineRef, pipelineStatus)
 	}
-	return fmt.Sprintf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","sha":%q,"state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":%s}`,
-		sourceSHA, state, conflicts, mergeStatus, pipeline)
+	// A merge request always names its target branch; the CI step aligns a
+	// restart at Review with it, so the fake serves one too (FAKE_CLI_MR_TARGET_BRANCH,
+	// defaulting to the fixture's main).
+	targetBranch := os.Getenv("FAKE_CLI_MR_TARGET_BRANCH")
+	if targetBranch == "" {
+		targetBranch = "main"
+	}
+	return fmt.Sprintf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","sha":%q,"state":%q,"target_branch":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":%s}`,
+		sourceSHA, state, targetBranch, conflicts, mergeStatus, pipeline)
 }
 
 // fakeCIGlabIsPipelineJobsRead reports whether the invocation is the REST jobs

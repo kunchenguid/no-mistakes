@@ -57,8 +57,23 @@ func (s *restartBaseReview) Execute(sctx *pipeline.StepContext) (*pipeline.StepO
 		s.t.Errorf("Review %d scoped to %q, want %q", s.calls, got, want)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || run.PRBaseBranch == nil || *run.PRBaseBranch != want {
-		s.t.Errorf("Review %d durable base = %+v, %v; want %q", s.calls, run, err, want)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	// The observation is scoping state: it must never be persisted as target
+	// intent, because the PR step retargets an existing pull request to that
+	// column. The first Review runs before any restart, so it has none.
+	if run.PRBaseBranch != nil {
+		s.t.Errorf("Review %d durable target base = %q, want the observation kept out of target intent", s.calls, *run.PRBaseBranch)
+	}
+	// An observation equal to the base this restart already resolves to is not
+	// persisted (applyRunPRBase only materialises a difference), so the durable
+	// value may be absent - it must simply never disagree with the scope.
+	if run.ObservedBaseBranch != nil && *run.ObservedBaseBranch != want {
+		s.t.Errorf("Review %d durable observed base = %q, want %q or none", s.calls, *run.ObservedBaseBranch, want)
+	}
+	if s.calls == 1 && run.ObservedBaseBranch != nil {
+		s.t.Errorf("Review 1 observed base = %q, want none before any restart", *run.ObservedBaseBranch)
 	}
 	return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 }
@@ -81,9 +96,8 @@ func TestCIStep_RestartRefreshesBaseAfterParkWithoutPush(t *testing.T) {
 				if err := f.sctx.DB.UpdateRunPRURL(run.ID, *f.sctx.Run.PRURL); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.sctx.DB.UpdateRunPRBaseBranch(run.ID, "layer1"); err != nil {
-					t.Fatal(err)
-				}
+				// The operator's target intent for the first, pre-restart
+				// Review. It is never written by the alignment.
 				initial := "layer1"
 				run.PRBaseBranch = &initial
 				run.PRURL = f.sctx.Run.PRURL
@@ -176,7 +190,7 @@ func TestCIStep_RestartRefusesAnUnreadableLiveBase(t *testing.T) {
 				t.Fatal("Review restart accepted an unreadable or invalid live base")
 			}
 			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-			if err != nil || run.PRBaseBranch != nil || f.sctx.Run.PRBaseBranch != nil {
+			if err != nil || run.ObservedBaseBranch != nil || run.PRBaseBranch != nil || f.sctx.Run.ObservedBaseBranch != nil {
 				t.Fatalf("refused base changed restart scope: %+v, %v", run, err)
 			}
 		})

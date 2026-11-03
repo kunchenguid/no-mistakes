@@ -200,19 +200,16 @@ func forcePushRebaseTargets(branch, defaultBranch string) []string {
 }
 
 // effectivePRBaseBranch resolves the integration and change-scoping base for
-// pipeline steps. Per-run overrides win over repo config; the repository default
-// remains the fallback when neither selects a separate PR target branch.
+// pipeline steps. The base the CI step OBSERVED on the pull request wins,
+// because a restart at Review must scope the change the way the pull request is
+// now shaped; then the operator's per-run override, then repo config, then the
+// repository default. Observed state never reaches retarget decisions:
+// targetPRBaseBranch and PRBaseBranch keep owning those.
 func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
-	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
-	if runBase := runPRBaseBranch(sctx); runBase != "" {
-		defaultBranch = runBase
-	} else if sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" {
-		defaultBranch = strings.TrimSpace(sctx.Config.PR.BaseBranch)
+	if observed := observedBaseBranch(sctx); observed != "" {
+		return observed
 	}
-	if defaultBranch == "" {
-		defaultBranch = "main"
-	}
-	return defaultBranch
+	return targetPRBaseBranch(sctx)
 }
 
 // detectBundledLocalDefaultCommits returns a blocking finding when the gated

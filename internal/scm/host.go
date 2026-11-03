@@ -444,6 +444,14 @@ type MergedProof struct {
 	MergedBy       string
 }
 
+// PRHeadReader is implemented by hosts that can report the commit a pull
+// request currently points at without a full check read. The CI step uses it to
+// name the head a merge landed on when the provider cannot prove a merge, so a
+// merged completion is never recorded for a head nobody can attribute.
+type PRHeadReader interface {
+	GetPRHeadSHA(ctx context.Context, pr *PR) (string, error)
+}
+
 // MergedProofHost is implemented by hosts that can prove which exact PR head
 // was merged. ownHeads lists every head the run owns, its primary recorded
 // head first, then its durable last-pushed head and the caller worktree's

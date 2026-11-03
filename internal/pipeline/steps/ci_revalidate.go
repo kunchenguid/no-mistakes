@@ -248,8 +248,13 @@ func (s *CIStep) PrepareRestart(sctx *pipeline.StepContext, restartFrom types.St
 	if host == nil {
 		return fmt.Errorf("cannot align the pull request's live base before Review: %s", reason)
 	}
+	// A host that cannot report the pull request's live base is refused loudly
+	// rather than restarted against the base the run already had: after a
+	// forge-side retarget that base can be the parent branch the layer no
+	// longer layers on (or one GitHub deleted), which re-reviews every layer
+	// beneath it or fails the restart outright.
 	if _, ok := host.(scm.PRBaseBranchReader); !ok {
-		return nil
+		return fmt.Errorf("%w: %s", errLivePRBaseUnsupported, liveBaseRefusalGuidance(sctx))
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
 		return err
@@ -309,12 +314,34 @@ func fetchVerifiedPublishedHead(sctx *pipeline.StepContext) (string, error) {
 // no base, or an unusable branch name, is permanent and still fails closed.
 var errLivePRBaseUnread = errors.New("the pull request's live base branch could not be read")
 
-// resolveLivePRBase reads the pull request's live forge base. A
-// host that cannot report a base at all resolves to "" and persists nothing.
+// errLivePRBaseUnsupported marks a host that cannot report a pull request's
+// live base at all, which is not a transient failure: the same call fails the
+// same way on every poll, so a restart that needs the base is refused instead
+// of silently scoping the revalidated change against a stale one.
+var errLivePRBaseUnsupported = errors.New("the provider cannot report the pull request's live base branch")
+
+// liveBaseRefusalGuidance names what an operator can do when the provider
+// cannot report the base a restart at Review has to scope by. It reads the
+// provider from the step context rather than the host, because the refusal is
+// exactly the case where the host offers no live-base reader and a caller's
+// stub host may carry nothing else.
+func liveBaseRefusalGuidance(sctx *pipeline.StepContext) string {
+	provider := string(resolvedProvider(sctx))
+	if provider == "" {
+		provider = "the configured provider"
+	}
+	return fmt.Sprintf("the %s provider cannot report a pull request's live base branch, so restarting at Review would scope the change against a base the pull request may no longer target; retarget the pull request to the branch the run should scope by, or finish that retarget and start a new run with --base-branch naming it", provider)
+}
+
+// resolveLivePRBase reads the pull request's live forge base. A host that
+// cannot report one at all is an outright refusal (errLivePRBaseUnsupported),
+// never a silent no-op: the caller is about to restart Review, and an
+// unaligned restart re-scopes the change against a branch the pull request no
+// longer targets.
 func resolveLivePRBase(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (string, error) {
 	reader, ok := host.(scm.PRBaseBranchReader)
 	if !ok {
-		return "", nil
+		return "", fmt.Errorf("%w: %s", errLivePRBaseUnsupported, liveBaseRefusalGuidance(sctx))
 	}
 	liveBase, err := reader.GetPRBaseBranch(sctx.Ctx, pr)
 	if err != nil {
@@ -330,15 +357,21 @@ func resolveLivePRBase(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (s
 	return liveBase, nil
 }
 
-// applyRunPRBase sets the run's persisted per-run base to the base
-// resolveLivePRBase read, whenever that differs from the base the restart will
-// actually SCOPE by (effectivePRBaseBranch). That is the comparison the alignment
-// exists for: without it a restarted Review scopes the change against a branch
-// the pull request no longer targets, and a retargeted layer re-reviews every
-// layer beneath it. The comparison includes bases selected through configuration
-// when no per-run override exists. The write deliberately
-// supersedes an operator's earlier --base-branch: this is a restart-time
-// alignment to the pull request as it now is.
+// applyRunPRBase records the base resolveLivePRBase read as the run's OBSERVED
+// scoping base, whenever that differs from the base the restart will actually
+// SCOPE by (effectivePRBaseBranch). That is the comparison the alignment exists
+// for: without it a restarted Review scopes the change against a branch the
+// pull request no longer targets, and a retargeted layer re-reviews every layer
+// beneath it.
+//
+// It writes observed_base_branch, never pr_base_branch. The latter is operator
+// TARGET intent: the PR step retargets an existing pull request to it and
+// bindExistingPR reads it as an explicit request, so recording a forge-side
+// observation there let a later stack merge start a retarget war - adoption
+// recorded layer2, the forge retargeted to main, and the PR step moved the pull
+// request back to layer2. The observation still supersedes an operator's
+// --base-branch for SCOPING, which is what the alignment is for, without ever
+// becoming a request to move anything.
 func applyRunPRBase(sctx *pipeline.StepContext, liveBase string) error {
 	if liveBase == "" {
 		return nil
@@ -351,11 +384,11 @@ func applyRunPRBase(sctx *pipeline.StepContext, liveBase string) error {
 	if current == liveBase {
 		return nil
 	}
-	if err := sctx.DB.UpdateRunPRBaseBranch(sctx.Run.ID, liveBase); err != nil {
+	if err := sctx.DB.UpdateRunObservedBaseBranch(sctx.Run.ID, liveBase); err != nil {
 		return err
 	}
-	sctx.Run.PRBaseBranch = &liveBase
-	sctx.Log(fmt.Sprintf("run base branch updated to the pull request's live base %q (was %q)", liveBase, current))
+	sctx.Run.ObservedBaseBranch = &liveBase
+	sctx.Log(fmt.Sprintf("run scoping base aligned to the pull request's live base %q (was %q)", liveBase, current))
 	return nil
 }
 

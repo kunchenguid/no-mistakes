@@ -561,6 +561,37 @@ func validateMRTitle(title string) error {
 	return nil
 }
 
+// GetPRHeadSHA reads the commit the merge request points at, from the same
+// merge-request payload the adapter already parses. The CI step uses it to name
+// the head a merge landed on when this provider cannot prove a merge.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	mr, err := h.viewMR(ctx, pr.Number)
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(mr.sourceRevision())
+	if head == "" {
+		return "", errors.New("glab mr view: merge request reports no source commit")
+	}
+	return head, nil
+}
+
+// GetPRBaseBranch reads the merge request's live target branch, which the
+// adapter already fetches for every merge-request view. The CI step aligns a
+// restart at Review with it, so a layer the forge retargeted keeps its
+// layer-only scope instead of re-reviewing everything beneath it.
+func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
+	mr, err := h.viewMR(ctx, pr.Number)
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimSpace(mr.TargetBranch)
+	if base == "" {
+		return "", errors.New("glab mr view: merge request reports no target branch")
+	}
+	return base, nil
+}
+
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	mr, err := h.viewMR(ctx, pr.Number)
 	if err != nil {
