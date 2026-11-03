@@ -1142,3 +1142,159 @@ func TestCIStep_OwnershipReadinessClearFailureStopsTheStep(t *testing.T) {
 		})
 	}
 }
+
+func TestCIStep_ReadinessRecoversAfterUnverifiedPoll(t *testing.T) {
+	for _, foreignChecks := range []bool{false, true} {
+		name := "unreadable push target"
+		if foreignChecks {
+			name = "foreign provider head"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newCIRepairFixture(t, false, nil)
+			headFile := filepath.Join(t.TempDir(), "provider-head")
+			writeHead := func(head string) {
+				if err := os.WriteFile(headFile, []byte(head), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeHead(f.headSHA)
+			f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_HEAD_FILE="+headFile,
+				`FAKE_CLI_CHECKS=[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+			stop := errors.New("three polls observed")
+			polls := 0
+			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+				polls++
+				run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ready := run.CIReadyAt != nil; ready != (polls != 2) {
+					t.Fatalf("poll %d readiness = %v; want green, withdrawn, green", polls, ready)
+				}
+				switch polls {
+				case 1:
+					if foreignChecks {
+						writeHead(strings.Repeat("b", 40))
+					} else {
+						gitCmd(t, f.dir, "push", "origin", ":refs/heads/feature")
+					}
+				case 2:
+					if foreignChecks {
+						writeHead(f.headSHA)
+					} else {
+						gitCmd(t, f.dir, "push", "origin", f.headSHA+":refs/heads/feature")
+					}
+				case 3:
+					return stop
+				}
+				return nil
+			}}
+			if _, err := step.Execute(f.sctx); !errors.Is(err, stop) {
+				t.Fatalf("monitor = %v after %d polls; log:\n%s", err, polls, f.log())
+			}
+		})
+	}
+}
+
+func TestCIStep_AdoptionFetchCancellationStopsTransport(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	started := filepath.Join(t.TempDir(), "fetch-started")
+	f.sctx.Env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":          "git-stalled-fetch",
+		"FAKE_CLI_FETCH_STARTED": started,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.sctx.Ctx = ctx
+	done := make(chan error, 1)
+	go func() {
+		_, err := fetchVerifiedPublishedHead(f.sctx)
+		done <- err
+	}()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+waiting:
+	for {
+		select {
+		case <-tick.C:
+			if _, err := os.Stat(started); err == nil {
+				break waiting
+			}
+		case err := <-done:
+			t.Fatalf("fetch exited before starting its transport: %v", err)
+		case <-deadline.C:
+			t.Fatal("fetch never started its transport")
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled fetch succeeded")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("transport kept fetch pipes open after cancellation")
+	}
+	if f.localHead(t) != f.headSHA || f.remoteHead(t) != f.headSHA {
+		t.Fatal("cancelled fetch moved the local or published head")
+	}
+}
+
+func TestCIStep_RevokedApprovalDuringPollingRestartsReview(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	review, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.sctx.DB.CompleteReviewStep(review.ID, f.sctx.Run.ID, f.headSHA, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.Env = append(f.sctx.Env, `FAKE_CLI_CHECKS=[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+	polls := 0
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		polls++
+		if polls > 1 {
+			return errors.New("monitor continued without review authority")
+		}
+		return f.sctx.DB.UpdateRunHeadSHAForRevalidation(f.sctx.Run.ID, strings.Repeat("b", 40))
+	}}
+	outcome, err := step.Execute(f.sctx)
+	if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("CI = %#v, %v; want Review restart", outcome, err)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil || run.CIReadyAt != nil {
+		t.Fatalf("revoked Review retained readiness: %+v, %v", run, err)
+	}
+}
+
+func TestCIStep_TerminalPRStateRequiresReviewAuthority(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			f := newCIRepairFixture(t, false, nil)
+			review, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.sctx.DB.CompleteReviewStep(review.ID, f.sctx.Run.ID, f.headSHA, 0, 0, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.sctx.DB.UpdateRunHeadSHAForRevalidation(f.sctx.Run.ID, strings.Repeat("b", 40)); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			f.sctx.SetPRState = func(string) error { called = true; return nil }
+			if err := setCIMonitorPRState(f.sctx, state); err == nil || called {
+				t.Fatalf("terminal PR state accepted without Review: callback=%v, error=%v", called, err)
+			}
+			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil || run.Status.Terminal() || run.PRState != nil && (*run.PRState == "merged" || *run.PRState == "closed") {
+				t.Fatalf("terminal state was persisted: %+v, %v", run, err)
+			}
+		})
+	}
+}
