@@ -504,3 +504,64 @@ func TestRebaseStep_UsesPerRunPRBaseBranch(t *testing.T) {
 		t.Fatalf("merge-base with per-run base = %s, want epic %s", got, epicSHA)
 	}
 }
+
+// The base the CI step observed on the pull request scopes the restarted
+// validation; it must never become a retarget request. runs.pr_base_branch is
+// read as explicit operator intent (PRStep retargets to it and bindExistingPR
+// refuses a closed PR because of it), so an observation written there started a
+// retarget war after the next stack merge. With only an observed base and no
+// operator override, the PR step leaves the pull request where the forge put it.
+func TestPRStep_ObservedBaseNeverRetargets(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	observed := "layer2"
+	// The pull request already targets main, the way a partial stack merge
+	// retargets it; the run observed layer2 earlier and scopes by it.
+	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "main")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.ObservedBaseBranch = &observed
+	owned := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &owned
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if strings.Contains(ghLog, "pr create") {
+		t.Fatalf("expected the existing PR to be kept, not duplicated, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--base layer2") || strings.Contains(ghLog, "layer2") {
+		t.Fatalf("an observed base became a retarget request, got:\n%s", ghLog)
+	}
+	if got := effectivePRBaseBranch(sctx); got != observed {
+		t.Fatalf("scoping base = %q, want the observed %q", got, observed)
+	}
+
+	// Creating a pull request is target intent too: a new one lands on the
+	// configured base, never on the observation.
+	createDir, createBase, createHead := setupGitRepo(t)
+	createEnv, createLog := fakeGH(t, "")
+	createCtx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, createDir, createBase, createHead, config.Commands{})
+	createCtx.Env = createEnv
+	createCtx.Run.ObservedBaseBranch = &observed
+	if _, err := (&PRStep{}).Execute(createCtx); err != nil {
+		t.Fatal(err)
+	}
+	createData, err := os.ReadFile(createLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(createData), "pr create --head feature --base main") {
+		t.Fatalf("new pull request did not target the configured base, got:\n%s", createData)
+	}
+	if strings.Contains(string(createData), "--base "+observed) {
+		t.Fatalf("new pull request targeted the observed base, got:\n%s", createData)
+	}
+}

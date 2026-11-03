@@ -230,6 +230,33 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	return updated, nil
 }
 
+// GetPRHeadSHA reads the commit the pull request points at, from the same
+// forgejo-axi view GetPRState uses. The CI step uses it to name the head a
+// merge landed on when a merged proof is unavailable.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	number, err := h.validateInputPR(pr)
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		PullRequest pullRequest `json:"pull_request"`
+	}
+	if err := h.runJSON(ctx, "pr view", []string{"--repo", h.repository, number}, &response); err != nil {
+		return "", err
+	}
+	if _, err := h.normalizePull(response.PullRequest); err != nil {
+		return "", err
+	}
+	if err := h.validateOutputPRNumber(number, response.PullRequest.Number); err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(response.PullRequest.HeadSHA)
+	if head == "" {
+		return "", errors.New("forgejo-axi returned no head commit for the pull request")
+	}
+	return head, nil
+}
+
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	number, err := h.validateInputPR(pr)
 	if err != nil {

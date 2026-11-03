@@ -94,7 +94,7 @@ func TestCIStep_AdoptsAPublishedHeadRewriteAndRestartsAtReview(t *testing.T) {
 	for _, want := range []string{
 		"pull request branch head moved outside the run (",
 		"adopted rewritten pull request head " + short(rewritten),
-		`run base branch updated to the pull request's live base "develop" (was "main")`,
+		`run scoping base aligned to the pull request's live base "develop" (was "main")`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("log is missing %q:\n%s", want, joined)
@@ -116,8 +116,11 @@ func TestCIStep_AdoptsAPublishedHeadRewriteAndRestartsAtReview(t *testing.T) {
 	if run.ReviewApprovedHeadSHA != nil {
 		t.Fatalf("review approval = %q, want cleared for revalidation", *run.ReviewApprovedHeadSHA)
 	}
-	if run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
-		t.Fatalf("persisted base = %v, want the pull request's live base develop", run.PRBaseBranch)
+	if run.ObservedBaseBranch == nil || *run.ObservedBaseBranch != "develop" {
+		t.Fatalf("observed base = %v, want the pull request's live base develop", run.ObservedBaseBranch)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("target base = %q, want the observation kept out of target intent", *run.PRBaseBranch)
 	}
 }
 
@@ -365,7 +368,7 @@ func TestCIStep_AdoptionFailsClosedWhenTheLiveBaseIsUnreported(t *testing.T) {
 		t.Fatal(err)
 	}
 	if run.PRBaseBranch != nil {
-		t.Fatalf("persisted base = %q, want no base recorded", *run.PRBaseBranch)
+		t.Fatalf("observed base = %q, want no base recorded", *run.ObservedBaseBranch)
 	}
 	if run.HeadSHA != headSHA {
 		t.Fatalf("durable run head = %s, want the validated %s", run.HeadSHA, headSHA)
@@ -398,7 +401,7 @@ func TestCIStep_AdoptionRefusesAnUnusableLiveBaseName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if run.PRBaseBranch != nil {
-		t.Fatalf("persisted base = %q, want no base recorded", *run.PRBaseBranch)
+		t.Fatalf("observed base = %q, want no base recorded", *run.ObservedBaseBranch)
 	}
 	if run.HeadSHA != headSHA {
 		t.Fatalf("durable run head = %s, want the validated %s", run.HeadSHA, headSHA)
@@ -544,8 +547,8 @@ func TestCIStep_AdoptionWaitsWhenTheLiveBaseReadFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.HeadSHA != headSHA || run.PRBaseBranch != nil {
-		t.Fatalf("run = {head %s, base %v}, want both untouched", run.HeadSHA, run.PRBaseBranch)
+	if run.HeadSHA != headSHA || run.ObservedBaseBranch != nil || run.PRBaseBranch != nil {
+		t.Fatalf("run = {head %s, observed base %v, target base %v}, want all untouched", run.HeadSHA, run.ObservedBaseBranch, run.PRBaseBranch)
 	}
 }
 
@@ -592,8 +595,8 @@ func TestCIStep_PRStateUnknownSkipsChecksWithoutAdopting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.HeadSHA != headSHA || run.PRBaseBranch != nil {
-		t.Fatalf("run = {head %s, base %v}, want both untouched", run.HeadSHA, run.PRBaseBranch)
+	if run.HeadSHA != headSHA || run.ObservedBaseBranch != nil || run.PRBaseBranch != nil {
+		t.Fatalf("run = {head %s, observed base %v, target base %v}, want all untouched", run.HeadSHA, run.ObservedBaseBranch, run.PRBaseBranch)
 	}
 }
 

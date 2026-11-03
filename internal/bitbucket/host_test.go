@@ -1,7 +1,12 @@
 package bitbucket
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -168,5 +173,40 @@ func TestPipelineBuildNumberFromStatusURL(t *testing.T) {
 		if got := pipelineBuildNumberFromStatusURL(tt.raw); got != tt.want {
 			t.Fatalf("pipelineBuildNumberFromStatusURL(%q) = %q, want %q", tt.raw, got, tt.want)
 		}
+	}
+}
+
+// GetPRBaseBranch reads the pull request's live destination branch, which the
+// CI step aligns a restart at Review with so a layer the forge retargeted keeps
+// its layer-only scope.
+func TestHostGetPRBaseBranchReadsTheDestination(t *testing.T) {
+	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/2.0/repositories/test/repo/pullrequests/42" {
+			t.Errorf("path = %q, want the pull request read", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":42,"state":"OPEN","destination":{"branch":{"name":"layer2"}}}`)
+	}))
+	defer server.Close()
+
+	host := NewHost(&Client{baseURL: server.URL, email: "test@example.com", token: "token", httpClient: &http.Client{Timeout: time.Second}}, repo, false)
+	got, err := host.GetPRBaseBranch(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetPRBaseBranch() error = %v", err)
+	}
+	if got != "layer2" {
+		t.Fatalf("GetPRBaseBranch() = %q, want the destination layer2", got)
+	}
+
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":42,"state":"OPEN"}`)
+	})
+	if _, err := host.GetPRBaseBranch(context.Background(), &scm.PR{Number: "42"}); err == nil {
+		t.Fatal("GetPRBaseBranch() error = nil, want a pull request without a destination refused")
 	}
 }

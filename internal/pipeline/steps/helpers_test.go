@@ -417,7 +417,9 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
 			api.prStateCalls++
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}}}`, api.prState, api.prSourceSHA)
+			// Every pull request names its destination branch; the CI step
+			// aligns a restart at Review with it.
+			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}},"destination":{"branch":{"name":"main"}}}`, api.prState, api.prSourceSHA)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
 			api.statusesCalls++
 			api.lastStatusesQ = r.URL.Query().Get("q")

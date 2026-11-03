@@ -689,18 +689,18 @@ func TestCIStep_TransientBaseReadStillRestartsTheRepairAtReview(t *testing.T) {
 	// The live base equals what configuration already resolves to, so nothing
 	// is persisted; what this pins is that the retry succeeded and the restart
 	// happened at all, instead of the stale read failing the run.
-	if run.PRBaseBranch != nil {
-		t.Fatalf("persisted base = %q, want no override for a base configuration already resolves to", *run.PRBaseBranch)
+	if run.ObservedBaseBranch != nil || run.PRBaseBranch != nil {
+		t.Fatalf("persisted bases = {observed %v, target %v}, want none for a base configuration already resolves to", run.ObservedBaseBranch, run.PRBaseBranch)
 	}
 	if run.HeadSHA == f.headSHA {
 		t.Fatalf("recorded head = %s, want the repair commit recorded", run.HeadSHA)
 	}
 }
 
-// applyRunPRBase is a write path into runs.pr_base_branch, so the
-// forge-reported name goes through the same validator every operator-facing
-// writer runs: an unusable ref name is refused rather than persisted and
-// re-read as a ref by every later step.
+// applyRunPRBase is a write path for a forge-reported branch name, so it goes
+// through the same validator every operator-facing writer runs: an unusable ref
+// name is refused rather than persisted and re-read as a ref by every later
+// step.
 func TestApplyRunPRBase_RefusesAnUnusableBranchName(t *testing.T) {
 	t.Parallel()
 
@@ -712,8 +712,8 @@ func TestApplyRunPRBase_RefusesAnUnusableBranchName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.PRBaseBranch != nil {
-		t.Fatalf("persisted base = %q, want nothing persisted", *run.PRBaseBranch)
+	if run.ObservedBaseBranch != nil {
+		t.Fatalf("observed base = %q, want nothing persisted", *run.ObservedBaseBranch)
 	}
 	if err := applyRunPRBase(f.sctx, "develop"); err != nil {
 		t.Fatalf("applyRunPRBase() error = %v, want a usable name persisted", err)
@@ -722,8 +722,46 @@ func TestApplyRunPRBase_RefusesAnUnusableBranchName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
-		t.Fatalf("persisted base = %v, want develop", run.PRBaseBranch)
+	if run.ObservedBaseBranch == nil || *run.ObservedBaseBranch != "develop" {
+		t.Fatalf("observed base = %v, want develop", run.ObservedBaseBranch)
+	}
+}
+
+// The observation must never become target intent. runs.pr_base_branch is what
+// the PR step retargets an existing pull request to and what bindExistingPR
+// reads as an explicit request, so writing a forge-side observation there
+// started a retarget war: adoption recorded layer2, the next stack merge
+// retargeted the pull request to main, and the PR step moved it back to layer2.
+// The observed base scopes the restarted Review instead, and the operator's own
+// override is left exactly as it was.
+func TestApplyRunPRBase_NeverWritesTargetIntent(t *testing.T) {
+	t.Parallel()
+
+	f := newCIRepairFixture(t, true, nil)
+	operatorBase := "operator/base"
+	f.sctx.Run.PRBaseBranch = &operatorBase
+
+	if err := applyRunPRBase(f.sctx, "layer2"); err != nil {
+		t.Fatalf("applyRunPRBase() error = %v", err)
+	}
+	if f.sctx.Run.PRBaseBranch == nil || *f.sctx.Run.PRBaseBranch != operatorBase {
+		t.Fatalf("in-memory target base = %v, want the operator's %q untouched", f.sctx.Run.PRBaseBranch, operatorBase)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("durable target base = %q, want the observation never persisted as target intent", *run.PRBaseBranch)
+	}
+	if run.ObservedBaseBranch == nil || *run.ObservedBaseBranch != "layer2" {
+		t.Fatalf("observed base = %v, want layer2", run.ObservedBaseBranch)
+	}
+	if got := effectivePRBaseBranch(f.sctx); got != "layer2" {
+		t.Fatalf("scoping base = %q, want the observed layer2 to supersede the operator base for scoping", got)
+	}
+	if got := targetPRBaseBranch(f.sctx); got != operatorBase {
+		t.Fatalf("target base = %q, want the operator's %q: an observation never retargets", got, operatorBase)
 	}
 }
 
@@ -748,8 +786,8 @@ func TestApplyRunPRBase_OnlyMaterialisesADifferentBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.PRBaseBranch != nil {
-		t.Fatalf("persisted base = %q, want no per-run override for a base configuration already resolves to", *run.PRBaseBranch)
+	if run.ObservedBaseBranch != nil || run.PRBaseBranch != nil {
+		t.Fatalf("persisted bases = {observed %v, target %v}, want nothing for a base configuration already resolves to", run.ObservedBaseBranch, run.PRBaseBranch)
 	}
 	if err := applyRunPRBase(f.sctx, "develop"); err != nil {
 		t.Fatalf("applyRunPRBase() error = %v", err)
@@ -758,8 +796,8 @@ func TestApplyRunPRBase_OnlyMaterialisesADifferentBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
-		t.Fatalf("persisted base = %v, want the retargeted base develop recorded", run.PRBaseBranch)
+	if run.ObservedBaseBranch == nil || *run.ObservedBaseBranch != "develop" {
+		t.Fatalf("observed base = %v, want the retargeted base develop recorded", run.ObservedBaseBranch)
 	}
 }
 
@@ -786,18 +824,21 @@ func TestApplyRunPRBase_AlignsTheBaseTheRestartScopesBy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.PRBaseBranch == nil || *run.PRBaseBranch != "layer2" {
-		t.Fatalf("persisted base = %v, want layer2 recorded for the restart", run.PRBaseBranch)
+	if run.ObservedBaseBranch == nil || *run.ObservedBaseBranch != "layer2" {
+		t.Fatalf("observed base = %v, want layer2 recorded for the restart", run.ObservedBaseBranch)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("target base = %q, want it untouched by the observation", *run.PRBaseBranch)
 	}
 
 	// Equal to what the restart already scopes by: nothing to align.
-	f.sctx.Run.PRBaseBranch = nil
+	f.sctx.Run.ObservedBaseBranch = nil
 	f.sctx.Config.PR.BaseBranch = ""
 	if err := applyRunPRBase(f.sctx, effectivePRBaseBranch(f.sctx)); err != nil {
 		t.Fatalf("applyRunPRBase() error = %v", err)
 	}
-	if f.sctx.Run.PRBaseBranch != nil {
-		t.Fatalf("in-memory base = %q, want no write when the scoping base already agrees", *f.sctx.Run.PRBaseBranch)
+	if f.sctx.Run.ObservedBaseBranch != nil {
+		t.Fatalf("in-memory observed base = %q, want no write when the scoping base already agrees", *f.sctx.Run.ObservedBaseBranch)
 	}
 }
 
@@ -865,8 +906,11 @@ func TestCIStep_RepairRefreshesTheBaseAfterTheFixer(t *testing.T) {
 		t.Fatalf("restart base = %s, want main", effectivePRBaseBranch(f.sctx))
 	}
 	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-	if err != nil || run.PRBaseBranch == nil || *run.PRBaseBranch != "main" {
-		t.Fatalf("durable base = %+v, %v; want main", run, err)
+	if err != nil || run.ObservedBaseBranch == nil || *run.ObservedBaseBranch != "main" {
+		t.Fatalf("durable observed base = %+v, %v; want main", run, err)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("durable target base = %q, want the observation kept out of target intent", *run.PRBaseBranch)
 	}
 }
 
@@ -997,8 +1041,11 @@ func TestCIStep_RevokedApprovalRestartsInsteadOfCompletingAMerge(t *testing.T) {
 			}
 
 			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-			if err != nil || run.PRState != nil && *run.PRState == "merged" || run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
+			if err != nil || run.PRState != nil && *run.PRState == "merged" || run.ObservedBaseBranch == nil || *run.ObservedBaseBranch != "develop" {
 				t.Fatalf("CI finalized or missed base alignment: %+v, %v", run, err)
+			}
+			if run.PRBaseBranch != nil {
+				t.Fatalf("observed base became target intent: %q", *run.PRBaseBranch)
 			}
 		})
 	}
@@ -1296,5 +1343,40 @@ func TestCIStep_TerminalPRStateRequiresReviewAuthority(t *testing.T) {
 				t.Fatalf("terminal state was persisted: %+v, %v", run, err)
 			}
 		})
+	}
+}
+
+// A provider that cannot report the pull request's live base is refused loudly
+// at a restart at Review rather than restarted against the base the run already
+// had: after a forge-side retarget that base can be the parent branch the layer
+// no longer layers on, so the restart would re-review every layer beneath it or
+// fail outright when the forge deleted that branch.
+func TestPrepareRestart_RefusesAHostWithoutLiveBase(t *testing.T) {
+	t.Parallel()
+
+	f := newCIRepairFixture(t, true, nil)
+	// Forgejo is a provider without a live-base reader; the fixture's repository
+	// only has to resolve to it for buildHost to build that host.
+	f.sctx.Repo.UpstreamURL = "https://codeberg.org/octo/widgets.git"
+	f.sctx.Config.ForgejoAXIPath = "forgejo-axi"
+
+	err := (&CIStep{}).PrepareRestart(f.sctx, types.StepReview)
+	if !errors.Is(err, errLivePRBaseUnsupported) {
+		t.Fatalf("PrepareRestart() error = %v, want the unreadable live base refused", err)
+	}
+	if !strings.Contains(err.Error(), "start a new run with --base-branch") {
+		t.Fatalf("PrepareRestart() error = %v, want actionable guidance", err)
+	}
+	run, dbErr := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	if run.ObservedBaseBranch != nil || run.PRBaseBranch != nil {
+		t.Fatalf("refused restart changed a base: observed=%v target=%v", run.ObservedBaseBranch, run.PRBaseBranch)
+	}
+
+	// A restart that is not at Review scopes nothing, so it is not refused.
+	if err := (&CIStep{}).PrepareRestart(f.sctx, types.StepTest); err != nil {
+		t.Fatalf("PrepareRestart(Test) error = %v, want no alignment needed there", err)
 	}
 }

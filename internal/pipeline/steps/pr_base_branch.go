@@ -40,10 +40,42 @@ func VerifyRemoteBranchExists(ctx context.Context, workDir, branch string) error
 }
 
 // runPRBaseBranch returns the per-run PR base branch override stored on the
-// run record, or "" when unset.
+// run record, or "" when unset. It is the operator's TARGET intent and the only
+// base the PR step retargets an existing pull request to.
 func runPRBaseBranch(sctx *pipeline.StepContext) string {
 	if sctx == nil || sctx.Run == nil || sctx.Run.PRBaseBranch == nil {
 		return ""
 	}
 	return strings.TrimSpace(*sctx.Run.PRBaseBranch)
+}
+
+// observedBaseBranch returns the base branch the CI step observed on the pull
+// request and aligned the run to, or "" when it has not observed one. It is
+// SCOPING state: it never becomes a retarget request, because the forge moved
+// the pull request itself and nothing in this run asked for that.
+func observedBaseBranch(sctx *pipeline.StepContext) string {
+	if sctx == nil || sctx.Run == nil || sctx.Run.ObservedBaseBranch == nil {
+		return ""
+	}
+	return strings.TrimSpace(*sctx.Run.ObservedBaseBranch)
+}
+
+// targetPRBaseBranch resolves the branch this run means to target: the
+// operator's per-run override, then the configured pr.base_branch, then the
+// repository default. It deliberately ignores the observed base, because
+// observation is not intent: a pull request the forge retargeted must not be
+// moved back by the PR step.
+func targetPRBaseBranch(sctx *pipeline.StepContext) string {
+	branch := ""
+	if runBase := runPRBaseBranch(sctx); runBase != "" {
+		branch = runBase
+	} else if sctx != nil && sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" {
+		branch = strings.TrimSpace(sctx.Config.PR.BaseBranch)
+	} else if sctx != nil && sctx.Repo != nil {
+		branch = strings.TrimSpace(sctx.Repo.DefaultBranch)
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	return branch
 }

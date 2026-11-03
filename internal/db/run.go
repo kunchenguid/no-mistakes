@@ -98,8 +98,16 @@ type Run struct {
 	LaunchReceiptClaimedAt     *int64
 	// PRBaseBranch is a per-run override for the integration/PR target branch.
 	// It is set by the operator (axi run --base-branch) and takes precedence
-	// over pr.base_branch in repo config for this run only.
+	// over pr.base_branch in repo config for this run only. It is TARGET
+	// intent: the PR step retargets an existing pull request to this value.
 	PRBaseBranch *string
+	// ObservedBaseBranch is the base branch the CI step observed on the
+	// pull request and aligned the run to, so a restart at Review scopes the
+	// change the way the pull request is now shaped. It is SCOPING state only,
+	// never target intent: no retarget is issued from it (PRBaseBranch and the
+	// configured pr.base_branch own that), and it supersedes PRBaseBranch for
+	// change scoping because the forge retargeted the pull request itself.
+	ObservedBaseBranch *string
 	// OmitIntent records the caller-side, tighten-only decision to keep the
 	// generated Intent section out of the PR body for this run. It is the
 	// OR of the per-run flag and the operator's global intent.publish_intent
@@ -135,7 +143,7 @@ type Run struct {
 	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, %s, created_at, updated_at, reviewer_profile`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, observed_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, %s, created_at, updated_at, reviewer_profile`
 
 func (d *DB) runColumns() string {
 	intentCheck := "NULL"
@@ -169,7 +177,7 @@ func scanRun(row interface {
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentCheckJSON,
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
-		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
+		&r.PRBaseBranch, &r.ObservedBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -1057,15 +1065,16 @@ func (d *DB) RunTestRestartPending(id string) (bool, error) {
 	return pending, nil
 }
 
-// UpdateRunPRBaseBranch persists a per-run base branch override after run
-// creation. Only the CI step's restart-at-Review path writes it today: an
-// open pull request's live forge base outranks configuration, and a restart
-// that keeps a stale base would scope the revalidated change against a branch
-// the pull request no longer targets.
-func (d *DB) UpdateRunPRBaseBranch(id, baseBranch string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET pr_base_branch = ?, updated_at = ? WHERE id = ?`, baseBranch, now(), id)
+// UpdateRunObservedBaseBranch persists the base branch the CI step observed on
+// the pull request, so every later pass scopes the change the way the pull
+// request is now shaped. Only the CI step's restart-at-Review alignment writes
+// it today. It is deliberately separate from pr_base_branch: that column is
+// operator TARGET intent, and writing an observation there made the PR step
+// retarget the pull request back to a base nobody asked for.
+func (d *DB) UpdateRunObservedBaseBranch(id, baseBranch string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET observed_base_branch = ?, updated_at = ? WHERE id = ?`, baseBranch, now(), id)
 	if err != nil {
-		return fmt.Errorf("update run pr base branch: %w", err)
+		return fmt.Errorf("update run observed base branch: %w", err)
 	}
 	return nil
 }

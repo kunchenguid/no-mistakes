@@ -165,9 +165,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 	switch state {
 	case scm.PRStateMerged:
-		mergedHead, err := verifyMergedProof(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, s.ownValidatedHeads(sctx))
+		mergedHead, err := verifyMergedHead(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, s.ownValidatedHeads(sctx))
 		if err != nil {
-			if errors.Is(err, scm.ErrHeadChanged) || pluginContractBroken(err) {
+			if errors.Is(err, scm.ErrHeadChanged) || errors.Is(err, errMergedHeadUnproven) || pluginContractBroken(err) {
 				return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
 			}
 			return false, err
@@ -364,12 +364,75 @@ func (s *CIStep) recordHeadRewriteOverride(sctx *pipeline.StepContext, liveHead 
 	return sctx.DB.SetStepOverrideReason(sctx.StepResultID, reason)
 }
 
-// verifyMergedProof returns the head the proof names as merged, or "" when the
-// provider cannot prove one - a caller naming that head in a durable record
-// must say so only when the forge actually reported it.
+// errMergedHeadUnproven marks a merged pull request whose head no provider
+// evidence can name. A merged completion is a verdict on a head, so a merge
+// nobody can attribute is refused rather than recorded as a clean pass: the
+// alternative is certifying a commit no Review, Test, or check ever saw.
+var errMergedHeadUnproven = errors.New("the provider cannot prove which head merged")
+
+// verifyMergedHead returns the head the provider merged, or a refusal. Hosts
+// that advertise merged proof answer from it; a host without merged proof is
+// asked for the head it reports for the pull request, through the same check
+// read the monitor already trusts (adapters that report an observed head bind
+// it to the pull request's live head). A host that answers neither leaves the
+// merge unproven, which is a refusal and never a completion.
+func verifyMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads []string) (string, error) {
+	if host.Capabilities().MergedProof {
+		return verifyMergedProof(ctx, host, pr, ownHeads)
+	}
+	return observedMergedHead(ctx, host, pr, ownHeads)
+}
+
+// observedMergedHead is the merged-head read for providers without merged
+// proof. The head it trusts is the one the provider itself binds to the pull
+// request, never the head this run requested: a provider that echoes the
+// requested head back proves nothing about what merged.
+func observedMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads []string) (string, error) {
+	primary := ""
+	for _, head := range ownHeads {
+		if trimmed := strings.TrimSpace(head); trimmed != "" {
+			primary = trimmed
+			break
+		}
+	}
+	if primary == "" {
+		return "", fmt.Errorf("%w: the run owns no head to identify the merge by", errMergedHeadUnproven)
+	}
+	// A host that can name the pull request's head answers directly. It is the
+	// same head the check read would bind to, without paying for a check read of
+	// a merged pull request; a host that cannot, or that fails after all, falls
+	// through to the check observation.
+	if reader, ok := host.(scm.PRHeadReader); ok {
+		if head, err := reader.GetPRHeadSHA(ctx, pr); err == nil {
+			if head = strings.TrimSpace(head); head != "" {
+				if !containsFold(ownHeads, head) {
+					return "", fmt.Errorf("verify merged PR proof: %w: expected one of %s, got %s", scm.ErrHeadChanged, strings.Join(ownHeads, ", "), head)
+				}
+				return head, nil
+			}
+		}
+	}
+	probe := &scm.PR{Number: pr.Number, URL: pr.URL, HeadSHA: primary}
+	_, observed, _, err := getCIChecks(ctx, host, probe)
+	if err != nil && !errors.Is(err, scm.ErrHeadChanged) {
+		return "", fmt.Errorf("%w: reading the merged head failed: %v", errMergedHeadUnproven, err)
+	}
+	observed = strings.TrimSpace(observed)
+	if observed == "" {
+		return "", fmt.Errorf("%w: the %s provider reported no head for the pull request", errMergedHeadUnproven, host.Provider())
+	}
+	if !containsFold(ownHeads, observed) {
+		return "", fmt.Errorf("verify merged PR proof: %w: expected one of %s, got %s", scm.ErrHeadChanged, strings.Join(ownHeads, ", "), observed)
+	}
+	return observed, nil
+}
+
+// verifyMergedProof returns the head the proof names as merged. It is only
+// reached for hosts that advertise merged proof; every other provider goes
+// through verifyMergedHead's observed-head read instead of passing silently.
 func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads []string) (string, error) {
 	if !host.Capabilities().MergedProof {
-		return "", nil
+		return "", fmt.Errorf("%w: %s", errMergedHeadUnproven, host.Provider())
 	}
 	proofHost, ok := host.(scm.MergedProofHost)
 	if !ok {
@@ -799,7 +862,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 		} else if state == scm.PRStateMerged {
-			mergedHead, err := verifyMergedProof(ctx, host, pr, s.ownValidatedHeads(sctx))
+			mergedHead, err := verifyMergedHead(ctx, host, pr, s.ownValidatedHeads(sctx))
 			if err != nil {
 				return nil, err
 			}
