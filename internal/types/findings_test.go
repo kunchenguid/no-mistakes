@@ -572,3 +572,47 @@ func TestNormalizeFindingsAvoidsIDCollisions(t *testing.T) {
 		})
 	}
 }
+
+// Finding.UnmarshalJSON copies fields explicitly, so the carry provenance
+// must survive a stored round being parsed back.
+func TestFindingCarryProvenanceRoundTrips(t *testing.T) {
+	parsed, err := ParseFindingsJSON(`{"findings":[{"id":"review-1","severity":"warning","description":"leaks fd","action":"ask-user","carried_from_round":2,"carried_reason":"file not in reviewed_paths"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := parsed.Items[0]
+	if item.CarriedFromRound != 2 || item.CarriedReason != "file not in reviewed_paths" {
+		t.Fatalf("carry provenance dropped on parse: %+v", item)
+	}
+	if got, want := item.CarriedNote(), "carried from round 2, not cleared: file not in reviewed_paths"; got != want {
+		t.Errorf("CarriedNote() = %q, want %q", got, want)
+	}
+	if got := (Finding{Description: "fresh"}).CarriedNote(); got != "" {
+		t.Errorf("a finding its round reported has CarriedNote %q", got)
+	}
+}
+
+func TestFindingCarriedNoteNamesAnOperatorAddedFindingsGate(t *testing.T) {
+	parsed, err := ParseFindingsJSON(`{"findings":[{"id":"user-1","severity":"warning","file":"cache.go","description":"stale entry","action":"auto-fix","source":"user","carried_from_round":1,"carried_reason":"file not in reviewed_paths"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := parsed.Items[0].CarriedNote(), "added by the operator at round 1, not cleared: file not in reviewed_paths"; got != want {
+		t.Errorf("CarriedNote() = %q, want %q", got, want)
+	}
+}
+
+// A restatement clears the carry marker but not the gate an operator added the
+// finding at, so a later carry names that gate rather than the carry round.
+func TestFindingCarriedNotePrefersTheOperatorsGateRound(t *testing.T) {
+	parsed, err := ParseFindingsJSON(`{"findings":[{"id":"user-1","severity":"warning","file":"cache.go","description":"stale entry","action":"auto-fix","source":"user","added_at_round":1,"carried_from_round":2,"carried_reason":"file not in reviewed_paths"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Items[0].AddedAtRound; got != 1 {
+		t.Fatalf("AddedAtRound dropped on parse: got %d, want 1", got)
+	}
+	if got, want := parsed.Items[0].CarriedNote(), "added by the operator at round 1, not cleared: file not in reviewed_paths"; got != want {
+		t.Errorf("CarriedNote() = %q, want %q", got, want)
+	}
+}

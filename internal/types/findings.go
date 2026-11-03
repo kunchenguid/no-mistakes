@@ -218,6 +218,38 @@ type Finding struct {
 	// every non-CI finding.
 	Check   string `json:"check,omitempty"`
 	CheckID string `json:"check_id,omitempty"`
+	// CarriedFromRound and CarriedReason are pipeline-written: a Review round
+	// keeps every outstanding finding it did not positively verify, so they
+	// tell a reader that this round's reviewer did not submit the finding, the
+	// last round that did, and why this round did not clear it. Both are empty
+	// on a finding the round itself reported.
+	CarriedFromRound int    `json:"carried_from_round,omitempty"`
+	CarriedReason    string `json:"carried_reason,omitempty"`
+	// AddedAtRound is the pipeline-written round at whose gate the operator
+	// added this finding. Unlike CarriedFromRound, a later round restating the
+	// finding does not clear it, so the operator's gate stays the origin.
+	AddedAtRound int `json:"added_at_round,omitempty"`
+}
+
+// CarriedNote renders the carry provenance for a human reader, or "" for a
+// finding its round reported.
+func (f Finding) CarriedNote() string {
+	if f.CarriedFromRound == 0 {
+		return ""
+	}
+	note := "carried from round " + itoa(f.CarriedFromRound)
+	if f.Source == FindingSourceUser {
+		addedAt := f.AddedAtRound
+		if addedAt == 0 {
+			// A round stored before AddedAtRound existed only knows the carry round.
+			addedAt = f.CarriedFromRound
+		}
+		note = "added by the operator at round " + itoa(addedAt)
+	}
+	if f.CarriedReason != "" {
+		note += ", not cleared: " + f.CarriedReason
+	}
+	return note
 }
 
 // TestScenario is one named end-to-end scenario the test step derived from the
@@ -289,6 +321,9 @@ type findingWire struct {
 	Category            string `json:"category,omitempty"`
 	Check               string `json:"check,omitempty"`
 	CheckID             string `json:"check_id,omitempty"`
+	CarriedFromRound    int    `json:"carried_from_round,omitempty"`
+	CarriedReason       string `json:"carried_reason,omitempty"`
+	AddedAtRound        int    `json:"added_at_round,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -501,7 +536,8 @@ func AutoFixableFindings(findings Findings) Findings {
 
 // MergeUserOverrides applies per-finding user instructions to existing agent
 // findings and appends user-added findings at the end. Added findings have
-// Source stamped to FindingSourceUser and receive deterministic "user-N" IDs
+// Source stamped to FindingSourceUser, their pipeline-written carry
+// provenance cleared, and receive deterministic "user-N" IDs
 // if they do not carry an ID. The original Findings is not mutated.
 func MergeUserOverrides(findings Findings, instructions map[string]string, added []Finding) Findings {
 	result := FindingsMetadata(findings)
@@ -524,6 +560,9 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	appended := false
 	for _, item := range added {
 		item.Source = FindingSourceUser
+		item.CarriedFromRound = 0
+		item.CarriedReason = ""
+		item.AddedAtRound = 0
 		if item.Action == "" {
 			item.Action = ActionAutoFix
 		}
@@ -677,6 +716,9 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Category = wire.Category
 	f.Check = wire.Check
 	f.CheckID = wire.CheckID
+	f.CarriedFromRound = wire.CarriedFromRound
+	f.CarriedReason = wire.CarriedReason
+	f.AddedAtRound = wire.AddedAtRound
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

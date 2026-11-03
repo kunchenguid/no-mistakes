@@ -327,3 +327,37 @@ func TestBuildPipelineSummary_SkippedStepWithEmptyRoundIsNotAPass(t *testing.T) 
 		})
 	}
 }
+
+// A fix round's "still open" list must not read as what that round's reviewer
+// submitted: a finding the round only carried is labelled with its round and
+// the reason it was not cleared.
+func TestBuildPipelineSummary_MarksCarriedReviewFindings(t *testing.T) {
+	t.Parallel()
+	findings1 := `{"findings":[{"id":"review-1","severity":"warning","file":".github/workflows/tests.yml","line":12,"description":"tests run in the wrong lane","action":"ask-user"}],"summary":"1 issue"}`
+	findings2 := `{"findings":[` +
+		`{"id":"review-1","severity":"warning","file":".github/workflows/tests.yml","line":12,"description":"tests run in the wrong lane","action":"ask-user","carried_from_round":1,"carried_reason":"new finding in the same file"},` +
+		`{"id":"review-2","severity":"warning","file":".github/workflows/tests.yml","line":40,"description":"cache key ignores the lockfile","action":"ask-user"}],"summary":"2 issues"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings2},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings1, DurationMS: 800},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &findings2, DurationMS: 600},
+		},
+	}
+
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+	for _, want := range []string{
+		"2 warnings still open (1 carried from an earlier round):",
+		"tests run in the wrong lane _(carried from round 1, not cleared: new finding in the same file)_",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("expected %q in the review fold, got:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "cache key ignores the lockfile _(") {
+		t.Errorf("a finding the round reported is marked as carried:\n%s", md)
+	}
+}
