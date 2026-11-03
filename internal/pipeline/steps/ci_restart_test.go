@@ -79,6 +79,7 @@ func (s *restartBaseReview) Execute(sctx *pipeline.StepContext) (*pipeline.StepO
 }
 
 func TestCIStep_RestartRefreshesBaseAfterParkWithoutPush(t *testing.T) {
+	t.Parallel()
 	for _, recovered := range []bool{false, true} {
 		for _, action := range []types.ApprovalAction{types.ActionApprove, types.ActionFix, types.ActionSkip} {
 			name := string(action)
@@ -88,6 +89,7 @@ func TestCIStep_RestartRefreshesBaseAfterParkWithoutPush(t *testing.T) {
 				name += "/live"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				f := newCIRepairFixture(t, false, nil)
 				run, err := f.sctx.DB.InsertRun(f.sctx.Repo.ID, f.sctx.Run.Branch, f.headSHA, f.sctx.Run.BaseSHA)
 				if err != nil {
@@ -182,8 +184,10 @@ func TestCIStep_RestartRefreshesBaseAfterParkWithoutPush(t *testing.T) {
 }
 
 func TestCIStep_RestartRefusesAnUnreadableLiveBase(t *testing.T) {
+	t.Parallel()
 	for _, base := range []string{"!", "-", "bad..base"} {
 		t.Run(base, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, false, nil)
 			f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_BASE="+base)
 			if err := (&CIStep{}).PrepareRestart(f.sctx, types.StepReview); err == nil {

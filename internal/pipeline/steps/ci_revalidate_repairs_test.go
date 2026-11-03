@@ -22,9 +22,9 @@ import (
 // ciRepairFixture is one CI monitor run wired to a real git worktree, a real
 // bare upstream, and a fake gh reporting one failing check, so a test can
 // observe what a repair does to the local head, the remote, and the run's
-// review authority. Tests using this process-heavy fixture intentionally run
-// serially: running all of their git and fake-gh subprocesses in parallel can
-// exhaust macOS CI process capacity and stall a child indefinitely.
+// review authority. Each fixture owns its repositories, database,
+// environment, and logs, so independent cases can run under testing.T.Parallel
+// without adding their subprocess latency to the package's serial floor.
 type ciRepairFixture struct {
 	sctx     *pipeline.StepContext
 	dir      string
@@ -280,6 +280,7 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, tc.revalidate, nil)
 			// The agent commits the repair itself and leaves a clean tree.
 			os.WriteFile(filepath.Join(f.dir, "resolved.txt"), []byte("resolved"), 0o644)
@@ -423,6 +424,7 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Publish policy: this is the path that could publish without review.
 			// The base and the feature edit the SAME line of the same file, so
 			// a rebase genuinely conflicts and the repair really is conflict
@@ -505,6 +507,7 @@ func TestCIStep_ManualRepairFollowsTheSamePolicy(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, tc.revalidate, writeCIFix)
 			// Automatic auto-fix off; the user answered the gate with "fix",
 			// selecting the failing check's finding.
@@ -918,6 +921,7 @@ func TestCIStep_PluginBaseViolationPreventsAdoptionAndRepair(t *testing.T) {
 	t.Parallel()
 	for _, adoption := range []bool{false, true} {
 		t.Run(map[bool]string{true: "adoption", false: "repair"}[adoption], func(t *testing.T) {
+			t.Parallel()
 			called := false
 			f := newCIRepairFixture(t, false, func(workDir string) { called = true; writeCIFix(workDir) })
 			host, reason := buildHost(f.sctx, scm.ProviderGitHub)
@@ -979,6 +983,7 @@ func TestCIStep_UnverifiedPublishedPollClearsReadiness(t *testing.T) {
 	t.Parallel()
 	for _, missing := range []bool{false, true} {
 		t.Run(map[bool]string{true: "unreadable target", false: "unknown state with foreign target"}[missing], func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, false, nil)
 			if missing {
 				gitCmd(t, f.dir, "push", "origin", "--delete", "feature")
@@ -1005,6 +1010,7 @@ func TestCIStep_RevokedApprovalRestartsInsteadOfCompletingAMerge(t *testing.T) {
 	t.Parallel()
 	for _, fixing := range []bool{false, true} {
 		t.Run(map[bool]string{true: "fix reentry", false: "poll reentry"}[fixing], func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, false, nil)
 			unpublished, err := f.sctx.DB.InsertRun(f.sctx.Repo.ID, f.sctx.Run.Branch, f.headSHA, f.sctx.Run.BaseSHA)
 			if err != nil {
@@ -1067,6 +1073,7 @@ func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
 		{"filesystem case alias", "PRIVATE.env", "private.env", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, false, nil)
 			if err := os.WriteFile(filepath.Join(f.dir, ".git", "info", "exclude"), []byte("private*\nPRIVATE*\n private*\n"), 0o644); err != nil {
 				t.Fatal(err)
@@ -1114,6 +1121,7 @@ func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
 }
 
 func TestAdoptionPathCollisionRespectsCaseSensitivity(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		local, target          string
 		insensitive, collision bool
@@ -1136,6 +1144,7 @@ func TestAdoptionPathCollisionRespectsCaseSensitivity(t *testing.T) {
 			name += ":sensitive"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			got := adoptionPathCollision(tc.local+"\x00", tc.target+"\x00", tc.insensitive)
 			if (got != "") != tc.collision || got != "" && got != tc.local {
 				t.Fatalf("collision = %q, want collision %v preserving %q", got, tc.collision, tc.local)
@@ -1145,8 +1154,10 @@ func TestAdoptionPathCollisionRespectsCaseSensitivity(t *testing.T) {
 }
 
 func TestCIStep_OwnershipReadinessClearFailureStopsTheStep(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"unreadable target", "foreign target", "adoption", "pending Review"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, false, nil)
 			if err := f.sctx.DB.SetRunCIReadyWithReason(f.sctx.Run.ID, true, false); err != nil {
 				t.Fatal(err)
@@ -1191,12 +1202,14 @@ func TestCIStep_OwnershipReadinessClearFailureStopsTheStep(t *testing.T) {
 }
 
 func TestCIStep_ReadinessRecoversAfterUnverifiedPoll(t *testing.T) {
+	t.Parallel()
 	for _, foreignChecks := range []bool{false, true} {
 		name := "unreadable push target"
 		if foreignChecks {
 			name = "foreign provider head"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, false, nil)
 			headFile := filepath.Join(t.TempDir(), "provider-head")
 			writeHead := func(head string) {
@@ -1244,6 +1257,7 @@ func TestCIStep_ReadinessRecoversAfterUnverifiedPoll(t *testing.T) {
 }
 
 func TestCIStep_AdoptionFetchCancellationStopsTransport(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "git")
@@ -1292,6 +1306,7 @@ waiting:
 }
 
 func TestCIStep_RevokedApprovalDuringPollingRestartsReview(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	review, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepReview)
 	if err != nil {
@@ -1320,8 +1335,10 @@ func TestCIStep_RevokedApprovalDuringPollingRestartsReview(t *testing.T) {
 }
 
 func TestCIStep_TerminalPRStateRequiresReviewAuthority(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"merged", "closed"} {
 		t.Run(state, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, false, nil)
 			review, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepReview)
 			if err != nil {
