@@ -129,57 +129,38 @@ func (h *Host) repoArgs() []string {
 
 // bitbucketPullRequest is the subset of twg's `pull-requests get`/`query`/
 // `create`/`update` JSON this package reads. Field names mirror the
-// underlying Bitbucket Cloud API shape verbatim (id, state, source, destination),
+// underlying Bitbucket Cloud API shape verbatim (id, state, links.html.href),
 // which twg's own documented agent-field presets confirm it passes through.
 type bitbucketPullRequest struct {
 	ID    int    `json:"id"`
 	State string `json:"state"`
+	Links struct {
+		HTML struct {
+			Href string `json:"href"`
+		} `json:"html"`
+	} `json:"links"`
 	Source struct {
-		Branch struct {
-			Name string `json:"name"`
-		} `json:"branch"`
 		Commit struct {
 			Hash string `json:"hash"`
 		} `json:"commit"`
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
 	} `json:"source"`
-	Destination struct {
-		Branch struct {
-			Name string `json:"name"`
-		} `json:"branch"`
-	} `json:"destination"`
 }
 
 func (pr bitbucketPullRequest) toPR(repo RepoRef) *scm.PR {
 	return &scm.PR{
 		Number: strconv.Itoa(pr.ID),
-		URL:    prURL(repo, pr.ID),
+		URL:    prURL(repo, pr.ID, pr.Links.HTML.Href),
 	}
 }
 
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
-	items, err := h.queryPRs(ctx, "OPEN", branch, base)
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	return items[0].toPR(h.repo), nil
-}
-
-// queryPRs lists PRs from branch in one state. It returns an error for any
-// lookup, decoding or validation failure so no caller can read an
-// indeterminate answer as "there is no such PR".
-func (h *Host) queryPRs(ctx context.Context, state, branch, base string) ([]bitbucketPullRequest, error) {
-	args := []string{"bb", "pull-requests", "query", "--source", branch, "--state", state}
+	args := []string{"bb", "pull-requests", "query", "--source", branch, "--state", "OPEN"}
 	if strings.TrimSpace(base) != "" {
 		args = append(args, "--dest", base)
 	}
 	args = append(args, h.repoArgs()...)
-	out, err := h.runJSON(ctx, args)
+	args = append(args, "-o", "json")
+	out, err := h.cmd(ctx, "twg", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests query: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -205,47 +186,15 @@ func (h *Host) queryPRs(ctx context.Context, state, branch, base string) ([]bitb
 	if err := json.Unmarshal(trimmed, &items); err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests query: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
+	if len(items) == 0 {
+		return nil, nil
+	}
 	for i := range items {
 		if items[i].ID <= 0 {
 			return nil, fmt.Errorf("twg bb pull-requests query: entry %d missing positive id", i)
 		}
-		// An entry without its source repository cannot be told apart from a
-		// fork PR, so it is an incomplete response, not an absence.
-		if strings.TrimSpace(items[i].Source.Repository.FullName) == "" {
-			return nil, fmt.Errorf("twg bb pull-requests query: entry %d missing source repository full_name", i)
-		}
 	}
-	// twg's query matches by source branch name alone, so a fork PR that
-	// happens to use the same branch name must not be bound. Only a PR whose
-	// source repository is this repository counts.
-	wantRepo := h.repo.Workspace + "/" + h.repo.RepoSlug
-	sameRepo := items[:0]
-	for _, item := range items {
-		if strings.EqualFold(item.Source.Repository.FullName, wantRepo) {
-			sameRepo = append(sameRepo, item)
-		}
-	}
-	return sameRepo, nil
-}
-
-// outputSummaryFlag turns off twg's default `--output-summary auto`, which
-// replaces any large result with a short YAML envelope pointing at a file.
-// That envelope has no JSON delimiter, so a large PR list or statuses payload
-// would otherwise fail every parse below with "invalid JSON output".
-const outputSummaryFlag = "--output-summary"
-
-// jsonArgs appends the flags every twg call whose stdout is parsed as JSON
-// needs: `-o json` plus `--output-summary none` so twg prints the raw
-// payload instead of a summary envelope.
-func jsonArgs(args []string) []string {
-	return append(args, "-o", "json", outputSummaryFlag, "none")
-}
-
-// runJSON runs a twg subcommand and returns its combined output. Every
-// JSON-parsed twg call goes through it so a new call cannot forget the
-// output flags; callers must not pass their own `-o` or `--output-summary`.
-func (h *Host) runJSON(ctx context.Context, args []string) ([]byte, error) {
-	return h.cmd(ctx, "twg", jsonArgs(args)...).CombinedOutput()
+	return items[0].toPR(h.repo), nil
 }
 
 // runWithDescription runs a twg bb pull-requests command whose description is
@@ -270,7 +219,7 @@ func (h *Host) runWithDescription(ctx context.Context, body string, buildArgs fu
 	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("close PR description temp file: %w", err)
 	}
-	out, err := h.runJSON(ctx, buildArgs(path))
+	out, err := h.cmd(ctx, "twg", buildArgs(path)...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -291,7 +240,7 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 			args = append(args, "--draft")
 		}
 		args = append(args, h.repoArgs()...)
-		return args
+		return append(args, "-o", "json")
 	})
 	if err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests create: %w", err)
@@ -323,7 +272,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 			args = append(args, "--title", content.Title)
 		}
 		args = append(args, h.repoArgs()...)
-		return args
+		return append(args, "-o", "json")
 	})
 	if err != nil {
 		return nil, fmt.Errorf("twg bb pull-requests update: %w", err)
@@ -342,7 +291,8 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 func (h *Host) getPR(ctx context.Context, number string, extraArgs ...string) (bitbucketPullRequest, []byte, error) {
 	args := append([]string{"bb", "pull-requests", "get", number}, extraArgs...)
 	args = append(args, h.repoArgs()...)
-	out, err := h.runJSON(ctx, args)
+	args = append(args, "-o", "json")
+	out, err := h.cmd(ctx, "twg", args...).CombinedOutput()
 	if err != nil {
 		return bitbucketPullRequest{}, nil, fmt.Errorf("twg bb pull-requests get: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -481,51 +431,19 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 // payload itself, sidestepping any dependency on undocumented JSON step
 // shapes for a value that is opaque text either way.
 func (h *Host) fetchPipelineLog(ctx context.Context, buildNumber string) (string, error) {
-	args := []string{"bb", "pipeline", "get", "--pipeline", buildNumber, "--logs", "--failed-steps", "--lines", "0", outputSummaryFlag, "none"}
+	args := []string{"bb", "pipeline", "get", "--pipeline", buildNumber, "--logs", "--failed-steps", "--lines", "0"}
 	args = append(args, h.repoArgs()...)
-	// Stream into a bounded tail instead of CombinedOutput so a huge failed
-	// build log never allocates its whole text in the daemon. The tail is what
-	// matters: the failure is at the end of a log.
-	tail := &tailBuffer{max: maxPipelineLogBytes}
-	cmd := h.cmd(ctx, "twg", args...)
-	cmd.Stdout = tail
-	cmd.Stderr = tail
-	err := cmd.Run()
-	out := strings.TrimSpace(tail.String())
+	out, err := h.cmd(ctx, "twg", args...).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("twg bb pipeline get --logs: %s: %w", out, err)
+		return "", fmt.Errorf("twg bb pipeline get --logs: %s: %w", strings.TrimSpace(string(out)), err)
 	}
-	return out, nil
+	return strings.TrimSpace(string(out)), nil
 }
 
-// maxPipelineLogBytes bounds the memory held for one pipeline's failed-step
-// log, matching the 32 KiB budget the CI fixer applies to log evidence.
-const maxPipelineLogBytes = 32 * 1024
-
-// tailBuffer is an io.Writer that retains only the last max bytes written.
-type tailBuffer struct {
-	max int
-	buf []byte
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	n := len(p)
-	if len(p) >= t.max {
-		t.buf = append(t.buf[:0], p[len(p)-t.max:]...)
-		return n, nil
+func prURL(repo RepoRef, prID int, rawURL string) string {
+	if url := strings.TrimSpace(rawURL); url != "" {
+		return url
 	}
-	if over := len(t.buf) + len(p) - t.max; over > 0 {
-		t.buf = append(t.buf[:0], t.buf[over:]...)
-	}
-	t.buf = append(t.buf, p...)
-	return n, nil
-}
-
-func (t *tailBuffer) String() string { return string(t.buf) }
-
-// prURL builds the URL from the configured repository and the validated id,
-// never from the response's own link, so number and URL cannot disagree.
-func prURL(repo RepoRef, prID int) string {
 	if prID <= 0 || strings.TrimSpace(repo.Workspace) == "" || strings.TrimSpace(repo.RepoSlug) == "" {
 		return ""
 	}

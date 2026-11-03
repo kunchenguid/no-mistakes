@@ -400,31 +400,14 @@ func (api *fakeBitbucketAPI) withPipelineLog(buildNumber, log string) *fakeBitbu
 	return api
 }
 
-// bbFakeStateForTest mirrors the fake twg's on-disk state (see bbFakeState in
-// internal/pipeline/fakecli); a field missing here would be dropped by
-// updateState's read-modify-write.
 type bbFakeStateForTest struct {
-	Exists       bool              `json:"exists"`
-	ID           int               `json:"id"`
-	URL          string            `json:"url"`
-	State        string            `json:"state"`
-	Title        string            `json:"title"`
-	Description  string            `json:"description"`
-	Puts         int               `json:"puts"`
-	Source       string            `json:"source,omitempty"`
-	Dest         string            `json:"dest,omitempty"`
-	SourceCommit string            `json:"source_commit,omitempty"`
-	Others       []bbFakePRForTest `json:"others,omitempty"`
-}
-
-// bbFakePRForTest is one extra PR the fake twg lists from `query`.
-type bbFakePRForTest struct {
-	ID           int    `json:"id"`
-	URL          string `json:"url"`
-	State        string `json:"state"`
-	Source       string `json:"source"`
-	Dest         string `json:"dest"`
-	SourceCommit string `json:"source_commit"`
+	Exists      bool   `json:"exists"`
+	ID          int    `json:"id"`
+	URL         string `json:"url"`
+	State       string `json:"state"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Puts        int    `json:"puts"`
 }
 
 func (api *fakeBitbucketAPI) updateState(mutate func(*bbFakeStateForTest)) {
