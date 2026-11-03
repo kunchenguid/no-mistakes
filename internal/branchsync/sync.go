@@ -2570,7 +2570,7 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 // pinnedKeepLocalOffer refuses an unverified terminal head. Recover refuses
 // that head before keep-local, so status must not advertise the command.
 func (s *Service) pinnedKeepLocalOffer(ctx context.Context, state *State, run *db.Run) (recoverySourceProof, bool) {
-	if state == nil || run == nil || run.TerminalHeadVerifiedAt == nil || !terminalRunStatus(run.Status) || strings.TrimSpace(run.HeadSHA) == "" {
+	if state == nil || run == nil || !state.Local.Clean || run.TerminalHeadVerifiedAt == nil || !terminalRunStatus(run.Status) || strings.TrimSpace(run.HeadSHA) == "" {
 		return recoverySourceProof{}, false
 	}
 	gateDir := strings.TrimSpace(s.GateDir)
@@ -2594,6 +2594,18 @@ func (s *Service) pinnedKeepLocalOffer(ctx context.Context, state *State, run *d
 	}
 	if compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, preserved); err != nil || !compatible {
 		return recoverySourceProof{}, false
+	}
+	gateHead, gateHeadExists, err := git.ExactRefTarget(ctx, gateDir, "refs/heads/"+state.Local.Branch)
+	if err != nil {
+		return recoverySourceProof{}, false
+	}
+	if gateHeadExists && gateHead != state.Local.Head && gateHead != preserved {
+		if !objectExists(ctx, gateDir, gateHead) {
+			return recoverySourceProof{}, false
+		}
+		if compatible, err := recoveryGateAnchorCompatible(ctx, gateDir, run.ID, gateHead); err != nil || !compatible {
+			return recoverySourceProof{}, false
+		}
 	}
 	repoID := ""
 	if s.Repo != nil {

@@ -235,7 +235,7 @@ func TestRecoverImportProofRefusesUnrelatedHistoriesDirtyWorktreesAndConflicting
 		mustRun(t, f.local, "add", "fix.txt")
 		f.commitRepair("extra.txt", "repair only\n")
 		mustWrite(t, filepath.Join(f.local, "extra.txt"), "dirty edit\n")
-		assertPinnedKeepLocalOffer(t, f.service.InspectCached(f.ctx), f.anchorRef())
+		assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
 		if refused := f.service.Recover(f.ctx, false); refused.Recovered || f.custodyReturned() {
 			t.Fatalf("dirty worktree recovered: %#v", refused)
 		}

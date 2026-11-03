@@ -511,7 +511,9 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
 	inspected := f.service.InspectCached(f.ctx)
-	assertPinnedKeepLocalOffer(t, inspected, f.anchorRef())
+	if inspected.NextAction != nil && strings.Contains(inspected.NextAction.Command, "--keep-local") {
+		t.Fatalf("dirty worktree was offered keep-local: %#v", inspected.NextAction)
+	}
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
 		t.Fatalf("recover dirty = %#v", state)
@@ -3119,4 +3121,27 @@ func TestAdoptPublishedRefusesReplacedPushTarget(t *testing.T) {
 			t.Fatalf("gate lane = %s, want the untouched pre-rebase head %s", got, f.preserved)
 		}
 	})
+}
+
+func TestInspectDoesNotOfferPinnedKeepLocalWhenMovedGateHeadConflictsWithGateAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+	writer := filepath.Join(t.TempDir(), "writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "other.txt"), "independent gate work\n")
+	mustRun(t, writer, "add", "other.txt")
+	mustRun(t, writer, "commit", "-m", "independent gate work")
+	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+	mustRun(t, f.gate, "update-ref", custody.RecoveryGateRef(f.run.ID), f.submitted)
+
+	assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
+	if kept := f.service.Recover(f.ctx, true); kept.Recovered {
+		t.Fatalf("keep-local recovered despite conflicting gate anchor: %#v", kept)
+	}
 }
