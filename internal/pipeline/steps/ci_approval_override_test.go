@@ -180,11 +180,11 @@ func TestCIStep_VerifyApprovalOverride_NamesTheDeliveredCommit(t *testing.T) {
 
 	t.Run("stranded pipeline refuses", func(t *testing.T) {
 		t.Parallel()
-		dir := t.TempDir()
-		env := fakeCIGlabOverride(t, "deadbeef", strings.Repeat("b", 40), `[{"id":1,"name":"build","status":"success"}]`)
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		env := fakeCIGlabOverride(t, headSHA, strings.Repeat("b", 40), `[{"id":1,"name":"build","status":"success"}]`)
 
 		prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
-		sctx := newTestContext(t, nil, dir, "base", "deadbeef", config.Commands{})
+		sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
 		sctx.Env = env
 		sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 		sctx.Run.PRURL = &prURL
@@ -206,12 +206,12 @@ func TestCIStep_VerifyApprovalOverride_NamesTheDeliveredCommit(t *testing.T) {
 
 	t.Run("unrecognized job status is unresolved and named", func(t *testing.T) {
 		t.Parallel()
-		dir := t.TempDir()
-		env := fakeCIGlabOverride(t, "deadbeef", "deadbeef",
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		env := fakeCIGlabOverride(t, headSHA, headSHA,
 			`[{"id":1,"name":"build","status":"success"},{"id":2,"name":"legacy","status":"something_new"}]`)
 
 		prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
-		sctx := newTestContext(t, nil, dir, "base", "deadbeef", config.Commands{})
+		sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
 		sctx.Env = env
 		sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 		sctx.Run.PRURL = &prURL
@@ -227,11 +227,11 @@ func TestCIStep_VerifyApprovalOverride_NamesTheDeliveredCommit(t *testing.T) {
 
 	t.Run("pipeline at the delivered commit is a clean pass", func(t *testing.T) {
 		t.Parallel()
-		dir := t.TempDir()
-		env := fakeCIGlabOverride(t, "deadbeef", "deadbeef", `[{"id":1,"name":"build","status":"success"}]`)
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		env := fakeCIGlabOverride(t, headSHA, headSHA, `[{"id":1,"name":"build","status":"success"}]`)
 
 		prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
-		sctx := newTestContext(t, nil, dir, "base", "deadbeef", config.Commands{})
+		sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
 		sctx.Env = env
 		sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 		sctx.Run.PRURL = &prURL
@@ -530,5 +530,49 @@ func TestCIStep_PersistsOverrideBeforeTerminalState(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCIStep_VerifyApprovalOverride_ChecksOwnershipForOrdinaryFindings(t *testing.T) {
+	for _, scenario := range []string{"foreign push target", "foreign provider head", "unreadable push target", "restored owned head", "owned later publication"} {
+		t.Run(scenario, func(t *testing.T) {
+			sctx, validated, foreign := headRewriteParkFixture(t, "OPEN")
+			if err := sctx.DB.SetStepFindings(sctx.StepResultID, `{"findings":[{"id":"build","category":"ci-check","severity":"error","action":"auto-fix","description":"build failed"}]}`); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+foreign)
+			wantOverride := true
+			wantHead := shortSHA(foreign)
+			switch scenario {
+			case "foreign provider head":
+				gitCmd(t, sctx.WorkDir, "push", "--force", "origin", validated+":refs/heads/feature")
+			case "unreadable push target":
+				gitCmd(t, sctx.WorkDir, "push", "origin", ":refs/heads/feature")
+				wantHead = "a head the forge did not report"
+			case "restored owned head":
+				gitCmd(t, sctx.WorkDir, "push", "--force", "origin", validated+":refs/heads/feature")
+				sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+validated)
+				wantOverride = false
+			case "owned later publication":
+				if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{
+					HeadSHA: foreign, TargetKind: "upstream",
+					TargetFingerprint: branchsync.TargetFingerprint(sctx.Repo.UpstreamURL), Ref: "refs/heads/feature",
+				}); err != nil {
+					t.Fatal(err)
+				}
+				wantOverride = false
+			}
+			reason, err := (&CIStep{}).VerifyApprovalOverride(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wantOverride {
+				if !strings.Contains(reason, "owns nowhere") || !strings.Contains(reason, shortSHA(validated)) || !strings.Contains(reason, wantHead) {
+					t.Fatalf("approval lost unvalidated head evidence: %q", reason)
+				}
+			} else if reason != "" {
+				t.Fatalf("owned green head received an override: %q", reason)
+			}
+		})
 	}
 }

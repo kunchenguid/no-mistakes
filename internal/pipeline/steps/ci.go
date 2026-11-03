@@ -246,18 +246,12 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason stri
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
-	parked, err := parkedGateFindings(sctx)
-	if err != nil {
-		return fmt.Sprintf("could not read the parked CI gate findings: %v", err), nil
+	liveHead, headErr := publishedBranchHead(sctx)
+	if headErr != nil {
+		liveHead = ""
 	}
-	if s.headRewriteOverrideReason(sctx, parked, "") != "" {
-		liveHead, headErr := publishedBranchHead(sctx)
-		if headErr != nil {
-			liveHead = ""
-		}
-		if reason := s.headRewriteOverrideReason(sctx, parked, liveHead); reason != "" {
-			return reason, nil
-		}
+	if reason := s.headRewriteOverrideReason(sctx, liveHead); reason != "" {
+		return reason, nil
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
 	// The delivered commit is named on every read, not only when review-bot
@@ -267,8 +261,13 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason stri
 	// must never be recorded from another commit's checks. Review-bot identity
 	// comes from that same head read, exactly as the polling loop names it.
 	pr.HeadSHA = sctx.Run.HeadSHA
-	checks, _, _, err := getCIChecks(ctx, host, pr)
+	checks, observedHead, _, err := getCIChecks(ctx, host, pr)
 	if err == nil {
+		if strings.TrimSpace(observedHead) != "" {
+			if reason := s.headRewriteOverrideReason(sctx, observedHead); reason != "" {
+				return reason, nil
+			}
+		}
 		checks, err = requiredReviewChecks(sctx, host, pr, checks)
 	}
 	if err != nil {
@@ -331,10 +330,7 @@ func parkedGateFindings(sctx *pipeline.StepContext) (string, error) {
 // otherwise the durable text asserted the run owns nowhere a head it had just
 // been proved to own, naming the same SHA twice. liveHead may be empty when the
 // caller has not read the forge's head, which is not evidence of ownership.
-func (s *CIStep) headRewriteOverrideReason(sctx *pipeline.StepContext, parkedFindings, liveHead string) string {
-	if !pipeline.HasCIHeadRewriteRefusal(parkedFindings) {
-		return ""
-	}
+func (s *CIStep) headRewriteOverrideReason(sctx *pipeline.StepContext, liveHead string) string {
 	live := "a head the forge did not report"
 	if head := strings.TrimSpace(liveHead); head != "" {
 		if s.ciRunOwnsHead(sctx, head) {
@@ -358,7 +354,10 @@ func (s *CIStep) recordHeadRewriteOverride(sctx *pipeline.StepContext, liveHead 
 	if err != nil {
 		return fmt.Errorf("read the parked CI gate findings: %w", err)
 	}
-	reason := s.headRewriteOverrideReason(sctx, parked, liveHead)
+	if !pipeline.HasCIHeadRewriteRefusal(parked) {
+		return nil
+	}
+	reason := s.headRewriteOverrideReason(sctx, liveHead)
 	if reason == "" {
 		return nil
 	}
