@@ -3,7 +3,9 @@ package steps
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -82,31 +84,17 @@ func adoptableHeadRefusal(sctx *pipeline.StepContext, liveHead string) string {
 	if err != nil {
 		return fmt.Sprintf("the adopted tree could not be read: %v", err)
 	}
-	targetFiles := make(map[string]bool)
-	for target := range strings.SplitSeq(targetPaths, "\x00") {
-		if target == "" {
-			continue
-		}
-		targetFiles[target] = true
-		for parent := path.Dir(target); parent != "."; parent = path.Dir(parent) {
-			if _, exists := targetFiles[parent]; exists {
-				break
-			}
-			targetFiles[parent] = false
-		}
+	gitInfo, err := os.Lstat(filepath.Join(sctx.WorkDir, ".git"))
+	if err != nil {
+		return fmt.Sprintf("the worktree filesystem case sensitivity could not be read: %v", err)
 	}
-	for local := range strings.SplitSeq(localPaths, "\x00") {
-		local = strings.TrimSuffix(local, "/")
-		if local == "" {
-			continue
-		}
-		_, collision := targetFiles[local]
-		for parent := path.Dir(local); !collision && parent != "."; parent = path.Dir(parent) {
-			collision = targetFiles[parent]
-		}
-		if collision {
-			return fmt.Sprintf("local untracked or ignored path %q collides with the adopted tree", local)
-		}
+	aliasInfo, err := os.Lstat(filepath.Join(sctx.WorkDir, ".GIT"))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Sprintf("the worktree filesystem case sensitivity could not be read: %v", err)
+	}
+	ignoreCase := err == nil && os.SameFile(gitInfo, aliasInfo)
+	if local := adoptionPathCollision(localPaths, targetPaths, ignoreCase); local != "" {
+		return fmt.Sprintf("local untracked or ignored path %q collides with the adopted tree", local)
 	}
 	worktreeHead, err := stepGitHeadSHA(sctx)
 	if err != nil {
@@ -124,6 +112,43 @@ func adoptableHeadRefusal(sctx *pipeline.StepContext, liveHead string) string {
 	}
 	if strings.TrimSpace(orphans) != "" {
 		return "the run worktree holds commits that are neither on the live head nor recorded as published"
+	}
+	return ""
+}
+
+func adoptionPathCollision(localPaths, targetPaths string, ignoreCase bool) string {
+	targetFiles := make(map[string]bool)
+	for target := range strings.SplitSeq(targetPaths, "\x00") {
+		if ignoreCase {
+			target = strings.ToLower(target)
+		}
+		if target == "" {
+			continue
+		}
+		targetFiles[target] = true
+		for parent := path.Dir(target); parent != "."; parent = path.Dir(parent) {
+			if _, exists := targetFiles[parent]; exists {
+				break
+			}
+			targetFiles[parent] = false
+		}
+	}
+	for local := range strings.SplitSeq(localPaths, "\x00") {
+		local = strings.TrimSuffix(local, "/")
+		if local == "" {
+			continue
+		}
+		key := local
+		if ignoreCase {
+			key = strings.ToLower(key)
+		}
+		_, collision := targetFiles[key]
+		for parent := path.Dir(key); !collision && parent != "."; parent = path.Dir(parent) {
+			collision = targetFiles[parent]
+		}
+		if collision {
+			return local
+		}
 	}
 	return ""
 }
@@ -166,7 +191,7 @@ func parkPublishedHeadRewrite(recorded, worktreeHead, liveHead, reason string) *
 // existing pull request.
 func (s *CIStep) adoptPublishedHeadRewrite(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, observer, liveHead string, prOpen bool) (*pipeline.StepOutcome, error) {
 	recorded := strings.TrimSpace(sctx.Run.HeadSHA)
-	if err := clearCIMonitorReady(sctx); err != nil {
+	if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 		return nil, err
 	}
 	if !prOpen {

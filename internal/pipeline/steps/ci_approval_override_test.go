@@ -490,3 +490,35 @@ func TestCIStep_ReconcileApprovalGate_TransientMergedProofKeepsTheGate(t *testin
 		t.Fatal("a failed proof recorded the PR as merged")
 	}
 }
+
+func TestCIStep_ReconciliationPersistsOverrideBeforeTerminalState(t *testing.T) {
+	for _, terminal := range []string{"closed", "merged without proof"} {
+		t.Run(terminal, func(t *testing.T) {
+			sctx, _, _ := headRewriteParkFixture(t, "CLOSED")
+			want := "closed"
+			if terminal == "merged without proof" {
+				want = "merged"
+				prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+				sctx.Run.PRURL = &prURL
+				sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+				sctx.Env, _ = fakeGlab(t, `{"state":"merged"}`)
+			}
+			observed := false
+			sctx.SetPRState = func(state string) error {
+				observed = true
+				if state != want {
+					t.Errorf("terminal state = %q, want %q", state, want)
+				}
+				step, err := sctx.DB.GetStepResult(sctx.StepResultID)
+				if err != nil || step.OverrideReason == nil || !strings.Contains(*step.OverrideReason, "owns nowhere") {
+					t.Errorf("terminal transition preceded the override: %+v, %v", step, err)
+				}
+				return sctx.DB.UpdateRunPRState(sctx.Run.ID, state)
+			}
+			resolved, err := (&CIStep{}).ReconcileApprovalGate(sctx)
+			if err != nil || !resolved || !observed {
+				t.Fatalf("reconcile = %v, %v; terminal transition observed %v", resolved, err, observed)
+			}
+		})
+	}
+}

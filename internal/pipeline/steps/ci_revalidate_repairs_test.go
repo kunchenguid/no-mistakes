@@ -1009,17 +1009,19 @@ func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
 	for _, tc := range []struct {
 		name, local, target string
 		refuse              bool
+		caseAlias           bool
 	}{
-		{"exact", "private.env", "private.env", true},
-		{"local file blocks directory", "private", "private/file", true},
-		{"local directory blocks file", "private/file", "private", true},
-		{"leading whitespace", " private.env", " private.env", true},
-		{"separate siblings", "private/cache/file", "private/src/file", false},
-		{"prefix lookalike", "private.env", "private.env-example", false},
+		{"exact", "private.env", "private.env", true, false},
+		{"local file blocks directory", "private", "private/file", true, false},
+		{"local directory blocks file", "private/file", "private", true, false},
+		{"leading whitespace", " private.env", " private.env", true, false},
+		{"separate siblings", "private/cache/file", "private/src/file", false, false},
+		{"prefix lookalike", "private.env", "private.env-example", false, false},
+		{"filesystem case alias", "PRIVATE.env", "private.env", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCIRepairFixture(t, false, nil)
-			if err := os.WriteFile(filepath.Join(f.dir, ".git", "info", "exclude"), []byte("private*\n private*\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(f.dir, ".git", "info", "exclude"), []byte("private*\nPRIVATE*\n private*\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			targetPath := filepath.Join(f.dir, tc.target)
@@ -1039,12 +1041,17 @@ func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
 			if err := os.WriteFile(localPath, []byte("local secret"), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			refuse := tc.refuse
+			if tc.caseAlias {
+				_, lookupErr := os.Lstat(targetPath)
+				refuse = lookupErr == nil
+			}
 			gitCmd(t, f.dir, "push", "origin", target+":refs/heads/feature")
 			outcome, err := (&CIStep{}).Execute(f.sctx)
-			if err != nil || outcome == nil || outcome.NeedsApproval != tc.refuse {
-				t.Fatalf("adoption = %#v, %v; refusal want %v", outcome, err, tc.refuse)
+			if err != nil || outcome == nil || outcome.NeedsApproval != refuse {
+				t.Fatalf("adoption = %#v, %v; refusal want %v", outcome, err, refuse)
 			}
-			if !tc.refuse && outcome.RestartFrom != types.StepReview {
+			if !refuse && outcome.RestartFrom != types.StepReview {
 				t.Fatalf("noncolliding adoption did not restart: %#v", outcome)
 			}
 			data, err := os.ReadFile(localPath)
@@ -1052,8 +1059,85 @@ func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
 				t.Fatalf("local content = %q, %v", data, err)
 			}
 			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-			if tc.refuse && (err != nil || run.HeadSHA != f.headSHA || run.ReviewApprovedHeadSHA == nil || f.localHead(t) != f.headSHA) {
+			if refuse && (err != nil || run.HeadSHA != f.headSHA || run.ReviewApprovedHeadSHA == nil || f.localHead(t) != f.headSHA) {
 				t.Fatalf("adoption mutated state: %+v, %v", run, err)
+			}
+		})
+	}
+}
+
+func TestAdoptionPathCollisionRespectsCaseSensitivity(t *testing.T) {
+	for _, tc := range []struct {
+		local, target          string
+		insensitive, collision bool
+	}{
+		{"PRIVATE.env", "private.env", true, true},
+		{"PRIVATE", "private/file", true, true},
+		{"PRIVATE/file", "private", true, true},
+		{"private/SECRET", "PRIVATE/secret/file", true, true},
+		{"private/SECRET/file", "PRIVATE/secret", true, true},
+		{"PRIVATE.env", "private.env", false, false},
+		{"PRIVATE", "private/file", false, false},
+		{"PRIVATE/file", "private", false, false},
+		{"PRIVATE/cache", "private/source", true, false},
+		{"PRIVATE.env", "private.env-example", true, false},
+	} {
+		name := tc.local + ":" + tc.target
+		if tc.insensitive {
+			name += ":insensitive"
+		} else {
+			name += ":sensitive"
+		}
+		t.Run(name, func(t *testing.T) {
+			got := adoptionPathCollision(tc.local+"\x00", tc.target+"\x00", tc.insensitive)
+			if (got != "") != tc.collision || got != "" && got != tc.local {
+				t.Fatalf("collision = %q, want collision %v preserving %q", got, tc.collision, tc.local)
+			}
+		})
+	}
+}
+
+func TestCIStep_OwnershipReadinessClearFailureStopsTheStep(t *testing.T) {
+	for _, mode := range []string{"unreadable target", "foreign target", "adoption", "pending Review"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newCIRepairFixture(t, false, nil)
+			if err := f.sctx.DB.SetRunCIReadyWithReason(f.sctx.Run.ID, true, false); err != nil {
+				t.Fatal(err)
+			}
+			writeErr := errors.New("readiness write failed")
+			f.sctx.SetCIReadiness = func(bool, bool) error { return writeErr }
+			step := &CIStep{}
+			var outcome *pipeline.StepOutcome
+			var err error
+			switch mode {
+			case "unreadable target":
+				gitCmd(t, f.dir, "push", "origin", "--delete", "feature")
+				outcome, _, err = step.guardPublishedHead(f.sctx, nil, nil, false)
+			case "foreign target":
+				target := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}"), "-p", f.headSHA, "-m", "rewritten")
+				gitCmd(t, f.dir, "push", "origin", target+":refs/heads/feature")
+				outcome, _, err = step.guardPublishedHead(f.sctx, nil, nil, false)
+			case "adoption":
+				outcome, err = step.adoptPublishedHeadRewrite(f.sctx, nil, nil, "provider", "foreign", true)
+			case "pending Review":
+				review, insertErr := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepReview)
+				if insertErr != nil {
+					t.Fatal(insertErr)
+				}
+				if err := f.sctx.DB.CompleteReviewStep(review.ID, f.sctx.Run.ID, f.headSHA, 0, 0, ""); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.sctx.DB.UpdateRunHeadSHAForRevalidation(f.sctx.Run.ID, f.headSHA); err != nil {
+					t.Fatal(err)
+				}
+				outcome, err = step.Execute(f.sctx)
+			}
+			if !errors.Is(err, writeErr) || outcome != nil {
+				t.Fatalf("outcome = %#v, err = %v; want the readiness persistence failure", outcome, err)
+			}
+			run, readErr := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if readErr != nil || run.CIReadyAt == nil || run.HeadSHA != f.headSHA || f.localHead(t) != f.headSHA {
+				t.Fatalf("failed clear changed validation state: %+v, %v", run, readErr)
 			}
 		})
 	}
