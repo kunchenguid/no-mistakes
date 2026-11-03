@@ -254,6 +254,13 @@ func (e *Executor) SetGateReconcileTimings(interval, timeout time.Duration) {
 	}
 }
 
+// AwaitingApproval reports whether a step is blocked at an approval gate.
+func (e *Executor) AwaitingApproval() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.waiting
+}
+
 // Respond sends a gate response to the currently waiting step.
 // The step parameter must match the step currently awaiting approval.
 // Returns an error if no step is awaiting approval or if the step name doesn't match.

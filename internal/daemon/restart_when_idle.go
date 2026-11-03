@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -149,9 +150,9 @@ func (m *RunManager) beginGateResponse() (release func(), err error) {
 // recovered parked runs waiting for a slot.
 func (m *RunManager) busyRunCount() int {
 	m.mu.Lock()
-	ids := make([]string, 0, len(m.executors))
-	for id := range m.executors {
-		ids = append(ids, id)
+	execs := make(map[string]*pipeline.Executor, len(m.executors))
+	for id, exec := range m.executors {
+		execs[id] = exec
 	}
 	busy := 0
 	for _, qe := range m.runQueue {
@@ -160,7 +161,11 @@ func (m *RunManager) busyRunCount() int {
 		}
 	}
 	m.mu.Unlock()
-	for _, id := range ids {
+	for id, exec := range execs {
+		if !exec.AwaitingApproval() {
+			busy++
+			continue
+		}
 		run, err := m.db.GetRun(id)
 		if err == nil && run != nil && run.Status == types.RunRunning && run.AwaitingAgentSince != nil {
 			continue
