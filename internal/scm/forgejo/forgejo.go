@@ -366,10 +366,7 @@ func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, ownHeads []string
 		}
 		result.MergedAt = parsed
 	}
-	// mergedBy is optional evidence, the way GitHub's is: an app identity or a
-	// deleted account leaves it empty, and the merge commit and timestamp
-	// already prove the merge.
-	if result.Merged && (result.MergeCommitSHA == "" || result.MergedAt.IsZero()) {
+	if result.Merged && (result.MergeCommitSHA == "" || result.MergedAt.IsZero() || result.MergedBy == "") {
 		return scm.MergedProof{}, errors.New("forgejo-axi returned incomplete evidence for a merged PR")
 	}
 	return result, nil

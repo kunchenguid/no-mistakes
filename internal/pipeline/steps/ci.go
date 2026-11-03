@@ -130,6 +130,9 @@ func (s *CIStep) Name() types.StepName { return types.StepCI }
 // the normal CI polling loop. Open, unknown, and provider-error states remain
 // parked so reconciliation never guesses success.
 func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error) {
+	if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil || pending {
+		return false, err
+	}
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
 	}
@@ -164,12 +167,10 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	case scm.PRStateMerged:
 		mergedHead, err := verifyMergedProof(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, s.ownValidatedHeads(sctx))
 		if err != nil {
-			// A merge at a head the run owns nowhere is a deterministic
-			// refusal: every later tick reads the same merged proof, so a plain
-			// error would preserve the gate and retry forever. It is fatal here
-			// so the run ends with the same head-changed failure the poll loop
-			// produces. Transient reconciliation errors above stay parked.
-			return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
+			if errors.Is(err, scm.ErrHeadChanged) || pluginContractBroken(err) {
+				return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
+			}
+			return false, err
 		}
 		if err := setCIMonitorPRState(sctx, "merged"); err != nil {
 			return false, err
@@ -208,6 +209,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 // approval can use the ordinary CI override path. Any earlier return leaves
 // that proof absent, so the deferred guard refuses completion.
 func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (reason string, verifyErr error) {
+	if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil || pending {
+		return "", err
+	}
 	requiredComplete := !requiresExternalReview(sctx)
 	defer func() {
 		if !requiredComplete {
@@ -409,7 +413,12 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads 
 // waits rather than reporting checks or failing the run; the caller counts
 // every poll that skips the checks, whatever the reason, so no such condition
 // can repeat forever.
-func (s *CIStep) guardPublishedHead(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, stateKnown bool) (outcome *pipeline.StepOutcome, skipChecks bool, err error) {
+func (s *CIStep) guardPublishedHead(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, prOpen bool) (outcome *pipeline.StepOutcome, skipChecks bool, err error) {
+	defer func() {
+		if skipChecks && err == nil {
+			err = clearCIMonitorReady(sctx)
+		}
+	}()
 	liveHead, err := publishedBranchHead(sctx)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not read the published branch head, so no check result is read this poll: %v", err))
@@ -418,11 +427,7 @@ func (s *CIStep) guardPublishedHead(sctx *pipeline.StepContext, host scm.Host, p
 	if s.ciRunOwnsHead(sctx, liveHead) {
 		return nil, false, nil
 	}
-	if !stateKnown {
-		sctx.Log(fmt.Sprintf("warning: the push target serves %s, which this run owns nowhere, but the pull request state could not be read: no check result is read this poll and nothing is adopted until it can be", shortSHA(liveHead)))
-		return nil, true, nil
-	}
-	adopted, err := s.adoptPublishedHeadRewrite(sctx, host, pr, "the push target served head", liveHead)
+	adopted, err := s.adoptPublishedHeadRewrite(sctx, host, pr, "the push target served head", liveHead, prOpen)
 	if err != nil {
 		return nil, false, err
 	}
@@ -476,7 +481,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		s.pendingRepairPublish = false
 	}()
 	defer func() {
-		if !retryRefusal {
+		if !retryRefusal || pluginContractBroken(err) {
 			return
 		}
 		if refusal := pipeline.ProtectedPathOutcome(err); refusal != nil {
@@ -551,11 +556,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
 	if retryRefusal {
-		// The pull request's live base is read before the retained repair can
-		// commit or record anything, as the fast path. Only a restart at Review
-		// consumes it, so the read failure is carried and a repair that
-		// publishes is never abandoned over it.
-		liveBase, baseErr := resolveLivePRBase(sctx, host, pr)
+		_, baseErr := resolveLivePRBase(sctx, host, pr)
+		if pluginContractBroken(baseErr) {
+			return nil, baseErr
+		}
 		if err := clearCIMonitorReadyForIssues(sctx); err != nil {
 			return nil, err
 		}
@@ -565,17 +569,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		retryRefusal = false
 		if repair.Revalidate {
-			// Same rule as every other CI restart at Review: the run's
-			// persisted base becomes the pull request's live forge base. The
-			// retained repair has already committed by here, so a pre-read that
-			// failed is re-tried rather than failing the run over it. A restart
-			// at a later step keeps the base as it is: nothing re-scopes there.
 			if repair.restartFrom() == types.StepReview {
-				if baseErr != nil {
-					liveBase, baseErr = resolveLivePRBase(sctx, host, pr)
-					if baseErr != nil {
-						return nil, baseErr
-					}
+				liveBase, err := resolveLivePRBase(sctx, host, pr)
+				if err != nil {
+					return nil, err
 				}
 				if err := applyRunPRBase(sctx, liveBase); err != nil {
 					return nil, err
@@ -631,6 +628,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom(), Findings: sctx.DeferredFindings}, nil
 		}
+	}
+
+	if outcome, err := restartCIReviewIfPending(sctx, host, pr); err != nil || outcome != nil {
+		return outcome, err
 	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
@@ -792,7 +793,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 
 		// Check PR state (merged/closed -> exit)
-		prStateKnown := true
+		prOpen := false
 		state, err := host.GetPRState(ctx, pr)
 		if err != nil && pluginPollFailsStep(err) {
 			if err := clearCIMonitorReady(sctx); err != nil {
@@ -802,7 +803,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
-			prStateKnown = false
 		} else if state == scm.PRStateMerged {
 			if _, err := verifyMergedProof(ctx, host, pr, s.ownValidatedHeads(sctx)); err != nil {
 				return nil, err
@@ -820,6 +820,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			sctx.Log("PR has been closed")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateOpen {
+			prOpen = true
 			if err := setCIMonitorPRState(sctx, "open"); err != nil {
 				return nil, err
 			}
@@ -832,7 +833,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		// cases are an open PR and a state read that failed - and a failed
 		// state read is no reason to report checks for a head nobody proved the
 		// run owns.
-		outcome, skipChecks, guardErr := s.guardPublishedHead(sctx, host, pr, prStateKnown)
+		outcome, skipChecks, guardErr := s.guardPublishedHead(sctx, host, pr, prOpen)
 		if guardErr != nil {
 			return nil, guardErr
 		}
@@ -940,7 +941,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// run never validated. The same adoption applies before any of
 			// those results can establish readiness.
 			if observed := strings.TrimSpace(observedHead); observed != "" && !s.ciRunOwnsHead(sctx, observed) {
-				outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", observed)
+				outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", observed, prOpen)
 				if adoptErr != nil {
 					return nil, adoptErr
 				}
@@ -1157,7 +1158,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
 				switch {
-				case !prStateKnown || !mergeabilityKnown:
+				case !prOpen || !mergeabilityKnown:
 					if err := clearCIMonitorReady(sctx); err != nil {
 						return nil, err
 					}

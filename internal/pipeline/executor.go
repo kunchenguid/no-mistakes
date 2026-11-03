@@ -952,18 +952,25 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
-		// The live path approves with the parked outcome's restart in hand; a
-		// recovered CI gate has only the durable flag a carried review
-		// approval left (db.UpdateRunHeadSHAWithCarriedReview).
 		if gate.step.Name() == types.StepCI {
-			pending, err := e.db.RunTestRestartPending(run.ID)
+			pendingReview, err := CIReviewRestartPending(e.db, run.ID)
 			if err != nil {
 				return e.failRun(run, repo, err, ctx)
 			}
-			if pending {
-				restartIndex, err := e.prepareRestart(run.ID, types.StepTest, gate.index)
+			pendingTest, err := e.db.RunTestRestartPending(run.ID)
+			if err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+			var restartFrom types.StepName
+			if pendingReview {
+				restartFrom = types.StepReview
+			} else if pendingTest {
+				restartFrom = types.StepTest
+			}
+			if restartFrom != "" {
+				restartIndex, err := e.prepareRestart(run.ID, restartFrom, gate.index)
 				if err != nil {
-					return e.failRun(run, repo, fmt.Errorf("restart recovered run from %s: %w", types.StepTest, err), ctx)
+					return e.failRun(run, repo, fmt.Errorf("restart recovered run from %s: %w", restartFrom, err), ctx)
 				}
 				return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
 			}
@@ -2077,6 +2084,16 @@ rounds:
 	}
 
 done:
+	if stepName == types.StepCI {
+		pending, err := CIReviewRestartPending(e.db, run.ID)
+		if err != nil {
+			return false, "", err
+		}
+		if pending {
+			restartFrom = types.StepReview
+			ciReadyNoCIOnCompletion = nil
+		}
+	}
 	// Mark step completed with execution-only timing.
 	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
 	if durationOverrideMS > 0 {

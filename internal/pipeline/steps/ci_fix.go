@@ -136,7 +136,10 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	sctx.Log(fmt.Sprintf("repairing: %s...", issueDesc))
 	previousHeadSHA := sctx.Run.HeadSHA
 	fixCompletedAt := completionTimesForTargets(s.observedCompletedAt, targets.Checks)
-	liveBase, baseErr := resolveLivePRBase(sctx, host, pr)
+	_, baseErr := resolveLivePRBase(sctx, host, pr)
+	if pluginContractBroken(baseErr) {
+		return nil, baseErr
+	}
 	repair, err := s.autoFixCI(sctx, host, pr, targets)
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
@@ -197,21 +200,10 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 			// supersede findings that were left unselected for this repair.
 			// Carry them on the restart outcome: ask-user findings park before
 			// the restart, while an empty or informational set proceeds.
-			// Before any restart at Review, the run's persisted per-run base is
-			// aligned with the pull request's live forge base, so a retargeted
-			// layer keeps its layer-only scope. The pre-repair read is the fast
-			// path; only a restart needs the base, and by here the repair has
-			// already committed, so a read that failed then is re-tried rather
-			// than failing the run over a forge blip that says nothing about
-			// the repair - which would leave the recorded head unvalidated with
-			// no revalidation scheduled. A restart at Test re-scopes nothing,
-			// so it leaves the base alone.
 			if repair.restartFrom() == types.StepReview {
-				if baseErr != nil {
-					liveBase, baseErr = resolveLivePRBase(sctx, host, pr)
-					if baseErr != nil {
-						return nil, baseErr
-					}
+				liveBase, err := resolveLivePRBase(sctx, host, pr)
+				if err != nil {
+					return nil, err
 				}
 				if err := applyRunPRBase(sctx, liveBase); err != nil {
 					return nil, err

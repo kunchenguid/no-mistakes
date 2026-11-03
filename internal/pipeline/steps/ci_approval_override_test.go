@@ -279,6 +279,10 @@ func headRewriteParkFixture(t *testing.T, prState string) (*pipeline.StepContext
 	sctx.Run.PRURL = &prURL
 	sctx.Run.Branch = "refs/heads/feature"
 
+	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, validated); err != nil {
+		t.Fatal(err)
+	}
+
 	stepResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
 	if err != nil {
 		t.Fatal(err)
@@ -467,5 +471,22 @@ func TestCIStep_VerifyApprovalOverride_UnownedHeadStallIsNeverACleanPass(t *test
 	}
 	if !strings.Contains(unresolved, shortSHA(validated)) || !strings.Contains(unresolved, shortSHA(foreign)) {
 		t.Fatalf("unresolved = %q, want it to name the validated head %s and the published head %s", unresolved, shortSHA(validated), shortSHA(foreign))
+	}
+}
+
+func TestCIStep_ReconcileApprovalGate_TransientMergedProofKeepsTheGate(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := headRewriteParkFixture(t, "MERGED")
+	sctx.Env = append(sctx.Env, "FAKE_CLI_PR_MERGED_PROOF_ERR=rate limit")
+	resolved, err := (&CIStep{}).ReconcileApprovalGate(sctx)
+	if resolved || err == nil || errors.Is(err, pipeline.ErrFatalGateReconciliation) {
+		t.Fatalf("reconcile = %v, %v; want a retryable read failure", resolved, err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRState != nil && *run.PRState == "merged" {
+		t.Fatal("a failed proof recorded the PR as merged")
 	}
 }

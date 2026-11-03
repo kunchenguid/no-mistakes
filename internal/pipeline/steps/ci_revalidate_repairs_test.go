@@ -14,6 +14,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -826,5 +828,211 @@ func TestRecordRevalidationHead_FailedDurableWriteMovesNoRef(t *testing.T) {
 	}
 	if f.sctx.Run.HeadSHA != reviewed {
 		t.Fatalf("in-memory run head = %s, want the reviewed %s", f.sctx.Run.HeadSHA, reviewed)
+	}
+}
+
+type liveBaseTestHost struct {
+	scm.Host
+	readBase func() (string, error)
+}
+
+func (h *liveBaseTestHost) GetPRBaseBranch(context.Context, *scm.PR) (string, error) {
+	return h.readBase()
+}
+
+func TestCIStep_RepairRefreshesTheBaseAfterTheFixer(t *testing.T) {
+	t.Parallel()
+	base := "layer1"
+	f := newCIRepairFixture(t, true, func(workDir string) {
+		writeCIFix(workDir)
+		base = "main"
+	})
+	gitCmd(t, f.dir, "branch", "layer1", "main")
+	gitCmd(t, f.dir, "push", "origin", "layer1")
+	initialBase := "layer1"
+	f.sctx.Run.PRBaseBranch = &initialBase
+	f.sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"test failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
+	host, reason := buildHost(f.sctx, scm.ProviderGitHub)
+	if host == nil {
+		t.Fatal(reason)
+	}
+	reads := 0
+	liveHost := &liveBaseTestHost{Host: host, readBase: func() (string, error) {
+		reads++
+		return base, nil
+	}}
+	outcome, err := (&CIStep{}).repairFromFindings(f.sctx, liveHost, &scm.PR{Number: "42", URL: *f.sctx.Run.PRURL})
+	if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("repair = %#v, %v; want Review restart\n%s", outcome, err, f.log())
+	}
+	if reads != 2 || effectivePRBaseBranch(f.sctx) != "main" {
+		t.Fatalf("base = %s after %d reads; want current main base", effectivePRBaseBranch(f.sctx), reads)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil || run.PRBaseBranch == nil || *run.PRBaseBranch != "main" {
+		t.Fatalf("durable base = %+v, %v; want main", run, err)
+	}
+}
+
+func TestCIStep_PluginBaseViolationPreventsAdoptionAndRepair(t *testing.T) {
+	t.Parallel()
+	for _, adoption := range []bool{false, true} {
+		t.Run(map[bool]string{true: "adoption", false: "repair"}[adoption], func(t *testing.T) {
+			called := false
+			f := newCIRepairFixture(t, false, func(workDir string) { called = true; writeCIFix(workDir) })
+			host, reason := buildHost(f.sctx, scm.ProviderGitHub)
+			if host == nil {
+				t.Fatal(reason)
+			}
+			liveHost := &liveBaseTestHost{Host: host, readBase: func() (string, error) { return "", plugin.ErrProtocol }}
+			step := &CIStep{}
+			var outcome *pipeline.StepOutcome
+			var err error
+			if adoption {
+				target := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}"), "-p", f.headSHA, "-m", "rewrite")
+				gitCmd(t, f.dir, "push", "origin", target+":refs/heads/feature")
+				outcome, err = step.adoptPublishedHeadRewrite(f.sctx, liveHost, &scm.PR{Number: "42", URL: *f.sctx.Run.PRURL}, "provider head", target, true)
+			} else {
+				f.sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"test failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
+				outcome, err = step.repairFromFindings(f.sctx, liveHost, &scm.PR{Number: "42", URL: *f.sctx.Run.PRURL})
+			}
+			if !errors.Is(err, plugin.ErrProtocol) || outcome != nil || called {
+				t.Fatalf("outcome=%#v err=%v fixer called=%v; want protocol refusal before mutation", outcome, err, called)
+			}
+			run, readErr := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if run.HeadSHA != f.headSHA || run.ReviewApprovedHeadSHA == nil || f.localHead(t) != f.headSHA {
+				t.Fatalf("protocol error changed run or worktree: %+v", run)
+			}
+		})
+	}
+}
+
+func TestCIStep_CheckObserverCannotAdoptUnderUnknownPRState(t *testing.T) {
+	t.Parallel()
+	f := newCIRepairFixture(t, false, nil)
+	step := &CIStep{}
+	if outcome, skip, err := step.guardPublishedHead(f.sctx, nil, nil, false); err != nil || skip || outcome != nil {
+		t.Fatalf("owned pre-check guard = %#v, %v, %v", outcome, skip, err)
+	}
+	target := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}"), "-p", f.headSHA, "-m", "rewrite during checks")
+	gitCmd(t, f.dir, "push", "origin", target+":refs/heads/feature")
+	if err := f.sctx.DB.SetRunCIReadyWithReason(f.sctx.Run.ID, true, false); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := step.adoptPublishedHeadRewrite(f.sctx, nil, nil, "the pull request reports head", target, false)
+	if err != nil || outcome != nil {
+		t.Fatalf("adoption = %#v, %v", outcome, err)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.HeadSHA != f.headSHA || run.ReviewApprovedHeadSHA == nil || f.localHead(t) != f.headSHA || run.CIReadyAt != nil {
+		t.Fatalf("unknown-state adoption changed validated state or kept readiness: %+v", run)
+	}
+}
+
+func TestCIStep_UnverifiedPublishedPollClearsReadiness(t *testing.T) {
+	t.Parallel()
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{true: "unreadable target", false: "unknown state with foreign target"}[missing], func(t *testing.T) {
+			f := newCIRepairFixture(t, false, nil)
+			if missing {
+				gitCmd(t, f.dir, "push", "origin", "--delete", "feature")
+			} else {
+				target := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}"), "-p", f.headSHA, "-m", "rewrite")
+				gitCmd(t, f.dir, "push", "origin", target+":refs/heads/feature")
+			}
+			if err := f.sctx.DB.SetRunCIReadyWithReason(f.sctx.Run.ID, true, false); err != nil {
+				t.Fatal(err)
+			}
+			outcome, skip, err := (&CIStep{}).guardPublishedHead(f.sctx, nil, nil, false)
+			if err != nil || !skip || outcome != nil {
+				t.Fatalf("guard = %#v, %v, %v", outcome, skip, err)
+			}
+			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil || run.CIReadyAt != nil {
+				t.Fatalf("readiness survives unverified poll: %+v, %v", run, err)
+			}
+		})
+	}
+}
+
+func TestCIStep_RevokedApprovalRestartsInsteadOfCompletingAMerge(t *testing.T) {
+	t.Parallel()
+	for _, fixing := range []bool{false, true} {
+		t.Run(map[bool]string{true: "fix reentry", false: "poll reentry"}[fixing], func(t *testing.T) {
+			f := newCIRepairFixture(t, false, nil)
+			target := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}"), "-p", f.headSHA, "-m", "adopted head")
+			step := &CIStep{}
+			if _, err := step.recordRevalidationHead(f.sctx, target, "", false); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, f.dir, "reset", "--hard", target)
+			f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_STATE=MERGED", "FAKE_CLI_PR_BASE=develop")
+			f.sctx.Fixing = fixing
+			resolved, err := step.ReconcileApprovalGate(f.sctx)
+			if resolved || err != nil {
+				t.Fatalf("reconcile = %v, %v; want parked", resolved, err)
+			}
+			outcome, err := step.Execute(f.sctx)
+			if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview {
+				t.Fatalf("CI = %#v, %v; want Review restart", outcome, err)
+			}
+			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil || run.PRState != nil && *run.PRState == "merged" || run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
+				t.Fatalf("CI finalized or missed base alignment: %+v, %v", run, err)
+			}
+		})
+	}
+}
+
+func TestCIStep_AdoptionPreservesIgnoredTreeCollisions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, local, target string }{
+		{"exact", "private.env", "private.env"},
+		{"local file blocks directory", "private", "private/file"},
+		{"local directory blocks file", "private/file", "private"},
+		{"leading whitespace", " private.env", " private.env"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCIRepairFixture(t, false, nil)
+			if err := os.WriteFile(filepath.Join(f.dir, ".git", "info", "exclude"), []byte("private*\n private*\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			targetPath := filepath.Join(f.dir, tc.target)
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(targetPath, []byte("published data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, f.dir, "add", "-f", "--", tc.target)
+			target := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "write-tree"), "-p", f.headSHA, "-m", "rewrite tracks ignored path")
+			gitCmd(t, f.dir, "reset", "--hard", "HEAD")
+			localPath := filepath.Join(f.dir, tc.local)
+			if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(localPath, []byte("local secret"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, f.dir, "push", "origin", target+":refs/heads/feature")
+			outcome, err := (&CIStep{}).Execute(f.sctx)
+			if err != nil || outcome == nil || !outcome.NeedsApproval || outcome.RestartFrom != "" {
+				t.Fatalf("adoption = %#v, %v; want refusal", outcome, err)
+			}
+			data, err := os.ReadFile(localPath)
+			if err != nil || string(data) != "local secret" {
+				t.Fatalf("local content = %q, %v", data, err)
+			}
+			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil || run.HeadSHA != f.headSHA || run.ReviewApprovedHeadSHA == nil || f.localHead(t) != f.headSHA {
+				t.Fatalf("adoption mutated state: %+v, %v", run, err)
+			}
+		})
 	}
 }

@@ -769,6 +769,11 @@ func fakeGHMergedProof(args []string, joined string) {
 	if !strings.Contains(joined, "pr view") || !strings.Contains(joined, "mergeCommit") {
 		return
 	}
+	if message := os.Getenv("FAKE_CLI_PR_MERGED_PROOF_ERR"); message != "" {
+		fmt.Fprintln(os.Stderr, message)
+		os.Exit(1)
+	}
+
 	if raw := os.Getenv("FAKE_CLI_PR_MERGED_PROOF_JSON"); raw != "" {
 		fmt.Println(raw)
 		os.Exit(0)
