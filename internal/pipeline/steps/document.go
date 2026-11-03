@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -143,16 +144,39 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// comparing it after the pass detects changes a clean status would hide.
 	headBefore := sctx.Run.HeadSHA
 
-	if beamDraftsAllowed(sctx) {
-		if outcome, handled, err := s.executeBeamDocumentTurn(sctx, prompt, schema, purpose, headBefore, combinedLint); handled || err != nil {
-			return outcome, err
-		}
-		sctx.Log("beam draft unusable; falling back to the configured model")
+	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+		Prompt:     prompt,
+		CWD:        sctx.WorkDir,
+		JSONSchema: schema,
+		OnChunk:    sctx.LogChunk,
+		Purpose:    purpose,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent document: %w", err)
 	}
 
-	findings, changesApplied, err := s.runDocumentAnalyzerPass(sctx, prompt, schema, purpose, headBefore, combinedLint)
+	// Commit whatever the agent edited, regardless of how trustworthy its
+	// structured output turns out to be.
+	commitSummary := extractDocumentSummary(result.Output, "")
+	fallbackSummary := "update documentation"
+	if combinedLint {
+		fallbackSummary = "update documentation and fix lint"
+	}
+	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary, result)
 	if err != nil {
 		return nil, err
+	}
+	changesApplied := committed || sctx.Run.HeadSHA != headBefore
+
+	// Without trustworthy structured output we cannot confirm the agent
+	// resolved every gap. Fail the step rather than creating an approval gate:
+	// unattended AXI modes can resolve a gate, but must never certify opaque
+	// analyzer output.
+	var findings Findings
+	if result.Output == nil {
+		return nil, agent.RejectStructuredOutput(fmt.Errorf("document analyzer returned no structured findings"))
+	} else if err := validateDocumentAnalyzerFindings(result.Output, &findings, changesApplied); err != nil {
+		return nil, agent.RejectStructuredOutput(fmt.Errorf("validate document analyzer findings: %w", err))
 	}
 
 	docFindings := findings

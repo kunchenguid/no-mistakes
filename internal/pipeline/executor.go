@@ -1708,12 +1708,12 @@ rounds:
 			// file instead poisons that path in reportedFiles. Either way an
 			// answered-and-verified finding would stay outstanding for a reason
 			// that has nothing to do with it.
-			verificationFindings := dropExtraReviewFindingsJSON(dropReviewQuestionFindingsJSON(roundFindings))
+			verificationFindings := dropReviewQuestionFindingsJSON(roundFindings)
 			var fixedThisRound []string
 			if sctx.Fixing && !sctx.SkipFixExecution {
 				fixedThisRound = findingIDList(remapFindingIDsJSON(outstandingFindings, sctx.PreviousFindings))
 			}
-			outstandingFindings = dropExtraReviewFindingsJSON(dropReviewQuestionFindingsJSON(outstandingFindings))
+			outstandingFindings = dropReviewQuestionFindingsJSON(outstandingFindings)
 			// An answer round retracts by naming ids, never by silence - and
 			// ONLY an answer round. A fix round is held to the coverage rule,
 			// so a retraction it claimed would clear a selected finding no
@@ -2358,14 +2358,6 @@ func (a *gateStepBoundaryAgent) Run(ctx context.Context, opts agent.RunOpts) (*a
 
 func (a *gateStepBoundaryAgent) Close() error { return a.inner.Close() }
 
-func (a *gateStepBoundaryAgent) RunFreeModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFreeModel(a.inner, ctx, kind, opts)
-}
-
-func (a *gateStepBoundaryAgent) RunFallbackModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFallbackModel(a.inner, ctx, kind, opts)
-}
-
 func (a *gateStepBoundaryAgent) SupportsSessionResume() bool {
 	return agent.SupportsSessionResume(a.inner)
 }
@@ -2420,14 +2412,6 @@ func (a *lifecycleAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Re
 
 func (a *lifecycleAgent) Close() error {
 	return a.inner.Close()
-}
-
-func (a *lifecycleAgent) RunFreeModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFreeModel(a.inner, ctx, kind, opts)
-}
-
-func (a *lifecycleAgent) RunFallbackModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFallbackModel(a.inner, ctx, kind, opts)
 }
 
 // SupportsSessionResume forwards the wrapped adapter's session capability so
@@ -3053,7 +3037,7 @@ func answerRoundCarriedFindings(answering bool, outstanding string) string {
 	if !answering {
 		return ""
 	}
-	return dropExtraReviewFindingsJSON(dropReviewQuestionFindingsJSON(outstanding))
+	return dropReviewQuestionFindingsJSON(outstanding)
 }
 
 // ReviewConversationAnswerDir is where an answer for this run may be appended,

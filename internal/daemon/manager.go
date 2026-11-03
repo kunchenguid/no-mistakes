@@ -615,31 +615,7 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 			return nil, nil, err
 		}
 	}
-	ag = agent.WithFreeModels(ag, freeModelConfigFor(cfg, agents[0], environment, evidenceRoot))
 	return ag, record, nil
-}
-
-func freeModelConfigFor(cfg *config.Config, primary types.AgentName, environment runenv.Overlay, evidenceRoot string) agent.FreeModelConfig {
-	return agent.FreeModelConfig{
-		Harness:                primary,
-		Bin:                    cfg.AgentPathFor(primary),
-		Args:                   cfg.AgentArgsFor(primary),
-		BaseProfile:            cfg.AgentProfileFor(primary),
-		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
-		DisableProjectSettings: cfg.DisableProjectSettings,
-		Environment:            environment,
-		SteeringRoot:           evidenceRoot,
-		Minimax: agent.FreeModelSpec{
-			Enabled:       cfg.MinimaxExtraReview.Enabled,
-			Model:         cfg.MinimaxExtraReview.Model,
-			FallbackModel: cfg.MinimaxExtraReview.FallbackModel,
-		},
-		Beam: agent.FreeModelSpec{
-			Enabled:       cfg.BeamDrafts.Enabled,
-			Model:         cfg.BeamDrafts.Model,
-			FallbackModel: cfg.BeamDrafts.FallbackModel,
-		},
-	}
 }
 
 func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {

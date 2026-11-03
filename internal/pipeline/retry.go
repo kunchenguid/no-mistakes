@@ -36,14 +36,6 @@ func (a *invocationFailureAgent) Name() string { return a.inner.Name() }
 
 func (a *invocationFailureAgent) Close() error { return a.inner.Close() }
 
-func (a *invocationFailureAgent) RunFreeModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFreeModel(a.inner, ctx, kind, opts)
-}
-
-func (a *invocationFailureAgent) RunFallbackModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFallbackModel(a.inner, ctx, kind, opts)
-}
-
 func (a *invocationFailureAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	result, err := a.inner.Run(ctx, opts)
 	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

@@ -23,14 +23,6 @@ func (a *roundStampingAgent) Name() string { return a.inner.Name() }
 
 func (a *roundStampingAgent) Close() error { return a.inner.Close() }
 
-func (a *roundStampingAgent) RunFreeModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFreeModel(a.inner, ctx, kind, opts)
-}
-
-func (a *roundStampingAgent) RunFallbackModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFallbackModel(a.inner, ctx, kind, opts)
-}
-
 func (a *roundStampingAgent) SupportsSessionResume() bool {
 	return agent.SupportsSessionResume(a.inner)
 }

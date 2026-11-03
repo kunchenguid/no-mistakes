@@ -638,14 +638,6 @@ func (a *timeoutAgent) Name() string { return a.inner.Name() }
 
 func (a *timeoutAgent) Close() error { return a.inner.Close() }
 
-func (a *timeoutAgent) RunFreeModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFreeModel(a.inner, ctx, kind, opts)
-}
-
-func (a *timeoutAgent) RunFallbackModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFallbackModel(a.inner, ctx, kind, opts)
-}
-
 func (a *timeoutAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	if _, bounded := ctx.Deadline(); bounded {
 		// An outer seam (RunAgent or a Review/Test invocation) already owns the

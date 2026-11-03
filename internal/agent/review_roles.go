@@ -161,14 +161,6 @@ func (a *reviewAgents) NeutralizesGateInstructions() bool {
 	return true
 }
 
-func (a *reviewAgents) RunFreeModel(ctx context.Context, kind FreeModelKind, opts RunOpts) (*Result, error) {
-	return ForwardFreeModel(a.primary, ctx, kind, opts)
-}
-
-func (a *reviewAgents) RunFallbackModel(ctx context.Context, kind FreeModelKind, opts RunOpts) (*Result, error) {
-	return ForwardFallbackModel(a.primary, ctx, kind, opts)
-}
-
 func (a *reviewAgents) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	selected := a.primary
 	switch opts.Purpose {

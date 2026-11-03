@@ -33,14 +33,6 @@ func (a *perfRecordingAgent) Name() string { return a.inner.Name() }
 
 func (a *perfRecordingAgent) Close() error { return a.inner.Close() }
 
-func (a *perfRecordingAgent) RunFreeModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFreeModel(a.inner, ctx, kind, opts)
-}
-
-func (a *perfRecordingAgent) RunFallbackModel(ctx context.Context, kind agent.FreeModelKind, opts agent.RunOpts) (*agent.Result, error) {
-	return agent.ForwardFallbackModel(a.inner, ctx, kind, opts)
-}
-
 // SupportsSessionResume forwards the wrapped adapter's session capability.
 func (a *perfRecordingAgent) SupportsSessionResume() bool {
 	return agent.SupportsSessionResume(a.inner)

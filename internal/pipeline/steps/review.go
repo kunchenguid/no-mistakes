@@ -564,14 +564,11 @@ Risk assessment (after listing all findings):
 		}
 	}
 	findings.ReviewCoverageScope = currentReviewCoverageScope(sctx, baseSHA, reviewTargetSHA, reviewable)
-	if extra := s.appendExtraReviewFindings(sctx, turnPrompt, workload); len(extra) > 0 {
-		findings.Items = append(findings.Items, extra...)
-	}
 	findingsJSON, _ := json.Marshal(findings)
 
 	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 		NeedsApproval:     needsApproval,
-		AutoFixable:       countActionableReviewFindings(findings.Items) > 0,
+		AutoFixable:       len(findings.Items) > 0,
 		Findings:          string(findingsJSON),
 		ReviewedPaths:     findings.ReviewedPaths,
 		WithdrawnFindings: withdrawnFindings(findings),

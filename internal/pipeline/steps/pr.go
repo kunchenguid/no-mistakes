@@ -518,10 +518,6 @@ Final diff paths and statuses:
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 	prompt += agent.MemoryFilesRule
 
-	if content, handled := s.draftPRContentWithBeam(sctx, prompt, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider); handled {
-		return content, nil
-	}
-
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
@@ -583,9 +579,6 @@ Rules:
 Final diff paths and statuses:
 %s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, inventory, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
 	prompt += agent.MemoryFilesRule
-	if title, handled := s.draftConfiguredPRTitleWithBeam(sctx, prompt); handled {
-		return title, nil
-	}
 	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,

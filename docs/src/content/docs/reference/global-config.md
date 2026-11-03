@@ -507,64 +507,6 @@ select the agents repairing tests, documentation, or CI. An opt-in
 that run. Eval capture strips these profiles so replay candidates remain
 authoritative.
 
-### minimax_extra_review
-
-Optional, **global-only** extra reviewer beside the normal review.
-Repository config cannot set it.
-It stays off until enabled, and it runs only for repositories named in repos.
-
-```yaml
-minimax_extra_review:
-  enabled: false
-  model: opencode-go/minimax-m3.1-flash-free
-  fallback_model: opencode-go/muse-spark
-  mode: advisory
-  steps: [review]
-  repos: [skills, checks]
-```
-
-The extra reviewer reads the same change as the normal review and reports beside it.
-Every finding it contributes is advisory.
-Advisory findings never park the gate, never join fix selection, and never join the carry-forward.
-The extra turn is read only.
-A turn that changes the checkout is discarded and its findings are dropped.
-A turn that fails or returns unusable output is retried once on the fallback model, then dropped.
-The normal review always stands on the configured model, so the extra turn is strictly additional signal.
-
-mode must be advisory and steps must be review.
-Any other value is a configuration error.
-An enabled setting with an empty repos list is a configuration error, since it would allow nothing.
-Eval capture strips this setting so replay candidates remain authoritative.
-
-### beam_drafts
-
-Optional, **global-only** drafting model for the document pass and PR message drafts.
-Repository config cannot set it.
-It stays off until enabled, and it runs only for repositories named in repos.
-
-```yaml
-beam_drafts:
-  enabled: false
-  model: opencode-go/beam-free
-  fallback_model: opencode-go/muse-spark
-  steps: [commit, document]
-  empty_retries: 1
-  apply_check: true
-  repos: [skills, checks]
-```
-
-For the document pass Beam returns its edits as a unified diff instead of writing files.
-The pipeline checks the diff with git apply check before applying it.
-A diff that does not apply is discarded.
-An empty answer is retried once, then the pass falls back to the configured model.
-For PR titles and bodies Beam drafts the same text the configured model would draft, through the same title formatter and body assembler.
-Any Beam failure falls back to the configured model, so Beam is never the only path.
-
-steps must be commit and document in that order, empty_retries must be 1, and apply_check must stay true.
-Any other value is a configuration error.
-An enabled setting with an empty repos list is a configuration error, since it would allow nothing.
-Eval capture strips this setting so replay candidates remain authoritative.
-
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.

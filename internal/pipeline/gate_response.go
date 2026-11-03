@@ -170,13 +170,6 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 	for _, id := range ignored {
 		ignoreSet[id] = true
 	}
-	if advisory := extraReviewIDsInSelection(gateFindingsJSON, fixSet); len(advisory) > 0 {
-		return RespondDispositions{}, &RespondRefusal{
-			Message: fmt.Sprintf("%s are advisory extra-review notes: the fixer never works from them, so list them in --ignore to decline them", strings.Join(advisory, ",")),
-			Help:    fixResponseHelp,
-		}
-	}
-
 	var both []string
 	for _, id := range gate {
 		if fixSet[id] && ignoreSet[id] {
@@ -231,23 +224,6 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 		}
 	}
 	return dispositions, nil
-}
-
-func extraReviewIDsInSelection(gateFindingsJSON string, fixSet map[string]bool) []string {
-	if len(fixSet) == 0 {
-		return nil
-	}
-	findings, err := types.ParseFindingsJSON(gateFindingsJSON)
-	if err != nil {
-		return nil
-	}
-	var advisory []string
-	for _, item := range findings.Items {
-		if item.Category == types.FindingCategoryExtraReview && fixSet[item.ID] {
-			advisory = append(advisory, item.ID)
-		}
-	}
-	return advisory
 }
 
 func FindingDecisionKey(item types.Finding) string {

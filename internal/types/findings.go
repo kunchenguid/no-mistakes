@@ -112,9 +112,6 @@ const (
 // docs/src/content/docs/concepts/review-conversation.md.
 const FindingCategoryReviewQuestion = "review-question"
 
-// No gate fixes or approves on these ids; keyed on the category, never on an id prefix.
-const FindingCategoryExtraReview = "extra-review"
-
 // FindingCategoryTestCommand marks the deterministic finding produced when a
 // configured commands.test exits non-zero. The Test step's
 // ApprovalOverrideVerifier keys on it so an approval over that failure is

@@ -932,36 +932,6 @@ func filterFindingsJSON(raw string, ids []string) string {
 // permanent. A genuinely fixed finding would then stay outstanding and the gate
 // re-park on it for ever. It is re-emitted from the live conversation on every
 // review turn exactly as the questions are, so dropping it loses nothing either.
-// Advisory extra-review items never join the carry-forward or the verification input; each review turn re-emits them live.
-func dropExtraReviewFindingsJSON(raw string) string {
-	if raw == "" {
-		return raw
-	}
-	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil {
-		return raw
-	}
-	kept := make([]types.Finding, 0, len(findings.Items))
-	for _, item := range findings.Items {
-		if item.Category == types.FindingCategoryExtraReview {
-			continue
-		}
-		kept = append(kept, item)
-	}
-	if len(kept) == len(findings.Items) {
-		return raw
-	}
-	if len(kept) == 0 {
-		return ""
-	}
-	findings.Items = kept
-	encoded, err := types.MarshalFindingsJSON(findings)
-	if err != nil {
-		return raw
-	}
-	return encoded
-}
-
 func dropReviewQuestionFindingsJSON(raw string) string {
 	if raw == "" {
 		return raw
