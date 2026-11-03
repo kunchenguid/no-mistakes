@@ -19,6 +19,9 @@ import (
 // unreachable. Only a proven-stale path (nothing answers - a leftover from an
 // unclean exit) is removed before binding.
 func listen(endpoint string) (net.Listener, error) {
+	if err := CheckEndpointPath(endpoint); err != nil {
+		return nil, err
+	}
 	if conn, err := net.DialTimeout("unix", endpoint, 200*time.Millisecond); err == nil {
 		conn.Close()
 		return nil, fmt.Errorf("ipc socket %s is already in use by a live listener", endpoint)
@@ -31,5 +34,21 @@ func listen(endpoint string) (net.Listener, error) {
 }
 
 func dial(endpoint string, timeout time.Duration) (net.Conn, error) {
+	if err := CheckEndpointPath(endpoint); err != nil {
+		return nil, err
+	}
 	return dialNetworkWithTimeout("unix", endpoint, timeout)
+}
+
+// maxEndpointPathLen is the longest socket path the kernel accepts: sun_path
+// holds the path plus its NUL terminator.
+var maxEndpointPathLen = len(syscall.RawSockaddrUnix{}.Path) - 1
+
+// CheckEndpointPath reports a *SocketPathTooLongError when endpoint cannot be
+// bound or connected as a Unix socket on this platform.
+func CheckEndpointPath(endpoint string) error {
+	if len(endpoint) > maxEndpointPathLen {
+		return &SocketPathTooLongError{Path: endpoint, Limit: maxEndpointPathLen}
+	}
+	return nil
 }

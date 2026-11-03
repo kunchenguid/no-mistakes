@@ -36,7 +36,7 @@ type ghStatefulState struct {
 // and pr checks (always empty).
 func runGhStatefulPRStub(args []string) int {
 	var stdin string
-	if hasArgValue(args, "--body-file", "-") {
+	if hasArgValue(args, "--body-file", "-") || hasArgValue(args, "--input", "-") {
 		data, _ := io.ReadAll(os.Stdin)
 		stdin = string(data)
 	}
@@ -59,6 +59,11 @@ func runGhStatefulPRStub(args []string) int {
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		return 0
+	}
+	if len(args) >= 1 && args[0] == "api" && hasArgValue(args, "--method", "PATCH") && hasArgValue(args, "--input", "-") {
+		// REST PR content update (`gh api --method PATCH repos/<slug>/pulls/<n>`),
+		// the call the GitHub provider uses instead of `gh pr edit`.
+		return state.patchPR(statePath, args, stdin)
 	}
 	if len(args) >= 1 && args[0] == "api" && slices.Contains(args, "graphql") {
 		// The forge has no checks, workflow runs or review threads: answer the commit
@@ -189,6 +194,47 @@ func runGhStatefulPRStub(args []string) int {
 
 // lookup resolves `gh pr <verb> <selector>` where the selector is a PR number
 // or URL.
+// patchPR applies the JSON document streamed to a REST pulls PATCH to the PR the
+// endpoint names, replacing the title only when the document carries one.
+func (s *ghStatefulState) patchPR(statePath string, args []string, stdin string) int {
+	var pr *ghStatefulPR
+	for _, arg := range args {
+		if i := strings.LastIndex(arg, "/pulls/"); i >= 0 && strings.HasPrefix(arg, "repos/") {
+			if number, err := strconv.Atoi(arg[i+len("/pulls/"):]); err == nil {
+				for _, candidate := range s.PRs {
+					if candidate.Number == number {
+						pr = candidate
+					}
+				}
+			}
+		}
+	}
+	if pr == nil {
+		fmt.Fprintf(os.Stderr, "no pull request found for %v\n", args)
+		return 1
+	}
+	var payload struct {
+		Title *string `json:"title"`
+		Body  *string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(stdin), &payload); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent gh stateful-pr: invalid PATCH body: %v\n", err)
+		return 1
+	}
+	if payload.Title != nil {
+		pr.Title = *payload.Title
+	}
+	if payload.Body != nil {
+		pr.Body = *payload.Body
+	}
+	if err := saveGhStatefulState(statePath, s); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent gh stateful-pr: %v\n", err)
+		return 1
+	}
+	fmt.Println("{}")
+	return 0
+}
+
 func (s *ghStatefulState) lookup(args []string) *ghStatefulPR {
 	if len(args) < 3 {
 		return nil

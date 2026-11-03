@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"regexp"
 	"strings"
@@ -49,6 +50,15 @@ func transientBackoffBaseDuration(attempt int, base time.Duration) time.Duration
 	return delay
 }
 
+// exhaustedTransientRetries preserves the final diagnostic and error chain,
+// while marking the adapter's completed retry decision as terminal to callers.
+// In particular, a process exit underneath it must not start crash retries.
+type exhaustedTransientRetries struct{ err error }
+
+func (e *exhaustedTransientRetries) Error() string               { return e.err.Error() }
+func (e *exhaustedTransientRetries) Unwrap() error               { return e.err }
+func (e *exhaustedTransientRetries) TerminalProviderError() bool { return true }
+
 // runWithRetry invokes runOnce up to maxRetries+1 times, retrying when the
 // classifier marks the error as retriable. Between retries it sleeps with
 // exponential backoff (via transientBackoff) and respects ctx cancellation.
@@ -66,16 +76,37 @@ func runWithRetry(
 	var lastErr error
 	var lastLabel string
 	var lastResult *Result
+	var lastDuration time.Duration
+	budgetForRetry := func() error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return nil
+		}
+		left := time.Until(deadline)
+		if left >= lastDuration {
+			return nil
+		}
+		return fmt.Errorf("%s retry skipped: %s of the step budget remains, less than the %s the failed attempt took: %w",
+			name, left.Round(time.Millisecond), lastDuration.Round(time.Millisecond), lastErr)
+	}
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			if err := budgetForRetry(); err != nil {
+				return lastResult, &exhaustedTransientRetries{err: err}
+			}
 			emitAgentRetry(opts, name, lastLabel, attempt+1, maxRetries+1)
 			if err := transientBackoff(ctx, attempt); err != nil {
 				return lastResult, err
 			}
+			if err := budgetForRetry(); err != nil {
+				return lastResult, &exhaustedTransientRetries{err: err}
+			}
 		}
 		startedAt := time.Now()
 		result, err := runOnce()
-		emitAgentAttempt(opts, name, result, err, startedAt, time.Now())
+		completedAt := time.Now()
+		lastDuration = completedAt.Sub(startedAt)
+		emitAgentAttempt(opts, name, result, err, startedAt, completedAt)
 		if err == nil {
 			return result, nil
 		}
@@ -90,7 +121,7 @@ func runWithRetry(
 		lastErr = err
 		lastLabel = label
 	}
-	return lastResult, lastErr
+	return lastResult, &exhaustedTransientRetries{err: lastErr}
 }
 
 func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, startedAt, completedAt time.Time) {
@@ -98,6 +129,7 @@ func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, star
 		return
 	}
 	opts.OnAttempt(Attempt{
+		ConfiguredModel: opts.ConfiguredModel,
 		Agent:           name,
 		Result:          result,
 		Err:             err,
@@ -117,10 +149,20 @@ func cloneSessionRef(session *SessionRef) *SessionRef {
 }
 
 // claudeRetryClassifier retries both transient API errors and the
-// no-structured-output case that the existing loop already handled.
+// no-structured-output case that the existing loop already handled. When the
+// CLI reported the API error it ended on, that record alone decides: the
+// reported HTTP status takes precedence; without one, only the record's
+// terminal diagnostic is classified, never surrounding assistant or stderr text.
 func claudeRetryClassifier(err error) (string, bool) {
 	if errors.Is(err, errNoStructuredOutput) {
 		return "missing structured output", true
+	}
+	var apiErr *claudeAPIError
+	if errors.As(err, &apiErr) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", false
+		}
+		return apiErr.classify()
 	}
 	return classifyTransient(err)
 }
@@ -142,8 +184,19 @@ var transientNeedles = []struct {
 	{"connection refused", "connection refused"},
 	{"connection reset", "connection reset"},
 	{"i/o timeout", "i/o timeout"},
+	{"request timed out", "request timeout"},
 	{"no such host", "dns lookup failed"},
 	{"temporary failure in name resolution", "dns temporary failure"},
+	// The errno-symbol spellings agent CLIs built on Node runtimes print where
+	// Go's net stack prints the text forms above. Claude's "API Error: Can't
+	// reach the API server ... (EAI_AGAIN)" banner arrived as plain stdout
+	// with an empty stderr and no api_error_status, so the message text is the
+	// only transient-classification input an exit on it ever carries.
+	{"eai_again", "dns temporary failure"},
+	{"enotfound", "dns lookup failed"},
+	{"econnrefused", "connection refused"},
+	{"econnreset", "connection reset"},
+	{"etimedout", "i/o timeout"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
 	// A model ending its turn with prose instead of the required JSON object
@@ -171,6 +224,10 @@ var terminalNeedles = []struct {
 	needle string
 	label  string
 }{
+	// Every terminal needle is a quota-exhaustion shape: a spent
+	// subscription is the only failure a retry inside this agent can never
+	// fix. IsQuotaExhaustionError reuses exactly these so the quota-aware
+	// switch never invents a second string list.
 	{"freeusagelimit", "free usage limit"},
 	{"free usage limit", "free usage limit"},
 	{"free_usage_limit", "free usage limit"},
@@ -197,6 +254,27 @@ func classifyTransient(err error) (string, bool) {
 	if isTerminalRetryError(msg) {
 		return "", false
 	}
+	const piMissingOutputPrefix = "pi did not finish by calling no_mistakes_output alone"
+	if strings.HasPrefix(msg, piMissingOutputPrefix) {
+		stderr := strings.TrimSpace(strings.TrimPrefix(msg[len(piMissingOutputPrefix):], ":"))
+		if isPiPermanentStderr(stderr) {
+			return "", false
+		}
+		return "pi missing output tool", true
+	}
+	const piExitPrefix = "pi exited: "
+	if strings.HasPrefix(msg, piExitPrefix) {
+		if separator := strings.Index(msg[len(piExitPrefix):], ": "); separator >= 0 {
+			separator += len(piExitPrefix)
+			stderr := strings.TrimSpace(msg[separator+2:])
+			if strings.Contains(stderr, "fetch failed") {
+				if isPiPermanentStderr(stderr) {
+					return "", false
+				}
+				return "pi fetch failed", true
+			}
+		}
+	}
 	for _, sig := range transientNeedles {
 		if strings.Contains(msg, sig.needle) {
 			return sig.label, true
@@ -208,6 +286,29 @@ func classifyTransient(err error) (string, bool) {
 	return "", false
 }
 
+func isPiPermanentStderr(stderr string) bool {
+	for _, sig := range terminalNeedles {
+		if strings.Contains(stderr, sig.needle) {
+			return true
+		}
+	}
+	for _, needle := range []string{
+		"permission denied",
+		"authentication",
+		"unauthorized",
+		"forbidden",
+		"401",
+		"403",
+	} {
+		if strings.Contains(stderr, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTerminalRetryError reports whether an error message names a terminal
+// failure (today: quota exhaustion), so a retry inside this agent cannot help.
 func isTerminalRetryError(msg string) bool {
 	for _, sig := range terminalNeedles {
 		if strings.Contains(msg, sig.needle) {
@@ -215,4 +316,27 @@ func isTerminalRetryError(msg string) bool {
 		}
 	}
 	return false
+}
+
+// IsQuotaExhaustionError reports whether an error is a recognised
+// subscription-quota exhaustion: the same terminal needle set the retry
+// layer has always classified (free usage limit, insufficient quota, quota
+// exceeded/exhausted) plus claude's typed usage-limit response. Only these
+// concrete shapes may trigger the quota-aware mid-run switch - transient
+// overload, unavailability, and parse failures never do.
+func IsQuotaExhaustionError(err error) bool {
+	if err == nil || IsStructuredOutputRejected(err) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var apiErr *claudeAPIError
+	if errors.As(err, &apiErr) {
+		if apiErr.UsageLimitReached() {
+			return true
+		}
+		return isTerminalRetryError(strings.ToLower(apiErr.Message))
+	}
+	return isTerminalRetryError(strings.ToLower(err.Error()))
 }

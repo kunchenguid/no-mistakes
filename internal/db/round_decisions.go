@@ -13,7 +13,7 @@ import (
 // decisions.
 const MaxBranchDecisionRounds = 20
 
-// BranchDecisionRound is one step round that recorded a human decision,
+// BranchDecisionRound is one step round that recorded a gate response,
 // paired with the run and step it belongs to so a prompt can attribute it.
 type BranchDecisionRound struct {
 	RunID    string
@@ -22,12 +22,12 @@ type BranchDecisionRound struct {
 }
 
 // GetBranchDecisionRounds returns rounds from OTHER runs on the same repo and
-// branch that recorded a human decision, most recent first, bounded by limit.
+// branch that recorded a gate response, most recent first, bounded by limit.
 // The truncated result reports whether older matching rounds exist beyond the
 // returned recency window.
 //
-// It deliberately returns every round whose selection came from a human,
-// declined or partial, and leaves the "does this round actually carry a
+// It deliberately returns every round whose selection came from a gate
+// response, declined or partial, and leaves the "does this round actually carry a
 // decline" question to the caller: the declined set is derived by subtracting
 // selected_finding_ids from findings_json, and that parsing belongs with the
 // finding types rather than in the storage layer.
@@ -46,7 +46,7 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 		        sr.reviewed_head_sha, sr.starting_head_sha, sr.trusted_config_sha,
 		        sr.global_config_yaml, sr.repo_config_yaml, sr.user_findings_json,
 		        sr.selected_finding_ids, sr.selection_source, sr.fix_summary,
-		        sr.duration_ms, sr.created_at,
+		        sr.duration_ms, sr.created_at, sr.response_origin,
 		        res.step_name, res.run_id
 		   FROM step_rounds sr
 		   JOIN step_results res ON res.id = sr.step_result_id
@@ -74,7 +74,7 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 			&r.ReviewedHeadSHA, &r.StartingHeadSHA, &r.TrustedConfigSHA,
 			&r.GlobalConfigYAML, &r.RepoConfigYAML, &r.UserFindingsJSON,
 			&r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary,
-			&r.DurationMS, &r.CreatedAt,
+			&r.DurationMS, &r.CreatedAt, &r.ResponseOrigin,
 			&entry.StepName, &entry.RunID,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan branch decision round: %w", err)
@@ -91,22 +91,29 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 	return decisions, truncated, nil
 }
 
-// SetStepRoundDeclined records that a human resolved this round's approval
+// SetStepRoundDeclined records that a caller resolved this round's approval
 // gate without selecting any finding to fix.
 //
-// The write is conditional on selection_source still being NULL so a decline
-// can never overwrite a selection that was already recorded. Reaching an
-// approval gate on a round that already carries an auto-fix selection is not
-// currently possible - auto-fix continues into a new round instead of
-// gating - but a decline silently erasing a real selection would be a data
-// loss, so the invariant is enforced in the statement rather than assumed by
-// the caller.
-func (d *DB) SetStepRoundDeclined(id string) error {
+// The write records a new decline, or refreshes the origin on a round that
+// already records this same decline. It never overwrites another selection:
+// reaching an approval gate on a round that already carries an auto-fix
+// selection is not currently possible - auto-fix continues into a new round
+// instead of gating - but a decline silently erasing a real selection would be
+// a data loss, so the invariant is enforced in the statement rather than
+// assumed by the caller.
+func (d *DB) SetStepRoundDeclined(id string, origins ...types.ResponseOrigin) error {
+	origin := types.ResponseOriginUnknown
+	if len(origins) > 0 {
+		origin = origins[0].OrUnknown()
+	}
 	declined := DeclinedSelectionJSON
 	if _, err := d.sql.Exec(
-		`UPDATE step_rounds SET selected_finding_ids = ?, selection_source = ?
-		  WHERE id = ? AND selection_source IS NULL`,
-		declined, RoundSelectionSourceUserDeclined, id,
+		`UPDATE step_rounds
+		    SET selected_finding_ids = CASE WHEN selection_source IS NULL THEN ? ELSE selected_finding_ids END,
+		        selection_source = CASE WHEN selection_source IS NULL THEN ? ELSE selection_source END,
+		        response_origin = ?
+		  WHERE id = ? AND (selection_source IS NULL OR selection_source = ?)`,
+		declined, RoundSelectionSourceUserDeclined, origin, id, RoundSelectionSourceUserDeclined,
 	); err != nil {
 		return fmt.Errorf("set step round declined: %w", err)
 	}

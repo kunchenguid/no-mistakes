@@ -161,6 +161,8 @@ func TestRecoverRewrittenRemoteRefusesWhenRemoteChangesAgain(t *testing.T) {
 }
 
 func TestRecoverRewrittenRemoteRefusesChangedInvokingWorktreeBeforeRebind(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name   string
 		change func(*testing.T, *syncFixture)
@@ -173,6 +175,7 @@ func TestRecoverRewrittenRemoteRefusesChangedInvokingWorktreeBeforeRebind(t *tes
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f, _ := newRemoteRewrittenFixture(t)
 			f.service.beforeRecoverRebind = func() { tc.change(t, f) }
 			state := f.service.Recover(f.ctx, false)

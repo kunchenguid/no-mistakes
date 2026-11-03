@@ -336,7 +336,7 @@ func TestPRTemplateRegenerationPreservesAuthorsAndClosingReferences(t *testing.T
 	}
 	logs, _ := os.ReadFile(logFile)
 	for _, line := range strings.Split(string(logs), "\n") {
-		if strings.Contains(line, "pr edit") && strings.Contains(line, "--title") {
+		if strings.Contains(line, "stdin --title") {
 			t.Fatal("template update must not replace an author's title")
 		}
 	}
@@ -376,7 +376,7 @@ func TestPRTemplateDraftFailureDoesNotFallBackOrPublish(t *testing.T) {
 				t.Fatal("untrusted template output published")
 			}
 			logs, _ := os.ReadFile(logFile)
-			if strings.Contains(string(logs), "pr create") || strings.Contains(string(logs), "pr edit") {
+			if strings.Contains(string(logs), "pr create") || strings.Contains(string(logs), "--method PATCH") {
 				t.Fatalf("publication after invalid template output: %s", logs)
 			}
 		})
@@ -418,7 +418,7 @@ func TestPRTemplateUpdateErrorIsNotMaskedByLegacyWarning(t *testing.T) {
 		t.Fatalf("failed first attachment recorded as success: %+v, %v", run, err)
 	}
 	logs, _ := os.ReadFile(logFile)
-	if strings.Count(string(logs), "pr edit") != 1 || strings.Contains(string(logs), "pr create") {
+	if strings.Count(string(logs), "--method PATCH") != 1 || strings.Contains(string(logs), "pr create") {
 		t.Fatalf("uncertain write retried or duplicated: %s", logs)
 	}
 }
@@ -434,6 +434,18 @@ func TestPRTemplateBarePinnedReadsUnderExplicitBarePolicy(t *testing.T) {
 	got, err := loadPRTemplate(context.Background(), bare, pin, sctx.Config.PR.Template)
 	if err != nil || got != testPRTemplate {
 		t.Fatalf("bare pinned template = %q, %v", got, err)
+	}
+}
+
+func TestPRTemplateSupportsOrigin(t *testing.T) {
+	t.Parallel()
+	sctx, _, _ := templateTestContext(t)
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderOrigin, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(content.Body, filledPRTemplate) {
+		t.Fatalf("body = %q, want filled template", content.Body)
 	}
 }
 
@@ -485,7 +497,7 @@ func TestPRTemplateIncompleteGitHubReadsNeverOverwriteAuthor(t *testing.T) {
 				if readErr != nil {
 					t.Fatal(readErr)
 				}
-				if strings.Contains(string(logs), "pr edit") || strings.Contains(string(logs), "pr create") || len(ag.calls) != 0 {
+				if strings.Contains(string(logs), "--method PATCH") || strings.Contains(string(logs), "pr create") || len(ag.calls) != 0 {
 					t.Fatalf("incomplete read drafted or wrote content: %s; agent calls=%d", logs, len(ag.calls))
 				}
 			})

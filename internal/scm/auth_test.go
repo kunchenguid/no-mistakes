@@ -16,7 +16,8 @@ func TestAuthCheckCommand(t *testing.T) {
 		{ProviderGitLab, []string{"glab", "auth", "status"}},
 		{ProviderBitbucket, []string{"bb", "profile", "which"}},
 		{ProviderAzureDevOps, []string{"az", "account", "show"}},
-		{ProviderGitea, []string{"tea", "whoami"}},
+		{ProviderGitea, []string{"tea", "api", "/user"}},
+		{ProviderOrigin, []string{"origin", "auth", "status"}},
 	}
 
 	for _, tt := range tests {

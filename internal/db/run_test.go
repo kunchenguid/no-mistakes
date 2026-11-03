@@ -1113,6 +1113,76 @@ func TestVerifyTerminalRunHeadRewriteUsesRecordedReviewCAS(t *testing.T) {
 	}
 }
 
+func TestVerifyTerminalRunRecordedHeadIsACompareAndSwap(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/terminal-recorded-cas", "https://example.com/terminal-recorded-cas", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunHeadSHA(run.ID, "recorded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][3]any{
+		"status":    {types.RunCancelled, "recorded", "reviewed"},
+		"head":      {types.RunFailed, "other", "reviewed"},
+		"authority": {types.RunFailed, "recorded", "other"},
+	} {
+		if updated, err := d.VerifyTerminalRunRecordedHead(run.ID, args[0].(types.RunStatus), args[1].(string), args[2].(string)); err != nil || updated {
+			t.Fatalf("%s mismatch CAS = %t, %v", name, updated, err)
+		}
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil || got.HeadSHA != "recorded" || got.TerminalHeadVerifiedAt != nil {
+		t.Fatalf("failed CAS changed run = %#v, %v", got, err)
+	}
+	if updated, err := d.VerifyTerminalRunRecordedHead(run.ID, types.RunFailed, "recorded", "reviewed"); err != nil || !updated {
+		t.Fatalf("matching CAS = %t, %v", updated, err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil || got.HeadSHA != "recorded" || got.TerminalHeadVerifiedAt == nil || got.Status != types.RunFailed {
+		t.Fatalf("successful CAS did not verify the recorded head in place = %#v, %v", got, err)
+	}
+	if updated, err := d.VerifyTerminalRunRecordedHead(run.ID, types.RunFailed, "recorded", "reviewed"); err != nil || updated {
+		t.Fatalf("already-verified CAS = %t, %v", updated, err)
+	}
+
+	// A run whose custody was already returned is never re-stamped, even when
+	// every other predicate matches.
+	returned, err := d.InsertRun(repo.ID, "feature-returned", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunHeadSHA(returned.ID, "recorded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(returned.ID, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(returned.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunCustodyReturned(returned.ID); err != nil {
+		t.Fatal(err)
+	}
+	if updated, err := d.VerifyTerminalRunRecordedHead(returned.ID, types.RunFailed, "recorded", "reviewed"); err != nil || updated {
+		t.Fatalf("custody-returned CAS = %t, %v", updated, err)
+	}
+	got, err = d.GetRun(returned.ID)
+	if err != nil || got.TerminalHeadVerifiedAt != nil || got.CustodyReturnedAt == nil {
+		t.Fatalf("custody-returned CAS changed run = %#v, %v", got, err)
+	}
+}
+
 func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/repo-sync-binding", "https://example.com/repo.git", "main")
@@ -1770,5 +1840,103 @@ func TestRebindRunPushedHeadAppliesOnlyToTheVerifiedBinding(t *testing.T) {
 	got, _ = d.GetRun(run.ID)
 	if got.HeadSHA != "live" || *got.LastPushedSHA != "live" || *got.PushGeneration != 2 {
 		t.Fatalf("rebind result: head %s pushed %s generation %d", got.HeadSHA, *got.LastPushedSHA, *got.PushGeneration)
+	}
+}
+
+func TestRecoverStaleRunsCompletedCI(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    types.RunStatus
+		ready     bool
+		completed bool
+		preserved bool
+		unmarked  bool
+		want      types.RunStatus
+	}{
+		{"committed verdict", types.RunRunning, true, true, false, false, types.RunChecksPassed},
+		{"pending run", types.RunPending, true, true, false, false, types.RunChecksPassed},
+		{"default mode ready without release marker", types.RunRunning, true, true, false, true, types.RunFailed},
+		{"no readiness", types.RunRunning, false, true, false, false, types.RunFailed},
+		{"live monitor", types.RunRunning, true, false, false, false, types.RunCIMonitorInterrupted},
+		{"cancelled", types.RunCancelled, true, true, false, false, types.RunCancelled},
+		{"failed", types.RunFailed, true, true, false, false, types.RunFailed},
+		{"preserved", types.RunRunning, true, true, true, false, types.RunRunning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, err := d.InsertRepo("/project", "https://github.com/test/repo", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, err := range []error{d.UpdateRunStatus(run.ID, tc.status), d.UpdateRunPRState(run.ID, "open"), d.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/1")} {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			ci, err := d.InsertStepResult(run.ID, types.StepCI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.StartStep(ci.ID); err != nil {
+				t.Fatal(err)
+			}
+			if tc.unmarked {
+				if err := d.SetRunCIReady(run.ID, true); err != nil {
+					t.Fatal(err)
+				}
+				if err := d.CompleteStepWithStatus(ci.ID, types.StepStatusCompleted, 0, 1234, "ci.log"); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.ready {
+				if err := d.CompleteCIStep(ci.ID, run.ID, false, 0, 1234, "ci.log"); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.completed {
+				if err := d.CompleteStepWithStatus(ci.ID, types.StepStatusCompleted, 0, 1234, "ci.log"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.completed {
+				if err := d.StartStep(ci.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := d.GetStepResult(ci.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			preserved := map[string]struct{}{}
+			if tc.preserved {
+				preserved[run.ID] = struct{}{}
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				if _, err := d.RecoverStaleRunsExcept("daemon crashed", preserved); err != nil {
+					t.Fatal(err)
+				}
+				got, err := d.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != tc.want {
+					t.Fatalf("status = %s, want %s", got.Status, tc.want)
+				}
+				if tc.want == types.RunChecksPassed && got.Error != nil {
+					t.Fatalf("successful run error = %v", got.Error)
+				}
+				if tc.completed {
+					after, err := d.GetStepResult(ci.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if after.Status != types.StepStatusCompleted || after.DurationMS == nil || *after.DurationMS != 1234 || after.CompletedAt == nil || *after.CompletedAt != *before.CompletedAt {
+						t.Fatalf("recovery changed completed CI timing or status: %+v", after)
+					}
+				}
+			}
+		})
 	}
 }

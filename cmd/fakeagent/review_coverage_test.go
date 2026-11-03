@@ -120,3 +120,19 @@ func TestReviewCoverageReportsAnEmptySetAsPresent(t *testing.T) {
 		t.Fatalf("paths = %#v, want an empty non-nil slice", paths)
 	}
 }
+
+func TestReviewCoverageUsesPipelineChecklist(t *testing.T) {
+	dir, base := setupCoverageRepo(t)
+	for _, file := range []string{"feature.txt", `literal\n\t.txt`, `a file with spaces.txt`} {
+		prompt := reviewPromptFor(base, "*") +
+			"\nChanged files this review is held to (computed by the pipeline):\n- " + file +
+			"\n- A complete review pass examines every listed file and reports each one it actually read and judged in reviewed_paths.\n"
+		paths, err := reviewCoverageForPrompt(dir, prompt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(paths, []string{file}) {
+			t.Fatalf("coverage=%q, want pipeline-required %q despite pushed ignores", paths, file)
+		}
+	}
+}

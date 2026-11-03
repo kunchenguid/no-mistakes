@@ -139,7 +139,7 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	var reviewStep *db.StepResult
 	allRounds := make([]sourceRound, 0)
 	for _, step := range steps {
-		rounds, err := database.GetRoundsByStep(step.ID)
+		rounds, err := database.GetRoundsByStep(step.RoundsStepID())
 		if err != nil {
 			return nil, fmt.Errorf("read source rounds: %w", err)
 		}
@@ -153,7 +153,7 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	if reviewStep == nil {
 		return nil, fmt.Errorf("%w: run %q has no review step", ErrNoCapturableReview, run.ID)
 	}
-	reviewRounds, err := database.GetRoundsByStep(reviewStep.ID)
+	reviewRounds, err := database.GetRoundsByStep(reviewStep.RoundsStepID())
 	if err != nil {
 		return nil, fmt.Errorf("read review rounds: %w", err)
 	}
@@ -168,6 +168,21 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	invocations, err := database.GetAgentInvocationsByRun(run.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read source invocation metrics: %w", err)
+	}
+	if reviewStep.RoundsStepID() != reviewStep.ID {
+		origin, err := database.GetStepResult(reviewStep.RoundsStepID())
+		if err != nil || origin == nil {
+			return nil, fmt.Errorf("read the run that executed the carried review: %v", err)
+		}
+		carried, err := database.GetAgentInvocationsByRun(origin.RunID)
+		if err != nil {
+			return nil, fmt.Errorf("read carried review invocation metrics: %w", err)
+		}
+		for _, inv := range carried {
+			if inv.StepName == string(types.StepReview) {
+				invocations = append(invocations, inv)
+			}
+		}
 	}
 	captured := make([]Case, 0, len(reviewRounds))
 	for _, round := range reviewRounds {
@@ -792,7 +807,7 @@ func loadReviewRounds(database *db.DB, runID string) (*db.Run, []*db.StepRound, 
 	if reviewStep == nil {
 		return run, nil, nil, nil
 	}
-	rounds, err := database.GetRoundsByStep(reviewStep.ID)
+	rounds, err := database.GetRoundsByStep(reviewStep.RoundsStepID())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read review rounds: %w", err)
 	}

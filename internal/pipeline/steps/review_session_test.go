@@ -149,6 +149,7 @@ func fixCalls(calls []agent.RunOpts) []agent.RunOpts {
 // context a rereview legitimately needs travels in the explicit sanitized
 // round-history prompt section instead.
 func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
+	t.Parallel()
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -237,6 +238,7 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 // implemented, letting a defect the pipeline itself introduced pass with zero
 // findings.
 func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *testing.T) {
+	t.Parallel()
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -276,6 +278,7 @@ func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *test
 // turn uses the durable fixer session while the follow-up full rereview stays
 // session-free.
 func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
+	t.Parallel()
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -336,6 +339,7 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 }
 
 func TestReviewFixerSession_FreshFallbackTimeoutExcludesResumeActivity(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &sessionFallbackTimeoutAgent{}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -370,6 +374,7 @@ func TestReviewFixerSession_FreshFallbackTimeoutExcludesResumeActivity(t *testin
 // sessions are never lent to other pipeline steps: agent-driven document and
 // lint work runs with no session at all.
 func TestReviewLoop_OtherStepsStaySessionIsolated(t *testing.T) {
+	t.Parallel()
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
 		switch opts.Purpose {

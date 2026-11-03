@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,7 +15,7 @@ import (
 func ownedFixture(t *testing.T) (prContent, string) {
 	t.Helper()
 	appendix := "## Risk Assessment\n\nLow recorded risk.\n\n## Testing\n\nRecorded evidence link.\n\n" + compliantPipelineBody(t, testPipelineHeadSHA)
-	content, err := composeOwnedPRContent(prOwnedBody{before: "## Testing\n\n- [x] Human checked this\n\nCloses test/repo#7"}, "feat: story", appendix, 0)
+	content, err := composeOwnedPRContent(prOwnedBody{before: "## Testing\n\n- [x] Human checked this\n\nCloses test/repo#7"}, "feat: story", appendix, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +30,7 @@ func TestPROwnershipNeverInfersFromHeadings(t *testing.T) {
 		t.Fatalf("heading resemblance claimed author content: %+v, %v", parts, err)
 	}
 	_, appendix := ownedFixture(t)
-	got, err := composeOwnedPRContent(parts, "", appendix, 0)
+	got, err := composeOwnedPRContent(parts, "", appendix, 0, "", "")
 	if err != nil || !strings.HasPrefix(got.Body, body) {
 		t.Fatalf("author headings removed: %s, %v", got.Body, err)
 	}
@@ -71,14 +72,14 @@ func TestPROwnershipFailsSizePressureWithoutTruncation(t *testing.T) {
 		{before: strings.Repeat("author\n", maxPullRequestBodyBytes)},
 		{before: "author", after: strings.Repeat("closing refs\n", maxPullRequestBodyBytes), managed: true},
 	} {
-		if _, err := composeOwnedPRContent(parts, "", appendix, 0); err == nil {
+		if _, err := composeOwnedPRContent(parts, "", appendix, 0, "", ""); err == nil {
 			t.Fatal("oversized author content was truncated")
 		}
 	}
-	if _, err := composeOwnedPRContent(prOwnedBody{before: "author"}, "", appendix+strings.Repeat("evidence\n", maxPullRequestBodyBytes), 0); err == nil {
+	if _, err := composeOwnedPRContent(prOwnedBody{before: "author"}, "", appendix+strings.Repeat("evidence\n", maxPullRequestBodyBytes), 0, "", ""); err == nil {
 		t.Fatal("oversized evidence was dropped")
 	}
-	if _, err := composeOwnedPRContent(prOwnedBody{before: strings.Repeat("😀", 100)}, "", appendix, 400); err == nil {
+	if _, err := composeOwnedPRContent(prOwnedBody{before: strings.Repeat("😀", 100)}, "", appendix, 400, "", ""); err == nil {
 		t.Fatal("provider character cap ignored")
 	}
 }
@@ -87,7 +88,7 @@ func TestPROwnershipPublicationRedactionPrecedesDigest(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
 	appendix += "\n\nEvidence /Users/private/evidence.png\n```text\n" + prAppendixEnd + "\n```"
-	got, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\n/home/person/work\n\n", after: "\nC:\\Users\\person\\notes", managed: true}, "feat: /Users/person/path", appendix, 0)
+	got, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\n/home/person/work\n\n", after: "\nC:\\Users\\person\\notes", managed: true}, "feat: /Users/person/path", appendix, 0, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestPROwnershipUpdateMergesLatestAuthorEdits(t *testing.T) {
 		return nil
 	}}
 	sctx := &pipeline.StepContext{Ctx: context.Background()}
-	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(content), "", "", appendix+"\nNew recorded fact.", 0); err != nil {
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: content.Title, Body: content.Body}, "", "", appendix+"\nNew recorded fact.", 0); err != nil {
 		t.Fatal(err)
 	}
 	if host.writes != 1 || !strings.Contains(host.body, "Human updated checkbox label") || !strings.HasSuffix(host.body, "Fixes test/other#9") || !strings.Contains(host.body, "New recorded fact.") {
@@ -189,7 +190,7 @@ func TestPROwnershipUpdateFailuresNeverReadAsSuccess(t *testing.T) {
 			case "size":
 				initial.Body = strings.Repeat("Author content\n", maxPullRequestBodyBytes)
 			}
-			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent(initial), "", "", appendix+"\nNew fact", 0)
+			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent{Title: initial.Title, Body: initial.Body}, "", "", appendix+"\nNew fact", 0)
 			if err == nil || host.writes != wantWrites {
 				t.Fatalf("err=%v, writes=%d want %d", err, host.writes, wantWrites)
 			}
@@ -224,5 +225,31 @@ func TestPROwnershipRestampPreservesAuthorsAndConsumerContract(t *testing.T) {
 	host.updates = 0
 	if err := restampPRAttestation(context.Background(), host, &scm.PR{Number: "42"}, testPipelineHeadSHA, nil); err == nil || host.updates != 0 {
 		t.Fatalf("edited evidence overwritten during restamp: err=%v, writes=%d", err, host.updates)
+	}
+}
+
+func TestPROwnershipRedactsRunWorktreePaths(t *testing.T) {
+	t.Parallel()
+	_, appendix := ownedFixture(t)
+	worktrees := filepath.Join(t.TempDir(), "nm-home", "worktrees")
+	runWorktree := filepath.Join(worktrees, "ab12cd34ef56", "run-1")
+	appendix += "\n\nran " + filepath.Join(runWorktree, "bin", "tool")
+	got, err := composeOwnedPRContent(prOwnedBody{before: "saw " + filepath.Join(worktrees, "0f0f0f0f0f0f", "run-0", "out.log")}, "feat: "+runWorktree, appendix, 0, runWorktree, worktrees)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.Title+got.Body, worktrees) {
+		t.Fatalf("published worktree path:\n%s\n%s", got.Title, got.Body)
+	}
+	for _, want := range []string{"ran " + filepath.Join("{run-worktree}", "bin", "tool"), "saw " + filepath.Join("{run-worktree}", "out.log")} {
+		if !strings.Contains(got.Body, want) {
+			t.Errorf("expected %q in body:\n%s", want, got.Body)
+		}
+	}
+	if got.Title != "feat: {run-worktree}" {
+		t.Errorf("title = %q", got.Title)
+	}
+	if _, err := parsePROwnedBody(got.Body); err != nil {
+		t.Fatalf("redaction invalidated integrity guard: %v", err)
 	}
 }

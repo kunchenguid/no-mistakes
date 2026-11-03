@@ -13,6 +13,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const ciWorkflowGoSetup = `
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+`
+
 const ciWorkflowTemplateWithLint = `name: CI
 
 on:
@@ -32,12 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
+%s
       - name: Lint
         run: |
           %s
@@ -66,12 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
+%s
       - name: Test
         run: |
           %s
@@ -126,12 +123,18 @@ func generateCIWorkflow(dir string, force bool) error {
 	// Extract lint command (optional; empty means combined document+lint)
 	lint := cfg.Commands.Lint
 
+	// Only set up Go when the repository has a root module.
+	var goSetup string
+	if info, err := os.Stat(filepath.Join(root, "go.mod")); err == nil && !info.IsDir() {
+		goSetup = ciWorkflowGoSetup
+	}
+
 	// Select template and generate workflow
 	var workflow string
 	if lint == "" {
-		workflow = fmt.Sprintf(ciWorkflowTemplateTestOnly, yamlSingleQuote(defaultBranch), indentCommand(test))
+		workflow = fmt.Sprintf(ciWorkflowTemplateTestOnly, yamlSingleQuote(defaultBranch), goSetup, indentCommand(test))
 	} else {
-		workflow = fmt.Sprintf(ciWorkflowTemplateWithLint, yamlSingleQuote(defaultBranch), indentCommand(lint), indentCommand(test))
+		workflow = fmt.Sprintf(ciWorkflowTemplateWithLint, yamlSingleQuote(defaultBranch), goSetup, indentCommand(lint), indentCommand(test))
 	}
 
 	// Determine output path

@@ -181,6 +181,7 @@ func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
 	t.Parallel()
 
 	outcome := ciObservationOutcome(ciObservationFindings(ciIssues{
+		provider:            scm.ProviderGitHub,
 		checks:              []scm.Check{{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true}},
 		unresolvedCancelled: []string{"build"},
 		reruns:              func(string) int { return 1 },
@@ -224,6 +225,7 @@ func TestCIUnresolvedCancelledOutcomeKeepsSameNamedCausesPositional(t *testing.T
 	t.Parallel()
 
 	outcome := ciObservationOutcome(ciObservationFindings(ciIssues{
+		provider: scm.ProviderGitHub,
 		checks: []scm.Check{
 			{Name: "build", ProviderID: "github-check-run:41", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true},
 			{Name: "build", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
@@ -651,6 +653,7 @@ func assertNames(t *testing.T, label string, got, want []string) {
 // This guards the default rather than the plumbing: flipping it back to a
 // non-zero value would silently restart jobs a maintainer stopped on purpose.
 func TestRerunningCancelledChecksIsOffByDefault(t *testing.T) {
+	t.Parallel()
 	if config.DefaultCIRerunTransient != 0 {
 		t.Fatalf("DefaultCIRerunTransient = %d, want 0", config.DefaultCIRerunTransient)
 	}
@@ -665,6 +668,7 @@ func TestRerunningCancelledChecksIsOffByDefault(t *testing.T) {
 // recovered run started from zero spent and could issue another rerun past the
 // documented limit.
 func TestRerunBudgetSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	original := &checkRerunBudget{}
 	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed, Link: "https://github.com/test/repo/actions/runs/1/job/10"}
@@ -716,6 +720,7 @@ func TestRerunBudgetSurvivesARestart(t *testing.T) {
 // An empty budget writes nothing, so a run that never spent a rerun does not
 // persist a payload.
 func TestUnspentRerunBudgetMarshalsToNothing(t *testing.T) {
+	t.Parallel()
 	encoded, err := (&checkRerunBudget{}).marshal()
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -729,6 +734,7 @@ func TestUnspentRerunBudgetMarshalsToNothing(t *testing.T) {
 // only what the response carries dropped it from both buckets, so the run could
 // read as green while its replacement was still unknown.
 func TestOutstandingRerunMissingFromTheRollupStaysTracked(t *testing.T) {
+	t.Parallel()
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	budget := &checkRerunBudget{}
 	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed, Link: "https://github.com/test/repo/actions/runs/1/job/10"}
@@ -759,6 +765,7 @@ func TestOutstandingRerunMissingFromTheRollupStaysTracked(t *testing.T) {
 // A check that came back in a non-cancelled bucket is published, not missing:
 // it must not consume the missing-check grace.
 func TestOutstandingRerunPublishedInAnotherBucketIsNotTreatedAsMissing(t *testing.T) {
+	t.Parallel()
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	budget := &checkRerunBudget{}
 	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed, Link: "https://github.com/test/repo/actions/runs/1/job/10"}
@@ -773,6 +780,7 @@ func TestOutstandingRerunPublishedInAnotherBucketIsNotTreatedAsMissing(t *testin
 }
 
 func TestRetireResolvedReruns(t *testing.T) {
+	t.Parallel()
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	originalLink := "https://github.com/test/repo/actions/runs/1/job/10"
 	siblingLink := "https://github.com/test/repo/actions/runs/2/job/20"
@@ -889,6 +897,7 @@ func TestRetireResolvedReruns(t *testing.T) {
 }
 
 func TestRetireResolvedRerunsRetriesAfterPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
 	database, err := db.Open(dbPath)
 	if err != nil {

@@ -135,12 +135,18 @@ func prepareDaemonEnvironment() error {
 
 // applyLoginShellEnvironment applies a login-shell probe to the process and
 // keeps the service-supplied NM_HOME authoritative over anything the shell's
-// rc files export.
+// rc files export. A supplied telemetry opt-out also survives the probe, while
+// an enabling value may still be replaced by the shell's opt-out.
 func applyLoginShellEnvironment(apply func(...string) error, nmHome string) error {
+	var excluded []string
 	if nmHome != "" {
-		return apply("NM_HOME")
+		excluded = append(excluded, "NM_HOME")
 	}
-	return apply()
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("NO_MISTAKES_TELEMETRY"))) {
+	case "0", "false", "off":
+		excluded = append(excluded, "NO_MISTAKES_TELEMETRY")
+	}
+	return apply(excluded...)
 }
 
 // logDaemonPathSummary records the effective PATH at daemon startup so that
@@ -1022,7 +1028,7 @@ func protectedPathCleanupReason(d *db.DB, run *db.Run) string {
 		if step.Status == types.StepStatusSkipped && (step.Error == nil || *step.Error != types.RunCIMonitorInterruptedReason) {
 			continue
 		}
-		if step.Error != nil && *step.Error == "aborted by user" {
+		if step.Error != nil && types.IsUserAbortStepError(*step.Error) {
 			continue
 		}
 		return fmt.Sprintf("run %s has an unresolved protected-path refusal; preserving index and worktree", run.ID)
@@ -1453,6 +1459,21 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.RerunResult{RunID: runID}, nil
 	})
 
+	srv.Handle(ipc.MethodRetryRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.RetryRunParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		link, err := mgr.HandleRetry(ctx, p.RepoID, p.Branch, p.RunID, p.CallerHeadSHA)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.RetryRunResult{RunID: link.RunID, SourceRunID: link.SourceRunID, Step: link.StepName, SourceRound: link.SourceRound}, nil
+	})
+
 	srv.Handle(ipc.MethodPushReceived, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		// Hooks execute in a managed bare gate by definition, so only the
 		// authenticated peer ancestry is meaningful at this ingress.
@@ -1479,10 +1500,19 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason); err != nil {
+		dispositions, err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.IgnoreFindingIDs, respondInstructions(p), p.AddedFindings, p.ApprovalReason, pipeline.ResponseOptions{Origin: p.Origin, Coverage: p.Coverage})
+		if err != nil {
+			// A refused fix response is the caller's input to fix, not a
+			// transport failure: the gate is still parked. Report it as a
+			// structured result so the CLI can name the unaccounted findings
+			// and help, and the caller can send a corrected response.
+			var refusal *pipeline.RespondRefusal
+			if errors.As(err, &refusal) {
+				return &ipc.RespondResult{OK: false, Refusal: refusal.Message, Missing: refusal.Missing, DeclinedEarlierFix: refusal.DeclinedEarlierFix, Help: refusal.Help}, nil
+			}
 			return nil, err
 		}
-		return &ipc.RespondResult{OK: true}, nil
+		return &ipc.RespondResult{OK: true, Fixed: dispositions.Fixed, Ignored: dispositions.Ignored, Kept: dispositions.Kept}, nil
 	})
 
 	srv.Handle(ipc.MethodAnswerReview, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1505,6 +1535,20 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 		if err := mgr.HandleCancel(p.RunID); err != nil {
+			return nil, err
+		}
+		return &ipc.CancelRunResult{OK: true}, nil
+	})
+
+	srv.Handle(ipc.MethodHandoffRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.CancelRunParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := mgr.HandleHandoff(ctx, p.RunID); err != nil {
 			return nil, err
 		}
 		return &ipc.CancelRunResult{OK: true}, nil
@@ -1542,6 +1586,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			}
 		}, nil
 	})
+}
+
+// respondInstructions carries a response's per-finding guidance with who wrote
+// it, so the executor can keep a driver's guidance apart from the user's.
+func respondInstructions(p ipc.RespondParams) *pipeline.FixInstructions {
+	if len(p.Instructions) == 0 {
+		return nil
+	}
+	return &pipeline.FixInstructions{ByFinding: p.Instructions, FromDriver: p.InstructionsFromDriver}
 }
 
 // runSnapshot reads an authoritative run snapshot and stamps it with the state
@@ -1595,12 +1648,19 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
 		OmitIntent:         r.OmitIntent,
+		QuotaRouting:       r.QuotaRouting,
 		PiProfile:          r.PiProfile,
 		VerificationPlan:   r.VerificationPlan,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
+	}
+	if link, err := d.GetRunRetry(r.ID); err == nil && link != nil {
+		info.RetryOf = &ipc.RunRetryInfo{RunID: link.SourceRunID, Step: link.StepName, Round: link.SourceRound, Error: link.SourceError, CheckpointHeadSHA: link.CheckpointHeadSHA}
+	}
+	if link, err := d.GetRunRetryBySource(r.ID); err == nil && link != nil {
+		info.RetriedBy = link.RunID
 	}
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))
@@ -1650,17 +1710,25 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	if s.AutoFixLimit != nil {
 		info.AutoFixLimit = *s.AutoFixLimit
 	}
-	if stats, err := d.StepFindingStats(s); err == nil {
+	// A carried step reports what it did in the run it was carried from.
+	described := *s
+	described.ID = s.RoundsStepID()
+	if stats, err := d.StepFindingStats(&described); err == nil {
 		info.ReportedFindings = stats.ReportedFindings
 		info.FixedFindings = stats.FixedFindings
 	}
-	if summaries, err := d.StepFixSummaries(s.ID); err == nil {
+	if summaries, err := d.StepFixSummaries(described.ID); err == nil {
 		info.FixSummaries = summaries
 	}
-	if rounds, err := d.StepRoundStats(s.ID); err == nil {
+	if rounds, err := d.StepRoundStats(described.ID); err == nil {
 		info.RoundCount = rounds.TotalRounds
 		info.FixRoundCount = rounds.FixRounds
 		info.PendingFixSource = rounds.PendingFixSource
+	}
+	if s.StepName == types.StepReview && (s.Status == types.StepStatusAwaitingApproval || s.Status == types.StepStatusFixReview) {
+		if rounds, err := d.GetRoundsByStep(s.ID); err == nil && len(rounds) != 0 {
+			info.LatestRoundID = rounds[len(rounds)-1].ID
+		}
 	}
 	return info
 }

@@ -183,7 +183,9 @@ func TestWorktreeSteering_BoundsHostFilesystemSearch(t *testing.T) {
 		"repository-local path you were given remain fine",
 		"not on PATH and no repository-local path is supplied",
 		"report the missing tool and the work it blocked in your normal result",
-		"with the concrete reason, and stop there",
+		"with the concrete reason, and stop searching there",
+		"A missing tool blocks only the search and any verification that needs it",
+		"including any edits you were asked to make",
 	} {
 		if !strings.Contains(normalized, want) {
 			t.Errorf("steering preamble missing host-search boundary %q:\n%s", want, preamble)

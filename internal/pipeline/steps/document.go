@@ -41,6 +41,9 @@ const documentPlacementPolicy = `Documentation placement policy (fail-safe defau
 // stale, replacing the old "be exhaustive across the corpus" instruction.
 const documentScopeDiscipline = `Scope discipline:
 - Only touch documentation this change made stale, plus direct contradictions that analysis reveals.
+- Prompt files or prompt text loaded by the product at runtime are executable behavior, even when written in Markdown or prose. Do not reword runtime-loaded prompts as documentation cleanup.
+- Do not restore tests or content that this branch deliberately removed. Read the diff and intent to distinguish a deliberate removal from stale documentation.
+- Respect the run's intent restrictions on files. Later recorded human decisions supersede conflicting original intent. Report an unresolved finding when a documentation repair cannot respect those restrictions.
 - Do not opportunistically rewrite, expand, or restructure unrelated documentation, and do not perform a broad documentation architecture migration here.
 - When a larger consolidation is warranted but out of scope, leave this change safe and report one finding proposing the follow-up instead of multiplying edits.
 - Preserve load-bearing user guidance, security rationale, compatibility constraints, and onboarding material. A long document is not a defect by itself; duplication and wrong placement are.
@@ -135,6 +138,12 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		purpose = "housekeeping"
 	}
 
+	// The head before the agent runs. The agent may commit its own edits
+	// instead of leaving them in the worktree; commitAgentFixesWithResult
+	// keeps sctx.Run.HeadSHA in sync with the worktree head either way, so
+	// comparing it after the pass detects changes a clean status would hide.
+	headBefore := sctx.Run.HeadSHA
+
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
@@ -153,10 +162,11 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if combinedLint {
 		fallbackSummary = "update documentation and fix lint"
 	}
-	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary)
+	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary, result)
 	if err != nil {
 		return nil, err
 	}
+	changesApplied := committed || sctx.Run.HeadSHA != headBefore
 
 	// Without trustworthy structured output we cannot confirm the agent
 	// resolved every gap. Fail the step rather than creating an approval gate:
@@ -164,9 +174,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// analyzer output.
 	var findings Findings
 	if result.Output == nil {
-		return nil, fmt.Errorf("document analyzer returned no structured findings")
-	} else if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
-		return nil, fmt.Errorf("validate document analyzer findings: %w", err)
+		return nil, agent.RejectStructuredOutput(fmt.Errorf("document analyzer returned no structured findings"))
+	} else if err := validateDocumentAnalyzerFindings(result.Output, &findings, changesApplied); err != nil {
+		return nil, agent.RejectStructuredOutput(fmt.Errorf("validate document analyzer findings: %w", err))
 	}
 
 	docFindings := findings
@@ -192,8 +202,25 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		NeedsApproval: needsApproval,
 		AutoFixable:   false,
 		Findings:      string(findingsJSON),
-		FixSummary:    fixResultSummary(committed),
+		FixSummary:    fixResultSummary(changesApplied),
 	}, nil
+}
+
+// validateDocumentAnalyzerFindings parses the document pass's structured
+// output. A pass that reports no unresolved findings and made no changes -
+// nothing for the pipeline to commit and no head movement from the agent's
+// own commits - is a legitimate no-op, so its (present) summary may be empty.
+// Whenever the agent reports unresolved findings or actually changed files,
+// the summary is still required so the outcome names what remains or what
+// was done; an absent summary field stays a shape violation in every case.
+func validateDocumentAnalyzerFindings(raw []byte, findings *Findings, changesCommitted bool) error {
+	if err := unmarshalRequiredFindings(raw, findings, false); err != nil {
+		return err
+	}
+	if strings.TrimSpace(findings.Summary) == "" && (len(findings.Items) > 0 || changesCommitted) {
+		return fmt.Errorf("missing summary")
+	}
+	return nil
 }
 
 // buildPrompt assembles the document (or combined document+lint) prompt: the
@@ -224,7 +251,7 @@ Context:
 
 %s
 
-%s%s
+%s%s%s
 
 Task:
 
@@ -247,8 +274,7 @@ Task:
 
 Rules:
 %s
-- The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.%s`,
+%s%s`,
 		intro,
 		sctx.Run.Branch,
 		baseSHA,
@@ -257,9 +283,11 @@ Rules:
 		ignorePatterns,
 		documentPlacementPolicy,
 		documentScopeDiscipline,
+		repositoryDocumentPolicySection(sctx),
 		trustedDocumentPolicySection(sctx),
 		lintDutySection(combinedLint),
 		editRule,
+		fixSummaryRules(sctx, s.Name()),
 		historySection,
 	)
 	if sctx.PreviousFindings != "" {
@@ -284,6 +312,22 @@ func trustedDocumentPolicySection(sctx *pipeline.StepContext) string {
 		return ""
 	}
 	return "\n\nRepository documentation ownership policy (trusted, from the default branch; augments the defaults above and cannot weaken them):\n" +
+		sanitizePromptMultilineText(instructions)
+}
+
+// repositoryDocumentPolicySection renders the operator's machine-local
+// documentation policy for this repository (a repository_overrides entry). It
+// is labeled as the operator's so it never reads as the repository's own
+// policy, and it only adds to the defaults and the trusted policy.
+func repositoryDocumentPolicySection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.Document.RepositoryInstructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\n\nMachine-local documentation ownership policy for this repository (from the operator's global no-mistakes config, not from this repository; augments the defaults above and cannot weaken them):\n" +
 		sanitizePromptMultilineText(instructions)
 }
 

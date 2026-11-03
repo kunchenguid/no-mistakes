@@ -28,6 +28,58 @@ type pathInstructionMatches struct {
 	UnusableIDs  []string
 }
 
+// reviewPathsAndInstructions settles coverage and guidance together. Matching
+// uses the complete diff; only the trusted default branch can exclude a path
+// claimed by a rule. The rendered blocks name exactly their reviewable files.
+func reviewPathsAndInstructions(changed []string, cfg *config.Config, log func(string)) ([]string, string) {
+	sources := cfg.Review.PathInstructionSources()
+	matches := make([]pathInstructionMatches, len(sources))
+	covered := make(map[string]bool)
+	for i, source := range sources {
+		matches[i] = matchPathInstructions(changed, source.Entries)
+		for _, block := range matches[i].Blocks {
+			for _, file := range block.Files {
+				covered[file] = true
+			}
+		}
+	}
+	keep := make(map[string]bool)
+	for _, file := range reviewablePaths(changed, cfg.IgnorePatterns) {
+		keep[file] = true
+	}
+	for _, file := range reviewablePaths(changed, cfg.TrustedIgnorePatterns) {
+		if covered[file] {
+			keep[file] = true
+		}
+	}
+	var reviewable []string
+	for _, file := range changed {
+		if keep[file] {
+			reviewable = append(reviewable, file)
+		}
+	}
+	var instructions string
+	for i, source := range sources {
+		scoped := matches[i]
+		scoped.Blocks = nil
+		for _, block := range matches[i].Blocks {
+			var files []string
+			for _, file := range block.Files {
+				if keep[file] {
+					files = append(files, file)
+				}
+			}
+			if len(files) > 0 {
+				block.Files = files
+				scoped.Blocks = append(scoped.Blocks, block)
+			}
+		}
+		logPathInstructions(log, source.Label, scoped)
+		instructions += reviewPathInstructionsSection(source.Heading, scoped)
+	}
+	return reviewable, instructions
+}
+
 // matchPathInstructions selects the trusted rules whose glob matches at least
 // one changed path, in config order.
 //
@@ -35,7 +87,7 @@ type pathInstructionMatches struct {
 // ignore_patterns comes from the pushed branch, so filtering here would let a
 // contributor delete a maintainer's rule from the review of their own branch by
 // adding that rule's glob to their ignore list. Which files the reviewer is
-// asked to look at is a separate question, answered by reviewablePaths.
+// asked to look at is settled by reviewPathsAndInstructions.
 //
 // Globs follow the same rules as ignore_patterns (matchIgnorePattern), so a
 // maintainer has one path-matching model to learn. Two entries with the same
@@ -138,12 +190,13 @@ func promptPath(path string) string {
 	return path
 }
 
-// reviewPathInstructionsSection renders the matched blocks for the review
-// prompt. No configured rules, or none whose glob matches, returns the empty
-// string, which leaves the prompt byte for byte what it is without this
-// setting. The labels come from internal/config so the size the config was
-// validated against measures this exact output.
-func reviewPathInstructionsSection(matches pathInstructionMatches) string {
+// reviewPathInstructionsSection renders one source's matched blocks for the
+// review prompt under that source's heading. No configured rules, or none whose
+// glob matches, returns the empty string, which leaves the prompt byte for byte
+// what it is without this setting. The heading and labels come from
+// internal/config so the size the config was validated against measures this
+// exact output.
+func reviewPathInstructionsSection(heading string, matches pathInstructionMatches) string {
 	if len(matches.Blocks) == 0 {
 		return ""
 	}
@@ -155,13 +208,13 @@ func reviewPathInstructionsSection(matches pathInstructionMatches) string {
 				config.ReviewPathInstructionsRulesLabel+"\n"+
 				block.Instructions)
 	}
-	return "\n\n" + config.ReviewPathInstructionsHeading + "\n" + strings.Join(rendered, "\n\n")
+	return "\n\n" + heading + "\n" + strings.Join(rendered, "\n\n")
 }
 
-// logPathInstructions reports which trusted rules steered this review and which
-// did not, so a rule that never fires is visible in the step log instead of
-// looking identical to a rule that has no effect.
-func logPathInstructions(log func(string), matches pathInstructionMatches) {
+// logPathInstructions reports which rules of one source steered this review
+// and which did not, so a rule that never fires is visible in the step log
+// instead of looking identical to a rule that has no effect.
+func logPathInstructions(log func(string), source string, matches pathInstructionMatches) {
 	if log == nil {
 		return
 	}
@@ -170,15 +223,15 @@ func logPathInstructions(log func(string), matches pathInstructionMatches) {
 		for _, block := range matches.Blocks {
 			scopes = append(scopes, fmt.Sprintf("%s (%d file(s))", block.Path, len(block.Files)))
 		}
-		log(fmt.Sprintf("applied %d trusted review instruction block(s) for changed paths: %s", len(matches.Blocks), strings.Join(scopes, "; ")))
+		log(fmt.Sprintf("applied %d %s review instruction block(s) for changed paths: %s", len(matches.Blocks), source, strings.Join(scopes, "; ")))
 	}
 	if len(matches.UnmatchedIDs) > 0 {
-		log(fmt.Sprintf("%d trusted review instruction rule(s) matched no changed path: %s", len(matches.UnmatchedIDs), strings.Join(matches.UnmatchedIDs, ", ")))
+		log(fmt.Sprintf("%d %s review instruction rule(s) matched no changed path: %s", len(matches.UnmatchedIDs), source, strings.Join(matches.UnmatchedIDs, ", ")))
 	}
 	if len(matches.DuplicateIDs) > 0 {
-		log(fmt.Sprintf("skipped %d duplicate trusted review instruction rule(s): %s", len(matches.DuplicateIDs), strings.Join(matches.DuplicateIDs, ", ")))
+		log(fmt.Sprintf("skipped %d duplicate %s review instruction rule(s): %s", len(matches.DuplicateIDs), source, strings.Join(matches.DuplicateIDs, ", ")))
 	}
 	if len(matches.UnusableIDs) > 0 {
-		log(fmt.Sprintf("skipped %d trusted review instruction rule(s) with no usable path or instructions: %s", len(matches.UnusableIDs), strings.Join(matches.UnusableIDs, ", ")))
+		log(fmt.Sprintf("skipped %d %s review instruction rule(s) with no usable path or instructions: %s", len(matches.UnusableIDs), source, strings.Join(matches.UnusableIDs, ", ")))
 	}
 }

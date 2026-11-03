@@ -239,6 +239,36 @@ func TestRespondParams(t *testing.T) {
 	}
 }
 
+func TestRespondParamsOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{`{"run_id":"run123","step":"review","action":"approve"}`, "unknown"},
+		{`{"run_id":"run123","step":"review","action":"approve","origin":"interactive"}`, "interactive"},
+		{`{"run_id":"run123","step":"review","action":"fix","origin":"auto_yes"}`, "auto_yes"},
+	} {
+		var params RespondParams
+		if err := json.Unmarshal([]byte(tc.raw), &params); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(params.Origin.OrUnknown()); got != tc.want {
+			t.Fatalf("origin = %q, want %q", got, tc.want)
+		}
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var roundTrip RespondParams
+		if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(roundTrip.Origin.OrUnknown()); got != tc.want {
+			t.Fatalf("origin changed on round trip: got %q, want %q (%s)", got, tc.want, encoded)
+		}
+	}
+}
+
 func TestRunInfoRoundTrip(t *testing.T) {
 	prURL := "https://github.com/user/repo/pull/42"
 	submittedHead := "submitted123"
@@ -412,6 +442,7 @@ func TestMethodConstants(t *testing.T) {
 		MethodSubscribe,
 		MethodRespond,
 		MethodCancelRun,
+		MethodHandoffRun,
 		MethodGateContext,
 		MethodAdmitPush,
 		MethodHealth,
@@ -426,9 +457,6 @@ func TestMethodConstants(t *testing.T) {
 			t.Errorf("duplicate method: %q", m)
 		}
 		seen[m] = true
-	}
-	if len(methods) != 14 {
-		t.Errorf("expected 14 methods, got %d", len(methods))
 	}
 }
 

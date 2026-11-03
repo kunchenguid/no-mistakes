@@ -130,6 +130,42 @@ func validateGates(gates []Gate) error {
 	return nil
 }
 
+// GateFixLimits rejects fractional YAML numbers instead of truncating them.
+type GateFixLimits map[string]int
+
+func (g *GateFixLimits) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("auto_fix.gates must map gate names to non-negative integers")
+	}
+	for i := 1; i < len(node.Content); i += 2 {
+		if node.Content[i].Tag != "!!int" {
+			return fmt.Errorf("auto_fix.gates.%s must be an integer", node.Content[i-1].Value)
+		}
+	}
+	var decoded map[string]int
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*g = decoded
+	return nil
+}
+
+func validateGateFixLimits(limits GateFixLimits, gates []Gate) error {
+	declared := make(map[string]bool, len(gates))
+	for _, gate := range gates {
+		declared[gate.Name] = true
+	}
+	for name, limit := range limits {
+		if !declared[name] {
+			return fmt.Errorf("auto_fix.gates.%s must name a declared gate", name)
+		}
+		if limit < 0 {
+			return fmt.Errorf("auto_fix.gates.%s must be non-negative", name)
+		}
+	}
+	return nil
+}
+
 func gateAnchorText() string {
 	anchors := types.CustomGateAnchors()
 	names := make([]string, 0, len(anchors))

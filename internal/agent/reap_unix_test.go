@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -33,7 +34,7 @@ func TestNativeAgentCommand_WaitDelayClosesEscapedPipeHolder(t *testing.T) {
 	shellenv.ConfigureShellCommand(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
 
-	started, err := startNativeAgentCommand(cmd, nil)
+	started, err := startNativeAgentCommand(cmd, nil, false)
 	if err != nil {
 		t.Fatalf("startNativeAgentCommand: %v", err)
 	}
@@ -310,4 +311,219 @@ func waitForNativeAgentPipeHelperReady(path string, timeout time.Duration) bool 
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+// escapedStdoutHolder is a script fragment that leaves a session-detached
+// process holding the agent's stdout open after the agent exits, so neither
+// the process-group kill nor EOF ends the drain and WaitDelay must.
+func escapedStdoutHolder(t *testing.T, dir string) string {
+	t.Helper()
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid not available")
+	}
+	pidFile := filepath.Join(dir, "holder.pid")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	// The wait matters: until setsid() runs the holder is still in the agent's
+	// process group and the exit-time group kill would reap it.
+	return "setsid sleep 120 &\nholder=$!\necho $holder > \"" + pidFile + "\"\n" +
+		"while [ \"$(ps -o sid= -p $holder)\" = \"$(ps -o sid= -p $$)\" ]; do sleep 0.02; done\n"
+}
+
+// The Test step runs its analyzer with RequireCompletedChildren and a result
+// schema (runTestAnalyzer). Under exactly those options a cleanly exited agent
+// whose result was fully written must finish even when an escaped descendant
+// keeps stdout open until WaitDelay force-closes it.
+func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	tests := []struct {
+		name string
+		run  func(t *testing.T, dir, holder string) (*Result, error)
+	}{
+		{"claude", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeClaudeResult(t, dir, holder, schema)
+		}},
+		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeCodexResult(t, dir, holder, schema)
+		}},
+		{"pi", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakePiResult(t, dir, holder)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			res, err := tt.run(t, dir, escapedStdoutHolder(t, dir))
+			if err != nil {
+				t.Fatalf("Run = %v, want the finished result", err)
+			}
+			if res.Text != "ok" && string(res.Output) != `{"ok":true}` {
+				t.Fatalf("result = text %q output %q, want the finished result", res.Text, res.Output)
+			}
+		})
+	}
+}
+
+// RequireCompletedChildren must stay fail-closed on the WaitDelay path: an
+// agent that wrote its result but left a child in its own process group still
+// running is refused, because the owned-children probe runs before WaitDelay can
+// turn the run into a swallowable ErrWaitDelay.
+func TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	tests := []struct {
+		name string
+		run  func(t *testing.T, dir, holder string) (*Result, error)
+	}{
+		{"claude", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeClaudeResult(t, dir, holder, schema)
+		}},
+		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeCodexResult(t, dir, holder, schema)
+		}},
+		{"pi", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakePiResult(t, dir, holder)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			_, err := tt.run(t, dir, ownedStdoutHolder(t, dir))
+			if errors.Is(err, context.DeadlineExceeded) && strings.Contains(err.Error(), "native check completion is unverified:") {
+				// A ps probe that uses up the settle window must also refuse
+				// completion, but cannot certify the member's current identity.
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "agent exited with active owned children") {
+				t.Fatalf("Run error = %v, want refusal for active owned children", err)
+			}
+			// The refusal must name the surviving member so a wild report
+			// identifies which process refused to exit (issue #1614).
+			member := waitForPidFile(t, filepath.Join(dir, "owned.pid"), 5*time.Second)
+			if !strings.Contains(err.Error(), "pid "+strconv.Itoa(member)) || !strings.Contains(err.Error(), "(sleep 120)") {
+				t.Fatalf("Run error = %v, want member pid %d and its command named", err, member)
+			}
+		})
+	}
+}
+
+// TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild is the
+// issue #1614 regression: a member of the agent's own process group that was
+// still finishing when the leader exited must not fail the run - the bounded
+// re-probe sees it leave inside the settle window. A single-shot probe (the
+// old behavior) refused this shape outright.
+func TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	tests := []struct {
+		name string
+		run  func(t *testing.T, dir, holder string) (*Result, error)
+	}{
+		{"claude", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeClaudeResult(t, dir, holder, schema)
+		}},
+		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeCodexResult(t, dir, holder, schema)
+		}},
+		{"pi", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakePiResult(t, dir, holder)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			res, err := tt.run(t, dir, finishingOwnedChild(t, dir))
+			if err != nil {
+				t.Fatalf("Run = %v, want the finished result", err)
+			}
+			if res.Text != "ok" && string(res.Output) != `{"ok":true}` {
+				t.Fatalf("result = text %q output %q, want the finished result", res.Text, res.Output)
+			}
+		})
+	}
+}
+
+// finishingOwnedChild leaves a member in the agent's own process group that
+// outlives the leader by well under the settle window, with its stdio detached
+// so it does not hold the agent's pipes - the shape a test runner's last
+// worker or a toolchain helper mid-shutdown takes (issue #1614).
+func finishingOwnedChild(t *testing.T, dir string) string {
+	t.Helper()
+	return "( sleep 0.4 ) >/dev/null 2>&1 &\n"
+}
+
+// ownedStdoutHolder leaves a child in the agent's own process group holding
+// stdout, so the owned-children probe sees it still running.
+func ownedStdoutHolder(t *testing.T, dir string) string {
+	t.Helper()
+	pidFile := filepath.Join(dir, "owned.pid")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	return "sleep 120 &\necho $! > \"" + pidFile + "\"\n"
+}
+
+func runFakeClaudeResult(t *testing.T, dir, holder string, schema json.RawMessage) (*Result, error) {
+	t.Helper()
+	const events = `{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","structured_output":{"ok":true}}`
+	bin := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\ncat > /dev/null\n" + holder + "printf '%s\\n' '" + events + "'\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	return (&claudeAgent{bin: bin}).runOnce(context.Background(), RunOpts{Prompt: "p", CWD: dir, JSONSchema: schema, RequireCompletedChildren: true})
+}
+
+func runFakeCodexResult(t *testing.T, dir, holder string, schema json.RawMessage) (*Result, error) {
+	t.Helper()
+	const message = `{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}`
+	bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+message+"'\nexit 0\n", "")
+	return (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir, JSONSchema: schema, RequireCompletedChildren: true})
+}
+
+func runFakePiResult(t *testing.T, dir, holder string) (*Result, error) {
+	t.Helper()
+	const end = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}`
+	bin := writeFakePi(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+end+"'\nexit 0\n", "")
+	return (&piAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir, RequireCompletedChildren: true})
+}
+
+// Without a captured result, the real read failure is reported - not the
+// WaitDelay expiry that hid it - and the error says so.
+func TestNativeAgents_UnfinishedRunKeepsParseErrorOverWaitDelay(t *testing.T) {
+	dir := t.TempDir()
+	holder := escapedStdoutHolder(t, dir)
+	bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"exit 0\n", "")
+	_, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+	if err == nil {
+		t.Fatal("Run succeeded without any result")
+	}
+	if !errors.Is(err, os.ErrClosed) || !strings.Contains(err.Error(), "codex parse events (result received: false): ") {
+		t.Fatalf("error = %v, want the parse error leading", err)
+	}
+}
+
+func TestCodexEmptyResultEventIsReportedAsReceived(t *testing.T) {
+	dir := t.TempDir()
+	holder := escapedStdoutHolder(t, dir)
+	message := `{"type":"item.completed","item":{"type":"agent_message","text":""}}`
+	bin := writeFakeCodex(t, dir, "#!/bin/sh\ncat > /dev/null\n"+holder+"printf '%s\\n' '"+message+"'\nexit 0\n", "")
+	_, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "p", CWD: dir})
+	if err == nil {
+		t.Fatal("Run succeeded without usable result text")
+	}
+	if !strings.Contains(err.Error(), "codex parse events (result received: true): ") {
+		t.Fatalf("error = %v, want received result event reported", err)
+	}
 }

@@ -13,7 +13,7 @@ LDFLAGS := -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=$(VE
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryHost=$(UMAMI_HOST) \
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=$(UMAMI_WEBSITE_ID)
 
-.PHONY: build dist install test e2e e2e-record lint fmt clean docs docs-build docs-preview demo skill skill-check
+.PHONY: build dist install test e2e e2e-record lint fmt clean docs docs-build docs-preview demo skill skill-check winres winres-check
 
 DIST_DIR ?= dist
 INSTALL_BIN := $(shell go env GOPATH)/bin/no-mistakes
@@ -85,7 +85,18 @@ skill:
 skill-check:
 	go run ./cmd/genskill --check
 
-lint: skill-check
+# Regenerate the committed Windows resource objects
+# (cmd/no-mistakes/rsrc_windows_*.syso) that embed the application manifest
+# from internal/winres.
+winres:
+	go run ./cmd/genwinres
+
+# Fail if a committed resource object has drifted from the generator. Wired
+# into lint alongside skill-check.
+winres-check:
+	go run ./cmd/genwinres --check
+
+lint: skill-check winres-check
 	go vet ./...
 
 fmt:

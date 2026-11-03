@@ -13,13 +13,13 @@ import (
 
 // Pi reports model and provider as separate fields, so a candidate spelled
 // xai/grok-4.6 is served as model "grok-4.6" plus provider "xai".
-const piServedGrok46Reply = `{"type":"message_end","message":{"role":"assistant","provider":"xai","model":"grok-4.6","content":[{"type":"text","text":"{\"findings\":[],\"risk_level\":\"low\",\"risk_rationale\":\"clean\",\"risk_scope\":\"source-or-external\"}"}]}}
-{"type":"agent_end","messages":[]}
-`
+const piReviewOutput = `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
 
-const piServedMuseReply = `{"type":"message_end","message":{"role":"assistant","provider":"different-sidecar","model":"meta/muse-spark-1.3-contributor","content":[{"type":"text","text":"{\"findings\":[],\"risk_level\":\"low\",\"risk_rationale\":\"clean\",\"risk_scope\":\"source-or-external\"}"}]}}
-{"type":"agent_end","messages":[]}
-`
+const piReviewToolResult = `{"type":"tool_execution_end","toolCallId":"final-1","toolName":"no_mistakes_output","isError":false,"result":{"terminate":true,"details":{"output":` + piReviewOutput + `}}}` + "\n"
+
+const piServedGrok46Reply = `{"type":"message_end","message":{"role":"assistant","provider":"xai","model":"grok-4.6","stopReason":"toolUse","content":[{"type":"toolCall","id":"final-1","name":"no_mistakes_output","arguments":` + piReviewOutput + `}]}}` + "\n" + piReviewToolResult
+
+const piServedMuseReply = `{"type":"message_end","message":{"role":"assistant","provider":"different-sidecar","model":"meta/muse-spark-1.3-contributor","stopReason":"toolUse","content":[{"type":"toolCall","id":"final-1","name":"no_mistakes_output","arguments":` + piReviewOutput + `}]}}` + "\n" + piReviewToolResult
 
 func TestReplayPiModelIdentityComparison(t *testing.T) {
 	ctx := context.Background()
@@ -121,9 +121,9 @@ func installFakePiJSONL(t *testing.T, fakeDir, reply string) {
 	var script string
 	if runtime.GOOS == "windows" {
 		path += ".cmd"
-		script = "@echo off\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
+		script = "@echo off\r\nif \"%1\"==\"--version\" (echo 0.99.1& exit /b 0)\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
 	} else {
-		script = "#!/bin/sh\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
+		script = "#!/bin/sh\n[ \"$1\" = \"--version\" ] && { echo 0.99.1; exit 0; }\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
 	}
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

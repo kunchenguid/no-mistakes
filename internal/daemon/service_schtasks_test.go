@@ -3,7 +3,6 @@ package daemon
 import (
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -21,9 +20,14 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon(t *testing.T) {
 	runtimeGOOS = "windows"
 	exe := `C:\Program Files\no-mistakes\no-mistakes.exe`
 	serviceExecutablePath = func() (string, error) { return exe, nil }
+	serviceCurrentUser = stubWindowsTaskUser
 
 	var commands []string
+	var definition string
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		if name == "schtasks" && len(args) > 0 && args[0] == "/Create" {
+			definition = readWindowsTaskDefinition(t, args)
+		}
 		commands = append(commands, name+" "+strings.Join(args, " "))
 		// Simulate fresh-install: the legacy unsuffixed task is absent, so
 		// the pre-install cleanup query fails and cleanupLegacyWindowsTask
@@ -43,16 +47,17 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantTaskCommand := strconv.Quote(exe) + " daemon run --root " + strconv.Quote(p.Root())
 	wantQueryLegacy := "schtasks /Query /TN " + legacyWindowsTaskName + " /XML"
-	wantCreate := "schtasks /Create /TN " + windowsTaskName(p) +
-		" /SC ONLOGON /RL LIMITED /F /TR " + wantTaskCommand
+	wantCreatePrefix := "schtasks /Create /TN " + windowsTaskName(p) + " /XML "
 	wantRun := "schtasks /Run /TN " + windowsTaskName(p)
 	if len(commands) != 3 {
 		t.Fatalf("expected schtasks create, legacy query, and run, got %v", commands)
 	}
-	if commands[0] != wantCreate {
-		t.Fatalf("create command = %q, want %q", commands[0], wantCreate)
+	if !strings.HasPrefix(commands[0], wantCreatePrefix) || !strings.HasSuffix(commands[0], " /F") {
+		t.Fatalf("create command = %q, want %q<file> /F", commands[0], wantCreatePrefix)
+	}
+	if want := renderWindowsTaskXML(exe, p.Root(), stubWindowsTaskAccount); definition != want {
+		t.Fatalf("registered definition = %q, want %q", definition, want)
 	}
 	if commands[1] != wantQueryLegacy {
 		t.Fatalf("legacy query command = %q, want %q", commands[1], wantQueryLegacy)
@@ -71,6 +76,7 @@ func TestInstallWindowsTaskDoesNotRemoveLegacyTaskForDifferentRoot(t *testing.T)
 	cleanup := stubServiceRuntime(t)
 	defer cleanup()
 	runtimeGOOS = "windows"
+	serviceCurrentUser = stubWindowsTaskUser
 
 	var commands []string
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
@@ -102,6 +108,7 @@ func TestInstallWindowsTaskKeepsLegacyTaskOnCreateFailure(t *testing.T) {
 	cleanup := stubServiceRuntime(t)
 	defer cleanup()
 	runtimeGOOS = "windows"
+	serviceCurrentUser = stubWindowsTaskUser
 
 	var commands []string
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {

@@ -1,6 +1,8 @@
 package steps
 
 import (
+	"strings"
+
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
@@ -28,6 +30,17 @@ import (
 // Review, test, document, lint, and CI-fix prompts keep the full intent
 // under either signal.
 func publicPRIntent(sctx *pipeline.StepContext) string {
+	source := publicPRIntentSource(sctx)
+	if source == "" {
+		return ""
+	}
+	if sctx.Config != nil && strings.EqualFold(strings.TrimSpace(sctx.Config.PR.Intent.Format), "brief") {
+		return strings.TrimSpace(sctx.PublicIntentBrief)
+	}
+	return source
+}
+
+func publicPRIntentSource(sctx *pipeline.StepContext) string {
 	if sctx != nil && sctx.Config != nil && !sctx.Config.PR.PublishesIntent() {
 		return ""
 	}

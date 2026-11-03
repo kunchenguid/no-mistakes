@@ -62,6 +62,7 @@ func newIntentStepContext(t *testing.T) *pipeline.StepContext {
 }
 
 func TestIntentStep_SuccessPersistsAndAttaches(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -113,6 +114,7 @@ func TestIntentStep_SuccessPersistsAndAttaches(t *testing.T) {
 }
 
 func TestIntentStep_SuccessSanitizesLoggedIntentOnly(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -158,6 +160,7 @@ func TestIntentStep_SuccessSanitizesLoggedIntentOnly(t *testing.T) {
 }
 
 func TestIntentStep_NoMatchReturnsSkipped(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -178,6 +181,7 @@ func TestIntentStep_NoMatchReturnsSkipped(t *testing.T) {
 }
 
 func TestIntentStep_ExtractErrorReturnsSkippedNotError(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -198,6 +202,7 @@ func TestIntentStep_ExtractErrorReturnsSkippedNotError(t *testing.T) {
 }
 
 func TestIntentStep_UsesFiveMinuteExtractionTimeout(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	var remaining time.Duration
 	var hasDeadline bool
@@ -223,6 +228,7 @@ func TestIntentStep_UsesFiveMinuteExtractionTimeout(t *testing.T) {
 }
 
 func TestIntentStep_SlowExtractionPastOldTimeoutStillAttachesIntent(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(ctx context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -258,6 +264,7 @@ func TestIntentStep_SlowExtractionPastOldTimeoutStillAttachesIntent(t *testing.T
 }
 
 func TestIntentStep_DisambiguatorCleanupErrorReturnsError(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -278,6 +285,7 @@ func TestIntentStep_DisambiguatorCleanupErrorReturnsError(t *testing.T) {
 }
 
 func TestIntentStep_DisabledByConfigSkipsExtractor(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	sctx.Config.Intent.Enabled = false
 
@@ -302,6 +310,7 @@ func TestIntentStep_DisabledByConfigSkipsExtractor(t *testing.T) {
 }
 
 func TestIntentStep_PanicReturnsSkipped(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
@@ -318,7 +327,39 @@ func TestIntentStep_PanicReturnsSkipped(t *testing.T) {
 	}
 }
 
+func TestIntentStep_InferredIntentCheckRejectsBeforePersistence(t *testing.T) {
+	t.Parallel()
+	sctx := newIntentStepContext(t)
+	sctx.Config.Intent.Check = config.IntentCheck{Mode: config.IntentCheckReject, Terms: []string{"private-marker"}}
+	var logs []string
+	sctx.Log = func(message string) { logs = append(logs, message) }
+	step := &IntentStep{runIntent: func(context.Context, *pipeline.StepContext) (*intent.Result, error) {
+		return &intent.Result{Summary: "keep private-marker out of the public brief", AgentName: "claude", Score: 0.9}, nil
+	}}
+
+	outcome, err := step.Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "terms[0]") || strings.Contains(err.Error(), "private-marker") {
+		t.Fatalf("Execute() error = %v, want a non-disclosing rule-index rejection", err)
+	}
+	if outcome != nil {
+		t.Fatalf("rejected inferred intent returned outcome %+v", outcome)
+	}
+	stored, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Intent != nil || sctx.Run.Intent != nil {
+		t.Fatalf("rejected inferred intent was persisted or attached: stored=%v context=%v", stored.Intent, sctx.Run.Intent)
+	}
+	for _, message := range logs {
+		if strings.Contains(message, "private-marker") {
+			t.Fatalf("step log echoed matched text: %s", message)
+		}
+	}
+}
+
 func TestIntentStep_UsesSuppliedIntent(t *testing.T) {
+	t.Parallel()
 	sctx := newIntentStepContext(t)
 	supplied := "agent-supplied: add retry to the uploader"
 	sctx.Run.Intent = &supplied

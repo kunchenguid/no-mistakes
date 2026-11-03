@@ -111,14 +111,12 @@ func changedPathList(changedFiles string) []string {
 	return paths
 }
 
-// reviewablePaths returns the changed paths that survive the repo's ignore
-// patterns. ignore_patterns is a pushed-branch field, so this subset decides
-// only whether a step has anything to work on; it must never decide which
-// trusted configuration applies to a run.
+// reviewablePaths filters changed paths by the supplied ignore patterns. It
+// must never decide which trusted configuration applies to a run. Review's
+// final scope is owned by reviewPathsAndInstructions, which combines pushed
+// exclusions with instruction-covered paths and trusted exclusions.
 //
-// changed is the already-split complete set from changedPathList, so a step
-// that needs both views splits the `git diff --name-only` payload once and
-// feeds the same slice to both this and matchPathInstructions.
+// changed is the already-split complete set from changedPathList.
 func reviewablePaths(changed []string, ignorePatterns []string) []string {
 	var paths []string
 	for _, file := range changed {

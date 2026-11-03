@@ -3,11 +3,15 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestIntentDefaults(t *testing.T) {
 	got := intentDefaults()
+	if got.Check.Mode != "" && got.Check.Mode != IntentCheckOff {
+		t.Errorf("default intent check mode = %q, want off", got.Check.Mode)
+	}
 	if !got.Enabled {
 		t.Error("default Enabled should be true (opt-out)")
 	}
@@ -167,6 +171,96 @@ func TestLoadGlobalConfig_IntentPublishIntentParsed(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestIntentCheckDefaultsOffAndPoliciesComposeAdditively(t *testing.T) {
+	defaultConfig := Merge(DefaultGlobalConfig(), &RepoConfig{})
+	if defaultConfig.Intent.Check.Mode != IntentCheckOff || defaultConfig.PR.Intent.Format != "" {
+		t.Fatalf("new behavior should be off by default: intent=%#v PR=%#v", defaultConfig.Intent.Check, defaultConfig.PR.Intent)
+	}
+	global, err := LoadGlobalFromBytes([]byte("intent:\n  check:\n    mode: reject\n    terms: [operator-only]\n    patterns: ['(?i)run-[0-9]+']\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushed, err := LoadRepoFromBytes([]byte("intent:\n  check:\n    mode: reject\n    terms: [attacker-rule]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := LoadRepoFromBytes([]byte("intent:\n  check:\n    mode: warn\n    terms: [repository-rule]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := EffectiveRepoConfig(pushed, trusted, false)
+	check := Merge(global, effective).Intent.Check
+	if check.Mode != IntentCheckReject {
+		t.Fatalf("mode = %q, want strongest configured reject mode", check.Mode)
+	}
+	for text, want := range map[string]bool{
+		"OPERATOR-ONLY":   true,
+		"run-42":          true,
+		"Repository-Rule": true,
+		"attacker-rule":   false,
+	} {
+		if got := len(check.Match(text)) > 0; got != want {
+			t.Errorf("Match(%q) = %v, want %v", text, got, want)
+		}
+	}
+	if got := check.Match("run-42"); len(got) != 1 || got[0] != "patterns[0]" {
+		t.Fatalf("pattern result = %v; matched content must not be returned", got)
+	}
+}
+
+func TestIntentCheckPushedPolicyDoesNotApplyWithoutTrustedCopy(t *testing.T) {
+	pushed, err := LoadRepoFromBytes([]byte("intent:\n  check:\n    mode: reject\n    terms: [must-not-apply]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := EffectiveRepoConfig(pushed, nil, false)
+	check := Merge(DefaultGlobalConfig(), effective).Intent.Check
+	if check.Mode != IntentCheckOff || len(check.Match("must-not-apply")) != 0 {
+		t.Fatalf("pushed policy took effect: %#v", check)
+	}
+}
+
+func TestPRIntentFormatAndSectionsAreTrustedOnly(t *testing.T) {
+	pushed, err := LoadRepoFromBytes([]byte("pr:\n  intent:\n    format: brief\n    sections: [why]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := LoadRepoFromBytes([]byte("pr:\n  intent:\n    format: brief\n    sections: [scope, out_of_scope]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, allowRepoCommands := range []bool{false, true} {
+		effective := EffectiveRepoConfig(pushed, trusted, allowRepoCommands)
+		got := Merge(DefaultGlobalConfig(), effective).PR.Intent
+		if got.Format != "brief" || len(got.Sections) != 2 || got.Sections[0] != "scope" || got.Sections[1] != "out_of_scope" {
+			t.Fatalf("allow_repo_commands=%v: PR intent = %#v, want trusted settings", allowRepoCommands, got)
+		}
+	}
+	effective := EffectiveRepoConfig(pushed, nil, false)
+	if got := Merge(DefaultGlobalConfig(), effective).PR.Intent; got.Format != "" || len(got.Sections) != 0 {
+		t.Fatalf("untrusted PR intent config took effect: %#v", got)
+	}
+}
+
+func TestIntentConfigRejectsInvalidPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{name: "invalid mode", data: "intent:\n  check:\n    mode: redact\n"},
+		{name: "invalid regex", data: "intent:\n  check:\n    patterns: ['(']\n"},
+		{name: "oversized rule", data: "intent:\n  check:\n    terms: ['" + strings.Repeat("x", maxIntentCheckRuleLength+1) + "']\n"},
+		{name: "invalid brief format", data: "pr:\n  intent:\n    format: layout\n"},
+		{name: "unknown brief section", data: "pr:\n  intent:\n    sections: [audience]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := LoadRepoFromBytes([]byte(tc.data)); err == nil {
+				t.Fatal("invalid intent config unexpectedly loaded")
+			}
+		})
+	}
+}
 
 // The global publication default must live only in global config. The repo
 // raw type has no publication key (compile-enforced), so a pushed branch's

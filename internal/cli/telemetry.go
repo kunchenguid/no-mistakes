@@ -8,7 +8,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// trackAxiSurface records a state-changing axi command (run, respond, abort)
+// trackAxiSurface records a state-changing axi command (run, respond, abort, handoff)
 // both as a pageview and as a command event. The pageview gives agent usage
 // parity with the human surfaces (the TUI emits /tui, the wizard /wizard) so
 // agent and human activity show up the same way in analytics; the command
@@ -28,7 +28,7 @@ func trackAxiSurface(command, path string, fields telemetry.Fields, fn func() er
 func sanitizeAxiTelemetryAction(action string) string {
 	action = strings.TrimSpace(action)
 	switch types.ApprovalAction(action) {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip:
+	case types.ActionApprove, types.ActionFix, types.ActionSkip, types.ActionAbort, types.ActionCompleteCoverage:
 		return action
 	default:
 		return "invalid"

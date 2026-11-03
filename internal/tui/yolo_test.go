@@ -30,6 +30,7 @@ func TestModel_Yolo_RefusalGatesSendNoAutomaticResponse(t *testing.T) {
 	}{
 		{types.StepDocument, pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "ledger.json", Rule: "ledger.json"}).Findings},
 		{types.StepTest, unvalidatedWork},
+		{types.StepReview, `{"findings":[{"id":"review-fix-rounds-exhausted","severity":"warning","action":"ask-user","description":"Review used 1/1 fix rounds"}]}`},
 	} {
 		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
 			t.Run(string(refusal.step)+"/"+string(status), func(t *testing.T) {
@@ -183,7 +184,7 @@ func TestModel_Yolo_AutoApprovesAwaitingStep(t *testing.T) {
 		mu.Lock()
 		calls = append(calls, params)
 		mu.Unlock()
-		return &ipc.RespondResult{}, nil
+		return &ipc.RespondResult{OK: true}, nil
 	})
 
 	client, err := ipc.Dial(sock)
@@ -235,7 +236,7 @@ func captureRespond(t *testing.T) (string, *ipc.Client, func() []ipc.RespondPara
 		mu.Lock()
 		calls = append(calls, params)
 		mu.Unlock()
-		return &ipc.RespondResult{}, nil
+		return &ipc.RespondResult{OK: true}, nil
 	})
 
 	client, err := ipc.Dial(sock)

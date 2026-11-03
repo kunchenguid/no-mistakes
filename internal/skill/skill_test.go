@@ -72,6 +72,24 @@ func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 	}
 }
 
+// These expectations pin the task-first writing contract, independently of
+// the shared constant used by the renderer. They do not test model behavior.
+func TestBodyDocumentsIndependentTestOracles(t *testing.T) {
+	md := strings.Join(strings.Fields(Markdown()), " ")
+	for _, want := range []string{
+		"Use an independent oracle",
+		"expected result must come from somewhere other than the code under test",
+		"a specification, worked example, published constant, external contract, or independently justified property",
+		"Name the public behavior, the oracle's source, and a plausible wrong behavior the test would reject",
+		"Do not only check your own mocks, compare a result to itself, or copy the implementation's expected-value rule",
+		"External-boundary mocks, constants, snapshots, and computed expectations remain legitimate when they check an independent contract",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("task-first skill missing independent-oracle guidance %q:\n%s", want, md)
+		}
+	}
+}
+
 func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 	md := Markdown()
 	for _, want := range []string{

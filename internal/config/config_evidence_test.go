@@ -11,6 +11,9 @@ import (
 
 func TestTestEvidenceDefaults(t *testing.T) {
 	got := testDefaults()
+	if !got.Evidence.Compact {
+		t.Error("default Compact should be true")
+	}
 	if got.Evidence.StoreInRepo {
 		t.Error("default StoreInRepo should be false (opt-in)")
 	}
@@ -114,6 +117,7 @@ agent: claude
 test:
   evidence:
     store_in_repo: true
+    compact: false
     dir: artifacts/evidence
     branch: team/ci/evidence
 `
@@ -127,6 +131,9 @@ test:
 	}
 	if cfg.Test.Evidence.StoreInRepo == nil || !*cfg.Test.Evidence.StoreInRepo {
 		t.Error("expected StoreInRepo=true")
+	}
+	if cfg.Test.Evidence.Compact == nil || *cfg.Test.Evidence.Compact {
+		t.Error("expected Compact=false")
 	}
 	if cfg.Test.Evidence.Dir == nil || *cfg.Test.Evidence.Dir != "artifacts/evidence" {
 		t.Error("expected Dir=artifacts/evidence")
@@ -163,6 +170,7 @@ func TestLoadRepoConfig_TestEvidenceParsed(t *testing.T) {
 test:
   evidence:
     store_in_repo: true
+    compact: false
     branch: team/ci/evidence
 `
 	if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(yaml), 0o644); err != nil {
@@ -175,6 +183,9 @@ test:
 	}
 	if cfg.Test.Evidence.StoreInRepo == nil || !*cfg.Test.Evidence.StoreInRepo {
 		t.Error("expected repo StoreInRepo=true")
+	}
+	if cfg.Test.Evidence.Compact == nil || *cfg.Test.Evidence.Compact {
+		t.Error("expected repo Compact=false")
 	}
 	if cfg.Test.Evidence.Branch == nil || *cfg.Test.Evidence.Branch != "team/ci/evidence" {
 		t.Error("expected repo Branch=team/ci/evidence")
@@ -196,6 +207,30 @@ test:
 		t.Fatal("expected an invalid evidence branch name to fail the repo config")
 	} else if !strings.Contains(err.Error(), "test.evidence.branch") {
 		t.Errorf("error %q does not name the offending key", err)
+	}
+}
+
+func TestLoadConfig_InvalidEvidenceCommitMessageFailsClosed(t *testing.T) {
+	for name, template := range map[string]string{
+		"empty":               `"  "`,
+		"unknown placeholder": `"{{.Step}}"`,
+		"template function":   `'{{printf "%s" .Branch}}'`,
+		"control character":   `"evidence\tfor {{.Branch}}"`,
+		"too many":            `"` + strings.Repeat("{{.RunID}}", maxFixMessagePlaceholders+1) + `"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			yaml := "test:\n  evidence:\n    commit_message: " + template + "\n"
+			if _, err := LoadGlobalFromBytes([]byte(yaml)); err == nil || !strings.Contains(err.Error(), "test.evidence.commit_message") {
+				t.Errorf("global config error = %v, want test.evidence.commit_message rejection", err)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadRepo(dir); err == nil || !strings.Contains(err.Error(), "test.evidence.commit_message") {
+				t.Errorf("repo config error = %v, want test.evidence.commit_message rejection", err)
+			}
+		})
 	}
 }
 

@@ -1,13 +1,14 @@
-// Package safepath keeps operator filesystem identity - home directory paths -
-// out of the text a caller passes it.
+// Package safepath keeps operator filesystem identity - home directory paths,
+// and run worktree paths (RedactWorktrees) - out of the text a caller passes
+// it.
 //
 // It guarantees nothing on its own about what no-mistakes publishes: coverage
 // is exactly the set of publication boundaries that call it. Today that is the
-// pull request title and body (PRStep.buildPRContent). Agent-authored commit
+// pull request title and body (PRStep.buildPRContent) and the text files the
+// opt-in evidence branch publishes (evidence.Publish). Agent-authored commit
 // subjects, which reach the remote through the auto-fix commit path
 // (commitAgentFixes -> Commit.RenderFixMessage), are a separate surface with a
-// different rendering and are deliberately not covered; so is the opt-in
-// evidence branch, which copies artifact files verbatim.
+// different rendering and are deliberately not covered.
 //
 // It is the path analogue of internal/safeurl: safeurl keeps credentials out of
 // published text, safepath keeps the operator's home directory out of it. Route
@@ -21,7 +22,6 @@ package safepath
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -95,23 +95,17 @@ func homeCandidates() []string {
 	}
 	raw = append(raw, os.Getenv("HOME"), os.Getenv("USERPROFILE"))
 
+	// Each home's spellings include its resolved target: a macOS home reached
+	// through /var reads back as /private/var, and a symlinked home directory
+	// reads back as its target. Captured output can carry either spelling.
 	seen := map[string]bool{}
 	var out []string
-	add := func(candidate string) {
-		if !usableHomeCandidate(candidate) || seen[candidate] {
-			return
-		}
-		seen[candidate] = true
-		out = append(out, candidate)
-	}
 	for _, home := range raw {
-		home = filepath.Clean(strings.TrimSpace(home))
-		addBothSeparatorSpellings(add, home)
-		// A macOS home reached through /var reads back as /private/var, and a
-		// symlinked home directory reads back as its target. Captured output
-		// can carry either spelling.
-		if resolved, err := filepath.EvalSymlinks(home); err == nil {
-			addBothSeparatorSpellings(add, filepath.Clean(resolved))
+		for _, candidate := range pathSpellings(home) {
+			if !seen[candidate] {
+				seen[candidate] = true
+				out = append(out, candidate)
+			}
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
@@ -177,23 +171,31 @@ func isASCIILetter(c byte) bool {
 // Boundary alignment is what keeps "/home/dev" from clipping "/home/developer"
 // and what keeps an unrelated "/srv/home/dev" intact.
 func replaceHomePrefix(text, home string) string {
-	if home == "" || !strings.Contains(text, home) {
+	return replacePathPrefix(text, home, func(string) (int, string) { return 0, Placeholder })
+}
+
+// replacePathPrefix rewrites every path-boundary-aligned occurrence of prefix
+// with what replace returns for the text after it; replace also reports how
+// many of those following bytes the placeholder consumes.
+func replacePathPrefix(text, prefix string, replace func(rest string) (int, string)) string {
+	if prefix == "" || !strings.Contains(text, prefix) {
 		return text
 	}
-	specific := specificHomeCandidate(home)
+	specific := specificHomeCandidate(prefix)
 	var b strings.Builder
 	for i := 0; i < len(text); {
-		offset := strings.Index(text[i:], home)
+		offset := strings.Index(text[i:], prefix)
 		if offset < 0 {
 			b.WriteString(text[i:])
 			return b.String()
 		}
 		start := i + offset
-		end := start + len(home)
+		end := start + len(prefix)
 		if boundaryBefore(text, start, specific) && boundaryAfter(text, end) {
+			consumed, placeholder := replace(text[end:])
 			b.WriteString(text[i:start])
-			b.WriteString(Placeholder)
-			i = end
+			b.WriteString(placeholder)
+			i = end + consumed
 			continue
 		}
 		b.WriteString(text[i : start+1])

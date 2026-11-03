@@ -26,7 +26,7 @@ func TestServiceDefinitionMatchesRootRejectsPrefixOnlyMatch(t *testing.T) {
 	if serviceDefinitionMatchesRoot([]byte(renderSystemdUnit("/usr/local/bin/no-mistakes", other, home)), p) {
 		t.Fatal("expected systemd root prefix collision to be rejected")
 	}
-	if serviceDefinitionMatchesRoot([]byte(`<Task><Exec><Command>C:\nm.exe</Command><Arguments>`+buildWindowsTaskCommand(`C:\nm.exe`, otherRoot)+`</Arguments></Exec></Task>`), p) {
+	if serviceDefinitionMatchesRoot([]byte(renderWindowsTaskXML(`C:\nm.exe`, otherRoot, `HOST\user`)), p) {
 		t.Fatal("expected windows task root prefix collision to be rejected")
 	}
 
@@ -36,7 +36,7 @@ func TestServiceDefinitionMatchesRootRejectsPrefixOnlyMatch(t *testing.T) {
 	if !serviceDefinitionMatchesRoot([]byte(renderSystemdUnit("/usr/local/bin/no-mistakes", p, home)), p) {
 		t.Fatal("expected exact systemd root match")
 	}
-	if !serviceDefinitionMatchesRoot([]byte(`<Task><Exec><Command>C:\nm.exe</Command><Arguments>`+buildWindowsTaskCommand(`C:\nm.exe`, root)+`</Arguments></Exec></Task>`), p) {
+	if !serviceDefinitionMatchesRoot([]byte(renderWindowsTaskXML(`C:\nm.exe`, root, `HOST\user`)), p) {
 		t.Fatal("expected exact windows task root match")
 	}
 }

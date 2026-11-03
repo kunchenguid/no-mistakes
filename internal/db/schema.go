@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS runs (
     pr_state_observed_at    INTEGER,
     ci_ready_at             INTEGER,
     ci_ready_no_ci          INTEGER NOT NULL DEFAULT 0,
+    ci_released_at          INTEGER,
     last_pushed_sha         TEXT,
     push_target_kind        TEXT,
     push_target_fingerprint TEXT,
@@ -69,8 +70,10 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity    TEXT,
     agent_pid        INTEGER,
     auto_fix_limit              INTEGER,
+    review_max_fix_rounds        INTEGER,
     ci_fix_attempts             INTEGER NOT NULL DEFAULT 0,
-    override_reason             TEXT
+    override_reason             TEXT,
+    response_origin             TEXT NOT NULL DEFAULT 'unknown'
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -87,6 +90,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     user_findings_json   TEXT,
     selected_finding_ids TEXT,
     selection_source     TEXT,
+    response_origin      TEXT NOT NULL DEFAULT 'unknown',
     fix_summary          TEXT,
     repair_published     INTEGER NOT NULL DEFAULT 0,
     duration_ms          INTEGER NOT NULL,
@@ -102,6 +106,7 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
     agent                 TEXT NOT NULL,
     model                 TEXT,
     model_provider        TEXT,
+    configured_model      TEXT,
     session_mode          TEXT NOT NULL,
     session_key           TEXT,
     fallback_reason       TEXT,
@@ -231,6 +236,21 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
     created_at    INTEGER NOT NULL,
     PRIMARY KEY (repo_id, branch)
 );
+
+-- One row per run that continues a failed run from its failed step (axi
+-- retry): the audit trail from the original failure to the continuation,
+-- whose own status is the outcome. source_run_id is UNIQUE because a failed
+-- run is continued at most once; it is not a foreign key, so the trail
+-- survives the source run's deletion.
+CREATE TABLE IF NOT EXISTS run_retries (
+    run_id              TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    source_run_id       TEXT NOT NULL UNIQUE,
+    step_name           TEXT NOT NULL,
+    source_round        INTEGER NOT NULL,
+    source_error        TEXT NOT NULL,
+    checkpoint_head_sha TEXT NOT NULL,
+    created_at          INTEGER NOT NULL
+);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -240,6 +260,10 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,
+	// quota_routing records one run's quota-aware agent ordering (the
+	// quotarouting.Record JSON). Unlike pi_profile it is intentionally
+	// mutable: a mid-run quota switch appends to the record's switch list.
+	`ALTER TABLE runs ADD COLUMN quota_routing TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_pi_profile_immutable BEFORE UPDATE OF pi_profile ON runs WHEN NEW.pi_profile IS NOT OLD.pi_profile BEGIN SELECT RAISE(ABORT, 'run Pi profile is immutable'); END`,
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
@@ -258,6 +282,11 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
+	// Immutable admission policy snapshot: inferred intent may be extracted
+	// after launch or after recovery, so it must use the policy admitted before
+	// this run superseded any earlier one.
+	`ALTER TABLE runs ADD COLUMN intent_check_json TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_intent_check_immutable BEFORE UPDATE OF intent_check_json ON runs WHEN OLD.intent_check_json IS NOT NULL AND NEW.intent_check_json IS NOT OLD.intent_check_json BEGIN SELECT RAISE(ABORT, 'run intent check is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	// The CI step's per-check rerun budget. It is durable because a run
@@ -298,6 +327,10 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN pr_state_observed_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN ci_ready_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN ci_ready_no_ci INTEGER NOT NULL DEFAULT 0`,
+	// The CI step's opt-in release verdict (ci.release_after_checks_pass). NULL
+	// means the step never released the run there, so its terminal status can
+	// never claim checks_passed for a run that merely monitored the PR.
+	`ALTER TABLE runs ADD COLUMN ci_released_at INTEGER`,
 	// Custody return is nullable: NULL means the pipeline still owns any
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
@@ -350,6 +383,7 @@ var migrationStatements = []string{
 	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
 	// back as unknown, never a fabricated zero).
 	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN configured_model TEXT`,
 	`ALTER TABLE agent_invocations ADD COLUMN fallback_reason TEXT`,
 	`ALTER TABLE agent_invocations ADD COLUMN subprocess_wait_ms INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN fresh_input_tokens INTEGER`,
@@ -377,4 +411,37 @@ var migrationStatements = []string{
 	// a late --closes can still reach the Issues section; non-NULL closes that window
 	// (see UpdateRunClosingIssueRefs / ClaimClosingIssueRefsForPRBody).
 	`ALTER TABLE runs ADD COLUMN closing_issue_refs_locked_at INTEGER`,
+	// Set with a CI repair's carried review approval and cleared by the next
+	// publication (UpdateRunHeadSHAWithCarriedReview / UpdateRunPublication).
+	`ALTER TABLE runs ADD COLUMN ci_test_restart_pending INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_results ADD COLUMN response_origin TEXT NOT NULL DEFAULT 'unknown'`,
+	`ALTER TABLE step_rounds ADD COLUMN response_origin TEXT NOT NULL DEFAULT 'unknown'`,
+	// Why a failed step failed, when the executor could tell. NULL means no
+	// recorded cause, which is every historical row and every failure that is
+	// not an agent invocation's own error; only a recorded cause makes a
+	// failed run eligible for axi retry.
+	`ALTER TABLE step_results ADD COLUMN failure_cause TEXT`,
+	// The source run's step row a retried run carried instead of executing.
+	// The carried row has no rounds of its own; readers that render what the
+	// step did follow this to the source row's rounds.
+	`ALTER TABLE step_results ADD COLUMN carried_from TEXT`,
+	// Pin the opt-in total Review fix budget across recovery and restarts.
+	// NULL identifies a step started before this policy existed (unbounded).
+	`ALTER TABLE step_results ADD COLUMN review_max_fix_rounds INTEGER`,
+	// Run-history lookup indexes. Without them every run snapshot scans the
+	// whole step_results and step_rounds history once per step, and the branch
+	// joins (previous review, branch decisions) start from a full child-table
+	// walk. On the daemon's single connection that cost grows with history and
+	// queues every other request behind it. Column order follows the readers'
+	// WHERE and ORDER BY (GetStepsByRun with its id tie-break, GetRoundsByStep,
+	// and the repo/branch and status run lookups), so the step and round
+	// lookups need no temporary sort. TestHistoryLookupsUseHistoryIndexes
+	// plans the real queries against these. The four run in one transaction so
+	// a fresh database pays one commit for them instead of four.
+	`BEGIN;
+CREATE INDEX IF NOT EXISTS idx_step_results_run_order_id ON step_results (run_id, step_order, id);
+CREATE INDEX IF NOT EXISTS idx_step_rounds_step_round ON step_rounds (step_result_id, round);
+CREATE INDEX IF NOT EXISTS idx_runs_repo_branch_created_id ON runs (repo_id, branch, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_status_created_id ON runs (status, created_at DESC, id DESC);
+COMMIT;`,
 }

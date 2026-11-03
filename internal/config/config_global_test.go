@@ -779,6 +779,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.CI.RerunTransient == nil || *raw.CI.RerunTransient != ciDefaults().RerunTransient {
 		t.Errorf("YAML ci.rerun_transient = %v, Go default = %d", raw.CI.RerunTransient, ciDefaults().RerunTransient)
 	}
+	if raw.CI.ReleaseAfterChecksPass == nil || *raw.CI.ReleaseAfterChecksPass != ciDefaults().ReleaseAfterChecksPass {
+		t.Errorf("YAML ci.release_after_checks_pass = %v, Go default = %t", raw.CI.ReleaseAfterChecksPass, ciDefaults().ReleaseAfterChecksPass)
+	}
 }
 
 func TestLoadGlobal_AutoFixDefaults(t *testing.T) {

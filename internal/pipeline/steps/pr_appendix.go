@@ -25,25 +25,25 @@ func appendixMode(sctx *pipeline.StepContext) string {
 
 // appendixEvidence is the recorded Risk, Testing, and Pipeline tail.
 // Intent is the caller's job: it stays outside a collapsed Validation block.
-func appendixEvidence(mode string, flavor prBodyFlavor, risk, testing, pipeline string) string {
+func appendixEvidence(mode string, flavor prBodyFlavor, risk, testing, pipeline string, provider scm.Provider) string {
 	switch mode {
 	case config.PRAppendixMinimal:
-		return minimalTail(risk, pipeline)
+		return minimalTail(risk, pipeline, provider)
 	case config.PRAppendixCollapsed:
 		if flavor == prBodyHTML {
-			return wrapValidation(joinAppendixSections(risk, testing, pipeline))
+			return wrapValidation(joinAppendixSections(risk, testing, pipeline, provider))
 		}
 	}
-	return joinAppendixSections(risk, testing, pipeline)
+	return joinAppendixSections(risk, testing, pipeline, provider)
 }
 
-func joinAppendixSections(risk, testing, pipeline string) string {
+func joinAppendixSections(risk, testing, pipeline string, provider scm.Provider) string {
 	var parts []string
 	if strings.TrimSpace(risk) != "" {
-		parts = append(parts, "## Risk Assessment\n\n"+neutralizeAttestationMarkers(risk))
+		parts = append(parts, "## Risk Assessment\n\n"+neutralizeAttestationMarkers(provider, risk))
 	}
 	if strings.TrimSpace(testing) != "" {
-		parts = append(parts, neutralizeAttestationMarkers(testing))
+		parts = append(parts, neutralizeAttestationMarkers(provider, testing))
 	}
 	if pipeline != "" {
 		parts = append(parts, pipeline)
@@ -64,8 +64,8 @@ func wrapValidation(inner string) string {
 // attestation comment; this does not invent one. An owned Bitbucket body
 // carries that comment inside a text fence, and the fence is kept so the
 // marker stays visible there.
-func minimalTail(risk, pipelineMD string) string {
-	return joinBlocks(oneLineRisk(neutralizeAttestationMarkers(risk)), noMistakesPRSignature, carriedAttestation(pipelineMD))
+func minimalTail(risk, pipelineMD string, provider scm.Provider) string {
+	return joinBlocks(oneLineRisk(neutralizeAttestationMarkers(provider, risk)), noMistakesPRSignature, carriedAttestation(pipelineMD))
 }
 
 func oneLineRisk(risk string) string {
@@ -109,25 +109,25 @@ func joinBlocks(parts ...string) string {
 }
 
 func narrativeWithIntent(sctx *pipeline.StepContext, whatChanged string) string {
-	narrative := neutralizeAttestationMarkers(stripGeneratedSections(whatChanged))
+	narrative := neutralizeAttestationMarkers(resolvedProviderForBody(sctx), stripGeneratedSections(whatChanged))
 	return prependIntentSection(narrative, sctx)
 }
 
 func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
 	switch appendixMode(sctx) {
 	case config.PRAppendixMinimal:
-		return assembleMinimalPRBody(sctx, whatChanged, riskLine, pipelineMD, bodyLimit)
+		return assembleMinimalPRBody(sctx, whatChanged, riskLine, pipelineMD, bodyLimit, provider)
 	case config.PRAppendixCollapsed:
 		if prBodyFlavorFor(provider) == prBodyHTML {
-			return assembleCollapsedPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit)
+			return assembleCollapsedPRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 		}
 	}
-	return assemblePRBodyFull(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit)
+	return assemblePRBodyFull(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider)
 }
 
-func assembleMinimalPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int) string {
+func assembleMinimalPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int, provider scm.Provider) string {
 	prefix := narrativeWithIntent(sctx, whatChanged)
-	tail := minimalTail(riskLine, pipelineMD)
+	tail := minimalTail(riskLine, pipelineMD, provider)
 	full := joinBlocks(prefix, tail)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
@@ -135,12 +135,12 @@ func assembleMinimalPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, pi
 	return shrinkMeasuredKeepingTail(full, tail, bodyLimit, scm.PRBodyLen, scm.ClampPRBody)
 }
 
-func assembleCollapsedPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
+func assembleCollapsedPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
 	prefix := narrativeWithIntent(sctx, whatChanged)
 	if bodyLimit <= 0 {
-		return joinBlocks(prefix, wrapValidation(joinAppendixSections(riskLine, testingMD, pipelineMD)))
+		return joinBlocks(prefix, wrapValidation(joinAppendixSections(riskLine, testingMD, pipelineMD, provider)))
 	}
-	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, bodyLimit, scm.PRBodyLen, scm.ClampPRBody)
+	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, bodyLimit, scm.PRBodyLen, scm.ClampPRBody, provider)
 }
 
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, provider scm.Provider) string {
@@ -152,18 +152,18 @@ func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.St
 func buildPRBodyWithin(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, provider scm.Provider, maxBytes int) string {
 	switch appendixMode(sctx) {
 	case config.PRAppendixMinimal:
-		return buildMinimalPRBody(body, riskLine, pipelineMD, sctx, maxBytes)
+		return buildMinimalPRBody(body, riskLine, pipelineMD, sctx, maxBytes, provider)
 	case config.PRAppendixCollapsed:
 		if prBodyFlavorFor(provider) == prBodyHTML {
-			return buildCollapsedPRBody(body, riskLine, testingMD, pipelineMD, sctx, maxBytes)
+			return buildCollapsedPRBody(body, riskLine, testingMD, pipelineMD, sctx, maxBytes, provider)
 		}
 	}
-	return buildPRBodyFull(body, riskLine, testingMD, pipelineMD, sctx, maxBytes)
+	return buildPRBodyFull(body, riskLine, testingMD, pipelineMD, sctx, maxBytes, provider)
 }
 
-func buildMinimalPRBody(body, riskLine, pipelineMD string, sctx *pipeline.StepContext, maxBytes int) string {
+func buildMinimalPRBody(body, riskLine, pipelineMD string, sctx *pipeline.StepContext, maxBytes int, provider scm.Provider) string {
 	prefix := narrativeWithIntent(sctx, body)
-	tail := minimalTail(riskLine, pipelineMD)
+	tail := minimalTail(riskLine, pipelineMD, provider)
 	full := joinBlocks(prefix, tail)
 	if len(full) <= maxBytes {
 		return full
@@ -171,9 +171,9 @@ func buildMinimalPRBody(body, riskLine, pipelineMD string, sctx *pipeline.StepCo
 	return shrinkMeasuredKeepingTail(full, tail, maxBytes, func(s string) int { return len(s) }, clampPRBytes)
 }
 
-func buildCollapsedPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, maxBytes int) string {
+func buildCollapsedPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, maxBytes int, provider scm.Provider) string {
 	prefix := narrativeWithIntent(sctx, body)
-	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, maxBytes, func(s string) int { return len(s) }, clampPRBytes)
+	return fitCollapsed(prefix, riskLine, testingMD, pipelineMD, maxBytes, func(s string) int { return len(s) }, clampPRBytes, provider)
 }
 
 func clampPRBytes(text string, max int) string {
@@ -184,9 +184,9 @@ func clampPRBytes(text string, max int) string {
 // Testing is dropped before pipeline prose, matching the ordinary budget
 // order. The attestation stays inside the block because the inner truncator
 // keeps the pipeline header.
-func fitCollapsed(prefix, risk, testing, pipeline string, limit int, units func(string) int, clamp func(string, int) string) string {
+func fitCollapsed(prefix, risk, testing, pipeline string, limit int, units func(string) int, clamp func(string, int) string, provider scm.Provider) string {
 	untruncated := func(testingMD string) string {
-		return joinBlocks(prefix, wrapValidation(joinAppendixSections(risk, testingMD, pipeline)))
+		return joinBlocks(prefix, wrapValidation(joinAppendixSections(risk, testingMD, pipeline, provider)))
 	}
 	if full := untruncated(testing); units(full) <= limit {
 		return full
@@ -198,7 +198,7 @@ func fitCollapsed(prefix, risk, testing, pipeline string, limit int, units func(
 			return dropped
 		}
 	}
-	folded := foldedWithin(risk, "", pipeline, limit)
+	folded := foldedWithin(risk, "", pipeline, limit, provider)
 	if folded == "" {
 		return shrinkMeasuredKeepingTail(joinBlocks(prefix, carriedAttestation(pipeline)), carriedAttestation(pipeline), limit, units, clamp)
 	}
@@ -223,7 +223,7 @@ func fitCollapsed(prefix, risk, testing, pipeline string, limit int, units func(
 	return shrinkMeasuredKeepingTail(folded, carriedAttestation(pipeline), limit, units, clamp)
 }
 
-func foldedWithin(risk, testing, pipeline string, innerBudget int) string {
+func foldedWithin(risk, testing, pipeline string, innerBudget int, provider scm.Provider) string {
 	if innerBudget <= 0 {
 		return ""
 	}
@@ -243,7 +243,7 @@ func foldedWithin(risk, testing, pipeline string, innerBudget int) string {
 			risk = truncateTextAtLineBoundary(risk, riskBudget, essentialPRBodyTruncationMarker())
 		}
 	}
-	inner := strings.Trim(appendGeneratedSectionsToCleanBodyWithinLimit("", risk, testing, pipeline, budget), "\n")
+	inner := strings.Trim(appendGeneratedSectionsToCleanBodyWithinLimit("", risk, testing, pipeline, budget, provider), "\n")
 	if !strings.Contains(inner, carriedAttestation(pipeline)) {
 		inner = minimum
 	}

@@ -107,11 +107,11 @@ Rules:
 - Do not run tests or broader behavioral validation.
 - Focus on lint, format, and static-analysis issues only.
 - Do not report issues you already fixed.
-- The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.%s`,
+%s%s`,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			fixSummaryRules(sctx, s.Name()),
 			reassessHistory,
 		)
 		if sctx.PreviousFindings != "" {
@@ -133,19 +133,19 @@ Previous lint findings to address:
 
 		var findings Findings
 		if result.Output == nil {
-			return nil, errors.New("lint analyzer returned no structured findings")
+			return nil, agent.RejectStructuredOutput(errors.New("lint analyzer returned no structured findings"))
 		}
 		if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
-			return nil, fmt.Errorf("validate lint analyzer findings: %w", err)
+			return nil, agent.RejectStructuredOutput(fmt.Errorf("validate lint analyzer findings: %w", err))
 		}
 		summary, err := extractCommitSummary(result)
 		if err != nil {
 			if errors.Is(err, errRejectedCommitSummary) {
-				return nil, fmt.Errorf("validate lint summary: %w", err)
+				return nil, agent.RejectStructuredOutput(fmt.Errorf("validate lint summary: %w", err))
 			}
 			sctx.Log(fmt.Sprintf("warning: could not parse lint summary: %v", err))
 		}
-		committed, err := commitAgentFixesWithResult(sctx, s.Name(), summary, "fix lint issues")
+		committed, err := commitAgentFixesWithResult(sctx, s.Name(), summary, "fix lint issues", result)
 		if err != nil {
 			return nil, err
 		}
@@ -178,11 +178,11 @@ Rules:
 - Do not run tests or broader behavioral validation.
 - Re-run the relevant lint or format commands before finishing.
 - Return JSON with a single "summary" field when you are done.
-- The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.%s`,
+%s%s`,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			fixSummaryRules(sctx, s.Name()),
 			historySection,
 		)
 		if sctx.PreviousFindings != "" {

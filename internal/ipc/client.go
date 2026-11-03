@@ -43,6 +43,17 @@ func IsConnectTimeout(err error) bool {
 	return errors.As(err, &timeoutErr)
 }
 
+// SocketPathTooLongError reports a daemon socket path longer than the platform
+// accepts for a Unix socket (the size of sun_path, less its NUL terminator).
+type SocketPathTooLongError struct {
+	Path  string
+	Limit int
+}
+
+func (e *SocketPathTooLongError) Error() string {
+	return fmt.Sprintf("daemon socket path %s is %d bytes, over the %d-byte limit for Unix sockets on this platform; use a shorter NM_HOME (the resolved physical path counts, not a symbolic link to it)", e.Path, len(e.Path), e.Limit)
+}
+
 // CallTimeoutError reports an IPC method whose response did not arrive before
 // the caller-selected read deadline. The connection was accepted; this is a
 // slow or stuck reply, not a refused dial.
@@ -121,7 +132,7 @@ func Dial(socketPath string) (*Client, error) {
 		return nil, err
 	}
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, MaxFrameBytes), MaxFrameBytes)
 	return &Client{
 		conn:    conn,
 		encoder: json.NewEncoder(conn),
@@ -166,19 +177,35 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 		return err
 	}
 
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+
 	req, err := NewRequest(method, params)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
+	req.DeadlineUnixNano = deadline.UnixNano()
 
+	// Count the actual JSON encoding, including its newline delimiter: Scanner
+	// needs that delimiter inside MaxFrameBytes, and escaping/duplicated guidance
+	// can make a request much larger than its source file.
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	if size := len(encoded) + 1; size > MaxFrameBytes {
+		return fmt.Errorf("send %s request: encoded IPC frame is %d bytes, exceeds the %d-byte limit", method, size, MaxFrameBytes)
+	}
 	if err := c.encoder.Encode(req); err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
 
-	if timeout <= 0 {
-		timeout = defaultCallTimeout
-	}
-	c.conn.SetReadDeadline(time.Now().Add(timeout))
+	c.conn.SetReadDeadline(deadline)
 	interruptDone := make(chan struct{})
 	stopInterrupt := context.AfterFunc(ctx, func() {
 		c.conn.SetReadDeadline(time.Now())
@@ -250,7 +277,7 @@ func SubscribeContext(ctx context.Context, socketPath string, params *SubscribeP
 	}
 	encoder := json.NewEncoder(conn)
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, MaxFrameBytes), MaxFrameBytes)
 
 	// Send subscribe request.
 	req, err := NewRequest(MethodSubscribe, params)

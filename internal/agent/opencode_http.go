@@ -2,14 +2,19 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string, env []string) (string, error) {
@@ -18,17 +23,69 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string, env []stri
 	if a.server != nil {
 		return a.server.baseURL(), nil
 	}
+	v2, err := a.detectV2(ctx, cwd, env)
+	if err != nil {
+		return "", err
+	}
 	port, err := getAvailablePort()
 	if err != nil {
 		return "", fmt.Errorf("opencode port: %w", err)
 	}
 	args := buildOpencodeServeArgs(a.extraArgs, port)
-	srv, err := startServerWithPort(ctx, "opencode", a.bin, args, cwd, "/global/health", port, a.overlay(), env)
+	health := "/global/health"
+	options := managedServerOptions{}
+	var v2Client opencodeV2Client
+	if v2 {
+		health = "/api/info"
+		password := rand.Text()
+		v2Client.authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:"+password))
+		options.healthHeaders = map[string]string{"Authorization": v2Client.authorization}
+		options.holdStdin = true
+		args = append(args, "--stdio")
+		// V2's stdio mode removes these lease credentials before tools inherit
+		// the environment, and shuts down when our parent-owned pipe closes.
+		env = append(append([]string(nil), env...), "OPENCODE_PASSWORD="+password, "OPENCODE_SERVER_PASSWORD="+password)
+	}
+	srv, err := startServerWithOptions(ctx, "opencode", a.bin, args, cwd, health, port, a.overlay(), options, env)
 	if err != nil {
 		return "", fmt.Errorf("opencode server: %w", err)
 	}
+	if v2 {
+		var info struct {
+			Version string `json:"version"`
+		}
+		err := v2Client.json(ctx, http.MethodGet, srv.baseURL()+"/api/info", nil, &info)
+		if err != nil || !strings.HasPrefix(info.Version, "2.") {
+			srv.shutdown()
+			return "", fmt.Errorf("opencode server did not return valid v2 API metadata")
+		}
+	}
+	a.v2 = v2
+	a.v2Auth = v2Client.authorization
 	a.server = srv
 	return srv.baseURL(), nil
+}
+
+var opencodeVersionPattern = regexp.MustCompile(`^(?:opencode\s+)?v?([12])\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.+-]+)?$`)
+
+// Select a protocol before creating any session. Never discover a major-version
+// mismatch by retrying an admitted prompt against a different API.
+func (a *opencodeAgent) detectV2(ctx context.Context, cwd string, env []string) (bool, error) {
+	probe, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probe, a.bin, "--version")
+	cmd.Dir = cwd
+	cmd.Env = a.gitSafeEnv(cwd, env)
+	shellenv.ConfigureShellCommand(cmd)
+	output, err := shellenv.OutputShellCommand(cmd)
+	if err != nil {
+		return false, fmt.Errorf("opencode version probe: %w", err)
+	}
+	match := opencodeVersionPattern.FindStringSubmatch(strings.TrimSpace(string(output)))
+	if match == nil {
+		return false, fmt.Errorf("opencode version probe: unsupported version (expected OpenCode 1.x or 2.x)")
+	}
+	return match[1] == "2", nil
 }
 
 // buildOpencodeServeArgs builds `opencode serve`'s argv with user-supplied

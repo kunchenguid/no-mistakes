@@ -20,6 +20,7 @@ import (
 )
 
 func TestTestStep_HangingEvidenceAgentParksForADecision(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "hanging-evidence-agent",
@@ -64,6 +65,7 @@ func TestTestStep_HangingEvidenceAgentParksForADecision(t *testing.T) {
 }
 
 func TestTestStep_StreamingEvidenceAfterStallBudgetCompletes(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	const stall = 80 * time.Millisecond
 	done := time.NewTimer(stall + stall/2)
@@ -470,7 +472,7 @@ func TestTestStep_RepeatedCutKeepsRefusingUnvalidatedWork(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
 	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
-	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+	sctx.Config.TestAgentTimeout = 250 * time.Millisecond
 
 	first, err := (&TestStep{}).Execute(sctx)
 	if err != nil {
@@ -980,6 +982,79 @@ func TestTestStep_FixMode(t *testing.T) {
 	}
 }
 
+// The repair and evidence turns share the scope rules. The repair turn must
+// leave an intent-conflicting repair alone so the evidence turn can ask the user.
+func TestTestStep_RepairScopeContract(t *testing.T) {
+	t.Parallel()
+	for _, fixing := range []bool{false, true} {
+		name := "initial"
+		if fixing {
+			name = "repair"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(`{"summary":"repair requires a policy decision","findings":[{"id":"repair-scope","severity":"warning","action":"ask-user","description":"The proposed repair would change reply-default policy beyond the structured-question change."}],"tested":["drove structured-question scenario"],"testing_summary":"scenario failed; policy repair withheld","artifacts":[],"scenarios":[{"name":"reply to a structured question","result":"fail","live":true,"evidence":"reply rejected","reason":""}],"verdict":"no-go"}`)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Fixing = fixing
+			sctx.UserIntent = "Structure the question. Do not edit prompts or change reply-default policy."
+			sctx.IntentSource = db.RunIntentSourceAgent
+			if fixing {
+				sctx.PreviousFindings = `{"findings":[{"id":"test-1","severity":"error","action":"auto-fix","description":"structured-question scenario failed"}],"summary":"scenario failed"}`
+			}
+			outcome, err := (&TestStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCalls := 1
+			if fixing {
+				wantCalls = 2
+			}
+			if len(ag.calls) != wantCalls {
+				t.Fatalf("agent calls = %d, want %d", len(ag.calls), wantCalls)
+			}
+			for i, call := range ag.calls {
+				for _, want := range []string{
+					"Tests or product code, including shared libraries and prompts, may be fixed",
+					"Do not tune product logic or prompts to a single scenario's literal wording or scripted ordering",
+					"contradict explicit intent, edit a file the intent puts off limits, or change product policy beyond the change under validation",
+					"do not apply or commit that repair",
+					"Later recorded human decisions supersede conflicting original intent",
+					sctx.UserIntent,
+				} {
+					if !strings.Contains(call.Prompt, want) {
+						t.Errorf("call %d missing repair-scope instruction %q", i, want)
+					}
+				}
+			}
+			evidencePrompt := ag.calls[len(ag.calls)-1].Prompt
+			for _, want := range []string{
+				"report a warning finding with action \"ask-user\" instead of making the repair",
+				"Name the proposed repair and the intent restriction or product-policy change that needs a human decision",
+			} {
+				if !strings.Contains(evidencePrompt, want) {
+					t.Errorf("evidence prompt missing %q", want)
+				}
+			}
+			if !outcome.NeedsApproval {
+				t.Fatal("expected the unresolved repair to park for a decision")
+			}
+			var findings Findings
+			if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+				t.Fatal(err)
+			}
+			if len(findings.Items) == 0 || findings.Items[0].ID != "repair-scope" || findings.Items[0].Action != types.ActionAskUser {
+				t.Fatalf("scope finding lost its ask-user action: %+v", findings.Items)
+			}
+		})
+	}
+}
+
 func TestTestStep_FixMode_UsesConfiguredCommitMessage(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -1431,5 +1506,54 @@ func TestTestStep_InitialAgent_NoTargetedEvidenceRequiresHonestFinding(t *testin
 		if !strings.Contains(prompt, want) {
 			t.Errorf("expected no-targeted-evidence guidance %q in prompt:\n%s", want, prompt)
 		}
+	}
+}
+
+// A driver's --instructions on a budget-cut answer reach the evidence turn
+// labelled as the driver's guidance, never as the operator's decision.
+func TestBudgetCutGuidanceSection_LabelsDriverInstructions(t *testing.T) {
+	t.Parallel()
+	const userNote = "USER-NOTE validate only checkout"
+	const driverNote = "DRIVER-NOTE skip the docs"
+	for _, tt := range []struct {
+		name              string
+		user, driver      string
+		wantUser, wantDrv bool
+	}{
+		{"driver only", "", driverNote, false, true},
+		{"user only", userNote, "", true, false},
+		{"both", userNote, driverNote, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			findings := types.Findings{Items: []types.Finding{
+				{ID: types.FindingIDTestAgentTimeout, Severity: "warning", Action: types.ActionAskUser, Description: "budget cut", UserInstructions: tt.user, DriverInstructions: tt.driver},
+				{ID: types.FindingIDTestAgentUnvalidatedWork, Severity: "warning", Action: types.ActionAskUser, Description: "unvalidated", UserInstructions: tt.user, DriverInstructions: tt.driver},
+			}}
+			raw, err := types.MarshalFindingsJSON(findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := budgetCutGuidanceSection(&pipeline.StepContext{Fixing: true, PreviousFindings: raw})
+			userHeader := "Operator guidance for this validation (from the decision on the Test agent budget cut):\n"
+			driverHeader := "Driver guidance for this validation (from the agent driving this run"
+			if hasUser := strings.Contains(got, userHeader+userNote+"\n"); hasUser != tt.wantUser {
+				t.Fatalf("user guidance rendered = %v, want %v:\n%s", hasUser, tt.wantUser, got)
+			}
+			if hasDriver := strings.Contains(got, driverHeader) && strings.Contains(got, "not a decision by the user"); hasDriver != tt.wantDrv {
+				t.Fatalf("driver guidance labelled = %v, want %v:\n%s", hasDriver, tt.wantDrv, got)
+			}
+			if tt.driver != "" {
+				if strings.Contains(got, userHeader+driverNote) {
+					t.Fatalf("driver guidance presented as the operator's decision:\n%s", got)
+				}
+				if n := strings.Count(got, driverNote); n != 1 {
+					t.Fatalf("driver note rendered %d times, want once:\n%s", n, got)
+				}
+				if !strings.Contains(got[strings.Index(got, driverHeader):], driverNote) {
+					t.Fatalf("driver note not under the driver header:\n%s", got)
+				}
+			}
+		})
 	}
 }

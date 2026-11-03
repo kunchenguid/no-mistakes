@@ -54,7 +54,7 @@ func TestCIStep_CommitAndPush_CommitsLocallyWithoutPushing(t *testing.T) {
 	// repair is held locally until Review re-approves it.
 	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
-	repair, err := step.commitRepair(sctx, "stabilize Windows path test")
+	repair, err := step.commitRepair(sctx, "stabilize Windows path test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestCIStep_InvalidCommitTemplateDoesNotStageChanges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&CIStep{}).commitRepair(sctx, "repair checks"); err == nil {
+	if _, err := (&CIStep{}).commitRepair(sctx, "repair checks", nil); err == nil {
 		t.Fatal("commitRepair() accepted an invalid commit.fix_message")
 	}
 	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
@@ -250,7 +250,7 @@ func TestCIStep_CommitRepairUsesBranchIdentifier(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	repair, err := (&CIStep{}).commitRepair(sctx, "repair failing checks")
+	repair, err := (&CIStep{}).commitRepair(sctx, "repair failing checks", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,6 +419,7 @@ func TestCIStep_CommitAndPush_GitCommandsUseStandardCredentialEnv(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
 
 	realGit, err := testgit.RealGit()
 	if err != nil {
@@ -471,7 +472,7 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testin
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(ci): repair failing checks")
 	actualHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
@@ -525,7 +526,7 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA_UsesStepE
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(ci): repair failing checks")
 	actualHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
@@ -598,7 +599,7 @@ func TestCIStep_CommitAndPush_NoDirtyChangesRecordsAdvancedLocalHead(t *testing.
 
 	os.WriteFile(filepath.Join(dir, "resolved.txt"), []byte("resolved"), 0o644)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "resolve conflict")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(ci): repair failing checks")
 	advancedHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	ag := &mockAgent{name: "test"}

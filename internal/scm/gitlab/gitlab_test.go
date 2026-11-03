@@ -2,10 +2,12 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,122 +85,44 @@ func TestGetMergeableStateTreatsBlockedStatusesAsResolved(t *testing.T) {
 	}
 }
 
-func TestGetChecksFallbackParsesMRJSONAfterPreamble(t *testing.T) {
+// checksFixture is the command map a project-scoped GitLab checks read needs:
+// the merge request view carrying the head pipeline, the pipeline's job page,
+// the pipeline's trigger jobs, and the merge request's external status checks.
+func checksFixture(headPipeline, jobs, triggerJobs, statusChecks string) map[string]gitlabTestResponse {
+	return map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: `{"iid":123,"head_pipeline":` + headPipeline + `}` + "\n",
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: jobs,
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs": {
+			stdout: triggerJobs,
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
+			stdout: statusChecks,
+		},
+	}
+}
+
+func findCheck(checks []scm.Check, name string) (scm.Check, bool) {
+	for _, check := range checks {
+		if check.Name == name {
+			return check, true
+		}
+	}
+	return scm.Check{}, false
+}
+
+func TestGetChecksReadsHeadPipelineJobsWithoutAProjectPath(t *testing.T) {
 	t.Parallel()
 
+	// Without a project path the job read stays on the client porcelain path
+	// that needs a current branch, while the head pipeline still comes from the
+	// merge request payload.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
 		"glab mr view 123 --output json": {
-			stdout: "notice\n{\"head_pipeline\":{\"id\":77}}\n",
-		},
-		"glab ci get --pipeline-id 77 --output json --with-job-details": {
-			stdout: `[{"name":"test","status":"success"}]` + "\n",
-		},
-	}), nil, "", "")
-
-	checks, err := host.getChecksFallback(context.Background(), &scm.PR{Number: "123"})
-	if err != nil {
-		t.Fatalf("getChecksFallback() error = %v", err)
-	}
-	if len(checks) != 1 {
-		t.Fatalf("len(checks) = %d, want 1", len(checks))
-	}
-	if checks[0].Name != "test" || checks[0].Bucket != scm.CheckBucketPass {
-		t.Fatalf("checks[0] = %+v, want passing test job", checks[0])
-	}
-}
-
-func TestGetChecksReturnsFallbackErrors(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		responses  map[string]gitlabTestResponse
-		wantErrSub string
-	}{
-		{
-			name: "invalid mr json",
-			responses: map[string]gitlabTestResponse{
-				"glab ci status --mr 123 --output json": {
-					stderr: "unknown flag: --mr\n",
-					code:   1,
-				},
-				"glab mr view 123 --output json": {
-					stdout: "notice\nnot json\n",
-				},
-			},
-			wantErrSub: "invalid JSON output",
-		},
-		{
-			name: "pipeline jobs fetch fails",
-			responses: map[string]gitlabTestResponse{
-				"glab ci status --mr 123 --output json": {
-					stderr: "unknown flag: --mr\n",
-					code:   1,
-				},
-				"glab mr view 123 --output json": {
-					stdout: `{"head_pipeline":{"id":77}}` + "\n",
-				},
-				"glab ci get --pipeline-id 77 --output json --with-job-details": {
-					stderr: "gitlab unavailable\n",
-					code:   1,
-				},
-			},
-			wantErrSub: "glab pipeline jobs",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			host := New(gitlabTestCmdFactory(tt.responses), nil, "", "")
-
-			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
-			if err == nil {
-				t.Fatalf("GetChecks() error = nil, want error containing %q", tt.wantErrSub)
-			}
-			if !strings.Contains(err.Error(), tt.wantErrSub) {
-				t.Fatalf("GetChecks() error = %v, want substring %q", err, tt.wantErrSub)
-			}
-			if checks != nil {
-				t.Fatalf("GetChecks() checks = %+v, want nil", checks)
-			}
-		})
-	}
-}
-
-func TestGetChecksReturnsPrimaryStatusErrorWhenMRFlagIsSupported(t *testing.T) {
-	t.Parallel()
-
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
-			stderr: "gitlab unavailable\n",
-			code:   1,
-		},
-	}), nil, "", "")
-
-	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
-	if err == nil {
-		t.Fatal("GetChecks() error = nil, want primary ci status error")
-	}
-	if !strings.Contains(err.Error(), "glab ci status") {
-		t.Fatalf("GetChecks() error = %v, want glab ci status context", err)
-	}
-	if checks != nil {
-		t.Fatalf("GetChecks() checks = %+v, want nil", checks)
-	}
-}
-
-func TestGetChecksFallsBackForVariantUnsupportedMRFlagErrors(t *testing.T) {
-	t.Parallel()
-
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
-			stderr: "error: unrecognized arguments: --mr\n",
-			code:   1,
-		},
-		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+			stdout: "notice\n" + `{"head_pipeline":{"id":77,"status":"success","web_url":"https://gitlab.example.com/group/project/-/pipelines/77"}}` + "\n",
 		},
 		"glab ci get --pipeline-id 77 --output json --with-job-details": {
 			stdout: `[{"name":"test","status":"success"}]` + "\n",
@@ -214,6 +138,521 @@ func TestGetChecksFallsBackForVariantUnsupportedMRFlagErrors(t *testing.T) {
 	}
 	if checks[0].Name != "test" || checks[0].Bucket != scm.CheckBucketPass {
 		t.Fatalf("checks[0] = %+v, want passing test job", checks[0])
+	}
+}
+
+func TestGetChecksReturnsNoChecksWithoutAHeadPipeline(t *testing.T) {
+	t.Parallel()
+
+	// A merge request with no pipeline has registered nothing: no checks, and
+	// no error either, so the CI step keeps waiting for registration instead of
+	// reading a failure.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: `{"iid":123,"head_pipeline":null}` + "\n",
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
+			stdout: "[]",
+		},
+	}), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("checks = %+v, want none", checks)
+	}
+}
+
+func TestGetChecksSurfacesReadErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		mutate     func(map[string]gitlabTestResponse)
+		wantErrSub string
+	}{
+		{
+			name: "invalid mr json",
+			mutate: func(responses map[string]gitlabTestResponse) {
+				responses["glab mr view 123 --output json"] = gitlabTestResponse{stdout: "notice\nnot json\n"}
+			},
+			wantErrSub: "invalid JSON output",
+		},
+		{
+			name: "mr view fails",
+			mutate: func(responses map[string]gitlabTestResponse) {
+				responses["glab mr view 123 --output json"] = gitlabTestResponse{stderr: "gitlab unavailable\n", code: 1}
+			},
+			wantErrSub: "glab mr view",
+		},
+		{
+			name: "pipeline jobs fetch fails",
+			mutate: func(responses map[string]gitlabTestResponse) {
+				responses["glab api --paginate projects/group%2Fproject/pipelines/77/jobs"] = gitlabTestResponse{stderr: "gitlab unavailable\n", code: 1}
+			},
+			wantErrSub: "glab pipeline jobs",
+		},
+		{
+			name: "trigger jobs fetch fails",
+			mutate: func(responses map[string]gitlabTestResponse) {
+				responses["glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs"] = gitlabTestResponse{stderr: "gitlab unavailable\n", code: 1}
+				// A route rename is the only reason to retry the older name: an
+				// answered error must fail the read rather than be read from the
+				// other route.
+				responses["glab api --paginate projects/group%2Fproject/pipelines/77/bridges"] = gitlabTestResponse{stdout: "[]"}
+			},
+			wantErrSub: "glab pipeline trigger jobs",
+		},
+		{
+			name: "external status checks fetch fails",
+			mutate: func(responses map[string]gitlabTestResponse) {
+				responses["glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks"] = gitlabTestResponse{stderr: "gitlab unavailable\n", code: 1}
+			},
+			wantErrSub: "glab merge request status checks",
+		},
+		{
+			name: "external status checks answer a resource 404",
+			mutate: func(responses map[string]gitlabTestResponse) {
+				// Only the unmounted-route 404 means the feature is absent; a
+				// resource-level 404 is a read failure and must not be read as
+				// "no external checks".
+				responses["glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks"] = gitlabTestResponse{
+					stdout: `{"message":"404 Project Not Found"}` + "\n",
+					stderr: "glab: 404 Project Not Found (HTTP 404)\n",
+					code:   1,
+				}
+			},
+			wantErrSub: "glab merge request status checks",
+		},
+		{
+			name: "external status checks answer 403",
+			mutate: func(responses map[string]gitlabTestResponse) {
+				// The license guard answers 401 before a 403 is possible: a 403
+				// is a project that does have the feature refusing this token,
+				// so its failed check must never be read as "no checks".
+				responses["glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks"] = gitlabTestResponse{
+					stdout: `{"message":"403 Forbidden"}` + "\n",
+					stderr: "glab: 403 Forbidden (HTTP 403)\n",
+					code:   1,
+				}
+			},
+			wantErrSub: "glab merge request status checks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			responses := checksFixture(`{"id":77,"status":"success"}`, `[{"id":1,"name":"test","status":"success"}]`, "[]", "[]")
+			tt.mutate(responses)
+			host := New(gitlabTestCmdFactory(responses), nil, "", "group/project")
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if err == nil {
+				t.Fatalf("GetChecks() error = nil, want error containing %q", tt.wantErrSub)
+			}
+			if !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Fatalf("GetChecks() error = %v, want substring %q", err, tt.wantErrSub)
+			}
+			if checks != nil {
+				t.Fatalf("GetChecks() checks = %+v, want nil", checks)
+			}
+		})
+	}
+}
+
+func TestGetChecksReportsAFailedPipelineNoJobRepresents(t *testing.T) {
+	t.Parallel()
+
+	// A pipeline can fail without a failed job to read: its configuration was
+	// rejected, or a trigger stage failed in a way GitLab kept off the job list.
+	// Reading only the jobs then reports zero checks - a not-ready read that
+	// never escalates - so the pipeline's own status has to become a check.
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"failed","web_url":"https://gitlab.example.com/group/project/-/pipelines/77","finished_at":"2026-04-24T04:15:00.000Z"}`,
+		"[]",
+		"[]",
+		"[]",
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("checks = %+v, want exactly the pipeline aggregate", checks)
+	}
+	aggregate, ok := findCheck(checks, "Pipeline #77")
+	if !ok {
+		t.Fatalf("checks = %+v, want a Pipeline #77 check", checks)
+	}
+	if aggregate.Bucket != scm.CheckBucketFail {
+		t.Fatalf("aggregate bucket = %q, want %q", aggregate.Bucket, scm.CheckBucketFail)
+	}
+	if aggregate.ProviderID != "gitlab-pipeline:77" {
+		t.Fatalf("aggregate provider id = %q, want gitlab-pipeline:77", aggregate.ProviderID)
+	}
+	if aggregate.Link != "https://gitlab.example.com/group/project/-/pipelines/77" {
+		t.Fatalf("aggregate link = %q, want the pipeline URL", aggregate.Link)
+	}
+	wantCompletedAt := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
+	if !aggregate.CompletedAt.Equal(wantCompletedAt) {
+		t.Fatalf("aggregate CompletedAt = %v, want %v", aggregate.CompletedAt, wantCompletedAt)
+	}
+}
+
+func TestGetChecksDoesNotRepeatAFailureTheJobsAlreadyReport(t *testing.T) {
+	t.Parallel()
+
+	// The aggregate is only added when nothing else carries its state: a failed
+	// job already names the failure, and a second row for the same pipeline
+	// result would duplicate the finding and the fix target.
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"failed"}`,
+		`[{"id":1,"name":"test","status":"failed"}]`,
+		"[]",
+		"[]",
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "test" || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks = %+v, want only the failed test job", checks)
+	}
+}
+
+func TestGetChecksKeepsAPendingPipelineFromLookingGreen(t *testing.T) {
+	t.Parallel()
+
+	// A pipeline can still be running after every job it has reported finished
+	// (and its other jobs are being scheduled). With only the job list read, a
+	// green finished job would read as an all-green head.
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"running","web_url":"https://gitlab.example.com/group/project/-/pipelines/77"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		"[]",
+		"[]",
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("checks = %+v, want the green job plus the pending pipeline", checks)
+	}
+	aggregate, ok := findCheck(checks, "Pipeline #77")
+	if !ok || aggregate.Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks = %+v, want a pending Pipeline #77 check", checks)
+	}
+}
+
+func TestGetChecksTreatsAnUnrecognizedPipelineStateAsPending(t *testing.T) {
+	t.Parallel()
+
+	// A state this version cannot classify (a newer GitLab status) must not
+	// certify the head as green.
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"something-new"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		"[]",
+		"[]",
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	aggregate, ok := findCheck(checks, "Pipeline #77")
+	if !ok || aggregate.Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks = %+v, want an unrecognized pipeline state reported as pending", checks)
+	}
+}
+
+func TestGetChecksIncludesFailedTriggerJobs(t *testing.T) {
+	t.Parallel()
+
+	// A trigger job (bridge) never appears on the pipeline's job list, so a
+	// failed downstream pipeline used to be invisible while every ordinary job
+	// stayed green.
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"failed"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		`[{"id":5,"name":"deploy-child","status":"failed","web_url":"https://gitlab.example.com/group/project/-/jobs/5","downstream_pipeline":{"id":9,"status":"failed","web_url":"https://gitlab.example.com/group/project/-/pipelines/9"}}]`,
+		"[]",
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("checks = %+v, want the green job plus the failed trigger job", checks)
+	}
+	trigger, ok := findCheck(checks, "deploy-child")
+	if !ok {
+		t.Fatalf("checks = %+v, want a deploy-child check", checks)
+	}
+	if trigger.Bucket != scm.CheckBucketFail || trigger.ProviderID != "gitlab-trigger-job:5" {
+		t.Fatalf("trigger check = %+v, want a failing gitlab-trigger-job:5", trigger)
+	}
+	if trigger.Link != "https://gitlab.example.com/group/project/-/pipelines/9" {
+		t.Fatalf("trigger link = %q, want the downstream pipeline URL", trigger.Link)
+	}
+}
+
+func TestGetChecksIncludesPendingTriggerJobs(t *testing.T) {
+	t.Parallel()
+
+	// A trigger job waiting on a downstream pipeline keeps the head pipeline in
+	// flight, so readiness must not be reported while it is pending.
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"running"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		`[{"id":5,"name":"deploy-child","status":"pending"}]`,
+		"[]",
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	trigger, ok := findCheck(checks, "deploy-child")
+	if !ok || trigger.Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks = %+v, want a pending deploy-child check", checks)
+	}
+}
+
+func TestGetChecksReadsExternalStatusChecksWithoutAHeadPipeline(t *testing.T) {
+	t.Parallel()
+
+	// A merge request whose gate is an external service has no GitLab pipeline
+	// at all; dropping its status checks with the pipeline would read a failed
+	// requirement as no checks registered.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: `{"iid":123,"head_pipeline":null}` + "\n",
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
+			stdout: `[{"id":3,"name":"Compliance","status":"failed"}]`,
+		},
+	}), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("checks = %+v, want the external status check", checks)
+	}
+	if checks[0].Name != "Compliance" || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks[0] = %+v, want the failing external status check", checks[0])
+	}
+}
+
+func TestGetChecksBoundNoPipelineReportsOnlyNonPassingExternalStatusChecks(t *testing.T) {
+	t.Parallel()
+
+	// A merge request whose pipeline has not registered yet can already carry
+	// an external requirement. A failing or pending one must be reported, and
+	// only passes must read as no checks at all: the monitor would otherwise
+	// stop and call the head ready while the pipeline that has not appeared yet
+	// could still fail.
+	tests := []struct {
+		name       string
+		statusJSON string
+		wantBucket scm.CheckBucket
+		wantChecks int
+	}{
+		{
+			name:       "failing",
+			statusJSON: `[{"id":3,"name":"Compliance","status":"failed"}]`,
+			wantBucket: scm.CheckBucketFail,
+			wantChecks: 1,
+		},
+		{
+			name:       "pending",
+			statusJSON: `[{"id":3,"name":"Compliance","status":"pending"}]`,
+			wantBucket: scm.CheckBucketPending,
+			wantChecks: 1,
+		},
+		{
+			name:       "all passing",
+			statusJSON: `[{"id":3,"name":"Compliance","status":"passed"},{"id":4,"name":"Coverage","status":"passed"}]`,
+			wantChecks: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+				"glab mr view 123 --output json": {
+					stdout: fmt.Sprintf(`{"iid":123,"sha":%q,"head_pipeline":null}`+"\n", deliveredSHA),
+				},
+				"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
+					stdout: tt.statusJSON,
+				},
+			}), nil, "", "group/project")
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+			if err != nil {
+				t.Fatalf("GetChecks() error = %v", err)
+			}
+			if len(checks) != tt.wantChecks {
+				t.Fatalf("checks = %+v, want %d", checks, tt.wantChecks)
+			}
+			if tt.wantChecks > 0 && checks[0].Bucket != tt.wantBucket {
+				t.Fatalf("checks = %+v, want bucket %q", checks, tt.wantBucket)
+			}
+		})
+	}
+}
+
+func TestGetChecksStabilityReReadRunsAfterEveryProviderRead(t *testing.T) {
+	t.Parallel()
+
+	// The stability re-read must come after every provider read, so a source
+	// revision that moved mid-observation cannot be graded and a later read's
+	// failure is the outcome. This fixture answers the second merge request
+	// read with a moved revision and fails the status-check read: the read
+	// failure is what surfaces only if the status-check read happened first.
+	host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+			gitlabMRAtHead(movedSHA, deliveredSHA, "refs/heads/feature"),
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			{stdout: `[{"id":1,"name":"build","status":"success"}]`},
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs": {
+			{stdout: "[]"},
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
+			{stderr: "status checks unavailable\n", code: 1},
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want the status-check read failure", checks)
+	}
+	if errors.Is(err, scm.ErrHeadChanged) {
+		t.Fatalf("GetChecks() error = %v; the stability re-read ran before the status-check read", err)
+	}
+	if !strings.Contains(err.Error(), "glab merge request status checks") {
+		t.Fatalf("GetChecks() error = %v, want the status-check read failure", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() returned %+v alongside the error", checks)
+	}
+}
+
+func TestGetChecksReadsTriggerJobsFromTheDeprecatedRouteName(t *testing.T) {
+	t.Parallel()
+
+	// GitLab renamed "bridges" to "trigger_jobs" in 19.2; an instance older than
+	// that answers the new name with the route-not-found response, so the read
+	// retries the deprecated name instead of failing the step.
+	responses := checksFixture(`{"id":77,"status":"failed"}`, `[{"id":1,"name":"build","status":"success"}]`, "[]", "[]")
+	responses["glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs"] = gitlabTestResponse{
+		stdout: `{"error":"404 Not Found"}` + "\n",
+		stderr: "glab: HTTP 404\n",
+		code:   1,
+	}
+	responses["glab api --paginate projects/group%2Fproject/pipelines/77/bridges"] = gitlabTestResponse{
+		stdout: `[{"id":5,"name":"deploy-child","status":"failed"}]` + "\n",
+	}
+	host := New(gitlabTestCmdFactory(responses), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	trigger, ok := findCheck(checks, "deploy-child")
+	if !ok || trigger.Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks = %+v, want the failing trigger job from the deprecated route", checks)
+	}
+}
+
+func TestGetChecksIncludesExternalStatusChecks(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"success"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		"[]",
+		`[{"id":3,"name":"Compliance","external_url":"https://compliance.example.com/mr/123","status":"failed"},{"id":4,"name":"Coverage","status":"pending"}]`,
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	compliance, ok := findCheck(checks, "Compliance")
+	if !ok {
+		t.Fatalf("checks = %+v, want a Compliance status check", checks)
+	}
+	if compliance.Bucket != scm.CheckBucketFail || compliance.Kind != scm.CheckKindStatus {
+		t.Fatalf("compliance check = %+v, want a failing status check", compliance)
+	}
+	if compliance.ProviderID != "gitlab-status-check:3" || compliance.Link != "https://compliance.example.com/mr/123" {
+		t.Fatalf("compliance check = %+v, want provider id and external link", compliance)
+	}
+	coverage, ok := findCheck(checks, "Coverage")
+	if !ok || coverage.Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks = %+v, want a pending Coverage check", checks)
+	}
+}
+
+func TestGetChecksTreatsExternalStatusChecksAsAbsentWhenTheInstanceDoesNotServeThem(t *testing.T) {
+	t.Parallel()
+
+	// External status checks are a GitLab Ultimate capability. Community
+	// Edition answers 404 (route absent) and an unlicensed Enterprise Edition
+	// instance answers 401 from the license guard; neither is an unreadable
+	// check. A 403 is not in this group: the license guard answers 401 first,
+	// so a 403 is a project that has the feature refusing this token, which
+	// stays a read failure.
+	for _, unavailable := range []gitlabTestResponse{
+		{stdout: `{"error":"404 Not Found"}` + "\n", stderr: "glab: HTTP 404\n", code: 1},
+		{stdout: `{"message":"401 Unauthorized"}` + "\n", stderr: "glab: 401 Unauthorized (HTTP 401)\n", code: 1},
+	} {
+		responses := checksFixture(`{"id":77,"status":"success"}`, `[{"id":1,"name":"build","status":"success"}]`, "[]", "[]")
+		responses["glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks"] = unavailable
+		host := New(gitlabTestCmdFactory(responses), nil, "", "group/project")
+
+		checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+		if err != nil {
+			t.Fatalf("GetChecks() with unavailable external status checks (%q) error = %v", unavailable.stderr, err)
+		}
+		if len(checks) != 1 || checks[0].Name != "build" {
+			t.Fatalf("checks = %+v, want only the jobs on an instance without the feature", checks)
+		}
+	}
+}
+
+func TestGetChecksTreatsAnUnknownExternalStatusCheckStateAsPending(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"success"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		"[]",
+		`[{"id":3,"name":"Compliance","status":"something-new"}]`,
+	)), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	compliance, ok := findCheck(checks, "Compliance")
+	if !ok || compliance.Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks = %+v, want an unrecognized status check state reported as pending", checks)
 	}
 }
 
@@ -433,21 +872,23 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 	}
 }
 
-func TestGetChecksFallbackRequestsJobDetails(t *testing.T) {
+func TestGetChecksReadsJobDetailsFromThePorcelainRoute(t *testing.T) {
 	t.Parallel()
 
+	// `glab ci get --with-job-details` prints one pipeline object with a nested
+	// jobs array; the fixture key pins the flags that make it carry job details.
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
 		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+			stdout: `{"head_pipeline":{"id":77,"status":"failed"}}` + "\n",
 		},
 		"glab ci get --pipeline-id 77 --output json --with-job-details": {
 			stdout: `{"jobs":[{"name":"lint","status":"failed"}]}` + "\n",
 		},
 	}), nil, "", "")
 
-	checks, err := host.getChecksFallback(context.Background(), &scm.PR{Number: "123"})
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
-		t.Fatalf("getChecksFallback() error = %v", err)
+		t.Fatalf("GetChecks() error = %v", err)
 	}
 	if len(checks) != 1 {
 		t.Fatalf("len(checks) = %d, want 1", len(checks))
@@ -488,6 +929,7 @@ func TestFetchFailedCheckTargetLogsAggregatesEverySelectedJob(t *testing.T) {
 		"glab mr view 123 --output json": {stdout: `{"head_pipeline":{"id":77}}` + "\n"},
 		"glab ci get --pipeline-id 77 --output json --with-job-details": {
 			stdout: `{"jobs":[{"id":55,"name":"build","status":"failed"},{"id":56,"name":"lint","status":"failed"}]}` + "\n",
+			stderr: "glab diagnostic notice\n",
 		},
 		"glab ci trace 55": {stdout: "build failed\n"},
 		"glab ci trace 56": {stdout: "lint failed\n"},
@@ -560,11 +1002,104 @@ func TestFetchFailedCheckLogsParsesMRJSONAfterPreamble(t *testing.T) {
 	}
 }
 
-func TestGitlabStatusBucketTreatsManualJobsAsSkipped(t *testing.T) {
+// A blocking manual job (`when: manual` with `allow_failure: false`) stops the
+// pipeline at its stage until a person runs it, and GitLab's merge
+// rules treat that pipeline as unfinished. Reading it as a skip let a merge
+// request report ready while GitLab would refuse to merge it, so it is a
+// pending check marked as the human wait it is. An optional manual job
+// (`allow_failure: true`, the default outside `rules`) is one GitLab does not
+// wait for and keeps its skip.
+func TestParseGitlabJobsHonorsManualJobPolicy(t *testing.T) {
 	t.Parallel()
 
-	if got := gitlabStatusBucket("manual"); got != scm.CheckBucketSkip {
-		t.Fatalf("gitlabStatusBucket(manual) = %q, want %q", got, scm.CheckBucketSkip)
+	checks, err := parseGitlabJobs([]byte(`[
+		{"id":1,"name":"deploy","status":"manual","stage":"deploy","allow_failure":false},
+		{"id":2,"name":"optional-deploy","status":"manual","stage":"deploy","allow_failure":true},
+		{"id":3,"name":"build","status":"success","allow_failure":false}
+	]`))
+	if err != nil {
+		t.Fatalf("parseGitlabJobs() error = %v", err)
+	}
+	want := map[string]struct {
+		bucket            scm.CheckBucket
+		awaitingManualJob bool
+	}{
+		"deploy":          {bucket: scm.CheckBucketPending, awaitingManualJob: true},
+		"optional-deploy": {bucket: scm.CheckBucketSkip, awaitingManualJob: false},
+		"build":           {bucket: scm.CheckBucketPass, awaitingManualJob: false},
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("parseGitlabJobs() = %+v, want %d checks", checks, len(want))
+	}
+	for _, c := range checks {
+		expected, ok := want[c.Name]
+		if !ok {
+			t.Fatalf("unexpected check %+v", c)
+		}
+		if c.Bucket != expected.bucket {
+			t.Errorf("check %q bucket = %q, want %q", c.Name, c.Bucket, expected.bucket)
+		}
+		if c.AwaitingManualJob != expected.awaitingManualJob {
+			t.Errorf("check %q AwaitingManualJob = %v, want %v", c.Name, c.AwaitingManualJob, expected.awaitingManualJob)
+		}
+	}
+}
+
+// A pipeline stopped at a blocking manual job reports `manual`, and the
+// aggregate row built for it carries the same human wait as the job row: named,
+// pending, and never read as work in flight. The row is still omitted when
+// another check already reports the same bucket.
+func TestPipelineAggregateCarriesTheManualJobWait(t *testing.T) {
+	t.Parallel()
+
+	aggregate, ok := pipelineAggregateCheck(gitlabHeadPipeline{ID: 7, Status: "manual"}, nil)
+	if !ok {
+		t.Fatal("pipelineAggregateCheck(manual) = no row, want the blocked pipeline surfaced")
+	}
+	if aggregate.Bucket != scm.CheckBucketPending || !aggregate.AwaitingManualJob {
+		t.Fatalf("aggregate = %+v, want a pending row marked as a human wait", aggregate)
+	}
+	if aggregate.Name != "Pipeline #7" {
+		t.Fatalf("aggregate name = %q, want the pipeline named", aggregate.Name)
+	}
+
+	if _, ok := pipelineAggregateCheck(gitlabHeadPipeline{ID: 7, Status: "manual"}, []scm.Check{{Name: "deploy", Bucket: scm.CheckBucketPending}}); ok {
+		t.Fatal("pipelineAggregateCheck() added a row that another check already carries")
+	}
+}
+
+// A trigger job that starts a downstream pipeline can itself be a blocking
+// manual job, and GitLab reports its status like any other job's. It carries
+// the same human wait, so the CI step waits on the person instead of treating
+// it as work in flight; an optional manual trigger job stays a skip.
+func TestTriggerJobsCarryTheManualJobWait(t *testing.T) {
+	t.Parallel()
+
+	checks := triggerJobsToChecks([]gitlabTriggerJob{
+		{gitlabJob: gitlabJob{ID: 1, Name: "deploy", Status: "manual"}},
+		{gitlabJob: gitlabJob{ID: 2, Name: "optional-deploy", Status: "manual", AllowFailure: true}},
+		{gitlabJob: gitlabJob{ID: 3, Name: "build", Status: "success"}},
+	})
+	want := map[string]struct {
+		bucket            scm.CheckBucket
+		awaitingManualJob bool
+	}{
+		"deploy":          {bucket: scm.CheckBucketPending, awaitingManualJob: true},
+		"optional-deploy": {bucket: scm.CheckBucketSkip, awaitingManualJob: false},
+		"build":           {bucket: scm.CheckBucketPass, awaitingManualJob: false},
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("triggerJobsToChecks() = %+v, want %d checks", checks, len(want))
+	}
+	for _, c := range checks {
+		expected, ok := want[c.Name]
+		if !ok {
+			t.Fatalf("unexpected check %+v", c)
+		}
+		if c.Bucket != expected.bucket || c.AwaitingManualJob != expected.awaitingManualJob {
+			t.Errorf("check %q = (bucket %q, awaitingManualJob %v), want (%q, %v)",
+				c.Name, c.Bucket, c.AwaitingManualJob, expected.bucket, expected.awaitingManualJob)
+		}
 	}
 }
 
@@ -708,19 +1243,14 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 
 	// With a project path, pipeline jobs are read via `glab api` (REST), which
 	// is branch-independent and works in the daemon's detached-HEAD worktree.
-	// finished_at must be captured into CompletedAt.
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
-			stderr: "unknown flag: --mr\n",
-			code:   1,
-		},
-		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
-		},
-		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
-			stdout: `[{"id":9,"name":"test","status":"success","finished_at":"2026-04-24T04:15:00.000Z"}]` + "\n",
-		},
-	}), nil, "gitlab.example.com", "group/project")
+	// finished_at must be captured into CompletedAt, and the job must carry the
+	// provider's own state and details link so a finding can name both.
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"success"}`,
+		`[{"id":9,"name":"test","status":"success","web_url":"https://gitlab.example.com/group/project/-/jobs/9","finished_at":"2026-04-24T04:15:00.000Z"}]`,
+		"[]",
+		"[]",
+	)), nil, "gitlab.example.com", "group/project")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -732,6 +1262,9 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 	if checks[0].Name != "test" || checks[0].Bucket != scm.CheckBucketPass {
 		t.Fatalf("checks[0] = %+v, want passing test job", checks[0])
 	}
+	if checks[0].Link != "https://gitlab.example.com/group/project/-/jobs/9" {
+		t.Fatalf("checks[0] = %+v, want the job link", checks[0])
+	}
 	wantCompletedAt := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
 	if !checks[0].CompletedAt.Equal(wantCompletedAt) {
 		t.Fatalf("checks[0].CompletedAt = %v, want %v", checks[0].CompletedAt, wantCompletedAt)
@@ -741,18 +1274,12 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 func TestGetChecksLeavesCompletedAtZeroWhenFinishedAtMissingOrInvalid(t *testing.T) {
 	t.Parallel()
 
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
-			stderr: "unknown flag: --mr\n",
-			code:   1,
-		},
-		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
-		},
-		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
-			stdout: `[{"name":"running","status":"running"},{"name":"bad","status":"success","finished_at":"not-a-time"}]` + "\n",
-		},
-	}), nil, "", "group/project")
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"running"}`,
+		`[{"name":"running","status":"running"},{"name":"bad","status":"success","finished_at":"not-a-time"}]`,
+		"[]",
+		"[]",
+	)), nil, "", "group/project")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -774,22 +1301,16 @@ func TestGetChecksPaginatesJobsAcrossConcatenatedPages(t *testing.T) {
 	// `glab api --paginate` walks every page and writes one JSON array per page,
 	// so the output is several arrays concatenated back to back. The parser must
 	// read all of them; otherwise a failed job on a later page is silently
-	// dropped and the CI verdict misses it. The map key also asserts that the
+	// dropped and the CI verdict misses it. The fixture key also asserts that the
 	// `--paginate` flag is actually present on the jobs call.
 	page1 := `[{"id":1,"name":"build","status":"success"}]`
 	page2 := `[{"id":2,"name":"deploy","status":"failed"}]`
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
-			stderr: "unknown flag: --mr\n",
-			code:   1,
-		},
-		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
-		},
-		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
-			stdout: page1 + "\n" + page2 + "\n",
-		},
-	}), nil, "", "group/project")
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"failed"}`,
+		page1+"\n"+page2+"\n",
+		"[]",
+		"[]",
+	)), nil, "", "group/project")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -848,21 +1369,668 @@ func TestGetChecksSurfacesErrorWhenPaginatedPageIsCorrupt(t *testing.T) {
 	// End-to-end through GetChecks: a corrupt later page of paginated `glab api`
 	// output must fail the call rather than return a partial (potentially
 	// all-green) slice that hides a failed job on the dropped page.
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
-			stderr: "unknown flag: --mr\n",
-			code:   1,
-		},
-		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
-		},
-		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
-			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n" + `[{"id":2`,
-		},
-	}), nil, "", "group/project")
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"success"}`,
+		`[{"id":1,"name":"build","status":"success"}]`+"\n"+`[{"id":2`,
+		"[]",
+		"[]",
+	)), nil, "", "group/project")
 
 	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
 		t.Fatal("GetChecks() error = nil, want decode error surfaced from the corrupt page")
+	}
+}
+
+// unboundChecksFixture is the command map an unbound checks read (no delivered
+// commit to bind to) needs: the merge request with its head pipeline, and the
+// job list on either the paginated REST route (project path known) or the
+// porcelain one. The REST route also answers the trigger-job and external
+// status-check reads the composed observation makes.
+func unboundChecksFixture(jobsOutput string, rest bool) map[string]gitlabTestResponse {
+	responses := map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {stdout: `{"iid":123,"head_pipeline":{"id":77,"status":"success"}}`},
+	}
+	if rest {
+		responses["glab api --paginate projects/group%2Fproject/pipelines/77/jobs"] = gitlabTestResponse{stdout: jobsOutput}
+		responses["glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs"] = gitlabTestResponse{stdout: "[]"}
+		responses["glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks"] = gitlabTestResponse{stdout: "[]"}
+	} else {
+		responses["glab ci get --pipeline-id 77 --output json --with-job-details"] = gitlabTestResponse{stdout: jobsOutput}
+	}
+	return responses
+}
+
+// withEmptyCoverageRoutes adds the answers an instance with neither trigger
+// jobs nor external status checks reports, for a bound fixture map whose check
+// read runs with a known project path.
+func withEmptyCoverageRoutes(responses map[string]gitlabTestResponse) map[string]gitlabTestResponse {
+	responses["glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs"] = gitlabTestResponse{stdout: "[]"}
+	responses["glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks"] = gitlabTestResponse{stdout: "[]"}
+	return responses
+}
+
+func TestGetChecksRejectsUnreadableJobs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{"no JSON", "not JSON"},
+		{"empty output", ""},
+		{"missing jobs", `{}`},
+		{"null response", `null`},
+		{"scalar response", `true`},
+		{"null before empty page", "null\n[]"},
+		{"null before passing page", "null\n" + `[{"name":"build","status":"success"}]`},
+		{"boolean before empty page", "true\n[]"},
+		{"false before empty page", "false\n[]"},
+		{"number before empty page", "42\n[]"},
+		{"negative number before empty page", "-1\n[]"},
+		{"string before empty page", "\"unavailable\"\n[]"},
+		{"array inside string", `"[]"`},
+		{"non-JSON before empty page", "unavailable\n[]"},
+		{"object jobs", `{"jobs":{}}`},
+		{"string jobs", `{"jobs":"unavailable"}`},
+		{"null job", `[null]`},
+		{"missing job name", `[{"status":"success"}]`},
+		{"missing job status", `[{"name":"build"}]`},
+		{"wrong job field type", `[{"name":"build","status":true}]`},
+		{"wrong second page", `[{"name":"build","status":"success"}]` + "\n{}"},
+		{"null second page", `[{"name":"build","status":"success"}]` + "\nnull"},
+		{"wrong page after empty page", "[]\n{}"},
+	}
+	for _, route := range []string{"REST", "CLI"} {
+		t.Run(route, func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					projectPath := ""
+					if route == "REST" {
+						projectPath = "group/project"
+					}
+					host := New(gitlabTestCmdFactory(unboundChecksFixture(tt.output, route == "REST")), nil, "", projectPath)
+					checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+					if err == nil {
+						t.Fatalf("GetChecks() = (%+v, nil), want a read error for %q", checks, tt.output)
+					}
+					if !strings.Contains(err.Error(), "decode gitlab jobs") {
+						t.Fatalf("GetChecks() error = %v, want a jobs read error for %q", err, tt.output)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestGetChecksRequiresExplicitPipelineMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{"missing pipeline", `{}`},
+		{"missing pipeline ID", `{"head_pipeline":{}}`},
+		{"null pipeline ID", `{"head_pipeline":{"id":null}}`},
+		{"zero pipeline ID", `{"head_pipeline":{"id":0}}`},
+		{"negative pipeline ID", `{"head_pipeline":{"id":-1}}`},
+		{"wrong pipeline ID type", `{"head_pipeline":{"id":"77"}}`},
+		{"wrong pipeline shape", `{"head_pipeline":[]}`},
+		{"null MR", `null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+				"glab mr view 123 --output json": {stdout: tt.output},
+			}), nil, "", "")
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if err == nil {
+				t.Fatalf("GetChecks() = (%+v, nil), want a read error for %q", checks, tt.output)
+			}
+			// A `null` MR document fails before the field parse, so the
+			// invalid-JSON marker counts too. Both exclude the fake's
+			// unmapped-command error, which is what this guard is for.
+			if !strings.Contains(err.Error(), "head_pipeline") && !strings.Contains(err.Error(), "invalid JSON output") {
+				t.Fatalf("GetChecks() error = %v, want a head_pipeline read error for %q", err, tt.output)
+			}
+			if checks != nil {
+				t.Fatalf("GetChecks() checks = %+v, want nil for invalid pipeline metadata", checks)
+			}
+		})
+	}
+}
+
+// The subprocess stream contract keeps diagnostics out of successful job JSON
+// and retains them on failure. Mixing the streams would reject the build job.
+func TestGetChecksSeparatesJobJSONFromStderr(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range []string{"REST", "CLI"} {
+		for _, fails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/fails=%t", route, fails), func(t *testing.T) {
+				t.Parallel()
+				jobsCommand := "glab ci get --pipeline-id 77 --output json --with-job-details"
+				projectPath := ""
+				if route == "REST" {
+					projectPath = "group/project"
+					jobsCommand = "glab api --paginate projects/group%2Fproject/pipelines/77/jobs"
+				}
+				response := gitlabTestResponse{
+					stdout: `[{"id":55,"name":"build","status":"success"}]`,
+					stderr: "glab diagnostic notice\n",
+				}
+				if fails {
+					response.code = 1
+				}
+				responses := unboundChecksFixture("", route == "REST")
+				responses[jobsCommand] = response
+				host := New(gitlabTestCmdFactory(responses), nil, "", projectPath)
+				checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+				if fails {
+					if err == nil || !strings.Contains(err.Error(), "glab diagnostic notice") || len(checks) != 0 {
+						t.Fatalf("GetChecks() = (%+v, %v), want command error with stderr and no checks", checks, err)
+					}
+					return
+				}
+				if err != nil || len(checks) != 1 || checks[0].Name != "build" || checks[0].ProviderID != "gitlab-job:55" || checks[0].Bucket != scm.CheckBucketPass {
+					t.Fatalf("GetChecks() = (%+v, %v), want passing build job despite stderr notice", checks, err)
+				}
+			})
+		}
+	}
+}
+
+// The commit identities the head-binding tests reason about: the commit a run
+// is delivering, one it is not, one the source branch moved to mid-read, and
+// the temporary merged commit GitLab builds a merged-results pipeline on.
+const (
+	deliveredSHA = "aaaa000000000000000000000000000000000001"
+	otherSHA     = "bbbb000000000000000000000000000000000002"
+	movedSHA     = "cccc000000000000000000000000000000000003"
+	mergeRefSHA  = "dddd000000000000000000000000000000000004"
+	targetSHA    = "eeee000000000000000000000000000000000005"
+)
+
+// gitlabMRAtHead renders a merge request whose source commit is sourceSHA and
+// whose head pipeline (77) ran at pipelineSHA for pipelineRef. An empty
+// pipelineSHA omits the pipeline entirely.
+func gitlabMRAtHead(sourceSHA, pipelineSHA, pipelineRef string) gitlabTestResponse {
+	pipeline := "null"
+	if pipelineSHA != "" {
+		pipeline = fmt.Sprintf(`{"id":77,"sha":%q,"ref":%q,"status":"success"}`, pipelineSHA, pipelineRef)
+	}
+	return gitlabTestResponse{stdout: fmt.Sprintf(`{"iid":123,"sha":%q,"head_pipeline":%s}`+"\n", sourceSHA, pipeline)}
+}
+
+// TestGetChecksRejectsAHeadPipelineThatRanAtADifferentCommit is the reported
+// case in its simplest shape: the merge request's source commit is the head
+// being delivered, but its head pipeline ran at another commit and holds green
+// jobs. GitLab only replaces the head-pipeline pointer once a pipeline for the
+// newer revision exists, so an old pipeline's green jobs must never be
+// reported as the delivered commit's checks.
+func TestGetChecksRejectsAHeadPipelineThatRanAtADifferentCommit(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, otherSHA, "refs/heads/feature"),
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want an error for a pipeline that ran at %s, not %s", checks, otherSHA, deliveredSHA)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() returned %+v alongside the error; want no checks from a pipeline that is not the delivered commit's", checks)
+	}
+	for _, want := range []string{otherSHA, deliveredSHA} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("GetChecks() error = %v, want it to name %s", err, want)
+		}
+	}
+}
+
+func TestGetChecksReadsJobsOfAHeadPipelineThatRanAtTheDeliveredCommit(t *testing.T) {
+	t.Parallel()
+
+	// A head pipeline that ran at the delivered commit is the pipeline to read;
+	// no other pipeline's jobs may appear among the checks.
+	host := New(gitlabTestCmdFactory(withEmptyCoverageRoutes(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
+		},
+	})), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("GetChecks() = %+v, want the head pipeline's single passing build job", checks)
+	}
+}
+
+func TestGetChecksRejectsAMergeRequestThatIsNotAtTheDeliveredCommit(t *testing.T) {
+	t.Parallel()
+
+	// The merge request's own source revision is authoritative: when it is not
+	// the commit being delivered, its pipeline cannot speak for that commit,
+	// even if the pipeline matches the merge request's revision.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(otherSHA, otherSHA, "refs/heads/feature"),
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want a head-change error", checks)
+	}
+	if !errors.Is(err, scm.ErrHeadChanged) {
+		t.Fatalf("GetChecks() error = %v, want it to wrap %v", err, scm.ErrHeadChanged)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() returned %+v alongside the error", checks)
+	}
+}
+
+func TestGetChecksRejectsAMoveOfTheSourceCommitDuringCheckDiscovery(t *testing.T) {
+	t.Parallel()
+
+	// The merge request was at the delivered commit when the read started and
+	// moved while the jobs were being listed - the same window the GitHub
+	// adapter rejects, because the observation no longer describes the commit
+	// that will be certified.
+	host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+			gitlabMRAtHead(movedSHA, deliveredSHA, "refs/heads/feature"),
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			{stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n"},
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs": {
+			{stdout: "[]"},
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
+			{stdout: "[]"},
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want a head-change error", checks)
+	}
+	if !errors.Is(err, scm.ErrHeadChanged) {
+		t.Fatalf("GetChecks() error = %v, want it to wrap %v", err, scm.ErrHeadChanged)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() returned %+v alongside the error", checks)
+	}
+	if !strings.Contains(err.Error(), movedSHA) {
+		t.Fatalf("GetChecks() error = %v, want it to name the revision the merge request moved to", err)
+	}
+}
+
+func TestGetChecksAcceptsAMergedResultsPipelineThatIncludesTheDeliveredCommit(t *testing.T) {
+	t.Parallel()
+
+	// A merged-results pipeline runs on a temporary commit that merges the
+	// source revision into the target side, so its SHA can never equal the
+	// source commit. GitLab records the source commit as a parent of that
+	// commit; that provenance - not the SHA difference - is what binds the
+	// pipeline to the delivered commit.
+	host := New(gitlabTestCmdFactory(withEmptyCoverageRoutes(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, mergeRefSHA, "refs/merge-requests/123/merge"),
+		"glab api projects/group%2Fproject/repository/commits/" + mergeRefSHA: {
+			stdout: fmt.Sprintf(`{"id":%q,"parent_ids":[%q,%q]}`, mergeRefSHA, targetSHA, deliveredSHA) + "\n",
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
+		},
+	})), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("GetChecks() = %+v, want the merged-results pipeline's passing build job", checks)
+	}
+}
+
+func TestGetChecksRejectsAMergedResultsPipelineThatDoesNotIncludeTheDeliveredCommit(t *testing.T) {
+	t.Parallel()
+
+	// The merge-results pipeline predates the latest source commit: its
+	// temporary commit carries an older source revision, so a green run there
+	// says nothing about the delivered commit.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, mergeRefSHA, "refs/merge-requests/123/merge"),
+		"glab api projects/group%2Fproject/repository/commits/" + mergeRefSHA: {
+			stdout: fmt.Sprintf(`{"id":%q,"parent_ids":[%q,%q]}`, mergeRefSHA, targetSHA, otherSHA) + "\n",
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want an error for a merged-results pipeline that does not include %s", checks, deliveredSHA)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() returned %+v alongside the error", checks)
+	}
+}
+
+func TestGetChecksFailsClosedWhenMergedResultsProvenanceCannotBeRead(t *testing.T) {
+	t.Parallel()
+
+	// Without a project path the merge-result commit cannot be read, so its
+	// provenance cannot be proven. Failing closed keeps an unprovable pipeline
+	// from being graded; the jobs read below must never be reached.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, mergeRefSHA, "refs/merge-requests/123/merge"),
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {
+			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want a provenance error", checks)
+	}
+	if !strings.Contains(err.Error(), "project path") {
+		t.Fatalf("GetChecks() error = %v, want it to name the missing project path", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() returned %+v alongside the error", checks)
+	}
+}
+
+func TestGetChecksFailsClosedWhenTheHeadPipelineReportsNoCommit(t *testing.T) {
+	t.Parallel()
+
+	// An omitted commit is not an absent pipeline: the binding cannot be shown,
+	// so the read fails closed instead of grading jobs whose commit is unknown.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: fmt.Sprintf(`{"iid":123,"sha":%q,"head_pipeline":{"id":77}}`+"\n", deliveredSHA),
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA}); err == nil {
+		t.Fatal("GetChecks() error = nil, want a fail-closed error for a pipeline with no commit")
+	}
+}
+
+func TestGetChecksFailsClosedWhenTheMergeRequestReportsNoSourceCommit(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: `{"iid":123,"head_pipeline":{"id":77,"sha":"` + deliveredSHA + `"}}` + "\n",
+		},
+	}), nil, "", "")
+
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA}); err == nil {
+		t.Fatal("GetChecks() error = nil, want a fail-closed error for an unnamed source commit")
+	}
+}
+
+func TestGetChecksUsesTheDiffHeadCommitWhenTheMergeRequestReportsNoSHA(t *testing.T) {
+	t.Parallel()
+
+	// diff_refs.head_sha populates asynchronously after a push and is the
+	// documented head of the merge request's latest diff version; a merge
+	// request that has not reported its own sha yet is still bound through it.
+	host := New(gitlabTestCmdFactory(withEmptyCoverageRoutes(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: fmt.Sprintf(`{"iid":123,"sha":"","diff_refs":{"head_sha":%q},"head_pipeline":{"id":77,"sha":%q,"ref":"refs/heads/feature","status":"success"}}`+"\n", deliveredSHA, deliveredSHA),
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n",
+		},
+	})), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" {
+		t.Fatalf("GetChecks() = %+v, want the bound pipeline's build job", checks)
+	}
+}
+
+func TestGetChecksReturnsNoChecksWhenNoPipelineIsRegisteredForTheHead(t *testing.T) {
+	t.Parallel()
+
+	// Nothing has registered for this commit yet: an empty observation keeps
+	// the monitor waiting, where the legacy read would have graded a pipeline
+	// that belongs to a different revision.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, "", ""),
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() = %+v, want no checks before a pipeline registers for the head", checks)
+	}
+}
+
+func TestFetchFailedCheckTargetLogsRejectsAPipelineThatRanAtADifferentCommit(t *testing.T) {
+	t.Parallel()
+
+	// The selected check failed in a different commit's pipeline. Tracing a
+	// same-named job from the pipeline that is currently the merge request's
+	// head would attach another commit's log to this selection, so the fetch
+	// must fail closed instead.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, otherSHA, "refs/heads/feature"),
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {
+			stdout: `{"jobs":[{"id":55,"name":"lint","status":"failed"}]}` + "\n",
+		},
+		"glab ci trace 55": {stdout: "lint failed\n"},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "", deliveredSHA, []scm.CheckTarget{{Name: "lint"}})
+	if err == nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, err = nil; want a binding error", logs)
+	}
+	for _, log := range logs {
+		if log.Output != "" {
+			t.Fatalf("FetchFailedCheckTargetLogs() returned the log %q from another commit's pipeline", log.Output)
+		}
+	}
+}
+
+func TestFetchFailedCheckTargetLogsBindsToTheDeliveredCommit(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":55,"name":"lint","status":"failed"}]` + "\n",
+		},
+		"glab ci trace 55": {stdout: "lint failed\n"},
+	}), nil, "gitlab.example.com", "group/project")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "", deliveredSHA, []scm.CheckTarget{{ProviderID: "gitlab-job:55"}})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
+	}
+	if len(logs) != 1 || logs[0].Output != "lint failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, want the head pipeline's lint trace", logs)
+	}
+}
+
+func TestMergeResultRefMatchesOnlyThisMergeRequestsTemporaryRefs(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		ref    string
+		number string
+		want   bool
+	}{
+		{"refs/merge-requests/12/merge", "12", true},
+		{"refs/merge-requests/12/train", "12", true},
+		{"refs/merge-requests/12/merge", " 12 ", true},
+		{"refs/merge-requests/13/merge", "12", false},
+		// A detached merge request pipeline runs at the source revision itself,
+		// so it is never the merged-results exception to the SHA match.
+		{"refs/merge-requests/12/head", "12", false},
+		{"refs/heads/feature", "12", false},
+		{" refs/merge-requests/12/merge ", "12", true},
+		{"refs/merge-requests/12/merge", "", false},
+	} {
+		if got := mergeResultRef(tc.ref, tc.number); got != tc.want {
+			t.Errorf("mergeResultRef(%q, %q) = %v, want %v", tc.ref, tc.number, got, tc.want)
+		}
+	}
+}
+
+func TestGetChecksAcceptsExplicitEmptyResults(t *testing.T) {
+	t.Parallel()
+
+	outputs := []string{
+		`[]`,
+		`{"jobs":[]}`,
+		"[]\n{\"jobs\":[]}",
+		// What glab 1.114 prints for a pipeline with no jobs: `ci get`
+		// marshals a nil job slice as null.
+		`{"id":77,"status":"failed","jobs":null}`,
+		`{"pipeline":{"id":77,"status":"failed"},"jobs":null}`,
+	}
+	for _, route := range []string{"REST", "CLI"} {
+		for _, output := range outputs {
+			t.Run(route+"/"+output, func(t *testing.T) {
+				t.Parallel()
+				projectPath := ""
+				if route == "REST" {
+					projectPath = "group/project"
+				}
+				host := New(gitlabTestCmdFactory(unboundChecksFixture(output, route == "REST")), nil, "", projectPath)
+				checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+				if err != nil || len(checks) != 0 {
+					t.Fatalf("GetChecks() = (%+v, %v), want an explicitly empty check list", checks, err)
+				}
+			})
+		}
+	}
+	t.Run("absent pipeline", func(t *testing.T) {
+		t.Parallel()
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab mr view 123 --output json": {stdout: `{"head_pipeline":null}`},
+		}), nil, "", "")
+		checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+		if err != nil || len(checks) != 0 {
+			t.Fatalf("GetChecks() = (%+v, %v), want an explicitly absent pipeline", checks, err)
+		}
+	})
+}
+
+func TestGetChecksRejectsAMergedResultsPipelineWhoseCommitIsNotACommitID(t *testing.T) {
+	t.Parallel()
+
+	// The merge-result commit is interpolated into a repository API path, so a
+	// value that is not a commit id is refused before any request is built.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": gitlabMRAtHead(deliveredSHA, "not-a-commit", "refs/merge-requests/123/merge"),
+	}), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want a refusal for a non-commit pipeline SHA", checks)
+	}
+	if !strings.Contains(err.Error(), "not a commit id") {
+		t.Fatalf("GetChecks() error = %v, want it to name the unusable commit id", err)
+	}
+}
+
+// TestGetChecksRejectsAHeadPipelineStrandedByAHeadMoveWithoutAPipeline mirrors a
+// live reproduction: the branch head moved to a commit for which the project's
+// CI rules created no pipeline at all, so GitLab left the merge request's
+// head_pipeline on the pipeline the previous commit ran at. A run delivering
+// the new head must not read that pipeline's verdict or its failed job's trace.
+func TestGetChecksRejectsAHeadPipelineStrandedByAHeadMoveWithoutAPipeline(t *testing.T) {
+	t.Parallel()
+
+	// The delivered commit has no pipeline; the head pipeline belongs to the
+	// commit before it, where one job passed and one failed.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 1 --output json": {
+			stdout: fmt.Sprintf(`{"iid":1,"sha":%q,"head_pipeline":{"id":174,"sha":%q,"ref":"refs/merge-requests/1/head"}}`+"\n", deliveredSHA, otherSHA),
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/174/jobs": {
+			stdout: `[{"id":646,"name":"green-on-head","status":"success"},{"id":647,"name":"fails-on-purpose","status":"failed"}]` + "\n",
+		},
+		"glab ci trace 647": {stdout: "this job fails on purpose for CI_COMMIT_SHA=" + otherSHA + "\n"},
+	}), nil, "gitlab.example.com", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "1", HeadSHA: deliveredSHA})
+	if err == nil {
+		t.Fatalf("GetChecks() = %+v, err = nil; want a refusal for a pipeline stranded on %s", checks, otherSHA)
+	}
+	if !errors.Is(err, scm.ErrHeadChanged) {
+		t.Fatalf("GetChecks() error = %v, want it to wrap %v so a caller can wait rather than treat it as a provider failure", err, scm.ErrHeadChanged)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() returned %+v alongside the error", checks)
+	}
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "1"}, "", deliveredSHA, []scm.CheckTarget{{Name: "fails-on-purpose"}})
+	if err == nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, err = nil; want a refusal for another commit's pipeline", logs)
+	}
+	if !errors.Is(err, scm.ErrHeadChanged) {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v, want it to wrap %v", err, scm.ErrHeadChanged)
+	}
+	for _, log := range logs {
+		if strings.Contains(log.Output, otherSHA) {
+			t.Fatalf("FetchFailedCheckTargetLogs() returned the trace of %s for the delivered commit %s", otherSHA, deliveredSHA)
+		}
+	}
+}
+
+// TestFetchFailedCheckTargetLogsRejectsAHeadMoveDuringLogRetrieval covers the
+// second read: the traces are fetched for a pipeline proven to belong to the
+// delivered commit, and a source revision that moved while they were being
+// fetched must invalidate them rather than leave the caller with another
+// commit's logs.
+func TestFetchFailedCheckTargetLogsRejectsAHeadMoveDuringLogRetrieval(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
+		"glab mr view 1 --output json": {
+			gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+			gitlabMRAtHead(movedSHA, deliveredSHA, "refs/heads/feature"),
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			{stdout: `[{"id":647,"name":"fails-on-purpose","status":"failed"}]` + "\n"},
+		},
+		"glab ci trace 647": {{stdout: "this job fails on purpose\n"}},
+	}), nil, "gitlab.example.com", "group/project")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "1"}, "", deliveredSHA, []scm.CheckTarget{{Name: "fails-on-purpose"}})
+	if err == nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, err = nil; want a head-move error", logs)
+	}
+	if !errors.Is(err, scm.ErrHeadChanged) {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v, want it to wrap %v", err, scm.ErrHeadChanged)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("FetchFailedCheckTargetLogs() returned %+v alongside the error", logs)
+	}
+	if !strings.Contains(err.Error(), movedSHA) {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v, want it to name the revision the merge request moved to", err)
 	}
 }
 
@@ -879,15 +2047,49 @@ func gitlabTestCmdFactory(responses map[string]gitlabTestResponse) CmdFactory {
 		if !ok {
 			response = gitlabTestResponse{stderr: "unexpected command: " + key, code: 1}
 		}
-		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestGitlabHelperProcess", "--", key)
-		cmd.Env = append(os.Environ(),
-			"GITLAB_TEST_HELPER=1",
-			"GITLAB_TEST_STDOUT="+response.stdout,
-			"GITLAB_TEST_STDERR="+response.stderr,
-			fmt.Sprintf("GITLAB_TEST_EXIT_CODE=%d", response.code),
-		)
-		return cmd
+		return gitlabTestHelperCmd(ctx, key, response)
 	}
+}
+
+// gitlabSequenceCmdFactory serves a queue of responses per command line: a
+// command with several queued responses gets them in order, and the last one
+// repeats after the queue is exhausted. Tests that must observe two different
+// reads of the same command within one call use it.
+func gitlabSequenceCmdFactory(t *testing.T, responses map[string][]gitlabTestResponse) CmdFactory {
+	t.Helper()
+	var mu sync.Mutex
+	served := map[string]int{}
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
+		mu.Lock()
+		queue := responses[key]
+		var response gitlabTestResponse
+		if len(queue) == 0 {
+			response = gitlabTestResponse{stderr: "unexpected command: " + key, code: 1}
+		} else {
+			index := served[key]
+			if index >= len(queue) {
+				index = len(queue) - 1
+			}
+			response = queue[index]
+			served[key] = index + 1
+		}
+		mu.Unlock()
+		return gitlabTestHelperCmd(ctx, key, response)
+	}
+}
+
+// gitlabTestHelperCmd re-executes the test binary as its own fake glab, so the
+// adapter runs a real process with the faked stdout/stderr/exit code.
+func gitlabTestHelperCmd(ctx context.Context, key string, response gitlabTestResponse) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestGitlabHelperProcess", "--", key)
+	cmd.Env = append(os.Environ(),
+		"GITLAB_TEST_HELPER=1",
+		"GITLAB_TEST_STDOUT="+response.stdout,
+		"GITLAB_TEST_STDERR="+response.stderr,
+		fmt.Sprintf("GITLAB_TEST_EXIT_CODE=%d", response.code),
+	)
+	return cmd
 }
 
 func TestGitlabHelperProcess(t *testing.T) {
@@ -980,6 +2182,145 @@ func TestIsDraftTitle(t *testing.T) {
 	} {
 		if got := isDraftTitle(tt.title); got != tt.want {
 			t.Errorf("isDraftTitle(%q) = %v, want %v", tt.title, got, tt.want)
+		}
+	}
+}
+
+func TestFinalSourceReadWithoutRevisionIsAProviderError(t *testing.T) {
+	t.Parallel()
+	// An incomplete provider response is not evidence of a moved head. The
+	// error must reach the monitor's read-error budget, with no usable results.
+	for _, operation := range []string{"checks", "selected logs", "combined logs"} {
+		t.Run(operation, func(t *testing.T) {
+			host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
+				"glab mr view 123 --output json": {
+					gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+					{stdout: `{"iid":123}`},
+				},
+				"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+					{stdout: `[{"id":55,"name":"lint","status":"failed"}]`},
+				},
+				"glab api --paginate projects/group%2Fproject/pipelines/77/trigger_jobs": {
+					{stdout: "[]"},
+				},
+				"glab api --paginate projects/group%2Fproject/merge_requests/123/status_checks": {
+					{stdout: "[]"},
+				},
+				"glab ci trace 55": {{stdout: "lint failed\n"}},
+			}), nil, "gitlab.example.com", "group/project")
+			pr := &scm.PR{Number: "123", HeadSHA: deliveredSHA}
+			var err error
+			switch operation {
+			case "checks":
+				var checks []scm.Check
+				checks, err = host.GetChecks(context.Background(), pr)
+				if len(checks) != 0 {
+					t.Fatalf("unverified checks returned: %+v", checks)
+				}
+			case "selected logs":
+				var logs []scm.FailedCheckLog
+				logs, err = host.FetchFailedCheckTargetLogs(context.Background(), pr, "", deliveredSHA, []scm.CheckTarget{{ProviderID: "gitlab-job:55"}})
+				if len(logs) != 0 {
+					t.Fatalf("unverified logs returned: %+v", logs)
+				}
+			case "combined logs":
+				var logs string
+				logs, err = host.FetchFailedCheckLogs(context.Background(), pr, "", deliveredSHA, []string{"lint"})
+				if logs != "" {
+					t.Fatalf("unverified logs returned: %s", logs)
+				}
+			}
+			if err == nil || errors.Is(err, scm.ErrHeadChanged) || !strings.Contains(err.Error(), "no source commit") {
+				t.Fatalf("error = %v, want missing-source provider error", err)
+			}
+		})
+	}
+}
+
+func TestParseGitlabJobsTreatsAllowedFailureAsNonBlocking(t *testing.T) {
+	t.Parallel()
+
+	checks, err := parseGitlabJobs([]byte(`[
+		{"id":1,"name":"flaky-lint","status":"failed","allow_failure":true},
+		{"id":2,"name":"unit","status":"failed","allow_failure":false},
+		{"id":3,"name":"e2e","status":"failed"}
+	]`))
+	if err != nil {
+		t.Fatalf("parseGitlabJobs() error = %v", err)
+	}
+	want := map[string]scm.CheckBucket{
+		"flaky-lint": scm.CheckBucketSkip,
+		"unit":       scm.CheckBucketFail,
+		"e2e":        scm.CheckBucketFail,
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("parseGitlabJobs() = %+v, want %d checks", checks, len(want))
+	}
+	for _, c := range checks {
+		if c.Bucket != want[c.Name] {
+			t.Errorf("check %q bucket = %q, want %q", c.Name, c.Bucket, want[c.Name])
+		}
+	}
+}
+
+func TestFindFailedJobTargetIDsIgnoresAllowedFailure(t *testing.T) {
+	t.Parallel()
+
+	out := []byte(`[
+		{"id":1,"name":"flaky-lint","status":"failed","allow_failure":true},
+		{"id":2,"name":"unit","status":"failed"}
+	]`)
+	if got := findFailedJobTargetIDs(out, nil); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("findFailedJobTargetIDs() = %v, want [2]", got)
+	}
+}
+
+func TestGetChecksIgnoresStderrNoticesOnTriggerJobAndStatusCheckReads(t *testing.T) {
+	t.Parallel()
+
+	responses := checksFixture(
+		`{"id":77,"status":"success"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		`[{"id":5,"name":"deploy-child","status":"failed"}]`,
+		`[{"id":3,"name":"Compliance","status":"failed"}]`,
+	)
+	for key, resp := range responses {
+		if strings.HasSuffix(key, "/trigger_jobs") || strings.HasSuffix(key, "/status_checks") {
+			resp.stderr = "A new version of glab has been released\n"
+			responses[key] = resp
+		}
+	}
+	host := New(gitlabTestCmdFactory(responses), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want a stderr notice ignored on a successful read", err)
+	}
+	if _, ok := findCheck(checks, "deploy-child"); !ok {
+		t.Fatalf("checks = %+v, want the trigger job", checks)
+	}
+	if _, ok := findCheck(checks, "Compliance"); !ok {
+		t.Fatalf("checks = %+v, want the status check", checks)
+	}
+}
+
+func TestGetChecksRefusesANullPageOnTriggerJobAndStatusCheckReads(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		trigger string
+		status  string
+	}{
+		{"trigger jobs alone", "null", "[]"},
+		{"trigger jobs after a page", `[{"id":5,"name":"d","status":"success"}]` + "\n" + "null", "[]"},
+		{"status checks alone", "[]", "null"},
+		{"status checks after a page", "[]", `[{"id":3,"name":"c","status":"success"}]` + "\n" + "null"},
+	} {
+		responses := checksFixture(`{"id":77,"status":"success"}`, `[{"id":1,"name":"build","status":"success"}]`, tc.trigger, tc.status)
+		host := New(gitlabTestCmdFactory(responses), nil, "", "group/project")
+		if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
+			t.Fatalf("%s: GetChecks() error = nil, want a null page refused as unreadable", tc.name)
 		}
 	}
 }

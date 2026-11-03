@@ -65,7 +65,7 @@ func TestSetStepRoundDeclined_NeverOverwritesARecordedSelection(t *testing.T) {
 	if err := d.SetStepRoundSelection(round.ID, &selected, RoundSelectionSourceAutoFix); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetStepRoundDeclined(round.ID); err != nil {
+	if err := d.SetStepRoundDeclined(round.ID, types.ResponseOrigin("auto_yes")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,6 +78,9 @@ func TestSetStepRoundDeclined_NeverOverwritesARecordedSelection(t *testing.T) {
 	}
 	if rounds[0].SelectedFindingIDs == nil || *rounds[0].SelectedFindingIDs != selected {
 		t.Fatalf("selected_finding_ids = %v, want the original %q", rounds[0].SelectedFindingIDs, selected)
+	}
+	if rounds[0].ResponseOrigin != types.ResponseOrigin("unknown") {
+		t.Fatalf("response_origin = %q, want the original %q", rounds[0].ResponseOrigin, "unknown")
 	}
 }
 

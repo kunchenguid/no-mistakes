@@ -43,6 +43,9 @@ type ReviewAgent struct {
 	// omitted key, so a value the documented contract rejects fails closed
 	// instead of being read as the default.
 	AfterRound *int `yaml:"after_round"`
+	// Fallback is an explicit, ordered set of independent reviewer profiles.
+	// Only reviewer roles accept it, and only quota exhaustion advances it.
+	Fallback []ReviewAgent `yaml:"fallback"`
 }
 
 // TakesOverFromRound is the first 1-based round an *_after_round entry serves.
@@ -63,6 +66,17 @@ func validateReviewAgents(roles map[string]ReviewAgent) error {
 		}
 		if err := agentcfg.Validate(entry.Agent, agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: entry.Effort}); err != nil {
 			return fmt.Errorf("invalid review_agents.%s: %w", role, err)
+		}
+		if len(entry.Fallback) > 0 && role != RoleReviewer && role != RoleReviewerAfterRound {
+			return fmt.Errorf("review_agents.%s does not accept fallback; only reviewer roles do", role)
+		}
+		for i, candidate := range entry.Fallback {
+			if candidate.AfterRound != nil || len(candidate.Fallback) > 0 {
+				return fmt.Errorf("review_agents.%s.fallback[%d] accepts only agent, model and effort", role, i)
+			}
+			if err := validateReviewAgents(map[string]ReviewAgent{RoleReviewer: candidate}); err != nil {
+				return fmt.Errorf("review_agents.%s.fallback[%d]: %w", role, i, err)
+			}
 		}
 		if _, isOverlay := baseRoleFor[role]; !isOverlay {
 			if entry.AfterRound != nil {

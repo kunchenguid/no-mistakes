@@ -11,11 +11,17 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/windows"
 )
+
+// consoleAllocationPolicyBuild is the first Windows build that honors the
+// manifest's consoleAllocationPolicy (Windows 11 24H2, Server 2025).
+const consoleAllocationPolicyBuild = 26100
 
 // TestIsTaskkillAlreadyGone pins down the locale-independent contract the
 // Windows cancel path relies on: taskkill exit code 128 (no matching PID) is
@@ -70,7 +76,40 @@ func TestStartShellCommandFailsWhenJobSetupFails(t *testing.T) {
 
 func TestConfigureCooperativeShellCommandCancelAllowsCleanup(t *testing.T) {
 	installWindowsCooperativeCommandTestHelper(t)
+	assertCooperativeCancelAllowsCleanup(t)
+}
 
+// Issue #1653: the shipped no-mistakes.exe carries the manifest's
+// consoleAllocationPolicy=detached, which also overrides the CREATE_NEW_CONSOLE
+// the cooperative helper is started with. The real binary as helper must still
+// share a console with its target, or CTRL_BREAK never reaches the command and
+// cancellation force-kills it without its cleanup window. The test binary
+// carries no manifest, so only the real build shows this.
+func TestConfigureCooperativeShellCommandCancelAllowsCleanupWithShippedHelper(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds no-mistakes.exe")
+	}
+	if _, _, build := windows.RtlGetNtVersionNumbers(); build < consoleAllocationPolicyBuild {
+		t.Skipf("Windows build %d ignores consoleAllocationPolicy (needs %d, Windows 11 24H2 / Server 2025)", build, consoleAllocationPolicyBuild)
+	}
+	exe := filepath.Join(t.TempDir(), "no-mistakes.exe")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	build := exec.CommandContext(ctx, "go", "build", "-o", exe, "github.com/kunchenguid/no-mistakes/cmd/no-mistakes")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build no-mistakes.exe: %v\n%s", err, out)
+	}
+	old := windowsCooperativeHelperCommandFunc
+	windowsCooperativeHelperCommandFunc = func(eventName, targetPath string, targetArgs []string) (string, []string, error) {
+		args := append([]string{exe, windowsCooperativeCommandArg + eventName, targetPath}, targetArgs...)
+		return exe, args, nil
+	}
+	t.Cleanup(func() { windowsCooperativeHelperCommandFunc = old })
+	assertCooperativeCancelAllowsCleanup(t)
+}
+
+func assertCooperativeCancelAllowsCleanup(t *testing.T) {
+	t.Helper()
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
 	cleanup := filepath.Join(dir, "cleanup")
@@ -162,6 +201,13 @@ func TestWindowsCommandCancellationHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("NM_WINDOWS_COMMAND_READY"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if mode == "linger" {
+		// A child that is merely finishing when the leader exits: it stays in
+		// the job a moment longer, then leaves on its own (issue #1614).
+		ms, _ := strconv.Atoi(os.Getenv("NM_WINDOWS_COMMAND_LINGER_MS"))
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		return
+	}
 	if mode == "ignore" {
 		for range interrupts {
 		}
@@ -249,7 +295,7 @@ func startWindowsCommandCancellationTest(t *testing.T, cancel context.CancelFunc
 
 func waitForWindowsHelperPID(t *testing.T, path string, run *windowsCommandCancellationTestRun, output *bytes.Buffer) int {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
 		case <-run.done:
@@ -323,3 +369,160 @@ func (w wrappedErr) Error() string { return "wrapped: " + w.e.Error() }
 func (w wrappedErr) Unwrap() error { return w.e }
 
 func wrapErr(e error) error { return wrappedErr{e: e} }
+
+// TestShellCommandGroupActiveAcceptsCleanChildlessExit is the regression for
+// the completion check refusing a leader that exited cleanly and started
+// nothing: the job can still list the console host the leader's console got, or
+// a stale entry for the leader, and neither is a child.
+func TestShellCommandGroupActiveAcceptsCleanChildlessExit(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "cmd.exe", "/d", "/c", "exit", "0")
+	ConfigureShellCommand(cmd)
+	if _, ok := shellCommandJob(cmd); !ok {
+		t.Skip("job object setup unavailable")
+	}
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatalf("StartShellCommand() error = %v", err)
+	}
+	defer TerminateShellCommandGroup(cmd)
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("leader did not exit cleanly: %v", err)
+	}
+
+	active, _, err := ShellCommandGroupActive(cmd, 0)
+	if err != nil {
+		t.Fatalf("ShellCommandGroupActive() error = %v", err)
+	}
+	if active {
+		procs, _ := inspectJobProcesses(mustShellCommandJob(t, cmd).handle)
+		t.Fatalf("ShellCommandGroupActive() = true after a clean, childless exit (leader %d, job processes %+v); want false", cmd.Process.Pid, procs)
+	}
+}
+
+// TestShellCommandGroupActiveRefusesChildAlivePastWindow keeps the check
+// fail-closed under the re-probe: a child the leader left running is probed
+// until the window ends, then refused - and the verdict names it so the
+// failure identifies the offending process (issue #1614).
+func TestShellCommandGroupActiveRefusesChildAlivePastWindow(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	// `start /b` returns as soon as the child is launched, so cmd.exe exits
+	// while the test helper it started keeps running inside the same job. The
+	// empty title and the quotes keep a path with spaces in one piece. Go would
+	// escape those quotes as \" when it builds the command line from Args, and
+	// cmd.exe does not understand that, so the line is passed through verbatim.
+	cmd := exec.CommandContext(context.Background(), "cmd.exe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine: `cmd.exe /d /c start "" /b "%NM_WINDOWS_HELPER_EXE%" -test.run=TestWindowsCommandCancellationHelper`,
+	}
+	cmd.Env = append(os.Environ(),
+		"NM_WINDOWS_COMMAND_HELPER=ignore",
+		"NM_WINDOWS_HELPER_EXE="+os.Args[0],
+		"NM_WINDOWS_COMMAND_READY="+ready,
+		"NM_WINDOWS_COMMAND_CLEANUP="+filepath.Join(dir, "cleanup"),
+	)
+	ConfigureShellCommand(cmd)
+	if _, ok := shellCommandJob(cmd); !ok {
+		t.Skip("job object setup unavailable")
+	}
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatalf("StartShellCommand() error = %v", err)
+	}
+	defer TerminateShellCommandGroup(cmd)
+
+	childPID := 0
+	deadline := time.Now().Add(10 * time.Second)
+	for childPID == 0 {
+		if contents, err := os.ReadFile(ready); err == nil {
+			childPID, _ = strconv.Atoi(string(contents))
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child the leader started never reported ready")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("leader did not exit cleanly: %v", err)
+	}
+
+	const window = 500 * time.Millisecond
+	started := time.Now()
+	active, detail, err := ShellCommandGroupActive(cmd, window)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("ShellCommandGroupActive() error = %v", err)
+	}
+	if !active {
+		t.Fatal("ShellCommandGroupActive() = false with a live child in the job; want true")
+	}
+	if elapsed < window {
+		t.Errorf("a live child was refused after %s, before the %s window elapsed", elapsed, window)
+	}
+	if !strings.Contains(detail, "pid "+strconv.Itoa(childPID)) {
+		t.Errorf("detail = %q, want the surviving child pid %d named", detail, childPID)
+	}
+}
+
+// TestShellCommandGroupActiveAcceptsChildFinishingInsideWindow is the issue
+// #1614 regression on the job-object path: a child that is merely finishing
+// when the leader exits leaves the job inside the settle window, so the
+// bounded re-probe accepts the leader's exit.
+func TestShellCommandGroupActiveAcceptsChildFinishingInsideWindow(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	cmd := exec.CommandContext(context.Background(), "cmd.exe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine: `cmd.exe /d /c start "" /b "%NM_WINDOWS_HELPER_EXE%" -test.run=TestWindowsCommandCancellationHelper`,
+	}
+	cmd.Env = append(os.Environ(),
+		"NM_WINDOWS_COMMAND_HELPER=linger",
+		"NM_WINDOWS_COMMAND_LINGER_MS=700",
+		"NM_WINDOWS_HELPER_EXE="+os.Args[0],
+		"NM_WINDOWS_COMMAND_READY="+ready,
+		"NM_WINDOWS_COMMAND_CLEANUP="+filepath.Join(dir, "cleanup"),
+	)
+	ConfigureShellCommand(cmd)
+	if _, ok := shellCommandJob(cmd); !ok {
+		t.Skip("job object setup unavailable")
+	}
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatalf("StartShellCommand() error = %v", err)
+	}
+	defer TerminateShellCommandGroup(cmd)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child the leader started never reported ready")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("leader did not exit cleanly: %v", err)
+	}
+
+	const window = 3 * time.Second
+	started := time.Now()
+	active, detail, err := ShellCommandGroupActive(cmd, window)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("ShellCommandGroupActive() error = %v", err)
+	}
+	if active {
+		t.Fatalf("ShellCommandGroupActive() = true with only a finishing child (detail %q); want false", detail)
+	}
+	if elapsed >= window {
+		t.Errorf("the finishing child was probed for the whole %s window; it left the job inside it", window)
+	}
+}
+
+func mustShellCommandJob(t *testing.T, cmd *exec.Cmd) *shellCommandJobState {
+	t.Helper()
+	job, ok := shellCommandJob(cmd)
+	if !ok {
+		t.Fatal("command has no job")
+	}
+	return job
+}

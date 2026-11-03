@@ -899,7 +899,7 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 			// output it announces the call and spawns the child at once, and
 			// that child runs past the stall budget while the agent itself
 			// writes nothing.
-			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+			return runLaunchedShell(ctx, opts, liveChildScript, func(started, _ func()) {
 				opts.OnChunk("init\n")
 				time.Sleep(300 * time.Millisecond)
 				opts.OnChunk("running the suite\n")
@@ -935,7 +935,7 @@ func TestRunAgent_ToolAfterAnOnlyOutputBeforeAnySampleStillExtends(t *testing.T)
 			// The agent's only observed output lands right at launch, before
 			// any child sample settles; its later bytes are throttled away, and
 			// the long tool it starts afterwards is the only sign of work.
-			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+			return runLaunchedShell(ctx, opts, liveChildScript, func(started, _ func()) {
 				opts.OnChunk("init\n")
 				time.Sleep(200 * time.Millisecond)
 				started()
@@ -969,7 +969,7 @@ func TestRunAgent_ToolAnnouncedByTheFirstOutputOutlastsTheStallBudget(t *testing
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			// The agent's very first output only announces a tool call, and
 			// the tool starts at once and runs quietly past the stall budget.
-			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+			return runLaunchedShell(ctx, opts, liveChildScript, func(started, _ func()) {
 				time.Sleep(1200 * time.Millisecond)
 				opts.OnChunk("running the suite\n")
 				started()
@@ -1037,9 +1037,26 @@ func TestRunAgent_HelperStartedBeforeTheLastOutputDoesNotExtendTheBudget(t *test
 		name: "wedged-with-helper",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			// A long-lived helper (an ACP agent under acpx, a stdio MCP server)
-			// starts with the agent, which then talks and hangs.
-			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(_, _ func()) {
-				time.Sleep(1200 * time.Millisecond)
+			// starts with the agent, which then talks and hangs. The launch is
+			// reported only once the helper runs, so the child sample taken at
+			// launch already holds it; otherwise the baseline depends on the
+			// next 1s sample settling before the output, which a loaded host
+			// misses.
+			talk := time.Now().Add(1200 * time.Millisecond)
+			report := opts.OnLifecycle
+			var launch agent.LifecycleEvent
+			held := opts
+			held.OnLifecycle = func(event agent.LifecycleEvent) {
+				if event.Phase == agent.LifecyclePhaseStart {
+					launch = event
+					return
+				}
+				report(event)
+			}
+			return runLaunchedShell(ctx, held, "sleep 6 & echo ready; read go; wait", func(_, ready func()) {
+				ready()
+				report(launch)
+				time.Sleep(time.Until(talk))
 				opts.OnChunk("thinking\n")
 			})
 		},
@@ -1095,6 +1112,12 @@ func TestRunAgent_LaunchedAgentWithoutAChildIsCutAtTheStallBudget(t *testing.T) 
 		t.Fatalf("error = %q, want the silent budget named as the bound", err)
 	}
 }
+
+// liveChildScript waits for the go signal, then runs a tool that outlives the
+// stall budget as a real child of the shell. The tool is backgrounded and
+// waited on because a shell that execs its final command (bash as /bin/sh
+// does) would otherwise replace itself with sleep and leave no child to see.
+const liveChildScript = "read go; sleep 2.5 & wait"
 
 // runLaunchedShell stands in for a native adapter: it launches script as the
 // agent subprocess, reports its start, runs drive while the script is alive

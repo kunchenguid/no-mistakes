@@ -12,6 +12,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
+// ownedChildrenSettleWindow bounds how long the owned-children probe re-checks
+// an exited agent's process group or job before refusing its result (issue
+// #1614). A member that was merely finishing when the leader exited - a test
+// runner's last worker, a toolchain helper mid-shutdown - leaves inside this
+// window, while a genuinely surviving child is still refused and reaped by the
+// deferred group terminate.
+const ownedChildrenSettleWindow = 2 * time.Second
+
 type nativeAgentCommand struct {
 	cmd            *exec.Cmd
 	stdout         *nativeAgentPipe
@@ -19,6 +27,8 @@ type nativeAgentCommand struct {
 	waitCh         chan error
 	terminateOnce  sync.Once
 	closePipesOnce sync.Once
+	waitOnce       sync.Once
+	waitErr        error
 	pipeMu         sync.Mutex
 	remainingPipes int
 	pipesDone      chan struct{}
@@ -69,7 +79,7 @@ func (p *nativeAgentPipe) markDone() {
 // activity, when non-nil, is invoked on every non-empty read from either pipe;
 // see LifecyclePhaseActivity for why subprocess byte liveness - not assistant
 // prose - is the signal that distinguishes a working agent from a wedged one.
-func startNativeAgentCommand(cmd *exec.Cmd, activity func()) (*nativeAgentCommand, error) {
+func startNativeAgentCommand(cmd *exec.Cmd, activity func(), requireCompletedChildren bool) (*nativeAgentCommand, error) {
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -104,6 +114,21 @@ func startNativeAgentCommand(cmd *exec.Cmd, activity func()) (*nativeAgentComman
 	started.stderr = &nativeAgentPipe{file: stderrR, done: started.markPipeDone, activity: activity}
 	go func() {
 		err := shellenv.AttributeOOMKill(oomBase, oomOK, cmd.Wait())
+		if err == nil && requireCompletedChildren {
+			active, members, probeErr := shellenv.ShellCommandGroupActive(cmd, ownedChildrenSettleWindow)
+			if probeErr != nil {
+				err = fmt.Errorf("native check completion is unverified: %w", probeErr)
+				if members != "" {
+					err = fmt.Errorf("%w; last observed %s", err, members)
+				}
+			} else if active {
+				msg := "native check completion is unverified: agent exited with active owned children"
+				if members != "" {
+					msg += ": " + members
+				}
+				err = errors.New(msg)
+			}
+		}
 		started.terminate()
 		started.waitCh <- started.waitForPipes(err)
 	}()
@@ -151,18 +176,39 @@ func (c *nativeAgentCommand) terminate() {
 	})
 }
 
+// waitAfterParseError reaps the agent after its output failed to parse and
+// returns the parse error. A WaitDelay expiry is attached to it rather than
+// substituted for it, so the real cause is never hidden.
 func (c *nativeAgentCommand) waitAfterParseError(parseErr error) error {
 	c.terminate()
 	c.closePipes()
-	waitErr := c.wait()
-	if errors.Is(waitErr, exec.ErrWaitDelay) {
-		return waitErr
+	if waitErr := c.wait(); errors.Is(waitErr, exec.ErrWaitDelay) {
+		return fmt.Errorf("%w (%v)", parseErr, waitErr)
 	}
 	return parseErr
 }
 
+// closedByWaitDelay reports whether parseErr is only the stdout read failing
+// because WaitDelay force-closed a pipe that an escaped descendant of a cleanly
+// exited agent kept open. Call it after waitAfterParseError.
+func (c *nativeAgentCommand) closedByWaitDelay(parseErr error) bool {
+	return errors.Is(parseErr, os.ErrClosed) && errors.Is(c.wait(), exec.ErrWaitDelay)
+}
+
+// waitKeepingResult returns the agent's wait error, except that a bare
+// WaitDelay expiry is not an error once the caller holds a finished result:
+// the agent exited cleanly and only a lingering descendant held a pipe open.
+func (c *nativeAgentCommand) waitKeepingResult(finished bool) error {
+	err := c.wait()
+	if finished && errors.Is(err, exec.ErrWaitDelay) {
+		return nil
+	}
+	return err
+}
+
 func (c *nativeAgentCommand) wait() error {
-	return <-c.waitCh
+	c.waitOnce.Do(func() { c.waitErr = <-c.waitCh })
+	return c.waitErr
 }
 
 func (c *nativeAgentCommand) closePipes() {

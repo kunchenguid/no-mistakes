@@ -12,7 +12,7 @@ import (
 )
 
 func TestDaemonStopRefusesWithActiveRunsAndListsThem(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	createLifecycleGuardRuns(t, paths.WithRoot(nmHome))
 
@@ -47,7 +47,7 @@ func TestDaemonStopRefusesWithActiveRunsAndListsThem(t *testing.T) {
 }
 
 func TestDaemonStopForceOverridesActiveRunGuard(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	createLifecycleGuardRuns(t, paths.WithRoot(nmHome))
 
@@ -72,7 +72,7 @@ func TestDaemonStopForceOverridesActiveRunGuard(t *testing.T) {
 }
 
 func TestDaemonRestartRefusesWithActiveRuns(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	createLifecycleGuardRuns(t, paths.WithRoot(nmHome))
 
@@ -105,17 +105,71 @@ func TestDaemonRestartRefusesWithActiveRuns(t *testing.T) {
 	}
 }
 
+// TestDaemonStartRefusesToRestartForDriftWithActiveRuns covers #1425: a
+// running daemon whose service definition drifted is restarted by
+// `daemon start`, so that restart must pass the same active-run guard.
+func TestDaemonStartRefusesToRestartForDriftWithActiveRuns(t *testing.T) {
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	createLifecycleGuardRuns(t, paths.WithRoot(nmHome))
+
+	restarted := false
+	prevStart := daemonStartGuardedFn
+	daemonStartGuardedFn = func(_ *paths.Paths, beforeRestart func() error) error {
+		if err := beforeRestart(); err != nil {
+			return err
+		}
+		restarted = true
+		return nil
+	}
+	t.Cleanup(func() { daemonStartGuardedFn = prevStart })
+
+	out, err := executeCmd("daemon", "start")
+	if err == nil {
+		t.Fatal("daemon start should refuse to restart while active runs exist")
+	}
+	if restarted {
+		t.Fatal("daemon start should not restart the daemon after refusing")
+	}
+	for _, want := range []string{"refusing daemon start", "2 active pipeline runs", "feature-a", "feature-b", "--force"} {
+		if !strings.Contains(out+err.Error(), want) {
+			t.Fatalf("daemon start refusal should contain %q, got output %q error %v", want, out, err)
+		}
+	}
+
+	out, err = executeCmd("daemon", "start", "--force")
+	if err != nil {
+		t.Fatalf("daemon start --force failed: %v\n%s", err, out)
+	}
+	if !restarted {
+		t.Fatal("daemon start --force should restart the daemon")
+	}
+	if !strings.Contains(out, "FORCE: daemon start") {
+		t.Fatalf("force output should be loud, got %q", out)
+	}
+	data, err := os.ReadFile(filepath.Join(nmHome, "logs", "cli.log"))
+	if err != nil || !strings.Contains(string(data), "lifecycle FORCE command=daemon.start") {
+		t.Fatalf("cli.log should record the forced restart, got %q (err %v)", data, err)
+	}
+}
+
 func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 
 	prevStop := daemonStopFn
 	prevStart := daemonStartFn
+	prevUninstall := daemonUninstallFn
 	daemonStopFn = func(*paths.Paths) error { return nil }
 	daemonStartFn = func(*paths.Paths) error { return nil }
+	daemonUninstallFn = func(*paths.Paths) (string, error) { return "", nil }
+	prevSupported := daemonUninstallSupportedFn
+	daemonUninstallSupportedFn = func() bool { return true }
 	t.Cleanup(func() {
+		daemonUninstallSupportedFn = prevSupported
 		daemonStopFn = prevStop
 		daemonStartFn = prevStart
+		daemonUninstallFn = prevUninstall
 	})
 
 	out, err := executeCmd("daemon", "stop", "--force")
@@ -130,6 +184,10 @@ func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update --force failed: %v\n%s", err, out)
 	}
+	out, err = executeCmd("daemon", "uninstall", "--force")
+	if err != nil {
+		t.Fatalf("daemon uninstall --force failed: %v\n%s", err, out)
+	}
 
 	data, err := os.ReadFile(filepath.Join(nmHome, "logs", "cli.log"))
 	if err != nil {
@@ -139,6 +197,7 @@ func TestLifecycleCommandsWriteCallerAttributionToCLILog(t *testing.T) {
 	for _, want := range []string{
 		"lifecycle FORCE command=daemon.stop",
 		"lifecycle FORCE command=daemon.restart",
+		"lifecycle FORCE command=daemon.uninstall",
 		"lifecycle FORCE command=update",
 		"force=true",
 		"pid=",

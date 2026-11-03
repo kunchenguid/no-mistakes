@@ -32,6 +32,13 @@ func TestDetectProvider(t *testing.T) {
 		{"https://forgejo.example/user/repo.git", ProviderForgejo},
 		{"https://forgejo.gitlab.example/user/repo.git", ProviderForgejo},
 		{"https://forgejo.github.com.example/user/repo.git", ProviderForgejo},
+		{"https://origin.cursor.com/owner/repo.git", ProviderOrigin},
+		{"git@origin.cursor.com:owner/repo.git", ProviderOrigin},
+		{"https://cursor.com/codebase/owner/repo/pull/6", ProviderOrigin},
+		{"https://cursor.com/changelog", ProviderUnknown},
+		{"https://origin.cursor.com.example.net/owner/repo.git", ProviderUnknown},
+		{"https://notorigin.cursor.com.evil.test/owner/repo.git", ProviderUnknown},
+		{"https://cursor.com.example.net/codebase/owner/repo/pull/6", ProviderUnknown},
 		{"https://example.com/user/repo.git", ProviderUnknown},
 	}
 
@@ -71,6 +78,12 @@ func TestDetectProvider_SSHHostAlias(t *testing.T) {
 			url:      "git@forgejo-github:owner/repo.git",
 			hostname: "github.com",
 			want:     ProviderGitHub,
+		},
+		{
+			name:     "Cursor Origin SSH alias",
+			url:      "git@origin-work:owner/repo.git",
+			hostname: "origin.cursor.com",
+			want:     ProviderOrigin,
 		},
 	}
 
@@ -448,6 +461,7 @@ func writeTeaConfig(t *testing.T, body string) {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("TEA_CONFIG_DIR", "")
 }
 
 func TestDetectProvider_SelfHostedGiteaViaTeaConfig(t *testing.T) {
@@ -517,7 +531,7 @@ func TestDetectProvider_TeaConfigMalformedFailsClosed(t *testing.T) {
 	}
 }
 
-func TestResolveGiteaLogin(t *testing.T) {
+func TestResolveTeaAccount_Tea0Logins(t *testing.T) {
 	writeTeaConfig(t, `logins:
     - name: work
       url: https://gitea.internal:3000
@@ -531,23 +545,86 @@ func TestResolveGiteaLogin(t *testing.T) {
       token: yyy
 `)
 
-	if got := ResolveGiteaLogin("gitea.internal"); got != "work" {
-		t.Errorf("ResolveGiteaLogin(url host match) = %q, want %q", got, "work")
+	cases := map[string]string{
+		"gitea.internal":           "work",     // url host match
+		"git.internal":             "work",     // ssh_host match
+		"gitea.example.org":        "personal", // second login
+		"unconfigured.example.net": "",
 	}
-	if got := ResolveGiteaLogin("git.internal"); got != "work" {
-		t.Errorf("ResolveGiteaLogin(ssh_host match) = %q, want %q", got, "work")
-	}
-	if got := ResolveGiteaLogin("gitea.example.org"); got != "personal" {
-		t.Errorf("ResolveGiteaLogin(second login) = %q, want %q", got, "personal")
-	}
-	if got := ResolveGiteaLogin("unconfigured.example.net"); got != "" {
-		t.Errorf("ResolveGiteaLogin(unconfigured host) = %q, want empty", got)
+	for host, want := range cases {
+		if got := ResolveTeaAccount(host); got != (TeaAccount{Login: want}) {
+			t.Errorf("ResolveTeaAccount(%q) = %+v, want Login %q and no tea 1.0 instance", host, got, want)
+		}
 	}
 }
 
-func TestResolveGiteaLogin_NoConfigFailsClosed(t *testing.T) {
+func TestResolveTeaAccount_NoConfigFailsClosed(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if got := ResolveGiteaLogin("gitea.internal"); got != "" {
-		t.Errorf("ResolveGiteaLogin(no config) = %q, want empty", got)
+	t.Setenv("TEA_CONFIG_DIR", "")
+	if got := ResolveTeaAccount("gitea.internal"); got != (TeaAccount{}) {
+		t.Errorf("ResolveTeaAccount(no config) = %+v, want empty", got)
+	}
+}
+
+// writeTeaHosts writes a synthetic tea 1.0 hosts.yml (gitea/tea#1126) into
+// dir, the directory tea 1.0 reads its config from.
+func writeTeaHosts(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveTeaAccount_Tea1Hosts(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("TEA_CONFIG_DIR", "")
+	writeTeaHosts(t, filepath.Join(xdg, "tea"), `version: "1"
+hosts:
+    https://gitea.internal:3000:
+        user: someuser
+        ssh_host: git.internal:2222
+        users:
+            someuser: {}
+    https://gitea.example.org:
+        user: otheruser
+        users:
+            otheruser: {}
+    https://dup.example.com:
+        users: {}
+    https://dup.example.com/sub:
+        users: {}
+`)
+
+	cases := map[string]string{
+		"gitea.internal":           "https://gitea.internal:3000", // url host match
+		"git.internal":             "https://gitea.internal:3000", // ssh_host match, port ignored
+		"gitea.example.org":        "https://gitea.example.org",
+		"dup.example.com":          "", // two instances on one host: ambiguous, fail closed
+		"unconfigured.example.net": "",
+	}
+	for host, want := range cases {
+		if got := ResolveTeaAccount(host); got != (TeaAccount{Instance: want}) {
+			t.Errorf("ResolveTeaAccount(%q) = %+v, want Instance %q and no tea 0.x login", host, got, want)
+		}
+	}
+	// A host known only to tea 1.0 still detects as Gitea.
+	if got := DetectProvider("git@git.internal:group/repo.git"); got != ProviderGitea {
+		t.Errorf("DetectProvider(tea 1.0 ssh_host) = %q, want %q", got, ProviderGitea)
+	}
+}
+
+func TestResolveTeaAccount_Tea1HonorsTeaConfigDir(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("TEA_CONFIG_DIR", dir)
+	writeTeaHosts(t, dir, "hosts:\n    https://gitea.internal:\n        users: {}\n")
+	if got := ResolveTeaAccount("gitea.internal"); got.Instance != "https://gitea.internal" {
+		t.Errorf("ResolveTeaAccount(TEA_CONFIG_DIR) = %+v, want Instance https://gitea.internal", got)
 	}
 }

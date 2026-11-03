@@ -28,9 +28,28 @@ var templatePRContentSchema = json.RawMessage(`{
  }, "required":["title","body"]
 }`)
 
+var templatePRContentBriefSchema = json.RawMessage(`{
+ "type":"object", "properties":{
+ "title":{"type":"string","description":"Concise pull request title text"},
+ "body":{"type":"string","description":"Filled repository template as plain Markdown; preserve its top-level ATX # headings in order; best-effort fill applicable sections"},
+ "intent_brief":{"type":"object","properties":{
+   "goal":{"type":"string","maxLength":200},
+   "why":{"type":"array","maxItems":3,"items":{"type":"string","maxLength":220}},
+   "scope":{"type":"array","maxItems":3,"items":{"type":"string","maxLength":220}},
+   "out_of_scope":{"type":"array","maxItems":3,"items":{"type":"string","maxLength":220}}
+ },"required":["goal","why","scope","out_of_scope"],"additionalProperties":false}
+ }, "required":["title","body","intent_brief"]
+}`)
+
 func supportsPRTemplates(provider scm.Provider) bool {
+	// Provider plugins implement raw content reads through the required
+	// "pr view" subcommand, which is the whole contract templates and
+	// pre-push attestation need.
+	if provider.IsPlugin() {
+		return true
+	}
 	switch provider {
-	case scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderForgejo, scm.ProviderAzureDevOps, scm.ProviderBitbucket:
+	case scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderForgejo, scm.ProviderAzureDevOps, scm.ProviderBitbucket, scm.ProviderOrigin:
 		return true
 	default:
 		return false
@@ -98,6 +117,7 @@ func (s *PRStep) draftTemplateNarrative(sctx *pipeline.StepContext, branch, base
 	if err != nil {
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
+	inventory := prPromptInventory(sctx, paths, baseSHA)
 	// JSON quoting delimits the trusted template without inventing a template
 	// language. It supplies prose instructions/structure, never recorded facts.
 	quoted, _ := json.Marshal(template)
@@ -122,15 +142,23 @@ Trusted repository template (JSON string):
 %s
 
 Final diff paths and statuses:
-%s%s%s`, branch, baseBranch, baseSHA, sctx.Run.HeadSHA, titleRules, scopeRules, quoted, paths, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+%s%s%s`, branch, baseBranch, baseSHA, sctx.Run.HeadSHA, titleRules, scopeRules, quoted, inventory, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+	prompt += prIntentBriefPromptSection(sctx)
 	prompt += agent.MemoryFilesRule
-	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: templatePRContentSchema, OnChunk: sctx.LogChunk})
+	schema := templatePRContentSchema
+	if needsPRIntentBrief(sctx) {
+		schema = templatePRContentBriefSchema
+	}
+	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: schema, OnChunk: sctx.LogChunk})
 	if err != nil {
 		return prContent{}, fmt.Errorf("draft pr.template narrative (template will not be replaced by a generic fallback): %w", err)
 	}
 	var content prContent
 	if result == nil || json.Unmarshal(result.Output, &content) != nil || strings.TrimSpace(content.Title) == "" || strings.TrimSpace(content.Body) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid pr.template narrative; refusing generic fallback")
+	}
+	if err := acceptPRIntentBrief(sctx, content.IntentBrief); err != nil {
+		return prContent{}, err
 	}
 	content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
 	if err != nil {
@@ -188,16 +216,40 @@ func templateStructureLines(text string) []string {
 }
 
 func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
+		return "", fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
+	}
+	evidence, err := s.recordedPREvidence(sctx, provider)
+	if err != nil {
+		return "", err
+	}
+	parts := []string{}
+	if intent := publicPRIntent(sctx); intent != "" {
+		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
+	}
+	if evidence != "" {
+		parts = append(parts, evidence)
+	}
+	return strings.Join(parts, "\n\n"), nil
+}
+
+func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
 	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, true)
 	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
 		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
 	}
-	parts := []string{}
-	if intent := publicPRIntent(sctx); intent != "" {
-		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(intent))
+	return appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider), nil
+}
+
+// publishKeptDraft stores the ordinary narrative above the full owned appendix
+// (Intent included), whichever drafting path produced the narrative.
+// A later update refreshes that appendix through the template preservation path.
+func (s *PRStep) publishKeptDraft(sctx *pipeline.StepContext, provider scm.Provider, title, narrative string, bodyLimit int) (prContent, error) {
+	evidence, err := s.buildPRAppendix(sctx, provider)
+	if err != nil {
+		return prContent{}, err
 	}
-	if evidence := appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD); evidence != "" {
-		parts = append(parts, evidence)
-	}
-	return strings.Join(parts, "\n\n"), nil
+	narrative = neutralizeAttestationMarkers(resolvedProviderForBody(sctx), stripGeneratedSections(narrative))
+	evidence = appendIssuesSection(evidence, issuesSection(sctx, narrative))
+	return composeOwnedPRContent(prOwnedBody{before: narrative}, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }

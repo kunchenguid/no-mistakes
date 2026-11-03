@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -9,8 +10,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
@@ -56,6 +59,13 @@ type Request struct {
 	// the review conversation lives there - and this package must not have to
 	// know which name that is, so the caller supplies it.
 	ExcludeDirs []string
+	// RunWorktree is the run's worktree. Its absolute path names the local
+	// checkout (the repo id is a hash of it), so published text never keeps it.
+	RunWorktree string
+	// WorktreesRoot is the NM_HOME worktrees directory, the fallback for paths
+	// into any run worktree. NM_HOME may sit outside the home directory, where
+	// home redaction never reaches.
+	WorktreesRoot string
 	// Message is the evidence commit message.
 	Message string
 	// ForbiddenBranches names branches that must never receive evidence (the
@@ -160,7 +170,7 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 	published := make([]string, 0, len(files))
 	for _, file := range files {
 		inBranch := path.Join(dir, file.Rel)
-		blob, err := git.RunWithEnv(ctx, req.RepoDir, env, "hash-object", "-w", "--", file.Abs)
+		blob, err := hashEvidenceFile(ctx, req, env, file.Abs)
 		if err != nil {
 			return nil, fmt.Errorf("hash evidence file %s: %w", file.Rel, err)
 		}
@@ -193,6 +203,26 @@ func publishOnce(ctx context.Context, req Request, branch, dir string, files []c
 		return nil, fmt.Errorf("push evidence branch %s to %s: %w", branch, safeurl.Redact(req.PushURL), err)
 	}
 	return &Result{Branch: branch, CommitSHA: commit, Dir: dir, Files: published}, nil
+}
+
+// hashEvidenceFile writes one evidence file into the object store and returns
+// its blob id. A readable UTF-8 text file first gets the same home-directory
+// redaction the PR title and body get, because captured command output carries
+// absolute paths under the operator's home, after the run worktree paths are
+// rewritten. Binary and visual artifacts, and the local file itself, are left
+// untouched.
+func hashEvidenceFile(ctx context.Context, req Request, env []string, abs string) (string, error) {
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		return "", err
+	}
+	if utf8.Valid(content) && !bytes.Contains(content, []byte{0}) {
+		redacted := safepath.RedactText(safepath.RedactWorktrees(string(content), req.RunWorktree, req.WorktreesRoot))
+		if redacted != string(content) {
+			return git.RunWithInput(ctx, req.RepoDir, redacted, "hash-object", "-w", "--stdin")
+		}
+	}
+	return git.RunWithEnv(ctx, req.RepoDir, env, "hash-object", "-w", "--", abs)
 }
 
 // remoteTip returns the remote evidence branch head, fetched into the local

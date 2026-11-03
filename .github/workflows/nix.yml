@@ -1,0 +1,75 @@
+name: Nix flake
+
+# A path-filtered PR run is safe here: this workflow backs no required check,
+# and the filter omits every release-please output, so release PRs create no
+# run. The push trigger covers what the filter misses after merge.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - flake.nix
+      - flake.lock
+      - package.nix
+      - default.nix
+      - go.mod
+      - go.sum
+      - .github/workflows/nix.yml
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          # flake-compat reads the tree through builtins.fetchGit, which
+          # refuses a shallow clone ("'revCount' is not available").
+          fetch-depth: 0
+
+      - uses: DeterminateSystems/nix-installer-action@v23
+
+      - name: Evaluate every advertised system
+        run: nix flake check --all-systems --no-build
+
+      # vendorHash is fixed-output: a go.mod/go.sum change that does not
+      # recompute it fails here, and the error names the hash to commit.
+      - name: Build flake
+        run: |
+          set -o pipefail
+          if nix build --print-build-logs 2>&1 | tee "$RUNNER_TEMP/nix-build.log"; then
+            exit 0
+          fi
+          got=$(awk '$1 == "got:" { print $2 }' "$RUNNER_TEMP/nix-build.log" | tail -n 1)
+          if [ -n "$got" ]; then
+            echo "::error file=package.nix::vendorHash is stale after a go.mod/go.sum change; set it to $got"
+          fi
+          exit 1
+
+      - name: Check stamped version
+        run: ./result/bin/no-mistakes --version | grep -F "v$(jq -r '.["."]' .release-please-manifest.json) "
+
+      # Telemetry is on only when a website ID is embedded; the host has a
+      # source-level fallback, so the ID is the value that must match.
+      - name: Check embedded telemetry website ID
+        run: |
+          id=$(printf 'print-id:\n\t@echo $(DEFAULT_UMAMI_WEBSITE_ID)\n' | make -s --no-print-directory -f Makefile -f - print-id)
+          if [ -z "$id" ] || ! grep -qaF "$id" result/bin/no-mistakes; then
+            echo "::error file=package.nix::the Nix binary does not embed the Makefile's DEFAULT_UMAMI_WEBSITE_ID ($id)"
+            exit 1
+          fi
+
+      - name: Build through flake-compat
+        run: nix-build default.nix -A packages.x86_64-linux.default --no-out-link

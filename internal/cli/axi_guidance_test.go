@@ -276,3 +276,19 @@ func readAgentsGuide(t *testing.T) string {
 	}
 	return string(data)
 }
+
+var canonicalReleasedChecksPassedPhrases = []string{
+	"released",
+	"nothing is left watching the PR",
+	"will not rebase or re-push it",
+	"a fresh `no-mistakes axi run`",
+	"ci.release_after_checks_pass",
+}
+
+func TestReleasedChecksPassedGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	for _, phrase := range canonicalReleasedChecksPassedPhrases {
+		if !strings.Contains(skill.Markdown(), phrase) {
+			t.Errorf("generated skill is missing release guidance %q", phrase)
+		}
+	}
+}

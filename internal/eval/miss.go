@@ -158,7 +158,7 @@ func lastGreenReviewRound(database *db.DB, runID string) (*db.StepRound, error) 
 	if reviewStep.Status != types.StepStatusCompleted {
 		return nil, fmt.Errorf("%w: review step status is %s", ErrReviewDidNotPassGreen, reviewStep.Status)
 	}
-	rounds, err := database.GetRoundsByStep(reviewStep.ID)
+	rounds, err := database.GetRoundsByStep(reviewStep.RoundsStepID())
 	if err != nil {
 		return nil, fmt.Errorf("read review rounds: %w", err)
 	}

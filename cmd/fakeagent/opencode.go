@@ -21,16 +21,29 @@ import (
 // package) signals shutdown. The OpenCode wire format is documented in
 // internal/agent/opencode_types.go.
 func runOpencode(args []string, scenario *Scenario) int {
+	if len(args) == 1 && args[0] == "--version" {
+		if os.Getenv("FAKEAGENT_OPENCODE_V2") == "1" {
+			fmt.Println("opencode v2.0.26")
+		} else {
+			fmt.Println("1.0.0")
+		}
+		return 0
+	}
 	port, err := extractOpencodePort(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
-	srv := newFakeOpencodeServer(scenario)
+	var handler http.Handler
+	if os.Getenv("FAKEAGENT_OPENCODE_V2") == "1" {
+		handler = newFakeOpencodeV2Server(scenario).routes()
+	} else {
+		handler = newFakeOpencodeServer(scenario).routes()
+	}
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf("127.0.0.1:%d", port),
-		Handler:           srv.routes(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

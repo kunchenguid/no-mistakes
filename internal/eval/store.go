@@ -125,6 +125,81 @@ CREATE TABLE IF NOT EXISTS diversified_pins (
 			return fmt.Errorf("migrate eval replay reservations: %w", err)
 		}
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin eval cache migration: %w", err)
+	}
+	defer tx.Rollback()
+	cacheColumnsAdded := false
+	for _, column := range []string{"cache_read_tokens", "cache_write_tokens"} {
+		var cacheTokenColumn int
+		if err := tx.QueryRow(`SELECT count(*) FROM pragma_table_info('evaluations') WHERE name = ?`, column).Scan(&cacheTokenColumn); err != nil {
+			return fmt.Errorf("inspect eval evaluation schema: %w", err)
+		}
+		if cacheTokenColumn == 0 {
+			// A historical payload may be unavailable; NULL keeps its cost unknown.
+			if _, err := tx.Exec(`ALTER TABLE evaluations ADD COLUMN ` + column + ` INTEGER`); err != nil {
+				return fmt.Errorf("migrate eval evaluation schema: %w", err)
+			}
+			cacheColumnsAdded = true
+		}
+	}
+	if cacheColumnsAdded {
+		rows, err := tx.Query(`SELECT id, path, candidate FROM evaluations`)
+		if err != nil {
+			return fmt.Errorf("list eval cache payloads: %w", err)
+		}
+		type legacyPayload struct {
+			id, path, candidate string
+		}
+		var payloads []legacyPayload
+		for rows.Next() {
+			var payload legacyPayload
+			if err := rows.Scan(&payload.id, &payload.path, &payload.candidate); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan eval cache payload: %w", err)
+			}
+			payloads = append(payloads, payload)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("list eval cache payloads: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close eval cache payloads: %w", err)
+		}
+		for _, payload := range payloads {
+			var evaluation Evaluation
+			if err := readJSON(payload.path, &evaluation); err != nil {
+				// A damaged historical payload stays skipped (its cache columns
+				// keep NULL = unknown cost), but the skip must be visible: name
+				// the record so the operator can repair or retire it. The error
+				// is a JSON or filesystem error message, never payload contents.
+				// Write directly to stderr because the CLI may discard its logs.
+				fmt.Fprintf(os.Stderr, "eval cache migration: skipped unreadable evaluation %s at %s: %v\n", payload.id, payload.path, err)
+				continue
+			}
+			name, _, _ := strings.Cut(payload.candidate, ",")
+			name, _, _ = strings.Cut(name, "+")
+			disjointInput := name == "claude" || name == "pi" || name == "opencode"
+			var inputAdjustment int64
+			if disjointInput {
+				inputAdjustment = evaluation.CacheReadTokens + evaluation.CacheWriteTokens
+			}
+			if _, err := tx.Exec(`UPDATE evaluations SET cache_read_tokens = ?, cache_write_tokens = ?,
+input_tokens = CASE WHEN tokens_reported = 1 THEN input_tokens + ? ELSE input_tokens END,
+fresh_input_tokens = CASE WHEN tokens_reported != 1 THEN fresh_input_tokens
+    WHEN ? THEN input_tokens ELSE MAX(input_tokens - ? - ?, 0) END
+WHERE path = ?`,
+				evaluation.CacheReadTokens, evaluation.CacheWriteTokens, inputAdjustment, disjointInput,
+				evaluation.CacheReadTokens, evaluation.CacheWriteTokens, payload.path); err != nil {
+				return fmt.Errorf("backfill eval cache tokens: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit eval cache migration: %w", err)
+	}
 	return nil
 }
 

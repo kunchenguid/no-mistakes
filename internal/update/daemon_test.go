@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 	daemonStop = func(*paths.Paths) error { return nil }
 	daemonStart = func(*paths.Paths) error { return errors.New("boom") }
 
-	err := defaultResetDaemon(&paths.Paths{})
+	err := defaultResetDaemon(&paths.Paths{}, false, "")
 	if err == nil {
 		t.Fatal("defaultResetDaemon should fail when restart fails")
 	}
@@ -204,7 +205,7 @@ func TestDefaultResetDaemonRecoversWhenHealthCheckErrors(t *testing.T) {
 		return nil
 	}
 
-	if err := defaultResetDaemon(&paths.Paths{}); err != nil {
+	if err := defaultResetDaemon(&paths.Paths{}, false, ""); err != nil {
 		t.Fatalf("defaultResetDaemon error = %v", err)
 	}
 	if !stopCalled {
@@ -238,7 +239,7 @@ func TestDefaultResetDaemonNoopWhenDaemonOfflineAndNoArtifacts(t *testing.T) {
 		return nil
 	}
 
-	if err := defaultResetDaemon(p); err != nil {
+	if err := defaultResetDaemon(p, false, ""); err != nil {
 		t.Fatalf("defaultResetDaemon error = %v", err)
 	}
 	if stopCalled {
@@ -276,7 +277,7 @@ func TestDefaultResetDaemonRecoversWhenDaemonArtifactsRemain(t *testing.T) {
 		return nil
 	}
 
-	if err := defaultResetDaemon(p); err != nil {
+	if err := defaultResetDaemon(p, false, ""); err != nil {
 		t.Fatalf("defaultResetDaemon error = %v", err)
 	}
 	if !stopCalled {
@@ -308,7 +309,7 @@ func TestDefaultResetDaemonDoesNotReportOfflineWhenRestartLeavesDaemonRunning(t 
 	daemonStop = func(*paths.Paths) error { return nil }
 	daemonStart = func(*paths.Paths) error { return errors.New("daemon already running") }
 
-	err := defaultResetDaemon(&paths.Paths{})
+	err := defaultResetDaemon(&paths.Paths{}, false, "")
 	if err == nil {
 		t.Fatal("defaultResetDaemon should fail when restart fails")
 	}
@@ -321,5 +322,117 @@ func TestDefaultResetDaemonDoesNotReportOfflineWhenRestartLeavesDaemonRunning(t 
 	}
 	if checks < 2 {
 		t.Fatalf("expected follow-up daemon check, got %d checks", checks)
+	}
+}
+
+func TestDefaultResetDaemonStartsTheNewlyInstalledBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script as the installed binary")
+	}
+	origGOOS := currentGOOS
+	origIsRunning := daemonIsRunning
+	origStop := daemonStop
+	origStart := daemonStart
+	t.Cleanup(func() {
+		currentGOOS = origGOOS
+		daemonIsRunning = origIsRunning
+		daemonStop = origStop
+		daemonStart = origStart
+	})
+
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	exe := filepath.Join(dir, "no-mistakes")
+	script := "#!/bin/sh\nprintf '%s ' \"$@\" > '" + argsFile + "'\necho \"$NO_MISTAKES_NO_UPDATE_CHECK\" >> '" + argsFile + "'\n"
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, goos := range []string{"linux", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			currentGOOS = goos
+			daemonIsRunning = func(*paths.Paths) (bool, error) { return true, nil }
+			daemonStop = func(*paths.Paths) error { return nil }
+			daemonStart = func(*paths.Paths) error {
+				t.Fatal("the old binary's in-process daemon.Start must not start the daemon after update")
+				return nil
+			}
+			if err := defaultResetDaemon(&paths.Paths{}, false, exe); err != nil {
+				t.Fatalf("defaultResetDaemon error = %v", err)
+			}
+			got, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("new binary was not run: %v", err)
+			}
+			if want := "daemon start 1\n"; string(got) != want {
+				t.Fatalf("new binary ran with %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestDefaultResetDaemonReportsTheNewBinarysStartFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script as the installed binary")
+	}
+	origGOOS := currentGOOS
+	origIsRunning := daemonIsRunning
+	origStop := daemonStop
+	t.Cleanup(func() {
+		currentGOOS = origGOOS
+		daemonIsRunning = origIsRunning
+		daemonStop = origStop
+	})
+
+	exe := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\necho 'unit refresh failed' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentGOOS = "linux"
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		return checks == 1, nil
+	}
+	daemonStop = func(*paths.Paths) error { return nil }
+
+	err := defaultResetDaemon(&paths.Paths{}, false, exe)
+	var resetErr *daemonResetError
+	if !errors.As(err, &resetErr) || !resetErr.daemonOffline {
+		t.Fatalf("expected an offline daemonResetError, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unit refresh failed") {
+		t.Fatalf("error = %v, want the new binary's output", err)
+	}
+}
+
+func TestDefaultResetDaemonKeepsInProcessStartOnWindows(t *testing.T) {
+	origGOOS := currentGOOS
+	origIsRunning := daemonIsRunning
+	origStop := daemonStop
+	origStart := daemonStart
+	origStartExecutable := daemonStartExecutable
+	t.Cleanup(func() {
+		currentGOOS = origGOOS
+		daemonIsRunning = origIsRunning
+		daemonStop = origStop
+		daemonStart = origStart
+		daemonStartExecutable = origStartExecutable
+	})
+
+	currentGOOS = "windows"
+	daemonIsRunning = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonStop = func(*paths.Paths) error { return nil }
+	startCalled := false
+	daemonStart = func(*paths.Paths) error { startCalled = true; return nil }
+	daemonStartExecutable = func(string) error {
+		t.Fatal("windows must keep the in-process start")
+		return nil
+	}
+	if err := defaultResetDaemon(&paths.Paths{}, false, `C:\no-mistakes.exe`); err != nil {
+		t.Fatalf("defaultResetDaemon error = %v", err)
+	}
+	if !startCalled {
+		t.Fatal("expected the in-process start on windows")
 	}
 }

@@ -24,6 +24,17 @@ var _ pipeline.ApprovalOverrideVerifier = (*TestStep)(nil)
 
 func (s *TestStep) Name() types.StepName { return types.StepTest }
 
+// Both turns need the same scope: the repair turn leaves an unauthorized
+// remedy unapplied, and the evidence turn reports the unresolved failure.
+const testRepairScopeRules = `
+
+Repair scope:
+- Tests or product code, including shared libraries and prompts, may be fixed when the repair is required by the change under validation and respects its intent.
+- Do not tune product logic or prompts to a single scenario's literal wording or scripted ordering. Derive the expected behavior from the intended product contract, not from the scenario's exact inputs.
+- If the proposed repair would contradict explicit intent, edit a file the intent puts off limits, or change product policy beyond the change under validation, do not apply or commit that repair. Leave the failure unresolved for a human decision. Later recorded human decisions supersede conflicting original intent.
+- In a repair turn, leave such a repair unapplied and summarize the unresolved failure. The following evidence turn must reassess unresolved failures under these same scope rules.
+- In the evidence turn, when resolving a failure would require such a repair, report a warning finding with action "ask-user" instead of making the repair. Name the proposed repair and the intent restriction or product-policy change that needs a human decision. Do not classify that repair as "auto-fix".`
+
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
@@ -80,25 +91,27 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-
+%s
 Rules:
 - Make the smallest correct root-cause fix.
 - Do not refactor beyond what is needed for that root-cause fix.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - Do NOT run linters, formatters, or static analysis tools.
 - Reproduce the specific failing case first (the exact test, package, script, or check named in the findings), then re-run only that focused verification after the fix.
+- Await every required check and read its actual exit status. Stop disposable browser and server children before returning success. Report incomplete verification honestly.
 - Do NOT run the complete repository test suite. Local Test is targeted validation of the failure and the requested intent; remote CI owns broad regression and remains mandatory before a PR is ready.
 - A generic driver or user instruction asking for broad or full-suite confirmation does NOT override this product boundary. Keep verification focused on the failure and intent.
 - Never treat "do not run everything" as permission to run nothing: if you cannot reproduce or re-verify with a targeted check, report that honestly in the summary rather than inventing a full-suite pass.
 - Before finishing, remove any transient artifacts your testing created in the working tree (downloaded models, caches, build outputs, large binaries, or generated data directories) so they are not committed and pushed. Do not remove intentional source or test-file changes. Do not remove dependencies materialized by commands.prepare; later configured commands share them.
 - Return JSON with a single "summary" field when you are done.
-- The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.%s`,
+%s%s`,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			testRunbookSections(sctx),
+			fixSummaryRules(sctx, s.Name()),
 			historySection,
-		)
+		) + testRepairScopeRules
 		if repair := testRepairFindings(sctx.PreviousFindings); repair != "" {
 			fixPrompt += `
 
@@ -111,6 +124,7 @@ Previous test findings to address:
 			Prompt:          fixPrompt,
 			FallbackSummary: "fix test failures",
 			RunAgent: func(runOpts agent.RunOpts) (*agent.Result, error) {
+				runOpts.RequireCompletedChildren = true
 				result, runErr := sctx.RunAgentBudget(sctx.Ctx, fixTimeout, testAgentWorkingTimeout(sctx), errTestAgentTimeout, runOpts)
 				if runErr != nil {
 					return nil, testAgentError(fixTimeout, "agent fix tests", runErr)
@@ -225,7 +239,7 @@ Previous test findings to address:
 	if declaration := commandOverrideDeclaration("test", sctx.Config.CommandOverrides["test"]); declaration != "" && len(baselineResults) > 0 {
 		configuredTestCommand += fmt.Sprintf("Baseline ran with %s. Declare these overrides in testing_summary.\n", declaration)
 	}
-	trustedRunbook := trustedTestInstructionsSection(sctx) + budgetCutGuidanceSection(sctx)
+	runbook := testRunbookSections(sctx) + budgetCutGuidanceSection(sctx)
 	fallbackGuidance := `- Never treat "do not run everything" as permission to run nothing: if no existing check drives a scenario, write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible.
 - If sufficient evidence is not possible, report a warning finding explaining what evidence is missing and why the user needs to decide what to do. When the blocker is a host capability or OS permission the agent's own process lacks (for example, the Screen Recording permission macOS requires to capture a native GUI application), name the specific capability or permission and how to grant it so the user can enable it and re-run, instead of retrying blindly or failing opaquely.`
 	if sctx.Run.VerificationPlan != nil {
@@ -246,17 +260,24 @@ Derive the scenarios:
 - Turn that intent into a short list of named scenarios. Each scenario is one concrete thing an end user does and one observable result that proves it, named so a reviewer who never saw this change can tell what was exercised.
 - Where the intent names a failure mode, a guard, or a boundary, add an adversarial scenario that actively tries to break it rather than only confirming the happy path.
 - Keep the list proportionate to the change: cover what this change actually alters, not the whole product.
+- Once every scenario in your proportionate list has a recorded result, stop widening: author no further scenarios or fixtures, capture the evidence artifacts, and return your verdict and testing_summary then. Spend a remaining budget finishing the list you derived, not expanding it. This bounds expansion, not coverage: every scenario on the list still has to be driven.
+- This turn has at most %s of wall-clock time. When it runs out the turn is stopped and its result is lost: no verdict, no scenarios, and no artifacts. Scope the list and each scenario's evidence to finish well inside it.
 
 Drive each scenario:
 - Stand the product up the way an end user runs it, in an isolated environment, and drive each scenario end-to-end against that running product.
 - Getting every scenario live is your responsibility. When a scenario needs something that is not already provided - an environment, an instance, an account, records, a data set, an endpoint - find a workaround: build a disposable one yourself (throwaway fixtures, data, configuration, or a local instance), point the real product at it through whatever isolation the product supports (a separate root, home, or data directory, a temporary config, a local port, a sandbox or test mode), and drive the scenario there. A missing environment is a problem to solve, not a reason to skip the scenario. A scenario driven by the real product against a disposable setup you built is live; a fixture that stands in for the product itself is not.
 - Everything you build must stay disposable and isolated: never read or write the operator's real data, real configuration, or shared services, and tear it down before finishing unless it is evidence.
 - When a live scenario drives a TUI through a pseudo-terminal, give the pty a non-zero window size (TIOCSWINSZ) before the TUI reads its grid, and drain the master. A 0x0 grid makes the TUI exit immediately with a symptom such as "terminal reported a zero-sized grid" and never register, so a live UI check silently becomes a fake. Bare script(1) and pty.fork() from a non-tty parent typically yield that 0x0 grid.
-- Mark a scenario "live": true ONLY when you drove it against the real product in this run. A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live.
+- Mark a scenario "live": true ONLY when you drove it against the real product in this run. Live describes execution, not tenant or production liveness. An actually executed local product or real SDK against a localhost emulator with synthetic inputs counts as live for that local scenario; it does not prove tenant, mailbox, Graph, or production behavior. Name the local surface and synthetic inputs in the scenario name and reason, and cite what actually ran in evidence. An unexecuted tenant or production scenario stays "untested" with "live": false and a reason, even when a local scenario passed. Both "pass" and "fail" require "live": true and evidence. A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live.
 - Return a scenario with result "untested" only when live validation is truly impossible here: every workaround you could find within the workspace boundary still cannot drive it. Its reason must state what you tried in order to drive it live and why each attempt cannot work, naming the specific tool, credential, permission, or authority that is out of reach and how to provide it. "No environment was provided" is not such a reason while you could have built a disposable one.
 - If a needed tool is not on PATH and has no repository-local path, do not search the host machine for it or install it system-wide or globally. Try another available route or obtain, install, or build the tool inside the disposable workspace and use it there. Only if no workspace-local route can drive the scenario live, report the affected scenario as "untested" with what you tried and why it could not work.
 - Never guess a pass, and never mark a scenario live because you believe it would work.
 - Report every scenario in the "scenarios" array with name, result ("pass", "fail", or "untested"), live, evidence, and reason.
+- Await every required production build, browser run, and other check child before reporting a final "go". A background launch, early structured result, or completion notification does not prove that a check passed.
+- Nothing you started may still be running in the background when you return your result. Before returning, wait for or stop every background shell or job, monitor or watch, and scheduled wake-up you started. Background work that outlives the result keeps the turn open until the budget cuts it, and the finished result is lost.
+- Stop disposable browser and server children before exiting. The native boundary refuses successful exits with children still in its owned process group.
+- Read each required child's actual exit status and retained result evidence. Do not mask a failed check with a later successful shell command or report detached work as completed.
+- If any required check is still running, has an unknown result, or lacks evidence, do not report "go". Use "no-go" for a known failure or unsafe change, and "inconclusive" when completion or evidence cannot be established. Record the outstanding check and the missing result.
 - Return a "verdict": "go" when every scenario you could drive passed and nothing untested puts the intent in doubt, "no-go" when a scenario failed or the change is not safe to ship, "inconclusive" when the change has a live-exercisable product surface but too little could be driven live to judge, "no-surface" when this change has no runtime product surface no-mistakes can drive live (a CI-workflow-only change, a docs-only change, a pure non-runtime refactor, or anything else with no live-exercisable scenario).
 - A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" after exhausting your workarounds costs nothing and a guessed "pass" costs everything.
 - A single scenario you could not drive live is reported as an untested scenario with its reason, NOT as a finding. Report a finding only when the step as a whole cannot demonstrate the user intent.
@@ -296,18 +317,24 @@ Rules:
 		baseSHA,
 		sctx.Run.HeadSHA,
 		configuredTestCommand,
-		trustedRunbook,
+		runbook,
+		max(testAgentTimeout(sctx), testAgentWorkingTimeout(sctx)),
 		evidenceGuidance,
 		fallbackGuidance,
 		reassessHistory,
 		agent.MemoryFilesRule,
-	)
+	) + testRepairScopeRules
 	findings, err := runTestAnalyzer(sctx, evidencePrompt)
 	if err != nil {
 		if errors.Is(err, errTestAgentTimeout) {
 			outcome := testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineSummary, baselineExitCode)
 			outcome.FixSummary = fixSummary
 			return outcome, nil
+		}
+		// Keep a known command failure terminal even when the evidence agent
+		// also crashed. Retrying that step would replay a verdict failure.
+		if baselineExitCode != 0 && sctx.Config.AgentCrashRetries > 0 {
+			return &pipeline.StepOutcome{ExitCode: baselineExitCode}, err
 		}
 		return nil, err
 	}
@@ -321,6 +348,7 @@ Rules:
 	}
 
 	findings.Items = append(findings.Items, verdictFindings(findings)...)
+	findings.Items = append(findings.Items, unselectedTestFindings(sctx, findings.Items)...)
 
 	needsApproval := hasBlockingFindings(findings.Items)
 	autoFixable := needsApproval
@@ -371,10 +399,11 @@ func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error
 		}
 		timeout := testAgentTimeout(sctx)
 		result, err := sctx.RunAgentBudget(sctx.Ctx, timeout, testAgentWorkingTimeout(sctx), errTestAgentTimeout, agent.RunOpts{
-			Prompt:     current,
-			CWD:        sctx.WorkDir,
-			JSONSchema: testFindingsSchema,
-			OnChunk:    sctx.LogChunk,
+			RequireCompletedChildren: true,
+			Prompt:                   current,
+			CWD:                      sctx.WorkDir,
+			JSONSchema:               testFindingsSchema,
+			OnChunk:                  sctx.LogChunk,
 		})
 		runErr := testAgentError(timeout, "agent run tests", err)
 		if runErr != nil && (errors.Is(runErr, errTestAgentTimeout) || sctx.Ctx.Err() != nil || !agent.IsStructuredOutputRejected(runErr)) {
@@ -404,7 +433,7 @@ func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error
 		}
 		current = testAnalyzerCorrectionPrompt(valErr, rejected)
 	}
-	return Findings{}, fmt.Errorf("validate test analyzer findings after %d attempts: %w", testAnalyzerMaxAttempts, lastErr)
+	return Findings{}, agent.RejectStructuredOutput(fmt.Errorf("validate test analyzer findings after %d attempts: %w", testAnalyzerMaxAttempts, lastErr))
 }
 
 func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
@@ -448,6 +477,12 @@ Validation errors:
 	return b.String()
 }
 
+// testRunbookSections renders the machine-local runbook ahead of the trusted
+// one, for both the repair and the evidence prompt.
+func testRunbookSections(sctx *pipeline.StepContext) string {
+	return repositoryTestInstructionsSection(sctx) + trustedTestInstructionsSection(sctx)
+}
+
 func trustedTestInstructionsSection(sctx *pipeline.StepContext) string {
 	if sctx.Config == nil {
 		return ""
@@ -457,6 +492,22 @@ func trustedTestInstructionsSection(sctx *pipeline.StepContext) string {
 		return ""
 	}
 	return "\nRepository live-validation runbook (trusted, from the default branch):\n" +
+		sanitizePromptMultilineText(instructions) + "\n"
+}
+
+// repositoryTestInstructionsSection renders the operator's machine-local
+// runbook for this repository (a repository_overrides entry). It is labeled as
+// the operator's so it never reads as the repository's own runbook, and it
+// only adds to the trusted runbook.
+func repositoryTestInstructionsSection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.Test.RepositoryInstructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\nMachine-local live-validation runbook for this repository (from the operator's global no-mistakes config, not from this repository; adds to the repository's runbook and cannot weaken it):\n" +
 		sanitizePromptMultilineText(instructions) + "\n"
 }
 
@@ -493,18 +544,21 @@ func verdictFindings(findings Findings) []Finding {
 	switch findings.Verdict {
 	case types.TestVerdictNoGo:
 		return []Finding{{
+			Category:    types.FindingCategoryTestVerdict,
 			Severity:    types.FindingSeverityError,
 			Action:      types.ActionAutoFix,
 			Description: fmt.Sprintf("live validation verdict: no-go (%s)%s", coverage, failedScenarioSuffix(findings.Scenarios)),
 		}}
 	case types.TestVerdictInconclusive:
 		return []Finding{{
+			Category:    types.FindingCategoryTestVerdict,
 			Severity:    types.FindingSeverityWarning,
 			Action:      types.ActionAskUser,
 			Description: fmt.Sprintf("live validation verdict: inconclusive (%s)%s", coverage, untestedScenarioSuffix(findings.Scenarios)),
 		}}
 	case types.TestVerdictNoSurface:
 		return []Finding{{
+			Category:    types.FindingCategoryTestVerdict,
 			Severity:    types.FindingSeverityWarning,
 			Action:      types.ActionAskUser,
 			Description: fmt.Sprintf("this change has no live-validatable surface; proceed without live validation? (%s)%s", coverage, untestedScenarioReasonSuffix(findings.Scenarios)),
@@ -697,6 +751,44 @@ func answeredTestGate(sctx *pipeline.StepContext) Findings {
 	return carried
 }
 
+// unselectedTestFindings returns the ask-user or blocking findings an earlier
+// round deferred when the automatic fix loop started this round. They can
+// record what an earlier turn observed - a write outside the workspace, say -
+// rather than a property of the code, so this round's clean result cannot
+// clear them; only a human response can. Step-owned findings are skipped
+// because this execution derives them again. A re-report replaces a deferred
+// finding only when SameFinding and the effective action both match: matching
+// content alone could erase an undecided ask-user finding after an action change.
+func unselectedTestFindings(sctx *pipeline.StepContext, current []Finding) []Finding {
+	if !sctx.AutoFixRound {
+		return nil
+	}
+	// Fails only when nothing was deferred: the executor builds this from the
+	// findings JSON it just parsed to select the round.
+	deferred, err := types.ParseFindingsJSON(sctx.DeferredFindings)
+	if err != nil {
+		return nil
+	}
+	var carried []Finding
+	for _, item := range deferred.Items {
+		if slices.Contains(testBudgetCutIDs, item.ID) || item.Category == types.FindingCategoryTestCommand || item.Category == types.FindingCategoryTestVerdict {
+			continue
+		}
+		if item.ActionOrDefault() != types.ActionAskUser && item.Severity != types.FindingSeverityError && item.Severity != types.FindingSeverityWarning {
+			continue
+		}
+		if slices.ContainsFunc(current, func(reported Finding) bool {
+			return pipeline.SameFinding(reported, item) && reported.ActionOrDefault() == item.ActionOrDefault()
+		}) {
+			continue
+		}
+		// Cleared so it is renumbered: this round's own findings may reuse the ID.
+		item.ID = ""
+		carried = append(carried, item)
+	}
+	return carried
+}
+
 // testBudgetCutIDs are the step-owned findings of a Test budget-cut park. They
 // are operator decisions, never defects for an agent to repair, so an agent's
 // own finding can never claim them.
@@ -709,8 +801,10 @@ func onlyTestBudgetCutFindings(raw string) bool {
 	return err == nil && len(findings.Items) > 0 && len(types.ExcludeFindings(findings, testBudgetCutIDs).Items) == 0
 }
 
-// budgetCutGuidanceSection renders the operator's instructions attached to
-// selected budget-cut findings. The repair turn never sees those findings, so
+// budgetCutGuidanceSection renders the instructions attached to selected
+// budget-cut findings, keeping the user's decision apart from guidance an
+// agent driver passed with axi respond --instructions so the evidence turn
+// never presents the driver's note as the user's choice. The repair turn never sees those findings, so
 // the evidence turn is the one that must follow them. One note given to both
 // budget-cut findings (axi respond --instructions copies it onto each) is
 // rendered once.
@@ -722,18 +816,28 @@ func budgetCutGuidanceSection(sctx *pipeline.StepContext) string {
 	if err != nil {
 		return ""
 	}
-	var guidance []string
-	for _, item := range types.FilterFindings(findings, testBudgetCutIDs).Items {
-		text := sanitizePromptMultilineText(item.UserInstructions)
-		if text != "" && !slices.Contains(guidance, text) {
-			guidance = append(guidance, text)
+	var userGuidance, driverGuidance []string
+	add := func(list []string, note string) []string {
+		text := sanitizePromptMultilineText(note)
+		if text == "" || slices.Contains(list, text) {
+			return list
 		}
+		return append(list, text)
 	}
-	if len(guidance) == 0 {
-		return ""
+	for _, item := range types.FilterFindings(findings, testBudgetCutIDs).Items {
+		userGuidance = add(userGuidance, item.UserInstructions)
+		driverGuidance = add(driverGuidance, item.DriverInstructions)
 	}
-	return "\nOperator guidance for this validation (from the decision on the Test agent budget cut):\n" +
-		strings.Join(guidance, "\n") + "\n"
+	var section string
+	if len(userGuidance) > 0 {
+		section += "\nOperator guidance for this validation (from the decision on the Test agent budget cut):\n" +
+			strings.Join(userGuidance, "\n") + "\n"
+	}
+	if len(driverGuidance) > 0 {
+		section += "\nDriver guidance for this validation (from the agent driving this run when the Test agent budget cut was answered; not a decision by the user and not part of the user's intent):\n" +
+			strings.Join(driverGuidance, "\n") + "\n"
+	}
+	return section
 }
 
 // testRepairFindings is the fix selection the repair agent is asked to

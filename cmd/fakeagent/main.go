@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
 )
 
 func main() {
@@ -54,6 +56,10 @@ func run(argv []string) int {
 		return runGhStub(args)
 	case "tea":
 		return runTeaStub(args)
+	case fakeplugin.ExecutableName:
+		// The reference provider plugin, configured through the global
+		// provider_plugins block by internal/e2e/provider_plugin_test.go.
+		return fakeplugin.Main(args, os.Stdin, os.Stdout, os.Getenv(fakeplugin.EnvState), os.Getenv(fakeplugin.EnvLog))
 	default:
 		fmt.Fprintf(os.Stderr, "fakeagent: invoked under unknown name %q (argv[0]=%q)\n", name, argv[0])
 		return 2

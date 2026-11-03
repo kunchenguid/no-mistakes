@@ -72,21 +72,47 @@ func executablePathsMatch(a, b string) bool {
 	return strings.EqualFold(a, b)
 }
 
-func defaultResetDaemon(p *paths.Paths) error {
+// defaultResetDaemon restarts the daemon. daemonExpected records that daemon
+// artifacts existed before update's first probe, which may have cleared a dead
+// daemon's socket and PID file; that daemon is still started again.
+//
+// On Linux and macOS the start runs the newly installed binary at exe as a
+// child: the in-process daemon.Start is the old version's code and would
+// reinstall the systemd unit or LaunchAgent from the old template, so new
+// service settings would never land.
+func defaultResetDaemon(p *paths.Paths, daemonExpected bool, exe string) error {
 	if p == nil {
 		return nil
 	}
 	alive, err := daemonIsRunning(p)
-	if err == nil && !alive && !daemonArtifactsExist(p) {
+	if err == nil && !alive && !daemonExpected && !daemonArtifactsExist(p) {
 		return nil
 	}
 	if err := daemonStop(p); err != nil {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
-	if err := daemonStart(p); err != nil {
+	start := func() error { return daemonStart(p) }
+	if exe != "" && (currentGOOS == "linux" || currentGOOS == "darwin") {
+		start = func() error { return daemonStartExecutable(exe) }
+	}
+	if err := start(); err != nil {
 		running, checkErr := daemonIsRunning(p)
 		offline := checkErr == nil && !running
 		return &daemonResetError{err: fmt.Errorf("start daemon: %w", err), daemonOffline: offline}
+	}
+	return nil
+}
+
+// runDaemonStart starts the daemon through `exe daemon start` and waits for it.
+func runDaemonStart(exe string) error {
+	cmd := exec.Command(exe, "daemon", "start")
+	cmd.Env = append(os.Environ(), noUpdateCheckEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%s daemon start: %w: %s", exe, err, msg)
+		}
+		return fmt.Errorf("%s daemon start: %w", exe, err)
 	}
 	return nil
 }

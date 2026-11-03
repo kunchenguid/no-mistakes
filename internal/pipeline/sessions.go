@@ -94,7 +94,7 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 		rs.remember(role, result.SessionID, sessionProvider(a, result))
 		return result, nil
 	}
-	if storedID == "" || ctx.Err() != nil {
+	if storedID == "" || ctx.Err() != nil || (result != nil && result.ResumeRetryable != nil && !*result.ResumeRetryable) {
 		return nil, err
 	}
 

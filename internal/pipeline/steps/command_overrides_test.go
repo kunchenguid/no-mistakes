@@ -25,6 +25,7 @@ func commandOverrideContext(t *testing.T, override config.CommandOverride) *pipe
 }
 
 func TestRepositoryCommand_NoOverrideKeepsOutputAndExitCode(t *testing.T) {
+	t.Parallel()
 	sctx := commandOverrideContext(t, config.CommandOverride{})
 	sctx.Config.CommandOverrides = nil
 	for _, command := range []string{"echo unchanged", "exit 7"} {
@@ -37,6 +38,7 @@ func TestRepositoryCommand_NoOverrideKeepsOutputAndExitCode(t *testing.T) {
 }
 
 func TestConfiguredChecks_AddWithoutMaskingEitherFailure(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		teamExit  int
@@ -90,6 +92,7 @@ func TestRepositoryCommand_InheritsDaemonToolchainAndParallelismEnvironment(t *t
 }
 
 func TestRepositoryCommand_LowersOSPriority(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("nice is a POSIX scheduling knob")
 	}
@@ -112,6 +115,7 @@ func TestRepositoryCommand_LowersOSPriority(t *testing.T) {
 }
 
 func TestTestStep_LocalCheckFailureCannotBecomeAGreenBaseline(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil
@@ -149,6 +153,7 @@ func TestTestStep_LocalCheckFailureCannotBecomeAGreenBaseline(t *testing.T) {
 }
 
 func TestTestStep_LocalCheckFailureWithoutTeamCommandReachesTheAgentByName(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil
@@ -178,6 +183,7 @@ func TestTestStep_LocalCheckFailureWithoutTeamCommandReachesTheAgentByName(t *te
 }
 
 func TestTestStep_OverriddenPassIsDeclared(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil
@@ -200,6 +206,7 @@ func TestTestStep_OverriddenPassIsDeclared(t *testing.T) {
 }
 
 func TestLintStep_OverriddenPassIsDeclaredOnce(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{Lint: "exit 0"})
 	var logs []string
@@ -218,6 +225,7 @@ func TestLintStep_OverriddenPassIsDeclaredOnce(t *testing.T) {
 // A fix round re-executes the step into the same step log, which already
 // carries the first execution's declaration.
 func TestCommandSteps_FixRoundDoesNotRedeclareOverrides(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		step   pipeline.Step
@@ -253,6 +261,7 @@ func TestCommandSteps_FixRoundDoesNotRedeclareOverrides(t *testing.T) {
 }
 
 func TestLintStep_FailureBeforeTheBaselineDeclaresNothing(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	sctx := newPreparationTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{Prepare: "exit 3", Lint: "exit 0"})
 	var logs []string
@@ -267,6 +276,7 @@ func TestLintStep_FailureBeforeTheBaselineDeclaresNothing(t *testing.T) {
 }
 
 func TestRepositoryCommand_DeclaresOverridesForEveryCommand(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("nice is a POSIX scheduling knob")
 	}
@@ -293,6 +303,7 @@ func TestRepositoryCommand_DeclaresOverridesForEveryCommand(t *testing.T) {
 }
 
 func TestLintStep_AddedChecksDoNotReplaceAgentOnlyLint(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)}, nil
@@ -309,6 +320,7 @@ func TestLintStep_AddedChecksDoNotReplaceAgentOnlyLint(t *testing.T) {
 }
 
 func TestTestStep_PassingLocalChecksWithoutTeamCommandAreReportedAsBaseline(t *testing.T) {
+	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["live command"],"testing_summary":"live command exercised","artifacts":[],"scenarios":[{"name":"command","result":"pass","live":true,"evidence":"observed","reason":""}],"verdict":"go"}`)}, nil

@@ -801,21 +801,40 @@ func FakeCIGHNoChecks(t *testing.T) []string {
 	})
 }
 
-// fakeCIGlab creates a fake glab binary that serves the CI monitoring endpoints.
-// state is the MR state ("opened", "merged", "closed"); checksJSON is a JSON
-// array of jobs for `glab ci status` / `glab ci get`.
-func FakeCIGlab(t *testing.T, state, checksJSON string) []string {
+// FakeCIGlab creates a fake glab binary that serves the CI monitoring
+// endpoints. state is the MR state ("opened", "merged", "closed"); checksJSON
+// is a JSON array of jobs served for `glab ci get` and the pipeline jobs read. headSHA is the run's head: the CI step names it on every
+// poll, so the fake merge request reports it as its source revision and runs
+// its head pipeline at it too.
+func FakeCIGlab(t *testing.T, state, checksJSON, headSHA string) []string {
 	t.Helper()
 	binDir := FakeCLIBinDir(t)
 	LinkFakeCLI(t, binDir, "glab")
 	return FakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":   "ci-glab",
-		"FAKE_CLI_STATE":  state,
-		"FAKE_CLI_CHECKS": checksJSON,
+		"FAKE_CLI_MODE":        "ci-glab",
+		"FAKE_CLI_STATE":       state,
+		"FAKE_CLI_CHECKS":      checksJSON,
+		"FAKE_CLI_MR_HEAD_SHA": headSHA,
 	})
 }
 
-func FakeCIGlabConflict(t *testing.T, state, checksJSON string, conflict bool) []string {
+// FakeCIGlabStalePipeline serves checksJSON as a head pipeline that ran at
+// pipelineSHA while the run is delivering headSHA: the GitLab shape of an old
+// pipeline whose result must never be reported as the delivered commit's.
+func FakeCIGlabStalePipeline(t *testing.T, state, checksJSON, headSHA, pipelineSHA string) []string {
+	t.Helper()
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
+	return FakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":         "ci-glab",
+		"FAKE_CLI_STATE":        state,
+		"FAKE_CLI_CHECKS":       checksJSON,
+		"FAKE_CLI_MR_HEAD_SHA":  headSHA,
+		"FAKE_CLI_PIPELINE_SHA": pipelineSHA,
+	})
+}
+
+func FakeCIGlabConflict(t *testing.T, state, checksJSON, headSHA string, conflict bool) []string {
 	t.Helper()
 	binDir := FakeCLIBinDir(t)
 	LinkFakeCLI(t, binDir, "glab")
@@ -827,23 +846,58 @@ func FakeCIGlabConflict(t *testing.T, state, checksJSON string, conflict bool) [
 		"FAKE_CLI_MODE":         "ci-glab",
 		"FAKE_CLI_STATE":        state,
 		"FAKE_CLI_CHECKS":       checksJSON,
+		"FAKE_CLI_MR_HEAD_SHA":  headSHA,
 		"FAKE_CLI_MR_CONFLICTS": conflicts,
 	})
 }
 
-func FakeCIGlabWithTrace(t *testing.T, state, checksJSON, trace string) []string {
+// FakeCIGlabWithReviewComments is FakeCIGlab with the merge request's
+// discussion notes served to the review-comment read. discussionsJSON is the
+// raw JSON the GitLab discussions endpoint returns (an array of discussions,
+// each with its notes). headSHA is the run's head, as in FakeCIGlab.
+func FakeCIGlabWithReviewComments(t *testing.T, state, checksJSON, discussionsJSON, headSHA string) []string {
 	t.Helper()
 	binDir := FakeCLIBinDir(t)
 	LinkFakeCLI(t, binDir, "glab")
 	return FakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":   "ci-glab",
-		"FAKE_CLI_STATE":  state,
-		"FAKE_CLI_CHECKS": checksJSON,
-		"FAKE_CLI_TRACE":  trace,
+		"FAKE_CLI_MODE":               "ci-glab",
+		"FAKE_CLI_STATE":              state,
+		"FAKE_CLI_CHECKS":             checksJSON,
+		"FAKE_CLI_REVIEW_DISCUSSIONS": discussionsJSON,
+		"FAKE_CLI_MR_HEAD_SHA":        headSHA,
 	})
 }
 
-func FakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
+// FakeCIGlabMRReadFails is FakeCIGlab with every merge request read failing like
+// a provider or CLI failure, so a test can assert the read-failure path (the
+// consecutive-error park) rather than a head-binding refusal.
+func FakeCIGlabMRReadFails(t *testing.T, state, checksJSON, headSHA string) []string {
+	t.Helper()
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
+	return FakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":        "ci-glab",
+		"FAKE_CLI_STATE":       state,
+		"FAKE_CLI_CHECKS":      checksJSON,
+		"FAKE_CLI_MR_HEAD_SHA": headSHA,
+		"FAKE_CLI_MR_VIEW_ERR": "1",
+	})
+}
+
+func FakeCIGlabWithTrace(t *testing.T, state, checksJSON, trace, headSHA string) []string {
+	t.Helper()
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
+	return FakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":        "ci-glab",
+		"FAKE_CLI_STATE":       state,
+		"FAKE_CLI_CHECKS":      checksJSON,
+		"FAKE_CLI_TRACE":       trace,
+		"FAKE_CLI_MR_HEAD_SHA": headSHA,
+	})
+}
+
+func FakeCIGlabSequence(t *testing.T, state string, checks []string, headSHA string) []string {
 	t.Helper()
 	binDir := FakeCLIBinDir(t)
 	LinkFakeCLI(t, binDir, "glab")
@@ -861,6 +915,7 @@ func FakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
 	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":              "ci-glab-seq",
 		"FAKE_CLI_STATE":             state,
+		"FAKE_CLI_MR_HEAD_SHA":       headSHA,
 		"FAKE_CLI_CHECKS_PATH":       checksPath,
 		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
 	})

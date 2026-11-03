@@ -9,11 +9,28 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 const windowsCooperativeCommandArg = "--internal-windows-cooperative-command="
+
+// allocConsoleModeNoWindow is ALLOC_CONSOLE_MODE_NO_WINDOW.
+const allocConsoleModeNoWindow = 2
+
+var (
+	modKernel32                 = windows.NewLazySystemDLL("kernel32.dll")
+	procGetConsoleProcessList   = modKernel32.NewProc("GetConsoleProcessList")
+	procAllocConsoleWithOptions = modKernel32.NewProc("AllocConsoleWithOptions")
+)
+
+// allocConsoleOptions is ALLOC_CONSOLE_OPTIONS.
+type allocConsoleOptions struct {
+	mode          uint32
+	useShowWindow int32
+	showWindow    uint16
+}
 
 // RunWindowsCooperativeCommandHelper handles the private console process that
 // launches a configured command in a targetable process group.
@@ -43,6 +60,10 @@ func runWindowsCooperativeCommand(eventName, targetPath string, targetArgs []str
 		return 1, fmt.Errorf("open Windows cooperative cancel event: %w", err)
 	}
 	defer windows.CloseHandle(cancelEvent)
+
+	if err := ensureWindowsCooperativeConsole(); err != nil {
+		return 1, err
+	}
 
 	// This is the narrow exception to the usual winproc.Harden rule. The target
 	// must inherit this helper's private console for targeted CTRL+BREAK delivery;
@@ -82,6 +103,29 @@ func runWindowsCooperativeCommand(eventName, targetPath string, targetArgs []str
 		}
 	}
 	return windowsCommandExit(target.Wait())
+}
+
+// ensureWindowsCooperativeConsole gives the helper the private console its
+// target must share. The shipped binary's consoleAllocationPolicy=detached
+// also overrides the CREATE_NEW_CONSOLE this helper is started with, so on the
+// builds that honor it (26100 and later) the helper starts without a console
+// and allocates one without a window. AllocConsoleWithOptions exists on exactly
+// those builds; older ones ignore the manifest and already gave it a console.
+func ensureWindowsCooperativeConsole() error {
+	var pids [1]uint32
+	if n, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&pids[0])), uintptr(len(pids))); n != 0 {
+		return nil
+	}
+	if procAllocConsoleWithOptions.Find() != nil {
+		return nil
+	}
+	options := allocConsoleOptions{mode: allocConsoleModeNoWindow}
+	var result uint32
+	hr, _, _ := procAllocConsoleWithOptions.Call(uintptr(unsafe.Pointer(&options)), uintptr(unsafe.Pointer(&result)))
+	if int32(hr) < 0 {
+		return fmt.Errorf("allocate Windows cooperative console: HRESULT %#x", uint32(hr))
+	}
+	return nil
 }
 
 func windowsCommandExit(err error) (int, error) {

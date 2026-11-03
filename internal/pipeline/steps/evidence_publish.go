@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 )
@@ -62,13 +63,20 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		return nil
 	}
 
+	message, err := sctx.Config.Test.Evidence.RenderCommitMessage(branch, sctx.Run.ID)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("test evidence not published, linking local paths instead: %v", err))
+		return nil
+	}
 	result, err := evidence.Publish(sctx.Ctx, evidence.Request{
-		RepoDir:   sctx.WorkDir,
-		PushURL:   resolvePushURL(sctx),
-		Branch:    sctx.Config.Test.Evidence.Branch,
-		Dir:       sctx.Config.Test.Evidence.Dir,
-		Segments:  segments,
-		SourceDir: sourceDir,
+		RepoDir:       sctx.WorkDir,
+		RunWorktree:   sctx.WorkDir,
+		WorktreesRoot: nmWorktreesRoot(),
+		PushURL:       resolvePushURL(sctx),
+		Branch:        sctx.Config.Test.Evidence.Branch,
+		Dir:           sctx.Config.Test.Evidence.Dir,
+		Segments:      segments,
+		SourceDir:     sourceDir,
 		// The review conversation lives in this same directory but is NOT test
 		// evidence and must never be published: the operator's questions and
 		// answers would land on the orphan branch verbatim and permanently,
@@ -76,7 +84,7 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		// PR-body rendering applies. The name comes from the package that owns
 		// the location, so the two cannot drift.
 		ExcludeDirs:       []string{reviewqa.DirName},
-		Message:           fmt.Sprintf("no-mistakes: evidence for %s (run %s)", branch, sctx.Run.ID),
+		Message:           message,
 		ForbiddenBranches: []string{branch, sctx.Repo.DefaultBranch},
 	})
 	if err != nil {
@@ -129,4 +137,14 @@ func joinURLPath(dir, rel string) string {
 		segments[i] = url.PathEscape(segment)
 	}
 	return strings.Join(segments, "/")
+}
+
+// nmWorktreesRoot is the NM_HOME worktrees root published text is redacted
+// against. Without a resolvable NM_HOME only the run's own worktree is
+// rewritten.
+func nmWorktreesRoot() string {
+	if p, err := paths.New(); err == nil {
+		return p.WorktreesDir()
+	}
+	return ""
 }

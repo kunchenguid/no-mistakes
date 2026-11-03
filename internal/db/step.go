@@ -27,6 +27,9 @@ type StepResult struct {
 	LastActivity   *string
 	AgentPID       *int
 	AutoFixLimit   *int
+	// ReviewMaxFixRounds pins the total Review fix budget. NULL is a legacy,
+	// unbounded step; zero explicitly records the unbounded default.
+	ReviewMaxFixRounds *int
 	// OverrideReason is non-nil exactly when a human answered ActionApprove on
 	// this step's gate despite an unresolved condition (currently: the CI
 	// step's live checks were still failing, or the Test step's configured
@@ -40,9 +43,23 @@ type StepResult struct {
 	// SkipReason records an automatic PR/CI skip, distinct from an explicit
 	// per-run skip. Legacy rows have no recorded reason.
 	SkipReason *string
+	// ResponseOrigin records the caller of the latest gate response stored on
+	// the step. Fix selections store their origin on the answered round.
+	ResponseOrigin types.ResponseOrigin
+	// FailureCause is set on a failed step only when the executor recorded why
+	// (StepFailureCauseAgentInvocation); nil means no recorded cause.
+	FailureCause *string
+	// CarriedFrom names the source run's step row that a retried run carried
+	// instead of executing.
+	CarriedFrom *string
 }
 
-const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
+// StepFailureCauseAgentInvocation records a step that failed because an
+// agent invocation itself returned an error - a provider, transport, or
+// agent-process failure - rather than because of what the step judged.
+const StepFailureCauseAgentInvocation = "agent_invocation"
+
+const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at`
 
 // readableStepResultColumns tolerates databases that predate the optional
 // columns. The ci_fix_attempts column is no longer read: the CI step's fix
@@ -51,25 +68,17 @@ const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code,
 // append-only.
 func (d *DB) readableStepResultColumns() string {
 	columns := stepResultColumns
-	if d.hasColumn("step_results", "round_started_at") {
-		columns += ", round_started_at"
-	} else {
-		columns += ", NULL AS round_started_at"
+	for _, column := range []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit", "round_started_at", "override_reason", "skip_reason", "approval_reason", "failure_cause", "carried_from", "review_max_fix_rounds"} {
+		if d.hasColumn("step_results", column) {
+			columns += ", " + column
+		} else {
+			columns += ", NULL AS " + column
+		}
 	}
-	if d.hasColumn("step_results", "override_reason") {
-		columns += ", override_reason"
+	if d.hasColumn("step_results", "response_origin") {
+		columns += ", response_origin"
 	} else {
-		columns += ", NULL AS override_reason"
-	}
-	if d.hasColumn("step_results", "skip_reason") {
-		columns += ", skip_reason"
-	} else {
-		columns += ", NULL AS skip_reason"
-	}
-	if d.hasColumn("step_results", "approval_reason") {
-		columns += ", approval_reason"
-	} else {
-		columns += ", NULL AS approval_reason"
+		columns += ", 'unknown' AS response_origin"
 	}
 	return columns
 }
@@ -77,11 +86,12 @@ func (d *DB) readableStepResultColumns() string {
 // InsertStepResult creates a new step result record.
 func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResult, error) {
 	s := &StepResult{
-		ID:        newID(),
-		RunID:     runID,
-		StepName:  stepName,
-		StepOrder: stepName.Order(),
-		Status:    types.StepStatusPending,
+		ID:             newID(),
+		RunID:          runID,
+		StepName:       stepName,
+		StepOrder:      stepName.Order(),
+		Status:         types.StepStatusPending,
+		ResponseOrigin: types.ResponseOriginUnknown,
 	}
 	_, err := d.sql.Exec(
 		`INSERT INTO step_results (id, run_id, step_name, step_order, status) VALUES (?, ?, ?, ?, ?)`,
@@ -93,12 +103,58 @@ func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResul
 	return s, nil
 }
 
+// InsertCarriedStepResult records source - a completed or skipped step of the
+// run a retry continues - on runID without executing it. The carried row keeps
+// the source's outcome and approval facts but none of its findings or log, so
+// statistics never count the source's work twice; its rounds stay on the
+// source row, which carried_from names - or, when source is itself carried, the
+// row it was carried from.
+func (d *DB) InsertCarriedStepResult(runID string, source *StepResult) (*StepResult, error) {
+	if source == nil || (source.Status != types.StepStatusCompleted && source.Status != types.StepStatusSkipped) {
+		return nil, fmt.Errorf("insert carried step result: only a completed or skipped step can be carried")
+	}
+	origin := source.RoundsStepID()
+	s := &StepResult{
+		ID:             newID(),
+		RunID:          runID,
+		StepName:       source.StepName,
+		StepOrder:      source.StepName.Order(),
+		Status:         source.Status,
+		ExitCode:       source.ExitCode,
+		DurationMS:     source.DurationMS,
+		StartedAt:      source.StartedAt,
+		CompletedAt:    source.CompletedAt,
+		AutoFixLimit:   source.AutoFixLimit,
+		OverrideReason: source.OverrideReason,
+		ApprovalReason: source.ApprovalReason,
+		SkipReason:     source.SkipReason,
+		CarriedFrom:    &origin,
+	}
+	_, err := d.sql.Exec(
+		`INSERT INTO step_results (id, run_id, step_name, step_order, status, exit_code, duration_ms, started_at, completed_at, auto_fix_limit, override_reason, approval_reason, skip_reason, carried_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.RunID, s.StepName, s.StepOrder, s.Status, s.ExitCode, s.DurationMS, s.StartedAt, s.CompletedAt, s.AutoFixLimit, s.OverrideReason, s.ApprovalReason, s.SkipReason, s.CarriedFrom,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert carried step result: %w", err)
+	}
+	return s, nil
+}
+
+// RoundsStepID is the step row whose rounds describe what s did: the source
+// row for a carried step, s itself otherwise.
+func (s *StepResult) RoundsStepID() string {
+	if s.CarriedFrom != nil && *s.CarriedFrom != "" {
+		return *s.CarriedFrom
+	}
+	return s.ID
+}
+
 // GetStepResult returns a step result by ID.
 func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -128,7 +184,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason, &s.FailureCause, &s.CarriedFrom, &s.ReviewMaxFixRounds, &s.ResponseOrigin); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -142,7 +198,8 @@ func (d *DB) ResetStepsFrom(runID string, stepOrder int) error {
 		SET status = ?, exit_code = NULL, duration_ms = NULL, log_path = NULL,
 			findings_json = NULL, error = NULL, started_at = NULL,
 			round_started_at = NULL, completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
-			agent_pid = NULL, auto_fix_limit = NULL, override_reason = NULL, approval_reason = NULL
+			agent_pid = NULL, auto_fix_limit = NULL, override_reason = NULL, approval_reason = NULL, response_origin = 'unknown',
+			failure_cause = NULL, carried_from = NULL
 		WHERE run_id = ? AND step_order >= ? AND status != ?`, types.StepStatusPending, runID, stepOrder, types.StepStatusSkipped)
 	if err != nil {
 		return fmt.Errorf("reset steps for revalidation: %w", err)
@@ -222,6 +279,18 @@ func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, round_started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, auto_fix_limit = ? WHERE id = ?`, types.StepStatusRunning, ts, ts, ts, "step started", autoFixLimitDBValue(autoFixLimit), id)
 	if err != nil {
 		return fmt.Errorf("start step: %w", err)
+	}
+	return nil
+}
+
+// PinReviewMaxFixRounds records a Review step's budget once, before execution.
+// Recovery and validation restarts keep the original pin, including zero.
+func (d *DB) PinReviewMaxFixRounds(id string, limit int) error {
+	if limit < 0 {
+		return fmt.Errorf("review.max_fix_rounds must be non-negative")
+	}
+	if _, err := d.sql.Exec(`UPDATE step_results SET review_max_fix_rounds = COALESCE(review_max_fix_rounds, ?) WHERE id = ? AND step_name = 'review'`, limit, id); err != nil {
+		return fmt.Errorf("pin Review fix-round limit: %w", err)
 	}
 	return nil
 }
@@ -360,6 +429,36 @@ func (d *DB) completeStep(id string, status types.StepStatus, exitCode int, dura
 	return nil
 }
 
+func (d *DB) CompleteCIStep(id, runID string, declaredNoCI bool, exitCode int, durationMS int64, logPath string) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin complete CI step: %w", err)
+	}
+	defer tx.Rollback()
+	ts := now()
+	result, err := tx.Exec(
+		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ? AND run_id = ? AND step_name = ?`,
+		types.StepStatusCompleted, exitCode, durationMS, logPath, ts, ts, "status: completed", id, runID, types.StepCI,
+	)
+	if err != nil {
+		return fmt.Errorf("complete CI step: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("complete CI step: step row not found")
+	}
+	result, err = tx.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, ci_released_at = ?, updated_at = ? WHERE id = ?`, ts, declaredNoCI, ts, ts, runID)
+	if err != nil {
+		return fmt.Errorf("record CI readiness: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("record CI readiness: run row not found")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit completed CI: %w", err)
+	}
+	return nil
+}
+
 // CompleteReviewStep atomically completes a successful review and replaces
 // the run's exact review-approved head. Neither write survives if the other
 // fails, so a failed completion cannot create approval authority and a
@@ -397,9 +496,19 @@ func (d *DB) CompleteReviewStep(id, runID, approvedHeadSHA string, exitCode int,
 
 // FailStep marks a step as failed with an error message and duration.
 func (d *DB) FailStep(id string, errMsg string, durationMS int64) error {
+	return d.FailStepWithCause(id, errMsg, durationMS, "")
+}
+
+// FailStepWithCause is FailStep that also records why the step failed; an
+// empty cause records none.
+func (d *DB) FailStepWithCause(id string, errMsg string, durationMS int64, cause string) error {
+	var recorded *string
+	if cause != "" {
+		recorded = &cause
+	}
 	_, err := d.sql.Exec(
-		`UPDATE step_results SET status = ?, error = ?, duration_ms = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ?`,
-		types.StepStatusFailed, errMsg, durationMS, now(), now(), "step failed: "+errMsg, id,
+		`UPDATE step_results SET status = ?, error = ?, failure_cause = ?, duration_ms = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ?`,
+		types.StepStatusFailed, errMsg, recorded, durationMS, now(), now(), "step failed: "+errMsg, id,
 	)
 	if err != nil {
 		return fmt.Errorf("fail step: %w", err)

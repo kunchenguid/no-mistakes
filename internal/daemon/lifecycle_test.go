@@ -604,10 +604,10 @@ func TestWaitForProcessExitRetriesTransientInspectionErrors(t *testing.T) {
 		daemonProcessRunning = originalProcessRunning
 	})
 
-	waitForProcessExit(4242, 50*time.Millisecond)
+	waitForProcessExit(4242, 10*time.Second)
 
-	if checks < 3 {
-		t.Fatalf("waitForProcessExit stopped after %d checks, want at least 3", checks)
+	if checks != 3 {
+		t.Fatalf("waitForProcessExit stopped after %d checks, want 3", checks)
 	}
 }
 

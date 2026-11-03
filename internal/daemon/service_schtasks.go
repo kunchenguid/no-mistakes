@@ -1,17 +1,30 @@
 package daemon
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
 // installWindowsTask registers the daemon as a per-user scheduled task.
 //
+// The task is registered from an XML definition rather than schtasks'
+// /SC ONLOGON flags because those flags can only express an any-user logon
+// trigger, which Task Scheduler refuses to register from a non-elevated
+// (UAC-filtered) token with Access is denied (issue #1192). The XML scopes
+// the LogonTrigger to the installing user and keeps the principal on that
+// user's limited interactive token; there is no fallback to the unscoped
+// trigger. Settings mirror what schtasks /Create writes by default so the
+// task's lifecycle is unchanged apart from the trigger scope.
+//
 // Unlike the launchd and systemd paths, it deliberately does not forward proxy
-// environment variables (see serviceProxyEnv). A schtasks /SC ONLOGON task runs
+// environment variables (see serviceProxyEnv). A logon-triggered task runs
 // in the user's interactive logon session and inherits that session's
 // environment, so the user's HTTP(S)_PROXY/NO_PROXY/etc. are already present
 // without baking them into the task definition. That also means no proxy URL -
@@ -19,19 +32,91 @@ import (
 // tightening that writeServiceFile applies to the launchd/systemd files has no
 // Windows equivalent to worry about.
 func installWindowsTask(p *paths.Paths, exe string) error {
+	current, err := serviceCurrentUser()
+	if err != nil {
+		return fmt.Errorf("resolve current user for scheduled task: %w", err)
+	}
+	account := current.Username // DOMAIN\user on Windows
+	if strings.TrimSpace(account) == "" {
+		return errors.New("resolve current user for scheduled task: empty account name")
+	}
+	definition, err := os.CreateTemp("", "no-mistakes-task-*.xml")
+	if err != nil {
+		return fmt.Errorf("write scheduled task definition: %w", err)
+	}
+	defer os.Remove(definition.Name())
+	_, writeErr := definition.Write(encodeUTF16LEWithBOM(renderWindowsTaskXML(exe, p.Root(), account)))
+	if closeErr := definition.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		return fmt.Errorf("write scheduled task definition: %w", writeErr)
+	}
 	args := []string{
 		"/Create",
 		"/TN", windowsTaskName(p),
-		"/SC", "ONLOGON",
-		"/RL", "LIMITED",
+		"/XML", definition.Name(),
 		"/F",
-		"/TR", buildWindowsTaskCommand(exe, p.Root()),
 	}
 	if _, err := serviceCommandRunner("schtasks", args...); err != nil {
 		return fmt.Errorf("schtasks create: %w", err)
 	}
 	cleanupLegacyWindowsTask(p)
 	return nil
+}
+
+// renderWindowsTaskXML renders the Task Scheduler definition for the managed
+// daemon: a logon trigger scoped to account, run as account's limited
+// interactive token. The Arguments element keeps the "--root <root>" suffix
+// serviceDefinitionMatchesRoot keys on.
+func renderWindowsTaskXML(exe, root, account string) string {
+	arguments := "daemon run --root " + quoteWindowsTaskArg(root)
+	return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>` + xmlEscaped(account) + `</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>` + xmlEscaped(account) + `</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <IdleSettings>
+      <Duration>PT10M</Duration>
+      <WaitTimeout>PT1H</WaitTimeout>
+      <StopOnIdleEnd>true</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>` + xmlEscaped(exe) + `</Command>
+      <Arguments>` + xmlEscaped(arguments) + `</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`
+}
+
+// encodeUTF16LEWithBOM encodes s the way schtasks /XML reliably accepts and
+// matches the encoding declared in renderWindowsTaskXML.
+func encodeUTF16LEWithBOM(s string) []byte {
+	units := utf16.Encode([]rune(s))
+	out := make([]byte, 2+2*len(units))
+	out[0], out[1] = 0xFF, 0xFE
+	for i, unit := range units {
+		binary.LittleEndian.PutUint16(out[2+2*i:], unit)
+	}
+	return out
 }
 
 func cleanupLegacyWindowsTask(p *paths.Paths) {
@@ -113,11 +198,6 @@ func windowsManagedDaemonState(p *paths.Paths, launch managedServiceLaunch) (man
 	default:
 		return managedServiceUnknown, nil
 	}
-}
-
-func buildWindowsTaskCommand(exe, root string) string {
-	args := []string{quoteWindowsTaskArg(exe), "daemon", "run", "--root", quoteWindowsTaskArg(root)}
-	return strings.Join(args, " ")
 }
 
 func quoteWindowsTaskArg(arg string) string {

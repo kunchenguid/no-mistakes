@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -179,6 +180,98 @@ func TestExecutor_RecoveredGateResolutionsWithoutASelectionRecordTheDecline(t *t
 				t.Fatalf("selected_finding_ids = %v, want %q", rounds[0].SelectedFindingIDs, db.DeclinedSelectionJSON)
 			}
 		})
+	}
+}
+
+// A response recorded before a daemon restart leaves the same declined round
+// parked. A retry must refresh that round's caller origin rather than silently
+// keeping the first response's provenance.
+func TestExecutor_RecoveredIgnoreOnlyResponseUpdatesDeclinedRoundOrigin(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := declinedTestFindings
+	round, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepRoundDeclined(round.ID, types.ResponseOrigin("interactive")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(stepResult.ID, declinedTestFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepTest)}, nil)
+	events := collectEvents(exec)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(ctx, run, repo, t.TempDir()) }()
+	waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepTest)
+
+	if _, err := exec.RespondWithOverrides(
+		types.StepTest,
+		types.ActionFix,
+		nil,
+		[]string{"journal-version-deduplication"},
+		nil,
+		nil,
+		"",
+		ResponseOptions{Origin: types.ResponseOrigin("auto_yes")},
+	); err != nil {
+		t.Fatalf("recovered ignore-only response: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor timed out")
+	}
+
+	rounds, err := database.GetRoundsByStep(stepResult.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recoveredRound *db.StepRound
+	for _, candidate := range rounds {
+		if candidate.ID == round.ID {
+			recoveredRound = candidate
+			break
+		}
+	}
+	if recoveredRound == nil {
+		t.Fatalf("recovery lost parked round %q; rounds = %d", round.ID, len(rounds))
+	}
+	if recoveredRound.ResponseOrigin != types.ResponseOrigin("auto_yes") {
+		t.Fatalf("round origin = %q, want %q", recoveredRound.ResponseOrigin, "auto_yes")
+	}
+	if recoveredRound.SelectionSource == nil || *recoveredRound.SelectionSource != db.RoundSelectionSourceUserDeclined {
+		t.Fatalf("selection_source = %v, want %q", recoveredRound.SelectionSource, db.RoundSelectionSourceUserDeclined)
+	}
+	if recoveredRound.SelectedFindingIDs == nil || *recoveredRound.SelectedFindingIDs != db.DeclinedSelectionJSON {
+		t.Fatalf("selected_finding_ids = %v, want %q", recoveredRound.SelectedFindingIDs, db.DeclinedSelectionJSON)
 	}
 }
 

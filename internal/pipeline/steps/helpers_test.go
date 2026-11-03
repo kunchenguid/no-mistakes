@@ -462,6 +462,24 @@ func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 	return env, logFile
 }
 
+// fakeGlabWithMRState is fakeGlab with a stateful merge request: `mr create`
+// and `mr update` record the title and description they were given, and a later
+// `mr view` reads them back, which is what the PR step verifies a published
+// body against. It returns the env, the argv log, and the state file path.
+func fakeGlabWithMRState(t *testing.T) (env []string, logFile, stateFile string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	logFile = filepath.Join(t.TempDir(), "glab.log")
+	stateFile = filepath.Join(t.TempDir(), "mr-state.json")
+	linkTestBinary(t, binDir, "glab")
+	env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":          "glab",
+		"FAKE_CLI_LOG":           logFile,
+		"FAKE_CLI_MR_STATE_FILE": stateFile,
+	})
+	return env, logFile, stateFile
+}
+
 // newTestContextWithDBRecords is like newTestContext but also inserts
 // repo and run records into the database so GetRun works after updates.
 func recordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA string) {
@@ -650,7 +668,8 @@ func fakeCIGHNoChecks(t *testing.T) []string {
 
 // fakeCIGlab creates a fake glab binary that serves the CI monitoring endpoints.
 // state is the MR state ("opened", "merged", "closed"); checksJSON is a JSON
-// array of jobs for `glab ci status` / `glab ci get`.
+// array of pipeline jobs the checks read reports (`glab ci get` or the
+// paginated REST jobs route, depending on whether the project path is known).
 func fakeCIGlab(t *testing.T, state, checksJSON string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)

@@ -72,6 +72,7 @@ func ciTargetsFor(names []string, mergeConflict bool) ciFixTargets {
 func TestCIObservationFindings_ClassifiesEachIssueByProviderStructure(t *testing.T) {
 	t.Parallel()
 	findings := ciObservationFindings(ciIssues{
+		provider: scm.ProviderGitHub,
 		checks: []scm.Check{
 			{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE", App: "github-actions", Link: "https://github.com/test/repo/actions/runs/1/job/2"},
 			{Name: "ci/external", Bucket: scm.CheckBucketFail, State: "FAILURE", Kind: scm.CheckKindStatus},
@@ -143,6 +144,7 @@ func TestCIObservationFindings_ClassifiesEachIssueByProviderStructure(t *testing
 func TestCIObservationFindings_PreservesSameNamedCheckIdentityAndClassification(t *testing.T) {
 	t.Parallel()
 	findings := ciObservationFindings(ciIssues{
+		provider: scm.ProviderGitHub,
 		checks: []scm.Check{
 			{Name: "build", ProviderID: "github-check-run:41", Bucket: scm.CheckBucketFail, App: "github-actions"},
 			{Name: "build", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail, App: "greptile-apps"},
@@ -177,9 +179,9 @@ func TestCIObservationFindings_PreservesSameNamedCheckIdentityAndClassification(
 func TestReviewBotFindings_BoundsAndEmptyCase(t *testing.T) {
 	t.Parallel()
 	check := scm.Check{Name: "Greptile Review", Bucket: scm.CheckBucketFail, App: "greptile-apps", Link: "https://greptile.com/"}
-	bot, _ := scm.ReviewBotForApp(check.App)
+	bot, _ := scm.ReviewBotForCheck(scm.ReviewBotsFor(nil), check)
 
-	empty := reviewBotFindings([]reviewBotCheck{{check: check, bot: bot}}, nil)
+	empty := reviewBotFindings(scm.ProviderGitHub, []reviewBotCheck{{check: check, bot: bot}}, nil)
 	if len(empty) != 1 || empty[0].Action != types.ActionAskUser || empty[0].Check != check.Name || !strings.Contains(empty[0].Description, "no unresolved review comments") {
 		t.Fatalf("empty-case findings = %+v, want one ask-user finding for the check", empty)
 	}
@@ -188,7 +190,7 @@ func TestReviewBotFindings_BoundsAndEmptyCase(t *testing.T) {
 	for i := 0; i < maxReviewBotCommentFindings+7; i++ {
 		many = append(many, scm.ReviewComment{Author: "greptile-apps[bot]", Path: "a.go", Line: i + 1, Body: strings.Repeat("x", maxReviewBotCommentBytes+100)})
 	}
-	bounded := reviewBotFindings([]reviewBotCheck{{check: check, bot: bot}}, many)
+	bounded := reviewBotFindings(scm.ProviderGitHub, []reviewBotCheck{{check: check, bot: bot}}, many)
 	if len(bounded) > maxReviewBotCommentFindings {
 		t.Fatalf("got %d findings, want at most %d including the omission notice", len(bounded), maxReviewBotCommentFindings)
 	}
@@ -210,7 +212,7 @@ func TestReviewBotFindings_BoundsAndEmptyCase(t *testing.T) {
 
 func TestReviewBotFindings_BoundsEntireObservationAcrossRepeatedChecks(t *testing.T) {
 	t.Parallel()
-	bot, _ := scm.ReviewBotForApp("greptile-apps")
+	bot, _ := scm.ReviewBotForCheck(scm.ReviewBotsFor(nil), scm.Check{App: "greptile-apps"})
 	checks := make([]reviewBotCheck, 100)
 	for i := range checks {
 		checks[i] = reviewBotCheck{check: scm.Check{Name: "Greptile Review", ProviderID: fmt.Sprintf("github-check-run:%d", i+1)}, bot: bot}
@@ -220,7 +222,7 @@ func TestReviewBotFindings_BoundsEntireObservationAcrossRepeatedChecks(t *testin
 		comments[i] = scm.ReviewComment{ID: fmt.Sprintf("comment-%d", i), Author: "greptile-apps[bot]", Body: fmt.Sprintf("finding-%d", i)}
 	}
 
-	findings := reviewBotFindings(checks, comments)
+	findings := reviewBotFindings(scm.ProviderGitHub, checks, comments)
 	if len(findings) > maxReviewBotCommentFindings {
 		t.Fatalf("got %d findings across repeated checks, want at most %d", len(findings), maxReviewBotCommentFindings)
 	}
@@ -489,19 +491,204 @@ func TestCIResumedRepairSnapshotsSelectedCheckCompletion(t *testing.T) {
 	}
 }
 
+func TestCIResumedRepairEmptySnapshotSkipsRepairAndPreservesCompletionMap(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Error("fix agent ran without a selected failing check in the fresh snapshot")
+		return nil, errors.New("unexpected fixer invocation")
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"}]}`
+	prior := map[string]checkFreshness{"id:github-check-run:42": {CompletedAt: time.Now()}}
+	step := &CIStep{observedCompletedAt: prior}
+	host := &completionSnapshotHost{}
+	outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil {
+		t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+	}
+	if host.headSHA != headSHA {
+		t.Fatalf("snapshot head = %q, want current head %q", host.headSHA, headSHA)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want none", len(ag.calls))
+	}
+	if got := step.observedCompletedAt["id:github-check-run:42"]; !got.CompletedAt.Equal(prior["id:github-check-run:42"].CompletedAt) {
+		t.Fatalf("completion map entry = %+v, want prior value preserved", got)
+	}
+}
+
+func TestCIResumedRepairPartialSnapshotSkipsSelectedChecks(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Error("fix agent ran with only a subset of the selected checks present")
+		return nil, errors.New("unexpected fixer invocation")
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"},{"id":"ci-2","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"lint","check_id":"github-check-run:43"}]}`
+	host := &completionSnapshotHost{checks: []scm.Check{{Name: "test", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail}}}
+	step := &CIStep{}
+	outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil {
+		t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want none until all selected failures are confirmed", len(ag.calls))
+	}
+}
+
+func TestCIResumedRepairAdapterObservedStaleHeadWaitsInsteadOfRepairing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Error("fix agent ran against a snapshot of another head")
+		return nil, errors.New("unexpected fixer invocation")
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
+	host := &completionSnapshotHost{observedHead: "other-head", checks: []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}}
+	outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil {
+		t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want none", len(ag.calls))
+	}
+}
+
+func TestCIResumedRepairStaleHeadErrorWaitsInsteadOfFailing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"}]}`
+	host := &completionSnapshotHost{err: scm.ErrHeadChanged}
+	outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome != nil || len(ag.calls) != 0 {
+		t.Fatalf("repair = %#v, %v, agent calls %d; want a wait", outcome, err, len(ag.calls))
+	}
+}
+
+// A merge conflict is observed from mergeability, not from checks, so an empty
+// check snapshot must not stop its repair.
+func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
+	t.Parallel()
+	for _, category := range []string{types.FindingCategoryCIMergeConflict, types.FindingCategoryCIBehindBase} {
+		for _, snapshot := range []string{"empty", "partial", "stale-head", "head-error"} {
+			t.Run(category+"/"+snapshot, func(t *testing.T) {
+				t.Parallel()
+				dir, baseSHA, headSHA := setupGitRepo(t)
+				ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(`{"summary":"no code change","code_change_needed":false}`)}, nil
+				}}
+				sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				selected := Findings{Summary: "rejected-check-marker", Items: []Finding{
+					{ID: "check-1", Severity: types.FindingSeverityError, Category: types.FindingCategoryCICheck, Check: "test", Description: "rejected-check-marker"},
+					{ID: "check-2", Severity: types.FindingSeverityError, Category: types.FindingCategoryCICheck, Check: "lint", Description: "rejected-check-marker"},
+					{ID: "rebase", Severity: types.FindingSeverityError, Category: category, Description: "selected-rebase-marker"},
+				}}
+				encoded, err := json.Marshal(selected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sctx.PreviousFindings = string(encoded)
+				host := &completionSnapshotHost{}
+				switch snapshot {
+				case "partial":
+					host.checks = []scm.Check{{Name: "test", Bucket: scm.CheckBucketFail}}
+				case "stale-head":
+					host.observedHead = "other-head"
+				case "head-error":
+					host.err = scm.ErrHeadChanged
+				}
+				outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(ag.calls) != 1 {
+					t.Fatalf("agent calls = %d, want one rebase repair", len(ag.calls))
+				}
+				prompt := ag.calls[0].Prompt
+				if strings.Contains(prompt, "rejected-check-marker") || strings.Contains(prompt, `"check":"test"`) || strings.Contains(prompt, `"check":"lint"`) {
+					t.Fatalf("prompt includes rejected check findings:\n%s", prompt)
+				}
+				if !strings.Contains(prompt, "Findings to address") || !strings.Contains(prompt, "selected-rebase-marker") {
+					t.Fatalf("prompt lost selected rebase finding:\n%s", prompt)
+				}
+				if outcome != nil && strings.Contains(outcome.Findings, "rejected-check-marker") {
+					t.Fatalf("repair outcome retained rejected check: %#v", outcome)
+				}
+			})
+		}
+	}
+}
+
+func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
+	t.Parallel()
+	for _, withRejectedCheck := range []bool{false, true} {
+		t.Run(fmt.Sprint(withRejectedCheck), func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(`{"summary":"human decision needed","code_change_needed":false}`)}, nil
+			}}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			checks := []scm.Check{{Name: "Greptile Review", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketPass, App: "greptile-apps"}}
+			selected := ciObservationFindings(ciIssues{provider: scm.ProviderGitHub, checks: checks, greenBots: true, botComments: []scm.ReviewComment{
+				{Author: "greptile-apps[bot]", Path: "feature.txt", Line: 1, Body: "selected-bot-comment"},
+			}})
+			if len(selected.Items) != 1 || selected.Items[0].CheckID != "github-check-run:42" {
+				t.Fatalf("green comment finding = %+v", selected.Items)
+			}
+			if withRejectedCheck {
+				selected.Items = append(selected.Items, Finding{ID: "failed", Category: types.FindingCategoryCICheck, Check: "test", Description: "rejected-check-marker"})
+			}
+			encoded, err := json.Marshal(selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sctx.PreviousFindings = string(encoded)
+			host := &completionSnapshotHost{checks: checks}
+			outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ag.calls) != 1 {
+				t.Fatalf("agent calls = %d, want selected green bot comment repaired", len(ag.calls))
+			}
+			if !strings.Contains(ag.calls[0].Prompt, "selected-bot-comment") || strings.Contains(ag.calls[0].Prompt, "rejected-check-marker") {
+				t.Fatalf("incorrect selected findings in prompt:\n%s", ag.calls[0].Prompt)
+			}
+			if outcome == nil || !outcome.NeedsApproval {
+				t.Fatalf("outcome = %#v, want no-change decision parked", outcome)
+			}
+		})
+	}
+}
+
 type completionSnapshotHost struct {
 	scm.Host
-	checks  []scm.Check
-	headSHA string
+	checks       []scm.Check
+	headSHA      string
+	observedHead string
+	err          error
 }
 
 func (h *completionSnapshotHost) Capabilities() scm.Capabilities { return scm.Capabilities{} }
 func (h *completionSnapshotHost) GetChecks(_ context.Context, pr *scm.PR) ([]scm.Check, error) {
 	h.headSHA = pr.HeadSHA
+	if h.err != nil {
+		return nil, h.err
+	}
+	if h.observedHead != "" {
+		pr.ObservedHeadSHA = h.observedHead
+	}
 	return h.checks, nil
 }
 
 func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	markErr := errors.New("persist running status")
 	f.sctx.MarkRunning = func() error { return markErr }
@@ -513,6 +700,7 @@ func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
 }
 
 func TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	marked := 0
 	f.sctx.MarkRunning = func() error { marked++; return nil }
@@ -602,4 +790,207 @@ func itoaTest(v int) string {
 		v /= 10
 	}
 	return string(out)
+}
+
+func TestReviewBotFindingsKeepProviderIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		provider scm.Provider
+		want     string
+	}{
+		{scm.ProviderGitHub, "github"}, {scm.ProviderGitLab, "gitlab"},
+	} {
+		got := ciObservationFindings(ciIssues{
+			provider:  tc.provider,
+			greenBots: true,
+			botComments: []scm.ReviewComment{
+				{ID: "1", Author: "greptile-apps[bot]", Body: "github"},
+				{ID: "2", Author: "greptileai", Body: "gitlab"},
+			},
+		})
+		if len(got.Items) != 1 || !strings.HasSuffix(got.Items[0].Description, ": "+tc.want) {
+			t.Fatalf("provider %s findings = %+v", tc.provider, got)
+		}
+	}
+}
+
+func TestCIResumedRepairGitHubMovedHeadReadErrorWaits(t *testing.T) {
+	t.Parallel()
+	for _, read := range []string{"commit", "workflow", "final-head", "back-to-requested"} {
+		t.Run(read, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				t.Error("fixer invoked for another head")
+				return nil, errors.New("unexpected fixer")
+			}}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.PreviousFindings = `{"findings":[{"id":"check","category":"ci-check","check":"test","description":"failed"}]}`
+			sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","bucket":"fail","state":"FAILURE"}]`)
+			for i, entry := range sctx.Env {
+				if strings.HasPrefix(entry, "FAKE_CLI_PR_HEAD_SHA=") {
+					sctx.Env[i] = "FAKE_CLI_PR_HEAD_SHA=head-B"
+				}
+			}
+			switch read {
+			case "commit":
+				sctx.Env = append(sctx.Env, "FAKE_CLI_CHECKS_ERR=read failed")
+			case "workflow":
+				sctx.Env = append(sctx.Env, "FAKE_CLI_WORKFLOW_RUNS=invalid-json")
+			case "final-head", "back-to-requested":
+				heads := []string{headSHA, "head-B"}
+				if read == "back-to-requested" {
+					heads = []string{"head-B", headSHA}
+				}
+				sequence, err := json.Marshal(heads)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SEQUENCE="+string(sequence), "FAKE_CLI_PR_HEAD_INDEX="+filepath.Join(t.TempDir(), "head-index"))
+			}
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx.Run.PRURL = &prURL
+			host, reason := buildHost(sctx, scm.ProviderGitHub)
+			if host == nil {
+				t.Fatal(reason)
+			}
+			prior := checkFreshness{CompletedAt: time.Unix(1700000000, 0)}
+			step := &CIStep{observedCompletedAt: map[string]checkFreshness{"test": prior}}
+			outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42", URL: prURL})
+			if err != nil || outcome != nil || len(ag.calls) != 0 {
+				t.Fatalf("repair = %#v, %v; calls = %d, want wait", outcome, err, len(ag.calls))
+			}
+			if step.observedCompletedAt["test"] != prior {
+				t.Fatal("stale snapshot changed completion evidence")
+			}
+		})
+	}
+}
+
+// A required external review that is not complete at the head must name its
+// completion state even when stale unresolved comments from the same bot
+// already fill the gate.
+func TestReviewBotFindings_IncompleteExternalReviewSurvivesStaleComments(t *testing.T) {
+	t.Parallel()
+	comments := []scm.ReviewComment{
+		{ID: "old-1", Author: "coderabbitai[bot]", AuthorID: scm.CodeRabbitAuthorID, Path: "a.go", Line: 1, Body: "stale"},
+	}
+	for _, state := range []string{"RATE_LIMITED", "INCOMPLETE", "PENDING", "UNRESOLVED_FINDINGS"} {
+		check := scm.Check{Name: "External review: coderabbit", ProviderID: "external-review:coderabbit", ExternalReview: "coderabbit", AppID: scm.CodeRabbitAppID, AppHost: "github.com", Bucket: scm.CheckBucketFail, State: state}
+		bot, ok := scm.ReviewBotForCheck(scm.ReviewBotsFor([]string{"coderabbit"}), check)
+		if !ok {
+			t.Fatal("synthetic CodeRabbit check did not resolve to the CodeRabbit bot")
+		}
+		findings := reviewBotFindings(scm.ProviderGitHub, []reviewBotCheck{{check: check, bot: bot}}, comments)
+		named := false
+		for _, finding := range findings {
+			if strings.Contains(finding.Description, "Required external review coderabbit is "+state) {
+				named = true
+			}
+		}
+		if wantNamed := state != "UNRESOLVED_FINDINGS"; named != wantNamed || len(findings) != 1+boolToInt(wantNamed) {
+			t.Fatalf("state %s findings = %+v, want the stale comment plus a completion-state finding: %v", state, findings, wantNamed)
+		}
+	}
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// CodeRabbit is a review bot only when trusted ci.required_reviews opts in.
+// Without it, an installed CodeRabbit's red check is an ordinary failing
+// check and its unresolved threads are not findings, exactly as before
+// CodeRabbit support existed; Greptile is unaffected either way.
+func TestCIObservationFindings_CodeRabbitIsRecognizedOnlyWhenOptedIn(t *testing.T) {
+	t.Parallel()
+	comments := []scm.ReviewComment{
+		{ID: "1", Author: "coderabbitai[bot]", AuthorID: scm.CodeRabbitAuthorID, Path: "a.go", Line: 3, Body: "nit"},
+		{ID: "2", Author: "greptile-apps[bot]", Path: "b.go", Line: 4, Body: "off by one"},
+	}
+	red := scm.Check{Name: "CodeRabbit", ProviderID: "github-check-run:7", Bucket: scm.CheckBucketFail, State: "FAILURE", App: "coderabbitai", AppID: scm.CodeRabbitAppID, AppHost: "github.com"}
+	greenGreptile := scm.Check{Name: "Greptile Review", Bucket: scm.CheckBucketPass, State: "SUCCESS", App: "greptile-apps"}
+
+	unconfigured := ciObservationFindings(ciIssues{
+		provider:    scm.ProviderGitHub,
+		checks:      []scm.Check{red, greenGreptile},
+		failing:     []string{"CodeRabbit"},
+		reruns:      func(string) int { return 0 },
+		botComments: comments,
+		greenBots:   true,
+	})
+	if len(unconfigured.Items) != 2 {
+		t.Fatalf("unconfigured findings = %+v, want the ordinary CodeRabbit check and the Greptile comment", unconfigured.Items)
+	}
+	if got := unconfigured.Items[0]; got.Category != types.FindingCategoryCICheck || got.Action != types.ActionAutoFix || got.Check != "CodeRabbit" {
+		t.Fatalf("CodeRabbit finding = %+v, want an ordinary auto-fix CI check", got)
+	}
+	if got := unconfigured.Items[1]; got.Category != types.FindingCategoryCIReviewBot || got.File != "b.go" {
+		t.Fatalf("bot finding = %+v, want only the Greptile comment", got)
+	}
+
+	synthetic := scm.Check{Name: "External review: coderabbit", ProviderID: "external-review:coderabbit", ExternalReview: "coderabbit", AppID: scm.CodeRabbitAppID, AppHost: "github.com", Bucket: scm.CheckBucketFail, State: "UNRESOLVED_FINDINGS"}
+	optedIn := ciObservationFindings(ciIssues{
+		provider:        scm.ProviderGitHub,
+		requiredReviews: []string{"coderabbit"},
+		checks:          []scm.Check{synthetic, greenGreptile},
+		failing:         []string{synthetic.Name},
+		reruns:          func(string) int { return 0 },
+		botComments:     comments,
+		greenBots:       true,
+	})
+	var files []string
+	for _, item := range optedIn.Items {
+		if item.Category != types.FindingCategoryCIReviewBot || item.Action != types.ActionAskUser {
+			t.Fatalf("opted-in finding = %+v, want only ask-user review-bot findings", item)
+		}
+		files = append(files, item.File)
+	}
+	if strings.Join(files, ",") != "a.go,b.go" {
+		t.Fatalf("opted-in findings anchor %v, want the CodeRabbit and Greptile comments", files)
+	}
+}
+
+// A selected check that failed, was re-run, and ended cancelled has no failure
+// left to repair: the pre-repair refresh must not hand it to the fixer.
+func TestCIResumedRepairFailRerunCancelledSkipsRepair(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		finding string
+		current scm.Check
+	}{
+		{
+			name:    "matched by name",
+			finding: `{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test"}`,
+			current: scm.Check{Name: "test", Bucket: scm.CheckBucketCancel},
+		},
+		{
+			name:    "matched by provider id",
+			finding: `{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"}`,
+			current: scm.Check{Name: "test", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketCancel},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				t.Error("fix agent ran for a selected check whose re-run was cancelled")
+				return nil, errors.New("unexpected fixer invocation")
+			}}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.PreviousFindings = `{"findings":[` + tt.finding + `]}`
+			host := &completionSnapshotHost{checks: []scm.Check{tt.current}}
+			step := &CIStep{}
+			outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+			if err != nil || outcome != nil {
+				t.Fatalf("repair = %#v, %v; want monitoring to resume", outcome, err)
+			}
+			if len(ag.calls) != 0 {
+				t.Fatalf("agent calls = %d, want none for a cancelled re-run", len(ag.calls))
+			}
+		})
+	}
 }

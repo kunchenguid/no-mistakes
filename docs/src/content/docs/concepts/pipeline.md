@@ -59,7 +59,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - **Document after test** so docs are updated against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
 - **Push → PR → CI** happens after all local checks pass.
-  CI publishes a repair through the Push step's guarded path and keeps monitoring only when it can prove the repair descends from the reviewed head; otherwise the repair revalidates from Review before Push republishes it, which is what a merge-conflict repair always does. [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs) sets that intent: `false` (default) publishes when it is provable, `true` revalidates every repair.
+  CI publishes a repair through the Push step's guarded path and keeps monitoring only when it can prove the repair descends from the reviewed head; otherwise the repair revalidates from Review before Push republishes it, which is what a merge-conflict repair always does. [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs) sets that intent: `false` (default) publishes when it is provable, `true` revalidates every repair. Opt-in [`ci.carry_review_on_replay`](/no-mistakes/reference/repo-config/#cicarry_review_on_replay) lets a rebase repair that provably replayed the reviewed commits unchanged revalidate from Test instead.
   CI owns remote validation after publication. A repository gate command still runs before Push, although the command itself may contact an external service.
 
 ## What core steps can do

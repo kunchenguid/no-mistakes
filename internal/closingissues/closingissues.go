@@ -10,7 +10,9 @@ import (
 
 // Normalize validates, deduplicates case-insensitively, and deterministically
 // orders issue references. Same-repository references are stored as decimal
-// numbers; cross-repository references use owner/repository#number.
+// numbers; cross-repository references use project#number, where project is a
+// provider project path: "owner/repository" on GitHub and, on GitLab, a path
+// that may nest under subgroups ("group/subgroup/repository").
 func Normalize(values []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(values))
 	refs := make([]string, 0, len(values))
@@ -79,7 +81,9 @@ func Localize(ref, repo string) string {
 	return ref
 }
 
-// Target returns the syntax GitHub closing keywords expect after the keyword.
+// Target returns the syntax the forge's closing keywords expect after the
+// keyword. GitHub and GitLab both accept "#42" for the project's own issues and
+// "project#42" for a cross-project one, so the stored ref is already the target.
 func Target(ref string) string {
 	if strings.Contains(ref, "#") {
 		return ref
@@ -87,7 +91,9 @@ func Target(ref string) string {
 	return "#" + ref
 }
 
-// Parts returns template data for a normalized reference.
+// Parts returns template data for a normalized reference. A nested project
+// path (a GitLab subgroup path) leaves the subgroup segments in repository, so
+// the reference still round-trips through owner + repository.
 func Parts(ref string) (owner, repository, issue, target string) {
 	prefix, issue, qualified := strings.Cut(ref, "#")
 	if !qualified {
@@ -106,8 +112,8 @@ func normalize(value string) (string, error) {
 	if !qualified {
 		number = value
 		prefix = ""
-	} else if strings.Contains(number, "#") || strings.Count(prefix, "/") != 1 {
-		return "", fmt.Errorf("invalid closing issue reference %q: expected a number or owner/repository#number", value)
+	} else if !validProjectPath(prefix) {
+		return "", fmt.Errorf("invalid closing issue reference %q: expected a number or project#number", value)
 	}
 	if !positiveDecimal(number) {
 		return "", fmt.Errorf("invalid closing issue reference %q: issue number must be a positive decimal number", value)
@@ -115,11 +121,43 @@ func normalize(value string) (string, error) {
 	if prefix == "" {
 		return number, nil
 	}
-	owner, repo, _ := strings.Cut(prefix, "/")
-	if !validOwner(owner) || !validRepository(repo) {
-		return "", fmt.Errorf("invalid closing issue reference %q: expected owner/repository#number", value)
+	return strings.ToLower(prefix) + "#" + number, nil
+}
+
+// validProjectPath reports whether prefix is a provider project path: at least
+// two "/"-separated segments, each a well-formed project path segment. Two
+// segments is the GitHub owner/repository shape; a GitLab path may nest under
+// subgroups, so the count is open above it.
+func validProjectPath(prefix string) bool {
+	segments := strings.Split(prefix, "/")
+	if len(segments) < 2 {
+		return false
 	}
-	return strings.ToLower(owner+"/"+repo) + "#" + number, nil
+	for i, segment := range segments {
+		if i < len(segments)-1 && (strings.HasPrefix(segment, "-") || strings.HasSuffix(segment, "-")) {
+			return false
+		}
+		if !validProjectSegment(segment) {
+			return false
+		}
+	}
+	return true
+}
+
+// validProjectSegment reports whether one "/"-separated piece of a project path
+// is well formed. The rule is the repository one because a project path
+// segment - GitLab group and project paths alike - allows ".", "_" and "-"
+// inside it; a GitHub owner is a narrower case that rides on the same rule.
+func validProjectSegment(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for _, r := range value {
+		if !asciiLetterOrDigit(r) && r != '-' && r != '_' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func positiveDecimal(value string) bool {
@@ -128,30 +166,6 @@ func positiveDecimal(value string) bool {
 	}
 	for _, r := range value {
 		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func validOwner(value string) bool {
-	if value == "" || value[0] == '-' || value[len(value)-1] == '-' {
-		return false
-	}
-	for _, r := range value {
-		if !asciiLetterOrDigit(r) && r != '-' {
-			return false
-		}
-	}
-	return true
-}
-
-func validRepository(value string) bool {
-	if value == "" || value == "." || value == ".." {
-		return false
-	}
-	for _, r := range value {
-		if !asciiLetterOrDigit(r) && r != '-' && r != '_' && r != '.' {
 			return false
 		}
 	}

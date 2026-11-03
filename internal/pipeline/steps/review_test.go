@@ -227,6 +227,7 @@ func TestReviewStep_PartialReviewedPathsDoesNotGrantApproval(t *testing.T) {
 }
 
 func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "hanging-review-agent",
@@ -276,6 +277,7 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 // process was actually doing - and it is what makes a silent 30-minute review
 // timeout diagnosable instead of a dead end.
 func TestReviewStep_WallClockTimeoutPreservesTheAgentReport(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "reporting-review-agent",
@@ -313,6 +315,7 @@ func TestReviewStep_WallClockTimeoutPreservesTheAgentReport(t *testing.T) {
 // Each fixer and each independent rereviewer must start with a fresh silent
 // budget, not leftover time from the previous turn.
 func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -377,6 +380,7 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 }
 
 func TestReviewFix_PostAgentCommitUsesStepParentContext(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -439,6 +443,7 @@ func TestReviewFix_PostAgentCommitUsesStepParentContext(t *testing.T) {
 }
 
 func TestReviewStep_LateCompletionAfterInvocationDeadlineIsRejected(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "late-reviewer",
@@ -460,6 +465,7 @@ func TestReviewStep_LateCompletionAfterInvocationDeadlineIsRejected(t *testing.T
 }
 
 func TestReviewStep_StreamingPastStallBudgetCompletes(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	const stall = 80 * time.Millisecond
 	done := time.NewTimer(stall + stall/2)
@@ -495,6 +501,7 @@ func TestReviewStep_StreamingPastStallBudgetCompletes(t *testing.T) {
 }
 
 func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "progress-only-reviewer",
@@ -1482,6 +1489,11 @@ func TestReviewStep_RereviewFlagsIntentContradictionAsAskUser(t *testing.T) {
 // the agent received.
 func reviewPromptFor(t *testing.T, rules []config.PathInstruction) string {
 	t.Helper()
+	return reviewPromptForReview(t, config.Review{PathInstructions: rules})
+}
+
+func reviewPromptForReview(t *testing.T, review config.Review) string {
+	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -1492,7 +1504,7 @@ func reviewPromptFor(t *testing.T, rules []config.PathInstruction) string {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.Review = config.Review{PathInstructions: rules}
+	sctx.Config.Review = review
 
 	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -1532,6 +1544,30 @@ func TestReviewStep_PathInstructionsLeaveUnconfiguredPromptUnchanged(t *testing.
 	want := base + wantSection(wantBlock("*.txt", "feature.txt", "Fixture files carry no product behavior.")) + agent.MemoryFilesRule
 	if matched != want {
 		t.Fatalf("matched review prompt = %q, want the unconfigured prompt plus the appended section", matched)
+	}
+}
+
+// Machine-local rules from the operator's global config render as their own
+// labeled sections ahead of the repository's trusted rules, and only append:
+// the prompt is the unconfigured one plus the three sections and nothing else.
+func TestReviewStep_OperatorPathInstructionsRenderAsLabeledSectionsBeforeTrusted(t *testing.T) {
+	t.Parallel()
+
+	unconfigured := reviewPromptFor(t, nil)
+	got := reviewPromptForReview(t, config.Review{
+		GlobalPathInstructions:     []config.PathInstruction{{Path: "*.txt", Instructions: "Global operator rule."}},
+		RepositoryPathInstructions: []config.PathInstruction{{Path: "feature.txt", Instructions: "Per-repository operator rule."}},
+		PathInstructions:           []config.PathInstruction{{Path: "*.txt", Instructions: "Trusted maintainer rule."}},
+	})
+
+	base := strings.TrimSuffix(unconfigured, agent.MemoryFilesRule)
+	want := base +
+		"\n\n" + config.ReviewGlobalPathInstructionsHeading + "\n" + wantBlock("*.txt", "feature.txt", "Global operator rule.") +
+		"\n\n" + config.ReviewRepositoryPathInstructionsHeading + "\n" + wantBlock("feature.txt", "feature.txt", "Per-repository operator rule.") +
+		wantSection(wantBlock("*.txt", "feature.txt", "Trusted maintainer rule.")) +
+		agent.MemoryFilesRule
+	if got != want {
+		t.Fatalf("review prompt = %q, want the unconfigured prompt plus global, per-repository, then trusted sections", got)
 	}
 }
 
@@ -1580,10 +1616,9 @@ func TestReviewStep_PushedIgnorePatternsCannotSuppressPathInstructions(t *testin
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			// The branch adds app.go and ignores *.txt, so the reviewable set
-			// is app.go alone; the canned clean review covers it in one turn.
+			// Trusted instructions keep feature.txt in scope despite pushed ignores.
 			findings := cleanReviewFindings()
-			findings.ReviewedPaths = []string{"app.go"}
+			findings.ReviewedPaths = []string{"app.go", "feature.txt"}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},

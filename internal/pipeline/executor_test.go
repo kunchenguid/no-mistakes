@@ -91,6 +91,141 @@ func TestExecutor_SuccessfulStepsDoNotEmitTelemetry(t *testing.T) {
 	}
 }
 
+// A CI repair that carried the review approval (a proven pure replay) asks to
+// restart at Test: the rewind re-runs Test onward and leaves the completed
+// Review untouched, rather than paying for a second Review.
+func TestExecutor_RestartFromTestKeepsTheCompletedReview(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	var order []types.StepName
+	pass := func(name types.StepName) Step {
+		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+			order = append(order, name)
+			return &StepOutcome{}, nil
+		}}
+	}
+	ciCalls := 0
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		order = append(order, types.StepCI)
+		ciCalls++
+		switch ciCalls {
+		case 1:
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"severity":"error","description":"PR is behind its base","action":"auto-fix","category":"ci-behind-base"}],"summary":"behind base"}`,
+			}, nil
+		case 2:
+			return &StepOutcome{RestartFrom: types.StepTest}, nil
+		default:
+			return &StepOutcome{}, nil
+		}
+	}}
+	cycle := []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR}
+	steps := make([]Step, 0, len(cycle)+1)
+	for _, name := range cycle {
+		steps = append(steps, pass(name))
+	}
+	steps = append(steps, ci)
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{CI: 1}}, nil, steps, nil)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	want := append(append([]types.StepName{}, cycle...), types.StepCI, types.StepCI)
+	want = append(want, cycle[1:]...)
+	want = append(want, types.StepCI)
+	if !slices.Equal(order, want) {
+		t.Fatalf("execution order = %v, want %v", order, want)
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range results {
+		if result.Status != types.StepStatusCompleted {
+			t.Errorf("step %s = %s, want completed", result.StepName, result.Status)
+		}
+	}
+}
+
+// A CI repair that carried the review approval asks to restart at Test, but
+// that request lived only in the parked CI step's outcome. A daemon restart
+// while CI is parked on ask-user findings must still re-run Test onward on
+// approval, from the run's durable flag, instead of finishing the run with
+// the carried head never published.
+func TestExecutor_RecoveredCIGateApprovalRestartsAPendingCarryAtTest(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	const reviewed, replayed = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, reviewed); err != nil {
+		t.Fatal(err)
+	}
+	if carried, err := database.UpdateRunHeadSHAWithCarriedReview(run.ID, reviewed, replayed); err != nil || !carried {
+		t.Fatalf("carry = %v, %v", carried, err)
+	}
+
+	var order []types.StepName
+	record := func(name types.StepName) Step {
+		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+			order = append(order, name)
+			return &StepOutcome{}, nil
+		}}
+	}
+	names := []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	steps := make([]Step, 0, len(names))
+	findings := `{"findings":[{"id":"ci-1","severity":"warning","description":"review bot comment","action":"ask-user"}],"summary":"1 finding"}`
+	for _, name := range names {
+		steps = append(steps, record(name))
+		sr, err := database.InsertStepResult(run.ID, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name != types.StepCI {
+			if err := database.CompleteStepWithStatus(sr.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := database.StartStep(sr.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.SetStepFindings(sr.ID, findings); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.InsertStepRound(sr.ID, 1, "initial", &findings, nil, 10); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateStepStatusWithDuration(sr.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(database, p, &config.Config{}, nil, steps, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for exec.Respond(types.StepCI, types.ActionApprove, nil) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("recovered CI gate never accepted approval")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if want := names[1:]; !slices.Equal(order, want) {
+		t.Fatalf("after approval ran %v, want %v", order, want)
+	}
+}
+
 func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

@@ -3,15 +3,18 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 const (
 	RoundSelectionSourceUser    = "user"
 	RoundSelectionSourceAutoFix = "auto_fix"
-	// RoundSelectionSourceUserDeclined records that a human resolved the
+	// RoundSelectionSourceUserDeclined records that a caller resolved the
 	// round's approval gate without selecting any finding to fix: approve,
-	// skip, or abort. Before this existed, those three resolutions wrote no
-	// finding-level state at all, so "the human declined every finding" and
+	// skip, or abort, or a fix response that declined every finding the gate
+	// showed (--ignore with no --findings). Before this existed, those three resolutions wrote no
+	// finding-level state at all, so "the caller declined every finding" and
 	// "there were no findings" were the same row and no later step or run
 	// could tell them apart. The decline itself is still stored the way a
 	// partial selection stores one, as the complement of
@@ -32,9 +35,10 @@ type StepRound struct {
 	ID           string
 	StepResultID string
 	Round        int
-	// Trigger is "initial", "auto_fix", or "answer" (a review turn resumed
+	// Trigger is "initial", "auto_fix", "coverage", or "answer" (a review turn resumed
 	// once every question it left open was answered - not a fix round, since
-	// no code changed); legacy "user_fix" is treated as "auto_fix".
+	// no code changed). "coverage" starts another static review without a fix
+	// or verdict; legacy "user_fix" is treated as "auto_fix".
 	Trigger          string
 	FindingsJSON     *string // nullable - findings produced by this round
 	ReviewedHeadSHA  *string // non-authoritative commit candidate captured by a review round
@@ -54,6 +58,7 @@ type StepRound struct {
 	// round, so that later rounds' prompts can tell which findings were
 	// deliberately left unselected.
 	SelectedFindingIDs *string
+	ResponseOrigin     types.ResponseOrigin
 	SelectionSource    *string
 	// FixSummary, when non-nil, records a fix round's result.
 	FixSummary      *string
@@ -203,10 +208,11 @@ func (d *DB) insertStepRound(stepResultID string, round int, trigger string, fin
 		RepairPublished:  repairPublished,
 		DurationMS:       durationMS,
 		CreatedAt:        now(),
+		ResponseOrigin:   types.ResponseOriginUnknown,
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, repair_published, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.ReviewedHeadSHA, r.StartingHeadSHA, r.TrustedConfigSHA, r.GlobalConfigYAML, r.RepoConfigYAML, r.UserFindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.RepairPublished, r.DurationMS, r.CreatedAt,
+		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, repair_published, duration_ms, created_at, response_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.ReviewedHeadSHA, r.StartingHeadSHA, r.TrustedConfigSHA, r.GlobalConfigYAML, r.RepoConfigYAML, r.UserFindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.RepairPublished, r.DurationMS, r.CreatedAt, r.ResponseOrigin,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert step round: %w", err)
@@ -236,19 +242,25 @@ func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source
 	return nil
 }
 
-// SetStepRoundUserDecision records the user's resolution of a round: which
+// SetStepRoundUserDecision records the caller's resolution of a round: which
 // findings were selected for fix, how the selection was made, and the merged
 // finding list dispatched to the fix agent. The same empty-string versus
 // DeclinedSelectionJSON distinction described on SetStepRoundSelection
-// applies here.
-func (d *DB) SetStepRoundUserDecision(id string, selectedFindingIDs *string, source string, userFindingsJSON *string) error {
+// applies here. The decline set is derived on read as the complement of the
+// selection (minus any finding an earlier user round of the same step chose to
+// fix), never stored, so there is no decline column to keep in step with it.
+func (d *DB) SetStepRoundUserDecision(id string, selectedFindingIDs *string, source string, userFindingsJSON *string, origins ...types.ResponseOrigin) error {
+	origin := types.ResponseOriginUnknown
+	if len(origins) > 0 {
+		origin = origins[0].OrUnknown()
+	}
 	var selectionSource *string
 	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {
 		selectionSource = &source
 	}
 	if _, err := d.sql.Exec(
-		`UPDATE step_rounds SET selected_finding_ids = ?, selection_source = ?, user_findings_json = ? WHERE id = ?`,
-		selectedFindingIDs, selectionSource, userFindingsJSON, id,
+		`UPDATE step_rounds SET selected_finding_ids = ?, selection_source = ?, user_findings_json = ?, response_origin = ? WHERE id = ?`,
+		selectedFindingIDs, selectionSource, userFindingsJSON, origin, id,
 	); err != nil {
 		return fmt.Errorf("set step round user decision: %w", err)
 	}
@@ -277,7 +289,7 @@ func (d *DB) SetStepRoundUserFindings(id string, userFindingsJSON *string) error
 // GetRoundsByStep returns all rounds for a step result, ordered by round number.
 func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, repair_published, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
+		`SELECT id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, repair_published, duration_ms, created_at, response_origin FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
 		stepResultID,
 	)
 	if err != nil {
@@ -287,7 +299,7 @@ func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	var rounds []*StepRound
 	for rows.Next() {
 		r := &StepRound{}
-		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.ReviewedHeadSHA, &r.StartingHeadSHA, &r.TrustedConfigSHA, &r.GlobalConfigYAML, &r.RepoConfigYAML, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.RepairPublished, &r.DurationMS, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.ReviewedHeadSHA, &r.StartingHeadSHA, &r.TrustedConfigSHA, &r.GlobalConfigYAML, &r.RepoConfigYAML, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.RepairPublished, &r.DurationMS, &r.CreatedAt, &r.ResponseOrigin); err != nil {
 			return nil, fmt.Errorf("scan step round: %w", err)
 		}
 		rounds = append(rounds, r)

@@ -294,10 +294,14 @@ type Evaluation struct {
 	InputTokens       int64  `json:"input_tokens"`
 	OutputTokens      int64  `json:"output_tokens"`
 	CacheReadTokens   int64  `json:"cache_read_tokens"`
-	FreshInputTokens  int64  `json:"fresh_input_tokens"`
-	TokensReported    bool   `json:"tokens_reported"`
-	DurationMS        int64  `json:"duration_ms"`
-	Model             string `json:"model,omitempty"`
+	// CacheWriteTokens records provider cache-creation tokens. Older payloads
+	// predate the field and decode to zero, which the report renders as an
+	// absent cache-write segment rather than a fabricated write count.
+	CacheWriteTokens int64  `json:"cache_write_tokens,omitempty"`
+	FreshInputTokens int64  `json:"fresh_input_tokens"`
+	TokensReported   bool   `json:"tokens_reported"`
+	DurationMS       int64  `json:"duration_ms"`
+	Model            string `json:"model,omitempty"`
 }
 
 // EvaluationSummary aggregates finding-level scores. A case with no gold is

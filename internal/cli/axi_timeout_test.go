@@ -352,6 +352,9 @@ type axiTimeoutOpts struct {
 	subscribe ipc.StreamHandlerFunc
 	// answer, when set, serves the daemon's answer-review-question call.
 	answer func() *ipc.AnswerReviewQuestionResult
+	// respond, when set, replaces the default respond handler so a test can
+	// return the refusals and recorded dispositions the CLI has to render.
+	respond func(context.Context, json.RawMessage) (interface{}, error)
 }
 
 type axiTimeoutFixture struct {
@@ -477,7 +480,9 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 		}
 		return &ipc.GetActiveRunResult{Run: run}, nil
 	})
-	if opts.responded != nil {
+	if opts.respond != nil {
+		srv.Handle(ipc.MethodRespond, opts.respond)
+	} else if opts.responded != nil {
 		srv.Handle(ipc.MethodRespond, func(context.Context, json.RawMessage) (interface{}, error) {
 			opts.responded.Store(true)
 			return &ipc.RespondResult{OK: true}, nil
@@ -516,8 +521,11 @@ func hangSubscribe(ctx context.Context, _ json.RawMessage) (ipc.StreamFunc, erro
 
 func startIPCServer(t *testing.T, srv *ipc.Server, socketPath string) {
 	t.Helper()
+	if err := srv.Listen(socketPath); err != nil {
+		t.Fatalf("listen for fake daemon: %v", err)
+	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve(socketPath) }()
+	go func() { errCh <- srv.ServeReady() }()
 	t.Cleanup(func() {
 		srv.Close()
 		select {
@@ -526,7 +534,6 @@ func startIPCServer(t *testing.T, srv *ipc.Server, socketPath string) {
 			t.Error("fake daemon did not stop")
 		}
 	})
-	dialReady(t, socketPath).Close()
 }
 
 func dialReady(t *testing.T, socketPath string) *ipc.Client {

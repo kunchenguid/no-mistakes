@@ -1,1 +1,5 @@
 skills/no-mistakes/SKILL.md text eol=lf
+# The manifest's bytes are embedded verbatim into the committed resource
+# objects, so a CRLF checkout would make `make winres-check` report drift.
+internal/winres/no-mistakes.exe.manifest text eol=lf
+cmd/no-mistakes/*.syso binary

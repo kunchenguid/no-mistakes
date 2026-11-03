@@ -24,6 +24,9 @@ type piAgent struct {
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
 	subprocessContext
+	// output caches whether this Pi binary and provider can take the strict
+	// schema-constrained output tool; see structuredOutputPath.
+	output piOutputSupport
 }
 
 func (a *piAgent) Name() string { return "pi" }
@@ -48,13 +51,13 @@ func (a *piAgent) NeutralizesGateInstructions() bool {
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
-		return a.runOnce(ctx, opts)
+		return a.runStructured(ctx, opts)
 	})
 }
 
 func (a *piAgent) Close() error { return nil }
 
-func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Result, error) {
 	if opts.Session != nil && opts.Session.ID != "" && !isPiSessionID(opts.Session.ID) {
 		// Pi accepts a path or partial UUID for --session. no-mistakes persists
 		// only the full UUID that Pi minted, so corrupt local metadata cannot
@@ -62,6 +65,14 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("invalid pi session identity")
 	}
 	args := a.buildArgs(opts.Session)
+	if strict {
+		extension, cleanup, err := preparePiOutput(opts.JSONSchema)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+		args = append(args, "--extension", extension)
+	}
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
@@ -72,7 +83,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("pi stdin pipe: %w", err)
 	}
 
-	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "pi"))
+	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "pi"), opts.RequireCompletedChildren)
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("pi start: %w", err)
@@ -81,7 +92,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	pid := started.pid()
 	emitAgentStarted(opts, "pi", pid)
 
-	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema)
+	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema, strict)
 	stdinErrCh := writeNativeAgentStdin(stdin, prompt)
 
 	var stderrBuf []byte
@@ -95,14 +106,16 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	pp := &piParser{onChunk: opts.OnChunk}
 	if err := pp.parse(ctx, started.stdout); err != nil {
 		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		err = errors.Join(err, piStdinError(<-stdinErrCh))
-		retErr := fmt.Errorf("pi parse events: %w", err)
-		emitAgentExited(opts, "pi", pid, retErr)
-		return failedResult(pp.usage, pp.sessionID), retErr
+		if !started.closedByWaitDelay(err) || !pp.agentEnded {
+			stderrWG.Wait()
+			err = errors.Join(err, piStdinError(<-stdinErrCh))
+			retErr := fmt.Errorf("pi parse events (result received: %t): %w", pp.agentEnded, err)
+			emitAgentExited(opts, "pi", pid, retErr)
+			return pp.failedResult(), retErr
+		}
 	}
 
-	waitErr := started.wait()
+	waitErr := started.waitKeepingResult(pp.agentEnded)
 	stderrWG.Wait()
 	stdinErr := piStdinError(<-stdinErrCh)
 	stderr := strings.TrimSpace(string(stderrBuf))
@@ -110,28 +123,43 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		if stderr != "" {
 			retErr := fmt.Errorf("pi exited: %w: %s", errors.Join(waitErr, stdinErr), stderr)
 			emitAgentExited(opts, "pi", pid, retErr)
-			return failedResult(pp.usage, pp.sessionID), retErr
+			return pp.failedResult(), retErr
 		}
 		retErr := fmt.Errorf("pi exited: %w", errors.Join(waitErr, stdinErr))
 		emitAgentExited(opts, "pi", pid, retErr)
-		return failedResult(pp.usage, pp.sessionID), retErr
+		return pp.failedResult(), retErr
 	}
 	if stdinErr != nil {
 		if stderr != "" {
 			stdinErr = fmt.Errorf("%w: %s", stdinErr, stderr)
 		}
 		emitAgentExited(opts, "pi", pid, stdinErr)
-		return failedResult(pp.usage, pp.sessionID), stdinErr
+		return pp.failedResult(), stdinErr
 	}
 
 	if pp.assistantError != "" {
 		retErr := fmt.Errorf("pi reported error: %s", pp.assistantError)
 		emitAgentExited(opts, "pi", pid, retErr)
-		return failedResult(pp.usage, pp.sessionID), retErr
+		return pp.failedResult(), retErr
 	}
 
 	text := pp.finalText()
+	if strict {
+		text = pp.finalOutputToolText()
+		if text == "" {
+			retErr := fmt.Errorf("pi did not finish by calling %s alone", piOutputTool)
+			if stderr != "" {
+				retErr = fmt.Errorf("%w: %s", retErr, stderr)
+			}
+			retErr = RejectStructuredOutput(retErr)
+			emitAgentExited(opts, "pi", pid, retErr)
+			return pp.failedResult(), retErr
+		}
+	}
 	res, err := finalizeTextResult("pi", text, opts.JSONSchema, pp.usage)
+	if res == nil {
+		res = pp.failedResult()
+	}
 	if res != nil {
 		res.Model = pp.model
 		res.ModelProvider = pp.provider
@@ -157,6 +185,18 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 	emitAgentExited(opts, "pi", pid, err)
 	return res, err
+}
+
+func (p *piParser) failedResult() *Result {
+	res := failedResult(p.usage, p.sessionID)
+	if res == nil && (p.model != "" || p.provider != "") {
+		res = &Result{}
+	}
+	if res != nil {
+		res.Model = p.model
+		res.ModelProvider = p.provider
+	}
+	return res
 }
 
 func piStdinError(err error) error {
@@ -254,20 +294,26 @@ func piArgTakesValue(arg string) bool {
 }
 
 // buildPiPrompt appends a JSON-output contract to the user prompt when a
-// schema is provided. Pi has no equivalent of codex's --output-schema flag,
-// so we inline the schema in the prompt the same way gnhf does.
-func buildPiPrompt(prompt string, schema json.RawMessage) string {
+// schema is provided. On the strict path the schema is the output tool's
+// parameters; otherwise it is inlined in the prompt the same way gnhf does and
+// the final text is validated afterwards.
+func buildPiPrompt(prompt string, schema json.RawMessage, strict bool) string {
 	if len(schema) == 0 {
 		return prompt
 	}
-	pretty, err := json.MarshalIndent(json.RawMessage(schema), "", "  ")
-	if err != nil {
-		pretty = []byte(schema)
+	if !strict {
+		pretty, err := json.MarshalIndent(json.RawMessage(schema), "", "  ")
+		if err != nil {
+			pretty = []byte(schema)
+		}
+		return prompt + "\n\n## no-mistakes final output contract\n\n" +
+			"When the iteration is complete, your final assistant response must be only valid JSON matching this JSON Schema. " +
+			"Do not wrap it in Markdown fences. Do not include prose before or after the JSON object.\n\n" +
+			string(pretty)
 	}
 	return prompt + "\n\n## no-mistakes final output contract\n\n" +
-		"When the iteration is complete, your final assistant response must be only valid JSON matching this JSON Schema. " +
-		"Do not wrap it in Markdown fences. Do not include prose before or after the JSON object.\n\n" +
-		string(pretty)
+		"When the iteration is complete, submit the result by calling no_mistakes_output as your final and only remaining tool call. " +
+		"Its parameters enforce the requested JSON Schema. Do not write a final assistant JSON or prose response instead."
 }
 
 // piParser tracks the streaming state of one Pi run. It accumulates text
@@ -285,6 +331,10 @@ type piParser struct {
 	usage          TokenUsage
 	seenUsage      map[string]struct{}
 	assistantError string
+	// agentEnded is set once pi's agent_end event arrives: the run finished
+	// and its result is complete even if the process exit is not observed.
+	agentEnded  bool
+	outputTools map[string]string
 }
 
 func (p *piParser) parse(ctx context.Context, r io.Reader) error {
@@ -335,7 +385,10 @@ func (p *piParser) handleEvent(event map[string]any) {
 		p.rememberAssistant(event["message"])
 		p.recordAssistantUsage(event["message"])
 	case "agent_end":
+		p.agentEnded = true
 		p.rememberAgentEnd(event["messages"])
+	case "tool_execution_end":
+		p.rememberOutputTool(event)
 	}
 }
 
@@ -570,7 +623,7 @@ func piUsageFrom(usage map[string]any) TokenUsage {
 	return TokenUsage{
 		Reported:              len(usage) > 0,
 		CacheCreationReported: cacheCreationReported,
-		InputTokens:           piIntField(usage, "input"),
+		InputTokens:           piIntField(usage, "input") + piIntField(usage, "cacheRead") + piIntField(usage, "cacheWrite"),
 		OutputTokens:          piIntField(usage, "output"),
 		CacheReadTokens:       piIntField(usage, "cacheRead"),
 		CacheCreationTokens:   piIntField(usage, "cacheWrite"),

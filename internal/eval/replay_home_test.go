@@ -21,8 +21,7 @@ const claudeHOMEProbeReply = `{"type":"assistant","message":{"usage":{"input_tok
 {"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":12,"output_tokens":3}}
 `
 
-const piHOMEProbeReply = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"findings\":[],\"risk_level\":\"low\",\"risk_rationale\":\"clean\",\"risk_scope\":\"source-or-external\"}"}]}]}
-`
+const piHOMEProbeReply = `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"final-1","name":"no_mistakes_output","arguments":` + piReviewOutput + `}]}]}` + "\n" + piReviewToolResult
 
 // TestReplayUsesCallerHOMEAndKeepsIsolatedNMHOME is the behavioral half of
 // dropping eval's empty-HOME rewrite: candidates inherit the caller's HOME
@@ -182,6 +181,7 @@ func installNamedHOMEProbeHarness(t *testing.T, path, probePath, reply string) {
 	var script string
 	if runtime.GOOS == "windows" {
 		script = "@echo off\r\n" +
+			"if \"%1\"==\"--version\" (echo 0.99.1& exit /b 0)\r\n" +
 			"more >nul\r\n" +
 			">\"" + probePath + "\" echo home=%HOME%\r\n" +
 			">>\"" + probePath + "\" echo nm_home=%NM_HOME%\r\n" +
@@ -191,6 +191,7 @@ func installNamedHOMEProbeHarness(t *testing.T, path, probePath, reply string) {
 			"echo " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
 	} else {
 		script = "#!/bin/sh\n" +
+			"[ \"$1\" = \"--version\" ] && { echo 0.99.1; exit 0; }\n" +
 			"PROBE=\"" + probePath + "\"\n" +
 			"HOME_AUTH=0\n" +
 			"[ -f \"$HOME/.pi/agent/auth.json\" ] && HOME_AUTH=1\n" +

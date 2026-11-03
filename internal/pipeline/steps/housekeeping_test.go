@@ -323,6 +323,7 @@ func TestLintStep_FixRoundReassessesWithOwnAgentPass(t *testing.T) {
 // with agent-driven lint used to cost two cold agent passes; the combined
 // pass must cost exactly one.
 func TestPipeline_DocumentPlusLintIsOneAgentInvocation(t *testing.T) {
+	t.Parallel()
 	workDir, baseSHA, headSHA := setupGitRepo(t)
 	ensureHermeticOrigin(t, workDir)
 

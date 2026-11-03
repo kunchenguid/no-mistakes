@@ -44,7 +44,7 @@ func WorktreeSteering(evidenceRoot string) string {
 - Ephemeral temp/cache writes that are incidental side effects of running the project development toolchain are allowed outside the worktree for tests, linters, formatters, builds, and manual verification commands.
 - You may read files outside the worktree and run read-only commands, but every other intentional write must stay inside the worktree.
 - Do not search the host filesystem. Never run a filesystem-wide search such as `+"`find /`"+` or `+"`mdfind /`"+`, and never hunt the machine for an installed tool. A `+"`-maxdepth`"+` or `+"`-xdev`"+` flag does not make a whole-root search bounded, so it does not license one. Bounded searches inside the worktree, inside an external evidence path a prompt explicitly names, or inside a repository-local path you were given remain fine.
-- If a tool you need is not on PATH and no repository-local path is supplied, do not search the machine for it: report the missing tool and the work it blocked in your normal result, with the concrete reason, and stop there.
+- If a tool you need is not on PATH and no repository-local path is supplied, do not search the machine for it: report the missing tool and the work it blocked in your normal result, with the concrete reason, and stop searching there. A missing tool blocks only the search and any verification that needs it: still do every other part of your task, including any edits you were asked to make.
 
 `, location)
 }

@@ -20,10 +20,14 @@ import (
 )
 
 var (
-	daemonRun         = daemon.Run
-	daemonStartFn     = daemon.Start
-	daemonStopFn      = daemon.Stop
-	daemonIsRunningFn = daemon.IsRunning
+	daemonRun                  = daemon.Run
+	daemonStartFn              = daemon.Start
+	daemonStartGuardedFn       = daemon.StartGuarded
+	daemonStopFn               = daemon.Stop
+	daemonUninstallFn          = daemon.Uninstall
+	daemonUninstallSupportedFn = daemon.UninstallSupported
+	daemonLaunchAgentPathFn    = daemon.InstalledLaunchAgentPath
+	daemonIsRunningFn          = daemon.IsRunning
 )
 
 func newDaemonCmd() *cobra.Command {
@@ -34,6 +38,7 @@ func newDaemonCmd() *cobra.Command {
 
 	cmd.AddCommand(newDaemonStartCmd())
 	cmd.AddCommand(newDaemonStopCmd())
+	cmd.AddCommand(newDaemonUninstallCmd())
 	cmd.AddCommand(newDaemonRestartCmd())
 	cmd.AddCommand(newDaemonStatusCmd())
 	cmd.AddCommand(newDaemonRunCmd())
@@ -529,7 +534,8 @@ func dedupeSteps(steps []types.StepName) []types.StepName {
 }
 
 func newDaemonStartCmd() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Install or refresh the managed daemon service and start it",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -538,10 +544,29 @@ func newDaemonStartCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if err := ipc.CheckEndpointPath(p.Socket()); err != nil {
+					return err
+				}
 				if err := p.EnsureDirs(); err != nil {
 					return err
 				}
-				if err := daemonStartFn(p); err != nil {
+				// Restarting for service drift or an older daemon must pass
+				// the active-run guard before stopping or rewriting anything.
+				guard := func() error {
+					logLifecycleInvocation("daemon.start", force)
+					return guardDestructiveDaemonLifecycle(p, cmd.ErrOrStderr(), "daemon start", force)
+				}
+				if older, _ := cmd.Context().Value(olderDaemonContextKey{}).(bool); older {
+					if err := guard(); err != nil {
+						return err
+					}
+					if err := daemonStopFn(p); err != nil {
+						return fmt.Errorf("stop older daemon: %w", err)
+					}
+					if err := daemonStartFn(p); err != nil {
+						return fmt.Errorf("start daemon: %w", err)
+					}
+				} else if err := daemonStartGuardedFn(p, guard); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon started\n", sGreen.Render("✓"))
@@ -549,6 +574,8 @@ func newDaemonStartCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "restart a running daemon to refresh its service definition even when pipeline runs are active")
+	return cmd
 }
 
 func newDaemonStopCmd() *cobra.Command {
@@ -570,11 +597,51 @@ func newDaemonStopCmd() *cobra.Command {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon stopped\n", sGreen.Render("✓"))
+				if path := daemonLaunchAgentPathFn(p); path != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Service starts again at the next login; LaunchAgent remains at %s. Remove it with `no-mistakes daemon uninstall`.\n", path)
+				}
 				return nil
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "stop the daemon even when pipeline runs are active")
+	return cmd
+}
+
+func newDaemonUninstallCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Stop and remove this instance's managed daemon service",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logLifecycleInvocation("daemon.uninstall", force)
+			return trackCommand("daemon.uninstall", func() error {
+				if !daemonUninstallSupportedFn() {
+					fmt.Fprintln(cmd.OutOrStdout(), "  No service removal is available on this platform; daemon uninstall changed nothing.")
+					return nil
+				}
+				p, err := paths.New()
+				if err != nil {
+					return err
+				}
+				if err := guardDestructiveDaemonLifecycle(p, cmd.ErrOrStderr(), "daemon uninstall", force); err != nil {
+					return err
+				}
+				definition, err := daemonUninstallFn(p)
+				if err != nil {
+					return err
+				}
+				if definition == "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  No managed daemon service is installed for NM_HOME %s.\n", p.Root())
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s removed managed daemon service: %s\n", sGreen.Render("✓"), definition)
+				}
+				return nil
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "uninstall the daemon service even when pipeline runs are active")
 	return cmd
 }
 
@@ -588,6 +655,9 @@ func newDaemonRestartCmd() *cobra.Command {
 			return trackCommand("daemon.restart", func() error {
 				p, err := paths.New()
 				if err != nil {
+					return err
+				}
+				if err := ipc.CheckEndpointPath(p.Socket()); err != nil {
 					return err
 				}
 				if err := p.EnsureDirs(); err != nil {
@@ -635,6 +705,9 @@ func newDaemonStatusCmd() *cobra.Command {
 			return trackCommand("daemon.status", func() error {
 				p, err := paths.New()
 				if err != nil {
+					return err
+				}
+				if err := ipc.CheckEndpointPath(p.Socket()); err != nil {
 					return err
 				}
 				alive, err := daemonIsRunningFn(p)

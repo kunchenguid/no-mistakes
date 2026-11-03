@@ -149,3 +149,78 @@ func TestLoadGlobalRejectsEmptyForgeHost(t *testing.T) {
 		t.Fatalf("LoadGlobal error = %v, want empty-host error", err)
 	}
 }
+
+func TestLoadGlobalParsesOwnerScopedGHUserProfiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "gh-work")
+	cfg, err := LoadGlobalFromBytes([]byte("forge_profiles:\n" +
+		"  GitHub.com/RemiCaesar:\n" +
+		"    gh_user: ' remicaesar '\n" +
+		"  github.com:\n" +
+		"    gh_config_dir: " + dir + "\n"))
+	if err != nil {
+		t.Fatalf("LoadGlobalFromBytes: %v", err)
+	}
+	if got := cfg.ForgeProfiles["github.com/remicaesar"]; got.GHUser != "remicaesar" || got.GHConfigDir != "" {
+		t.Fatalf("owner-scoped ambient profile = %#v", got)
+	}
+	if got := cfg.ForgeProfiles["github.com"]; got.GHUser != "" || got.GHConfigDir != dir {
+		t.Fatalf("plain host profile changed = %#v", got)
+	}
+}
+
+func TestLoadGlobalRejectsInvalidGHUserProfiles(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		key     string
+		profile string
+		want    string
+	}{
+		{name: "with glab dir", key: "gitlab.com", profile: "{gh_user: me, glab_config_dir: /tmp/glab}", want: "cannot be combined with glab_config_dir"},
+		{name: "with expected login", key: "github.com", profile: "{gh_user: me, expected_login: me}", want: "remove expected_login"},
+		{name: "flag-shaped login", key: "github.com", profile: "{gh_user: --hostname}", want: "is not a GitHub login"},
+		{name: "login with space", key: "github.com", profile: "{gh_user: 'a b'}", want: "is not a GitHub login"},
+		{name: "with gh config dir", key: "github.com/acme", profile: "{gh_user: me, gh_config_dir: /tmp/gh}", want: "cannot be combined with gh_config_dir"},
+		{name: "owner-scoped gitlab", key: "gitlab.com/group", profile: "{glab_config_dir: /tmp/glab}", want: "only for gh_user profiles"},
+		{name: "owner-scoped gh config dir", key: "github.com/acme", profile: "{gh_config_dir: /tmp/gh}", want: "only for gh_user profiles"},
+		{name: "owner-scoped expected login", key: "github.com/acme", profile: "{gh_config_dir: /tmp/gh, expected_login: acme-bot}", want: "only for gh_user profiles"},
+		{name: "nested owner", key: "github.com/a/b", profile: "{gh_user: me}", want: "single owner segment"},
+		{name: "empty owner", key: "github.com/", profile: "{gh_user: me}", want: "single owner segment"},
+		{name: "empty host", key: "/acme", profile: "{gh_user: me}", want: "host must not be empty"},
+		{name: "token field", key: "github.com/acme", profile: "{gh_user: me, token: secret}", want: "token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadGlobalFromBytes([]byte("forge_profiles:\n  '" + tc.key + "': " + tc.profile + "\n"))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadGlobalFromBytes error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The owner-to-login mapping decides which account's credentials a run
+// executes with, so nothing on the pushed branch may supply or extend it.
+func TestMergeTakesForgeProfilesFromGlobalOnly(t *testing.T) {
+	global, err := LoadGlobalFromBytes([]byte("forge_profiles:\n  github.com/acme:\n    gh_user: acme-bot\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := LoadRepoFromBytes([]byte("forge_profiles:\n  github.com/acme:\n    gh_user: attacker\n  github.com/evil:\n    gh_user: attacker\n"))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes: %v", err)
+	}
+	merged := Merge(global, repo)
+	if len(merged.ForgeProfiles) != 1 || merged.ForgeProfiles["github.com/acme"].GHUser != "acme-bot" {
+		t.Fatalf("merged ForgeProfiles = %#v", merged.ForgeProfiles)
+	}
+	if repoOnly := Merge(DefaultGlobalConfig(), repo); len(repoOnly.ForgeProfiles) != 0 {
+		t.Fatalf("repository config configured a forge profile: %#v", repoOnly.ForgeProfiles)
+	}
+}
+
+func TestLoadGlobalRejectsOwnerScopedProfileHostClaimedByPlugin(t *testing.T) {
+	_, err := LoadGlobalFromBytes([]byte("forge_profiles:\n  git.example.com/acme:\n    gh_user: acme-bot\n" +
+		"provider_plugins:\n  ssm:\n    command: nm-ssm\n    hosts: [git.example.com]\n"))
+	if err == nil || !strings.Contains(err.Error(), "also claimed by provider_plugins.ssm") {
+		t.Fatalf("LoadGlobalFromBytes error = %v, want plugin overlap", err)
+	}
+}

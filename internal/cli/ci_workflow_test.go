@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -186,6 +188,74 @@ func TestGenerateCIWorkflow(t *testing.T) {
 				tt.validate(t, workflow)
 			}
 		})
+	}
+}
+
+func TestGenerateCIWorkflow_GoSetup(t *testing.T) {
+	for _, withLint := range []bool{true, false} {
+		for _, modulePath := range []string{"go.mod", "nested/go.mod", ""} {
+			name := fmt.Sprintf("lint=%t/module=%s", withLint, modulePath)
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				initGitRepo(t, dir)
+				if modulePath != "" {
+					path := filepath.Join(dir, modulePath)
+					if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("module example.com/test\n\ngo 1.25\n"), 0644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				configYAML := "commands:\n  test: sh scripts/test.sh\n"
+				if withLint {
+					configYAML += "  lint: sh scripts/lint.sh\n"
+				}
+				if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(configYAML), 0644); err != nil {
+					t.Fatal(err)
+				}
+				// Detection must use the git root, not the caller's subdirectory.
+				subdir := filepath.Join(dir, "subdir")
+				if err := os.Mkdir(subdir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := generateCIWorkflow(subdir, false); err != nil {
+					t.Fatal(err)
+				}
+				content, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", "ci.yml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				type step struct {
+					Uses string
+					Name string
+					Run  string
+					With map[string]interface{}
+				}
+				var workflow struct {
+					Jobs map[string]struct {
+						Steps []step
+					}
+				}
+				if err := yaml.Unmarshal(content, &workflow); err != nil {
+					t.Fatal(err)
+				}
+				want := []step{{Uses: "actions/checkout@v4"}}
+				if modulePath == "go.mod" {
+					want = append(want, step{
+						Uses: "actions/setup-go@v5",
+						With: map[string]interface{}{"go-version-file": "go.mod", "check-latest": true},
+					})
+				}
+				if withLint {
+					want = append(want, step{Name: "Lint", Run: "sh scripts/lint.sh\n"})
+				}
+				want = append(want, step{Name: "Test", Run: "sh scripts/test.sh\n"})
+				if got := workflow.Jobs["build-test"].Steps; !reflect.DeepEqual(got, want) {
+					t.Errorf("steps = %#v, want %#v", got, want)
+				}
+			})
+		}
 	}
 }
 

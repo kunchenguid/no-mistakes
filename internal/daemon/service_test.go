@@ -88,6 +88,51 @@ func TestStart_ReinstallsManagedServiceWhenPlistChanged(t *testing.T) {
 	}
 }
 
+// TestStartGuarded_RefusalLeavesDriftedServiceAndDaemonAlone covers #1425:
+// when the restart guard refuses, the stale definition stays on disk and the
+// running daemon is never stopped.
+func TestStartGuarded_RefusalLeavesDriftedServiceAndDaemonAlone(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/opt/no-mistakes/bin/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := "<stale-plist-from-older-binary/>"
+	if err := os.WriteFile(plistPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	refusal := fmt.Errorf("refusing daemon start")
+	if err := StartGuarded(p, func() error { return refusal }); err != refusal {
+		t.Fatalf("StartGuarded should return the guard's refusal, got %v", err)
+	}
+	if data, _ := os.ReadFile(plistPath); string(data) != stale {
+		t.Fatalf("refused start should leave the definition untouched, got:\n%s", data)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("refused start should run no service commands, got %v", commands)
+	}
+}
+
 // TestStart_DoesNotReinstallWhenPlistUnchanged preserves the existing
 // "daemon already running" contract when nothing has changed, so repeated
 // `daemon start` invocations from shells/hooks don't silently restart the
@@ -122,7 +167,10 @@ func TestStart_DoesNotReinstallWhenPlistUnchanged(t *testing.T) {
 	}
 	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
 
-	err := Start(p)
+	err := StartGuarded(p, func() error {
+		t.Fatal("an unchanged definition restarts nothing, so the restart guard must not run")
+		return nil
+	})
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("expected 'already running' error when plist unchanged, got %v", err)
 	}

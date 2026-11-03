@@ -133,12 +133,12 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	bareDir := p.RepoDir(id)
 
 	// Provision (or repair) the on-disk gate. This is idempotent.
-	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL, p.ReposDir(), existing != nil); err != nil {
+	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL, p.ReposDir()); err != nil {
 		// Only tear down a gate we created in this call; never destroy an
 		// already-initialized gate when a repair pass fails.
 		if existing == nil {
-			if remoteURL, remoteErr := git.GetRemoteURL(ctx, absRoot, RemoteName); remoteErr == nil && remoteURL == bareDir {
-				git.RemoveRemote(ctx, absRoot, RemoteName)
+			if urls, err := git.GetConfiguredRemoteURLs(ctx, absRoot, RemoteName); err == nil && len(urls) == 1 && urls[0] == bareDir {
+				_ = git.RemoveRemote(ctx, absRoot, RemoteName)
 			}
 			os.RemoveAll(bareDir)
 		}
@@ -166,7 +166,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, redactedUpstreamURL, forkURL, branch)
 	if err != nil {
 		// Rollback: remove remote and bare repo.
-		git.RemoveRemote(ctx, absRoot, RemoteName)
+		removeOwnWorkingRemote(ctx, absRoot, p.ReposDir())
 		os.RemoveAll(bareDir)
 		return nil, false, fmt.Errorf("insert repo: %w", err)
 	}
@@ -191,7 +191,7 @@ func validateForkRouting(ctx context.Context, upstreamURL, forkURL string) error
 // its push/hook configuration, hook-path isolation, and the git remotes wiring
 // the working repo to the gate and the gate to its upstream. Every step is
 // idempotent so this doubles as the repair path for re-running init.
-func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir string, refresh bool) error {
+func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir string) error {
 	// Create the bare repo. git init --bare is a no-op on an existing one.
 	if err := git.InitBare(ctx, bareDir); err != nil {
 		return fmt.Errorf("create bare repo: %w", err)
@@ -223,31 +223,107 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 		return fmt.Errorf("add gate origin remote: %w", err)
 	}
 
-	if err := ensureWorkingRemote(ctx, absRoot, bareDir, reposDir, refresh); err != nil {
+	if err := ensureWorkingRemote(ctx, absRoot, bareDir, reposDir); err != nil {
 		return fmt.Errorf("add remote: %w", err)
 	}
 
 	return nil
 }
 
-func ensureWorkingRemote(ctx context.Context, absRoot, bareDir, reposDir string, refresh bool) error {
-	if refresh {
-		return git.EnsureRemote(ctx, absRoot, RemoteName, bareDir)
-	}
-	existingURL, err := git.GetRemoteURL(ctx, absRoot, RemoteName)
+// ensureWorkingRemote points the working repo's no-mistakes remote at bareDir,
+// on a fresh init and on a refresh alike. It decides from the literal
+// configured URL, before any url.<base>.insteadOf rewrite, because that is
+// what it would overwrite: the remote lives in .git/config, which every linked
+// worktree of the checkout shares, including one gated by another no-mistakes
+// home (another NM_HOME, typically another OS account). A literal URL outside
+// this home's repos dir is never rewritten (issue #1555).
+func ensureWorkingRemote(ctx context.Context, absRoot, bareDir, reposDir string) error {
+	literalURLs, err := git.GetConfiguredRemoteURLs(ctx, absRoot, RemoteName)
 	if err != nil {
 		return git.AddRemote(ctx, absRoot, RemoteName, bareDir)
 	}
-	if existingURL == bareDir {
+	if len(literalURLs) != 1 {
+		// A push goes to every URL, and set-url refuses to pick one, so there
+		// is no single URL to judge or repair.
+		return fmt.Errorf("remote %q has %d urls configured (%s); init does not rewrite it",
+			RemoteName, len(literalURLs), strings.Join(literalURLs, ", "))
+	}
+	literalURL := literalURLs[0]
+	if literalURL == bareDir {
 		return nil
 	}
 	// A leftover remote pointing into our own repos dir is stale gate wiring
 	// (e.g. the working directory was copied, or its gate was half-ejected);
-	// repoint it. Anything else is a user-managed remote we must not touch.
-	if filepath.Dir(existingURL) == reposDir {
+	// repoint it.
+	if filepath.Dir(literalURL) == reposDir {
 		return git.EnsureRemote(ctx, absRoot, RemoteName, bareDir)
 	}
-	return fmt.Errorf("remote %q already exists with url %q", RemoteName, existingURL)
+	// Anything else is not ours to rewrite. When the operator's own git config
+	// already maps it onto this gate, pushes through the remote land here, so
+	// the wiring is complete as it is.
+	if remoteResolvesTo(ctx, absRoot, bareDir) {
+		return nil
+	}
+	refusal := fmt.Sprintf("remote %q already exists with url %q", RemoteName, literalURL)
+	if !isSameRepoGateOfAnotherHome(literalURL, bareDir) {
+		return fmt.Errorf("%s", refusal)
+	}
+	return fmt.Errorf("%s\n\n"+
+		"That looks like this repository's gate in another no-mistakes home: this .git is shared with another NM_HOME\n"+
+		"(for example a linked worktree used by another OS account), and this home's gate is %s.\n"+
+		"init leaves the remote alone, because rewriting it would send the other home's pushes to this gate.\n"+
+		"To push through this home's gate, map the other gate onto it in your own global git config, then re-run init:\n\n"+
+		"  git config --global %s %s",
+		refusal, bareDir, shellQuote("url."+bareDir+".insteadOf"), shellQuote(literalURL))
+}
+
+// shellQuote quotes s as one POSIX shell word, so a path holding $, quotes, or
+// spaces survives copying the printed command into a shell.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// remoteResolvesTo reports whether every URL git resolves for the working
+// repo's no-mistakes remote, for fetch and for push and after any insteadOf or
+// pushInsteadOf rewrite, is bareDir.
+func remoteResolvesTo(ctx context.Context, absRoot, bareDir string) bool {
+	for _, args := range [][]string{
+		{"remote", "get-url", "--all", RemoteName},
+		{"remote", "get-url", "--push", "--all", RemoteName},
+	} {
+		out, err := git.Run(ctx, absRoot, args...)
+		if err != nil {
+			return false
+		}
+		for _, url := range strings.Split(out, "\n") {
+			if url != bareDir {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// removeOwnWorkingRemote removes the working repo's no-mistakes remote only
+// when its literal URL points into this home's repos dir. Under a shared .git
+// the remote can be another home's gate that this home merely reaches through
+// url.insteadOf, and that wiring is not ours to remove.
+func removeOwnWorkingRemote(ctx context.Context, absRoot, reposDir string) {
+	urls, err := git.GetConfiguredRemoteURLs(ctx, absRoot, RemoteName)
+	if err == nil && len(urls) == 1 && filepath.Dir(urls[0]) == reposDir {
+		_ = git.RemoveRemote(ctx, absRoot, RemoteName)
+	}
+}
+
+// isSameRepoGateOfAnotherHome reports whether url has the shape of this
+// repository's gate under some other no-mistakes home: <NM_HOME>/repos/<id>.git
+// with the same id as bareDir. A fresh init derives the id from the main
+// checkout's path, so homes sharing one .git usually name the same id; one
+// that kept an older id gets the plain refusal without this guidance.
+func isSameRepoGateOfAnotherHome(url, bareDir string) bool {
+	return filepath.IsAbs(url) &&
+		filepath.Base(url) == filepath.Base(bareDir) &&
+		filepath.Base(filepath.Dir(url)) == filepath.Base(filepath.Dir(bareDir))
 }
 
 // reattachRelocatedRepo detects a working directory that was renamed or moved
@@ -313,8 +389,9 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.R
 		return nil, fmt.Errorf("not initialized for %s", absRoot)
 	}
 
-	// Remove remote from working repo (non-fatal).
-	_ = git.RemoveRemote(ctx, absRoot, RemoteName)
+	// Remove remote from working repo (non-fatal), unless it is another home's
+	// gate wiring in a shared .git.
+	removeOwnWorkingRemote(ctx, absRoot, p.ReposDir())
 
 	// Delete bare repo.
 	bareDir := p.RepoDir(repo.ID)

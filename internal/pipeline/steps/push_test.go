@@ -94,6 +94,7 @@ func TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit(t *testing.
 }
 
 func TestAssertReviewApprovedPushHead(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		approval  string
@@ -177,6 +178,7 @@ func TestAssertReviewApprovedPushHead(t *testing.T) {
 }
 
 func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	err := assertReviewApprovedPushHead(sctx, headSHA)
@@ -186,6 +188,7 @@ func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
 }
 
 func TestAssertReviewApprovedPushHead_UsesStepScopedGit(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, approvedHead := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, approvedHead, config.Commands{})
 	recordReviewApproval(t, sctx, approvedHead)
@@ -400,6 +403,80 @@ func TestPushStep_DoesNotPublishTestEvidenceIntoThePushedBranch(t *testing.T) {
 	tracked := gitCmd(t, clone, "ls-files")
 	if strings.Contains(tracked, "evidence") || strings.Contains(tracked, ".png") {
 		t.Fatalf("pushed branch carries evidence files:\n%s", tracked)
+	}
+}
+
+func TestPushStep_CatchAllCommitSubject(t *testing.T) {
+	for _, tc := range []struct {
+		name, template, want string
+	}{
+		{"default", config.DefaultFixMessageTemplate, "no-mistakes: apply agent fixes"},
+		{"configured", "chore({{.Step}}): {{.Summary}} [{{.Branch}}]", "chore(push): apply agent fixes [feature]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := t.TempDir()
+			gitCmd(t, upstream, "init", "--bare")
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "remote", "add", "origin", upstream)
+			if err := os.WriteFile(filepath.Join(dir, "leftover.txt"), []byte("formatted\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Repo.UpstreamURL = upstream
+			sctx.Run.Branch = "refs/heads/feature"
+			sctx.Config.Commit.FixMessage = tc.template
+			setupGateMirror(t, sctx)
+			recordReviewApproval(t, sctx, headSHA)
+
+			if _, err := (&PushStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := gitCmd(t, upstream, "log", "-1", "--format=%s", "refs/heads/feature"); got != tc.want {
+				t.Fatalf("catch-all commit subject = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPushStep_CatchAllCommitSubjectRenderFailureDoesNotMutateGit(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	leftover := filepath.Join(dir, "leftover.txt")
+	if err := os.WriteFile(leftover, []byte("still uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.Commit = config.Commit{
+		FixMessage:    "chore({{.Branch}}): {{.Summary}}",
+		BranchPattern: `^PROJ/([0-9]+)$`,
+	}
+	setupGateMirror(t, sctx)
+	recordReviewApproval(t, sctx, headSHA)
+
+	_, err := (&PushStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "commit.branch_pattern did not find an identifier") {
+		t.Fatalf("PushStep.Execute() error = %v, want branch-pattern render error", err)
+	}
+	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
+		t.Fatalf("render failure staged files: %q", got)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("render failure moved HEAD from %s to %s", headSHA, got)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "?? leftover.txt" {
+		t.Fatalf("leftover change was not preserved uncommitted: %q", got)
+	}
+	if got, err := os.ReadFile(leftover); err != nil || string(got) != "still uncommitted\n" {
+		t.Fatalf("leftover change = %q, %v; want original uncommitted content", got, err)
+	}
+	if refs := gitCmd(t, upstream, "for-each-ref", "--format=%(refname)"); refs != "" {
+		t.Fatalf("render failure changed remote refs: %q", refs)
 	}
 }
 
@@ -1268,6 +1345,7 @@ func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 }
 
 func TestPushStep_MirrorMovesAfterPlanning(t *testing.T) {
+	t.Parallel()
 	for _, descendant := range []bool{true, false} {
 		t.Run(fmt.Sprintf("descendant=%t", descendant), func(t *testing.T) {
 			dir, baseSHA, submittedHead := setupGitRepo(t)

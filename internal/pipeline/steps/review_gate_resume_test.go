@@ -22,6 +22,7 @@ const openQuestionGateFindings = `{"findings":[{"id":"question-q1","severity":"w
 // question is open defeats the park, and resuming with the conversation off
 // changes behaviour for repositories that never opted in.
 func TestReviewStep_ResumeApprovalGateOnlyWhenTheConversationIsSettled(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		conversation bool
@@ -113,6 +114,7 @@ func TestReviewStep_ResumeApprovalGateOnlyWhenTheConversationIsSettled(t *testin
 // Unreadable findings leave the gate parked rather than resuming it, which is
 // the fail-closed direction the interface requires.
 func TestReviewStep_ResumeApprovalGateFailsClosedOnUnreadableFindings(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := withReviewConversation(newTestContextWithDBRecords(t, newStaticReviewAgent(cleanReviewJSON), dir, baseSHA, headSHA, config.Commands{}))
 	if _, resume, err := (&ReviewStep{}).ResumeApprovalGate(sctx, "{not json"); err == nil || resume {
@@ -137,6 +139,7 @@ func TestReviewStep_ResumeApprovalGateFailsClosedOnUnreadableFindings(t *testing
 // Nothing here calls Respond. The run has to move on its own, or it does not
 // move.
 func TestReviewStep_AnswerRacingTheParkStillReachesTheReviewer(t *testing.T) {
+	t.Parallel()
 	mock := &sessionMockAgent{}
 	var convDir string
 	turns := make(chan int, 4)

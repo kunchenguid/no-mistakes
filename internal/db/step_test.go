@@ -610,3 +610,44 @@ func TestGetStepsByRun_PlacesAGateAfterItsAnchor(t *testing.T) {
 		}
 	}
 }
+
+func TestGetStepsByRun_ReadOnlyToleratesPreActivityColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	repo, err := d.InsertRepo("/tmp/repo", "git@github.com:test/repo.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if _, err := d.InsertStepResult(run.ID, types.StepReview); err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	for _, column := range []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit"} {
+		if _, err := d.sql.Exec(`ALTER TABLE step_results DROP COLUMN ` + column); err != nil {
+			t.Fatalf("drop %s: %v", column, err)
+		}
+	}
+	d.Close()
+
+	ro, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("open read-only: %v", err)
+	}
+	defer ro.Close()
+	steps, err := ro.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps by run: %v", err)
+	}
+	if len(steps) != 1 || steps[0].StepName != types.StepReview {
+		t.Fatalf("steps = %+v, want the review step", steps)
+	}
+	if steps[0].LastActivityAt != nil || steps[0].AgentPID != nil || steps[0].AutoFixLimit != nil {
+		t.Fatalf("missing columns must read as NULL: %+v", steps[0])
+	}
+}

@@ -20,17 +20,31 @@ import "strings"
 const (
 	// ChecksPassedMsg is logged when every CI check has passed but the PR is
 	// not yet merged or closed, so the monitor keeps watching subject to its
-	// configured timeout.
+	// configured timeout unless an operator explicitly hands it off. This is
+	// the default behaviour.
 	ChecksPassedMsg = "all CI checks passed - still monitoring until merged or closed"
+	// ChecksPassedCompleteMsg is the green verdict under the opt-in
+	// ci.release_after_checks_pass: every CI check has passed, so the step
+	// records readiness and finishes, releasing the run instead of waiting for
+	// a human merge decision. It names the release explicitly because the
+	// identical observation means the opposite by default.
+	ChecksPassedCompleteMsg = "all CI checks passed - validation complete, releasing without waiting for the merge"
 	// NoChecksPassedMsg is logged only when the trusted default-branch config
 	// declares `no_ci: true` and the forge reports zero checks. The message
 	// names the positive declaration so agents and operators can inspect the
 	// evidence rather than treating every empty forge response as green. An
-	// empty check list WITHOUT that declaration must never produce this line.
+	// empty check list WITHOUT that declaration must never produce this line;
+	// the resulting monitor can still be explicitly handed off.
 	NoChecksPassedMsg = "repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"
+	// NoChecksPassedCompleteMsg is the release form of NoChecksPassedMsg: the
+	// declaration is the positive evidence the empty check list is green, and
+	// the run then finishes like any other green run.
+	NoChecksPassedCompleteMsg = "repository declares no CI (no_ci: true) - treating as all checks passed - validation complete, releasing without waiting for the merge"
 	// ChecksRunningMsg is logged when checks are (re-)running with no failures
 	// yet, which clears any previous passed-checks state.
 	ChecksRunningMsg = "CI checks running, waiting for results..."
+	// ChecksHeadWaitingPrefix precedes the reason checks could not be bound to the delivered commit.
+	ChecksHeadWaitingPrefix = "waiting for the delivered commit's own checks: "
 	// ChecksAwaitingApprovalMsg is logged when the provider is holding a
 	// workflow until a maintainer approves it - GitHub does this to a
 	// first-time contributor's workflows - so nothing is running and nothing
@@ -38,6 +52,15 @@ const (
 	// running checks, because the only thing that clears it happens outside
 	// the pipeline.
 	ChecksAwaitingApprovalMsg = "CI workflows are held awaiting maintainer approval - no jobs have run, waiting..."
+	// ChecksAwaitingManualJobMsg is logged when the provider is holding the
+	// pipeline on a blocking manual job - GitLab stops at the job's stage
+	// until a person runs it. Nothing the repository does clears it,
+	// so like the maintainer-approval hold it is named instead of being
+	// reported as checks that are running.
+	ChecksAwaitingManualJobMsg = "CI is held on a blocking manual job awaiting a person to run it, waiting..."
+	// BehindBaseMsg is the one poll a green PR the forge reports BEHIND
+	// waits for its base to stop moving before the monitor rebases it.
+	BehindBaseMsg = "all CI checks passed but the PR is behind a base that requires up-to-date branches, waiting for the base to settle before rebasing..."
 )
 
 // Activity summarizes what the CI step has been doing, derived from its logs.
@@ -89,7 +112,17 @@ func ParseActivity(logs []string) Activity {
 			a.Ready = true
 			a.DeclaredNoCI = false
 			a.LastEvent = line
+		case line == ChecksPassedCompleteMsg:
+			a.AutoFixing = false
+			a.Ready = true
+			a.DeclaredNoCI = false
+			a.LastEvent = line
 		case line == NoChecksPassedMsg:
+			a.AutoFixing = false
+			a.Ready = true
+			a.DeclaredNoCI = true
+			a.LastEvent = line
+		case line == NoChecksPassedCompleteMsg:
 			a.AutoFixing = false
 			a.Ready = true
 			a.DeclaredNoCI = true
@@ -97,6 +130,9 @@ func ParseActivity(logs []string) Activity {
 		case strings.Contains(line, "issues detected"),
 			strings.Contains(line, "CI checks running"),
 			line == ChecksAwaitingApprovalMsg,
+			line == ChecksAwaitingManualJobMsg,
+			strings.HasPrefix(line, ChecksHeadWaitingPrefix),
+			line == BehindBaseMsg,
 			strings.Contains(line, "mergeable state still pending"),
 			strings.Contains(line, "no CI checks reported"),
 			strings.Contains(line, "waiting for checks to register"),

@@ -2,14 +2,17 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -23,6 +26,64 @@ const claudeMaxRetries = 3
 var errNoStructuredOutput = errors.New("claude returned no structured output")
 
 const claudeScannerMaxTokenSize = 256 * 1024 * 1024
+
+// claudeResultGrace is how long a process may stay open after writing a
+// finished result. Print mode exits within a second of it unless background
+// work it started (a background shell, a Monitor watch) holds the session open.
+var claudeResultGrace = 10 * time.Second
+
+// claudeAPIErrorMessageMaxRunes bounds the CLI's API error text in a step
+// failure message.
+const claudeAPIErrorMessageMaxRunes = 400
+
+// claudeAPIError is the API error an invocation ended on, read from the
+// structured fields of the CLI's result event. The CLI writes that event once,
+// after its own retries, so an API error it recovered from never appears here.
+// The retry decision reads these fields and never the assistant text, which
+// can quote a status code or an error phrase of its own.
+type claudeAPIError struct {
+	Status  int
+	Message string
+	// usageLimitReached records that the CLI's last rate_limit_event rejected
+	// the request. Such a 429 clears at the limit's reset time, not after a
+	// backoff.
+	usageLimitReached bool
+}
+
+func (e *claudeAPIError) UsageLimitReached() bool {
+	return e.usageLimitReached
+}
+
+func (e *claudeAPIError) TerminalProviderError() bool {
+	_, retry := e.classify()
+	return !retry
+}
+
+func (e *claudeAPIError) Error() string {
+	message := []rune(e.Message)
+	if len(message) > claudeAPIErrorMessageMaxRunes {
+		message = append(message[:claudeAPIErrorMessageMaxRunes], []rune("...")...)
+	}
+	if e.Status == 0 {
+		return "API error: " + string(message)
+	}
+	return fmt.Sprintf("API error status %d: %s", e.Status, string(message))
+}
+
+func (e *claudeAPIError) classify() (string, bool) {
+	if e.usageLimitReached || isTerminalRetryError(strings.ToLower(e.Message)) {
+		return "", false
+	}
+	if e.Status == 0 {
+		// Network failures have no HTTP status; classify their terminal
+		// diagnostic without letting text override a reported HTTP status.
+		return classifyTransient(errors.New(e.Message))
+	}
+	if status := transientStatusRE.FindString(strconv.Itoa(e.Status)); status != "" {
+		return "http " + status, true
+	}
+	return "", false
+}
 
 // claudeAgent spawns the claude CLI for each invocation.
 type claudeAgent struct {
@@ -83,7 +144,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
-	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "claude"))
+	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "claude"), opts.RequireCompletedChildren)
 	if err != nil {
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
@@ -99,20 +160,54 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+	var stdoutTail claudeStdoutTail
+	// A finished result ends the turn: background work the agent started can
+	// hold print mode open long past it (issue #1659), so after a grace the
+	// process group is stopped rather than left idling to the budget.
+	var graceTimer *time.Timer
+	onResult := func(r *claudeResult) {
+		if graceTimer == nil && claudeFinishedWithOutput(r, opts.JSONSchema) {
+			graceTimer = time.AfterFunc(claudeResultGrace, func() {
+				started.terminate()
+				started.closePipes()
+			})
+		}
+	}
+	err = parseClaudeEvents(ctx, io.TeeReader(started.stdout, &stdoutTail), opts.OnChunk, &usage, &result, onResult)
+	if graceTimer != nil && !graceTimer.Stop() {
+		// RequireCompletedChildren never counts a result as success while
+		// work the agent started is still running (#1449), so it fails here.
+		if opts.RequireCompletedChildren {
+			_ = started.wait()
+			stderrWG.Wait()
+			retErr := fmt.Errorf("claude completion is unverified: background work outlived the result by %s", claudeResultGrace)
+			emitAgentExited(opts, "claude", pid, retErr)
+			return resultFromUsage(usage), retErr
+		}
+		if opts.OnChunk != nil {
+			opts.OnChunk(fmt.Sprintf("claude stayed open %s after completing its result; stopping it", claudeResultGrace))
+		}
+	} else if err != nil {
 		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		retErr := fmt.Errorf("claude parse events: %w", err)
-		emitAgentExited(opts, "claude", pid, retErr)
-		return resultFromUsage(usage), retErr
+		if !started.closedByWaitDelay(err) || !claudeFinishedWithOutput(result, opts.JSONSchema) {
+			stderrWG.Wait()
+			retErr := fmt.Errorf("claude parse events (result received: %t): %w", result != nil, err)
+			emitAgentExited(opts, "claude", pid, retErr)
+			return resultFromUsage(usage), retErr
+		}
 	}
 
-	waitErr := started.wait()
+	waitErr := started.waitKeepingResult(claudeFinishedWithOutput(result, opts.JSONSchema))
 	stderrWG.Wait()
 	if waitErr != nil {
-		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
-		emitAgentExited(opts, "claude", pid, retErr)
-		return resultFromUsage(usage), retErr
+		if ctx.Err() != nil || opts.RequireCompletedChildren || !claudeFinishedWithOutput(result, opts.JSONSchema) {
+			retErr := claudeExitError(waitErr, string(stderrBuf), result.terminalAPIError(), stdoutTail.evidence(result))
+			emitAgentExited(opts, "claude", pid, retErr)
+			return resultFromUsage(usage), retErr
+		}
+		if opts.OnChunk != nil {
+			opts.OnChunk(fmt.Sprintf("claude exited after completing its result: %v; using the result", waitErr))
+		}
 	}
 
 	if result == nil {
@@ -147,12 +242,134 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 
 func (a *claudeAgent) Close() error { return nil }
 
+func claudeExitError(waitErr error, stderr string, apiErr *claudeAPIError, evidence string) error {
+	if apiErr == nil {
+		if strings.TrimSpace(stderr) == "" {
+			return fmt.Errorf("claude exited: %w: %s", waitErr, evidence)
+		}
+		return fmt.Errorf("claude exited: %w: %s", waitErr, stderr)
+	}
+	if strings.TrimSpace(stderr) == "" {
+		return fmt.Errorf("claude exited: %w: %w", waitErr, apiErr)
+	}
+	return fmt.Errorf("claude exited: %w: %s: %w", waitErr, strings.TrimSpace(stderr), apiErr)
+}
+
+// claudeFinishedWithOutput reports whether the invocation produced a successful
+// result event carrying the output the caller asked for, so a nonzero exit
+// after it loses nothing.
+func claudeFinishedWithOutput(result *claudeResult, schema json.RawMessage) bool {
+	if result == nil || result.IsError || result.Subtype != "success" {
+		return false
+	}
+	if len(schema) > 0 {
+		return result.StructuredOutput != nil
+	}
+	return result.text != ""
+}
+
+const (
+	claudeStdoutTailLines    = 3
+	claudeStdoutTailLineRune = 300
+	claudeNoOutputEvidence   = "no stderr or stdout output"
+)
+
+// claudeStdoutTail keeps the last few non-event lines the CLI wrote to stdout.
+// The usage-limit banner and similar CLI messages arrive there as plain text
+// between stream-json events, and an exit with empty stderr has no other
+// evidence of its cause.
+type claudeStdoutTail struct {
+	partial []byte
+	// skipping drops the rest of a line that outgrew the buffer.
+	skipping bool
+	lines    []string
+}
+
+func (t *claudeStdoutTail) Write(p []byte) (int, error) {
+	for rest := p; len(rest) > 0; {
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
+			if !t.skipping {
+				t.partial = append(t.partial, rest...)
+				// A stream event line can be megabytes long.
+				if len(t.partial) > 4*claudeStdoutTailLineRune {
+					t.partial, t.skipping = t.partial[:4*claudeStdoutTailLineRune], true
+				}
+			}
+			break
+		}
+		if t.skipping {
+			t.add(string(t.partial))
+		} else {
+			t.add(string(t.partial) + string(rest[:i]))
+		}
+		t.partial, t.skipping = nil, false
+		rest = rest[i+1:]
+	}
+	return len(p), nil
+}
+
+func (t *claudeStdoutTail) add(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "{") {
+		return
+	}
+	if r := []rune(line); len(r) > claudeStdoutTailLineRune {
+		line = string(r[:claudeStdoutTailLineRune]) + "..."
+	}
+	t.lines = append(t.lines, line)
+	if len(t.lines) > claudeStdoutTailLines {
+		t.lines = t.lines[1:]
+	}
+}
+
+// evidence describes why an invocation with empty stderr exited nonzero: the
+// plain-text stdout tail, else the result event's own subtype, else an explicit
+// marker.
+func (t *claudeStdoutTail) evidence(result *claudeResult) string {
+	t.add(string(t.partial))
+	t.partial = nil
+	if len(t.lines) > 0 {
+		return "stdout: " + strings.Join(t.lines, " | ")
+	}
+	if result != nil && result.Subtype != "" {
+		return "result subtype=" + result.Subtype
+	}
+	return claudeNoOutputEvidence
+}
+
+// terminalAPIError returns the API error the result event reports, or nil when
+// the invocation did not end on one. The fields are decoded apart from
+// claudeEvent so a change of their wire type costs only this diagnostic and
+// never the result event itself.
+func (r *claudeResult) terminalAPIError() *claudeAPIError {
+	if r == nil || !r.IsError {
+		return nil
+	}
+	var fields struct {
+		APIErrorStatus int    `json:"api_error_status"`
+		Result         string `json:"result"`
+		TerminalReason string `json:"terminal_reason"`
+	}
+	if err := json.Unmarshal(r.rawEvent, &fields); err != nil {
+		return nil
+	}
+	if fields.APIErrorStatus == 0 && fields.TerminalReason != "api_error" {
+		return nil
+	}
+	return &claudeAPIError{
+		Status:            fields.APIErrorStatus,
+		Message:           strings.Join(strings.Fields(fields.Result), " "),
+		usageLimitReached: r.usageLimitReached,
+	}
+}
+
 func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if result.IsError || result.Subtype != "success" {
 		return resultFromUsage(usage), fmt.Errorf("claude error: subtype=%s", result.Subtype)
 	}
 	if len(schema) > 0 && result.StructuredOutput == nil {
-		return resultFromUsage(usage), rejectStructuredOutput(errNoStructuredOutput)
+		return resultFromUsage(usage), RejectStructuredOutput(errNoStructuredOutput)
 	}
 
 	return &Result{
@@ -272,6 +489,13 @@ type claudeEvent struct {
 	IsError          bool            `json:"is_error,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
 	Usage            *claudeUsage    `json:"usage,omitempty"`
+
+	// rate_limit_event fields
+	RateLimitInfo *claudeRateLimitInfo `json:"rate_limit_info,omitempty"`
+}
+
+type claudeRateLimitInfo struct {
+	Status string `json:"status"`
 }
 
 // claudeResult captures the parsed result event.
@@ -283,6 +507,9 @@ type claudeResult struct {
 	rawEvent         json.RawMessage
 	sessionID        string // durable session identity from the event stream
 	model            string // model reported by assistant events
+	// usageLimitReached is true when the last rate_limit_event before the
+	// result rejected the request.
+	usageLimitReached bool
 }
 
 type claudeUsage struct {
@@ -292,7 +519,19 @@ type claudeUsage struct {
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
+func (u claudeUsage) tokenUsage() TokenUsage {
+	return TokenUsage{
+		InputTokens:           u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+		OutputTokens:          u.OutputTokens,
+		CacheReadTokens:       u.CacheReadInputTokens,
+		CacheCreationTokens:   u.CacheCreationInputTokens,
+		Reported:              true,
+		CacheCreationReported: true,
+	}
+}
+
 type claudeMessage struct {
+	ID      string          `json:"id"`
 	Model   string          `json:"model"`
 	Usage   claudeUsage     `json:"usage"`
 	Content []claudeContent `json:"content"`
@@ -301,16 +540,38 @@ type claudeMessage struct {
 type claudeContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+
+	// tool_use fields
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+
+	// tool_result fields
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 }
+
+// claudeStructuredOutputTool is the tool Claude Code exposes for submitting
+// the --json-schema payload. A run can call it several times; the latest
+// accepted call is the review's current state.
+const claudeStructuredOutputTool = "StructuredOutput"
 
 // parseClaudeEvents reads JSONL from the reader and dispatches events.
 // It accumulates token usage and captures the final result event.
-func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult) error {
+// onResult, when set, is called with each result event as it is parsed.
+func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult, onResult func(*claudeResult)) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
 	var textBuf string
 	var lastSessionID string
 	var lastModel string
+	var usageLimitReached bool
+	usageByMsg := make(map[string]TokenUsage)
+	// A terminal result event can carry only prose after background work
+	// completes, so the latest accepted StructuredOutput submission is kept
+	// and used when the result event has no structured payload of its own.
+	pendingSubmissions := make(map[string]json.RawMessage)
+	var lastSubmission json.RawMessage
 
 	for scanner.Scan() {
 		select {
@@ -341,14 +602,9 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 			if msg.Model != "" {
 				lastModel = msg.Model
 			}
-			usage.Add(TokenUsage{
-				InputTokens:           msg.Usage.InputTokens,
-				OutputTokens:          msg.Usage.OutputTokens,
-				CacheReadTokens:       msg.Usage.CacheReadInputTokens,
-				CacheCreationTokens:   msg.Usage.CacheCreationInputTokens,
-				Reported:              true,
-				CacheCreationReported: true,
-			})
+			// Content blocks repeat cumulative usage for the same message.
+			usageByMsg[msg.ID] = msg.Usage.tokenUsage()
+			*usage = accumulateUsage(usageByMsg)
 			for _, c := range msg.Content {
 				if c.Type == "text" && c.Text != "" {
 					textBuf += c.Text
@@ -356,20 +612,62 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 						onChunk(c.Text)
 					}
 				}
+				if c.Type == "tool_use" && c.Name == claudeStructuredOutputTool && c.ID != "" && len(c.Input) > 0 {
+					pendingSubmissions[c.ID] = c.Input
+				}
+			}
+
+		case "user":
+			var msg claudeMessage
+			if err := json.Unmarshal(event.Message, &msg); err != nil {
+				continue
+			}
+			for _, c := range msg.Content {
+				if c.Type != "tool_result" {
+					continue
+				}
+				input, ok := pendingSubmissions[c.ToolUseID]
+				if !ok {
+					continue
+				}
+				delete(pendingSubmissions, c.ToolUseID)
+				if !c.IsError {
+					lastSubmission = input
+				}
+			}
+
+		case "rate_limit_event":
+			if event.RateLimitInfo != nil {
+				usageLimitReached = event.RateLimitInfo.Status == "rejected"
 			}
 
 		case "result":
+			// The invocation total includes usage absent from assistant events.
+			if event.Usage != nil {
+				*usage = event.Usage.tokenUsage()
+			}
 			if result != nil {
 				raw := make(json.RawMessage, len(line))
 				copy(raw, line)
+				structured := event.StructuredOutput
+				if len(structured) == 0 || string(structured) == "null" {
+					structured = lastSubmission
+				} else {
+					lastSubmission = structured
+				}
 				*result = &claudeResult{
 					Subtype:          event.Subtype,
 					IsError:          event.IsError,
-					StructuredOutput: event.StructuredOutput,
+					StructuredOutput: structured,
 					text:             textBuf,
 					rawEvent:         raw,
 					sessionID:        lastSessionID,
 					model:            lastModel,
+
+					usageLimitReached: usageLimitReached,
+				}
+				if onResult != nil {
+					onResult(*result)
 				}
 			}
 		}

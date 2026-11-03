@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,6 +68,11 @@ func testStepPrompts(h *Harness) []string {
 // the team command's priority.
 func TestMachineLocalCommandOverridesJourney(t *testing.T) {
 	t.Run("overrides_apply_are_declared_and_recorded", func(t *testing.T) {
+		priority, err := exec.Command("nice", "-n", "7", "sh", "-c", "ps -o nice= -p $$").Output()
+		if err != nil {
+			t.Fatalf("measure adjusted niceness: %v", err)
+		}
+		expectedNice := strings.TrimSpace(string(priority))
 		h := NewHarness(t, SetupOpts{Agent: "claude"})
 		marker := filepath.Join(t.TempDir(), "marker")
 		writeMachineLocalScript(t, filepath.Join(h.BinDir, "nm-team-test"),
@@ -98,8 +104,8 @@ exit 0
 		}
 		t.Logf("command marker:\n%s", markerData)
 		for _, want := range []string{
-			"team nice=7",
-			"local nice=7",
+			"team nice=" + expectedNice,
+			"local nice=" + expectedNice,
 		} {
 			if !strings.Contains(string(markerData), want) {
 				t.Errorf("marker missing %q", want)

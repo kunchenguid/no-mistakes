@@ -31,6 +31,12 @@ func assertTestQualityRulePrompt(t *testing.T, prompt string) {
 		"explicitly owned text or byte contract",
 		"final emitted prompt delivered to an agent",
 		"development-only evaluation, not live-LLM CI",
+		"Use an independent oracle",
+		"expected result must come from somewhere other than the code under test",
+		"a specification, worked example, published constant, external contract, or independently justified property",
+		"Name the public behavior, the oracle's source, and a plausible wrong behavior the test would reject",
+		"Do not only check your own mocks, compare a result to itself, or copy the implementation's expected-value rule",
+		"External-boundary mocks, constants, snapshots, and computed expectations remain legitimate when they check an independent contract",
 		"reproduce the reported failure when feasible",
 		"fail before the fix and pass after it",
 	} {
@@ -48,9 +54,12 @@ func assertTestQualityReviewerAction(t *testing.T, prompt string) {
 		"remove or semantically refine a same-pattern test",
 		"directly within the accepted change's scope",
 		"unrelated repository-wide cleanup",
+		"Within that same scope, also flag newly added or changed tests that lack an independent oracle",
+		"only check their own mocks, compare a result to itself, or copy the implementation's expected-value rule without an independent contract",
+		"Name the public behavior, the oracle's source, and a plausible wrong behavior an in-scope replacement would reject",
 	} {
 		if !strings.Contains(normalizedPrompt, want) {
-			t.Errorf("emitted review prompt missing source-content test action %q:\n%s", want, prompt)
+			t.Errorf("emitted review prompt missing test-quality action %q:\n%s", want, prompt)
 		}
 	}
 }

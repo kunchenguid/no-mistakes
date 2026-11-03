@@ -163,10 +163,35 @@ func waitPublished(t *testing.T, h *Harness, branch, prevID, label string) *ipc.
 		}
 		t.Fatalf("%s: run %s status=%s error=%v: PR step did not complete", label, run.ID, run.Status, deref(run.Error))
 	}
+	return settlePublished(t, h, run, branch, label)
+}
+
+// settlePublished brings a run whose PR step completed to rest from a possibly
+// stale snapshot of it: a live run is cancelled, a terminal one must be a
+// successful outcome.
+func settlePublished(t *testing.T, h *Harness, run *ipc.RunInfo, branch, label string) *ipc.RunInfo {
+	t.Helper()
 	if !run.Status.Terminal() {
-		h.CancelRun(run.ID)
-		h.WaitForRun(branch, time.Minute)
-	} else if run.Status != types.RunCompleted {
+		err := h.TryCancelRun(run.ID)
+		if err == nil {
+			h.WaitForRun(branch, time.Minute)
+			return run
+		}
+		if !strings.Contains(err.Error(), "no active run") {
+			t.Fatalf("%s: cancel run %s: %v", label, run.ID, err)
+		}
+		// A run that skips CI finishes right after its PR step, so it can
+		// finish and leave the daemon's active set between the snapshot above
+		// and this cancel. The daemon records the terminal status before it
+		// forgets the run, so re-read it and hold it to the same bar as a run
+		// that was already terminal in the snapshot.
+		run = h.RunInfo(run.ID)
+	}
+	if run.Status != types.RunCompleted && run.Status != types.RunChecksPassed {
+		// Both are successful terminal outcomes for a published PR: completed
+		// when the CI step observed the merge (or was skipped for the run), and
+		// checks_passed when every check came back green and the run reached its
+		// validation verdict and released the branch instead of waiting.
 		t.Fatalf("%s: run %s status=%s error=%v", label, run.ID, run.Status, deref(run.Error))
 	}
 	return run

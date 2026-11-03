@@ -30,7 +30,7 @@ git push no-mistakes main
 
 ### Before
 
-A freshly initialized repo:
+A freshly initialized Go repo with a root `go.mod`:
 
 ```bash
 $ ls -la .github/workflows/
@@ -108,6 +108,6 @@ no-mistakes ci-workflow --force
 
 ## Notes
 
-- The generated workflow is Go-focused (uses `setup-go` action). Non-Go repos can adapt the template as needed.
+- See the [CLI reference](src/content/docs/reference/cli.md#no-mistakes-ci-workflow) for toolchain setup behavior and customization.
 - Commands are inserted verbatim from `.no-mistakes.yaml`, so ensure they're portable to GitHub's Ubuntu runner.
 - The workflow runs on push to the repository's default branch and on all `pull_request` events.

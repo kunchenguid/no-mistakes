@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,7 +72,7 @@ func TestExecutor_AutoFixCarriesUnselectedFindingsSeparately(t *testing.T) {
 				AutoFixable:   true,
 				Findings: `{"findings":[` +
 					`{"id":"ci-1","severity":"error","description":"test failed","action":"auto-fix"},` +
-					`{"id":"ci-2","severity":"warning","description":"bot finding","action":"ask-user"}` +
+					`{"id":"ci-2","severity":"error","description":"test failed","action":"ask-user"}` +
 					`],"summary":"mixed findings"}`,
 			}, nil
 		}
@@ -90,6 +91,58 @@ func TestExecutor_AutoFixCarriesUnselectedFindingsSeparately(t *testing.T) {
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
+}
+
+func TestExecutor_AutoFixDuplicateIDsKeepUnselectedFindingParked(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepTest, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		if calls == 1 {
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings: `{"findings":[` +
+					`{"id":"x","severity":"error","description":"test failed","action":"auto-fix"},` +
+					`{"id":" x ","severity":"warning","description":"confirm isolation","action":"ask-user"}` +
+					`],"summary":"mixed findings"}`,
+			}, nil
+		}
+		selected, err := types.ParseFindingsJSON(sctx.PreviousFindings)
+		if err != nil || len(selected.Items) != 1 || selected.Items[0].ID != "x" || selected.Items[0].Description != "test failed" {
+			return nil, fmt.Errorf("selected findings = %+v, %v", selected.Items, err)
+		}
+		deferred, err := types.ParseFindingsJSON(sctx.DeferredFindings)
+		if err != nil || len(deferred.Items) != 1 || deferred.Items[0].ID != "test-2" || deferred.Items[0].Description != "confirm isolation" || deferred.Items[0].ActionOrDefault() != types.ActionAskUser {
+			return nil, fmt.Errorf("deferred findings = %+v, %v", deferred.Items, err)
+		}
+		return &StepOutcome{Findings: sctx.DeferredFindings}, nil
+	}}
+
+	parked := make(chan string, 1)
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Test: 1}}, nil, []Step{step}, func(event ipc.Event) {
+		if event.Type == ipc.EventStepCompleted && event.Status != nil && *event.Status == string(types.StepStatusFixReview) && event.Findings != nil {
+			parked <- *event.Findings
+		}
+	})
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+
+	select {
+	case gate := <-parked:
+		findings, err := types.ParseFindingsJSON(gate)
+		if err != nil || len(findings.Items) != 1 || findings.Items[0].Description != "confirm isolation" || findings.Items[0].ActionOrDefault() != types.ActionAskUser {
+			t.Fatalf("parked findings = %+v, %v", findings.Items, err)
+		}
+	case err := <-done:
+		t.Fatalf("executor finished without parking on the unselected finding: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("executor neither parked nor finished")
+	}
+	if err := exec.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
 }
 
 func TestExecutor_PersistsEffectiveAutoFixLimit(t *testing.T) {

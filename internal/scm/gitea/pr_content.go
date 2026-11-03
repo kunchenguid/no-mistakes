@@ -28,8 +28,13 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 	if !ok {
 		return scm.PRContent{}, fmt.Errorf("invalid Gitea repository")
 	}
+	_, account, err := h.begin(ctx)
+	if err != nil {
+		return scm.PRContent{}, err
+	}
 	endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%s", owner, repo, id)
-	out, err := h.cmd(ctx, "tea", "api", "--login", h.login, endpoint).Output()
+	args := append([]string{"api"}, account...)
+	out, err := h.cmd(ctx, "tea", append(args, endpoint)...).Output()
 	if err != nil {
 		return scm.PRContent{}, fmt.Errorf("tea api pull content: %w", err)
 	}

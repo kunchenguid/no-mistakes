@@ -63,6 +63,48 @@ func TestFallbackAgentFallsBackOnLaunchFailure(t *testing.T) {
 	}
 }
 
+func TestFallbackAgent_PreservesTerminalErrorAcrossEarlyReturns(t *testing.T) {
+	for _, stop := range []string{"non-fallback failure", "cancelled fallback", "cancelled before fallback"} {
+		t.Run(stop, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			schemaErr := &codexSchemaIncompatibility{err: errors.New("Invalid json schema: unsupported array")}
+			first := &fallbackTestAgent{name: "codex", run: func() (*Result, error) {
+				return nil, schemaErr
+			}}
+			secondErr := errors.New("second protocol failed")
+			secondResult := &Result{Text: "partial fallback diagnostic"}
+			second := &fallbackTestAgent{name: "second", run: func() (*Result, error) {
+				if stop == "cancelled fallback" {
+					cancel()
+				}
+				return secondResult, secondErr
+			}}
+			third := &fallbackTestAgent{name: "third", run: func() (*Result, error) {
+				t.Fatal("must not continue past a non-fallback failure or cancellation")
+				return nil, nil
+			}}
+			result, err := NewFallback([]Agent{first, second, third}).Run(ctx, RunOpts{
+				OnLifecycle: func(event LifecycleEvent) {
+					if stop == "cancelled before fallback" && event.Phase == LifecyclePhaseFallback {
+						cancel()
+					}
+				},
+			})
+			if !errors.Is(err, schemaErr) || !IsTerminalProviderError(err) {
+				t.Fatalf("Run error = %v, want original terminal provider error preserved", err)
+			}
+			if stop == "cancelled before fallback" {
+				if !errors.Is(err, context.Canceled) || second.calls != 0 {
+					t.Fatalf("Run error = %v, fallback calls = %d, want cancellation before fallback", err, second.calls)
+				}
+			} else if !errors.Is(err, secondErr) || result != secondResult || second.calls != 1 {
+				t.Fatalf("Run = (%+v, %v), fallback calls = %d, want fallback result and failure preserved", result, err, second.calls)
+			}
+		})
+	}
+}
+
 func TestFallbackAgentDoesNotFallBackOnFindingsResult(t *testing.T) {
 	first := &fallbackTestAgent{
 		name: "codex",

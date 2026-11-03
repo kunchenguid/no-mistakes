@@ -118,6 +118,7 @@ func TestParseClaudeEvents_AssistantMessage(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -156,6 +157,7 @@ func TestParseClaudeEvents_ResultEvent(t *testing.T) {
 		nil,
 		&usage,
 		&result,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -199,6 +201,7 @@ func TestParseClaudeEvents_LargeAssistantEvent(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -229,6 +232,7 @@ func TestParseClaudeEvents_MultipleEvents(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		&result,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -266,6 +270,7 @@ func TestParseClaudeEvents_NoSeparatorForFirstMessage(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -293,6 +298,7 @@ func TestParseClaudeEvents_NoSeparatorAfterToolOnlyEvent(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -318,6 +324,7 @@ func TestParseClaudeEvents_DoesNotSeparateSplitAssistantReply(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -342,6 +349,7 @@ func TestParseClaudeEvents_SkipsMalformedLines(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -355,7 +363,7 @@ func TestParseClaudeEvents_CacheTokens(t *testing.T) {
 	events := `{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10},"content":[]}}
 `
 	var usage TokenUsage
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,6 +375,65 @@ func TestParseClaudeEvents_CacheTokens(t *testing.T) {
 	}
 }
 
+func TestParseClaudeEvents_MultipleContentBlocksUsage(t *testing.T) {
+	// Claude emits text and StructuredOutput as separate events for one message,
+	// repeating the same cumulative usage on each content block.
+	events := strings.Join([]string{
+		`{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[{"type":"text","text":"review complete"}]}}`,
+		`{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[{"type":"tool_use","name":"StructuredOutput","input":{"findings":[]}}]}}`,
+		`{"type":"result","subtype":"success","structured_output":{"findings":[]},"usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000}}`,
+		"",
+	}, "\n")
+	var usage TokenUsage
+	var result *claudeResult
+	var text strings.Builder
+	if err := parseClaudeEvents(context.Background(), strings.NewReader(events), func(chunk string) {
+		text.WriteString(chunk)
+	}, &usage, &result, nil); err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 31_000 || usage.OutputTokens != 500 ||
+		usage.CacheReadTokens != 20_000 || usage.CacheCreationTokens != 1_000 ||
+		usage.Total() != 31_500 || !usage.Reported || !usage.CacheCreationReported {
+		t.Fatalf("usage = %+v, total %d; want one message totaling 31500 tokens", usage, usage.Total())
+	}
+	if text.String() != "review complete" || result == nil || string(result.StructuredOutput) != `{"findings":[]}` {
+		t.Fatalf("text = %q, result = %+v; want both text and structured output", text.String(), result)
+	}
+}
+
+func TestParseClaudeEvents_CumulativeUsage(t *testing.T) {
+	first := `{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":8,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[]}}`
+	updated := `{"type":"assistant","message":{"id":"msg-1","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[]}}`
+	other := `{"type":"assistant","message":{"id":"msg-2","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000},"content":[]}}`
+	final := `{"type":"result","subtype":"success","usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000}}`
+	for _, tc := range []struct {
+		name     string
+		events   []string
+		messages int
+	}{
+		{"repeated blocks without a final result", []string{updated, updated}, 1},
+		{"latest cumulative snapshot without a final result", []string{first, updated}, 1},
+		{"distinct messages with identical usage", []string{first, other, updated}, 2},
+		{"result without usage keeps message totals", []string{first, other, updated, `{"type":"result","subtype":"error","is_error":true}`}, 2},
+		{"final total supersedes incomplete message usage", []string{first, final}, 1},
+		{"final total without assistant events", []string{final}, 1},
+		{"failed invocation reports its final total", []string{first, `{"type":"result","subtype":"error","is_error":true,"usage":{"input_tokens":10000,"output_tokens":500,"cache_read_input_tokens":20000,"cache_creation_input_tokens":1000}}`}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var usage TokenUsage
+			if err := parseClaudeEvents(context.Background(), strings.NewReader(strings.Join(tc.events, "\n")), nil, &usage, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if usage.InputTokens != 31_000*tc.messages || usage.OutputTokens != 500*tc.messages ||
+				usage.CacheReadTokens != 20_000*tc.messages || usage.CacheCreationTokens != 1_000*tc.messages ||
+				usage.Total() != 31_500*tc.messages || !usage.Reported || !usage.CacheCreationReported {
+				t.Fatalf("usage = %+v, total %d; want %d messages totaling %d tokens", usage, usage.Total(), tc.messages, 31_500*tc.messages)
+			}
+		})
+	}
+}
+
 func TestParseClaudeEvents_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -375,7 +442,7 @@ func TestParseClaudeEvents_ContextCancellation(t *testing.T) {
 	events := `{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"ok"}]}}
 `
 	var usage TokenUsage
-	err := parseClaudeEvents(ctx, strings.NewReader(events), nil, &usage, nil)
+	err := parseClaudeEvents(ctx, strings.NewReader(events), nil, &usage, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -387,7 +454,7 @@ func TestParseClaudeEvents_ErrorResult(t *testing.T) {
 	var usage TokenUsage
 	var result *claudeResult
 
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -479,7 +546,7 @@ func TestParseClaudeEvents_ResultCapturesRawEvent(t *testing.T) {
 	var usage TokenUsage
 	var result *claudeResult
 
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -664,6 +731,363 @@ func TestClaudeAgent_CancellationWithBlockedStdinAndInheritedPipesIsBounded(t *t
 	}
 }
 
+// The testdata/claude_*.jsonl streams are recorded from Claude Code 2.1.289
+// against a local stand-in for the API, without the init event.
+func TestClaudeAgent_RetriesOnlyATerminalTransientAPIError(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	for _, tc := range []struct {
+		name         string
+		fixture      string
+		banner       string
+		wantAttempts int
+		wantErr      string
+	}{
+		{
+			name:         "terminal 529",
+			fixture:      "claude_terminal_529.jsonl",
+			wantAttempts: claudeMaxRetries + 1,
+			wantErr:      "claude exited: exit status 1: API error status 529: API Error: Repeated 529 Overloaded errors. The API is at capacity \u2014 this is usually temporary. Try again in a moment. If it persists, check your inference gateway (127.0.0.1:48529).",
+		},
+		{
+			name:         "terminal 429",
+			fixture:      "claude_terminal_429.jsonl",
+			wantAttempts: claudeMaxRetries + 1,
+			wantErr:      "claude exited: exit status 1: API error status 429: API Error: Request rejected (429) \u00b7 Number of request tokens has exceeded your per-minute rate limit",
+		},
+		{
+			name:         "recovered 529 then max turns",
+			fixture:      "claude_recovered_529_max_turns.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: result subtype=error_max_turns",
+		},
+		{
+			name:         "prose quoting 429 then max turns",
+			fixture:      "claude_prose_429_max_turns.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: result subtype=error_max_turns",
+		},
+		{
+			name:         "usage limit",
+			fixture:      "claude_usage_limit.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: API error status 429: You've hit your session limit \u00b7 resets 10:53pm (UTC)",
+		},
+		{
+			name:         "permanent 400",
+			fixture:      "claude_terminal_400.jsonl",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: API error status 400: Prompt is too long \u00b7 the request is ~250000 tokens (limit 200000) but this conversation is only ~2372 tokens \u2014 the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be compacted; reduce attached files/tools or start with less context.",
+		},
+		{
+			name:         "empty stdout and stderr",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: no stderr or stdout output",
+		},
+		{
+			name:         "plain-text banner on stdout",
+			banner:       "\n  \nYou've hit your weekly limit \u00b7 resets Jul 9 at 9pm (America/Chicago)\n",
+			wantAttempts: 1,
+			wantErr:      "claude exited: exit status 1: stdout: You've hit your weekly limit \u00b7 resets Jul 9 at 9pm (America/Chicago)",
+		},
+		{
+			// The 2026-09-27 incident shape: the CLI's DNS-failure banner on
+			// stdout, empty stderr, no api_error_status. Transient, so every
+			// bounded attempt runs before the failure surfaces.
+			name:         "EAI_AGAIN banner on stdout",
+			banner:       "API Error: Can't reach the API server — check your internet or DNS (EAI_AGAIN)\n",
+			wantAttempts: claudeMaxRetries + 1,
+			wantErr:      "claude exited: exit status 1: stdout: API Error: Can't reach the API server — check your internet or DNS (EAI_AGAIN)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := ""
+			if tc.fixture != "" {
+				abs, err := filepath.Abs(filepath.Join("testdata", tc.fixture))
+				if err != nil {
+					t.Fatalf("resolve fixture: %v", err)
+				}
+				fixture = abs
+			}
+			t.Setenv("NM_CLAUDE_STDIN_HELPER", "replay-then-fail")
+			t.Setenv("NM_CLAUDE_STDIN_FIXTURE", fixture)
+			t.Setenv("NM_CLAUDE_STDIN_BANNER", tc.banner)
+			a := newClaudeStdinHelperAgent(t)
+
+			attempts := 0
+			_, err := a.Run(context.Background(), RunOpts{
+				Prompt:    "review",
+				CWD:       t.TempDir(),
+				OnAttempt: func(Attempt) { attempts++ },
+			})
+			if err == nil {
+				t.Fatal("Run succeeded, want the exit error")
+			}
+			if attempts != tc.wantAttempts {
+				t.Errorf("attempts = %d, want %d", attempts, tc.wantAttempts)
+			}
+			if err.Error() != tc.wantErr {
+				t.Errorf("error = %q, want %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestClaudeAgent_RetriesEAIAGAINThenSucceeds(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "transient-then-succeed")
+	t.Setenv("NM_CLAUDE_STDIN_COUNT_FILE", filepath.Join(t.TempDir(), "attempts"))
+	t.Setenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN", "1")
+	t.Setenv("NM_CLAUDE_STDIN_BANNER", "API Error: Can't reach the API server — check your internet or DNS (EAI_AGAIN)\n")
+	a := newClaudeStdinHelperAgent(t)
+
+	attempts := 0
+	res, err := a.Run(context.Background(), RunOpts{
+		Prompt:    "review",
+		CWD:       t.TempDir(),
+		OnAttempt: func(Attempt) { attempts++ },
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2 (one transient DNS failure, then success)", attempts)
+	}
+	if res == nil || res.Output == nil {
+		t.Errorf("result = %+v, want the helper's structured output", res)
+	}
+}
+
+func TestClaudeAgent_RetriesTerminalNetworkErrors(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	// Oracle: Claude Code 2.1.301's recorded network failures end with is_error,
+	// terminal_reason=api_error and a null api_error_status. Replaying that
+	// protocol must retry; dropping its result text used to stop at attempt 1.
+	for _, code := range []string{"EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "Request timed out"} {
+		for _, mode := range []string{"fresh", "resume", "exhausted", "permanent"} {
+			t.Run(code+"/"+mode, func(t *testing.T) {
+				message := "API Error: Can't reach the API server — check your internet or DNS (" + code + ")"
+				if code == "Request timed out" {
+					message = code
+				}
+				status := "null"
+				if mode == "permanent" {
+					status = "400"
+					message = "Invalid request quoting " + code
+				}
+				text, err := json.Marshal(message)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("NM_CLAUDE_STDIN_HELPER", "transient-then-succeed")
+				t.Setenv("NM_CLAUDE_STDIN_COUNT_FILE", filepath.Join(t.TempDir(), "attempts"))
+				t.Setenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN", "1")
+				t.Setenv("NM_CLAUDE_STDIN_BANNER", `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":`+status+`,"result":`+string(text)+"}\n")
+				wantAttempts := 2
+				wantFailure := mode == "exhausted" || mode == "permanent"
+				if mode == "exhausted" {
+					t.Setenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN", "10")
+					wantAttempts = 4 // Initial invocation plus three bounded retries.
+				} else if mode == "permanent" {
+					wantAttempts = 1
+				}
+				attempts := 0
+				opts := RunOpts{
+					Prompt:    "review",
+					CWD:       t.TempDir(),
+					OnAttempt: func(Attempt) { attempts++ },
+				}
+				if mode == "resume" {
+					opts.Session = &SessionRef{ID: "helper-session"}
+					t.Setenv("NM_CLAUDE_STDIN_EXPECT_RESUME", "helper-session")
+				}
+				res, err := newClaudeStdinHelperAgent(t).Run(context.Background(), opts)
+				if attempts != wantAttempts {
+					t.Errorf("attempts = %d, want %d", attempts, wantAttempts)
+				}
+				if wantFailure {
+					if err == nil || !strings.Contains(err.Error(), message) {
+						t.Fatalf("error = %v, want terminal diagnostic %q", err, message)
+					}
+				} else if err != nil || res == nil || string(res.Output) != `{"ok":true}` {
+					t.Fatalf("Run = %+v, %v, want recovered structured output", res, err)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeAgent_NonzeroExitAfterUsableResultFinalizesIt(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "result-then-fail")
+	a := newClaudeStdinHelperAgent(t)
+
+	res, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","required":["ok"]}`),
+	})
+	if err != nil {
+		t.Fatalf("Run = %v, want the finished result despite the nonzero exit", err)
+	}
+	if string(res.Output) != `{"ok":true}` {
+		t.Errorf("Output = %s, want {\"ok\":true}", res.Output)
+	}
+}
+
+func TestClaudeAgent_NonzeroExitAfterTextResultIsAcceptedAndNoted(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "result-then-fail")
+	a := newClaudeStdinHelperAgent(t)
+
+	var chunks []string
+	res, err := a.Run(context.Background(), RunOpts{
+		Prompt:  "review",
+		CWD:     t.TempDir(),
+		OnChunk: func(s string) { chunks = append(chunks, s) },
+	})
+	if err != nil {
+		t.Fatalf("Run = %v, want the finished text result despite the nonzero exit", err)
+	}
+	if res.Text != "ok" {
+		t.Errorf("Text = %q, want ok", res.Text)
+	}
+	if !strings.Contains(strings.Join(chunks, "\n"), "claude exited after completing its result: exit status 1") {
+		t.Errorf("chunks = %q, want the exit note", chunks)
+	}
+}
+
+func TestClaudeAgent_NonzeroExitAfterResultMissingStructuredOutputFails(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "unstructured-result-then-fail")
+	a := newClaudeStdinHelperAgent(t)
+
+	_, err := a.runOnce(context.Background(), RunOpts{
+		Prompt:     "review",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "claude exited: exit status 1") {
+		t.Fatalf("err = %v, want the exit error", err)
+	}
+}
+
+func TestClaudeStdoutTail(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	for _, tc := range []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{name: "split writes", writes: []string{"usage li", "mit reached\n"}, want: "stdout: usage limit reached"},
+		{name: "final line without newline", writes: []string{"first\nlast words"}, want: "stdout: first | last words"},
+		{name: "event lines filtered", writes: []string{"{\"type\":\"assistant\"}\nbanner\n{\"type\":\"result\"}\n"}, want: "stdout: banner"},
+		{name: "three line limit", writes: []string{"a\nb\nc\nd\n"}, want: "stdout: b | c | d"},
+		{name: "long line is truncated", writes: []string{long + "\nafter\n"}, want: "stdout: " + strings.Repeat("x", claudeStdoutTailLineRune) + "... | after"},
+		{name: "long line spanning writes is truncated once", writes: []string{long, long, "\nafter\n"}, want: "stdout: " + strings.Repeat("x", claudeStdoutTailLineRune) + "... | after"},
+		{name: "long unterminated line", writes: []string{long}, want: "stdout: " + strings.Repeat("x", claudeStdoutTailLineRune) + "..."},
+		{name: "nothing", writes: []string{"\n  \n"}, want: claudeNoOutputEvidence},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tail claudeStdoutTail
+			for _, w := range tc.writes {
+				if _, err := tail.Write([]byte(w)); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+			}
+			if got := tail.evidence(nil); got != tc.want {
+				t.Errorf("evidence = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeAgent_NonzeroExitStillFailsWhenNativeChildrenMustComplete(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "result-then-fail")
+	a := newClaudeStdinHelperAgent(t)
+
+	_, err := a.runOnce(context.Background(), RunOpts{
+		Prompt:                   "test",
+		CWD:                      t.TempDir(),
+		JSONSchema:               json.RawMessage(`{"type":"object","required":["ok"]}`),
+		RequireCompletedChildren: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "claude exited: exit status 1") {
+		t.Fatalf("err = %v, want the exit error", err)
+	}
+}
+
+// Issue #1659: a turn whose result is already on stdout must not idle until its
+// budget while background work holds the session open. The 10s context stands
+// in for the step budget; the helper's background work outlasts it.
+func TestClaudeAgent_BackgroundWorkAfterResult(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "result-background-result")
+	old := claudeResultGrace
+	claudeResultGrace = 200 * time.Millisecond
+	t.Cleanup(func() { claudeResultGrace = old })
+	run := func(requireCompletedChildren bool) (*Result, error, time.Duration) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		start := time.Now()
+		res, err := newClaudeStdinHelperAgent(t).runOnce(ctx, RunOpts{
+			Prompt:                   "test",
+			CWD:                      t.TempDir(),
+			JSONSchema:               json.RawMessage(`{"type":"object","required":["ok"]}`),
+			RequireCompletedChildren: requireCompletedChildren,
+		})
+		return res, err, time.Since(start)
+	}
+
+	t.Run("completed children required fails promptly", func(t *testing.T) {
+		_, err, took := run(true)
+		if err == nil || !strings.Contains(err.Error(), "background work outlived the result") {
+			t.Fatalf("err = %v, want the background-work refusal", err)
+		}
+		if took > 5*time.Second {
+			t.Fatalf("took %s, want a prompt failure inside the budget", took)
+		}
+	})
+	t.Run("otherwise ends on the result", func(t *testing.T) {
+		res, err, took := run(false)
+		if err != nil {
+			t.Fatalf("err = %v, want the finished result", err)
+		}
+		if string(res.Output) != `{"ok":true}` {
+			t.Fatalf("output = %s, want the first result", res.Output)
+		}
+		if took > 5*time.Second {
+			t.Fatalf("took %s, want the result after a short grace", took)
+		}
+	})
+}
+
+func TestClaudeAgent_NonzeroExitWithoutUsableResultStillFails(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture string
+	}{
+		{name: "no output"},
+		{name: "error result", fixture: "claude_prose_429_max_turns.jsonl"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := ""
+			if tc.fixture != "" {
+				fixture, _ = filepath.Abs(filepath.Join("testdata", tc.fixture))
+			}
+			t.Setenv("NM_CLAUDE_STDIN_HELPER", "replay-then-fail")
+			t.Setenv("NM_CLAUDE_STDIN_FIXTURE", fixture)
+			a := newClaudeStdinHelperAgent(t)
+			_, err := a.runOnce(context.Background(), RunOpts{
+				Prompt:     "review",
+				CWD:        t.TempDir(),
+				JSONSchema: json.RawMessage(`{"type":"object"}`),
+			})
+			if err == nil || !strings.Contains(err.Error(), "claude exited: exit status 1") {
+				t.Fatalf("err = %v, want the exit error", err)
+			}
+		})
+	}
+}
+
 func newClaudeStdinHelperAgent(t *testing.T) *claudeAgent {
 	t.Helper()
 	exe, err := os.Executable()
@@ -707,6 +1131,54 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "replay-then-fail":
+		if fixture := os.Getenv("NM_CLAUDE_STDIN_FIXTURE"); fixture != "" {
+			stream, err := os.ReadFile(fixture)
+			if err != nil {
+				os.Exit(6)
+			}
+			_, _ = os.Stdout.Write(stream)
+		}
+		_, _ = io.WriteString(os.Stdout, os.Getenv("NM_CLAUDE_STDIN_BANNER"))
+		os.Exit(1)
+	case "transient-then-succeed":
+		// Validate each subprocess invocation, including retries, against the
+		// caller's requested conversation before emitting any result.
+		if session := os.Getenv("NM_CLAUDE_STDIN_EXPECT_RESUME"); session != "" && !claudeArgsContainPair(args, "--resume", session) {
+			t.Fatalf("argv %v missing --resume %s", args, session)
+		}
+		// Fails NM_CLAUDE_STDIN_TRANSIENT_REMAIN invocations (banner on stdout,
+		// exit 1), counted through NM_CLAUDE_STDIN_COUNT_FILE because every
+		// retry attempt is a fresh process, then emits a success result.
+		remain := 0
+		if v := os.Getenv("NM_CLAUDE_STDIN_TRANSIENT_REMAIN"); v != "" {
+			remain, _ = strconv.Atoi(v)
+		}
+		count := 0
+		if data, err := os.ReadFile(os.Getenv("NM_CLAUDE_STDIN_COUNT_FILE")); err == nil {
+			count, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+		if count < remain {
+			_ = os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_COUNT_FILE"), []byte(strconv.Itoa(count+1)), 0o644)
+			_, _ = io.WriteString(os.Stdout, os.Getenv("NM_CLAUDE_STDIN_BANNER"))
+			os.Exit(1)
+		}
+		emitClaudeHelperResult()
+		return
+	case "result-background-result":
+		// Replays issue #1659's captured stream: a result, background work that
+		// holds the session open, a second result once that work ends, then EOF.
+		emitClaudeHelperResult()
+		time.Sleep(30 * time.Second)
+		_, _ = io.WriteString(os.Stdout, `{"type":"system","subtype":"task_notification","session_id":"helper-session"}`+"\n")
+		_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session","structured_output":{"ok":false}}`+"\n")
+		return
+	case "result-then-fail":
+		emitClaudeHelperResult()
+		os.Exit(1)
+	case "unstructured-result-then-fail":
+		_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session"}`+"\n")
+		os.Exit(1)
 	case "read":
 		prompt, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -772,4 +1244,148 @@ func claudeArgsContainPair(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+func claudeSubmissionStream(t *testing.T, calls ...claudeSubmissionCall) string {
+	t.Helper()
+	var b strings.Builder
+	for _, c := range calls {
+		use, err := json.Marshal(map[string]any{
+			"type": "assistant",
+			"message": map[string]any{
+				"id": "msg_" + c.id,
+				"content": []map[string]any{{
+					"type": "tool_use", "id": c.id, "name": "StructuredOutput", "input": json.RawMessage(c.input),
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := json.Marshal(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"content": []map[string]any{{
+					"type": "tool_result", "tool_use_id": c.id, "is_error": c.isError,
+					"content": "Structured output provided successfully",
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(use)
+		b.WriteByte('\n')
+		b.Write(res)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+type claudeSubmissionCall struct {
+	id      string
+	input   string
+	isError bool
+}
+
+func parseClaudeStream(t *testing.T, stream string) *claudeResult {
+	t.Helper()
+	var usage TokenUsage
+	var result *claudeResult
+	if err := parseClaudeEvents(context.Background(), strings.NewReader(stream), nil, &usage, &result, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result event")
+	}
+	return result
+}
+
+const claudeProseOnlyResult = `{"type":"result","subtype":"success","is_error":false,"result":"All background agents finished."}` + "\n"
+
+func TestParseClaudeEvents_ProseOnlyResultKeepsEarlierSubmission(t *testing.T) {
+	stream := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: `{"findings":[{"id":"a"}]}`}) + claudeProseOnlyResult
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"a"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+	res, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if string(res.Output) != `{"findings":[{"id":"a"}]}` {
+		t.Fatalf("output = %s", res.Output)
+	}
+}
+
+func TestParseClaudeEvents_LatestSubmissionWins(t *testing.T) {
+	stream := claudeSubmissionStream(t,
+		claudeSubmissionCall{id: "toolu_1", input: `{"findings":[{"id":"a"}]}`},
+		claudeSubmissionCall{id: "toolu_2", input: `{"findings":[{"id":"a"},{"id":"b"}]}`},
+	) + claudeProseOnlyResult
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"a"},{"id":"b"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+}
+
+func TestParseClaudeEvents_RejectedSubmissionDoesNotReplaceAcceptedOne(t *testing.T) {
+	stream := claudeSubmissionStream(t,
+		claudeSubmissionCall{id: "toolu_1", input: `{"findings":[{"id":"a"}]}`},
+		claudeSubmissionCall{id: "toolu_2", input: `{"findings":"bad"}`, isError: true},
+	) + claudeProseOnlyResult
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"a"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+}
+
+func TestParseClaudeEvents_ResultStructuredOutputBeatsEarlierSubmission(t *testing.T) {
+	stream := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: `{"findings":[]}`}) +
+		`{"type":"result","subtype":"success","structured_output":{"findings":[{"id":"z"}]}}` + "\n"
+	result := parseClaudeStream(t, stream)
+	if string(result.StructuredOutput) != `{"findings":[{"id":"z"}]}` {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+}
+
+func TestParseClaudeEvents_NoSubmissionStillFailsAsMissing(t *testing.T) {
+	result := parseClaudeStream(t, claudeProseOnlyResult)
+	if result.StructuredOutput != nil {
+		t.Fatalf("structured output = %s", result.StructuredOutput)
+	}
+	_, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if !errors.Is(err, errNoStructuredOutput) {
+		t.Fatalf("expected errNoStructuredOutput, got %v", err)
+	}
+}
+
+func TestParseClaudeEvents_ErrorResultFailsDespiteEarlierSubmission(t *testing.T) {
+	stream := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: `{"findings":[]}`}) +
+		`{"type":"result","subtype":"error_during_execution","is_error":true}` + "\n"
+	result := parseClaudeStream(t, stream)
+	if _, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{}); err == nil {
+		t.Fatal("expected error result to fail closed")
+	}
+}
+
+func TestParseClaudeEvents_OnlyRejectedSubmissionFailsAsMissing(t *testing.T) {
+	stream := claudeSubmissionStream(t,
+		claudeSubmissionCall{id: "toolu_1", input: `{"findings":"bad"}`, isError: true},
+	) + claudeProseOnlyResult
+	result := parseClaudeStream(t, stream)
+	_, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if !errors.Is(err, errNoStructuredOutput) {
+		t.Fatalf("expected errNoStructuredOutput, got %v (structured output %s)", err, result.StructuredOutput)
+	}
+}
+
+func TestParseClaudeEvents_UnansweredSubmissionFailsAsMissing(t *testing.T) {
+	full := claudeSubmissionStream(t, claudeSubmissionCall{id: "toolu_1", input: `{"findings":[{"id":"a"}]}`})
+	toolUseOnly := full[:strings.Index(full, "\n")+1]
+	result := parseClaudeStream(t, toolUseOnly+claudeProseOnlyResult)
+	_, err := finalizeClaudeResult(result, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if !errors.Is(err, errNoStructuredOutput) {
+		t.Fatalf("expected errNoStructuredOutput, got %v (structured output %s)", err, result.StructuredOutput)
+	}
 }

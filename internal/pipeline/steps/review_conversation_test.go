@@ -73,6 +73,7 @@ func appendAgentQuestionLine(dir, line string) error {
 // run's conversation file, and the step parks on it as an ask-user finding
 // rather than approving the head with an open question.
 func TestReviewStep_QuestionEmittedMidTurnParksInWaitingOnAnswers(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	var convDir string
 	ag := &mockAgent{}
@@ -141,6 +142,7 @@ func TestReviewStep_QuestionEmittedMidTurnParksInWaitingOnAnswers(t *testing.T) 
 // question itself after asking it. A withdrawal must cost nothing: no park, no
 // finding, no answer required.
 func TestReviewStep_RetractedQuestionDoesNotPark(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	var convDir string
 	ag := &mockAgent{}
@@ -175,6 +177,7 @@ func TestReviewStep_RetractedQuestionDoesNotPark(t *testing.T) {
 // finishes the pass it paused instead of re-reading the diff from scratch, and
 // the answer is durably recorded for the next cold reviewer.
 func TestReviewStep_AnswersResumeTheSameSessionAndFinalize(t *testing.T) {
+	t.Parallel()
 	turn := 0
 	mock := &sessionMockAgent{}
 	var convDir string
@@ -277,6 +280,7 @@ func TestReviewStep_AnswersResumeTheSameSessionAndFinalize(t *testing.T) {
 // review_agent_timeout. A park longer than the whole budget must not expire
 // the review.
 func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	// Each invocation's deadline is recorded against the real clock at call
 	// time: the budget starts when the turn starts, so a turn that sees its
@@ -339,6 +343,7 @@ func TestReviewStep_ParkedWaitDoesNotCountAgainstTheReviewAgentTimeout(t *testin
 // the next COLD reviewer reads - including a reviewer in a later run, which is
 // what an author's fix push produces.
 func TestReviewStep_SettledQuestionReachesTheNextColdReviewer(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := newStaticReviewAgent(cleanReviewJSON)
 	sctx := withReviewConversation(newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{}))
@@ -382,6 +387,7 @@ func TestReviewStep_SettledQuestionReachesTheNextColdReviewer(t *testing.T) {
 // review prompt without any question being asked and would otherwise be the
 // one part of the feature a repository gets without opting in.
 func TestReviewStep_SupersedeCarriesThePreviousRunsReviewRounds(t *testing.T) {
+	t.Parallel()
 	t.Run("conversation on", func(t *testing.T) {
 		assertSupersedeSection(t, true)
 	})
@@ -449,6 +455,7 @@ func assertSupersedeSection(t *testing.T, conversation bool) {
 // TestBuildReviewConversationSection covers item 9: the PR body records what
 // was asked, what was answered, and by whom.
 func TestBuildReviewConversationSection(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := withReviewConversation(newTestContextWithDBRecords(t, newStaticReviewAgent(cleanReviewJSON), dir, baseSHA, headSHA, config.Commands{}))
 
@@ -507,6 +514,7 @@ func TestBuildReviewConversationSection(t *testing.T) {
 }
 
 func TestPublishedConversationTextFlattensAndBounds(t *testing.T) {
+	t.Parallel()
 	// A newline would break out of the markdown list item it belongs to.
 	if got := publishedConversationText("two\nlines"); got != "two lines" {
 		t.Fatalf("got %q, want the lines flattened", got)
@@ -523,6 +531,7 @@ func TestPublishedConversationTextFlattensAndBounds(t *testing.T) {
 // an en dash, an ellipsis. A byte slice cuts that rune in half and publishes
 // invalid UTF-8 into the PR body, and reports a byte count as "chars".
 func TestPublishedConversationTextBoundsRunesNotBytes(t *testing.T) {
+	t.Parallel()
 	// One dash short of the bound, so the em dash itself straddles it.
 	const runeCount = maxPublishedConversationChars + 50
 	text := strings.Repeat("a", maxPublishedConversationChars-1) + strings.Repeat("—", runeCount-(maxPublishedConversationChars-1))
@@ -591,6 +600,7 @@ func lastReviewPrompt(t *testing.T, m *mockAgent) string {
 // deliver the answer must replay its review turn only. Running the fixer again
 // would re-apply the same findings to already-fixed code.
 func TestReviewStep_AnsweringARereviewQuestionDoesNotReRunTheFixer(t *testing.T) {
+	t.Parallel()
 	reviewTurn := 0
 	mock := &sessionMockAgent{}
 	var convDir string
@@ -668,6 +678,7 @@ func TestReviewStep_AnsweringARereviewQuestionDoesNotReRunTheFixer(t *testing.T)
 // re-enters this step on a NEW head while RunSessions still holds the identity
 // of the session that reviewed the old one.
 func TestReviewStep_OnlyAFinalizeTurnResumesTheReviewerSession(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name              string
 		finalizingAnswers bool
@@ -730,6 +741,7 @@ func TestReviewStep_OnlyAFinalizeTurnResumesTheReviewerSession(t *testing.T) {
 // nothing else, and the off run must leave no conversation on disk, mint no
 // reviewer session, and produce no question findings.
 func TestReviewStep_ConversationOffIsTodaysReview(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, on bool) (*pipeline.StepContext, *mockAgent, *pipeline.StepOutcome) {
 		t.Helper()
 		dir, baseSHA, headSHA := setupGitRepo(t)
@@ -835,6 +847,7 @@ func TestReviewStep_ConversationOffIsTodaysReview(t *testing.T) {
 // the reviewer had resumed with the answer. Opening the write side alone is
 // worse than refusing; both sides key on the conversation being on disk.
 func TestReviewStep_FinalizeTurnDeliversAnswersEvenWithTheSettingOff(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := newStaticReviewAgent(cleanReviewJSON)
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -885,6 +898,7 @@ func TestReviewStep_FinalizeTurnDeliversAnswersEvenWithTheSettingOff(t *testing.
 }
 
 func TestReviewStep_ConversationOffIgnoresQuestionsAlreadyOnDisk(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := newStaticReviewAgent(cleanReviewJSON)
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -934,6 +948,7 @@ func TestReviewStep_ConversationOffIgnoresQuestionsAlreadyOnDisk(t *testing.T) {
 // either (its id list comes from the open set), and the review completes clean
 // with a major question silently discarded.
 func TestUnreadableQuestionHistoryParksEvenWithNothingOpen(t *testing.T) {
+	t.Parallel()
 	conv := reviewqa.Conversation{QuestionsIncomplete: true}
 	if len(conv.Open()) != 0 {
 		t.Fatal("fixture is meant to have nothing open")
@@ -975,6 +990,7 @@ func TestUnreadableQuestionHistoryParksEvenWithNothingOpen(t *testing.T) {
 // names the ids it is standing in for so the loss is bounded rather than
 // silent.
 func TestUnreadableQuestionHistoryReplacesTheAnswerableRows(t *testing.T) {
+	t.Parallel()
 	conv := reviewqa.Conversation{
 		QuestionsIncomplete: true,
 		Entries: []reviewqa.Entry{
@@ -1021,6 +1037,7 @@ func TestUnreadableQuestionHistoryReplacesTheAnswerableRows(t *testing.T) {
 // "bounded" conversation while being far over the frame once each becomes a
 // finding.
 func TestOpenReviewQuestionFindingsAreBounded(t *testing.T) {
+	t.Parallel()
 	var conv reviewqa.Conversation
 	const open = maxReviewQuestionFindings + 7
 	for i := 0; i < open; i++ {
@@ -1078,6 +1095,7 @@ func TestOpenReviewQuestionFindingsAreBounded(t *testing.T) {
 // The prompt sections carry the same set and had the same shape. Every sibling
 // prompt channel in this package is bounded, so these were the outliers.
 func TestReviewQuestionPromptSectionsAreBounded(t *testing.T) {
+	t.Parallel()
 	var conv reviewqa.Conversation
 	const open = maxReviewQuestionPromptEntries + 5
 	for i := 0; i < open; i++ {
@@ -1125,6 +1143,7 @@ func TestReviewQuestionPromptSectionsAreBounded(t *testing.T) {
 // rendered the same question twice, once as an answered pair and once as
 // withdrawn.
 func TestRetractedQuestionIsNeitherPersistedNorRenderedTwice(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := withReviewConversation(newTestContextWithDBRecords(t, newStaticReviewAgent(cleanReviewJSON), dir, baseSHA, headSHA, config.Commands{}))
 	convDir := reviewConversationDir(sctx)
@@ -1178,6 +1197,7 @@ func TestRetractedQuestionIsNeitherPersistedNorRenderedTwice(t *testing.T) {
 // prefix must not tell it run 1 parked, that findings were fixed, or to judge
 // whether a claimed fix holds. None of that happened.
 func TestSupersededSectionDoesNotClaimThePreviousRunParked(t *testing.T) {
+	t.Parallel()
 	mock := &sessionMockAgent{}
 	mock.respond = func(agent.RunOpts) *agent.Result {
 		return &agent.Result{Output: []byte(cleanReviewJSON)}
@@ -1238,6 +1258,7 @@ func TestSupersededSectionDoesNotClaimThePreviousRunParked(t *testing.T) {
 // park, and the feature degrades to the old monologue with nothing logged. So
 // the protocol section has to name the exception itself.
 func TestReviewPromptNamesTheConversationDirectoryAsABoundaryException(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := newStaticReviewAgent(cleanReviewJSON)
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1279,6 +1300,7 @@ func TestReviewPromptNamesTheConversationDirectoryAsABoundaryException(t *testin
 // nothing. Absence is still absence: a run whose reviewer asked nothing never
 // creates the directory and must complete normally.
 func TestReviewStep_UnreadableConversationFailsTheReview(t *testing.T) {
+	t.Parallel()
 	t.Run("unreadable", func(t *testing.T) {
 		dir, baseSHA, headSHA := setupGitRepo(t)
 		sctx := withReviewConversation(newTestContextWithDBRecords(t, newStaticReviewAgent(cleanReviewJSON), dir, baseSHA, headSHA, config.Commands{}))
@@ -1337,6 +1359,7 @@ func TestReviewStep_UnreadableConversationFailsTheReview(t *testing.T) {
 // step hands the agent declares the property, and a payload using it reaches
 // the outcome the executor reads.
 func TestReviewStep_FinalizeTurnCanActuallyRetractWhatItCarried(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	var handed agent.RunOpts
@@ -1430,6 +1453,7 @@ func schemaPropertyNames(t *testing.T, raw json.RawMessage) map[string]struct{} 
 // executor applies that list only on such a turn, so the contract and the
 // instruction have to arrive together or the retraction path is unreachable.
 func TestReviewStep_OnlyAFinalizeTurnIsOfferedTheRetractionProperty(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := newStaticReviewAgent(cleanReviewJSON)
 	sctx := withReviewConversation(newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{}))

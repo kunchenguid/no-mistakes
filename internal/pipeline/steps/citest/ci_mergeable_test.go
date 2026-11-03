@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -426,5 +427,138 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	}
 	if !foundWaiting {
 		t.Fatalf("expected log about waiting for pending checks, got: %v", logs)
+	}
+}
+
+func TestCIStep_GitHubObservedHeadOnReadErrorResetsTimeoutFailures(t *testing.T) {
+	t.Parallel()
+	for _, read := range []string{"commit-checks", "workflow-runs"} {
+		for _, changedHead := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/changed=%v", read, changedHead), func(t *testing.T) {
+				t.Parallel()
+				dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+				env := stepstest.FakeCIGH(t, "OPEN", `[{"name":"old-head-failure","state":"FAILURE","bucket":"fail"},{"name":"slow-suite","state":"PENDING","bucket":"pending"}]`)
+				sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+				prURL := "https://github.com/test/repo/pull/42"
+				sctx.Run.PRURL = &prURL
+				sctx.Env = env
+				sctx.Config.CITimeout = time.Minute
+				now := time.Unix(1700000000, 0)
+				waits := 0
+				var logs []string
+				sctx.Log = func(message string) { logs = append(logs, message) }
+				step := (&steps.CIStep{}).SetNow(func() time.Time { return now }).SetBaseBranchTip(func(context.Context) (string, bool) { return "base-tip", true })
+				step.SetWaitForNextPoll(func(context.Context, time.Duration) error {
+					waits++
+					switch waits {
+					case 1:
+						if changedHead {
+							for i, entry := range sctx.Env {
+								if strings.HasPrefix(entry, "FAKE_CLI_PR_HEAD_SHA=") {
+									sctx.Env[i] = "FAKE_CLI_PR_HEAD_SHA=another-head"
+								}
+							}
+						}
+						if read == "commit-checks" {
+							sctx.Env = append(sctx.Env, "FAKE_CLI_CHECKS_ERR=commit lookup failed")
+						} else {
+							sctx.Env = append(sctx.Env, "FAKE_CLI_WORKFLOW_RUNS=invalid-json")
+						}
+					case 2:
+						now = now.Add(2 * time.Minute)
+					default:
+						return errors.New("monitor polled past timeout")
+					}
+					return nil
+				})
+				outcome, err := step.Execute(sctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if outcome == nil || !outcome.NeedsApproval {
+					t.Fatalf("outcome = %#v, want parked timeout", outcome)
+				}
+				if got := strings.Contains(outcome.Findings, "old-head-failure"); got == changedHead {
+					t.Fatalf("timeout findings = %s, changed head = %v", outcome.Findings, changedHead)
+				}
+				errorLog := "warning: could not check CI:"
+				if changedHead {
+					errorLog = "waiting for the delivered commit"
+				}
+				if !strings.Contains(strings.Join(logs, "\n"), errorLog) {
+					t.Fatalf("did not exercise check-read error: %v", logs)
+				}
+			})
+		}
+	}
+}
+
+func TestCIStep_GitHubHeadObservationAcrossLookupFailures(t *testing.T) {
+	t.Parallel()
+	for _, lateMovement := range []bool{false, true} {
+		t.Run(fmt.Sprint(lateMovement), func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+			env := stepstest.FakeCIGH(t, "OPEN", `[{"name":"remembered-failure","state":"FAILURE","bucket":"fail"},{"name":"slow","state":"PENDING","bucket":"pending"}]`)
+			heads := []string{"head-B", "head-B", "ERROR"}
+			if lateMovement {
+				heads = []string{headSHA, headSHA, headSHA, "head-B"}
+			}
+			sequence, err := json.Marshal(heads)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexPath := filepath.Join(t.TempDir(), "head-index")
+			env = append(env, "FAKE_CLI_PR_HEAD_SEQUENCE="+string(sequence), "FAKE_CLI_PR_HEAD_INDEX="+indexPath)
+			sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx.Run.PRURL = &prURL
+			sctx.Config.CITimeout = time.Minute
+			now := time.Unix(1700000000, 0)
+			waits := 0
+			step := (&steps.CIStep{}).SetNow(func() time.Time { return now }).SetBaseBranchTip(func(context.Context) (string, bool) { return "base-tip", true })
+			step.SetWaitForNextPoll(func(context.Context, time.Duration) error {
+				waits++
+				if waits == 2 {
+					now = now.Add(2 * time.Minute)
+				}
+				if waits > 2 {
+					return errors.New("polling past timeout")
+				}
+				return nil
+			})
+			outcome, err := step.Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome == nil || !outcome.NeedsApproval {
+				t.Fatalf("outcome = %#v, want timeout park", outcome)
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			remembered := false
+			for _, finding := range findings.Items {
+				if finding.Check == "remembered-failure" {
+					remembered = true
+				}
+			}
+			if remembered == lateMovement {
+				t.Fatalf("timeout = %s, late movement = %v", outcome.Findings, lateMovement)
+			}
+			data, err := os.ReadFile(indexPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantLookups := "3"
+			if lateMovement {
+				wantLookups = "4"
+			}
+			if string(data) != wantLookups {
+				t.Fatalf("head lookups = %s, want %s", data, wantLookups)
+			}
+		})
 	}
 }

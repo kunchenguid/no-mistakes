@@ -40,9 +40,9 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 
 // resolveBranchBaseSHA returns the branch base commit relative to the supplied
 // effective PR base branch when possible. This keeps pipeline steps scoped to
-// the full branch, not just the last pushed delta. It fetches that branch's current
-// remote tip first (same pattern as resolveRunDefaultBranchTip) so the
-// merge-base is computed against the live base, not whatever origin/<base>
+// the full branch, not just the last pushed delta. Outside eval replay, it fetches
+// that branch's current remote tip first (as resolveRunDefaultBranchTip does).
+// The merge-base is computed against the live base, not whatever origin/<base>
 // happened to be sitting at in the worktree - a stale local ref otherwise
 // drafts PR content (and other consumers) against an outdated base and pulls
 // in unrelated commits that already landed there.
@@ -60,19 +60,18 @@ func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallb
 			return "", fmt.Errorf("fetch default branch %q to resolve branch base: %w", defaultBranch, err)
 		}
 	}
-	if mb := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch); mb != "" {
-		return mb, nil
+	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	if baseSHA == "" {
+		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch)
 	}
-	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), nil
+	if err := sctx.CheckAgentCrashRetryBase(baseSHA); err != nil {
+		return "", err
+	}
+	return baseSHA, nil
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
 	sha, _ := resolveDefaultBranchTip(ctx, workDir, upstreamURL, fallbackBaseSHA, defaultBranch)
-	return sha
-}
-
-func resolveRunDefaultBranchTipSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) string {
-	sha, _ := resolveRunDefaultBranchTip(ctx, sctx, fallbackBaseSHA, defaultBranch)
 	return sha
 }
 

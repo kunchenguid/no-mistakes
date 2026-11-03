@@ -18,13 +18,12 @@ import (
 // 100 input, 20 output, and 30 cache-read tokens.
 func piReviewReply(t *testing.T, review string) string {
 	t.Helper()
-	text, err := json.Marshal(review)
-	if err != nil {
-		t.Fatal(err)
+	if !json.Valid([]byte(review)) {
+		t.Fatal("invalid fixture JSON")
 	}
-	return fmt.Sprintf(`{"type":"message_end","message":{"role":"assistant","provider":"xai","model":"grok-4.6","content":[{"type":"text","text":%s}],"usage":{"input":100,"output":20,"cacheRead":30}}}
-{"type":"agent_end","messages":[]}
-`, text)
+	return fmt.Sprintf(`{"type":"message_end","message":{"role":"assistant","provider":"xai","model":"grok-4.6","stopReason":"toolUse","content":[{"type":"toolCall","id":"final-1","name":"no_mistakes_output","arguments":%s}],"usage":{"input":100,"output":20,"cacheRead":30}}}
+{"type":"tool_execution_end","toolCallId":"final-1","toolName":"no_mistakes_output","isError":false,"result":{"terminate":true,"details":{"output":%s}}}
+`, review, review)
 }
 
 // installFakePiSequence installs a pi that answers its nth invocation with
@@ -37,6 +36,7 @@ func installFakePiSequence(t *testing.T, fakeDir string, replies ...string) {
 		}
 	}
 	script := fmt.Sprintf(`#!/bin/sh
+[ "$1" = "--version" ] && { echo 0.99.1; exit 0; }
 cat >/dev/null
 dir='%s'
 n=$(cat "$dir/calls" 2>/dev/null || echo 0)
@@ -74,8 +74,8 @@ func TestReplayTokensCoverEveryReviewAttempt(t *testing.T) {
 		wantOutput   int64
 		wantFresh    int64
 	}{
-		{name: "schema-rejected attempt still reports usage", first: missingRiskLevel, wantReported: true, wantInput: 200, wantOutput: 40, wantFresh: 140},
-		{name: "two attempts that both report usage", first: blankRationale, wantReported: true, wantInput: 200, wantOutput: 40, wantFresh: 140},
+		{name: "schema-rejected attempt still reports usage", first: missingRiskLevel, wantReported: true, wantInput: 260, wantOutput: 40, wantFresh: 200},
+		{name: "two attempts that both report usage", first: blankRationale, wantReported: true, wantInput: 260, wantOutput: 40, wantFresh: 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

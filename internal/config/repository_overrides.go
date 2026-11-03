@@ -23,10 +23,18 @@ func normalizeRepositoryOverrides(raw RepositoryOverrides) (RepositoryOverrides,
 		if err := validateGlobalCommitRaw(override.Commit); err != nil {
 			return nil, fmt.Errorf("invalid repository_overrides.%s.commit: %w", key, err)
 		}
-		if override.PR.TitleFormat != nil {
-			if err := validatePRTitleFormat(*override.PR.TitleFormat); err != nil {
-				return nil, fmt.Errorf("invalid repository_overrides.%s.pr: %w", key, err)
-			}
+		if err := validatePRRaw(PRRaw{
+			TitleFormat: override.PR.TitleFormat,
+			Template:    override.PR.Template,
+			Appendix:    override.PR.Appendix,
+		}); err != nil {
+			return nil, fmt.Errorf("invalid repository_overrides.%s.pr: %w", key, err)
+		}
+		if err := validatePRUpdateText(override.PR.UpdateText); err != nil {
+			return nil, fmt.Errorf("invalid repository_overrides.%s.pr: %w", key, err)
+		}
+		if err := validateReviewAgents(override.ReviewAgents); err != nil {
+			return nil, fmt.Errorf("invalid repository_overrides.%s: %w", key, err)
 		}
 		overrides[key] = override
 	}

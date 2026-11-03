@@ -46,14 +46,14 @@ tail -f ~/.no-mistakes/logs/daemon.log
 
 ### Check for stale artifacts
 
-A leftover socket from an unclean exit no longer blocks startup: the daemon probes the socket path before binding and removes it only when nothing is listening on it.
-A stale PID file can still confuse status reporting:
+A leftover socket and PID file from an unclean exit clear themselves: once the recorded daemon process is provably gone, status checks report the daemon as not running and remove both files (see [Daemon & Worktrees](/no-mistakes/concepts/daemon/)).
+If a command still reports `connect to daemon socket: ... connection refused`, the PID file names a process that is still alive or cannot be verified:
 
 ```sh
 ls -la ~/.no-mistakes/daemon.pid ~/.no-mistakes/socket
 ```
 
-If the PID file points at a process that's no longer running, remove it and run `no-mistakes daemon start` again.
+Check that process, then run `no-mistakes daemon start`.
 
 ### "a no-mistakes daemon is already running for this NM_HOME"
 
@@ -166,6 +166,19 @@ Symptom: a run stops with a failed step.
 Check the per-step log at `~/.no-mistakes/logs/<runID>/<step>.log`.
 Fatal step errors are appended to that log, so failures such as rejected pushes include the returned error output there instead of only appearing in `daemon.log`.
 
+### A run failed on a provider error, usage limit, or agent exit
+
+When the failed step is Test or an earlier step and its error came from the agent invocation itself, continue the run instead of starting over:
+
+```sh
+no-mistakes axi sync --recover   # when the run left unpublished pipeline commits
+no-mistakes axi retry --run <id>
+```
+
+The retry keeps every committed correction, carries the steps before the failed one, and restarts the failed step from the beginning.
+It refuses, naming the proof that failed, when the failure is about the change itself, the branch or head moved, or the configuration changed; use `no-mistakes rerun` then.
+See [`no-mistakes axi retry`](/no-mistakes/reference/cli/#no-mistakes-axi-retry) for every proof.
+
 ### Push fails with `refusing to force-push`
 
 This means the live remote branch changed after the pipeline's last observed head and contains commit(s) the validated worktree did not incorporate.
@@ -239,6 +252,7 @@ git remote -v | grep no-mistakes
 
 If it's missing, run `no-mistakes init` again.
 Re-running init refreshes an existing gate and repairs the `no-mistakes` remote when it is missing.
+If init instead refuses because the remote already exists with another URL, it leaves that remote alone; when the `.git` is shared with another no-mistakes home, follow the `url.<base>.insteadOf` rewrite the refusal prints (see [`no-mistakes init`](/no-mistakes/reference/cli/#no-mistakes-init)).
 It also reattaches an existing gate after you rename or move the repo directory, as long as the old path no longer exists.
 
 ### Check the receive hooks
@@ -277,10 +291,13 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - `gh`, `glab`, `forgejo-axi`, or `tea` not installed (or, for GitHub, not on `PATH`)
 - The provider CLI reports that it is not authenticated; on GitHub, a timed-out or interrupted `gh auth status` is reported separately from auth failure
 - Bitbucket env vars not set in the daemon's environment
-- Upstream is not one of the hosts listed in Provider Integration
+- Upstream is not one of the hosts listed in Provider Integration (and no [provider plugin](/no-mistakes/reference/provider-plugin-protocol/) claims it)
+- A provider plugin claims the host, but its command cannot be found or its `status` handshake exited non-zero
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
-- Self-hosted Gitea isn't detected because `tea` has no login configured for the host; run `tea logins add --url https://your-gitea.example.com --token <token> --name <name>` so detection finds it. See [Self-hosted Gitea](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
+- Self-hosted Gitea isn't detected because `tea` has no login configured for the host; run `tea logins add --url https://your-gitea.example.com --token <token> --name <name>` (tea 0.x) or `tea auth login --host https://your-gitea.example.com --with-token < token-file` (tea 1.0) so detection finds it. tea 1.0 does not read tea 0.x logins, so after upgrading tea the PR step is skipped with `no tea 1.0 account configured` until you log in again. See [Self-hosted Gitea](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
+- Self-hosted Forgejo reached over an SSH origin isn't detected until `FORGEJO_BASE_URL` is set in the daemon's environment; when the instance serves SSH from a hostname other than its web host (Forgejo's `SSH_DOMAIN` setting), also set `FORGEJO_SSH_DOMAIN`, or the origin still fails to match the instance. See [Forgejo](/no-mistakes/guides/provider-integration/#forgejo).
+- `FORGEJO_SSH_DOMAIN` is set, but a `tea` login for the same host, such as one left from an earlier split-host workaround, is matched first and routes the repository to Gitea; with `tea` not installed or not logged in, the PR step is skipped with `tea CLI is not installed` or `tea CLI is not authenticated`. Remove the login with `tea logins delete <name>` (tea 0.x) or `tea auth logout --host <url>` (tea 1.0). See [`FORGEJO_SSH_DOMAIN`](/no-mistakes/reference/environment/#forgejo_ssh_domain).
 - A non-GitHub repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
 - You pushed the effective PR base branch (see the [PR step's skip rules](/no-mistakes/reference/pipeline-steps/#pr))
 
@@ -288,16 +305,15 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
-Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later default-branch update can make the PR conflict or rerun CI.
-Once the CI monitor reports readiness and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears. A trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) can establish readiness for a zero-check repository; an empty forge response without that declaration is not ready. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the exact readiness and signal-clearing rules, including GitHub Actions runs that do not appear in the PR check rollup.
+By default, the run keeps monitoring the pull request after CI readiness is established, and ends when the PR is merged or closed, or when you explicitly hand it to human reviewers with [`no-mistakes axi handoff`](/no-mistakes/reference/cli/#no-mistakes-axi-handoff); handoff ends monitoring without cancelling, merging, or closing the PR. Ending it at readiness instead requires [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass). If the run has not finished, consult the [CI readiness rules](/no-mistakes/reference/pipeline-steps/#ci), including unresolved mergeability and checks missing from the PR rollup.
 
 How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
 Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
 
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
-You can approve, fix, or skip from the TUI or `no-mistakes axi respond`.
+You can approve, fix, skip, or abort from the TUI or `no-mistakes axi respond`.
 
-A park that happens **before** the timeout, with a finding that CI checks could not be read from the provider, means the check read itself is failing (after 6 consecutive failed polls, the step stops waiting instead of spinning to `ci_timeout`). The finding is provider-neutral and the step log shows the underlying provider error; for GitHub, a `gh` older than 2.50 rejects the `gh pr checks --json` call and needs upgrading. The same park on GitLab, Bitbucket Cloud, or Azure DevOps points at that provider's CLI or credentials instead.
+A park that happens **before** the timeout, with a finding that CI checks could not be read from the provider, means the check read itself is failing (after 6 consecutive failed polls, the step stops waiting instead of spinning to `ci_timeout`). The finding is provider-neutral and the step log shows the underlying provider error; for GitHub, the finding adds a `gh >= 2.50` hint only when `gh` itself rejected the `pr checks --json` flag (a `gh` older than 2.50 does), and any other error is reported without a version diagnosis. The same park on GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, Gitea, or a provider plugin points at that provider's CLI, credentials, or plugin instead. For GitLab's "waiting for the delivered commit's own checks" message, see [CI source-commit binding](/no-mistakes/reference/pipeline-steps/#ci).
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 
 ## Step looks quiet or wedged
@@ -309,13 +325,13 @@ It is only a liveness signal.
 It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
 
 A quiet Review step still ends on its own: each fixer or reviewer invocation is independently bounded by [`review_agent_timeout`](/no-mistakes/reference/global-config/#review_agent_timeout).
-A silent invocation is cancelled at that budget. A still-working one continues only until its configured still-working cap, and otherwise stops at this budget. The run then fails with a timeout diagnostic in the step log.
+A silent invocation is cancelled at that budget. A still-working one continues only until its configured still-working cap, and otherwise stops at this budget. With an eligible default-budget cut and [`agent_crash_retries`](/no-mistakes/reference/global-config/#agent_crash_retries) enabled, the same live run may retry the validation step; otherwise, or after retry proof fails or the budget is exhausted, the run fails with a timeout diagnostic in the step log.
 An invocation that emitted output reports measured last-activity evidence, while a no-output invocation reports its measured no-output duration.
 `step_quiet_warning` remains status-only; the idle window after the stall budget is a fixed 10 minutes (or the budget itself when shorter).
 A quiet Test step is bounded the same way by [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout), covering the post-test evidence-gathering agent and a Test-repair turn.
 An expired Test budget parks for a decision rather than failing the run as a code defect; raise that setting when targeted tests or evidence gathering routinely stay quiet longer than the stall budget, and set [`test_agent_working_timeout`](/no-mistakes/reference/global-config/#test_agent_working_timeout) when a turn that was still working is cut there.
-A Review cut deliberately still fails the run rather than parking, because an approved Review park would let Push ship a half-finished, unreviewed fix; parking Review cuts as well is left to a separate follow-up.
-Every other agent-spawning step (Document, Lint, Rebase conflict repair, PR drafting, CI auto-fix) is bounded by [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout), so a stall reaches the step's normal agent-error handling instead of remaining active until you abort. Most mutation steps fail, PR drafting continues with deterministic fallback content, and CI auto-fix parks for a user decision as described in the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci).
+A Review cut deliberately still fails the run rather than parking when no eligible same-run crash retry remains, because an approved Review park would let Push ship a half-finished, unreviewed fix; parking Review cuts as well is left to a separate follow-up.
+Document and Lint are likewise bounded by [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout) and may use an eligible [`agent_crash_retries`](/no-mistakes/reference/global-config/#agent_crash_retries) retry. Rebase conflict repair, PR drafting, and CI auto-fix retain their normal agent-error handling instead of remaining active until you abort: most mutation steps fail, PR drafting continues with deterministic fallback content, and CI auto-fix parks for a user decision as described in the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci).
 
 Start by reading the active run and the step log:
 

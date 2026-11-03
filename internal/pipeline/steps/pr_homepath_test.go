@@ -598,3 +598,47 @@ func TestTestFindingsSchema_KeepsEvidenceDirectoryPathsReportable(t *testing.T) 
 		}
 	})
 }
+
+// TestPRStep_BuildPRContentRedactsRunWorktreePaths covers evidence text inlined
+// into the PR body: the run worktree and any run worktree under an NM_HOME
+// outside the home directory, which home redaction never sees (#1611).
+func TestPRStep_BuildPRContentRedactsRunWorktreePaths(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"title":"fix: evidence paths","body":"## What Changed\n\n- evidence paths"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if err := os.MkdirAll(sctx.EvidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	evidenceFile := filepath.Join(sctx.EvidenceDir, "run.log")
+	other := filepath.Join(nmHome, "worktrees", "ab12cd34ef56", "run-0", "out.log")
+	if err := os.WriteFile(evidenceFile, []byte("ran "+filepath.Join(dir, "bin", "tool")+"\nsaw "+other+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertFixturePathIsRenderable(t, evidenceFile)
+	insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{
+		TestingSummary: "Ran the tool.",
+		Artifacts:      []types.TestArtifact{{Kind: "log", Label: "run log", Path: evidenceFile}},
+	}), "")
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{dir, nmHome} {
+		if strings.Contains(content.Body, leak) {
+			t.Errorf("PR body leaked %q:\n%s", leak, content.Body)
+		}
+	}
+	for _, want := range []string{"ran " + filepath.Join("{run-worktree}", "bin", "tool"), "saw " + filepath.Join("{run-worktree}", "out.log")} {
+		if !strings.Contains(content.Body, want) {
+			t.Errorf("expected %q in PR body:\n%s", want, content.Body)
+		}
+	}
+}

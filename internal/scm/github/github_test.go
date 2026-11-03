@@ -222,8 +222,8 @@ func TestGetChecksUsesLivePRHeadForWorkflowDiscovery(t *testing.T) {
 	if len(checks) != 1 || checks[0].Name != "build" {
 		t.Fatalf("checks = %+v, want live-head build rollup", checks)
 	}
-	if pr.HeadSHA != "live-head" {
-		t.Fatalf("PR HeadSHA = %q, want live-head", pr.HeadSHA)
+	if pr.HeadSHA != "stale-head" || pr.ObservedHeadSHA != "live-head" {
+		t.Fatalf("requested head = %q, observed head = %q", pr.HeadSHA, pr.ObservedHeadSHA)
 	}
 }
 
@@ -391,6 +391,101 @@ func TestGetChecksCollapseOrderingDoesNotLetWorkflowRunUnionResurrectSupersededC
 	}
 	if got := checks[0]; got.Name != "gate" || got.Bucket != scm.CheckBucketPass {
 		t.Fatalf("checks[0] = %+v, want the latest SUCCESS run to win with no resurrected failure", got)
+	}
+}
+
+func TestGetChecksSupersedesJoblessCancelledWorkflowOnlyWithALaterReplacement(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		replacement bool
+		withJob     bool
+		conclusion  string
+		workflowID  int64
+		startedAt   string
+		wantCancel  bool
+		wantBucket  scm.CheckBucket
+	}{
+		{name: "later success represented by jobs", replacement: true, withJob: true, conclusion: "success", workflowID: 1001, wantBucket: scm.CheckBucketPass},
+		{name: "later success without jobs", replacement: true, conclusion: "success", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "later pending run with jobs", replacement: true, withJob: true, workflowID: 1001, wantBucket: scm.CheckBucketPending},
+		{name: "later failed run with jobs", replacement: true, withJob: true, conclusion: "failure", workflowID: 1001, wantBucket: scm.CheckBucketFail},
+		{name: "no replacement", wantCancel: true},
+		{name: "another workflow with the same name", replacement: true, withJob: true, conclusion: "success", workflowID: 1002, wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "unknown workflow", replacement: true, withJob: true, conclusion: "success", wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "older success", replacement: true, withJob: true, conclusion: "success", workflowID: 1001, startedAt: "2026-08-26T08:00:00Z", wantCancel: true, wantBucket: scm.CheckBucketPass},
+		{name: "later pending run without jobs", replacement: true, workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketPending},
+		{name: "later failed run without jobs", replacement: true, conclusion: "failure", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketFail},
+		{name: "later cancelled run without jobs", replacement: true, conclusion: "cancelled", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketCancel},
+		{name: "later skipped run without jobs", replacement: true, conclusion: "skipped", workflowID: 1001, wantCancel: true, wantBucket: scm.CheckBucketSkip},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			jobs := `[]`
+			runs := `{"id":101,"workflow_id":1001,"name":"PR Gates","status":"completed","conclusion":"cancelled","run_started_at":"2026-08-26T08:25:50Z"}`
+			count := 1
+			if tc.replacement {
+				count++
+				startedAt := tc.startedAt
+				if startedAt == "" {
+					startedAt = "2026-08-26T08:39:44Z"
+				}
+				status := "completed"
+				if tc.conclusion == "" {
+					status = "in_progress"
+				}
+				replacementName := "PR Gates"
+				if !tc.withJob {
+					replacementName = "PR Gates rerun"
+				}
+				runs += fmt.Sprintf(`,{"id":102,"workflow_id":%d,"name":%q,"status":%q,"conclusion":%q,"run_started_at":%q}`, tc.workflowID, replacementName, status, tc.conclusion, startedAt)
+				if tc.withJob {
+					jobs = fmt.Sprintf(`[{"__typename":"CheckRun","name":"validate","status":%q,"conclusion":%q,"startedAt":%q,"detailsUrl":"https://github.com/test/repo/actions/runs/102/job/202"}]`, strings.ToUpper(status), strings.ToUpper(tc.conclusion), startedAt)
+				}
+			}
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+				githubCommitChecksCommand("", "test/repo", "deadbeef"):               {stdout: githubCommitChecksResponse(jobs)},
+				"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+					stdout: fmt.Sprintf(`[{"total_count":%d,"workflow_runs":[%s]}]`, count, runs),
+				},
+			}), nil, "", "test/repo")
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancelled := false
+			replacements := 0
+			for _, check := range checks {
+				if check.ProviderID == "github-workflow-run:101" {
+					cancelled = true
+					if check.Bucket != scm.CheckBucketCancel {
+						t.Fatalf("cancelled workflow changed bucket: %+v", check)
+					}
+				}
+				if (tc.withJob && check.Name == "validate") || (!tc.withJob && check.ProviderID == "github-workflow-run:102") {
+					replacements++
+					if check.Bucket != tc.wantBucket {
+						t.Fatalf("replacement bucket = %q, want %q: %+v", check.Bucket, tc.wantBucket, check)
+					}
+				}
+			}
+			if wantReplacements := map[bool]int{true: 1}[tc.replacement]; replacements != wantReplacements {
+				t.Fatalf("replacement present %d times, want %d; checks = %+v", replacements, wantReplacements, checks)
+			}
+			if cancelled != tc.wantCancel {
+				t.Fatalf("cancelled workflow present = %v, want %v; checks = %+v", cancelled, tc.wantCancel, checks)
+			}
+			wantCount := count
+			if !tc.wantCancel {
+				wantCount--
+			}
+			if len(checks) != wantCount {
+				t.Fatalf("got %d checks, want %d; replacement must stay visible: %+v", len(checks), wantCount, checks)
+			}
+		})
 	}
 }
 
@@ -875,21 +970,26 @@ func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
+// A token limited to the repo and workflow scopes cannot run `gh pr edit`: its
+// GraphQL lookup selects Team.organization through reviewRequests, which needs
+// read:org. UpdatePR therefore sends the content as a REST PATCH, streamed on
+// stdin, and must never fall back to `gh pr edit`.
+func TestUpdatePRPatchesPullRequestOverREST(t *testing.T) {
 	t.Parallel()
 
-	const body = "## What Changed\n\n- update existing pull request bodies without long argv"
+	const body = "## What Changed\n\n- <b>update</b> & \"quote\" existing pull request bodies without long argv"
+	want, err := json.Marshal(map[string]string{"title": "fix: cap body", "body": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// githubTestCmdFactory rejects every command it was not given, so a
+	// `gh pr edit` call fails this test.
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr edit 42 --repo test/repo --title fix: cap body --body-file -": {
-			wantStdin: body,
-		},
+		"gh api --method PATCH repos/test/repo/pulls/42 --input -": {wantStdin: string(want)},
 	}), nil, "", "test/repo")
 
 	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
-	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{
-		Title: "fix: cap body",
-		Body:  body,
-	})
+	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "fix: cap body", Body: body})
 	if err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)
 	}
@@ -901,65 +1001,81 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 func TestUpdatePROmitsTitleWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	var recorded [][]string
-	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
-	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{
-		Body: "marker only",
-	}); err != nil {
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/42 --input -": {wantStdin: `{"body":"marker only"}`},
+	}), nil, "", "test/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "marker only"}); err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)
 	}
-	if len(recorded) != 1 {
-		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+}
+
+func TestUpdatePRScopesRESTCallToEnterpriseHost(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --hostname ghe.example.com --method PATCH repos/org/repo/pulls/7 --input -": {wantStdin: `{"body":"b"}`},
+	}), nil, "ghe.example.com", "ghe.example.com/org/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "7"}, scm.PRContent{Body: "b"}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
 	}
-	got := strings.Join(recorded[0], " ")
-	if strings.Contains(got, "--title") {
-		t.Fatalf("body-only UpdatePR must not pass --title, got %v", recorded[0])
-	}
-	if !strings.Contains(got, "--body-file") {
-		t.Fatalf("body-only UpdatePR must still pass --body-file, got %v", recorded[0])
+}
+
+func TestUpdatePRReportsRESTFailure(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/42 --input -": {stderr: "HTTP 403: Resource not accessible", code: 1},
+	}), nil, "", "test/repo")
+	_, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "b"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403: Resource not accessible") {
+		t.Fatalf("UpdatePR() error = %v, want the gh stderr in the error", err)
 	}
 }
 
 // UpdatePR shares the same explicit-PR selector boundary as the read methods:
-// when the number is absent it must target the canonical PR URL, never an empty
-// positional that makes `gh pr edit` resolve the cwd branch (main) from the
+// when the number is absent it must target the number in the canonical PR URL,
+// never an empty selector that makes gh resolve the cwd branch (main) from the
 // detached bare gate repo and edit the wrong PR.
 func TestUpdatePRTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
 	t.Parallel()
 
-	var recorded [][]string
-	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
-
-	prURL := "https://github.com/test/repo/pull/123"
-	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: prURL}, scm.PRContent{
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/123 --input -": {wantStdin: `{"body":"body","title":"fix: cap body"}`},
+	}), nil, "", "test/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: "https://github.com/test/repo/pull/123"}, scm.PRContent{
 		Title: "fix: cap body",
 		Body:  "body",
 	}); err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)
 	}
-	if len(recorded) != 1 {
-		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
-	}
-	got := recorded[0]
-	// argv is: gh pr edit <selector> --repo ...
-	if len(got) < 4 || got[1] != "pr" || got[2] != "edit" {
-		t.Fatalf("unexpected argv: %v", got)
-	}
-	if selector := got[3]; selector != prURL {
-		t.Fatalf("edit selector = %q, want the known PR URL %q (empty selector makes gh resolve the cwd branch)", selector, prURL)
+}
+
+// With no configured repository the PR URL names it; the cwd is never consulted.
+func TestUpdatePRTakesRepositoryFromURLWhenHostHasNone(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --method PATCH repos/test/repo/pulls/123 --input -": {wantStdin: `{"body":"body"}`},
+	}), nil, "", "")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: "https://github.com/test/repo/pull/123"}, scm.PRContent{Body: "body"}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
 	}
 }
 
-// UpdatePR must fail closed exactly like the read methods: with neither number
-// nor URL it refuses to shell out rather than running an argument-less
-// `gh pr edit` that would edit the inferred cwd branch's PR.
+// UpdatePR must fail closed exactly like the read methods: with neither a PR
+// identity nor a repository it refuses to shell out rather than letting gh
+// expand {owner}/{repo} from the cwd and edit the inferred PR.
 func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 	t.Parallel()
 
 	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
-
 	if _, err := host.UpdatePR(context.Background(), &scm.PR{}, scm.PRContent{Title: "t", Body: "b"}); err == nil {
 		t.Fatal("UpdatePR() with no PR identity: expected error, got nil")
+	}
+
+	noRepo := New(failIfInvokedCmdFactory(t), nil, "", "")
+	if _, err := noRepo.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Body: "b"}); err == nil {
+		t.Fatal("UpdatePR() with no repository: expected error, got nil")
 	}
 }
 
@@ -1156,6 +1272,40 @@ func TestPRStateAndMergeableTargetKnownPRByURL(t *testing.T) {
 	}
 	if len(mergeArgs) != 1 || len(mergeArgs[0]) < 4 || mergeArgs[0][3] != prURL {
 		t.Fatalf("GetMergeableState selector = %v, want %q at argv[3]", mergeArgs, prURL)
+	}
+}
+
+// A conflict-free PR behind a base that requires up-to-date branches reads
+// mergeable MERGEABLE, so only mergeStateStatus says GitHub will refuse it.
+func TestGetMergeableStateReadsMergeStateStatusBehind(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		out  string
+		want scm.MergeableState
+	}{
+		{"MERGEABLE BEHIND\n", scm.MergeableBehind},
+		{"MERGEABLE CLEAN\n", scm.MergeableOK},
+		{"MERGEABLE BLOCKED\n", scm.MergeableOK},
+		{"MERGEABLE\n", scm.MergeableOK},
+		{"CONFLICTING DIRTY\n", scm.MergeableConflict},
+		{"CONFLICTING BEHIND\n", scm.MergeableConflict},
+		{"UNKNOWN UNKNOWN\n", scm.MergeablePending},
+		{"UNKNOWN BEHIND\n", scm.MergeablePending},
+		{"\n", scm.MergeablePending},
+	} {
+		var args [][]string
+		host := New(recordingCmdFactory(tc.out, &args), nil, "", "test/repo")
+		got, err := host.GetMergeableState(context.Background(), &scm.PR{Number: "7"})
+		if err != nil {
+			t.Fatalf("GetMergeableState(%q) error = %v", tc.out, err)
+		}
+		if got != tc.want {
+			t.Errorf("GetMergeableState(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+		if joined := strings.Join(args[0], " "); !strings.Contains(joined, "--json mergeable,mergeStateStatus") {
+			t.Fatalf("GetMergeableState args = %q, want mergeStateStatus requested", joined)
+		}
 	}
 }
 
@@ -1995,5 +2145,113 @@ func TestGetPRContentRequiresExplicitStrings(t *testing.T) {
 	got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
 	if err != nil || got.Title != "Author title" || got.Body != "" {
 		t.Fatalf("explicit empty body rejected: %+v, %v", got, err)
+	}
+}
+
+func TestFindPRIgnoresStderrNoticeOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName": {
+			stdout: `[{"number":42,"url":"https://github.example.com/org/repo/pull/42","baseRefName":"main"}]` + "\n",
+			stderr: "wrapper: using cached credentials\n",
+		},
+	}), nil, "", "")
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "42" {
+		t.Fatalf("FindPR() PR = %+v, want #42", pr)
+	}
+}
+
+func TestCreatePRIgnoresStderrNoticeOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr create --head feature/notice --base main --repo test/repo --title fix: notice --body-file -": {
+			stdout:    "https://github.com/test/repo/pull/42\n",
+			stderr:    "wrapper: using cached credentials\n",
+			wantStdin: "body",
+		},
+	}), nil, "", "test/repo")
+
+	pr, err := host.CreatePR(context.Background(), "feature/notice", "main", scm.PRContent{Title: "fix: notice", Body: "body"})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.URL != "https://github.com/test/repo/pull/42" || pr.Number != "42" {
+		t.Fatalf("CreatePR() PR = %+v, want the bare PR URL and #42", pr)
+	}
+}
+
+func TestGetChecksIgnoresStderrNoticeOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
+			stderr: "wrapper: using cached credentials\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" {
+		t.Fatalf("checks = %+v, want single build check", checks)
+	}
+}
+
+func TestGetChecksTreatsNoChecksReportedOnStderrAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stderr: "no checks reported on the 'feature' branch\n",
+			code:   1,
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("checks = %+v, want none", checks)
+	}
+}
+
+func TestStdoutOnlyFailureDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		stdout string
+		stderr string
+		want   string
+	}{
+		{name: "stderr only", stderr: "  stderr failure \n", want: "stderr failure"},
+		{name: "stdout only", stdout: "\n stdout failure  \n", want: "stdout failure"},
+		{name: "both prefers stderr", stdout: "stdout noise\n", stderr: "stderr failure\n", want: "stderr failure"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := githubTestCmdFactory(map[string]githubTestResponse{
+				"gh probe": {stdout: tt.stdout, stderr: tt.stderr, code: 1},
+			})(context.Background(), "gh", "probe")
+			_, detail, err := stdoutOnly(cmd)
+			if err == nil {
+				t.Fatal("stdoutOnly() error = nil, want the exit error")
+			}
+			if detail != tt.want {
+				t.Fatalf("detail = %q, want %q", detail, tt.want)
+			}
+		})
 	}
 }

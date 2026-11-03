@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/kunchenguid/no-mistakes/internal/quotarouting"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -18,6 +19,12 @@ type Stats struct {
 	FixedFindings    int
 	StepStats        []StepStats
 	RepoStats        []RepoStats
+	QuotaRouting     []QuotaRoutingStats
+}
+
+type QuotaRoutingStats struct {
+	RunID  string
+	Record *quotarouting.Record
 }
 
 // StepStats summarizes reported and fixed findings for one pipeline step.
@@ -66,6 +73,13 @@ func (d *DB) GetStats() (*Stats, error) {
 		stats.TotalRuns += len(runs)
 
 		for _, run := range runs {
+			record, err := quotarouting.ParseRecord(run.QuotaRouting)
+			if err != nil {
+				return nil, fmt.Errorf("quota routing for run %s: %w", run.ID, err)
+			}
+			if record != nil {
+				stats.QuotaRouting = append(stats.QuotaRouting, QuotaRoutingStats{RunID: run.ID, Record: record})
+			}
 			if run.PRURL != nil && *run.PRURL != "" {
 				stats.PullRequests++
 			}
@@ -182,8 +196,9 @@ func (d *DB) StepFindingStats(step *StepResult) (StepStats, error) {
 }
 
 // findingItems returns the findings that count as mistakes. A Test budget cut
-// is an operator decision about the invocation budget, not a code mistake, so
-// it is neither reported nor, when a later round no longer carries it, fixed.
+// or an exhausted Review fix-round budget is an operator decision about a
+// budget, not a code mistake, so it is neither reported nor, when a later round
+// no longer carries it, fixed.
 func findingItems(raw *string) []types.Finding {
 	if raw == nil || *raw == "" {
 		return nil
@@ -193,7 +208,8 @@ func findingItems(raw *string) []types.Finding {
 		return nil
 	}
 	return slices.DeleteFunc(findings.Items, func(item types.Finding) bool {
-		return item.ID == types.FindingIDTestAgentTimeout || item.ID == types.FindingIDTestAgentUnvalidatedWork
+		return item.ID == types.FindingIDTestAgentTimeout || item.ID == types.FindingIDTestAgentUnvalidatedWork ||
+			item.ID == types.FindingIDReviewFixRoundsExhausted
 	})
 }
 
@@ -202,6 +218,7 @@ func findingStatsKey(item types.Finding) types.Finding {
 	item.Action = ""
 	item.Source = ""
 	item.UserInstructions = ""
+	item.DriverInstructions = ""
 	return item
 }
 

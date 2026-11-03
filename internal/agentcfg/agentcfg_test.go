@@ -357,3 +357,34 @@ func TestProfileString(t *testing.T) {
 		t.Errorf("Profile.String() = %q", got)
 	}
 }
+
+func TestEffectiveModelUsesNativeRawOverridePrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name  types.AgentName
+		raw   []string
+		model string
+		want  string
+	}{
+		{types.AgentClaude, []string{"--model", "opus"}, "sonnet", "opus"},
+		{types.AgentClaude, []string{"--model=opus"}, "", "opus"},
+		{types.AgentPi, []string{"--model", "account/opus"}, "other/sonnet", "account/opus"},
+		{types.AgentCodex, []string{"-m", "raw-model"}, "default", "raw-model"},
+		{types.AgentCodex, []string{"--model=raw-model"}, "default", "raw-model"},
+		{types.AgentCodex, []string{"-c", `model="raw-model"`}, "default", "raw-model"},
+		{types.AgentCodex, []string{`--config=model='raw-model'`}, "default", "raw-model"},
+		{types.AgentCodex, []string{`-c model="raw-model"`}, "default", "raw-model"},
+		{types.AgentCodex, []string{"--config", `model="old"`, "-c", `model="new"`}, "default", "new"},
+		{types.AgentCodex, []string{"-m", "flag", "-c", `model="config"`}, "default", "flag"},
+		{types.AgentCodex, []string{"--other", "nested model=ignored"}, "default", "default"},
+		{types.AgentGrok, []string{"-m", "raw-model"}, "default", "raw-model"},
+		{types.AgentCopilot, []string{"--model", "raw-model"}, "default", "raw-model"},
+		{types.AgentOpenCode, []string{"--model", "ignored"}, "openai/default", "openai/default"},
+		{types.AgentClaude, nil, "sonnet", "sonnet"},
+	} {
+		t.Run(string(tc.name)+strings.Join(tc.raw, " "), func(t *testing.T) {
+			if got := EffectiveModel(tc.name, Profile{Model: tc.model}, tc.raw); got != tc.want {
+				t.Fatalf("model = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

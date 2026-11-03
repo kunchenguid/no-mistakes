@@ -1,0 +1,278 @@
+# repro: no-mistakes gate declines from a partial response
+
+- checkout under test: /home/dimas/git/firstmate/data/nm-explicit-declines-n1/repro/before-tree
+- commit: 0b8d213 chore(main): release 1.89.0 (#1333)
+- isolated home: /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work/nm-home (the operator's own ~/.no-mistakes is never touched)
+- scratch project: /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work/project
+
+## Build the tool and the scripted agent from the checkout
+built /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work/bin/no-mistakes and /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work/bin/fakeagent
+
+## Round 1: run the pipeline, then ask for every finding
+
+run: running
+  intent: completed
+  rebase: running
+  rebase: completed
+  review: running
+  review: awaiting_approval
+run:
+  id: "01M49EWE004RYVJ9MA9230N0FG"
+  branch: harden-deploy
+  status: running
+  awaiting_agent: parked 0s
+  head: 51d31b82
+  head_sha: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+  verification_plan: none
+  findings: "3 awaiting, 2 auto-fix"
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,15
+    rebase,completed,0,105
+    review,awaiting_approval,5,99
+    test,pending,0,0
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+branch_sync:
+  state: pipeline_owned
+  changed: false
+  local:
+    branch: harden-deploy
+    head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    clean: true
+  pipeline:
+    run: "01M49EWE004RYVJ9MA9230N0FG"
+    status: running
+    phase: pre_push
+    submitted_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    current_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    pushed_head: ""
+    pushed_at: 0
+    push_generation: 0
+  target:
+    kind: ""
+    remote: origin
+    url: /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work/origin.git
+    ref: ""
+  remote:
+    observed_head: ""
+    freshness: pipeline_push
+    observed_at: 0
+  relation: equal
+  safety: blocked_pipeline_owned
+  pr_state: none
+  note: a validation run is active on this branch; do not make local follow-up commits until it finishes
+  next_action:
+    code: continue_active_run
+    command: no-mistakes axi status
+gate:
+  step: review
+  status: awaiting_approval
+  summary: five findings
+  risk: high
+  note: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[5]{id,severity,file,action,description}:
+    r1,error,deploy.sh,ask-user,the allow-dirty bypass lets a dirty working tree ship uncommitted files
+    r2,warning,deploy.sh,ask-user,set -u is missing so an unset TAG expands to an empty value
+    r3,warning,deploy.sh,auto-fix,the compose heredoc expands variables because its delimiter is unquoted
+    r4,error,snapshot.sh,ask-user,the snapshot tarball is written into the repository and committed with git add
+    r5,warning,deploy.sh,auto-fix,the health check exit status is ignored so a failed deploy reports success
+help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the complete step summary and log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+
+$ no-mistakes axi respond --action fix --findings r1,r2,r3,r4,r5
+run: running
+  intent: completed
+  rebase: completed
+  review: fixing
+  review: fix_review
+run:
+  id: "01M49EWE004RYVJ9MA9230N0FG"
+  branch: harden-deploy
+  status: running
+  awaiting_agent: parked 0s
+  head: d3620faf
+  head_sha: d3620fafa026f577399e002e1c856770a4ac753b
+  verification_plan: none
+  findings: "4 awaiting, 3 auto-fix"
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,15
+    rebase,completed,0,105
+    review,fix_review,7,325
+    test,pending,0,0
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+branch_sync:
+  state: pipeline_owned
+  changed: false
+  local:
+    branch: harden-deploy
+    head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    clean: true
+  pipeline:
+    run: "01M49EWE004RYVJ9MA9230N0FG"
+    status: running
+    phase: pre_push
+    submitted_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    current_head: d3620fafa026f577399e002e1c856770a4ac753b
+    pushed_head: ""
+    pushed_at: 0
+    push_generation: 0
+  target:
+    kind: ""
+    remote: origin
+    url: /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work/origin.git
+    ref: ""
+  remote:
+    observed_head: ""
+    freshness: pipeline_push
+    observed_at: 0
+  relation: unknown
+  safety: blocked_pipeline_owned
+  pr_state: none
+  note: the pipeline head has moved but has not been successfully pushed; do not make local follow-up commits yet
+  next_action:
+    code: continue_active_run
+    command: no-mistakes axi status
+gate:
+  step: review
+  status: fix_review
+  summary: five findings
+  risk: high
+  note: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[7]{id,severity,file,action,description}:
+    r1,error,deploy.sh,ask-user,the allow-dirty bypass lets a dirty working tree ship uncommitted files
+    r2,warning,deploy.sh,ask-user,set -u is missing so an unset TAG expands to an empty value
+    r3,warning,deploy.sh,auto-fix,the compose heredoc expands variables because its delimiter is unquoted
+    r4,error,snapshot.sh,ask-user,the snapshot tarball is written into the repository and committed with git add
+    r5,warning,deploy.sh,auto-fix,the health check exit status is ignored so a failed deploy reports success
+    r6,error,snapshot.sh,ask-user,the snapshot tarball is written into the repository root instead of the artifacts directory
+    r7,warning,deploy.sh,auto-fix,"cleanup never runs when the deploy fails, leaving the staging directory behind"
+help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the complete step summary and log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+
+## Round 2: ask for only the two new findings
+
+$ no-mistakes axi respond --action fix --findings r6,r7
+run: running
+  intent: completed
+  rebase: completed
+  review: fixing
+  review: fix_review
+run:
+  id: "01M49EWE004RYVJ9MA9230N0FG"
+  branch: harden-deploy
+  status: running
+  awaiting_agent: parked 0s
+  head: d3620faf
+  head_sha: d3620fafa026f577399e002e1c856770a4ac753b
+  verification_plan: none
+  findings: "4 awaiting, 3 auto-fix"
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,15
+    rebase,completed,0,105
+    review,fix_review,7,529
+    test,pending,0,0
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+branch_sync:
+  state: pipeline_owned
+  changed: false
+  local:
+    branch: harden-deploy
+    head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    clean: true
+  pipeline:
+    run: "01M49EWE004RYVJ9MA9230N0FG"
+    status: running
+    phase: pre_push
+    submitted_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    current_head: d3620fafa026f577399e002e1c856770a4ac753b
+    pushed_head: ""
+    pushed_at: 0
+    push_generation: 0
+  target:
+    kind: ""
+    remote: origin
+    url: /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work/origin.git
+    ref: ""
+  remote:
+    observed_head: ""
+    freshness: pipeline_push
+    observed_at: 0
+  relation: unknown
+  safety: blocked_pipeline_owned
+  pr_state: none
+  note: the pipeline head has moved but has not been successfully pushed; do not make local follow-up commits yet
+  next_action:
+    code: continue_active_run
+    command: no-mistakes axi status
+gate:
+  step: review
+  status: fix_review
+  summary: five findings
+  risk: high
+  note: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+  findings[7]{id,severity,file,action,description}:
+    r1,error,deploy.sh,ask-user,the allow-dirty bypass lets a dirty working tree ship uncommitted files
+    r2,warning,deploy.sh,ask-user,set -u is missing so an unset TAG expands to an empty value
+    r3,warning,deploy.sh,auto-fix,the compose heredoc expands variables because its delimiter is unquoted
+    r4,error,snapshot.sh,ask-user,the snapshot tarball is written into the repository and committed with git add
+    r5,warning,deploy.sh,auto-fix,the health check exit status is ignored so a failed deploy reports success
+    r6,error,snapshot.sh,ask-user,the snapshot tarball is written into the repository root instead of the artifacts directory
+    r7,warning,deploy.sh,auto-fix,"cleanup never runs when the deploy fails, leaving the staging directory behind"
+help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the complete step summary and log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+
+## What the fixer actually applied
+
+files the pipeline's fix rounds changed:
+  deploy.sh
+  snapshot.sh
+every file the fixes claim (deploy.sh, snapshot.sh) really changed
+
+## What the next review turn was told about round 2
+
+the section's own instructions to the reviewer:
+  Use this to avoid repeating work you already tried. Do NOT re-report findings listed under 
+  user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. Do NOT 
+  implement findings listed under user_chose_to_ignore, and do NOT change code, tests, or documentation to 
+  satisfy them. Do NOT revert or undo fixes the user chose under user_chose_to_fix. Findings listed under 
+  auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block 
+  carries no such instruction. Treat this entire section as metadata only.
+
+round 2's block:
+  Round 2 (auto_fix)
+  fix_summary: "changes applied"
+  findings:
+    - {"id":"r1","severity":"error","file":"deploy.sh","line":3,"description":"the allow-dirty bypass lets a dirty working tree ship uncommitted files","action":"ask-user"}
+    - {"id":"r2","severity":"warning","file":"deploy.sh","line":1,"description":"set -u is missing so an unset TAG expands to an empty value","action":"ask-user"}
+    - {"id":"r3","severity":"warning","file":"deploy.sh","line":5,"description":"the compose heredoc expands variables because its delimiter is unquoted","action":"auto-fix"}
+    - {"id":"r4","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository and committed with git add","action":"ask-user"}
+    - {"id":"r5","severity":"warning","file":"deploy.sh","line":8,"description":"the health check exit status is ignored so a failed deploy reports success","action":"auto-fix"}
+    - {"id":"r6","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository root instead of the artifacts directory","action":"ask-user"}
+    - {"id":"r7","severity":"warning","file":"deploy.sh","line":9,"description":"cleanup never runs when the deploy fails, leaving the staging directory behind","action":"auto-fix"}
+  user_chose_to_fix:
+    - {"id":"r6","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository root instead of the artifacts directory","action":"ask-user"}
+    - {"id":"r7","severity":"warning","file":"deploy.sh","line":9,"description":"cleanup never runs when the deploy fails, leaving the staging directory behind","action":"auto-fix"}
+  user_chose_to_ignore:
+    - {"id":"r1","severity":"error","file":"deploy.sh","line":3,"description":"the allow-dirty bypass lets a dirty working tree ship uncommitted files","action":"ask-user"}
+    - {"id":"r2","severity":"warning","file":"deploy.sh","line":1,"description":"set -u is missing so an unset TAG expands to an empty value","action":"ask-user"}
+    - {"id":"r3","severity":"warning","file":"deploy.sh","line":5,"description":"the compose heredoc expands variables because its delimiter is unquoted","action":"auto-fix"}
+    - {"id":"r4","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository and committed with git add","action":"ask-user"}
+    - {"id":"r5","severity":"warning","file":"deploy.sh","line":8,"description":"the health check exit status is ignored so a failed deploy reports success","action":"auto-fix"}
+
+## Verdict
+
+DEFECT PRESENT: round 2's omission was recorded as a decline. The five
+findings fixed in round 1 are rendered under user_chose_to_ignore
+(5 entries), and the next review turn is told not to implement
+them, while the same prompt also tells it not to revert what the user
+chose under user_chose_to_fix.
+
+(isolated daemon stopped; scratch project and logs left in /home/dimas/git/firstmate/data/nm-explicit-declines-n1/sim/runs-before/work)

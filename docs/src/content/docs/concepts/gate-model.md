@@ -37,12 +37,13 @@ When you run `no-mistakes init` in a repo:
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
 6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
-7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
+7. It handles the user-level `/no-mistakes` agent skill as described in the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init), which owns installation and skip behavior.
 8. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.
-If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
+If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, and origin/default-branch metadata are repaired or updated where needed. A `no-mistakes` remote that is not this home's own gate wiring is never rewritten; see [`no-mistakes init`](/no-mistakes/reference/cli/#no-mistakes-init) for when init refuses it.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
+A checkout is one repository however its path is spelled: when no stored working path matches exactly, lookup falls back to filesystem identity (`os.SameFile`), so a case variant on a case-insensitive volume or a symlinked spelling resolves to the registered repository from the main checkout and from any linked worktree, and `init` refreshes it instead of registering a second one. The stored path keeps the spelling it was first recorded with. Directories that differ only in case on a case-sensitive volume stay separate repositories.
 If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
 
@@ -58,14 +59,13 @@ That is a core design choice, not an implementation detail.
 4. The gate repo's `post-receive` hook notifies the daemon.
 5. The daemon creates a detached worktree for this run.
 6. The nine core steps run in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`. Repository gates, when configured, run immediately after their anchors.
-7. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, or skip.
+7. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, skip, or abort.
    Use `no-mistakes axi abort` only when you mean to cancel the whole run.
    AXI run objects show `awaiting_agent: parked <duration>` while a non-terminal run is parked at that gate, so a supervising agent can distinguish a waiting run from active work in one status read.
    While a step is actively running or fixing, AXI run objects can also show `active_steps` with the active duration, latest activity, native agent PID, and current execution or fix round.
 8. After local checks pass, the push step forwards the branch to the configured push target only after verifying that the update will not discard unincorporated commits already on that target, and the PR step creates or updates the pull request.
    For GitHub fork routing, the push target is the fork and the PR base repository is the parent from `origin`.
-9. The CI step keeps watching the open PR until it is merged, closed, or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported.
-   While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable (or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) and no checks are registered), and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it. An empty forge response without that declaration stays not-ready.
+9. The CI step keeps watching the open PR until it is merged, closed, explicitly handed off with [`no-mistakes axi handoff`](/no-mistakes/reference/cli/#no-mistakes-axi-handoff), or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported. While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable (or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) and no checks are registered), and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it or explicitly hand it off. An empty forge response without that declaration stays not-ready. Under [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass) the step instead records readiness and finishes at that verdict, so the run completes as `checks_passed`, releases its worktree, and leaves the merge decision - and any later observation of it - to you.
 
 **Key design decisions:**
 
@@ -96,27 +96,49 @@ work unchanged.
 ### Private mirror reconciliation
 
 A rebase can leave the gate branch on an older history that rejects the next
-ordinary push. Reconciliation compares exact commit heads and per-file
-`git patch-id --stable` identities; commit messages are not evidence. Historical
-patch matches also require a clean three-way merge of the private head into the
-live head whose resulting tree equals the live tree. This prevents changes
-discarded by a merge or revert from being counted as surviving content. If that
-survival check cannot prove preservation, the private-only range is reported
-as at risk.
+ordinary push. Reconciliation compares exact commit heads and final-tree
+survival; commit messages and per-commit patch identities are not evidence. A
+clean three-way merge of the private head into the live head whose resulting
+tree equals the live tree proves every private commit contained, so a rebased
+copy whose patch ID changed only because the new base edited nearby context
+lines is not at risk, while changes discarded by a merge or revert are never
+counted as surviving content.
+
+A rebased branch whose later commits edit the lines the private commits wrote
+(for example a new run on a branch an earlier run already published) makes that
+merge conflict although nothing was dropped. Survival is then proven in two
+halves instead: merging with every conflicting hunk resolved toward the live
+head must still leave the live tree unchanged, so a private hunk that merges
+cleanly - content the live head reverted or never had - still refuses; and a
+commit on the live head's first-parent history touching the private paths must
+pass the clean-merge check, placing all of the private content in the live
+history. A side branch discarded by a merge never serves as that point. Both
+halves prove the whole private head, so a rebased copy whose patch ID drifted
+with context and whose lines a later live commit edited is not at risk either.
+At most 64 first-parent candidates are tried; past that bound the proof fails
+closed.
+
+If survival cannot be proven, the whole private-only range is reported as at
+risk.
 
 **Recovery-anchor preservation credit (issue #1233):** a private-only commit
-that a `refs/no-mistakes/recover/<run>` anchor reaches is *preserved*, so it is
-re-derived out of the at-risk set. Those anchors are the tool's own sanctioned
-preservation record - terminalization pins every verified unpublished head at
-that ref before the managed worktree can be removed, and
+that a `refs/no-mistakes/recover/<run>` or
+`refs/no-mistakes/recover-rewritten/<run>/<generation>` anchor reaches is
+*preserved*, so it is re-derived out of the at-risk set. Those anchors are the
+tool's own sanctioned preservation record - terminalization pins every verified
+unpublished head under `recover/` before the managed worktree can be removed;
+rewritten-remote recovery pins each superseded push under `recover-rewritten/`
+in the invoking worktree or gate. Reconciliation consults both locations for
+rewritten recovery anchors, staging their verified objects in the gate without
+creating or replacing durable refs during planning.
 `custody.PreserveRecoveryAnchor` never replaces evidence (a conflicting or
 symbolic anchor fails closed and is never dereferenced). The credit exists so
 the sanctioned `sync --recover` -> rerun -> push loop cannot deadlock against
 the very anchor that loop wrote to declare the work preserved.
 
 This is a **preservation credit, not containment evidence**. It says nothing
-about whether the content lands in the published tree; ancestry, patch
-identity and final-tree survival remain the only proofs of that, and Decision
+about whether the content lands in the published tree; ancestry and
+final-tree survival remain the only proofs of that, and Decision
 41-A below remains the only head exception. The archive-before-delete contract
 is unchanged, so a credited reconciliation still archives the exact private
 head before removing the branch ref. A commit no anchor reaches is still
@@ -137,7 +159,7 @@ deadlock the credit exists to end.
 
 **Accepted Decision 41-A (issue #983):** pipeline publication may replace a
 private mirror head that is **exactly equal to a head the publishing run itself
-placed on the mirror** without patch-ID or tree-survival proof: its
+placed on the mirror** without tree-survival proof: its
 `Run.SubmittedHeadSHA`, or, once it has published, its durable
 `Run.LastPushedSHA`. The last pushed head is recorded only after a verified push to the configured
 push target and mirror settlement, so it is never an external or newer head.

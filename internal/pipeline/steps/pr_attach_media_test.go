@@ -190,6 +190,42 @@ func TestPRStep_StoreInRepoKeepsCommitLinkAndAttachment(t *testing.T) {
 	}
 }
 
+func TestPRStep_AttachMediaOptOutDisablesUploads(t *testing.T) {
+	t.Parallel()
+	for _, storeInRepo := range []bool{false, true} {
+		t.Run(fmt.Sprintf("store_in_repo=%t", storeInRepo), func(t *testing.T) {
+			t.Parallel()
+			sctx, remote := newEvidencePublishContext(t, "feature/add-login")
+			sctx.Agent = prDraftAgent()
+			sctx.Config.Test.Evidence.StoreInRepo = storeInRepo
+			sctx.Config.Test.Evidence.AttachMedia = false
+			png := writeEvidenceFile(t, testEvidenceDir(sctx), "checkout.png", []byte("\x89PNG binary"))
+			insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
+			uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+
+			content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature/add-login", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(uploader.calls) != 0 {
+				t.Fatalf("uploads = %d, want 0", len(uploader.calls))
+			}
+			if strings.Contains(content.Body, "user-attachments") {
+				t.Fatalf("disabled attachments must not be embedded, got:\n%s", content.Body)
+			}
+			if storeInRepo {
+				tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
+				wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.png"
+				if !strings.Contains(content.Body, "[Checkout screenshot]("+wantLink+")") {
+					t.Fatalf("expected commit-pinned evidence link %q, got:\n%s", wantLink, content.Body)
+				}
+			} else if !strings.Contains(content.Body, "local file:") {
+				t.Fatalf("unpublished screenshot should keep local rendering, got:\n%s", content.Body)
+			}
+		})
+	}
+}
+
 func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -229,6 +265,60 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	joined := strings.Join(logs, "\n")
 	if !strings.Contains(joined, "upload endpoint 500") {
 		t.Fatalf("expected logged upload reason, got %q", joined)
+	}
+}
+
+func TestPRStep_TokenRefusalAsksOnceAndSkipsTheRemainingFiles(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	env, ghLog := fakeGH(t, "")
+	sctx.Env = env
+	var artifacts []string
+	for _, name := range []string{"one.png", "two.png", "three.png"} {
+		path := writeEvidenceFile(t, sctx.EvidenceDir, name, []byte("png-bytes-"+name))
+		artifacts = append(artifacts, fmt.Sprintf(`{"kind":"screenshot","label":%q,"path":%q}`, name, path))
+	}
+	insertCompletedStep(t, sctx, types.StepTest, `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[`+strings.Join(artifacts, ",")+`]}`, "")
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content.Body, "user-attachments") {
+		t.Fatalf("a refused token must keep today's rendering, got:\n%s", content.Body)
+	}
+
+	recorded, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenCalls := 0
+	for _, line := range strings.Split(string(recorded), "\n") {
+		if strings.HasPrefix(line, "auth token") {
+			tokenCalls++
+		}
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("gh auth token ran %d times for %d files, want 1:\n%s", tokenCalls, len(artifacts), recorded)
+	}
+	var skipLines, perFileLines []string
+	for _, line := range logs {
+		switch {
+		case strings.Contains(line, "skipping GitHub media attachments for 3 pending file(s)"):
+			skipLines = append(skipLines, line)
+		case strings.Contains(line, "GitHub media attachment failed for"), strings.Contains(line, "uploaded GitHub media attachment"):
+			perFileLines = append(perFileLines, line)
+		}
+	}
+	if len(skipLines) != 1 || !strings.Contains(skipLines[0], "gh auth token") {
+		t.Fatalf("want one skip line naming gh auth token, got %q in:\n%s", skipLines, strings.Join(logs, "\n"))
+	}
+	if len(perFileLines) != 0 {
+		t.Fatalf("a refused token must not report each file, got:\n%s", strings.Join(perFileLines, "\n"))
 	}
 }
 
@@ -327,6 +417,7 @@ func TestPRStep_OversizedImagePreservesCommittedPath(t *testing.T) {
 	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Agent = prDraftAgent()
+	sctx.Config.Test.Evidence.AttachMedia = true
 	png := writeEvidenceFile(t, testEvidenceDir(sctx), "oversize.png", make([]byte, 10*1024*1024+1))
 	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
 	var logs []string
@@ -357,6 +448,7 @@ func TestPRStep_UnsupportedImagePreservesCommittedPath(t *testing.T) {
 	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Agent = prDraftAgent()
+	sctx.Config.Test.Evidence.AttachMedia = true
 	image := writeEvidenceFile(t, testEvidenceDir(sctx), "checkout.bmp", []byte("bitmap"))
 	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(image), "")
 	var logs []string

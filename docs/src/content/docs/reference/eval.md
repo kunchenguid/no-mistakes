@@ -71,7 +71,7 @@ Capture writes gold from the **recorded gate decision** for a review round - wha
 - Skip, approve-with-findings, and abort **without a merge** stay **unlabeled / pending** until later adjudication, and so does any legacy or unresolved round whose gate decision was never recorded, merged or not. Absence of a decision is never read as a judgement.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
-If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested false-negative labels are never overwritten. Relabel and recapture converge in place: repeating either with unchanged source evidence produces the same labels, including for gold findings that lack IDs.
+If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. A run that ended at its own validation verdict (the opt-in [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass)) or was explicitly handed off stops observing the PR there, so merge-derived labels remain pending unless merge evidence is independently persisted on the run. Neither `eval relabel` nor recapture fetches forge state; both use the recorded PR state. A run that kept monitoring, which is the default, still records the merge and relabels itself automatically. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested false-negative labels are never overwritten. Relabel and recapture converge in place: repeating either with unchanged source evidence produces the same labels, including for gold findings that lack IDs.
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 
@@ -123,7 +123,7 @@ When a harness reports the model it served, replay verifies the model name again
 
 Effort is part of the candidate identity, so `codex,model=gpt-5.4,effort=low` and `codex,model=gpt-5.4,effort=high` are reported as two candidates rather than collapsing into one.
 
-The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
+The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Branch-base resolution uses the captured default-branch commit restored as a local remote-tracking ref, without fetching an upstream remote. A case pool therefore needs no configured remote to replay. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
 
 Replay scores each candidate finding against that gold:
 
@@ -157,12 +157,16 @@ The report groups local replays by candidate and cohort. A cohort pins the selec
 - precision bounds, and F1 only when false-positive gold exists
 - queued unmatched candidate findings, which are not scored as false positives
 - failed candidate invocations
-- reported fresh-input plus output token cost, summed over every review attempt in a replay, including Review's reruns after a rejected output, and reported as missing when any attempt reports no usage
+- average token cost per replay: fresh input plus output, cache reads, and reported cache writes, summed over every review attempt in each replay, including Review's reruns after a rejected output, and reported as missing when any attempt reports no usage
 - average wall time
 - a finite-sample case-level recall range, with repeats averaged inside each case
 - whether a candidate lies on the observed recall-versus-token-cost frontier
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. It is a pure read: repeated reports over unchanged recorded evaluations produce identical text output.
+Eval records cache-read and cache-write counts in each evaluation payload and in the local registry. Input totals include reported cache reads and writes; eval subtracts both to calculate fresh input, then adds each bucket once to the report total. The cost line shows positive cache-read and cache-write segments separately. Unreported cache writes, including those absent from older payloads, contribute no separate segment. The frontier compares these token totals without provider pricing weights.
+
+Opening an older registry automatically backfills available cache counts from saved evaluation payloads and corrects its legacy input and fresh-input counters for the provider's accounting. Missing, unreadable, or malformed historical payloads are skipped with a warning on stderr naming each evaluation and its path; the registry still opens, and skipped rows retain unset cache counts (unknown, not zero). Reports use those corrected registry counters; captured labels, manifests, and historical payloads stay unchanged. Cache writes that were never recorded cannot be recovered.
+
+The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. After any registry migration, repeated reports over unchanged recorded evaluations produce identical text output.
 
 ## Current boundary
 

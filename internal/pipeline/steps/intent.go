@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
@@ -22,11 +23,12 @@ const intentExtractTimeout = 300 * time.Second
 
 // IntentStep is a best-effort pipeline step that infers the user's intent
 // from local agent transcripts and attaches it to the run so downstream
-// steps can surface it in their prompts. Failures are intentionally
-// swallowed and surface as a "skipped" outcome rather than a run failure:
-// missing transcripts, slow summarizers, or DB hiccups must not block
-// the pipeline. Disambiguator cleanup failures are fatal because they may leave
-// worktree side effects that could affect later steps.
+// steps can surface it in their prompts. Extraction failures are intentionally
+// swallowed and surface as a "skipped" outcome: missing transcripts, slow
+// summarizers, or DB hiccups must not block the pipeline. A configured reject
+// policy is different; it fails the step before a matched summary is stored.
+// Disambiguator cleanup failures are fatal because they may leave worktree side
+// effects that could affect later steps.
 type IntentStep struct {
 	// runIntent computes the intent for a step context. It is overridden
 	// in tests; the zero value falls back to defaultRunIntent which wires
@@ -124,6 +126,18 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	if result == nil {
 		sctx.Log("no intent attached")
 		return &pipeline.StepOutcome{Skipped: true}, nil
+	}
+
+	if matches := sctx.Config.Intent.Check.Match(result.Summary); len(matches) > 0 {
+		switch sctx.Config.Intent.Check.Mode {
+		case config.IntentCheckReject:
+			outcomeLabel = "rejected"
+			err := fmt.Errorf("inferred intent rejected by configured rules: %s", strings.Join(matches, ", "))
+			sctx.Log(err.Error())
+			return nil, err
+		case config.IntentCheckWarn:
+			slog.Warn("inferred run intent matched configured rules", "run_id", sctx.Run.ID, "rules", strings.Join(matches, ", "))
+		}
 	}
 
 	matchedAgent = result.AgentName

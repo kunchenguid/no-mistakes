@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,8 +42,8 @@ func TestTestBaseAttributionJourney(t *testing.T) {
 		// wantAttributionAbsent must not appear in the attribution section
 		// itself (the summary's text before the command output).
 		wantAttributionAbsent []string
-		// wantNice is the niceness every commands.test and commands.prepare
-		// run must report, on the head and on the base checkout.
+		// The daemon inherits suite niceness, so wantNice is an adjustment
+		// rather than an absolute priority.
 		wantNice string
 	}
 	goFailures := `echo '--- FAIL: TestOld (0.01s)'
@@ -182,6 +183,14 @@ exit 0
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			expectedNice := tc.wantNice
+			if expectedNice != "" {
+				priority, err := exec.Command("nice", "-n", expectedNice, "sh", "-c", "ps -o nice= -p $$").Output()
+				if err != nil {
+					t.Fatalf("measure adjusted niceness: %v", err)
+				}
+				expectedNice = strings.TrimSpace(string(priority))
+			}
 			h := NewHarness(t, SetupOpts{Agent: "claude"})
 			cwdLog := filepath.Join(t.TempDir(), "cwd.log")
 			record := "echo \"$0 $(pwd) nice=$(ps -o nice= -p $$ | tr -d ' ')\" >> '" + cwdLog + "'\n"
@@ -266,8 +275,8 @@ exit 0
 			// the run worktree, which is removed afterwards.
 			for _, line := range strings.Split(strings.TrimSpace(string(cwds)), "\n") {
 				fields := strings.Fields(line)
-				if tc.wantNice != "" && len(fields) == 3 && fields[2] != "nice="+tc.wantNice {
-					t.Errorf("command ran without the operator's niceness %s: %s", tc.wantNice, line)
+				if expectedNice != "" && len(fields) == 3 && fields[2] != "nice="+expectedNice {
+					t.Errorf("command ran without the operator's niceness adjustment %s (expected %s): %s", tc.wantNice, expectedNice, line)
 				}
 				if !strings.Contains(line, "no-mistakes-test-base-") {
 					continue

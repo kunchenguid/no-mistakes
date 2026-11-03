@@ -20,6 +20,8 @@ import (
 
 var cleanupOldExecutable = update.CleanupOldExecutable
 var maybeHandleBackgroundCheck = update.MaybeHandleBackgroundCheck
+var prepareDaemonRunStdio = daemon.PrepareRunStdio
+var runDaemon = daemon.Run
 
 func main() {
 	os.Exit(run())
@@ -59,7 +61,14 @@ func run() int {
 				return 1
 			}
 		}
-		if err := daemon.Run(); err != nil {
+		// Before the daemon spawns or writes anything: on Windows, release a
+		// console that exists only for this process and send standard output
+		// without a usable handle to the bootstrap log (issue #1653). Best
+		// effort; the daemon runs either way.
+		if err := prepareDaemonRunStdio(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		if err := runDaemon(); err != nil {
 			writeDaemonRunError(os.Stderr, err)
 			return 1
 		}

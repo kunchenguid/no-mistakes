@@ -95,7 +95,7 @@ func buildReviewConversationSection(sctx *pipeline.StepContext) string {
 	// The conversation quotes agent and human text, so it can carry a foreign
 	// attestation marker; verify.py binds the FIRST marker in the raw body, and
 	// this section is appended after the real one.
-	return neutralizeAttestationMarkers(strings.TrimRight(b.String(), "\n"))
+	return neutralizeAttestationMarkers(resolvedProviderForBody(sctx), strings.TrimRight(b.String(), "\n"))
 }
 
 func publishedRunAnswers(sctx *pipeline.StepContext) []db.ReviewAnswer {
