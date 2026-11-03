@@ -172,10 +172,10 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 			}
 			return false, err
 		}
-		if err := setCIMonitorPRState(sctx, "merged"); err != nil {
+		if err := s.recordHeadRewriteOverride(sctx, mergedHead); err != nil {
 			return false, err
 		}
-		if err := s.recordHeadRewriteOverride(sctx, mergedHead); err != nil {
+		if err := setCIMonitorPRState(sctx, "merged"); err != nil {
 			return false, err
 		}
 		notifyPRMerged(sctx)
@@ -184,10 +184,10 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		}
 		return true, nil
 	case scm.PRStateClosed:
-		if err := setCIMonitorPRState(sctx, "closed"); err != nil {
+		if err := s.recordHeadRewriteOverride(sctx, ""); err != nil {
 			return false, err
 		}
-		if err := s.recordHeadRewriteOverride(sctx, ""); err != nil {
+		if err := setCIMonitorPRState(sctx, "closed"); err != nil {
 			return false, err
 		}
 		if sctx.Log != nil {
@@ -416,7 +416,7 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads 
 func (s *CIStep) guardPublishedHead(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, prOpen bool) (outcome *pipeline.StepOutcome, skipChecks bool, err error) {
 	defer func() {
 		if skipChecks && err == nil {
-			err = clearCIMonitorReady(sctx)
+			err = setCIMonitorReadiness(sctx, false, false)
 		}
 	}()
 	liveHead, err := publishedBranchHead(sctx)
@@ -625,7 +625,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil {
 		return nil, err
 	} else if pending {
-		if err := clearCIMonitorReady(sctx); err != nil {
+		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 			return nil, err
 		}
 		return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: sctx.DeferredFindings}, nil
@@ -909,6 +909,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// check a CLI that answered fine. The idle timeout still bounds
 				// the wait, and the readiness signal is cleared because the
 				// previous observation was for a different head.
+				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+					return nil, err
+				}
+
 				consecutiveCheckErrs = 0
 				timeoutFailingChecks = nil
 				if err := logStatus(fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err)); err != nil {
@@ -1024,7 +1028,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// The published head moved, so this run never delivered the
 					// commit whose checks were observed: nothing here may leave
 					// a ready-to-merge signal behind on the way out.
-					if err := clearCIMonitorReady(sctx); err != nil {
+					if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 						return nil, err
 					}
 					return rerunOutcome, nil

@@ -799,7 +799,7 @@ func TestRecoverReportsAnUnknownValidationStateRatherThanLosingTheRebind(t *test
 func TestDowngradeUnreadableReboundMarkerReportsTheCompletedMutation(t *testing.T) {
 	t.Parallel()
 
-	blocked := State{State: StatePipelineOwned, Relation: RelationBehind}
+	blocked := State{State: StatePipelineOwned, Relation: RelationBehind, Local: LocalState{Head: "bound"}, Pipeline: PipelineState{PushedHead: "bound"}}
 	blockUnreadableReboundMarker(&blocked, "whether any run validated the push-bound head could not be read")
 	if blocked.NextAction == nil || blocked.NextAction.Code != "retry" || blocked.Error == "" {
 		t.Fatalf("pre-mutation refusal = %#v, want the retry offered with its reason", blocked)
@@ -825,5 +825,36 @@ func TestDowngradeUnreadableReboundMarkerReportsTheCompletedMutation(t *testing.
 	downgradeUnreadableReboundMarker(&ordinary)
 	if ordinary.State != StateBehind || ordinary.Safety != SafetySafeFastForward || ordinary.BoundHeadValidationUnknown {
 		t.Fatalf("state = %#v, want an ordinary plan untouched", ordinary)
+	}
+}
+
+func TestRecoverReboundGuidanceWaitsForTheCheckedOutHead(t *testing.T) {
+	for _, behind := range []bool{false, true} {
+		name := "diverged"
+		if behind {
+			name = "behind"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, rewritten := newRemoteRewrittenFixture(t)
+			wantAction := "inspect_and_reconcile_manually"
+			if behind {
+				rewritten = mustRun(t, f.local, "commit-tree", mustRun(t, f.local, "rev-parse", "HEAD^{tree}"), "-p", f.old, "-m", "rewritten descendant")
+				mustRun(t, f.local, "push", "--force", f.remote, rewritten+":refs/heads/feature/sync")
+				wantAction = "sync"
+			}
+			recovered := f.service.Recover(f.ctx, false)
+			if !recovered.Recovered || recovered.BoundHeadUnvalidated != rewritten || recovered.Local.Head != f.old {
+				t.Fatalf("recovered = %#v; want retained checkout and unvalidated binding", recovered)
+			}
+			if recovered.NextAction == nil || recovered.NextAction.Code != wantAction {
+				t.Fatalf("action = %#v, want %s before validation", recovered.NextAction, wantAction)
+			}
+			if behind {
+				aligned := f.service.Apply(f.ctx)
+				if aligned.Local.Head != rewritten || aligned.NextAction == nil || aligned.NextAction.Code != "validate_rebound_head" {
+					t.Fatalf("aligned = %#v; want validation only after synchronization", aligned)
+				}
+			}
+		})
 	}
 }

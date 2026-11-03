@@ -2208,6 +2208,10 @@ func reboundNextAction(state *State) *NextAction {
 	if state == nil || (state.BoundHeadUnvalidated == "" && !state.BoundHeadValidationUnknown) {
 		return nil
 	}
+	if state.Local.Head == "" || state.Local.Head != state.Pipeline.PushedHead ||
+		(state.BoundHeadUnvalidated != "" && state.Local.Head != state.BoundHeadUnvalidated) {
+		return state.NextAction
+	}
 	return &NextAction{Code: "validate_rebound_head", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 }
 
