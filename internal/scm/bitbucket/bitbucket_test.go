@@ -91,7 +91,7 @@ func TestAvailableSucceedsWhenAuthenticated(t *testing.T) {
 func TestFindPRMatchesOpenPRForSourceBranch(t *testing.T) {
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
 		"twg bb pull-requests query --source feature --state OPEN --dest main --workspace ws --repo repo -o json --output-summary none": {
-			stdout: `[{"id":42,"state":"OPEN","links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/42"}}}]`,
+			stdout: `[{"id":42,"state":"OPEN","source":{"repository":{"full_name":"ws/repo"}},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/42"}}}]`,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
 
@@ -101,6 +101,52 @@ func TestFindPRMatchesOpenPRForSourceBranch(t *testing.T) {
 	}
 	if pr == nil || pr.Number != "42" || pr.URL != "https://bitbucket.org/ws/repo/pull-requests/42" {
 		t.Fatalf("FindPR() = %+v, want matched PR", pr)
+	}
+}
+
+func TestFindPRSkipsForkPRWithSameSourceBranch(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {
+			stdout: `[{"id":7,"state":"OPEN","source":{"repository":{"full_name":"someone/repo"}},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/7"}}},` +
+				`{"id":8,"state":"OPEN","source":{"repository":{"full_name":"ws/repo"}},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/8"}}}]`,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+
+	pr, err := h.FindPR(context.Background(), "feature", "")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "8" {
+		t.Fatalf("FindPR() = %+v, want the PR whose source repository is this repo", pr)
+	}
+}
+
+func TestFindPRReturnsNilWhenOnlyForkPRsMatch(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {
+			stdout: `[{"id":7,"state":"OPEN","source":{"repository":{"full_name":"someone/repo"}},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/7"}}}]`,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+
+	pr, err := h.FindPR(context.Background(), "feature", "")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() = %+v, want nil for a fork-only match", pr)
+	}
+}
+
+func TestFindPRReturnsErrorWhenSourceRepositoryMissing(t *testing.T) {
+	h := New(bbTestCmdFactory(map[string]bbTestResponse{
+		"twg bb pull-requests query --source feature --state OPEN --workspace ws --repo repo -o json --output-summary none": {
+			stdout: `[{"id":42,"state":"OPEN"}]`,
+		},
+	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
+
+	pr, err := h.FindPR(context.Background(), "feature", "")
+	if err == nil {
+		t.Fatalf("FindPR() = %+v, want error for an entry without source repository", pr)
 	}
 }
 
@@ -287,10 +333,10 @@ func TestFetchFailedCheckTargetLogsKeepsOnlyTheTailOfHugeOutput(t *testing.T) {
 	// ~100 KB of output, over twice maxPipelineLogBytes, ending in the failure.
 	huge := strings.Repeat("noise line\n", 9000) + "FINAL FAILURE\n"
 	h := New(bbTestCmdFactory(map[string]bbTestResponse{
-		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json": {
+		"twg bb pull-requests get 42 --statuses --workspace ws --repo repo -o json --output-summary none": {
 			stdout: `{"id":42,"source":{"commit":{"hash":"abc123"}},"_statuses":[{"name":"build","state":"FAILED","url":"https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/1"}]}`,
 		},
-		"twg bb pipeline get --pipeline 1 --logs --failed-steps --lines 0 --workspace ws --repo repo": {
+		"twg bb pipeline get --pipeline 1 --logs --failed-steps --lines 0 --output-summary none --workspace ws --repo repo": {
 			stdout: huge,
 		},
 	}), func() bool { return true }, RepoRef{Workspace: "ws", RepoSlug: "repo"}, false)
@@ -520,7 +566,7 @@ func TestBBHelperProcess(t *testing.T) {
 func TestEveryJSONCallPassesOutputSummaryNone(t *testing.T) {
 	const flags = "-o json --output-summary none"
 	pr := &scm.PR{Number: "42"}
-	prJSON := `{"id":42,"title":"T","description":"D","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/42"}}}`
+	prJSON := `{"id":42,"title":"T","description":"D","state":"OPEN","source":{"repository":{"full_name":"ws/repo"}},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/42"}}}`
 	tests := []struct {
 		name string
 		resp string
@@ -584,7 +630,7 @@ func TestFindPRParsesLargePRList(t *testing.T) {
 		if i > 1 {
 			b.WriteString(",")
 		}
-		fmt.Fprintf(&b, `{"id":%d,"state":"OPEN","title":"PR %d","description":%q,"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/%d"}}}`,
+		fmt.Fprintf(&b, `{"id":%d,"state":"OPEN","title":"PR %d","description":%q,"source":{"repository":{"full_name":"ws/repo"}},"links":{"html":{"href":"https://bitbucket.org/ws/repo/pull-requests/%d"}}}`,
 			i, i, strings.Repeat("long description ", 200), i)
 	}
 	b.WriteString("]")
