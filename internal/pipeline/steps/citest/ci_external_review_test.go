@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
@@ -221,6 +222,12 @@ func TestCIStep_RequiredReviewClearsReadyOnNextHeadAndTimesOutMissing(t *testing
 		poll++
 		if poll == 1 {
 			next := strings.Repeat("b", 40)
+			// The run published this head, so it is one of the run's own and
+			// the monitor reads its checks; a head the run never produced is a
+			// rewrite, which has its own coverage.
+			if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: next, TargetKind: "upstream", TargetFingerprint: "fixture", Ref: "refs/heads/feature"}); err != nil {
+				t.Fatal(err)
+			}
 			sctx.Env = append(sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+next, "FAKE_CLI_EXTERNAL_REVIEWS="+externalReviewPayload(next, "missing", "", ""))
 		} else {
 			now = now.Add(2 * time.Minute)

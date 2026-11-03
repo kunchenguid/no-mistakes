@@ -435,12 +435,15 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured
 	return path
 }
 
-func writeMockGHState(t *testing.T, dir, state string) (string, string) {
+// headSHA is the run's own head: the merged-proof read the recovered CI gate
+// performs must see the PR merged at a head the run owns, or the recovery
+// refuses the foreign merge instead of completing the run.
+func writeMockGHState(t *testing.T, dir, state, headSHA string) (string, string) {
 	t.Helper()
 	logPath := filepath.Join(dir, "gh.log")
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "gh.bat")
-		script := "@echo off\r\nset TOKENSTATE=\r\nif defined GH_TOKEN set TOKENSTATE=set\r\necho env:%GH_CONFIG_DIR% token:%TOKENSTATE%>>\"" + logPath + "\"\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
+		script := "@echo off\r\nset TOKENSTATE=\r\nif defined GH_TOKEN set TOKENSTATE=set\r\necho env:%GH_CONFIG_DIR% token:%TOKENSTATE%>>\"" + logPath + "\"\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"mergeCommit,mergedAt,mergedBy\" >nul && (echo {\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"state\":\"" + state + "\",\"headRefOid\":\"" + headSHA + "\",\"mergeCommit\":{\"oid\":\"merge123\"},\"mergedAt\":\"2026-09-01T12:00:00Z\",\"mergedBy\":{\"login\":\"someone\"}}& exit /b 0)\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -452,6 +455,7 @@ printf 'env:%s token:%s\n' "$GH_CONFIG_DIR" "${GH_TOKEN:+set}" >>` + shellQuoteF
 printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
 case "$*" in
   "auth status"*|"auth status --hostname "*) exit 0 ;;
+  *"mergeCommit,mergedAt,mergedBy"*) printf '%s\n' ` + shellQuoteForTest(`{"number":42,"url":"https://github.com/test/repo/pull/42","state":"`+state+`","headRefOid":"`+headSHA+`","mergeCommit":{"oid":"merge123"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"someone"}}`) + `; exit 0 ;;
   "pr view 42 "*) printf '%s\n' ` + shellQuoteForTest(state) + `; exit 0 ;;
 esac
 exit 1

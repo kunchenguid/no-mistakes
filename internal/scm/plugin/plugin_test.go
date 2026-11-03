@@ -253,7 +253,7 @@ func TestCall_FailureCodesMapToSentinels(t *testing.T) {
 		t.Fatalf("a declared capability refused as unsupported must be a protocol violation, got %v", err)
 	}
 	transport.outcomes = append(transport.outcomes, invocation{stdout: []byte(`{"error":{"code":"head_changed","message":"moved"}}`), runErr: errors.New("exit status 1")})
-	_, err = host.GetMergedProof(context.Background(), testPR(), "abc123")
+	_, err = host.GetMergedProof(context.Background(), testPR(), []string{"abc123"})
 	if !errors.Is(err, scm.ErrHeadChanged) {
 		t.Fatalf("head_changed error = %v", err)
 	}
@@ -599,7 +599,7 @@ func TestOptionalCapabilitiesAreGatedByHandshake(t *testing.T) {
 	if _, err := host.FetchFailedCheckLogs(ctx, testPR(), "feature", "abc", []string{"build"}); !errors.Is(err, scm.ErrUnsupported) {
 		t.Fatalf("FetchFailedCheckLogs error = %v", err)
 	}
-	if _, err := host.GetMergedProof(ctx, testPR(), "abc"); !errors.Is(err, scm.ErrUnsupported) {
+	if _, err := host.GetMergedProof(ctx, testPR(), []string{"abc"}); !errors.Is(err, scm.ErrUnsupported) {
 		t.Fatalf("GetMergedProof error = %v", err)
 	}
 	if err := host.SetPRBaseBranch(ctx, testPR(), "dev"); !errors.Is(err, scm.ErrUnsupported) {
@@ -658,29 +658,29 @@ func TestGetMergedProof(t *testing.T) {
 	ctx := context.Background()
 	url := testPR().URL
 	transport.reply(`{"merged":true,"number":7,"url":"` + url + `","head_sha":"abc123","merge_commit_sha":"m1","merged_at":"2026-01-02T03:04:05Z","merged_by":"alice"}`)
-	proof, err := host.GetMergedProof(ctx, testPR(), "abc123")
+	proof, err := host.GetMergedProof(ctx, testPR(), []string{"abc123"})
 	if err != nil || !proof.Merged || proof.MergeCommitSHA != "m1" || proof.MergedBy != "alice" || proof.Number != "7" || proof.MergedAt.IsZero() {
 		t.Fatalf("proof = %+v, %v", proof, err)
 	}
 	transport.wantArgv("pr", "merged", "7", "--expected-head=abc123")
 
 	transport.reply(`{"merged":true,"number":7,"url":"` + url + `","head_sha":"other","merge_commit_sha":"m1","merged_at":"2026-01-02T03:04:05Z"}`)
-	if _, err := host.GetMergedProof(ctx, testPR(), "abc123"); !errors.Is(err, scm.ErrHeadChanged) {
+	if _, err := host.GetMergedProof(ctx, testPR(), []string{"abc123"}); !errors.Is(err, scm.ErrHeadChanged) {
 		t.Fatalf("head mismatch error = %v", err)
 	}
 	transport.reply(`{"merged":true,"number":7,"url":"` + url + `","head_sha":"abc123"}`)
-	if _, err := host.GetMergedProof(ctx, testPR(), "abc123"); err == nil || !strings.Contains(err.Error(), "merge_commit_sha and merged_at") {
+	if _, err := host.GetMergedProof(ctx, testPR(), []string{"abc123"}); err == nil || !strings.Contains(err.Error(), "merge_commit_sha and merged_at") {
 		t.Fatalf("incomplete proof error = %v", err)
 	}
 	transport.reply(`{"merged":false,"number":7,"url":"https://git.example.com/team/repo/pulls/7?x","head_sha":"abc123"}`)
-	if _, err := host.GetMergedProof(ctx, testPR(), "abc123"); err == nil || !strings.Contains(err.Error(), "proof identifies") {
+	if _, err := host.GetMergedProof(ctx, testPR(), []string{"abc123"}); err == nil || !strings.Contains(err.Error(), "proof identifies") {
 		t.Fatalf("url mismatch error = %v", err)
 	}
 	transport.reply(`{"merged":false,"number":8,"url":"` + url + `","head_sha":"abc123"}`)
-	if _, err := host.GetMergedProof(ctx, testPR(), "abc123"); err == nil || !errors.Is(err, ErrProtocol) {
+	if _, err := host.GetMergedProof(ctx, testPR(), []string{"abc123"}); err == nil || !errors.Is(err, ErrProtocol) {
 		t.Fatalf("number mismatch = %v", err)
 	}
-	if _, err := host.GetMergedProof(ctx, testPR(), " "); err == nil || !strings.Contains(err.Error(), "expected head SHA") {
+	if _, err := host.GetMergedProof(ctx, testPR(), []string{" "}); err == nil || !strings.Contains(err.Error(), "expected head SHA") {
 		t.Fatalf("empty expected head error = %v", err)
 	}
 }

@@ -503,7 +503,7 @@ func TestMergedProofRequiresExpectedHeadAndCanonicalIdentity(t *testing.T) {
 	proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 	recorder := &fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}}
 	host := newTestHost(recorder)
-	got, err := host.GetMergedProof(context.Background(), testPR(), testHeadSHA)
+	got, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA})
 	if err != nil || !got.Merged || got.HeadSHA != testHeadSHA || got.MergeCommitSHA == "" {
 		t.Fatalf("GetMergedProof() = (%+v, %v)", got, err)
 	}
@@ -516,7 +516,7 @@ func TestMergedProofRequiresExpectedHeadAndCanonicalIdentity(t *testing.T) {
 func TestMergedProofRejectsEmptyExpectedHead(t *testing.T) {
 	proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 	host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
-	_, err := host.GetMergedProof(context.Background(), testPR(), "")
+	_, err := host.GetMergedProof(context.Background(), testPR(), nil)
 	if err == nil || !strings.Contains(err.Error(), "expected head") {
 		t.Fatalf("GetMergedProof() error = %v, want missing expected head", err)
 	}
@@ -525,7 +525,7 @@ func TestMergedProofRejectsEmptyExpectedHead(t *testing.T) {
 func TestMergedProofRejectsAlreadyMergedHeadRace(t *testing.T) {
 	proof := `{"merged":true,"number":42,"url":"` + testPRURL + `","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 	host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
-	_, err := host.GetMergedProof(context.Background(), testPR(), testHeadSHA)
+	_, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA})
 	if !errors.Is(err, scm.ErrHeadChanged) {
 		t.Fatalf("GetMergedProof() error = %v, want ErrHeadChanged", err)
 	}
@@ -582,7 +582,7 @@ func TestRejectsMismatchedPRIdentityAndIncompleteSearch(t *testing.T) {
 	t.Run("merged proof output number", func(t *testing.T) {
 		proof := `{"merged":true,"number":43,"url":"` + testBaseURL + `/octo/widgets/pulls/43","head_sha":"` + testHeadSHA + `","merge_commit_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","merged_at":"2025-01-02T00:00:00Z","merged_by":"alice"}`
 		host := newTestHost(&fakeRecorder{responses: []fakeResponse{{stdout: `{"proof":` + proof + `}`}}})
-		_, err := host.GetMergedProof(context.Background(), testPR(), testHeadSHA)
+		_, err := host.GetMergedProof(context.Background(), testPR(), []string{testHeadSHA})
 		if err == nil || !strings.Contains(err.Error(), "number") {
 			t.Fatalf("GetMergedProof() error = %v, want number identity error", err)
 		}

@@ -416,6 +416,38 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 	}
 }
 
+// ciUnownedHeadStallOutcome parks the CI step when consecutive polls all ended
+// without reading a check for a head this run owns: an unreadable push target,
+// a pull request state nobody could read while the branch head is foreign, or
+// an adoption whose own reads keep failing. None of those can be attributed to
+// a validated head, so none may be reported - and naming the condition is what
+// separates this park from the generic CI timeout it would otherwise spin into,
+// or from no ending at all under an unlimited timeout.
+//
+// It carries the head-rewrite category and its own stable ID because the
+// decision it asks for is the same one that park asks for - which head to
+// validate - so the automatic resolvers must stand aside (they read one
+// category-keyed predicate) and a human's own approve must record the
+// unresolved condition rather than complete CI as a plain pass on a head no
+// Review certified.
+func ciUnownedHeadStallOutcome() *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: "No check could be read for a head this run validated",
+		Items: []Finding{{
+			ID:          types.FindingIDCIUnownedHeadStall,
+			Severity:    "warning",
+			Category:    types.FindingCategoryCIHeadRewrite,
+			Description: "several consecutive polls ended without a check result for a head this run validated: the pull request branch head, or the pull request state, could not be read, or the head the provider reports and the head the push target serves kept disagreeing. Verify that the push target and the provider are reachable, that their credentials are current, and that the pull request branch still exists.",
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 // ciFixAgentTimeoutOutcome parks the CI step for a decision after the auto-fix
 // agent burned its whole invocation budget without finishing.
 //

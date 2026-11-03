@@ -445,10 +445,16 @@ type MergedProof struct {
 }
 
 // MergedProofHost is implemented by hosts that can prove which exact PR head
-// was merged. The expected head must be checked even when the PR is already
-// merged, because merge and monitor polling can race.
+// was merged. ownHeads lists every head the run owns, its primary recorded
+// head first, then its durable last-pushed head and the caller worktree's
+// HEAD - so a merge that raced an outside rewrite of the branch can still
+// prove the run's own work landed. The head must be checked even when the PR
+// is already merged, because merge and monitor polling can race. Hosts that
+// cannot validate the whole set validate the first head alone; every host
+// reports which head the proof carries and the caller re-checks membership, so
+// a proof for a head the run owns nowhere can never pass.
 type MergedProofHost interface {
-	GetMergedProof(ctx context.Context, pr *PR, expectedHead string) (MergedProof, error)
+	GetMergedProof(ctx context.Context, pr *PR, ownHeads []string) (MergedProof, error)
 }
 
 // Host is the provider-agnostic interface to a PR-hosting service.

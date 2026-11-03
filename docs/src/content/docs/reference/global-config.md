@@ -700,6 +700,7 @@ A clean behind PR needs no command, except on GitHub when the base requires up-t
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
+On a provider that can prove which head was merged (GitHub and Forgejo), a merge at a head the run owns nowhere is not that completion: every recheck reads the same proof, so the run fails with the head-changed refusal instead of clearing the gate as its own merge.
 
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to disable this timeout. A run still ends when the PR is merged, closed, or declined, when green monitoring is explicitly handed off, or at readiness under `ci.release_after_checks_pass`. You can end it explicitly with `no-mistakes axi handoff` or cancel it with `no-mistakes axi abort --run <id>`.
 

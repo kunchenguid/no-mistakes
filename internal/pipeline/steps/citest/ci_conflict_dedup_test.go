@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -65,6 +66,13 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 			prURL := "https://github.com/test/repo/pull/42"
 			sctx.Run.PRURL = &prURL
 			sctx.Run.Branch = "refs/heads/feature"
+			// The run published this branch at headSHA before the conflict
+			// repair revalidated a local head on top of it, so the push target
+			// still serves a head the run owns while the repair commits only
+			// exist in the run worktree.
+			if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: headSHA, TargetKind: "upstream", TargetFingerprint: "fixture", Ref: "refs/heads/feature"}); err != nil {
+				t.Fatal(err)
+			}
 			sctx.Repo.UpstreamURL = upstream
 			sctx.Env = stepstest.FakeCIGHMergeable(t, "OPEN", "[]", "CONFLICTING")
 			sctx.Config.CITimeout = time.Minute
@@ -75,7 +83,16 @@ func TestCIStep_SecondMergeConflictUsesBaseCommit(t *testing.T) {
 			step := (&steps.CIStep{}).SetBaseBranchTip(func(context.Context) (string, bool) { return tip, true }).SetWaitForNextPoll(func(context.Context, time.Duration) error { return context.Canceled })
 			if tc.lookupFails {
 				sctx.EvalReplay = true
-				stepstest.GitCmd(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+				// Only the base lookup is meant to fail here: the upstream the
+				// base branch is fetched from is unreachable while the push
+				// target the monitor reads the published head from stays
+				// readable. A broken push target would instead leave the
+				// published head unprovable, and the monitor waits on that.
+				unreachable := filepath.Join(t.TempDir(), "missing.git")
+				stepstest.GitCmd(t, dir, "remote", "set-url", "origin", unreachable)
+				sctx.Repo.URLsVerified = true
+				sctx.Repo.UpstreamURL = unreachable
+				sctx.Repo.ForkURL = upstream
 			}
 			first, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 			if err != nil || first == nil || first.RestartFrom != types.StepReview || len(ag.Calls) != 1 {

@@ -66,7 +66,11 @@ func newCIRepairFixture(t *testing.T, revalidate bool, agentAction func(workDir 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`),
-		"FAKE_CLI_PR_HEAD_SHA="+headSHA,
+		// The fake resolves the PR's head from the run worktree at read time,
+		// the way the provider reports the branch's live head: before the repair
+		// it is the run head, after the repair it is the pushed repair head.
+		"FAKE_CLI_PR_HEAD_SHA=deadbeef",
+		"FAKE_CLI_HEAD_FROM_WORKTREE=1",
 		// attestHeadBeforePush discovers the PR via FindPR before every publish
 		// (Push and a CI repair alike), so the fixture's fake gh must be able to
 		// resolve the same PR the fixture's own persisted PRURL names.
@@ -608,5 +612,219 @@ func TestCIStep_MonitorRestartsAtReviewForAHeldRepair(t *testing.T) {
 	}
 	if !strings.Contains(f.log(), "CI repair policy:") {
 		t.Errorf("CI step did not report its repair policy; log:\n%s", f.log())
+	}
+}
+
+// The pull request's live base is only an input to a restart at Review. A
+// repair that publishes and keeps monitoring never needs it, so a forge that
+// cannot report it must not cost the run its repair; a repair that restarts
+// still fails closed on the same read.
+func TestCIStep_UnreadableLiveBaseOnlyStopsTheRestartingRepair(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		revalidate bool
+	}{
+		{name: "published_repair_survives_it", revalidate: false},
+		{name: "restarting_repair_fails_closed", revalidate: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCIRepairFixture(t, tc.revalidate, writeCIFix)
+			f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_BASE=!")
+
+			outcome, err := f.run(t)
+			if tc.revalidate {
+				if err == nil || !strings.Contains(err.Error(), "read the pull request's live base branch") {
+					t.Fatalf("outcome = %#v, err = %v, want the restart to fail closed\nlog:\n%s", outcome, err, f.log())
+				}
+				return
+			}
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
+			}
+			if f.remoteHead(t) == f.headSHA {
+				t.Fatalf("the repair was never published; log:\n%s", f.log())
+			}
+			if !strings.Contains(f.log(), "committed and pushed CI repair") {
+				t.Errorf("log missing the published repair:\n%s", f.log())
+			}
+		})
+	}
+}
+
+// A base read that fails BEFORE the repair says nothing about the repair, and
+// by the time the restart needs the base the repair has already committed and
+// cleared the review approval. Failing the run there left a recorded head no
+// Review had validated with no revalidation scheduled, so the read is re-tried
+// at the restart instead and the run restarts at Review with the live base.
+func TestCIStep_TransientBaseReadStillRestartsTheRepairAtReview(t *testing.T) {
+	t.Parallel()
+
+	// The outage covers every base read up to and including the pre-repair
+	// one; the fix agent ends it, so only the read at the restart succeeds.
+	forgeBack := filepath.Join(t.TempDir(), "forge-back")
+	f := newCIRepairFixture(t, true, func(workDir string) {
+		writeCIFix(workDir)
+		if err := os.WriteFile(forgeBack, []byte("reachable\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_BASE=main", "FAKE_CLI_PR_BASE_OK_AFTER="+forgeBack)
+
+	outcome, err := f.run(t)
+	if err != nil {
+		t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
+	}
+	if outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("outcome = %#v, want a restart from Review despite the first base read failing\nlog:\n%s", outcome, f.log())
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The live base equals what configuration already resolves to, so nothing
+	// is persisted; what this pins is that the retry succeeded and the restart
+	// happened at all, instead of the stale read failing the run.
+	if run.PRBaseBranch != nil {
+		t.Fatalf("persisted base = %q, want no override for a base configuration already resolves to", *run.PRBaseBranch)
+	}
+	if run.HeadSHA == f.headSHA {
+		t.Fatalf("recorded head = %s, want the repair commit recorded", run.HeadSHA)
+	}
+}
+
+// applyRunPRBase is a write path into runs.pr_base_branch, so the
+// forge-reported name goes through the same validator every operator-facing
+// writer runs: an unusable ref name is refused rather than persisted and
+// re-read as a ref by every later step.
+func TestApplyRunPRBase_RefusesAnUnusableBranchName(t *testing.T) {
+	t.Parallel()
+
+	f := newCIRepairFixture(t, true, nil)
+	if err := applyRunPRBase(f.sctx, "bad..base"); err == nil || !strings.Contains(err.Error(), "not a usable branch name") {
+		t.Fatalf("applyRunPRBase() error = %v, want the unusable name refused", err)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("persisted base = %q, want nothing persisted", *run.PRBaseBranch)
+	}
+	if err := applyRunPRBase(f.sctx, "develop"); err != nil {
+		t.Fatalf("applyRunPRBase() error = %v, want a usable name persisted", err)
+	}
+	run, err = f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
+		t.Fatalf("persisted base = %v, want develop", run.PRBaseBranch)
+	}
+}
+
+// The per-run base is an operator-style override: several consumers read a
+// non-empty value as "the operator picked this base" and act on it - reverting
+// a maintainer's forge-side retarget, and refusing a run whose persisted pull
+// request has since closed. Aligning with the live base must therefore write it
+// only when the live base actually differs from what configuration already
+// resolves to, not merely from the (usually empty) override.
+func TestApplyRunPRBase_OnlyMaterialisesADifferentBase(t *testing.T) {
+	t.Parallel()
+
+	f := newCIRepairFixture(t, true, nil)
+	effective := effectivePRBaseBranch(f.sctx)
+	if effective == "" {
+		t.Fatalf("fixture has no effective base to compare against")
+	}
+	if err := applyRunPRBase(f.sctx, effective); err != nil {
+		t.Fatalf("applyRunPRBase() error = %v", err)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("persisted base = %q, want no per-run override for a base configuration already resolves to", *run.PRBaseBranch)
+	}
+	if err := applyRunPRBase(f.sctx, "develop"); err != nil {
+		t.Fatalf("applyRunPRBase() error = %v", err)
+	}
+	run, err = f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRBaseBranch == nil || *run.PRBaseBranch != "develop" {
+		t.Fatalf("persisted base = %v, want the retargeted base develop recorded", run.PRBaseBranch)
+	}
+}
+
+// The restart is scoped by effectivePRBaseBranch, so that is the base the
+// alignment has to compare against. A layer retargeted onto another parent must
+// not keep scoping against the base configuration still resolves: the restarted
+// Review then re-reviews every layer beneath a branch it no longer layers on.
+func TestApplyRunPRBase_AlignsTheBaseTheRestartScopesBy(t *testing.T) {
+	t.Parallel()
+
+	f := newCIRepairFixture(t, true, nil)
+	f.sctx.Config.PR.BaseBranch = "layer1"
+	if got := effectivePRBaseBranch(f.sctx); got != "layer1" {
+		t.Fatalf("scoping base = %q, want the configured layer1", got)
+	}
+
+	if err := applyRunPRBase(f.sctx, "layer2"); err != nil {
+		t.Fatalf("applyRunPRBase() error = %v", err)
+	}
+	if got := effectivePRBaseBranch(f.sctx); got != "layer2" {
+		t.Fatalf("scoping base = %q, want the restart scoped by the layer the PR now targets", got)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRBaseBranch == nil || *run.PRBaseBranch != "layer2" {
+		t.Fatalf("persisted base = %v, want layer2 recorded for the restart", run.PRBaseBranch)
+	}
+
+	// Equal to what the restart already scopes by: nothing to align.
+	f.sctx.Run.PRBaseBranch = nil
+	f.sctx.Config.PR.BaseBranch = ""
+	if err := applyRunPRBase(f.sctx, effectivePRBaseBranch(f.sctx)); err != nil {
+		t.Fatalf("applyRunPRBase() error = %v", err)
+	}
+	if f.sctx.Run.PRBaseBranch != nil {
+		t.Fatalf("in-memory base = %q, want no write when the scoping base already agrees", *f.sctx.Run.PRBaseBranch)
+	}
+}
+
+// The durable record is what every later pass reads, and the run worktree's
+// head is one of the heads the run is credited with owning, so nothing may move
+// a ref before that record lands. Moving the branch first left the branch - and
+// therefore the worktree head - on a commit no Review approved while
+// runs.head_sha still named the reviewed one, and the next CI poll then counted
+// that foreign head as the run's own and could complete CI green on it.
+func TestRecordRevalidationHead_FailedDurableWriteMovesNoRef(t *testing.T) {
+	t.Parallel()
+
+	f := newCIRepairFixture(t, true, nil)
+	reviewed := f.headSHA
+	adopted := gitCmd(t, f.dir, "commit-tree", gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}"), "-p", reviewed, "-m", "rewritten outside the run")
+	if err := f.sctx.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&CIStep{}).recordRevalidationHead(f.sctx, adopted, "", false); err == nil {
+		t.Fatal("recordRevalidationHead() error = nil, want the durable write failure surfaced")
+	}
+	if got := gitCmd(t, f.dir, "rev-parse", "refs/heads/feature"); got != reviewed {
+		t.Fatalf("branch ref = %s, want the reviewed %s: the adopted head %s would then count as the run's own", got, reviewed, adopted)
+	}
+	if got := gitCmd(t, f.dir, "rev-parse", "HEAD"); got != reviewed {
+		t.Fatalf("worktree head = %s, want the reviewed %s", got, reviewed)
+	}
+	if f.sctx.Run.HeadSHA != reviewed {
+		t.Fatalf("in-memory run head = %s, want the reviewed %s", f.sctx.Run.HeadSHA, reviewed)
 	}
 }

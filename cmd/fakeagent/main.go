@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -154,6 +155,26 @@ func runGhForkPRStub(args []string) int {
 		}
 		if hasArgValue(args, "--json", "mergeable") {
 			fmt.Println("MERGEABLE")
+			return 0
+		}
+		// The CI step's merged-proof read must see the PR merged at a head the
+		// run owns, so the stub reports the invoking worktree's HEAD (the step
+		// always runs there). Failing to resolve one exits 1 - the proof must
+		// fail closed rather than certify a foreign head.
+		if strings.Contains(argAfter(args, "--json"), "mergeCommit") {
+			head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "fakeagent gh fork-pr: merged proof could not resolve the worktree head: %v\n", err)
+				return 1
+			}
+			repo := argAfter(args, "--repo")
+			if repo == "" {
+				repo = os.Getenv("FAKEAGENT_GH_PARENT")
+			}
+			if repo == "" {
+				repo = "parent/repo"
+			}
+			fmt.Printf(`{"number":99,"url":"https://github.com/%s/pull/99","state":"MERGED","headRefOid":"%s","mergeCommit":{"oid":"merge00000000000000000000000000000000000000"},"mergedAt":"2026-09-01T12:00:00Z","mergedBy":{"login":"e2e-parent-user"}}`+"\n", strings.TrimSuffix(repo, ".git"), strings.TrimSpace(string(head)))
 			return 0
 		}
 	}
