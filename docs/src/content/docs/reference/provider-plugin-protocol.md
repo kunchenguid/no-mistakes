@@ -104,7 +104,7 @@ Error codes with defined meaning:
 
 | Code | Meaning |
 | --- | --- |
-| `head_changed` | The PR head is no longer the expected commit (`pr merged`). |
+| `head_changed` | The merged head is outside the accepted set; see [`pr merged`](#pr-merged-capability-merged_proof). |
 | `unsupported` | Never a valid answer: no-mistakes invokes only the required subcommands and the ones you declared. It is reported as a contract violation (capability mismatch). |
 
 Any other code, or none, is an ordinary failure whose message is shown to the

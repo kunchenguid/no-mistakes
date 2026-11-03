@@ -231,7 +231,7 @@ When unset and without a per-run override, no-mistakes targets the repository's 
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
 A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, Gitea, Cursor Origin, and [provider plugins](/no-mistakes/reference/provider-plugin-protocol/) that advertise `set_pr_base_branch`) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
-Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created. The base the CI step observes there is recorded as the run's observed scoping state, never as target intent, so it scopes a restarted Review without ever retargeting the pull request. See [CI](/no-mistakes/reference/pipeline-steps/#ci) for live-base alignment before a restart at Review and its provider requirements.
+Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created. See [CI](/no-mistakes/reference/pipeline-steps/#ci) for observed scoping state, live-base alignment before a restart at Review, and its provider requirements.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.
@@ -833,7 +833,7 @@ Reruns are skipped when:
 
 - The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, Gitea, Cursor Origin, and provider plugins reach the approval gate without a rerun).
 - The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a cancelled check naming only the workflow run re-runs the whole workflow, while other run-only links re-run failed jobs; an unrecognized link is widened into neither.
-- The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
+- The published branch head no longer equals the delivered commit when rechecked immediately before a rerun request. That last-moment move clears readiness and pauses for user approval with the expected and observed commits instead of rerunning stale checks. Head rewrites observed during ordinary polling follow the [CI adoption and revalidation rules](/no-mistakes/reference/pipeline-steps/#ci).
 
 ### ci.required_reviews
 

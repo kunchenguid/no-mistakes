@@ -87,9 +87,9 @@ type State struct {
 	Recovered bool
 	Recovery  *RecoveryEvidence
 	// BoundHeadUnvalidated is the push-bound head a rewritten-remote recovery
-	// rebound without any run validating it. Empty when every reported bound
-	// head was validated by the run that published it; the report holds until
-	// any run publishes that exact head, which clears the durable marker.
+	// rebound without any run validating it. A later publication of that exact
+	// head attempts to clear the marker; a failed clear leaves this conservative
+	// report. An empty field alone is not evidence of validation.
 	BoundHeadUnvalidated string
 	// BoundHeadValidationUnknown is set when the marker could not be read after
 	// a synchronization or rebind that already completed. The mutation
@@ -2162,9 +2162,9 @@ func syncAnchorRef(runID string) string {
 // annotateUnvalidatedRebound reports a push binding whose head a
 // rewritten-remote recovery rebound without any run validating it. The
 // recovery's compare-and-swap is the only writer of the durable marker, and a
-// later publication of the exact head by any run clears it, so a stale marker
-// can never name a head the pipeline has since validated. States that never
-// reach the ordinary relation classification (merged, closed, ambiguous
+// later publication of the exact head by any run attempts to clear it. A failed
+// clear leaves a conservative marker until a later publication succeeds.
+// States that never reach the ordinary relation classification (merged, closed, ambiguous
 // context) keep their own reasons and carry no statement either way. EVERY
 // relation carries the statement, because the branch a report calls behind
 // today is the branch a fast-forward puts exactly on that unvalidated head,
