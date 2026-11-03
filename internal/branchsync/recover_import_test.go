@@ -133,7 +133,7 @@ func TestRecoverLocalOnlyHeadDivergingFromPreservedStaysRefusedAndPreservesBoth(
 	repair := f.commitRepair("other.txt", "unrelated repair\n")
 
 	state := f.service.InspectCached(f.ctx)
-	assertManualReconciliationOffer(t, state)
+	assertPinnedKeepLocalOffer(t, state, f.anchorRef())
 
 	refused := f.service.Recover(f.ctx, false)
 	if refused.Recovered || refused.Safety != "blocked_recover_diverged" || refused.Relation != RelationDiverged {
@@ -223,7 +223,7 @@ func TestRecoverImportProofRefusesUnrelatedHistoriesDirtyWorktreesAndConflicting
 		mustRun(t, f.local, "add", "fix.txt")
 		mustRun(t, f.local, "commit", "-m", "unrelated root")
 		mustRun(t, f.local, "branch", "-M", "feature/recover")
-		assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
+		assertPinnedKeepLocalOffer(t, f.service.InspectCached(f.ctx), f.anchorRef())
 		if refused := f.service.Recover(f.ctx, false); refused.Recovered || f.custodyReturned() {
 			t.Fatalf("unrelated histories recovered: %#v", refused)
 		}
@@ -235,7 +235,7 @@ func TestRecoverImportProofRefusesUnrelatedHistoriesDirtyWorktreesAndConflicting
 		mustRun(t, f.local, "add", "fix.txt")
 		f.commitRepair("extra.txt", "repair only\n")
 		mustWrite(t, filepath.Join(f.local, "extra.txt"), "dirty edit\n")
-		assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
+		assertPinnedKeepLocalOffer(t, f.service.InspectCached(f.ctx), f.anchorRef())
 		if refused := f.service.Recover(f.ctx, false); refused.Recovered || f.custodyReturned() {
 			t.Fatalf("dirty worktree recovered: %#v", refused)
 		}
