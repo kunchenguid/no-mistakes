@@ -284,7 +284,7 @@ func fetchVerifiedPublishedHead(sctx *pipeline.StepContext) (string, error) {
 			return "", fmt.Errorf("re-read the pull request branch head before adopting it: %w", err)
 		}
 		bounded, cancel := publishedHeadBoundedContext(sctx)
-		if _, err := stepGitRun(bounded, "fetch", pushURL, branch); err != nil {
+		if _, err := stepGitRunTree(bounded, "fetch", pushURL, branch); err != nil {
 			cancel()
 			return "", fmt.Errorf("fetch %s from the push target: %w", branch, err)
 		}

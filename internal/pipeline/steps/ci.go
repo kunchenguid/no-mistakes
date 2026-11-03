@@ -622,15 +622,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 	}
 
-	if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil {
-		return nil, err
-	} else if pending {
-		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
-			return nil, err
-		}
-		return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: sctx.DeferredFindings}, nil
-	}
-
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
 	// self-terminate; 0 means the value was never configured, so fall back
 	// to the default; >0 is an explicit finite idle timeout.
@@ -754,6 +745,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil {
+			return nil, err
+		} else if pending {
+			if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+				return nil, err
+			}
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview, Findings: sctx.DeferredFindings}, nil
+		}
 		pollBaseTip := ""
 		botCommentReadFailed := false
 		behindObserved := false
@@ -838,6 +837,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return outcome, nil
 		}
 		if skipChecks {
+			lastMonitorLog = ciMonitorStatus{}
 			consecutiveUnreadPolls++
 			if consecutiveUnreadPolls >= consecutiveCheckErrorLimit {
 				sctx.Log(fmt.Sprintf("no check could be read for a head this run owns on %d consecutive polls, parking for a decision", consecutiveUnreadPolls))
@@ -942,6 +942,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// run never validated. The same adoption applies before any of
 			// those results can establish readiness.
 			if observed := strings.TrimSpace(observedHead); observed != "" && !s.ciRunOwnsHead(sctx, observed) {
+				lastMonitorLog = ciMonitorStatus{}
 				outcome, adoptErr := s.adoptPublishedHeadRewrite(sctx, host, pr, "the pull request reports head", observed, prOpen)
 				if adoptErr != nil {
 					return nil, adoptErr
@@ -1400,6 +1401,13 @@ func clearCIMonitorReady(sctx *pipeline.StepContext) error {
 }
 
 func setCIMonitorPRState(sctx *pipeline.StepContext, state string) error {
+	if state == "merged" || state == "closed" {
+		if pending, err := pipeline.CIReviewRestartPending(sctx.DB, sctx.Run.ID); err != nil {
+			return err
+		} else if pending {
+			return fmt.Errorf("cannot record terminal PR state before reviewing the rewritten head")
+		}
+	}
 	if sctx.SetPRState != nil {
 		return sctx.SetPRState(state)
 	}

@@ -65,7 +65,7 @@ func (s *restartBaseReview) Execute(sctx *pipeline.StepContext) (*pipeline.StepO
 
 func TestCIStep_RestartRefreshesBaseAfterParkWithoutPush(t *testing.T) {
 	for _, recovered := range []bool{false, true} {
-		for _, action := range []types.ApprovalAction{types.ActionApprove, types.ActionFix} {
+		for _, action := range []types.ApprovalAction{types.ActionApprove, types.ActionFix, types.ActionSkip} {
 			name := string(action)
 			if recovered {
 				name += "/recovered"

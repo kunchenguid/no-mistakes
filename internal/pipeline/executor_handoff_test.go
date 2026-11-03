@@ -83,3 +83,59 @@ func TestExecutor_HandoffAndPlainAbort(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutor_HandoffRefusesRevokedReview(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		if err := database.UpdateRunHeadSHAForRevalidation(run.ID, "rewritten-head"); err != nil {
+			return nil, err
+		}
+		cancel(ErrHandoff)
+		return nil, sctx.Ctx.Err()
+	}}
+	executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview), ci}, nil)
+	if err := executor.Execute(ctx, run, repo, t.TempDir()); err == nil {
+		t.Fatal("handed off an unreviewed head")
+	}
+	recorded, err := database.GetRun(run.ID)
+	if err != nil || recorded.Status != types.RunFailed || recorded.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("revoked Review completed the run: %+v, %v", recorded, err)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepCI && step.Status != types.StepStatusFailed {
+			t.Fatalf("CI completed without Review: %+v", step)
+		}
+	}
+}
+
+func TestExecutor_TerminalCompletionRefusesRevokedReview(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunCompleted, types.RunChecksPassed, types.RunHandedOff} {
+		t.Run(string(status), func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			review, err := database.InsertStepResult(run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.CompleteReviewStep(review.ID, run.ID, run.HeadSHA, 0, 0, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunHeadSHAForRevalidation(run.ID, "rewritten-head"); err != nil {
+				t.Fatal(err)
+			}
+			executor := NewExecutor(database, p, nil, nil, nil, nil)
+			if err := executor.completeRunWithStatus(run, repo, status); err == nil {
+				t.Fatal("unreviewed head received a success status")
+			}
+			recorded, err := database.GetRun(run.ID)
+			if err != nil || recorded.Status.Terminal() || recorded.ReviewApprovedHeadSHA != nil {
+				t.Fatalf("revoked Review completed the run: %+v, %v", recorded, err)
+			}
+		})
+	}
+}

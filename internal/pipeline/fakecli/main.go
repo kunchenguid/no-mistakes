@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/fakecli/ghsanitize"
 	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
@@ -72,6 +73,8 @@ func handleFakeCLI(mode string) {
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
+	case "git-stalled-fetch":
+		fakeGitStalledFetchHandler(args)
 	case "git-move-head-passthrough":
 		fakeGitMoveHeadPassthroughHandler(args)
 	case "git-intervening-push-passthrough":
@@ -379,6 +382,30 @@ func fakeGitCommitErrorHandler(args []string) {
 	fakeGitForward(args, os.Getenv("FAKE_CLI_REAL_GIT"))
 }
 
+func fakeGitStalledFetchHandler(args []string) {
+	if len(args) > 0 && args[0] == "hold-fetch-pipes" {
+		if err := os.WriteFile(os.Getenv("FAKE_CLI_FETCH_STARTED"), []byte("started"), 0o600); err != nil {
+			os.Exit(1)
+		}
+		time.Sleep(4 * time.Second)
+		return
+	}
+	if len(args) > 0 && args[0] == "fetch" {
+		helper, err := os.Executable()
+		if err != nil {
+			os.Exit(1)
+		}
+		child := exec.Command(helper, "hold-fetch-pipes")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Run(); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	fakeGitForward(args, os.Getenv("FAKE_CLI_REAL_GIT"))
+}
+
 func fakeGitPassthroughHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
 	fakeGitForward(args, realGit)
@@ -518,6 +545,13 @@ func fakeGitRemoteErrorHandler(args []string) {
 }
 
 func fakePRHeadSHA() string {
+	if path := os.Getenv("FAKE_CLI_PR_HEAD_FILE"); path != "" {
+		head, err := os.ReadFile(path)
+		if err != nil {
+			os.Exit(1)
+		}
+		return strings.TrimSpace(string(head))
+	}
 	if raw := os.Getenv("FAKE_CLI_PR_HEAD_SEQUENCE"); raw != "" {
 		var heads []string
 		if err := json.Unmarshal([]byte(raw), &heads); err != nil || len(heads) == 0 {
