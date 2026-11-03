@@ -86,7 +86,7 @@ If you have multiple installs with different `NM_HOME` roots, each gets its own 
 
 ## `no-mistakes update` refuses or aborts
 
-Symptom: `update` refuses because active pipeline runs are in progress, prompts because the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
+Symptom: `update` refuses because active pipeline runs are in progress (on Windows, or when the running daemon is too old to restart when idle), prompts because the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
 
 `update`, `daemon stop`, and `daemon restart` all refuse by default while pipeline runs are active and list the affected runs; [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the guard's exact rules, including why `-y`/`--yes` does not bypass it.
 

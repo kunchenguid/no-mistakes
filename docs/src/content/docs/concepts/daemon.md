@@ -42,6 +42,7 @@ no-mistakes daemon start
 no-mistakes daemon stop
 no-mistakes daemon uninstall
 no-mistakes daemon restart
+no-mistakes daemon restart --when-idle
 no-mistakes daemon status
 
 # Ensures the daemon is running, using the managed service when possible
@@ -59,7 +60,17 @@ no-mistakes update
 
 `no-mistakes update` stops and starts the daemon when it is running, or when stale daemon artifacts exist, so the new executable is used. On macOS and Linux the start runs the newly installed binary's `daemon start`, so the LaunchAgent or systemd unit is rewritten from the new version's service definition.
 It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails.
-If pending or running pipeline runs exist, `update` refuses to restart the daemon by default and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail; `-y`/`--yes` does not bypass this guard.
+If pending or running pipeline runs exist, `update` on macOS and Linux installs the new binary and then schedules a restart when idle on the running daemon instead of restarting it, printing each active run's ID, status, branch, and short head SHA as runs that finish on the current version. On Windows, or when the running daemon is too old to restart when idle, `update` refuses instead and replaces nothing. Pass `--force` to restart the daemon immediately and accept that those runs may fail; `-y`/`--yes` does not bypass this guard. If the restart cannot be scheduled after the binary was replaced, `update` reports the installed version and the failure; run `no-mistakes daemon restart --when-idle` to finish.
+
+`no-mistakes daemon restart --when-idle` schedules the same restart without an update. Once scheduled, the running daemon:
+
+1. Lets every run that is executing a step, or queued for a slot, finish on the version it started on.
+2. Holds a plain gate push that arrives meanwhile in `~/.no-mistakes/held-pushes.jsonl` instead of starting a run, and refuses `rerun`, retries, fresh launches, and pushes from `axi run` with "the daemon is restarting for an update; try again shortly".
+3. Does not wait for runs parked at an approval gate: a clean stop keeps them (see [Crash recovery](#crash-recovery)), so they resume on the new version.
+4. Once no run is executing, stops cleanly and replaces its own process with the executable file, keeping its PID, so the managed service or detached launch keeps owning it.
+5. Starts each held push as a new run as soon as the restarted daemon is ready, then removes the file.
+
+`daemon status` shows a pending restart with the number of runs it waits for and pushes it holds. The git hook still prints its usual banner for a held push; the run appears after the restart. A restart when idle does not rewrite the managed service definition; run `no-mistakes daemon start` afterwards to refresh it. `--force` on `daemon restart` takes precedence over `--when-idle`. Without a running daemon, `--when-idle` starts one as a plain restart does.
 If the daemon is already running from a different executable path, update still prompts before replacing it; `-y`/`--yes` answers that prompt non-interactively.
 If the daemon executable path cannot be determined, the update aborts before replacing anything.
 
