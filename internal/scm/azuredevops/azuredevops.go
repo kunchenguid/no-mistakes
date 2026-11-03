@@ -411,6 +411,18 @@ func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
 	return head, nil
 }
 
+func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
+	got, err := h.showPR(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimPrefix(strings.TrimSpace(got.TargetRefName), "refs/heads/")
+	if base == "" {
+		return "", errors.New("az repos pr show: pull request reports no base branch")
+	}
+	return base, nil
+}
+
 func (h *Host) showPR(ctx context.Context, pr *scm.PR) (*azPR, error) {
 	id := h.prID(pr)
 	if id == "" {

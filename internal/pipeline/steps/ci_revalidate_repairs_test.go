@@ -1351,21 +1351,17 @@ func TestCIStep_TerminalPRStateRequiresReviewAuthority(t *testing.T) {
 // had: after a forge-side retarget that base can be the parent branch the layer
 // no longer layers on, so the restart would re-review every layer beneath it or
 // fail outright when the forge deleted that branch.
-func TestPrepareRestart_RefusesAHostWithoutLiveBase(t *testing.T) {
+func TestResolveLivePRBase_RefusesAHostWithoutLiveBase(t *testing.T) {
 	t.Parallel()
 
 	f := newCIRepairFixture(t, true, nil)
-	// Forgejo is a provider without a live-base reader; the fixture's repository
-	// only has to resolve to it for buildHost to build that host.
-	f.sctx.Repo.UpstreamURL = "https://codeberg.org/octo/widgets.git"
-	f.sctx.Config.ForgejoAXIPath = "forgejo-axi"
 
-	err := (&CIStep{}).PrepareRestart(f.sctx, types.StepReview)
+	_, err := resolveLivePRBase(f.sctx, &mergedProofTestHost{}, &scm.PR{Number: "42"})
 	if !errors.Is(err, errLivePRBaseUnsupported) {
-		t.Fatalf("PrepareRestart() error = %v, want the unreadable live base refused", err)
+		t.Fatalf("resolveLivePRBase() error = %v, want the unreadable live base refused", err)
 	}
 	if !strings.Contains(err.Error(), "start a new run with --base-branch") {
-		t.Fatalf("PrepareRestart() error = %v, want actionable guidance", err)
+		t.Fatalf("resolveLivePRBase() error = %v, want actionable guidance", err)
 	}
 	run, dbErr := f.sctx.DB.GetRun(f.sctx.Run.ID)
 	if dbErr != nil {
