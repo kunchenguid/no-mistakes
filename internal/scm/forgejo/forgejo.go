@@ -323,12 +323,15 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	return scm.MergeableOK, nil
 }
 
-func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead string) (scm.MergedProof, error) {
+func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, ownHeads []string) (scm.MergedProof, error) {
 	number, err := h.validateInputPR(pr)
 	if err != nil {
 		return scm.MergedProof{}, err
 	}
-	expectedHead = strings.TrimSpace(expectedHead)
+	expectedHead := ""
+	if len(ownHeads) > 0 {
+		expectedHead = strings.TrimSpace(ownHeads[0])
+	}
 	if expectedHead == "" {
 		return scm.MergedProof{}, errors.New("Forgejo merged proof requires an expected head SHA")
 	}
@@ -363,7 +366,10 @@ func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead stri
 		}
 		result.MergedAt = parsed
 	}
-	if result.Merged && (result.MergeCommitSHA == "" || result.MergedAt.IsZero() || result.MergedBy == "") {
+	// mergedBy is optional evidence, the way GitHub's is: an app identity or a
+	// deleted account leaves it empty, and the merge commit and timestamp
+	// already prove the merge.
+	if result.Merged && (result.MergeCommitSHA == "" || result.MergedAt.IsZero()) {
 		return scm.MergedProof{}, errors.New("forgejo-axi returned incomplete evidence for a merged PR")
 	}
 	return result, nil

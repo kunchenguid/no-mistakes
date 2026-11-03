@@ -650,7 +650,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 				t.Fatal(err)
 			}
 
-			ghDir, ghLog := writeMockGHState(t, t.TempDir(), state)
+			ghDir, ghLog := writeMockGHState(t, t.TempDir(), state, headSHA)
 			t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("GH_TOKEN", "ambient-must-not-leak")
 			errCh := make(chan error, 1)

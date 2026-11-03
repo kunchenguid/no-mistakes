@@ -228,10 +228,17 @@ Select the branch that newly created pull requests target.
 Use this when the repository's integration branch differs from its forge default branch, for example `develop` instead of `main`.
 The configured branch is used for PR creation and pipeline integration and change scoping; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) describe which steps use it and how the recorded per-run override takes precedence.
 When unset and without a per-run override, no-mistakes targets the repository's forge default branch.
+||||||| base
+The configured branch is used for PR creation, as the integration base for the rebase step, and as the scoping base for every validation step that works on the branch's changes: Review, Test, Document, Lint, and repository gate fixes.
+Scoping reads only the trusted default-branch value, even under `allow_repo_commands: true`: a pushed branch that could move the scoping base would hide its own commits from those gates and from trusted [`review.path_instructions`](#reviewpath_instructions) selection. The pushed value still targets the PR and the rebase under that opt-in.
+A per-run `--base-branch` outranks both, for scoping as well as targeting, because an operator supplies it.
+CI repair is the exception: once the PR exists its live forge base takes precedence (see below), so this setting only scopes CI repair when no PR record is available.
+When unset, no-mistakes preserves the existing behavior and targets `Repo.DefaultBranch`.
+Before any restart at Review from the CI step - a repair revalidation or an adopted head rewrite - that live forge base also replaces the run's persisted base, including a per-run `--base-branch`, so every validation step after the restart scopes against the branch the pull request actually targets (see [CI](/no-mistakes/reference/pipeline-steps/#ci)).
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
 A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, Gitea, Cursor Origin, and [provider plugins](/no-mistakes/reference/provider-plugin-protocol/) that advertise `set_pr_base_branch`) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
-Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created.
+Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix, its base-branch tip monitoring, and the base it persists before any restart at Review - a repair revalidation or an adopted head rewrite - protecting a resumed run from a configuration change made after the PR was created.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.

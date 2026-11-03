@@ -470,3 +470,35 @@ func footerContains(plain string, needles ...string) bool {
 	}
 	return false
 }
+
+// TestModel_Yolo_CIHeadRewriteParkSendsNoAutomaticResponse is the TUI half of
+// the head-rewrite carve-out. The park's finding is an ordinary actionable
+// ask-user warning, so without its own predicate yolo took the fix branch
+// first, handed the CI fixer a branch rewrite it cannot fix, and then approved
+// the resulting fix_review as already-fixed.
+func TestModel_Yolo_CIHeadRewriteParkSendsNoAutomaticResponse(t *testing.T) {
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			sock, client, snapshot := captureRespond(t)
+			run := testRun()
+			fj := `{"findings":[{"id":"ci-head-rewrite-refusal","severity":"warning","category":"ci-head-rewrite","description":"the pull request branch head is now abc1234567, but the run recorded def4567890 and its worktree sits at def4567890.","action":"ask-user"}],"summary":"the pull request branch moved to a head this run owns nowhere"}`
+			run.Steps = []ipc.StepResultInfo{{StepName: types.StepCI, Status: status, FindingsJSON: &fj}}
+			m := NewModel(sock, client, run)
+			m.yoloMode = true
+			m.stepDiffLoaded[types.StepCI] = true
+			for range 2 {
+				if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+					if msg := cmd(); msg != nil {
+						t.Fatalf("automatic response failed: %v", msg)
+					}
+				}
+			}
+			if calls := snapshot(); len(calls) != 0 {
+				t.Fatalf("a published-head-rewrite park was auto-resolved: %+v", calls)
+			}
+			if m.yoloFixed[types.StepCI] || m.yoloApproved[types.StepCI] {
+				t.Fatal("a published-head-rewrite park consumed yolo bookkeeping without a human decision")
+			}
+		})
+	}
+}

@@ -157,7 +157,7 @@ func repoOwner(slug string) string {
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
 
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ReviewComments: true, ClosingReferences: true}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ReviewComments: true, ClosingReferences: true, MergedProof: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {
@@ -492,6 +492,98 @@ func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) 
 		return "", fmt.Errorf("gh pr view base branch: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// GetMergedProof proves which exact head of this pull request was merged.
+// expectedHead is the run's recorded head and is always accepted; ownHeads
+// lists every head the run owns (its recorded head first, then its durable
+// last-pushed head and the caller worktree's HEAD), any of which may carry the
+// merge when the branch was rewritten outside the run and then merged. A merge at any other head is a
+// foreign merge: it is refused with scm.ErrHeadChanged rather than reported
+// as the run's own outcome. The merge commit and timestamp are required
+// whenever the PR is merged, so an attestation written from this proof always
+// names both; the merging identity is optional, because an app identity or a
+// deleted account leaves it empty.
+func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, ownHeads []string) (scm.MergedProof, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return scm.MergedProof{}, err
+	}
+	accepted := false
+	for _, head := range ownHeads {
+		if strings.TrimSpace(head) != "" {
+			accepted = true
+			break
+		}
+	}
+	if !accepted {
+		return scm.MergedProof{}, errors.New("GitHub merged proof requires at least one accepted head SHA")
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "number,url,state,headRefOid,mergeCommit,mergedAt,mergedBy")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return scm.MergedProof{}, fmt.Errorf("gh pr view merged proof: %w", err)
+	}
+	var response struct {
+		Number      int    `json:"number"`
+		URL         string `json:"url"`
+		State       string `json:"state"`
+		HeadRefOid  string `json:"headRefOid"`
+		MergeCommit struct {
+			Oid string `json:"oid"`
+		} `json:"mergeCommit"`
+		MergedAt string `json:"mergedAt"`
+		MergedBy struct {
+			Login string `json:"login"`
+		} `json:"mergedBy"`
+	}
+	if err := json.Unmarshal(out, &response); err != nil {
+		return scm.MergedProof{}, fmt.Errorf("decode gh pr view merged proof: %w", err)
+	}
+	proof := scm.MergedProof{
+		Number:         strconv.Itoa(response.Number),
+		URL:            response.URL,
+		HeadSHA:        response.HeadRefOid,
+		MergeCommitSHA: response.MergeCommit.Oid,
+		MergedBy:       response.MergedBy.Login,
+	}
+	if response.MergedAt != "" {
+		parsed, err := time.Parse(time.RFC3339, response.MergedAt)
+		if err != nil {
+			return scm.MergedProof{}, fmt.Errorf("invalid gh mergedAt timestamp: %w", err)
+		}
+		proof.MergedAt = parsed
+	}
+	if strings.EqualFold(strings.TrimSpace(response.State), "MERGED") {
+		proof.Merged = true
+	}
+	// mergedBy is optional evidence: an app identity or a deleted account
+	// leaves it empty, and that is not a reason to fail a run over a merge the
+	// commit and timestamp already prove.
+	if proof.Merged && (proof.MergeCommitSHA == "" || proof.MergedAt.IsZero()) {
+		return scm.MergedProof{}, errors.New("gh returned incomplete evidence for a merged PR")
+	}
+	if !headIsOwned(proof.HeadSHA, ownHeads) {
+		return scm.MergedProof{}, fmt.Errorf("%w: expected one of %s, got %s", scm.ErrHeadChanged, strings.Join(ownHeads, ", "), proof.HeadSHA)
+	}
+	return proof, nil
+}
+
+// headIsOwned reports whether observed is one of the heads the run owns.
+// Comparison is case-insensitive: GitHub returns lowercase object IDs while
+// Git callers may pass either case.
+func headIsOwned(observed string, ownHeads []string) bool {
+	observed = strings.TrimSpace(observed)
+	if observed == "" {
+		return false
+	}
+	for _, head := range ownHeads {
+		if head = strings.TrimSpace(head); head != "" && strings.EqualFold(observed, head) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {

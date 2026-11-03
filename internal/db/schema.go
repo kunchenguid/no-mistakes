@@ -265,6 +265,19 @@ CREATE TABLE IF NOT EXISTS run_retries (
     checkpoint_head_sha TEXT NOT NULL,
     created_at          INTEGER NOT NULL
 );
+
+-- Push-bound heads a rewritten-remote recovery rebound into a run's binding
+-- without any run having validated them. One row per repository ref: the
+-- recovery's compare-and-swap is the only writer, and a later publication of
+-- the exact head by any run clears it, so branch-sync reports can say that no
+-- run validated the bound head until one does.
+CREATE TABLE IF NOT EXISTS unvalidated_rebound_heads (
+    repo_id    TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    ref        TEXT NOT NULL,
+    head_sha   TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, ref)
+);
 `
 
 // migrationStatements hold additive schema changes applied to databases that

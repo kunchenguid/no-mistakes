@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -59,6 +60,11 @@ const (
 const (
 	SafetySafeFastForward       = "safe_fast_forward"
 	SafetySafeEquivalentAdvance = "safe_equivalent_advance"
+	// SafetyValidationUnknown reports a completed synchronization or rebind
+	// whose bound head could not be checked against the unvalidated-rebound
+	// marker. It is a successful outcome - the mutation landed - that declines
+	// to call the head validated.
+	SafetyValidationUnknown = "synchronized_validation_unknown"
 )
 
 // State is the shared branch synchronization contract rendered by CLI, AXI,
@@ -78,10 +84,21 @@ type State struct {
 	// returned (by this call or an earlier, idempotent one), or the terminal
 	// outcome had already released the branch (user_owned), making recovery an
 	// idempotent no-op.
-	Recovered  bool
-	Recovery   *RecoveryEvidence
-	NextAction *NextAction
-	Error      string
+	Recovered bool
+	Recovery  *RecoveryEvidence
+	// BoundHeadUnvalidated is the push-bound head a rewritten-remote recovery
+	// rebound without any run validating it. Empty when every reported bound
+	// head was validated by the run that published it; the report holds until
+	// any run publishes that exact head, which clears the durable marker.
+	BoundHeadUnvalidated string
+	// BoundHeadValidationUnknown is set when the marker could not be read after
+	// a synchronization or rebind that already completed. The mutation
+	// succeeded, so the report is not a refusal, but it cannot claim the bound
+	// head was validated either: it says the validation state is unknown and
+	// points at a validation run, exactly as the unvalidated case does.
+	BoundHeadValidationUnknown bool
+	NextAction                 *NextAction
+	Error                      string
 }
 
 type LocalState struct {
@@ -518,8 +535,11 @@ func (s *Service) Apply(ctx context.Context) State {
 	plan.State = StateSynchronized
 	plan.Relation = RelationEqual
 	plan.Safety = "already_synchronized"
-	plan.NextAction = nil
 	plan.Error = ""
+	plan.NextAction = reboundNextAction(&plan)
+	if !s.annotateUnvalidatedRebound(&plan, plan.Pipeline.PushedHead) {
+		markReboundValidationUnknown(&plan, "HEAD reached the exact pipeline-pushed commit, but whether any run validated that head could not be read")
+	}
 	return plan
 }
 
@@ -560,8 +580,7 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 	}
 	if len(records) > 0 {
 		if len(records) == 1 && sameRecoveryArchive(records[0], record) {
-			verified, _, _ := s.inspect(ctx)
-			return verified
+			return s.inspectAfterMutation(ctx)
 		}
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_ambiguous", fmt.Sprintf("run %s already has %d recovery archive record(s); refusing to add another candidate; no files or refs were changed", run.ID, len(records)))
 	}
@@ -575,8 +594,7 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 	if _, err := s.DB.RecordRecoveryArchive(*record); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_record_failed", fmt.Sprintf("the verified archive ref %s could not be recorded: %v; no files or refs were changed", record.ArchiveRef, err))
 	}
-	verified, _, _ := s.inspect(ctx)
-	return verified
+	return s.inspectAfterMutation(ctx)
 }
 
 // Recover returns custody of a branch stranded by a TERMINAL run whose MOVED
@@ -1604,12 +1622,19 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 		state.Pipeline.RunID != run.ID || !reboundStateUsable(state) {
 		return blockedPlan(state, state.State, "blocked_recover_ownership_changed", fmt.Sprintf("the push binding was rebound to %s, but this run no longer owns the branch or its binding could not be confirmed; the superseded pipeline head stays anchored at %s", live, anchorRef)), true
 	}
+	downgradeUnreadableReboundMarker(&state)
 	state.Recovered = true
 	state.Changed = false
 	state.Recovery = &RecoveryEvidence{
 		Source: "remote_rewritten", RepositoryID: s.Repo.ID, RunID: run.ID, Branch: fresh.Local.Branch,
 		RequiredHead: live, PreservedHead: superseded, ArchiveRef: anchorRef, Proof: anchoredIn,
 	}
+	// RebindRunPushedHead wrote the unvalidated-bound-head marker in the same
+	// transaction as the binding, so a rebind that applied always has one. The
+	// inspection above ran against the pre-rebind state, so the recovery result
+	// carries the statement directly; every later report re-reads it.
+	state.BoundHeadUnvalidated = live
+	state.NextAction = reboundNextAction(&state)
 	note := fmt.Sprintf("the superseded pipeline head was anchored at %s; the branch, worktree, and remote were not changed", anchorRef)
 	if state.Error != "" {
 		note += "; " + strings.TrimSuffix(state.Error, "; no files or refs were changed")
@@ -1628,6 +1653,11 @@ func reboundStateUsable(state State) bool {
 	switch state.State {
 	case StateSynchronized, StateBehind, StateLocalAhead, StateDiverged:
 		return true
+	case StateAmbiguousContext:
+		// The rebind wrote the marker in its own transaction and the recovery
+		// result names the bound head itself, so a marker read that failed says
+		// nothing about who owns the branch.
+		return state.Safety == "blocked_rebound_marker_unreadable"
 	default:
 		return false
 	}
@@ -1706,7 +1736,7 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 		state.NextAction = nil
 		return state
 	}
-	state, _, _ := s.inspect(ctx)
+	state := s.inspectAfterMutation(ctx)
 	state.Recovered = true
 	state.Changed = changed
 	return state
@@ -1751,7 +1781,7 @@ func (s *Service) finishKeepLocalRecover(ctx context.Context, state State, runID
 		fresh.NextAction = nil
 		return fresh
 	}
-	fresh, _, _ := s.inspect(ctx)
+	fresh := s.inspectAfterMutation(ctx)
 	fresh.Recovered = true
 	fresh.Changed = false
 	return fresh
@@ -1845,7 +1875,7 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_gate_race", "the gate lane changed while the published head was being adopted; the lane was not replaced and the recovered head remains preserved")
 	}
 
-	adopted, _, _ := s.inspect(ctx)
+	adopted := s.inspectAfterMutation(ctx)
 	adopted.Changed = true
 	return adopted
 }
@@ -2063,11 +2093,16 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 }
 
 func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, base string, live bool) {
+	readable := s.annotateUnvalidatedRebound(state, pushed)
 	if state.Local.Head == pushed {
+		if !readable {
+			blockUnreadableReboundMarker(state, "whether any run validated the push-bound head could not be read; no files or refs were changed")
+			return
+		}
 		state.State = StateSynchronized
 		state.Relation = RelationEqual
 		state.Safety = "already_synchronized"
-		state.NextAction = nil
+		state.NextAction = reboundNextAction(state)
 		return
 	}
 	if objectExists(ctx, s.workDir(), pushed) {
@@ -2122,6 +2157,100 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 
 func syncAnchorRef(runID string) string {
 	return "refs/no-mistakes/sync-anchor/" + runID
+}
+
+// annotateUnvalidatedRebound reports a push binding whose head a
+// rewritten-remote recovery rebound without any run validating it. The
+// recovery's compare-and-swap is the only writer of the durable marker, and a
+// later publication of the exact head by any run clears it, so a stale marker
+// can never name a head the pipeline has since validated. States that never
+// reach the ordinary relation classification (merged, closed, ambiguous
+// context) keep their own reasons and carry no statement either way. EVERY
+// relation carries the statement, because the branch a report calls behind
+// today is the branch a fast-forward puts exactly on that unvalidated head,
+// and reporting it as plainly synchronized afterwards is the one report that
+// most needs it. It reports whether the read succeeded rather than acting on a
+// failure itself: only the equal relation consumes the marker for its verdict,
+// so only that relation blocks on an unreadable one - blocking the others
+// turned an ordinary fast-forward plan, and a rebind that DID apply, into a
+// refusal over state with no bearing on either.
+func (s *Service) annotateUnvalidatedRebound(state *State, pushed string) bool {
+	if state == nil || pushed == "" || state.Target.Ref == "" {
+		return true
+	}
+	bound, ok, err := s.DB.GetUnvalidatedReboundHead(s.Repo.ID, state.Target.Ref)
+	if err != nil {
+		return false
+	}
+	if ok && bound == pushed {
+		state.BoundHeadUnvalidated = bound
+	}
+	return true
+}
+
+// blockUnreadableReboundMarker refuses a branch that sits exactly on the push
+// binding while the marker deciding that relation's verdict could not be read:
+// the report can neither call the head validated nor call it unvalidated, so it
+// states the read failure and offers the re-check instead.
+func blockUnreadableReboundMarker(state *State, reason string) {
+	state.State = StateAmbiguousContext
+	state.Safety = "blocked_rebound_marker_unreadable"
+	state.Error = reason
+	state.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
+}
+
+// reboundNextAction is what a branch sitting exactly on a head no run
+// validated - or a head whose validation state could not be read - should do
+// next: start a validation run on it, rather than be told it is synchronized.
+// An up-to-date push from that run falls back to a rerun that keeps the pull
+// request, so the instruction is safe to follow either way.
+func reboundNextAction(state *State) *NextAction {
+	if state == nil || (state.BoundHeadUnvalidated == "" && !state.BoundHeadValidationUnknown) {
+		return nil
+	}
+	return &NextAction{Code: "validate_rebound_head", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+}
+
+// markReboundValidationUnknown records that a COMPLETED mutation - a
+// synchronization or a committed rebind - left the bound head's validation
+// state unread. The mutation succeeded, so this is never a refusal and never an
+// ambiguous context; it is a synchronized report that declines to call the head
+// validated and points at a validation run, the same next action the
+// unvalidated case gives. A read failure before any mutation still refuses
+// (blockUnreadableReboundMarker), because retrying there costs nothing.
+func markReboundValidationUnknown(state *State, reason string) {
+	if state == nil {
+		return
+	}
+	slog.Warn("unvalidated-rebound-head marker unreadable after a completed mutation", "reason", reason, "repository", state.Target.Ref)
+	state.BoundHeadValidationUnknown = true
+	state.Safety = SafetyValidationUnknown
+	state.Error = ""
+	state.NextAction = reboundNextAction(state)
+}
+
+// inspectAfterMutation is the re-inspection every path runs once its mutation
+// has landed. The classification it wraps cannot know a mutation already
+// happened, so an unreadable marker arrives as a refusal; here that refusal is
+// downgraded to the unknown-validation report, because refusing work that has
+// already been done tells the operator to recover a branch that is in fact
+// synchronized.
+func (s *Service) inspectAfterMutation(ctx context.Context) State {
+	state, _, _ := s.inspect(ctx)
+	downgradeUnreadableReboundMarker(&state)
+	return state
+}
+
+// downgradeUnreadableReboundMarker turns the pre-mutation refusal into the
+// post-mutation report: the branch is where the mutation put it, and the only
+// thing unknown is whether any run validated that head.
+func downgradeUnreadableReboundMarker(state *State) {
+	if state == nil || state.Safety != "blocked_rebound_marker_unreadable" {
+		return
+	}
+	state.State = StateSynchronized
+	state.Relation = RelationEqual
+	markReboundValidationUnknown(state, "the branch reached the push-bound head, but whether any run validated it could not be read")
 }
 
 func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) bool {

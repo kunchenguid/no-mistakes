@@ -102,7 +102,41 @@ const (
 	FindingCategoryCIBehindBase    = "ci-behind-base"
 	FindingCategoryCITransient     = "ci-transient"
 	FindingCategoryCIReviewBot     = "ci-review-bot"
+	// FindingCategoryCIHeadRewrite marks the ask-user finding the CI monitor
+	// parks on when the pull request branch moved to a head the run owns
+	// nowhere (not recorded, not durably pushed, not the caller worktree) and
+	// the run worktree holds commits that are neither on the live head nor
+	// recorded as published. No head is adopted until an operator decides;
+	// the finding names the recorded, worktree, and live heads so the decision
+	// is informed.
+	FindingCategoryCIHeadRewrite = "ci-head-rewrite"
 )
+
+// FindingIDCIHeadRewrite is the fixed ID of that park's single finding, so an
+// operator can select it by name the way every other gate finding can be
+// selected. The automatic resolvers key on the category, not on this ID.
+const FindingIDCIHeadRewrite = "ci-head-rewrite-refusal"
+
+// FindingIDCIUnownedHeadStall is the fixed ID of the park the CI monitor raises
+// when consecutive polls all ended without a check for a head the run owns. It
+// carries FindingCategoryCIHeadRewrite for the same reason that park does: the
+// decision is which head to validate, and no verdict an automatic resolver can
+// send settles it.
+const FindingIDCIUnownedHeadStall = "ci-unowned-head-stall"
+
+// HasCIHeadRewrite reports whether findings carry the CI monitor's
+// published-head-rewrite park. Keyed on the category, the same way
+// HasReviewQuestion is, because the park is what makes the head decision an
+// operator's: no verdict an automatic resolver can send settles it, and
+// approving it reports checks for a head the run never validated.
+func HasCIHeadRewrite(findings Findings) bool {
+	for _, item := range findings.Items {
+		if item.Category == FindingCategoryCIHeadRewrite {
+			return true
+		}
+	}
+	return false
+}
 
 // FindingCategoryReviewQuestion marks the synthetic finding the review step
 // emits for each question its reviewer asked and nobody has answered yet. It

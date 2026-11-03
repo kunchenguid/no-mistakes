@@ -246,6 +246,15 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		Binding:         binding,
 		PreviousHeadSHA: decision.remoteSHA,
 	})
+	// A published head is a validated head: any run publishing the exact head
+	// a rewritten-remote recovery rebound clears that recovery's unvalidated
+	// marker, so branch-sync reports stop saying the bound head was never
+	// validated. The publication above is verified and durable; the marker is
+	// reporting state only, so a failed clear is a logged warning and the next
+	// publication of the same head retries it - never a failed push.
+	if err := sctx.DB.ClearUnvalidatedReboundHeadOnPublication(sctx.Run.ID, ref, headBeingPushed); err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not clear the unvalidated rebound head marker: %v", err))
+	}
 	sctx.Run.HeadSHA = headBeingPushed
 	return nil
 }

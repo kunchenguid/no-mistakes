@@ -458,7 +458,14 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, hea
 	return keepTail(*result.Logs, maxLogsBytes), nil
 }
 
-func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead string) (scm.MergedProof, error) {
+// GetMergedProof proves which head was merged. The plugin protocol carries one
+// expected head, so the run's primary recorded head is what the wire call
+// names; every other head the run owns (its durable last-pushed head and the
+// caller worktree's HEAD) is matched here instead, the same way Forgejo does,
+// because a merge that raced an outside rewrite of the branch can still prove
+// the run's own work landed. A proof for a head none of them carries is the
+// same ErrHeadChanged a single expected head produced.
+func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, ownHeads []string) (scm.MergedProof, error) {
 	if !h.Capabilities().MergedProof {
 		return scm.MergedProof{}, scm.ErrUnsupported
 	}
@@ -466,7 +473,10 @@ func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead stri
 	if err != nil {
 		return scm.MergedProof{}, err
 	}
-	expectedHead = strings.TrimSpace(expectedHead)
+	expectedHead := ""
+	if len(ownHeads) > 0 {
+		expectedHead = strings.TrimSpace(ownHeads[0])
+	}
 	if expectedHead == "" {
 		return scm.MergedProof{}, fmt.Errorf("provider plugin %q %s: merged proof requires an expected head SHA", h.opts.Name, CmdPRMerged)
 	}
@@ -480,8 +490,8 @@ func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead stri
 	if wantURL := strings.TrimSpace(pr.URL); result.URL != wantURL {
 		return scm.MergedProof{}, h.protocolf(CmdPRMerged, "proof identifies %q, expected %q", result.URL, wantURL)
 	}
-	if result.HeadSHA != expectedHead {
-		return scm.MergedProof{}, fmt.Errorf("provider plugin %q %s: %w: expected %s, got %q", h.opts.Name, CmdPRMerged, scm.ErrHeadChanged, expectedHead, result.HeadSHA)
+	if !pluginHeadIsOwned(result.HeadSHA, ownHeads) {
+		return scm.MergedProof{}, fmt.Errorf("provider plugin %q %s: %w: expected one of %s, got %q", h.opts.Name, CmdPRMerged, scm.ErrHeadChanged, strings.Join(ownHeads, ", "), result.HeadSHA)
 	}
 	proof := scm.MergedProof{
 		Merged:         result.Merged,
@@ -498,6 +508,21 @@ func (h *Host) GetMergedProof(ctx context.Context, pr *scm.PR, expectedHead stri
 		return scm.MergedProof{}, h.protocolf(CmdPRMerged, "a merged proof must include merge_commit_sha and merged_at")
 	}
 	return proof, nil
+}
+
+// pluginHeadIsOwned reports whether observed is one of the heads the run owns.
+// Comparison is case-insensitive because a provider may report either case.
+func pluginHeadIsOwned(observed string, ownHeads []string) bool {
+	observed = strings.TrimSpace(observed)
+	if observed == "" {
+		return false
+	}
+	for _, head := range ownHeads {
+		if head = strings.TrimSpace(head); head != "" && strings.EqualFold(observed, head) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetPRBaseBranch retargets an existing PR. A plugin that did not declare the
