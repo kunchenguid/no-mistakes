@@ -186,10 +186,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
-	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
-	if err != nil {
-		return nil, err
-	}
 	bodyLimit := scm.HostMaxPRBodyChars(host)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
@@ -197,6 +193,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	existing, err = bindExistingPR(sctx, host, existing)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil && observedBaseBranch(sctx) != "" {
+		baseBranch = observedBaseBranch(sctx)
+		if liveBase := strings.TrimSpace(existing.BaseBranch); liveBase != "" {
+			baseBranch = liveBase
+		}
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
 	}

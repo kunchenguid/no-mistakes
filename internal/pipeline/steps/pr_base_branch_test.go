@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestEffectivePRBaseBranch_PerRunOverrideWinsOverRepoConfig(t *testing.T) {
@@ -563,5 +564,69 @@ func TestPRStep_ObservedBaseNeverRetargets(t *testing.T) {
 	}
 	if strings.Contains(string(createData), "--base "+observed) {
 		t.Fatalf("new pull request targeted the observed base, got:\n%s", createData)
+	}
+}
+
+func TestPRStep_StackMergeDeletesRecordedBase(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{config.PRUpdateTextRegenerate, config.PRUpdateTextKeep} {
+		t.Run(mode, func(t *testing.T) {
+			dir, baseSHA, layerSHA := setupGitRepo(t)
+			gitCmd(t, dir, "branch", "layer1", layerSHA)
+			gitCmd(t, dir, "branch", "-f", "main", layerSHA)
+			if err := os.WriteFile(filepath.Join(dir, "layer2.txt"), []byte("layer two\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "layer2.txt")
+			gitCmd(t, dir, "commit", "-m", "add layer two")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "branch", "-D", "layer1")
+
+			owned := "https://github.com/test/repo/pull/42"
+			env, logFile := fakeGHWithBase(t, owned, "main")
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: []byte(`{"title":"feat: add layer two","body":"## What Changed\n- Add layer two."}`)}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			sctx.Config.PR.BaseBranch = "layer1"
+			sctx.Config.PR.UpdateText = mode
+			sctx.Config.PR.TitleFormat = "Use a conventional commit title"
+			sctx.Run.PRURL = &owned
+			observed := "main"
+			sctx.Run.ObservedBaseBranch = &observed
+			review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+				t.Fatal(err)
+			}
+
+			outcome, err := (&PRStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.PRURL != owned {
+				t.Fatalf("published PR = %q, want %q", outcome.PRURL, owned)
+			}
+			if len(ag.calls) == 0 {
+				t.Fatal("publication did not draft content")
+			}
+			prompt := ag.calls[0].Prompt
+			if !strings.Contains(prompt, "- base commit: "+layerSHA) || !strings.Contains(prompt, "layer2.txt") || strings.Contains(prompt, "feature.txt") {
+				t.Fatalf("publication must describe only the surviving layer:\n%s", prompt)
+			}
+			data, err := os.ReadFile(logFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "stdin --body ") || strings.Contains(string(data), "pr create") || strings.Contains(string(data), "--base layer1") || strings.Contains(string(data), "--base main") {
+				t.Fatalf("expected an in-place update without retargeting:\n%s", data)
+			}
+			if sctx.Run.PRBaseBranch != nil || sctx.Config.PR.BaseBranch != "layer1" {
+				t.Fatal("publication changed operator target intent")
+			}
+		})
 	}
 }

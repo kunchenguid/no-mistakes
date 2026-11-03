@@ -602,6 +602,39 @@ func TestGetPRState(t *testing.T) {
 	}
 }
 
+func TestGetPRBaseBranch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		response azdoTestResponse
+		want     string
+	}{
+		{name: "live retarget", response: azdoTestResponse{stdout: `{"pullRequestId":42,"targetRefName":"refs/heads/release/layer"}`}, want: "release/layer"},
+		{name: "missing base", response: azdoTestResponse{stdout: `{"pullRequestId":42}`}},
+		{name: "blank base", response: azdoTestResponse{stdout: `{"pullRequestId":42,"targetRefName":" "}`}},
+		{name: "empty ref", response: azdoTestResponse{stdout: `{"pullRequestId":42,"targetRefName":"refs/heads/"}`}},
+		{name: "invalid output", response: azdoTestResponse{stdout: `{`}},
+		{name: "read error", response: azdoTestResponse{stderr: "unavailable", code: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHost(map[string]azdoTestResponse{
+				"az repos pr show --id 42 --organization " + testOrg + " --output json": tc.response,
+			})
+			var reader scm.PRBaseBranchReader = h
+			base, err := reader.GetPRBaseBranch(context.Background(), &scm.PR{Number: "42", BaseBranch: "old-layer"})
+			if tc.want == "" {
+				if err == nil || base != "" {
+					t.Fatalf("GetPRBaseBranch() = (%q, %v), want refusal", base, err)
+				}
+				return
+			}
+			if err != nil || base != tc.want {
+				t.Fatalf("GetPRBaseBranch() = (%q, %v), want %q", base, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestGetMergeableState(t *testing.T) {
 	t.Parallel()
 

@@ -293,7 +293,7 @@ func TestPRLifecycleCommandsAndIdempotentCreate(t *testing.T) {
 	host := newTestHost(recorder)
 
 	found, err := host.FindPR(context.Background(), "feature/forgejo", "main")
-	if err != nil || found == nil || found.Number != "42" || found.URL != testPRURL || found.HeadSHA != testHeadSHA {
+	if err != nil || found == nil || found.Number != "42" || found.URL != testPRURL || found.HeadSHA != testHeadSHA || found.BaseBranch != "main" {
 		t.Fatalf("FindPR() = (%+v, %v)", found, err)
 	}
 	created, err := host.CreatePR(context.Background(), "feature/forgejo", "main", scm.PRContent{Title: "Title", Body: "line one\nline two"})
@@ -318,6 +318,42 @@ func TestPRLifecycleCommandsAndIdempotentCreate(t *testing.T) {
 		if !reflect.DeepEqual(recorder.calls[i].args, want[i]) {
 			t.Errorf("call %d args = %#v, want %#v", i, recorder.calls[i].args, want[i])
 		}
+	}
+}
+
+func TestGetPRBaseBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response fakeResponse
+		want     string
+	}{
+		{name: "live retarget", response: fakeResponse{stdout: `{"pull_request":` + strings.Replace(pullJSON("open", false, testHeadSHA), `"base":"main"`, `"base":"release/layer"`, 1) + `}`}, want: "release/layer"},
+		{name: "missing base", response: fakeResponse{stdout: `{"pull_request":` + strings.Replace(pullJSON("open", false, testHeadSHA), `"base":"main"`, `"base":""`, 1) + `}`}},
+		{name: "blank base", response: fakeResponse{stdout: `{"pull_request":` + strings.Replace(pullJSON("open", false, testHeadSHA), `"base":"main"`, `"base":" "`, 1) + `}`}},
+		{name: "wrong PR", response: fakeResponse{stdout: `{"pull_request":` + strings.ReplaceAll(pullJSON("open", false, testHeadSHA), "42", "43") + `}`}},
+		{name: "invalid output", response: fakeResponse{stdout: `{`}},
+		{name: "read error", response: fakeResponse{stderr: "unavailable", code: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fakeRecorder{responses: []fakeResponse{tc.response}}
+			var reader scm.PRBaseBranchReader = newTestHost(recorder)
+			pr := testPR()
+			pr.BaseBranch = "old-layer"
+			base, err := reader.GetPRBaseBranch(context.Background(), pr)
+			if tc.want == "" {
+				if err == nil || base != "" {
+					t.Fatalf("GetPRBaseBranch() = (%q, %v), want refusal", base, err)
+				}
+				return
+			}
+			if err != nil || base != tc.want {
+				t.Fatalf("GetPRBaseBranch() = (%q, %v), want %q", base, err, tc.want)
+			}
+			want := []string{"pr", "view", "--repo", testRepo, "42", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"}
+			if len(recorder.calls) != 1 || !reflect.DeepEqual(recorder.calls[0].args, want) {
+				t.Fatalf("live-base read calls = %+v, want %v", recorder.calls, want)
+			}
+		})
 	}
 }
 
