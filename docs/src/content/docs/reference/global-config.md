@@ -520,7 +520,7 @@ minimax_extra_review:
   fallback_model: opencode-go/muse-spark
   mode: advisory
   steps: [review]
-  repos: [skills, checks, fleet-dash]
+  repos: [skills, checks]
 ```
 
 The extra reviewer reads the same change as the normal review and reports beside it.
@@ -550,7 +550,7 @@ beam_drafts:
   steps: [commit, document]
   empty_retries: 1
   apply_check: true
-  repos: [skills, checks, fleet-dash]
+  repos: [skills, checks]
 ```
 
 For the document pass Beam returns its edits as a unified diff instead of writing files.
