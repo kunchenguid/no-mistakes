@@ -335,9 +335,8 @@ func resolveLivePRBase(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (s
 // actually SCOPE by (effectivePRBaseBranch). That is the comparison the alignment
 // exists for: without it a restarted Review scopes the change against a branch
 // the pull request no longer targets, and a retargeted layer re-reviews every
-// layer beneath it. Comparing against the effective base instead missed exactly
-// that case, because a pushed pr.base_branch can equal the live base while the
-// scoping base is still the repository default. The write deliberately
+// layer beneath it. The comparison includes bases selected through configuration
+// when no per-run override exists. The write deliberately
 // supersedes an operator's earlier --base-branch: this is a restart-time
 // alignment to the pull request as it now is.
 func applyRunPRBase(sctx *pipeline.StepContext, liveBase string) error {

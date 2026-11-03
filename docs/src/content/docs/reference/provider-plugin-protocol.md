@@ -137,9 +137,10 @@ exceptions, both of which never count as a pass: one during the CI step's
 repeated `pr view`, `pr checks`, or `pr mergeability` polls is retried like
 any failed read, and a timed-out `pr check-logs` lets the repair proceed
 with the logs marked unavailable. A timeout anywhere else, including the CI
-step's one-time read of the PR's live base branch, fails closed. Any other
-failure of a subcommand after `status` fails or parks the step the same way
-a built-in provider's failure does; it is never read as an empty answer.
+step's live-base reads before adoption, repair, or a restart at Review,
+fails closed. Any other failure of a subcommand after `status` fails or parks
+the step the same way a built-in provider's failure does; it is never read
+as an empty answer.
 
 ## Objects
 
@@ -288,9 +289,11 @@ Prove that the PR merged at the commit no-mistakes validated.
 ```
 
 `number` and `url` must identify the requested PR (the same URL you returned
-for it), `head_sha` must equal `--expected-head` (or fail with code
-`head_changed`), and a merged proof must include `merge_commit_sha` and
-`merged_at`.
+for it). `--expected-head` names the run’s recorded head. Return the actual
+merged head as `head_sha`; the adapter accepts it only if it matches the
+recorded head, the durable last-pushed head, or the run worktree’s HEAD.
+A head outside that set is a `head_changed` refusal. A merged proof must
+include `merge_commit_sha` and `merged_at`.
 
 ### pr retarget (capability `set_pr_base_branch`)
 

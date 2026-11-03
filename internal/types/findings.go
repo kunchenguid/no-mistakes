@@ -102,13 +102,10 @@ const (
 	FindingCategoryCIBehindBase    = "ci-behind-base"
 	FindingCategoryCITransient     = "ci-transient"
 	FindingCategoryCIReviewBot     = "ci-review-bot"
-	// FindingCategoryCIHeadRewrite marks the ask-user finding the CI monitor
-	// parks on when the pull request branch moved to a head the run owns
-	// nowhere (not recorded, not durably pushed, not the caller worktree) and
-	// the run worktree holds commits that are neither on the live head nor
-	// recorded as published. No head is adopted until an operator decides;
-	// the finding names the recorded, worktree, and live heads so the decision
-	// is informed.
+	// FindingCategoryCIHeadRewrite marks CI parks that require an operator's
+	// head decision: adoption is unsafe, or repeated polls cannot establish
+	// checks for an owned head. The adoption refusal names the recorded,
+	// worktree, and live heads; the stall finding names the unread condition.
 	FindingCategoryCIHeadRewrite = "ci-head-rewrite"
 )
 

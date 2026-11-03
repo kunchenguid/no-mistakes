@@ -461,7 +461,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, hea
 // GetMergedProof proves which head was merged. The plugin protocol carries one
 // expected head, so the run's primary recorded head is what the wire call
 // names; every other head the run owns (its durable last-pushed head and the
-// caller worktree's HEAD) is matched here instead, the same way Forgejo does,
+// caller worktree's HEAD) is matched here instead,
 // because a merge that raced an outside rewrite of the branch can still prove
 // the run's own work landed. A proof for a head none of them carries is the
 // same ErrHeadChanged a single expected head produced.
