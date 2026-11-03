@@ -492,8 +492,10 @@ func TestCIStep_ReconcileApprovalGate_TransientMergedProofKeepsTheGate(t *testin
 }
 
 func TestCIStep_PersistsOverrideBeforeTerminalState(t *testing.T) {
+	t.Parallel()
 	for _, entry := range []string{"reconciliation", "polling"} {
 		t.Run(entry+"/closed", func(t *testing.T) {
+			t.Parallel()
 			sctx, _, _ := headRewriteParkFixture(t, "CLOSED")
 			observed := false
 			sctx.SetPRState = func(state string) error {
@@ -529,8 +531,10 @@ func TestCIStep_PersistsOverrideBeforeTerminalState(t *testing.T) {
 // refuse before touching terminal state, so nothing can be replayed as a merge
 // the run produced.
 func TestCIStep_MergedWithoutProofRefusesWithoutTerminalState(t *testing.T) {
+	t.Parallel()
 	for _, entry := range []string{"reconciliation", "polling"} {
 		t.Run(entry, func(t *testing.T) {
+			t.Parallel()
 			sctx, _, _ := headRewriteParkFixture(t, "CLOSED")
 			prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 			sctx.Run.PRURL = &prURL
@@ -567,8 +571,10 @@ func TestCIStep_MergedWithoutProofRefusesWithoutTerminalState(t *testing.T) {
 }
 
 func TestCIStep_VerifyApprovalOverride_ChecksOwnershipForOrdinaryFindings(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"foreign push target", "foreign provider head", "unreadable push target", "restored owned head", "owned later publication"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			sctx, validated, foreign := headRewriteParkFixture(t, "OPEN")
 			if err := sctx.DB.SetStepFindings(sctx.StepResultID, `{"findings":[{"id":"build","category":"ci-check","severity":"error","action":"auto-fix","description":"build failed"}]}`); err != nil {
 				t.Fatal(err)
