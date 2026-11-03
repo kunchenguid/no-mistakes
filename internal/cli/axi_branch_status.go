@@ -212,9 +212,10 @@ func validateBranchRun(r *db.Run, repoID, branch string) error {
 	if r == nil || r.ID == "" || r.RepoID != repoID || r.Branch != branch || r.CreatedAt <= 0 {
 		return fmt.Errorf("malformed run identity or creation time")
 	}
-	switch r.Status {
-	case types.RunPending, types.RunRunning, types.RunCompleted, types.RunFailed, types.RunCancelled, types.RunCIMonitorInterrupted:
-	default:
+	// Accept exactly the active statuses and the shared terminal set, so a
+	// terminal status added later (checks_passed, handed_off) is never read as
+	// malformed while an unknown value still fails closed.
+	if r.Status != types.RunPending && r.Status != types.RunRunning && !r.Status.Terminal() {
 		return fmt.Errorf("run %s: unknown status %q", r.ID, r.Status)
 	}
 	for _, sha := range []*string{&r.HeadSHA, r.ReviewApprovedHeadSHA, r.LastPushedSHA} {

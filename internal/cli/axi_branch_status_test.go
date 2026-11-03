@@ -131,7 +131,7 @@ func TestBranchStatusTerminalOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		status types.RunStatus
 		want   string
-	}{{types.RunCompleted, "passed"}, {types.RunFailed, "failed"}, {types.RunCancelled, "cancelled"}, {types.RunCIMonitorInterrupted, "ci-monitor-interrupted"}} {
+	}{{types.RunCompleted, "passed"}, {types.RunFailed, "failed"}, {types.RunCancelled, "cancelled"}, {types.RunCIMonitorInterrupted, "ci-monitor-interrupted"}, {types.RunChecksPassed, "checks-passed"}, {types.RunHandedOff, "handed-off"}} {
 		item := branchTestSnapshot()
 		item.Run.Status = tc.status
 		run := decodeBranchFields(t, []db.BranchRunSnapshot{item})["run"].(map[string]any)
@@ -293,5 +293,29 @@ func TestAxiBranchStatusRejectsInvalidScope(t *testing.T) {
 		if err := cmd.Execute(); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
+	}
+}
+
+func TestBranchStatusAcceptsGreenTerminalStatesInHistory(t *testing.T) {
+	newest := branchTestSnapshot()
+	newest.Run.Status = types.RunPending
+	newest.Steps = nil
+	items := []db.BranchRunSnapshot{newest}
+	for i, status := range []types.RunStatus{types.RunChecksPassed, types.RunHandedOff} {
+		older := branchTestSnapshot()
+		older.Run.ID = older.Run.ID[:len(older.Run.ID)-1] + string(rune('A'+i))
+		older.Steps = nil
+		older.Run.CreatedAt = newest.Run.CreatedAt - int64(i+1)
+		older.Run.Status = status
+		items = append(items, older)
+	}
+	got := decodeBranchFields(t, items)
+	if len(got["runs"].([]any)) != len(items) {
+		t.Fatalf("green terminal runs dropped from inventory: %#v", got["runs"])
+	}
+	bad := branchTestSnapshot()
+	bad.Run.Status = types.RunStatus("mystery")
+	if _, err := branchStatusFields("repo-1", "feature/report", []db.BranchRunSnapshot{bad}); err == nil {
+		t.Fatal("unknown run status passed")
 	}
 }
