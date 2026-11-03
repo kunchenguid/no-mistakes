@@ -78,7 +78,7 @@ func newInitCmd() *cobra.Command {
 				// --skip-user-skill the installer is not invoked at all.
 				var skillErr error
 				if !skipUserSkill {
-					_, skillErr = skill.InstallUser()
+					_, skillErr = installUserSkill()
 				}
 
 				w := cmd.OutOrStdout()
