@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -35,18 +36,22 @@ func TestAxiRunEnvFileRefusalsHappenBeforeTheDaemonAndNeverQuoteTheValue(t *test
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name string
-		args []string
-		want string
+		name          string
+		args          []string
+		want          string
+		posixModeOnly bool
 	}{
-		{"group readable", []string{"--run-env-file", writeRunEnvFile(t, 0o640)}, "chmod 600"},
-		{"world readable", []string{"--run-env-file", writeRunEnvFile(t, 0o604)}, "chmod 600"},
-		{"empty path", []string{"--run-env-file="}, "--run-env-file requires a file path"},
-		{"missing", []string{"--run-env-file", filepath.Join(t.TempDir(), "absent")}, "open run env file"},
-		{"line without a name", []string{"--run-env-file", unquotedLine}, "line 1 is not NAME=VALUE"},
-		{"with a Pi profile pin", []string{"--run-env-file", owned, "--model", "claude-bridge/claude-haiku-5-5"}, "cannot be combined with --model/--effort"},
+		{"group readable", []string{"--run-env-file", writeRunEnvFile(t, 0o640)}, "chmod 600", true},
+		{"world readable", []string{"--run-env-file", writeRunEnvFile(t, 0o604)}, "chmod 600", true},
+		{"empty path", []string{"--run-env-file="}, "--run-env-file requires a file path", false},
+		{"missing", []string{"--run-env-file", filepath.Join(t.TempDir(), "absent")}, "open run env file", false},
+		{"line without a name", []string{"--run-env-file", unquotedLine}, "line 1 is not NAME=VALUE", false},
+		{"with a Pi profile pin", []string{"--run-env-file", owned, "--model", "claude-bridge/claude-haiku-5-5"}, "cannot be combined with --model/--effort", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.posixModeOnly && runtime.GOOS == "windows" {
+				t.Skip("POSIX mode bits")
+			}
 			home := filepath.Join(t.TempDir(), "not-created")
 			t.Setenv("NM_HOME", home)
 			cmd := newAxiRunCmd()
