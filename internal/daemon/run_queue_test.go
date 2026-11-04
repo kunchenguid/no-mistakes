@@ -314,7 +314,7 @@ func TestMaxConcurrentRuns_ConcurrentSubmissionsPreserveAdmissionOrder(t *testin
 			})
 			repo, head := setupTestGitRepo(t, p, d, "concurrent-admission")
 			submit := func(branch string) (string, error) {
-				return m.startRun(context.Background(), repo, branch, head, head, "push", nil, "", "", false, "", nil)
+				return m.startRun(context.Background(), repo, branch, head, head, "push", nil, "", "", false, "", nil, "")
 			}
 			held, err := submit("feature/held")
 			if err != nil {
@@ -488,7 +488,7 @@ func TestMaxConcurrentRuns_QueuedCancellationPublishesTerminalEvent(t *testing.T
 			repo, head := setupTestGitRepo(t, p, d, "cancel-event")
 			submit := func(branch string) string {
 				t.Helper()
-				id, err := m.startRun(context.Background(), repo, branch, head, head, "push", nil, "", "", false, "", nil)
+				id, err := m.startRun(context.Background(), repo, branch, head, head, "push", nil, "", "", false, "", nil, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -709,7 +709,7 @@ func TestMaxConcurrentRuns_CancelRecoveredRunPreservesUnpublishedHead(t *testing
 			wantCause := types.RunCancelReasonAbortedByUser
 			if action == "supersede" {
 				wantCause = types.RunCancelReasonSuperseded
-				if _, err := m.startRun(context.Background(), repo, run.Branch, submitted, submitted, "push", nil, "", "", false, "", nil); err != nil {
+				if _, err := m.startRun(context.Background(), repo, run.Branch, submitted, submitted, "push", nil, "", "", false, "", nil, ""); err != nil {
 					t.Fatal(err)
 				}
 			} else {

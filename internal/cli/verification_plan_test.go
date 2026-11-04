@@ -36,7 +36,7 @@ func TestVerificationPlanStatusIncludesSnapshotOrExplicitAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "", "", "", "", false, plan)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", nil, "", "", "", "", false, plan, "")
 	if err != nil {
 		t.Fatal(err)
 	}
