@@ -1140,6 +1140,8 @@ ci:
 
 An explicit value in the trusted repository config overrides this value in either direction.
 
+A repair the fixer reports as unverified (`verification_passed: false`) is not published under either value. That park is part of the repository reference above.
+
 ### ci.review_bot_comments
 
 The operator-level fallback for [`ci.review_bot_comments`](/no-mistakes/reference/repo-config/#cireview_bot_comments), whose per-repository reference owns the semantics and the trust boundary.
