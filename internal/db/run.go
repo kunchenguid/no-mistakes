@@ -29,7 +29,14 @@ type Run struct {
 	// a run exists cannot retarget the run. It is nil only for runs recorded
 	// before the column existed, which worktrees.RecordedDir resolves to the
 	// default placement.
-	WorktreeDir      *string
+	WorktreeDir *string
+	// EvidenceDir is the absolute directory this run writes evidence into,
+	// resolved once at creation from evidence_dir (or the local_root default).
+	// Nil only for runs recorded before the column existed. Those keep
+	// resolving through test.evidence.local_root and ignore a later
+	// evidence_dir, so a settings change cannot retarget them and nothing
+	// moves an existing directory.
+	EvidenceDir      *string
 	SubmittedHeadSHA *string
 	// NoMistakesVersion and NoMistakesBuildSHA identify the binary that created
 	// this run. They remain nil only for runs recorded before these fields.
@@ -124,14 +131,22 @@ type Run struct {
 	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, created_at, updated_at`
 
 func (d *DB) runColumns() string {
 	intentCheck := "NULL"
 	if d.hasColumn("runs", "intent_check_json") {
 		intentCheck = "intent_check_json"
 	}
-	return fmt.Sprintf(runColumns, intentCheck)
+	// Selected only when the schema has it. OpenReadOnly does not migrate, and
+	// a query naming a missing column fails the preflight that guards every
+	// command that would apply the migration. NULL is the pre-column case:
+	// those runs keep the local_root resolution and are not moved.
+	evidenceDir := "NULL"
+	if d.hasColumn("runs", "evidence_dir") {
+		evidenceDir = "evidence_dir"
+	}
+	return fmt.Sprintf(runColumns, intentCheck, evidenceDir)
 }
 
 func scanRun(row interface {
@@ -148,7 +163,7 @@ func scanRun(row interface {
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
-		&r.PRTitle, &r.PRBody,
+		&r.PRTitle, &r.PRBody, &r.EvidenceDir,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -169,6 +184,15 @@ func (r *Run) WorktreePath() string {
 		return ""
 	}
 	return *r.WorktreeDir
+}
+
+// EvidencePath returns the evidence directory pinned at run creation, or ""
+// when this run predates that pin.
+func (r *Run) EvidencePath() string {
+	if r == nil || r.EvidenceDir == nil {
+		return ""
+	}
+	return *r.EvidenceDir
 }
 
 // InsertRun creates a new run record.
@@ -906,6 +930,21 @@ func (d *DB) SetRunWorktreeDir(id, dir string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET worktree_dir = ?, updated_at = ? WHERE id = ?`, dir, now(), id)
 	if err != nil {
 		return fmt.Errorf("set run worktree dir: %w", err)
+	}
+	return nil
+}
+
+// SetRunEvidenceDir records the evidence directory resolved for this run.
+// A second call does not move it: existing runs stay where they were pinned,
+// including when evidence_dir later points somewhere else.
+func (d *DB) SetRunEvidenceDir(id, dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fmt.Errorf("set run evidence dir: empty path")
+	}
+	_, err := d.sql.Exec(`UPDATE runs SET evidence_dir = ?, updated_at = ? WHERE id = ? AND evidence_dir IS NULL`, dir, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run evidence dir: %w", err)
 	}
 	return nil
 }

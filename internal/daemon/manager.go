@@ -235,7 +235,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if quotaRecord == nil {
 		cfg.QuotaRouting.Enabled = false
 	}
-	ag, _, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx), quotaRecord)
+	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), quotaRecord)
 	if err != nil {
 		return nil, err
 	}
@@ -772,11 +772,23 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		}
 	}
 	root := m.paths.EvidenceRoot(configured)
-	if err := os.Remove(filepath.Join(root, runID)); err != nil && !os.IsNotExist(err) {
+	removePath := filepath.Join(root, runID)
+	if pinned := m.recordedRunEvidenceDir(cfg, runID); pinned != "" {
+		removePath = pinned
+	}
+	if err := os.Remove(removePath); err != nil && !os.IsNotExist(err) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	now := time.Now()
-	reapEvidence(m.db, root, policy, now)
+	seenRoots := map[string]bool{}
+	for _, candidate := range []string{root, m.paths.EvidenceDir(), filepath.Dir(removePath)} {
+		candidate = filepath.Clean(candidate)
+		if candidate == "" || candidate == "." || seenRoots[candidate] {
+			continue
+		}
+		seenRoots[candidate] = true
+		reapEvidence(m.db, candidate, policy, now)
+	}
 	reapWorktrees(m.db, m.paths, wtPolicy, now)
 	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
 }
@@ -1890,6 +1902,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("record_worktree_placement")
 		return "", fmt.Errorf("record worktree placement: %w", err)
 	}
+	if err := m.pinRunEvidenceDir(run, globalCfg); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record evidence dir: %s", err))
+		trackStartFailure("record_evidence_dir")
+		return "", fmt.Errorf("record evidence dir: %w", err)
+	}
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
@@ -2068,7 +2085,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// wires review-role routing plus the trusted-opt-out gate-neutralization
 	// fail-closed check. The quota-aware record is fresh-read here (a nil
 	// input) and persisted beside the gates pin below.
-	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx), nil)
+	ag, quotaRecord, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), nil)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("create_agent")

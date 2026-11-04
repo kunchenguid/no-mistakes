@@ -488,7 +488,7 @@ func (m *RunManager) discardRefusedRetryRun(runID string, cfg *config.Config) {
 	if err := m.db.DeleteRun(runID); err != nil {
 		m.db.UpdateRunError(runID, fmt.Sprintf("discard refused retry: %s", err))
 	}
-	os.RemoveAll(m.paths.RunEvidenceDir(cfg.Test.Evidence.LocalRoot, runID))
+	os.RemoveAll(m.recordedRunEvidenceDir(cfg, runID))
 }
 
 // RetryProofConversation names the proof that a carried Review's question
@@ -519,9 +519,8 @@ func (m *RunManager) carryReviewConversation(r *retryLaunch, cfg *config.Config,
 			asked = true
 		}
 	}
-	local := cfg.Test.Evidence.LocalRoot
-	src := reviewqa.Dir(m.paths.RunEvidenceDir(local, r.source.ID))
-	dst := reviewqa.Dir(m.paths.RunEvidenceDir(local, runID))
+	src := reviewqa.Dir(m.recordedRunEvidenceDir(cfg, r.source.ID))
+	dst := reviewqa.Dir(m.recordedRunEvidenceDir(cfg, runID))
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		if asked {

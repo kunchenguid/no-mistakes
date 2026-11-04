@@ -503,9 +503,13 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// tell a crashed run's leftovers from work still in flight.
 	evidenceStarted := time.Now()
 	policy := evidenceReapPolicyFor(global)
-	root := evidenceRootFor(p, global)
-	reapEvidence(d, root, policy, now)
-	reapLegacyEvidence(d, root, policy, now)
+	roots := evidenceRootsFor(p, global)
+	for _, root := range roots {
+		reapEvidence(d, root, policy, now)
+	}
+	if len(roots) > 0 {
+		reapLegacyEvidence(d, roots[0], policy, now)
+	}
 	reapRunLogs(d, p.LogsDir(), policy, now)
 	logStartupPhase("evidence_cleanup", evidenceStarted)
 

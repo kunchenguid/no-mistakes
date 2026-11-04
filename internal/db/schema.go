@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     worktree_dir            TEXT,
+    evidence_dir            TEXT,
     submitted_head_sha      TEXT,
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
@@ -185,6 +186,17 @@ CREATE TABLE IF NOT EXISTS run_media_attachments (
     PRIMARY KEY (run_id, path)
 );
 
+-- GitLab project uploads already sent for an evidence file's contents.
+-- Keyed by project and digest, not by run, so a later PR rewrite of the same
+-- bytes reuses the markdown instead of posting another upload.
+CREATE TABLE IF NOT EXISTS gitlab_evidence_uploads (
+    project_path TEXT NOT NULL,
+    digest       TEXT NOT NULL,
+    markdown     TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (project_path, digest)
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,
@@ -308,6 +320,7 @@ var migrationStatements = []string{
 	// since this column shipped with the setting that moves it
 	// (worktrees.RecordedDir).
 	`ALTER TABLE runs ADD COLUMN worktree_dir TEXT`,
+	`ALTER TABLE runs ADD COLUMN evidence_dir TEXT`,
 	// Build identity is nullable for historical records. New runs record the
 	// version and embedded build SHA used by the running binary.
 	`ALTER TABLE runs ADD COLUMN no_mistakes_version TEXT`,

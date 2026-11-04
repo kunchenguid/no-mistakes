@@ -1283,7 +1283,7 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `test.evidence.branch` | `string` | Inherits from global (default `no-mistakes/evidence`) |
 | `test.evidence.commit_message` | `string` | Inherits from global (default `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})`) |
 
-By default, test evidence is written to `<NM_HOME>/evidence/<run-id>`. Where it is stored locally and how long it is kept are global-only settings; see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence).
+By default, test evidence is written to `<NM_HOME>/evidence/<run-id>`. Where it is stored locally and how long it is kept are global-only settings; see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence). [`evidence_dir`](/no-mistakes/reference/global-config/#evidence_dir) is also global-only. A repository file that sets it fails to load.
 For GitHub repositories, set `store_in_repo: true` to also publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
 `compact: false` opts into expanded PR Testing presentation with inline previews while retaining published artifact links. See [global config](/no-mistakes/reference/global-config/#testevidence) for rendering details and publication requirements.
 

@@ -32,6 +32,9 @@ type PRStep struct {
 	// will replace the drafted one, so the drafted title is neither validated
 	// nor formatted: discarded text must not block publishing.
 	titleReplaced bool
+	// gitlabUploader uploads image evidence to a GitLab project. Nil uses the
+	// GitLab host. Tests inject a stub so they never talk to live GitLab.
+	gitlabUploader gitlabEvidenceUploader
 }
 
 type prContent struct {
@@ -925,6 +928,14 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 		compact = sctx.Config.Test.Evidence.Compact
 	}
 	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds), compact)
+	// shortcut: minimal appendix mode drops this section with Testing; thread it into minimalTail if a minimal-appendix GitLab repo needs the images.
+	if evidenceMD := s.gitlabEvidenceSection(sctx, provider); evidenceMD != "" {
+		if testingMD != "" {
+			testingMD += "\n\n" + evidenceMD
+		} else {
+			testingMD = evidenceMD
+		}
+	}
 	return pipelineMD, riskLine, testingMD
 }
 
@@ -1780,7 +1791,7 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues":
+	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues", "evidence":
 		return true
 	default:
 		return false

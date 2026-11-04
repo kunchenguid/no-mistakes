@@ -54,9 +54,98 @@ func evidenceReapPolicyFor(global *config.GlobalConfig) evidenceReapPolicy {
 // evidenceRootFor resolves this machine's evidence root from a loaded global
 // config, falling back to the app-root default.
 func evidenceRootFor(p *paths.Paths, global *config.GlobalConfig) string {
-	configured := ""
+	roots := evidenceRootsFor(p, global)
+	if len(roots) == 0 {
+		return ""
+	}
+	return roots[0]
+}
+
+// evidenceRootsFor is the active evidence root plus any previous root a
+// settings change left behind. Changing evidence_dir does not move existing
+// run directories, so the reaper still has to visit the default and a
+// configured local_root. shortcut: a root used only between two later
+// evidence_dir values is not visited unless a finished run's pin still names it.
+func evidenceRootsFor(p *paths.Paths, global *config.GlobalConfig) []string {
+	if p == nil {
+		return nil
+	}
+	evidenceDir := ""
+	localRoot := ""
 	if global != nil {
-		configured = config.Merge(global, &config.RepoConfig{}).Test.Evidence.LocalRoot
+		evidenceDir = global.EvidenceDir
+		localRoot = config.Merge(global, &config.RepoConfig{}).Test.Evidence.LocalRoot
+	}
+	root, warning := p.ResolveEvidenceRoot(evidenceDir, localRoot)
+	if warning != "" {
+		slog.Warn("evidence directory fallback", "detail", warning)
+	}
+	seen := map[string]bool{}
+	var roots []string
+	add := func(candidate string) {
+		candidate = filepath.Clean(candidate)
+		if candidate == "" || candidate == "." || seen[candidate] {
+			return
+		}
+		seen[candidate] = true
+		roots = append(roots, candidate)
+	}
+	add(root)
+	add(p.EvidenceDir())
+	add(p.EvidenceRoot(localRoot))
+	return roots
+}
+
+// pinRunEvidenceDir records the evidence directory for a new run. A later
+// change to evidence_dir does not move it. Runs that already have a pin,
+// including a second call, stay where they are.
+func (m *RunManager) pinRunEvidenceDir(run *db.Run, global *config.GlobalConfig) error {
+	if m == nil || run == nil || global == nil || run.EvidencePath() != "" {
+		return nil
+	}
+	root, warning := m.paths.ResolveEvidenceRoot(global.EvidenceDir, config.Merge(global, &config.RepoConfig{}).Test.Evidence.LocalRoot)
+	if warning != "" {
+		slog.Warn("evidence directory fallback", "run_id", run.ID, "detail", warning)
+	}
+	dir := filepath.Join(root, run.ID)
+	if err := m.db.SetRunEvidenceDir(run.ID, dir); err != nil {
+		return err
+	}
+	run.EvidenceDir = &dir
+	return nil
+}
+
+// recordedRunEvidenceDir returns the directory pinned on the run, or the
+// local_root path for a run that predates the pin.
+func (m *RunManager) recordedRunEvidenceDir(cfg *config.Config, runID string) string {
+	if m != nil && m.db != nil && runID != "" {
+		if run, err := m.db.GetRun(runID); err == nil && run != nil && run.EvidencePath() != "" {
+			return run.EvidencePath()
+		}
+	}
+	configured := ""
+	if cfg != nil {
+		configured = cfg.Test.Evidence.LocalRoot
+	}
+	if m == nil || m.paths == nil {
+		return ""
+	}
+	return m.paths.RunEvidenceDir(configured, runID)
+}
+
+// pipelineEvidenceRoot is the one out-of-worktree location steering permits.
+// A pinned run names its own directory so a later evidence_dir change cannot
+// point the agent at a different tree. An unpinned run keeps the configured root.
+func pipelineEvidenceRoot(p *paths.Paths, cfg *config.Config, run *db.Run) string {
+	if run != nil && run.EvidencePath() != "" {
+		return run.EvidencePath()
+	}
+	if p == nil {
+		return ""
+	}
+	configured := ""
+	if cfg != nil {
+		configured = cfg.Test.Evidence.LocalRoot
 	}
 	return p.EvidenceRoot(configured)
 }

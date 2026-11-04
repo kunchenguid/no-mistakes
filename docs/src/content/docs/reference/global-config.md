@@ -1509,10 +1509,27 @@ Partial matches older than 24 hours are rejected unless their raw score is at le
 If exactly one accepted candidate has a raw score of at least `0.85`, that decisive candidate wins before recency ranking.
 Otherwise, accepted candidates are ranked by confidence, which combines the raw score with a small recency boost, with ties going to the most recent matching session, and ambiguous accepted candidates may be disambiguated by the configured pipeline agent.
 
+### evidence_dir
+
+Parent directory for new run evidence. Global-only. A repository cannot set it.
+
+| | |
+| ---- | -------- |
+| Type | `string` |
+| Default | `<NM_HOME>/evidence` |
+
+Set `evidence_dir` to an absolute path, or a path that starts with `~`. New runs write `<evidence_dir>/<run-id>`. The default is unchanged when the key is absent.
+
+If the directory is missing, not writable, not absolute after `~` expansion, or inside `<NM_HOME>/worktrees`, no-mistakes logs a warning and uses `<NM_HOME>/evidence`. It does not use `test.evidence.local_root` as that fallback. It does not create a missing directory, and it does not move a directory that already exists.
+
+A run records its evidence directory at creation. A later change to `evidence_dir` does not retarget that run. A run recorded before this setting existed keeps resolving through `test.evidence.local_root`.
+
+On GitLab, the PR step uploads images from that run directory and embeds them in one `## Evidence` section. See [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
+
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On GitHub.com/GHEC, supported image and video artifacts are also uploaded when the PR is rendered; see `attach_media` below.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. [`evidence_dir`](#evidence_dir) moves that parent for new runs. On GitHub.com/GHEC, supported image and video artifacts are also uploaded when the PR is rendered; see `attach_media` below.
 
 |      |          |
 | ---- | -------- |
