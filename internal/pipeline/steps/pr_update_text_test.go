@@ -615,6 +615,23 @@ func TestPRSuppliedBodyOnlyDraftsAConventionalTitle(t *testing.T) {
 	}
 }
 
+func TestPRSuppliedBodyOnlyFallsBackToTheOrdinaryTitleWhenDraftingFails(t *testing.T) {
+	t.Parallel()
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return nil, errors.New("agent unavailable")
+	}}
+	sctx, env, logFile := suppliedPRContext(t, ag, "", suppliedPRBodyText)
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatalf("a failed title draft failed the PR step: %v", err)
+	}
+	if logs := string(mustRead(t, logFile)); !strings.Contains(logs, "--title chore: update pull request") {
+		t.Fatalf("body-only run did not use the ordinary fallback title:\n%s", logs)
+	}
+	if body := string(mustRead(t, envEntry(env, "FAKE_CLI_PR_BODY_FILE"))); !strings.HasPrefix(body, suppliedPRBodyText+"\n\n<!-- no-mistakes-pr-appendix:v1 ") {
+		t.Fatalf("supplied body was not published verbatim above the appendix:\n%s", body)
+	}
+}
+
 func TestPRSuppliedTitleTakesTheConfiguredTitleFormat(t *testing.T) {
 	t.Parallel()
 	sctx, _, logFile := suppliedPRContext(t, noDraftAgent(t), suppliedPRTitleText, suppliedPRBodyText)

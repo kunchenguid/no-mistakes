@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -141,7 +142,14 @@ func (s *PRStep) buildSuppliedPRContent(sctx *pipeline.StepContext, branch, base
 	} else {
 		title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
 		if err != nil {
-			return prContent{}, err
+			slog.Warn("agent failed for supplied-description PR title, using fallback", "error", err)
+			if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
+				return prContent{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
+			}
+			title, err = renderPRTitle(sctx, "update pull request")
+			if err != nil {
+				return prContent{}, err
+			}
 		}
 	}
 	appendix, err := s.buildPRAppendix(sctx, provider)
