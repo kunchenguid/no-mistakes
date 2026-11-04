@@ -9,6 +9,12 @@ import (
 
 func TestResolveEvidenceRootUsesAUsableSettingAndFallsBack(t *testing.T) {
 	root := t.TempDir()
+	// TempDir may use a symlink (macOS) or a short Windows path. The
+	// resolver returns the canonical spelling of configured directories.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := WithRoot(root)
 	home := filepath.Join(root, "home")
 	dropbox := filepath.Join(home, "Dropbox", "no-mistakes-evidence")
@@ -31,15 +37,23 @@ func TestResolveEvidenceRootUsesAUsableSettingAndFallsBack(t *testing.T) {
 		t.Fatalf("missing = %q warning %q, want the default and a warning", missing, warning)
 	}
 
-	unwritable := filepath.Join(root, "locked")
-	if err := os.Mkdir(unwritable, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(unwritable, 0o755) })
-	got, warning = p.ResolveEvidenceRoot(unwritable, "")
-	if got != p.EvidenceDir() || !strings.Contains(warning, "missing or not writable") {
-		t.Fatalf("unwritable = %q warning %q, want the default and a warning", got, warning)
-	}
+	t.Run("unwritable", func(t *testing.T) {
+		unwritable := filepath.Join(root, "locked")
+		if err := os.Mkdir(unwritable, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(unwritable, 0o755) })
+		// Mode bits do not deny writes on Windows or for privileged users.
+		if probe, err := os.CreateTemp(unwritable, "probe-*"); err == nil {
+			probe.Close()
+			os.Remove(probe.Name())
+			t.Skip("directory permissions do not deny writes on this platform")
+		}
+		got, warning := p.ResolveEvidenceRoot(unwritable, "")
+		if got != p.EvidenceDir() || !strings.Contains(warning, "missing or not writable") {
+			t.Fatalf("unwritable = %q warning %q, want the default and a warning", got, warning)
+		}
+	})
 
 	// A bad evidence_dir falls back to the app-root default, not to local_root.
 	other := filepath.Join(root, "other")

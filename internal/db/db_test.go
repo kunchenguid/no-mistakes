@@ -511,15 +511,16 @@ func TestOpenWaitsForTransientMigrationLock(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
+	// Always release the lock and join Open before TempDir cleanup, including
+	// when COMMIT fails. The package test timeout bounds a stuck migration;
+	// fresh-schema migrations can exceed five seconds on Windows runners.
+	defer func() {
+		_, _ = locker.Exec("ROLLBACK")
+		if err := <-done; err != nil {
+			t.Errorf("Open after lock release: %v", err)
+		}
+	}()
 	if _, err := locker.Exec("COMMIT"); err != nil {
 		t.Fatalf("commit exclusive lock: %v", err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Open after lock release: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Open did not finish after the migration lock was released")
 	}
 }

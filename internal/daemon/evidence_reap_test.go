@@ -500,7 +500,11 @@ func TestPinRunEvidenceDirAvoidsEveryWorktreePlacement(t *testing.T) {
 				}
 				want := filepath.Join(f.p.EvidenceDir(), run.ID)
 				if relation == "separate" {
-					want = filepath.Join(evidence, run.ID)
+					canonical, err := filepath.EvalSymlinks(evidence)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want = filepath.Join(canonical, run.ID)
 				}
 				stored, err := f.db.GetRun(run.ID)
 				if err != nil {
