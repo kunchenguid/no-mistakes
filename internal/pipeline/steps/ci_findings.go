@@ -597,7 +597,13 @@ func ciVerificationFailedOutcome(selected Findings, deferredRaw string, repair c
 	if err != nil {
 		return outcome
 	}
-	parsed.Items = append(parsed.Items, Finding{
+	kept := parsed.Items[:0]
+	for _, item := range parsed.Items {
+		if item.ID != types.FindingIDCIVerificationFailed {
+			kept = append(kept, item)
+		}
+	}
+	parsed.Items = append(kept, Finding{
 		ID:          types.FindingIDCIVerificationFailed,
 		Severity:    types.FindingSeverityError,
 		Action:      types.ActionAskUser,
