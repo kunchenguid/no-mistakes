@@ -309,7 +309,7 @@ const OperatorSkipReason = "skipped by operator"
 // IsOperatorSkipReason reports whether a recorded skip_reason marks an
 // explicit operator skip.
 func IsOperatorSkipReason(reason string) bool {
-	return strings.HasPrefix(reason, OperatorSkipReason)
+	return reason == OperatorSkipReason
 }
 
 // ApprovalAction represents user responses at approval points.

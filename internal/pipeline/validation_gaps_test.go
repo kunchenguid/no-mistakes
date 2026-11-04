@@ -17,8 +17,9 @@ func TestCollectValidationGaps(t *testing.T) {
 		CIOverride:    "lint still red",
 		Steps: []ValidationStep{
 			{Name: "review", Status: string(types.StepStatusSkipped), SkipReason: types.OperatorSkipReason},
-			{Name: "document", Status: string(types.StepStatusSkipped), SkipReason: types.OperatorSkipReason + ": docs live elsewhere"},
+			{Name: "document", Status: string(types.StepStatusSkipped), SkipReason: types.OperatorSkipReason},
 			{Name: "pr", Status: string(types.StepStatusSkipped), SkipReason: "gh is not authenticated"},
+			{Name: "ci", Status: string(types.StepStatusSkipped), SkipReason: types.OperatorSkipReason + ": gh is not authenticated"},
 			// Nothing to validate (empty diff after rebase) records no reason and is no gap.
 			{Name: "lint", Status: string(types.StepStatusSkipped)},
 			// A completed step's stale reason is ignored.
@@ -35,8 +36,9 @@ func TestCollectValidationGaps(t *testing.T) {
 		{Step: "test", Kind: ValidationKindTestException, Reason: "test agent invocation budget exhausted"},
 		{Step: "ci", Kind: ValidationKindCIOverride, Reason: "lint still red"},
 		{Step: "review", Kind: ValidationKindOperatorSkip, Reason: NoReasonRecorded},
-		{Step: "document", Kind: ValidationKindOperatorSkip, Reason: "docs live elsewhere"},
+		{Step: "document", Kind: ValidationKindOperatorSkip, Reason: NoReasonRecorded},
 		{Step: "pr", Kind: ValidationKindAutomaticSkip, Reason: "gh is not authenticated"},
+		{Step: "ci", Kind: ValidationKindAutomaticSkip, Reason: types.OperatorSkipReason + ": gh is not authenticated"},
 	}
 	if len(gaps.Exceptions) != len(want) {
 		t.Fatalf("exceptions = %+v", gaps.Exceptions)
@@ -56,7 +58,7 @@ func TestCollectValidationGaps_NothingToReport(t *testing.T) {
 	if !gaps.Empty() || gaps.HasGaps() {
 		t.Fatalf("gaps = %+v", gaps)
 	}
-	if IsAutomaticSkip("ci", types.OperatorSkipReason) || IsAutomaticSkip("review", "cause") || !IsAutomaticSkip("ci", "cause") {
+	if IsAutomaticSkip("ci", types.OperatorSkipReason) || IsAutomaticSkip("review", "cause") || !IsAutomaticSkip("ci", "cause") || types.IsOperatorSkipReason(types.OperatorSkipReason+": gh is not authenticated") {
 		t.Fatal("automatic skip classification is wrong")
 	}
 }

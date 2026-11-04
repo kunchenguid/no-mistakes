@@ -502,11 +502,6 @@ func scenarioReferenceCanEnd(after string) bool {
 // so a stale or agent-copied callout is stripped before a body is rebuilt.
 const notValidatedLiveHeading = "## Not validated live"
 
-// maxValidationCalloutItems bounds the callout so a run with a long scenario
-// list cannot crowd the narrative out of a capped PR body. The omitted count is
-// stated, never silently dropped.
-const maxValidationCalloutItems = 20
-
 // validationCallout renders the run's Not validated live callout, or "" when
 // every scenario was driven live and nothing was excepted or skipped. It reads
 // the same step rows and Test evidence the Testing section and the axi run
@@ -556,10 +551,6 @@ func renderValidationCallout(gaps pipeline.ValidationGaps, flavor prBodyFlavor) 
 	}
 	for _, e := range gaps.Exceptions {
 		items = append(items, fmt.Sprintf("- **%s** (`%s`): %s", validationKindLabel(e.Kind), scenarioCell(e.Step, flavor), scenarioCell(e.Reason, flavor)))
-	}
-	if len(items) > maxValidationCalloutItems {
-		omitted := len(items) - maxValidationCalloutItems
-		items = append(items[:maxValidationCalloutItems], fmt.Sprintf("- ...and %d more not listed here", omitted))
 	}
 	var summary []string
 	if n := len(gaps.Untested); n > 0 {

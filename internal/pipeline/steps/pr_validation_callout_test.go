@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -190,17 +191,22 @@ func TestRenderValidationCallout_EscapesAgentText(t *testing.T) {
 	}
 }
 
-func TestRenderValidationCallout_BoundsTheItemList(t *testing.T) {
+func TestRenderValidationCallout_ListsEveryUntestedScenario(t *testing.T) {
 	t.Parallel()
+	const count = 25
 	var scenarios []types.TestScenario
-	for i := 0; i < maxValidationCalloutItems+5; i++ {
-		scenarios = append(scenarios, types.TestScenario{Name: "scenario", Result: types.ScenarioResultUntested, Reason: "no lab"})
+	for i := 0; i < count; i++ {
+		scenarios = append(scenarios, types.TestScenario{Name: fmt.Sprintf("scenario-%d", i), Result: types.ScenarioResultUntested, Reason: fmt.Sprintf("reason-%d", i)})
 	}
 	md := renderValidationCallout(pipeline.CollectValidationGaps(pipeline.ValidationInput{Scenarios: scenarios}), prBodyHTML)
-	if got := strings.Count(md, "**Untested:**"); got != maxValidationCalloutItems {
-		t.Fatalf("listed %d items, want %d", got, maxValidationCalloutItems)
+	if got := strings.Count(md, "**Untested:**"); got != count {
+		t.Fatalf("listed %d scenarios, want %d", got, count)
 	}
-	if !strings.Contains(md, "...and 5 more not listed here") || !strings.Contains(md, "25 of 25 scenarios") {
-		t.Fatalf("omitted items are not counted:\n%s", md)
+	for i := 0; i < count; i++ {
+		for _, want := range []string{fmt.Sprintf("scenario-%d", i), fmt.Sprintf("reason-%d", i)} {
+			if !strings.Contains(md, want) {
+				t.Fatalf("callout omitted %q:\n%s", want, md)
+			}
+		}
 	}
 }

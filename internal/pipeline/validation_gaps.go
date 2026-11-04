@@ -101,7 +101,7 @@ func CollectValidationGaps(in ValidationInput) ValidationGaps {
 		}
 		switch {
 		case types.IsOperatorSkipReason(s.SkipReason):
-			gaps.Exceptions = append(gaps.Exceptions, ValidationException{Step: s.Name, Kind: ValidationKindOperatorSkip, Reason: operatorSkipDetail(s.SkipReason)})
+			gaps.Exceptions = append(gaps.Exceptions, ValidationException{Step: s.Name, Kind: ValidationKindOperatorSkip, Reason: operatorSkipDetail()})
 		case IsAutomaticSkip(s.Name, s.SkipReason):
 			gaps.Exceptions = append(gaps.Exceptions, ValidationException{Step: s.Name, Kind: ValidationKindAutomaticSkip, Reason: s.SkipReason})
 		}
@@ -118,13 +118,8 @@ func IsAutomaticSkip(step, skipReason string) bool {
 	return step == string(types.StepPR) || step == string(types.StepCI)
 }
 
-func operatorSkipDetail(skipReason string) string {
-	detail := strings.TrimSpace(strings.TrimPrefix(skipReason, types.OperatorSkipReason))
-	detail = strings.TrimSpace(strings.TrimPrefix(detail, ":"))
-	if detail == "" {
-		return NoReasonRecorded
-	}
-	return detail
+func operatorSkipDetail() string {
+	return NoReasonRecorded
 }
 
 // HasGaps reports whether anything was left unvalidated live.
