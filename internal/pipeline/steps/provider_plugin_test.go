@@ -129,6 +129,30 @@ func TestProviderPlugin_PRStepCreatesPRThroughPlugin(t *testing.T) {
 	t.Logf("plugin operations: %s\npersisted PR URL: %s", ops, *run.PRURL)
 }
 
+func TestProviderPlugin_PRStepPublishesASuppliedBodyAndReadsItBack(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	statePath, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{})
+	completeCleanReview(t, sctx)
+	title, body := "Supplied title", "Supplied narrative.\n"
+	sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatalf("PR step: %v", err)
+	}
+	state, err := fakeplugin.Load(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PRs) != 1 || state.PRs[0].Title != title || !strings.HasPrefix(state.PRs[0].Body, body+"\n\n<!-- no-mistakes-pr-appendix:v1 ") {
+		t.Fatalf("created PR = %+v", state.PRs)
+	}
+	if ops := strings.Join(pluginOperations(t, logPath), ","); !strings.Contains(ops, "pr create,pr view") {
+		t.Fatalf("created body was not read back: %s", ops)
+	}
+}
+
 func TestProviderPlugin_PRStepUpdatesExistingPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

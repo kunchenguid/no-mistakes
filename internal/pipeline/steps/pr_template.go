@@ -178,6 +178,15 @@ Final diff paths and statuses:
 // completion is best effort, not an enforced policy. No H1s means no structural
 // requirements. Existing published narrative never goes through this check again.
 func validateTemplateStructure(template, body string) error {
+	if _, missing := missingTemplateHeading(template, body); missing {
+		return fmt.Errorf("agent changed, omitted or reordered a pr.template top-level # heading; refusing publication")
+	}
+	return nil
+}
+
+// missingTemplateHeading returns the first template H1 the body does not keep
+// in order.
+func missingTemplateHeading(template, body string) (string, bool) {
 	rest := templateStructureLines(body)
 	for _, line := range templateStructureLines(template) {
 		found := false
@@ -190,10 +199,10 @@ func validateTemplateStructure(template, body string) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("agent changed, omitted or reordered a pr.template top-level # heading; refusing publication")
+			return line, true
 		}
 	}
-	return nil
+	return "", false
 }
 
 func templateStructureLines(text string) []string {

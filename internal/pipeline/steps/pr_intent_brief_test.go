@@ -349,3 +349,28 @@ func TestFallbackPRContentRefusesRawIntentInBriefMode(t *testing.T) {
 		t.Fatalf("fallback error = %v, want a non-disclosing fail-closed error", err)
 	}
 }
+
+func TestPRStep_SuppliedTextDraftsOnlyTheBrief(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"intent_brief":{"goal":"Keep the release check reliable","why":["Catch invalid changes early"]}}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Keep the release check reliable."
+	sctx.Config.PR.Intent.Format = "brief"
+	sctx.Config.PR.Intent.Sections = []string{"why"}
+	insertCompletedStep(t, sctx, types.StepReview, "", "")
+	title, body := "Supplied title", "Supplied narrative."
+	sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
+	got, err := (&PRStep{}).buildSuppliedPRContent(sctx, "feature", "main", baseSHA, "", scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 || string(ag.calls[0].JSONSchema) != string(prIntentBriefOnlySchema) {
+		t.Fatalf("supplied text must draft only the brief: calls=%d", len(ag.calls))
+	}
+	if got.Title != title || !strings.HasPrefix(got.Body, body+"\n\n") || !strings.Contains(got.Body, "## Intent\n\nKeep the release check reliable\n\n### Why\n- Catch invalid changes early") {
+		t.Fatalf("content = %+v", got)
+	}
+}

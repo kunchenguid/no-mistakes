@@ -523,3 +523,46 @@ func TestPRTemplateStructureInvalidBacktickFenceKeepsRequiredHeadings(t *testing
 		t.Fatalf("fenced example treated as required: %v", err)
 	}
 }
+
+// A supplied description replaces the agent's template fill, under the same
+// top-level heading rule, and is refused loudly before anything is created.
+func TestPRTemplateSuppliedBodyMustKeepTheTemplateHeadings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "kept", body: "# Overview\n\nOur own words.\n\n### Rollout\n\nStaged.\n"},
+		{name: "missing", body: "## Overview\n\nOur own words.\n", wantErr: `"# Overview" is missing, changed or out of order`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sctx, ag, _ := templateTestContext(t)
+			env, logFile := fakeGH(t, "")
+			sctx.Env = env
+			title := "Supplied title"
+			sctx.Run.PRTitle, sctx.Run.PRBody = &title, &tc.body
+			_, err := (&PRStep{}).Execute(sctx)
+			logs := string(mustRead(t, logFile))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), "pr.template") || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v", err)
+				}
+				if strings.Contains(logs, "pr create") {
+					t.Fatalf("refused body was published:\n%s", logs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body := string(mustRead(t, envEntry(env, "FAKE_CLI_PR_BODY_FILE"))); !strings.HasPrefix(body, tc.body) {
+				t.Fatalf("supplied body did not replace the template fill:\n%s", body)
+			}
+			if len(ag.calls) != 0 {
+				t.Fatalf("template was drafted despite a supplied title and body: calls=%d", len(ag.calls))
+			}
+		})
+	}
+}
