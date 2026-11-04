@@ -592,10 +592,16 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	// A kept draft is already an owned body. Redacting it again would change
 	// bytes the integrity guard just stamped.
 	if keepsPRUpdateText(sctx) {
+		if err := requireValidationCallout(content.Body, sctx, provider, bodyLimit); err != nil {
+			return prContent{}, err
+		}
 		return content, nil
 	}
 	redacted := redactPRContent(content, sctx.WorkDir, nmWorktreesRoot())
 	if err := validateOwnedPRBudget(redacted.Body, bodyLimit); err != nil {
+		return prContent{}, err
+	}
+	if err := requireValidationCallout(redacted.Body, sctx, provider, bodyLimit); err != nil {
 		return prContent{}, err
 	}
 	return redacted, nil

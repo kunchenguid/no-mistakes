@@ -508,6 +508,20 @@ const notValidatedLiveHeading = "## Not validated live"
 // view read (pipeline.CollectValidationGaps), and it is placed directly after
 // Intent, outside every fold, in every appendix mode: untested work must be
 // visible to a reviewer who never opens the Validation details.
+func requireValidationCallout(body string, sctx *pipeline.StepContext, provider scm.Provider, bodyLimit int) error {
+	callout := validationCallout(sctx, provider)
+	if callout == "" {
+		return nil
+	}
+	if !strings.Contains(body, callout) {
+		return fmt.Errorf("PR body budget cannot fit the complete Not validated live callout")
+	}
+	if len(body) > maxPullRequestBodyBytes || (bodyLimit > 0 && scm.PRBodyLen(body) > bodyLimit) {
+		return fmt.Errorf("PR body exceeds provider budget with the complete Not validated live callout")
+	}
+	return nil
+}
+
 func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) string {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
 		return ""

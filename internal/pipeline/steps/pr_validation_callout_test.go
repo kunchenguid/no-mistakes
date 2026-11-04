@@ -99,6 +99,20 @@ func TestPRBody_NotValidatedLiveCalloutStaysOutsideEveryFold(t *testing.T) {
 	}
 }
 
+func TestPRBody_RefusesBudgetThatTruncatesRequiredCallout(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			sctx := newCalloutContext(t, mode, true, true)
+			body := assemblePRBody(sctx, "## What Changed\n\n- add refunds", "low risk", "", "## Pipeline\n\n- ok", 128, scm.ProviderGitHub)
+			if err := requireValidationCallout(body, sctx, scm.ProviderGitHub, 128); err == nil {
+				t.Fatalf("accepted body that cannot preserve the complete callout:\n%s", body)
+			}
+		})
+	}
+}
+
 func TestPRBody_FullyLiveRunHasNoCallout(t *testing.T) {
 	t.Parallel()
 	sctx := newCalloutContext(t, config.PRAppendixMinimal, false, false)
