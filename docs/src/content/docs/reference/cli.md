@@ -145,6 +145,7 @@ no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
 no-mistakes axi run --intent "the user's goal" --no-publish-intent
 no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#12
+no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --pr-body-file ./pr.md
 ```
 
 | Flag            | Type     | Default | Description                                                                                          |
@@ -157,6 +158,8 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
+| `--pr-title` | `string` | (none) | PR title used verbatim when this run creates the PR; see [Supplied PR title and description](#supplied-pr-title-and-description) |
+| `--pr-body-file` | `string` | (none) | Read the PR description used verbatim when this run creates the PR; `-` reads stdin to EOF |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
@@ -224,6 +227,14 @@ The same omit-to-reattach rule applies to `--model`/`--effort` against an active
 The references are persisted on the run and survive daemon restarts, fix rounds, rebases, and that run's PR-body refreshes; `no-mistakes rerun` inherits them, and its own `--closes` adds to them. They can also be passed on a plain gate push as repeated `-o no-mistakes.closes=<ref>` push options; a gate push without them starts a run with none, and its PR-body refresh drops the `## Issues` section. Reattaching with `--closes` adds references to the active run until its PR body has been composed; after that the request is refused with an explicit error rather than reported as applied. Before starting a run with `--closes`, `axi run` refuses a running daemon too old to honor it, and rejects `--closes` combined with `--skip pr` as a usage error; a run whose PR step is skipped any other way fails at that step instead (see the [PR step](/no-mistakes/reference/pipeline-steps/#pr)).
 
 `--closes` is supported on providers that close issues from the pull request body: GitHub and GitLab. On another forge the PR step fails rather than publish a PR that silently closes nothing; a GitLab subgroup reference on a non-GitLab provider is refused the same way, since that forge would read it as a different repository's reference. The forge closes the issue only when the PR merges into the repository's default branch (and, on GitLab, unless automatic issue closing is disabled for the project); a PR merged into another branch does not close it.
+
+### Supplied PR title and description
+
+`--pr-title TEXT` and `--pr-body-file PATH` supply the PR's title and description, for teams with a description convention. They are used only when this run **creates** the PR; the PR step then adds the usual appendix (Intent, the evidence in the configured [`pr.appendix`](/no-mistakes/reference/repo-config/#prappendix) mode, the `## Issues` section) and the attestation after the description. Either flag works alone: a run with only `--pr-title` drafts the description as usual, and a run with only `--pr-body-file` drafts the title. Without either flag nothing changes. See the [PR step](/no-mistakes/reference/pipeline-steps/#pr) for how each is published and what later runs keep.
+
+There is no inline description flag, because Markdown with backticks and dollars is exactly the text a caller's shell expands; pass a file or `--pr-body-file -` to read stdin to EOF. `--pr-body-file -` and `--intent -` cannot both read stdin. The title is trimmed and must be one non-empty line of at most 4,096 bytes of valid UTF-8 with no control, bidi, or invisible format characters. The description must be non-blank, valid UTF-8, at most **49,122 bytes** (the same single push-option transport as [intent](#intent-input)), free of control characters other than tab, newline, and carriage return, free of bidi override and isolate characters, and must not contain no-mistakes appendix or attestation markers. Every refusal is a usage error before any push; the daemon re-checks the same rules. A description that is valid but does not fit the provider's body budget together with the appendix fails at the PR step instead of being truncated.
+
+Both values are persisted on the run, survive daemon restarts, and are inherited by `no-mistakes rerun` and [`axi retry`](#no-mistakes-axi-retry); a plain gate push carries neither unless it passes the `-o no-mistakes.pr-title=<base64>` and `-o no-mistakes.pr-body=<base64>` push options. Reattaching with a title or description that differs from the active run's is refused; omit the flags to reattach. Like `--closes`, `axi run` refuses a running daemon too old to honor them and rejects them combined with `--skip pr`. A run whose PR step is skipped any other way, or that finds the PR already open, logs that the supplied text went unused.
 Ordinary reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
@@ -287,6 +298,7 @@ A conflicting submitted head, validation generation, intent, or [pinned Pi profi
 A different nonce creates a distinct run rather than reattaching to a same-head run; both post-receive creation and the up-to-date-push fallback follow this contract.
 The up-to-date-push fallback preserves the latest same-head run's PR URL unless its recorded PR state is closed or merged, including when an explicit `--base-branch` retargets that PR.
 An explicit `--base-branch` is persisted on creation and must match the stored per-run base on replay; omitting it on replay preserves the stored base.
+A supplied `--pr-title` or `--pr-body-file` is bound the same way: a replay must supply the same text as the run, or none when the run has none.
 A replay that adds `--no-publish-intent` against a run bound to publish the section is refused for the same reason; the stored omit decision folds in the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default at creation, so a replay without the flag still matches a run whose row omits publication.
 Explicit `--model`/`--effort` must match a stored pin the same way; omitting both preserves it.
 A conflicting claim does not consume the first `created` disposition.
@@ -749,6 +761,7 @@ no-mistakes rerun --intent "the revised user goal"
 no-mistakes rerun --model openai-codex/gpt-5.4 --effort high
 no-mistakes rerun --no-publish-intent
 no-mistakes rerun --closes 95
+no-mistakes rerun --pr-body-file ./pr.md
 ```
 
 `--model` and `--effort` opt this new run into a [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles), with the same precedence and validation as `axi run`. Omitting both retains current global-config behavior; a prior run's model pin is not inherited.
@@ -788,6 +801,8 @@ failed step instead of repeating every completed step.
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
+| `--pr-title` | `string` | (none) | Replace the inherited [supplied PR title](#supplied-pr-title-and-description); used only if this rerun creates the PR |
+| `--pr-body-file` | `string` | (none) | Replace the inherited supplied PR description from a file, or `-` for stdin |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 
