@@ -17,6 +17,7 @@ const (
 	MethodPushReceived              = "push_received"
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
+	MethodProbeRunPRText            = "probe_run_pr_text"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
 	MethodCaptureVerificationPlan   = "capture_verification_plan"
 	MethodStartFreshRun             = "start_fresh_run"
@@ -107,6 +108,11 @@ type PushReceivedParams struct {
 	// ClosingIssueRefs are the explicit issues (axi run --closes) the
 	// generated PR should close.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
+	// PRTitle and PRBody are the caller-supplied PR title and description
+	// (axi run --pr-title / --pr-body-file), used only when the run creates
+	// the PR.
+	PRTitle string `json:"pr_title,omitempty"`
+	PRBody  string `json:"pr_body,omitempty"`
 }
 
 // StartFreshRunParams requests a nonce-bound fresh launch for one exact gate
@@ -126,6 +132,8 @@ type StartFreshRunParams struct {
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
 	OmitIntent           bool             `json:"omit_intent,omitempty"`
 	ClosingIssueRefs     []string         `json:"closing_issue_refs,omitempty"`
+	PRTitle              string           `json:"pr_title,omitempty"`
+	PRBody               string           `json:"pr_body,omitempty"`
 }
 
 // CaptureVerificationPlanParams requests a snapshot before the caller pushes.
@@ -158,6 +166,17 @@ type ProbeOmitIntentResult struct {
 	OK bool `json:"ok"`
 }
 
+// ProbeRunPRTextParams is the empty request for MethodProbeRunPRText.
+type ProbeRunPRTextParams struct{}
+
+// ProbeRunPRTextResult answers MethodProbeRunPRText, the capability check for
+// pr_title and pr_body. An older daemon would drop those unknown fields and
+// open a PR with drafted text instead; it refuses the unknown method, so a
+// client that reaches OK=true knows the supplied text is honored.
+type ProbeRunPRTextResult struct {
+	OK bool `json:"ok"`
+}
+
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
@@ -171,6 +190,9 @@ type ClaimLaunchReceiptParams struct {
 	IntentDigest         string `json:"intent_digest"`
 	PRBaseBranch         string `json:"pr_base_branch,omitempty"`
 	OmitIntent           bool   `json:"omit_intent,omitempty"`
+	// PRTextDigest is db.PRTextDigest of the supplied PR title and
+	// description, "" for none. A replay must match the run's stored text.
+	PRTextDigest string `json:"pr_text_digest,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -243,6 +265,10 @@ type RerunParams struct {
 	// ClosingIssueRefs are added to the references the selected run carried;
 	// a rerun never drops an inherited closing reference.
 	ClosingIssueRefs []string `json:"closing_issue_refs,omitempty"`
+	// PRTitle and PRBody each replace the selected run's supplied value when
+	// set; an unset field inherits it.
+	PRTitle string `json:"pr_title,omitempty"`
+	PRBody  string `json:"pr_body,omitempty"`
 }
 
 // RetryRunParams asks the daemon to continue a failed run from its failed
@@ -522,6 +548,11 @@ type RunInfo struct {
 	// tighten-only request to keep the generated Intent section out of the
 	// PR body (see runs.omit_intent).
 	OmitIntent bool `json:"omit_intent,omitempty"`
+	// PRTitleDigest and PRBodyDigest identify the run's caller-supplied PR
+	// title and description (db.PRTextDigest of each alone), so a reattach can
+	// refuse different text without the text riding every run listing.
+	PRTitleDigest string `json:"pr_title_digest,omitempty"`
+	PRBodyDigest  string `json:"pr_body_digest,omitempty"`
 	// QuotaRouting is the run's quota-aware agent-ordering record (the raw
 	// quotarouting.Record JSON) when the feature is on for this run, empty
 	// otherwise. Local-only observability; see internal/quotarouting.

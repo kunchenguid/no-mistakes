@@ -270,6 +270,50 @@ func TestProofLaunchReceiptBindsIndependentGenerationAndFirstObserver(t *testing
 	}
 }
 
+func TestProofLaunchReceiptBindsTheSuppliedPRText(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	repo, headSHA := setupTestGitRepo(t, p, d, "proof-pr-text-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	const nonce, generation, intent = "nonce-pr-text", "generation-001", "exact intent"
+	start := func(title, body string) (ipc.StartFreshRunResult, error) {
+		var result ipc.StartFreshRunResult
+		err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+			RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+			LaunchNonce: nonce, ValidationGeneration: generation, PRTitle: title, PRBody: body,
+		}, &result)
+		return result, err
+	}
+	claim := func(digest string) error {
+		var result ipc.ClaimLaunchReceiptResult
+		return client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+			RepoID: repo.ID, Branch: "main", LaunchNonce: nonce, SubmittedHeadSHA: headSHA,
+			ValidationGeneration: generation, IntentDigest: digestIntent(intent), PRTextDigest: digest,
+		}, &result)
+	}
+
+	first, err := start("Add widget", "Our words.\n")
+	if err != nil || first.Receipt.Disposition != "created" {
+		t.Fatalf("first launch = %#v, %v", first.Receipt, err)
+	}
+	if replay, err := start("Add widget", "Our words.\n"); err != nil || replay.Receipt.RunID != first.Receipt.RunID {
+		t.Fatalf("identical replay = %#v, %v", replay.Receipt, err)
+	}
+	if _, err := start("Add widget", "Other words.\n"); err == nil || !strings.Contains(err.Error(), "supplied PR title or description") {
+		t.Fatalf("changed description reused a nonce: %v", err)
+	}
+	if err := claim(db.PRTextDigest("Add widget", "Our words.\n")); err != nil {
+		t.Fatalf("matching claim: %v", err)
+	}
+	if err := claim(""); err == nil || !strings.Contains(err.Error(), "supplied PR title or description") {
+		t.Fatalf("claim without the PR text was served: %v", err)
+	}
+}
+
 func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
@@ -966,6 +1010,70 @@ func TestRerunInheritsIntentAndClosingIssuesFromSelectedRun(t *testing.T) {
 	}
 	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,owner/repo#9" {
 		t.Fatalf("closing issue references = %q, want inherited set", refs)
+	}
+}
+
+func TestSuppliedPRTextPersistsAndRerunInheritsOrReplacesIt(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	_, headSHA := setupTestGitRepo(t, p, d, "pr-text-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	push := func(title, body string) (string, error) {
+		var result ipc.PushReceivedResult
+		err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			Gate: p.RepoDir("pr-text-repo"), Ref: "refs/heads/main",
+			Old: "0000000000000000000000000000000000000000", New: headSHA,
+			PRTitle: title, PRBody: body,
+		}, &result)
+		return result.RunID, err
+	}
+	rerun := func(title, body string) *db.Run {
+		t.Helper()
+		var result ipc.RerunResult
+		if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: "pr-text-repo", Branch: "main", PRTitle: title, PRBody: body}, &result); err != nil {
+			t.Fatal(err)
+		}
+		return waitForRunTerminalState(t, d, result.RunID)
+	}
+	text := func(run *db.Run) string {
+		var title, body string
+		if run.PRTitle != nil {
+			title = *run.PRTitle
+		}
+		if run.PRBody != nil {
+			body = *run.PRBody
+		}
+		return title + "|" + body
+	}
+
+	if _, err := push("bad\ntitle", ""); err == nil || !strings.Contains(err.Error(), "pr title") {
+		t.Fatalf("daemon accepted an invalid title: %v", err)
+	}
+	first, err := push("  Add widget  ", "Our words.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := text(waitForRunTerminalState(t, d, first)); got != "Add widget|Our words.\n" {
+		t.Fatalf("pushed run PR text = %q", got)
+	}
+	if got := text(rerun("", "")); got != "Add widget|Our words.\n" {
+		t.Fatalf("rerun did not inherit the PR text: %q", got)
+	}
+	if got := text(rerun("New title", "")); got != "New title|Our words.\n" {
+		t.Fatalf("rerun --pr-title did not replace only the title: %q", got)
+	}
+	superseding, err := push("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := text(waitForRunTerminalState(t, d, superseding)); got != "|" {
+		t.Fatalf("a plain push inherited PR text: %q", got)
 	}
 }
 

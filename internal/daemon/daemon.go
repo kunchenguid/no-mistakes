@@ -1344,7 +1344,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PiProfile)
+		run, claimed, err := d.ClaimLaunchReceiptWithPRText(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.PiProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
@@ -1360,6 +1360,9 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if p.OmitIntent && !run.OmitIntent {
 			return nil, conflictingLaunchOmitIntent(p.LaunchNonce)
 		}
+		if run.PRTextDigest() != p.PRTextDigest {
+			return nil, conflictingLaunchPRText(p.LaunchNonce)
+		}
 
 		receipt, err := receiptForRun(run, claimed)
 		if err != nil {
@@ -1374,6 +1377,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	// Capability probe for --no-publish-intent: see ipc.ProbeOmitIntentResult.
 	srv.Handle(ipc.MethodProbeOmitIntent, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeOmitIntentResult{OK: true}, nil
+	})
+
+	// Capability probe for --pr-title / --pr-body-file: see ipc.ProbeRunPRTextResult.
+	srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeRunPRTextResult{OK: true}, nil
 	})
 
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1452,7 +1460,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, p.PiProfile)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.PiProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1655,6 +1663,12 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
+	}
+	if r.PRTitle != nil {
+		info.PRTitleDigest = db.PRTextDigest(*r.PRTitle, "")
+	}
+	if r.PRBody != nil {
+		info.PRBodyDigest = db.PRTextDigest("", *r.PRBody)
 	}
 	if link, err := d.GetRunRetry(r.ID); err == nil && link != nil {
 		info.RetryOf = &ipc.RunRetryInfo{RunID: link.SourceRunID, Step: link.StepName, Round: link.SourceRound, Error: link.SourceError, CheckpointHeadSHA: link.CheckpointHeadSHA}
