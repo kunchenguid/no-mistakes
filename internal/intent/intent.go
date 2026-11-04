@@ -27,6 +27,8 @@ type ExtractParams struct {
 	OriginCWD string
 	// DiffFiles is the repo-relative file set used for matching and scoring.
 	DiffFiles []string
+	// Change is the exact Git range and diff under validation, for summarization.
+	Change ChangeContext
 	// BaseTime is the committer time of the base SHA.
 	BaseTime time.Time
 	// HeadTime is the committer time of the head SHA.
@@ -140,7 +142,8 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 		return nil, err
 	}
 
-	key := cacheKeyFor(match.Session)
+	change := SummaryContext{Change: p.Change, WindowStart: opts.WindowStart, WindowEnd: opts.WindowEnd}
+	key := summaryCacheKeyFor(match.Session, change)
 	if cached, ok := p.Cache.Get(key); ok && cached != "" {
 		return &Result{
 			Summary:   cached,
@@ -150,7 +153,7 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 		}, nil
 	}
 
-	summary, err := p.Summarizer.Summarize(ctx, match.Session)
+	summary, err := p.Summarizer.Summarize(ctx, match.Session, change)
 	if err != nil {
 		return nil, fmt.Errorf("intent: summarize: %w", err)
 	}

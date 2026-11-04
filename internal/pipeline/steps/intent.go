@@ -200,6 +200,12 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	if len(diffFiles) == 0 {
 		return nil, errIntentEmptyDiff
 	}
+	// Use the submitted range, never HEAD or the live working tree. Disable
+	// external diff/textconv helpers and leave binary data as Git's notices.
+	diff, err := git.Run(ctx, gitWorkDir, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--patch", resolvedBaseSHA+".."+run.HeadSHA, "--")
+	if err != nil {
+		return nil, fmt.Errorf("intent change context: %w", err)
+	}
 
 	baseTime, err := git.CommitTime(ctx, gitWorkDir, resolvedBaseSHA)
 	if err != nil || git.IsZeroSHA(run.BaseSHA) {
@@ -224,6 +230,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	return intent.Extract(ctx, intent.ExtractParams{
 		OriginCWD:     repo.WorkingPath,
 		DiffFiles:     diffFiles,
+		Change:        intent.ChangeContext{Base: resolvedBaseSHA, Head: run.HeadSHA, Diff: diff},
 		BaseTime:      baseTime,
 		HeadTime:      headTime,
 		SlackDays:     cfg.Intent.SlackDays,

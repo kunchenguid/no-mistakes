@@ -3,6 +3,7 @@ package intent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -67,5 +68,15 @@ func cacheKeyFor(s *Session) string {
 	h.Write([]byte(s.LastMsgKey))
 	h.Write([]byte{'|'})
 	h.Write([]byte(strconv.Itoa(len(s.Messages))))
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// A session can produce several changes without gaining another message. Keep
+// summaries distinct by change and window, and invalidate transcript-only caches.
+func summaryCacheKeyFor(s *Session, change SummaryContext) string {
+	data, _ := json.Marshal(change)
+	h := sha256.New()
+	h.Write([]byte("change-summary-v1|" + cacheKeyFor(s)))
+	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
