@@ -171,7 +171,8 @@ func TestWorktreeSteering_DescribesSoftBoundary(t *testing.T) {
 // the Test step has scenarios and an "untested" state, so the shared preamble
 // asks the role to report the missing tool in its own normal result.
 func TestWorktreeSteering_BoundsHostFilesystemSearch(t *testing.T) {
-	preamble := WorktreeSteering(filepath.Join(t.TempDir(), "evidence"))
+	evidenceDir := filepath.Join(t.TempDir(), "evidence")
+	preamble := WorktreeSteering(evidenceDir)
 	normalized := strings.Join(strings.Fields(preamble), " ")
 	for _, want := range []string{
 		"Do not search the host filesystem",
@@ -192,8 +193,11 @@ func TestWorktreeSteering_BoundsHostFilesystemSearch(t *testing.T) {
 		}
 	}
 	// The shared fallback must not claim a scenario/untested shape that only the
-	// Test step's schema supports; the Test prompt owns that wording.
-	if strings.Contains(normalized, "untested") || strings.Contains(normalized, "scenario") {
+	// Test step's schema supports; the Test prompt owns that wording. The
+	// caller-supplied evidence path is not steering text, so a temp directory
+	// whose name happens to contain either word is not a violation.
+	wording := strings.ReplaceAll(normalized, evidenceDir, "")
+	if strings.Contains(wording, "untested") || strings.Contains(wording, "scenario") {
 		t.Errorf("shared steering fallback is not role-neutral (mentions scenario/untested):\n%s", preamble)
 	}
 	// The pre-existing read allowance must survive: this narrows an unbounded

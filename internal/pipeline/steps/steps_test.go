@@ -35,6 +35,9 @@ func TestMain(m *testing.M) {
 	}
 	globalConfig := filepath.Join(globalConfigDir, "gitconfig")
 	os.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	// Nor the developer's glab login: a fixture that relies on no GitLab host
+	// being available fails on a machine logged in to gitlab.com.
+	os.Setenv("GLAB_CONFIG_DIR", filepath.Join(globalConfigDir, "glab"))
 	cleanup, err := stepstest.Init()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init fake CLI helper: %v\n", err)
