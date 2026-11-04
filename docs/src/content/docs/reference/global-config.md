@@ -301,14 +301,6 @@ An entry may also declare `quota_provider`, the quota-axi provider ID used as ro
 
 `agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored. For first-class ACP aliases, `cursor` and `acp:cursor` share a profile, as do `devin` and `acp:devin`: the selected spelling's entry wins when both are configured; otherwise the other spelling's entry applies. This also applies to review-agent profiles.
 
-#### Cursor model preflight
-
-For `cursor` and `acp:cursor`, admission checks each effective primary, review-role, later-round and configured fallback selection against the selected ACP executable's catalog before superseding an existing run or starting preparation and pipeline work. The check uses the candidate worktree and the agent's launch environment, including forge overlays and gate markers. The existing [project-settings opt-out](/no-mistakes/reference/repo-config/#disable_project_settings) can refuse an adapter before catalog inspection. Identical selections share a check only within that admission. Recovery and each model invocation perform a fresh check with their effective working directory and environment.
-
-Model IDs are opaque strings, including any bracketed parameters. A complete, valid catalog supports an explicit model only when the full ID matches exactly. A complete catalog missing that ID is unsupported. Authentication failure, unavailable or incompatible dependencies, missing capability, empty or malformed metadata, timeout and excessive output make the result indeterminate. Both refusals stop dependent work and identify the requested ID and configuration field to correct. Admission refusals retain the previous run and clean up only the refused candidate. Select an exact ACP-advertised ID in the named `agent_config` or `review_agents` field, or correct the installed dependency or existing authentication in the daemon's launch context before retrying.
-
-Discovery has a 15-second deadline and bounded cleanup. Bridge output and returned model-ID metadata are bounded. It initializes an ACP session through acpx's non-generating inspection API, sends no prompt and grants no filesystem, terminal or permission callbacks. The backend may retain native session history. An omitted model is accepted only when the catalog advertises its current default; that observation leaves the model unpinned. Catalog acceptance establishes model availability at discovery time, not inference success. Other backends keep their existing model-selection behavior.
-
 **Precedence for unpinned runs.** `agent_args_override` wins. Opt-in [per-run Pi profiles](#per-run-pi-profiles) and [reviewer profiles](#per-run-reviewer-profiles) have separate, immutable selection contracts. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
 
 ```yaml
@@ -321,6 +313,14 @@ agent_args_override:
     - -m
     - o3
 ```
+
+#### Cursor model preflight
+
+For `cursor` and `acp:cursor`, admission checks each effective primary, review-role, later-round and configured fallback selection against the selected ACP executable's catalog before superseding an existing run or starting preparation and pipeline work. The check uses the candidate worktree and the agent's launch environment, including forge overlays and gate markers. The existing [project-settings opt-out](/no-mistakes/reference/repo-config/#disable_project_settings) can refuse an adapter before catalog inspection. Identical selections share a check only within that admission. Recovery and each model invocation perform a fresh check with their effective working directory and environment.
+
+Model IDs are opaque strings, including any bracketed parameters. A complete, valid catalog supports an explicit model only when the full ID matches exactly. A complete catalog missing that ID is unsupported. Authentication failure, unavailable or incompatible dependencies, missing capability, empty or malformed metadata, timeout and excessive output make the result indeterminate. Both refusals stop dependent work and identify the requested ID and configuration field to correct. Admission refusals retain the previous run and clean up only the refused candidate. Select an exact ACP-advertised ID in the named `agent_config` or `review_agents` field, or correct the installed dependency or existing authentication in the daemon's launch context before retrying.
+
+Discovery has a 15-second deadline and bounded cleanup. Bridge output and returned model-ID metadata are bounded. It initializes an ACP session through acpx's non-generating inspection API, sends no prompt and grants no filesystem, terminal or permission callbacks. The backend may retain native session history. An omitted model is accepted only when the catalog advertises its current default; that observation leaves the model unpinned. Catalog acceptance establishes model availability at discovery time, not inference success. Other backends keep their existing model-selection behavior.
 
 ### Per-run reviewer profiles
 
