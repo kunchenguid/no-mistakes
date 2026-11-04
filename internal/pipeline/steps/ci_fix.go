@@ -92,11 +92,14 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		}
 	}
 	failingTargets := ciFixTargetsFromFindings(failingFindings)
-	if len(failingTargets.Checks) > 0 {
-		expectedHeadSHA, err := stepGitHeadSHA(sctx)
-		if err != nil {
-			return nil, fmt.Errorf("resolve head before snapshotting selected CI checks: %w", err)
-		}
+	expectedHeadSHA, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve head before snapshotting selected CI checks: %w", err)
+	}
+	// A repair pinned by a failed verification has no remote checks to
+	// snapshot: the provider still reports the published head, so the snapshot
+	// would call the selected check stale and drop the requested fix.
+	if len(failingTargets.Checks) > 0 && !pinnedByFailedVerification(sctx, expectedHeadSHA) {
 		snapshotPR := *pr
 		snapshotPR.HeadSHA = expectedHeadSHA
 		checks, _, moved, err := getCIChecks(sctx.Ctx, host, &snapshotPR)
@@ -363,7 +366,8 @@ CI logs:
 	conclusion, conclusionErr := extractCIFixConclusion(result)
 	if conclusionErr != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
-	} else if conclusion.VerificationPassed != nil {
+	}
+	if conclusion.VerificationPassed != nil {
 		s.repairVerification = ciRepairVerification{
 			reported: true,
 			passed:   *conclusion.VerificationPassed,
@@ -553,22 +557,26 @@ var ciFixConclusionSchema = json.RawMessage(fmt.Sprintf(`{
 }`, config.MaxFixMessageSummaryBytes, maxCIVerificationRanBytes))
 
 func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
-	summary, err := extractCommitSummary(result)
-	if err != nil {
-		return ciFixConclusion{}, err
-	}
+	summary, summaryErr := extractCommitSummary(result)
 	var conclusion ciFixConclusion
+	if result.Output == nil {
+		return ciFixConclusion{}, summaryErr
+	}
 	if err := json.Unmarshal(result.Output, &conclusion); err != nil {
 		return ciFixConclusion{}, fmt.Errorf("parse CI repair conclusion: %w", err)
 	}
+	conclusion.VerificationRan = boundVerificationRan(conclusion.VerificationRan)
+	conclusion.Summary = ""
+	if summaryErr != nil {
+		return conclusion, summaryErr
+	}
 	if conclusion.CodeChangeNeeded == nil {
-		return ciFixConclusion{}, fmt.Errorf("CI repair conclusion omitted code_change_needed")
+		return conclusion, fmt.Errorf("CI repair conclusion omitted code_change_needed")
 	}
 	if !*conclusion.CodeChangeNeeded && summary == "" {
-		return ciFixConclusion{}, fmt.Errorf("no-change CI repair conclusion omitted its summary")
+		return conclusion, fmt.Errorf("no-change CI repair conclusion omitted its summary")
 	}
 	conclusion.Summary = summary
-	conclusion.VerificationRan = boundVerificationRan(conclusion.VerificationRan)
 	return conclusion, nil
 }
 
@@ -859,11 +867,33 @@ func (s *CIStep) unrecordedRepairResult() ciRepairResult {
 }
 
 func ciHeadAwaitsRecording(sctx *pipeline.StepContext, headSHA string) bool {
-	if headSHA != sctx.Run.HeadSHA {
-		return true
-	}
+	return headSHA != sctx.Run.HeadSHA || ciRepairUnpublished(sctx, headSHA)
+}
+
+func ciRepairUnpublished(sctx *pipeline.StepContext, headSHA string) bool {
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	return err == nil && run != nil && run.LastPushedSHA != nil && !strings.EqualFold(strings.TrimSpace(*run.LastPushedSHA), headSHA)
+}
+
+// pinnedByFailedVerification reports whether the local head is an unpublished
+// repair that the parked gate withheld for a failed verification. The gate's
+// verification finding rides this round as selected or deferred.
+func pinnedByFailedVerification(sctx *pipeline.StepContext, headSHA string) bool {
+	if !ciRepairUnpublished(sctx, headSHA) {
+		return false
+	}
+	for _, raw := range []string{sctx.PreviousFindings, sctx.DeferredFindings} {
+		parsed, err := types.ParseFindingsJSON(raw)
+		if err != nil {
+			continue
+		}
+		for _, item := range parsed.Items {
+			if item.ID == types.FindingIDCIVerificationFailed {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ciRevalidatesRepairs reports whether this run must re-run the whole pipeline
