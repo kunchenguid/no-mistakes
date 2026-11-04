@@ -300,6 +300,8 @@ Context:
 		mergeConflict,
 		promptRules,
 	)
+	prompt += "\n" + fixSummaryRules(sctx, s.Name())
+	prompt += "\n- Keep detailed diagnosis and verification evidence in your explanatory output, which is recorded in the run log, rather than in summary."
 	if rebase {
 		prompt += fmt.Sprintf("\n- rebase target commit: %s", rebaseBaseSHA)
 	}
