@@ -102,7 +102,15 @@ const (
 	FindingCategoryCIBehindBase    = "ci-behind-base"
 	FindingCategoryCITransient     = "ci-transient"
 	FindingCategoryCIReviewBot     = "ci-review-bot"
+	// FindingCategoryCIVerification is the CI fixer's own verification result.
+	// It is not a forge check, so the fix half does not fetch logs for it.
+	FindingCategoryCIVerification = "ci-verification"
 )
+
+// FindingIDCIVerificationFailed is the ask-user finding the CI step emits
+// when a fix conclusion reports verification_passed false. The repair commit
+// stays pinned on the run and is not published.
+const FindingIDCIVerificationFailed = "ci-verification-failed"
 
 // FindingCategoryReviewQuestion marks the synthetic finding the review step
 // emits for each question its reviewer asked and nobody has answered yet. It

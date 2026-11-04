@@ -50,12 +50,14 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 ` + ciFixerClassRules + `
 		- Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires.
 		- Do not refactor beyond what is needed for that root-cause fix.
-		- Verify the fix by running the most relevant commands locally before finishing.`
+		- Verify the fix by running the most relevant commands locally before finishing.
+` + ciVerificationConclusionRules
 
 const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 ` + ciFixerClassRules + `
-		- Verify the rebase completes cleanly before finishing.`
+		- Verify the rebase completes cleanly before finishing.
+` + ciVerificationConclusionRules
 
 // repairFromFindings runs one CI fix round over the findings the executor
 // selected for it (sctx.PreviousFindings): the auto-fix subset of the last
@@ -66,13 +68,14 @@ const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the m
 // It returns a non-nil outcome when the round ends this execution: a
 // protected-path refusal, a fix agent that burned its whole invocation
 // budget, a repair whose attestation could not be settled, a repair that must
-// revalidate from Review, or the agent's conclusion that no code change is
-// warranted - the last two of those park the selected findings as ask-user,
-// because a question the agent has already declined to answer with code is a
-// human's to answer. A nil outcome means monitoring resumes: either the
-// repair was published and the provider must re-run the checks against it,
-// or the agent produced nothing and the next settled observation re-emits
-// the same findings so the executor can retry while auto_fix.ci allows.
+// revalidate from Review, the agent's conclusion that no code change is
+// warranted, or a conclusion that reports its own verification failed. Those
+// parks leave the selected findings as ask-user. A reported verification
+// failure also pins the repair commit on the run without publishing it and
+// without restarting Review or Test. A nil outcome means monitoring resumes:
+// either the repair was published and the provider must re-run the checks
+// against it, or the agent produced nothing and the next settled observation
+// re-emits the same findings so the executor can retry while auto_fix.ci allows.
 func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (*pipeline.StepOutcome, error) {
 	targets, err := parseCIFixTargets(sctx.PreviousFindings)
 	if err != nil {
@@ -157,6 +160,15 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
 		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
 	}
+	if repair.VerificationFailed {
+		if err != nil {
+			sctx.Log(fmt.Sprintf("warning: CI repair reported failed verification and was not published: %v", err))
+		} else {
+			sctx.Log("CI repair reported failed verification; pinned locally and not published")
+		}
+		s.pendingFixSummary = repair.Summary
+		return ciVerificationFailedOutcome(targets.Findings, sctx.DeferredFindings, repair), nil
+	}
 	if err != nil {
 		// An ordinary fix failure is cheap to repeat and often works the next
 		// time: the next settled observation re-emits the findings and the
@@ -226,6 +238,8 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 // The result reports whether the recorded head advanced and whether the repair
 // must revalidate; a zero result means the agent produced no changes.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, targets ciFixTargets) (ciRepairResult, error) {
+	s.repairVerification = ciRepairVerification{}
+	defer func() { s.repairVerification = ciRepairVerification{} }()
 	ctx := sctx.Ctx
 	failingNames := targets.checkNames()
 	mergeConflict := targets.MergeConflict
@@ -343,6 +357,12 @@ CI logs:
 	conclusion, conclusionErr := extractCIFixConclusion(result)
 	if conclusionErr != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
+	} else if conclusion.VerificationPassed != nil {
+		s.repairVerification = ciRepairVerification{
+			reported: true,
+			passed:   *conclusion.VerificationPassed,
+			ran:      conclusion.VerificationRan,
+		}
 	}
 	if rebase {
 		s.replayBase = rebaseBaseSHA
@@ -494,18 +514,29 @@ func boundedCILogError(err error, maxBytes int) string {
 }
 
 type ciFixConclusion struct {
-	Summary          string `json:"summary"`
-	CodeChangeNeeded *bool  `json:"code_change_needed"`
+	Summary            string `json:"summary"`
+	CodeChangeNeeded   *bool  `json:"code_change_needed"`
+	VerificationPassed *bool  `json:"verification_passed"`
+	VerificationRan    string `json:"verification_ran"`
 }
+
+// maxCIVerificationRanBytes bounds verification_ran. The text is copied into
+// an ask-user finding, which rides the IPC event stream.
+const maxCIVerificationRanBytes = 300
+
+const ciVerificationConclusionRules = `- Report that verification in the conclusion. Set verification_passed to true only when those commands succeeded. Set verification_ran to the commands you ran. If verification failed, set verification_passed to false and describe the commands and the failure in verification_ran. Leave the repair as local changes either way.
+`
 
 var ciFixConclusionSchema = json.RawMessage(fmt.Sprintf(`{
 	"type": "object",
 	"properties": {
 		"summary": {"type": "string", "maxLength": %d},
-		"code_change_needed": {"type": "boolean"}
+		"code_change_needed": {"type": "boolean"},
+		"verification_passed": {"type": "boolean"},
+		"verification_ran": {"type": "string", "maxLength": %d}
 	},
-	"required": ["summary", "code_change_needed"]
-}`, config.MaxFixMessageSummaryBytes))
+	"required": ["summary", "code_change_needed", "verification_passed", "verification_ran"]
+}`, config.MaxFixMessageSummaryBytes, maxCIVerificationRanBytes))
 
 func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
 	summary, err := extractCommitSummary(result)
@@ -523,7 +554,16 @@ func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
 		return ciFixConclusion{}, fmt.Errorf("no-change CI repair conclusion omitted its summary")
 	}
 	conclusion.Summary = summary
+	conclusion.VerificationRan = boundVerificationRan(conclusion.VerificationRan)
 	return conclusion, nil
+}
+
+func boundVerificationRan(raw string) string {
+	ran := strings.Join(strings.Fields(raw), " ")
+	if len(ran) <= maxCIVerificationRanBytes {
+		return ran
+	}
+	return strings.ToValidUTF8(ran[:maxCIVerificationRanBytes], "")
 }
 
 // ciFixAgentBudgetOutcome converts an auto-fix invocation that exhausted its
@@ -655,6 +695,24 @@ type ciRepairResult struct {
 	ConflictBaseSHA    string
 	NoCodeChangeNeeded bool
 	Summary            string
+	// VerificationFailed is true when the fix conclusion reported
+	// verification_passed false. The commit is pinned and not published,
+	// and the caller parks instead of restarting Review or Test.
+	VerificationFailed bool
+	VerificationRan    string
+}
+
+// ciRepairVerification is the fix conclusion's verification_passed report.
+// A zero value is not a reported failure: conclusions that omit the field
+// keep the publication rule they had before the field existed.
+type ciRepairVerification struct {
+	reported bool
+	passed   bool
+	ran      string
+}
+
+func (v ciRepairVerification) failed() bool {
+	return v.reported && !v.passed
 }
 
 // restartFrom is the step a revalidating repair restarts validation at.
@@ -718,7 +776,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 		if err == nil && ciHeadAwaitsRecording(sctx, headSHA) {
 			return s.recordRepair(sctx, headSHA)
 		}
-		return ciRepairResult{}, nil
+		return s.unrecordedRepairResult(), nil
 	}
 
 	message, err := render()
@@ -743,7 +801,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 		if ciHeadAwaitsRecording(sctx, headSHA) {
 			return s.recordRepair(sctx, headSHA)
 		}
-		return ciRepairResult{}, nil
+		return s.unrecordedRepairResult(), nil
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {
 		return ciRepairResult{}, fmt.Errorf("commit: %w", err)
@@ -761,6 +819,13 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 // repair already recorded locally but never published, such as the commit of a
 // fix agent that ran out of budget. Without the second case a later round that
 // adds nothing would leave that repair stranded behind the old published head.
+func (s *CIStep) unrecordedRepairResult() ciRepairResult {
+	if !s.repairVerification.failed() {
+		return ciRepairResult{}
+	}
+	return ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran}
+}
+
 func ciHeadAwaitsRecording(sctx *pipeline.StepContext, headSHA string) bool {
 	if headSHA != sctx.Run.HeadSHA {
 		return true
@@ -812,7 +877,16 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // Once recording or publication succeeds, the run's recorded head advances;
 // the two paths differ in whether the repair is published now or held until
 // Review has approved it.
+//
+// A conclusion that reports verification_passed false is neither path. The
+// commit is pinned on the run, the review approval and the attestation stay
+// where they are, and the caller parks at the CI gate. ci.revalidate_repairs
+// still chooses publication or a Review restart only when verification was
+// not reported as failed.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
+	if s.repairVerification.failed() {
+		return s.pinFailedVerificationRepair(sctx, headSHA)
+	}
 	if ciRevalidatesRepairs(sctx) {
 		return s.recordLocalRepair(sctx, headSHA)
 	}
@@ -839,6 +913,28 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 		return s.recordLocalRepair(sctx, headSHA)
 	}
 	return s.publishRepair(sctx, headSHA)
+}
+
+// pinFailedVerificationRepair records a repair the fixer reported as
+// unverified. It does not publish, does not restamp the attestation, and
+// does not revoke the review approval. recordLocalRepair would do that
+// revocation and the caller would restart at Review.
+func (s *CIStep) pinFailedVerificationRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
+	result := ciRepairResult{VerificationFailed: true, VerificationRan: s.repairVerification.ran}
+	if strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
+		sctx.Log("CI repair reported failed verification; not publishing")
+		return result, nil
+	}
+	if err := updateNonSharedBranchRef(sctx, headSHA); err != nil {
+		return result, err
+	}
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		return result, err
+	}
+	sctx.Run.HeadSHA = headSHA
+	sctx.Log("CI repair reported failed verification; pinned locally and not published")
+	result.HeadAdvanced = true
+	return result, nil
 }
 
 // recordReplayedRepair keeps a rebase repair local and moves the run's review
