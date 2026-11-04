@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -59,6 +60,59 @@ func TestCIStep_ReportedVerificationPassStillPublishes(t *testing.T) {
 	}
 	if f.remoteHead(t) != f.localHead(t) || f.remoteHead(t) == f.headSHA {
 		t.Fatalf("pass was not published: local=%s remote=%s original=%s", f.localHead(t), f.remoteHead(t), f.headSHA)
+	}
+}
+
+func TestCIStep_RejectedSummaryStillWithholdsFailedVerification(t *testing.T) {
+	t.Parallel()
+	overlong := strings.Repeat("x", config.MaxFixMessageSummaryBytes+1)
+	f := newFixerOutputFixture(t, false, `{"summary":"`+overlong+`","code_change_needed":true,"verification_passed":false,"verification_ran":"`+failedVerificationRan+`"}`)
+	outcome, err := f.run(t)
+	if err != nil {
+		t.Fatalf("repair: %v\nlog:\n%s", err, f.log())
+	}
+	assertFailedVerificationPark(t, outcome)
+	if f.remoteHead(t) != f.headSHA {
+		t.Fatalf("remote head = %s, want the unpublished pre-repair head %s", f.remoteHead(t), f.headSHA)
+	}
+}
+
+func TestCIStep_FixOverPinnedFailedRepairRunsTheFixerAndKeepsOneFinding(t *testing.T) {
+	t.Parallel()
+	f, first := runFailedVerificationRepairFixture(t, false, false)
+	assertFailedVerificationPark(t, first)
+	pinned := f.localHead(t)
+
+	f.sctx.Ctx = context.Background()
+	f.sctx.Fixing = true
+	f.sctx.PreviousFindings = ciGateFindingsJSON("test")
+	f.sctx.DeferredFindings = first.Findings
+	outcome, err := (&CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		t.Fatal("failed verification must park before another poll")
+		return nil
+	}}).Execute(f.sctx)
+	if err != nil {
+		t.Fatalf("second fix: %v\nlog:\n%s", err, f.log())
+	}
+	assertFailedVerificationPark(t, outcome)
+	if f.localHead(t) == pinned {
+		t.Fatalf("the fixer did not run over the pinned repair:\n%s", f.log())
+	}
+	if f.remoteHead(t) != f.headSHA {
+		t.Fatalf("remote head = %s, want the unpublished pre-repair head %s", f.remoteHead(t), f.headSHA)
+	}
+	parsed, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, item := range parsed.Items {
+		if item.ID == types.FindingIDCIVerificationFailed {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("verification findings = %d, want 1: %+v", count, parsed.Items)
 	}
 }
 
@@ -168,6 +222,15 @@ type attestationFixture struct {
 
 func newFailedVerificationFixture(t *testing.T, revalidate, passed bool) *attestationFixture {
 	t.Helper()
+	passedJSON := "false"
+	if passed {
+		passedJSON = "true"
+	}
+	return newFixerOutputFixture(t, revalidate, `{"summary":"repair the failing check","code_change_needed":true,"verification_passed":`+passedJSON+`,"verification_ran":"`+failedVerificationRan+`"}`)
+}
+
+func newFixerOutputFixture(t *testing.T, revalidate bool, output string) *attestationFixture {
+	t.Helper()
 	f := newCIRepairFixture(t, revalidate, nil)
 	original := compliantPipelineBody(t, f.headSHA)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
@@ -175,13 +238,10 @@ func newFailedVerificationFixture(t *testing.T, revalidate, passed bool) *attest
 		t.Fatal(err)
 	}
 	f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_BODY_FILE="+bodyFile, "FAKE_CLI_PR_TITLE=fix: ci")
-	passedJSON := "false"
-	if passed {
-		passedJSON = "true"
-	}
-	output := `{"summary":"repair the failing check","code_change_needed":true,"verification_passed":` + passedJSON + `,"verification_ran":"` + failedVerificationRan + `"}`
+	runs := 0
 	f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-		if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		runs++
+		if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte(strings.Repeat("fixed", runs)), 0o644); err != nil {
 			return nil, err
 		}
 		if !strings.Contains(opts.Prompt, "verification_passed") || !strings.Contains(opts.Prompt, "verification_ran") {
