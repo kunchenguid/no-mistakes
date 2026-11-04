@@ -295,7 +295,7 @@ validation:
 
 `verdict` is the Test verdict (`go`, `no-go`, `inconclusive`, `no-surface`, or `none`), and `live` of `total` scenarios were driven against the real product.
 `untested` names every scenario that was not, with the reason the Test step recorded.
-`exceptions` lists each decision that let the run continue without that validation: `test-exception` (the same reason as `run.test_override_reason`), `ci-override`, `operator-skip` (a step skipped with `--skip` or a skip response), and `automatic-skip` (the `run.automatic_skips` causes).
+`exceptions` lists each decision that let the run continue without that validation: `test-exception` (the same reason as `run.test_override_reason`), `ci-override`, `operator-skip` (a step skipped with `--skip` or a skip response; its reason is `no reason recorded`), and `automatic-skip` (the `run.automatic_skips` causes).
 The block never changes the outcome word; a `help` line asks the agent to report each untested scenario with its reason and each operator skip, and not to describe the run as fully validated.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
