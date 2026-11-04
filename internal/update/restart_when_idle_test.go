@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -134,6 +135,55 @@ func TestUpdaterRunWhenIdleWithNoActiveRunStillSchedulesTheRestart(t *testing.T)
 	}
 	if !strings.Contains(stdout.String(), "the daemon restarts after 1 active run finishes") {
 		t.Fatalf("stdout should report the run the restart now waits for, got %q", stdout.String())
+	}
+}
+
+// A failed probe leaves a daemon that may be running and may start a run
+// during the download, so an immediate reset is not a safe fallback.
+func TestUpdaterRunWhenIdleWithNoActiveRunRefusesAFailedProbe(t *testing.T) {
+	u, execPath, _, _ := newActiveRunUpdater(t)
+	finishActiveRuns(t, u.paths)
+	u.whenIdle = true
+	u.resetDaemon = func(bool) error { t.Fatal("reset must not run"); return nil }
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) { return nil, fmt.Errorf("read: unexpected EOF") }
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
+
+	err := u.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "unexpected EOF") || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("update should refuse, name the error and offer --force, got %v", err)
+	}
+	if content, _ := os.ReadFile(execPath); string(content) != "old-binary" {
+		t.Fatalf("a refused update must leave the executable alone, got %q", content)
+	}
+}
+
+// With no daemon listening there is nothing to protect: the plain path applies.
+func TestUpdaterRunWhenIdleWithNoActiveRunAndNoDaemonResetsImmediately(t *testing.T) {
+	u, _, _, _ := newActiveRunUpdater(t)
+	finishActiveRuns(t, u.paths)
+	u.whenIdle = true
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) {
+		return nil, fmt.Errorf("connect to daemon: %w", daemon.ErrDaemonNotReachable)
+	}
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
+	reset := false
+	u.resetDaemon = func(bool) error { reset = true; return nil }
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("update should proceed when no daemon is reachable, got %v", err)
+	}
+	if !reset {
+		t.Fatal("update should use the plain reset when there is no daemon to protect")
+	}
+}
+
+func TestRestartStatusWrapsAnUnreachableSocket(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemon.RestartStatus(p); !errors.Is(err, daemon.ErrDaemonNotReachable) {
+		t.Fatalf("a dial failure should be ErrDaemonNotReachable, got %v", err)
 	}
 }
 

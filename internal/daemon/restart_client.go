@@ -12,6 +12,10 @@ import (
 // schedule_restart existed: it can only be restarted immediately.
 var ErrRestartWhenIdleUnsupported = errors.New("the running daemon is too old to wait for active runs before restarting")
 
+// ErrDaemonNotReachable reports that nothing accepted a connection on the
+// daemon socket, so there is no running daemon to protect.
+var ErrDaemonNotReachable = errors.New("daemon is not reachable")
+
 // ScheduleRestart asks the running daemon to restart through its executable
 // file once no run is executing (see RunManager.ScheduleRestartWhenIdle).
 func ScheduleRestart(p *paths.Paths) (*ipc.RestartStatusResult, error) {
@@ -26,7 +30,7 @@ func RestartStatus(p *paths.Paths) (*ipc.RestartStatusResult, error) {
 func callRestartMethod(p *paths.Paths, method string) (*ipc.RestartStatusResult, error) {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
-		return nil, fmt.Errorf("connect to daemon: %w", err)
+		return nil, fmt.Errorf("connect to daemon: %w: %w", ErrDaemonNotReachable, err)
 	}
 	defer client.Close()
 	var result ipc.RestartStatusResult
