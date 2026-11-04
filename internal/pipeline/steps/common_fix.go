@@ -591,6 +591,77 @@ func normalizeAgentHead(sctx *pipeline.StepContext) error {
 	return nil
 }
 
+// A proven merge carries base history nothing in this run wrote, so the gate
+// judges only the merge line and leaves the merged-in parents out.
+func normalizeProvenMergeHead(sctx *pipeline.StepContext, provenHead string) error {
+	recorded := strings.TrimSpace(sctx.Run.HeadSHA)
+	if recorded == "" {
+		return nil
+	}
+	head, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return fmt.Errorf("resolve head for identity gate: %w", err)
+	}
+	if head != provenHead || head == recorded {
+		return normalizeAgentHead(sctx)
+	}
+	if _, err := stepGitRun(sctx, "merge-base", "--is-ancestor", recorded, head); err != nil {
+		return normalizeAgentHead(sctx)
+	}
+	parents, err := stepGitRun(sctx, "rev-list", "--parents", "-n", "1", head)
+	if err != nil {
+		return fmt.Errorf("inspect proven merge %s: %w", shortObjectID(head), err)
+	}
+	fields := strings.Fields(parents)
+	if len(fields) <= 2 {
+		return normalizeAgentHead(sctx)
+	}
+	args := append([]string{"rev-list", "--reverse", recorded + ".." + head, "--not"}, fields[2:]...)
+	revList, err := stepGitRun(sctx, args...)
+	if err != nil {
+		return fmt.Errorf("list proven merge commits for identity gate: %w", err)
+	}
+	commits := strings.Fields(revList)
+	if len(commits) == 0 {
+		return nil
+	}
+	name, email, err := pipelineCommitIdentity(sctx, recorded)
+	if err != nil {
+		return err
+	}
+	hasMerge := false
+	foreign := false
+	for _, c := range commits {
+		parents, err := stepGitRun(sctx, "rev-list", "--parents", "-n", "1", c)
+		if err != nil {
+			return fmt.Errorf("inspect agent commit %s: %w", shortObjectID(c), err)
+		}
+		if len(strings.Fields(parents)) > 2 {
+			hasMerge = true
+		}
+		ident, err := stepGitRun(sctx, "log", "-1", "--format=%an%x00%ae%x00%cn%x00%ce", c)
+		if err != nil {
+			return fmt.Errorf("inspect agent commit %s: %w", shortObjectID(c), err)
+		}
+		idFields := strings.Split(ident, "\x00")
+		if len(idFields) != 4 || strings.TrimSpace(idFields[0]) != name || strings.TrimSpace(idFields[1]) != email ||
+			strings.TrimSpace(idFields[2]) != name || strings.TrimSpace(idFields[3]) != email {
+			foreign = true
+		}
+	}
+	if !foreign {
+		return nil
+	}
+	if hasMerge {
+		return fmt.Errorf("refusing to adopt %s: it concludes a merge with a foreign identity, which needs an operator re-author", shortObjectID(head))
+	}
+	if _, err := stepGitRun(sctx, "reset", "--soft", recorded); err != nil {
+		return fmt.Errorf("recollect agent commits onto %s: %w", shortObjectID(recorded), err)
+	}
+	sctx.Log(fmt.Sprintf("re-authored %d agent commit(s) with the pipeline identity; recommitting their content", len(commits)))
+	return nil
+}
+
 func commitPipelineCorrection(sctx *pipeline.StepContext, workDir, message string, logf func(string)) error {
 	return commitPipelineCorrectionWithCleanup(sctx, workDir, message, logf, os.RemoveAll)
 }

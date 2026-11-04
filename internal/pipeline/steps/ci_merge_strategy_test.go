@@ -3,6 +3,8 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -383,5 +385,40 @@ func TestCIStep_RebaseStrategyConflictRepairStillRebases(t *testing.T) {
 	}
 	if got := parents(t, f.dir, f.localHead(t)); len(got) != 1 {
 		t.Fatalf("rebase-strategy repair has parents %v, want a linear rebase", got)
+	}
+}
+
+func commitAsForge(t *testing.T, dir, message string) {
+	t.Helper()
+	cmd := exec.Command("git", "commit", "-m", message)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Another Contributor", "GIT_AUTHOR_EMAIL=another@example.com",
+		"GIT_COMMITTER_NAME=GitHub", "GIT_COMMITTER_EMAIL=noreply@github.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+}
+
+func TestCIStep_MergeStrategyCleanMergeOverForgeMergedBaseIsNotRefused(t *testing.T) {
+	t.Parallel()
+	f := newCIRepairFixture(t, false, nil)
+	f.sctx.Config.Rebase.Strategy = config.RebaseStrategyMerge
+	gitCmd(t, f.dir, "checkout", "main")
+	writeFixtureFile(t, f.dir, "main.txt", "main line\n")
+	gitCmd(t, f.dir, "add", "-A")
+	commitAsForge(t, f.dir, "squash-merged elsewhere (#7)")
+	gitCmd(t, f.dir, "push", "origin", "main")
+	gitCmd(t, f.dir, "checkout", "feature")
+	f.useAgent(func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		return repairConclusion(), nil
+	})
+	repair, err := f.conflictRepair(t, ciTargetsFor(nil, true))
+	if err != nil {
+		t.Fatalf("clean merge repair refused: %v\nlog:\n%s", err, f.log())
+	}
+	if !repair.HeadAdvanced {
+		t.Fatalf("repair = %#v, want the merge published", repair)
 	}
 }

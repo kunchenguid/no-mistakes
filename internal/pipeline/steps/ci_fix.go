@@ -784,7 +784,11 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 		}
 	}
 	if s.replayBase == "" {
-		if err := normalizeAgentHead(sctx); err != nil {
+		if s.isProvenMergeHead(sctx) {
+			if err := normalizeProvenMergeHead(sctx, s.provenMergeHead); err != nil {
+				return ciRepairResult{}, err
+			}
+		} else if err := normalizeAgentHead(sctx); err != nil {
 			return ciRepairResult{}, err
 		}
 	} else if err := restampReplayedCommits(sctx, s.replayBase); err != nil {
