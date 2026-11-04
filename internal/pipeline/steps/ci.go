@@ -85,6 +85,9 @@ type CIStep struct {
 	// set only for the duration of that repair's recording. recordRepair
 	// proves a pure replay against exactly this commit and nothing else.
 	replayBase string
+	// repairVerification is the structured verification report for the
+	// commitRepair call inside the current autoFixCI turn.
+	repairVerification ciRepairVerification
 }
 
 // SetPollIntervalOverride is a test hook; production leaves the override unset.
