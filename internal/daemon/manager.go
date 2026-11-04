@@ -781,7 +781,7 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	}
 	now := time.Now()
 	seenRoots := map[string]bool{}
-	for _, candidate := range []string{root, m.paths.EvidenceDir(), filepath.Dir(removePath)} {
+	for _, candidate := range append(evidenceRootsFor(m.paths, nil, m.db), root, filepath.Dir(removePath)) {
 		candidate = filepath.Clean(candidate)
 		if candidate == "" || candidate == "." || seenRoots[candidate] {
 			continue

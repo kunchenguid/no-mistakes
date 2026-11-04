@@ -2,15 +2,19 @@ package steps
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestGitlabEvidenceSectionUploadsOnceAndRewritesOneSection(t *testing.T) {
@@ -67,7 +71,13 @@ func TestGitlabEvidenceSectionUploadsOnceAndRewritesOneSection(t *testing.T) {
 		t.Fatalf("strip left an Evidence section:\n%s", rewritten)
 	}
 
-	if got := step.gitlabEvidenceSection(sctx, scm.ProviderGitHub); got != "" || uploader.calls != 1 {
+	sctx.Repo.UpstreamURL = "https://another.example.com/group/project.git"
+	step.gitlabEvidenceSection(sctx, scm.ProviderGitLab)
+	if uploader.calls != 2 {
+		t.Fatalf("uploads across hosts = %d, want 2", uploader.calls)
+	}
+
+	if got := step.gitlabEvidenceSection(sctx, scm.ProviderGitHub); got != "" || uploader.calls != 2 {
 		t.Fatalf("GitHub section = %q uploads %d, want none", got, uploader.calls)
 	}
 }
@@ -85,9 +95,86 @@ type countingGitlabUploader struct {
 	calls    int
 	markdown string
 	url      string
+	err      error
 }
 
 func (u *countingGitlabUploader) UploadProjectFile(context.Context, string) (gitlab.ProjectUpload, error) {
 	u.calls++
-	return gitlab.ProjectUpload{Markdown: u.markdown, URL: u.url}, nil
+	return gitlab.ProjectUpload{Markdown: u.markdown, URL: u.url}, u.err
+}
+
+func TestGitlabEvidenceAttemptsEveryImageAndReportsRejections(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 51; i++ {
+		if err := os.WriteFile(filepath.Join(runDir, fmt.Sprintf("%02d.png", i)), []byte("image"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	large := filepath.Join(runDir, "large.png")
+	if err := os.WriteFile(large, make([]byte, 11*1024*1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	uploader := &countingGitlabUploader{err: errors.New("attachment rejected by server")}
+	step := &PRStep{gitlabUploader: uploader}
+	sctx := &pipeline.StepContext{Ctx: context.Background(), EvidenceDir: runDir, Repo: &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"}, Log: func(string) {}}
+	got := step.gitlabEvidenceSection(sctx, scm.ProviderGitLab)
+	if uploader.calls != 52 {
+		t.Fatalf("upload attempts = %d, want every one of 52 images", uploader.calls)
+	}
+	if strings.Count(got, "not uploaded: attachment rejected by server") != 52 || !strings.Contains(got, "run/large.png") {
+		t.Fatalf("missing rejected evidence entries: %s", got)
+	}
+}
+
+func TestGitlabEvidenceIndependentOfTestingInEveryAppendixMode(t *testing.T) {
+	sctx, _ := newEvidencePublishContext(t, "feature/gitlab-evidence")
+	sctx.Repo.UpstreamURL = "https://gitlab.example.com/group/project.git"
+	review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(review.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Config.Test.Evidence.StoreInRepo = false
+	sctx.EvidenceDir = filepath.Join(t.TempDir(), sctx.Run.ID)
+	if err := os.Mkdir(sctx.EvidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sctx.EvidenceDir, "shot.png"), []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	uploader := &countingGitlabUploader{markdown: "![shot](/uploads/abc/shot.png)", url: "/uploads/abc/shot.png"}
+	step := &PRStep{gitlabUploader: uploader}
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		t.Run(mode, func(t *testing.T) {
+			sctx.Config.PR.Appendix = mode
+			pipelineMD, risk, testing, evidence := step.buildPipelineSection(sctx, scm.ProviderGitLab)
+			ordinary := assembleDraftPRBody(sctx, "## What Changed\n\nUpdated", risk, testing, pipelineMD, evidence, 0, scm.ProviderGitLab)
+			limited := assembleDraftPRBody(sctx, "## What Changed\n\nUpdated", risk, "## Testing\n\n"+strings.Repeat("verbose test log\n", 200), pipelineMD, evidence, 1200, scm.ProviderGitLab)
+			if scm.PRBodyLen(limited) > 1200 {
+				t.Fatal("evidence reservation exceeded body budget")
+			}
+			fallback, err := step.fallbackPRContent(sctx, "A\tfile.go", risk, testing, pipelineMD, evidence, 0, scm.ProviderGitLab)
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendix, err := step.buildPRAppendix(sctx, scm.ProviderGitLab)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owned, err := composeOwnedPRContent(prOwnedBody{before: "Author narrative"}, "Title", appendix, 0, sctx.WorkDir, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, body := range map[string]string{"ordinary": ordinary, "limited": limited, "fallback": fallback.Body, "owned": owned.Body} {
+				if strings.Count(body, "## Evidence") != 1 || !strings.Contains(body, uploader.markdown) || !strings.Contains(body, sctx.Run.ID+"/shot.png") {
+					t.Fatalf("%s omitted evidence: %s", name, body)
+				}
+			}
+		})
+	}
 }

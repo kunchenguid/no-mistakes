@@ -1594,3 +1594,20 @@ func (d *DB) SetRunCIRerunState(id, state string) error {
 	}
 	return nil
 }
+
+func (d *DB) GetRunEvidenceDirs() ([]string, error) {
+	rows, err := d.sql.Query(`SELECT DISTINCT evidence_dir FROM runs WHERE evidence_dir IS NOT NULL AND evidence_dir != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var dirs []string
+	for rows.Next() {
+		var dir string
+		if err := rows.Scan(&dir); err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, rows.Err()
+}

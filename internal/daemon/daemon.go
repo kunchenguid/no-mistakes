@@ -503,7 +503,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// tell a crashed run's leftovers from work still in flight.
 	evidenceStarted := time.Now()
 	policy := evidenceReapPolicyFor(global)
-	roots := evidenceRootsFor(p, global)
+	roots := evidenceRootsFor(p, global, d)
 	for _, root := range roots {
 		reapEvidence(d, root, policy, now)
 	}

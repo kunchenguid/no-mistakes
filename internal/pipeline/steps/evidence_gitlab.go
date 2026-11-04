@@ -14,11 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 )
 
-const (
-	maxGitlabEvidenceImages   = 50
-	maxGitlabEvidenceImageMiB = 10
-)
-
 // gitlabEvidenceUploader posts one local image to the GitLab project that owns
 // the merge request. *gitlab.Host implements it. Tests inject a stub.
 type gitlabEvidenceUploader interface {
@@ -41,22 +36,11 @@ func (s *PRStep) gitlabEvidenceSection(sctx *pipeline.StepContext, provider scm.
 		sctx.Log("skipping GitLab evidence uploads: project path is unknown")
 		return ""
 	}
-	images, skipped, err := gitlabEvidenceImages(runDir)
+	project = strings.ToLower(resolvedHost(sctx, sctx.Repo.UpstreamURL)) + "/" + project
+	images, err := gitlabEvidenceImages(runDir)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("skipping GitLab evidence uploads: %v", err))
 		return ""
-	}
-	for _, rel := range skipped {
-		sctx.Log(fmt.Sprintf("skipping GitLab evidence upload for %s: empty or larger than %d MiB", rel, maxGitlabEvidenceImageMiB))
-	}
-	if len(images) == 0 {
-		return ""
-	}
-	if len(images) > maxGitlabEvidenceImages {
-		for _, extra := range images[maxGitlabEvidenceImages:] {
-			sctx.Log(fmt.Sprintf("skipping GitLab evidence upload for %s: more than %d images in one PR", extra.rel, maxGitlabEvidenceImages))
-		}
-		images = images[:maxGitlabEvidenceImages]
 	}
 	var uploader gitlabEvidenceUploader
 	var lines []string
@@ -66,16 +50,19 @@ func (s *PRStep) gitlabEvidenceSection(sctx *pipeline.StepContext, provider scm.
 			if uploader == nil {
 				uploader = s.resolveGitlabUploader(sctx, provider)
 				if uploader == nil {
-					break
+					lines = append(lines, fmt.Sprintf("`%s` — not uploaded: GitLab uploader unavailable", strings.ReplaceAll(image.rel, "`", "'")))
+					continue
 				}
 			}
 			uploaded, err := uploader.UploadProjectFile(sctx.Ctx, image.path)
 			if err != nil {
-				sctx.Log(fmt.Sprintf("GitLab evidence upload failed for %s, leaving it out of the Evidence section: %v", image.rel, err))
+				sctx.Log(fmt.Sprintf("GitLab evidence upload failed for %s: %v", image.rel, err))
+				lines = append(lines, fmt.Sprintf("`%s` — not uploaded: %s", strings.ReplaceAll(image.rel, "`", "'"), err))
 				continue
 			}
 			if err := validateGitlabEvidenceMarkdown(uploaded); err != nil {
-				sctx.Log(fmt.Sprintf("GitLab evidence upload for %s returned unusable markdown, leaving it out: %v", image.rel, err))
+				sctx.Log(fmt.Sprintf("GitLab evidence upload for %s returned unusable markdown: %v", image.rel, err))
+				lines = append(lines, fmt.Sprintf("`%s` — not uploaded: %s", strings.ReplaceAll(image.rel, "`", "'"), err))
 				continue
 			}
 			markdown = uploaded.Markdown
@@ -166,7 +153,7 @@ func uploadURLFromMarkdown(markdown string) string {
 	return strings.TrimSpace(rest[:end])
 }
 
-func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, skipped []string, err error) {
+func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, err error) {
 	root := filepath.Clean(runDir)
 	parent := filepath.Dir(root)
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -185,16 +172,6 @@ func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, skipped 
 		if !gitlabEvidenceImageExt(path) {
 			return nil
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil
-		}
-		if info.Size() == 0 || info.Size() > maxGitlabEvidenceImageMiB*1024*1024 {
-			if rel, relErr := filepath.Rel(parent, path); relErr == nil {
-				skipped = append(skipped, filepath.ToSlash(rel))
-			}
-			return nil
-		}
 		rel, err := filepath.Rel(parent, path)
 		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 			return nil
@@ -211,10 +188,10 @@ func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, skipped 
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	sort.Slice(images, func(i, j int) bool { return images[i].rel < images[j].rel })
-	return images, skipped, nil
+	return images, nil
 }
 
 func gitlabEvidenceImageExt(path string) bool {

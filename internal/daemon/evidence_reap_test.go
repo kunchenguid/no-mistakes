@@ -396,3 +396,58 @@ func TestRecoveredRunCleanupRemovesItsEmptyEvidenceDir(t *testing.T) {
 		t.Error("a resumed run left its empty evidence directory behind")
 	}
 }
+
+func TestEvidenceCleanupRevisitsPreviousPinnedRoots(t *testing.T) {
+	for _, completion := range []bool{false, true} {
+		t.Run(map[bool]string{false: "startup", true: "completion"}[completion], func(t *testing.T) {
+			f := newEvidenceFixture(t)
+			oldRoot := t.TempDir()
+			currentRoot := t.TempDir()
+			f.root = oldRoot
+			id := f.seed("old-evidence", types.RunCompleted, 48*time.Hour, map[string]string{"shot.png": "image"})
+			if err := f.db.SetRunEvidenceDir(id, filepath.Join(oldRoot, id)); err != nil {
+				t.Fatal(err)
+			}
+			global := &config.GlobalConfig{EvidenceDir: currentRoot}
+			if completion {
+				f.root = currentRoot
+				currentID := f.seed("current-evidence", types.RunCompleted, 0, map[string]string{"shot.png": "image"})
+				if err := f.db.SetRunEvidenceDir(currentID, filepath.Join(currentRoot, currentID)); err != nil {
+					t.Fatal(err)
+				}
+				cfg := config.Merge(global, &config.RepoConfig{})
+				cfg.Test.Evidence.Retention = 24 * time.Hour
+				m := &RunManager{db: f.db, paths: f.p}
+				m.cleanupRunEvidence(cfg, currentID)
+				if !f.exists(currentID) {
+					t.Fatal("removed current evidence")
+				}
+			} else {
+				for _, root := range evidenceRootsFor(f.p, global, f.db) {
+					reapEvidence(f.db, root, evidenceReapPolicy{Retention: 24 * time.Hour}, time.Now())
+				}
+			}
+			if _, err := os.Stat(filepath.Join(oldRoot, id)); !os.IsNotExist(err) {
+				t.Fatalf("historical evidence survived retention: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiscardRefusedRetryRemovesPinnedEvidence(t *testing.T) {
+	f := newEvidenceFixture(t)
+	f.root = t.TempDir()
+	id := f.seed("refused-retry", types.RunPending, 0, map[string]string{"questions.ndjson": "partial copy"})
+	if err := f.db.SetRunEvidenceDir(id, filepath.Join(f.root, id)); err != nil {
+		t.Fatal(err)
+	}
+	m := &RunManager{db: f.db, paths: f.p}
+	m.discardRefusedRetryRun(id, nil)
+	run, err := f.db.GetRun(id)
+	if err != nil || run != nil {
+		t.Fatalf("refused retry still recorded: %v %v", run, err)
+	}
+	if f.exists(id) {
+		t.Fatal("pinned evidence survived deletion of its run")
+	}
+}

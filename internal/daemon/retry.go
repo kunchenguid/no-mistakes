@@ -485,10 +485,11 @@ func (r *retryLaunch) proveAtLaunch(ctx context.Context, m *RunManager, globalCf
 // directory a refused retry created, so the failed run stays the branch's
 // latest run and can be retried again once the cause is fixed.
 func (m *RunManager) discardRefusedRetryRun(runID string, cfg *config.Config) {
+	evidenceDir := m.recordedRunEvidenceDir(cfg, runID)
 	if err := m.db.DeleteRun(runID); err != nil {
 		m.db.UpdateRunError(runID, fmt.Sprintf("discard refused retry: %s", err))
 	}
-	os.RemoveAll(m.recordedRunEvidenceDir(cfg, runID))
+	os.RemoveAll(evidenceDir)
 }
 
 // RetryProofConversation names the proof that a carried Review's question

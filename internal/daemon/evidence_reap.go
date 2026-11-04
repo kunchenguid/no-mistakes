@@ -54,19 +54,14 @@ func evidenceReapPolicyFor(global *config.GlobalConfig) evidenceReapPolicy {
 // evidenceRootFor resolves this machine's evidence root from a loaded global
 // config, falling back to the app-root default.
 func evidenceRootFor(p *paths.Paths, global *config.GlobalConfig) string {
-	roots := evidenceRootsFor(p, global)
+	roots := evidenceRootsFor(p, global, nil)
 	if len(roots) == 0 {
 		return ""
 	}
 	return roots[0]
 }
 
-// evidenceRootsFor is the active evidence root plus any previous root a
-// settings change left behind. Changing evidence_dir does not move existing
-// run directories, so the reaper still has to visit the default and a
-// configured local_root. shortcut: a root used only between two later
-// evidence_dir values is not visited unless a finished run's pin still names it.
-func evidenceRootsFor(p *paths.Paths, global *config.GlobalConfig) []string {
+func evidenceRootsFor(p *paths.Paths, global *config.GlobalConfig, d *db.DB) []string {
 	if p == nil {
 		return nil
 	}
@@ -93,6 +88,15 @@ func evidenceRootsFor(p *paths.Paths, global *config.GlobalConfig) []string {
 	add(root)
 	add(p.EvidenceDir())
 	add(p.EvidenceRoot(localRoot))
+	if d != nil {
+		dirs, err := d.GetRunEvidenceDirs()
+		if err != nil {
+			slog.Warn("failed to discover pinned evidence roots", "error", err)
+		}
+		for _, dir := range dirs {
+			add(filepath.Dir(dir))
+		}
+	}
 	return roots
 }
 
