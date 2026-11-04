@@ -509,7 +509,10 @@ const notValidatedLiveHeading = "## Not validated live"
 // Intent, outside every fold, in every appendix mode: untested work must be
 // visible to a reviewer who never opens the Validation details.
 func requireValidationCallout(body string, sctx *pipeline.StepContext, provider scm.Provider, bodyLimit int) error {
-	callout := validationCallout(sctx, provider)
+	callout, err := validationCallout(sctx, provider)
+	if err != nil {
+		return fmt.Errorf("read validation state for PR callout: %w", err)
+	}
 	if callout == "" {
 		return nil
 	}
@@ -522,13 +525,13 @@ func requireValidationCallout(body string, sctx *pipeline.StepContext, provider 
 	return nil
 }
 
-func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) string {
+func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
-		return ""
+		return "", nil
 	}
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("query step results: %w", err)
 	}
 	in := pipeline.ValidationInput{}
 	for _, sr := range steps {
@@ -541,7 +544,7 @@ func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) string
 		case types.StepTest:
 			rounds, err := sctx.DB.GetRoundsByStep(sr.RoundsStepID())
 			if err != nil {
-				return ""
+				return "", fmt.Errorf("query Test rounds: %w", err)
 			}
 			in.Scenarios = collectTestingScenarios(sr, rounds)
 			in.Verdict = collectTestingVerdict(sr, rounds)
@@ -552,7 +555,7 @@ func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) string
 			}
 		}
 	}
-	return neutralizeAttestationMarkers(provider, renderValidationCallout(pipeline.CollectValidationGaps(in), prBodyFlavorFor(provider)))
+	return neutralizeAttestationMarkers(provider, renderValidationCallout(pipeline.CollectValidationGaps(in), prBodyFlavorFor(provider))), nil
 }
 
 func renderValidationCallout(gaps pipeline.ValidationGaps, flavor prBodyFlavor) string {

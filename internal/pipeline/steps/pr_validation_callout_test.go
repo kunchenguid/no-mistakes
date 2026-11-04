@@ -99,6 +99,17 @@ func TestPRBody_NotValidatedLiveCalloutStaysOutsideEveryFold(t *testing.T) {
 	}
 }
 
+func TestPRBody_RefusesUnreadableValidationState(t *testing.T) {
+	t.Parallel()
+	sctx := newCalloutContext(t, config.PRAppendixMinimal, true, true)
+	if err := sctx.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireValidationCallout("", sctx, scm.ProviderGitHub, 0); err == nil {
+		t.Fatal("publication accepted unreadable validation state")
+	}
+}
+
 func TestPRBody_RefusesBudgetThatTruncatesRequiredCallout(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
@@ -172,7 +183,10 @@ func TestPRBody_CalloutListsAnApprovedTestException(t *testing.T) {
 	if err := sctx.DB.CompleteStep(sr.ID, 0, 0, ""); err != nil {
 		t.Fatal(err)
 	}
-	callout := validationCallout(sctx, scm.ProviderGitHub)
+	callout, err := validationCallout(sctx, scm.ProviderGitHub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{
 		"1 of 1 scenarios were not driven live against the product. 1 exception or skip let this run continue without that validation.",
 		"**Test exception** (`test`): live validation verdict: inconclusive Test exception approved: provider sandbox is down; verified manually",

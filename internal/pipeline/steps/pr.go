@@ -163,6 +163,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		logSuppliedPRTextUnused(sctx, "PR creation was skipped")
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
+	if _, err := validationCallout(sctx, provider); err != nil {
+		return nil, fmt.Errorf("read validation state for PR callout: %w", err)
+	}
 
 	if _, err := publishedPRPushBinding(sctx, host); err != nil {
 		return nil, err
@@ -1872,7 +1875,8 @@ func prLeadSections(sctx *pipeline.StepContext, provider scm.Provider) string {
 	if cleaned := neutralizeAttestationMarkers(provider, publicPRIntent(sctx)); cleaned != "" {
 		intent = "## Intent\n\n" + cleaned
 	}
-	return joinBlocks(intent, validationCallout(sctx, provider))
+	callout, _ := validationCallout(sctx, provider)
+	return joinBlocks(intent, callout)
 }
 
 func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
