@@ -266,3 +266,69 @@ func TestCursorAdmissionOptOutRefusesBeforeCatalogLaunch(t *testing.T) {
 		t.Fatal("unverified instruction-suppression adapter launched during catalog admission")
 	}
 }
+
+func TestCursorPrimaryAliasDiagnosticNamesCorrectableField(t *testing.T) {
+	for _, route := range []string{"admission", "invocation"} {
+		t.Run(route, func(t *testing.T) {
+			bin, modelCounter := writeCursorCatalogPackage(t)
+			supported := "fixture-supported[mode=careful]"
+			requested := "fixture-selected-alias-absent[mode=careful]"
+			cfg := &config.Config{Agent: "acp:cursor", ACPXPath: bin, ACPRegistryOverrides: map[string]string{"cursor": bin}, AgentConfig: map[string]agentcfg.Profile{
+				"cursor":     {Model: "fixture-unselected-cursor-absent"},
+				"acp:cursor": {Model: requested},
+			}}
+			// The public invocation consumer must also succeed after correcting its
+			// named selection field; this fixture emits a valid acpx reply only then.
+			script := `#!/usr/bin/env node
+import fs from 'node:fs';
+fs.appendFileSync(` + strconvQuote(modelCounter) + `, 'model work\n');
+fs.readFileSync(0);
+console.log(JSON.stringify({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',text:'alias correction accepted'}}}));
+`
+			if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			check := func() error {
+				if route == "admission" {
+					return preflightCursorSelections(context.Background(), cfg, filepath.Dir(bin), runenv.Overlay{})
+				}
+				ag, _, err := newConfiguredAgent(context.Background(), cfg, t.TempDir(), exec.LookPath, runenv.Overlay{}, nil)
+				if err != nil {
+					return err
+				}
+				defer ag.Close()
+				result, err := ag.Run(context.Background(), agent.RunOpts{CWD: filepath.Dir(bin), Prompt: "synthetic correction check"})
+				if err == nil && (result == nil || result.Text != "alias correction accepted") {
+					t.Fatalf("corrected invocation reply: %+v", result)
+				}
+				return err
+			}
+			var refusal *agent.CursorModelError
+			err := check()
+			if !errors.As(err, &refusal) || refusal.Status != agent.CursorModelUnsupported || refusal.Model != requested {
+				t.Fatalf("selected alias was not checked: %v", err)
+			}
+			if refusal.Owner != "agent_config['acp:cursor'].model" {
+				t.Fatalf("diagnostic names a field that cannot correct the selected alias: %s", refusal.Owner)
+			}
+			if _, err := os.Stat(modelCounter); !os.IsNotExist(err) {
+				t.Fatal("unsupported alias started dependent model work")
+			}
+			// Apply the correction to exactly the key named by the diagnostic. The
+			// sibling cursor profile stays unsupported and cannot win this selection.
+			cfg.AgentConfig["acp:cursor"] = agentcfg.Profile{Model: supported}
+			if err := check(); err != nil {
+				t.Fatalf("named field did not correct the selection: %v", err)
+			}
+			if cfg.AgentProfileFor(types.AgentCursor).Model != "fixture-unselected-cursor-absent" {
+				t.Fatal("correction changed the unselected sibling profile")
+			}
+			if route == "invocation" {
+				body, err := os.ReadFile(modelCounter)
+				if err != nil || string(body) != "model work\n" {
+					t.Fatalf("corrected invocation count: %q %v", body, err)
+				}
+			}
+		})
+	}
+}

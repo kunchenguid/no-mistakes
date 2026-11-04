@@ -397,7 +397,11 @@ func preflightCursorSelections(ctx context.Context, cfg *config.Config, cwd stri
 		if err := current.ResolveAgent(ctx, exec.LookPath); err != nil {
 			for _, name := range configured {
 				if target, ok := types.ACPTargetFor(name); ok && target == "cursor" {
-					return &agent.CursorModelError{Status: agent.CursorModelIndeterminate, Owner: owner, Model: current.AgentProfileFor(name).Model}
+					selectionOwner := owner
+					if selectionOwner == "" {
+						selectionOwner = agent.CursorModelConfigOwner(name)
+					}
+					return &agent.CursorModelError{Status: agent.CursorModelIndeterminate, Owner: selectionOwner, Model: current.AgentProfileFor(name).Model}
 				}
 			}
 			return err
@@ -417,13 +421,17 @@ func preflightCursorSelections(ctx context.Context, cfg *config.Config, cwd stri
 				continue
 			}
 			seen[string(key)] = true
-			if err := agent.PreflightCursorModel(ctx, name, current.AgentPathFor(name), options, agent.RunOpts{CWD: cwd}, owner); err != nil {
+			selectionOwner := owner
+			if selectionOwner == "" {
+				selectionOwner = agent.CursorModelConfigOwner(name)
+			}
+			if err := agent.PreflightCursorModel(ctx, name, current.AgentPathFor(name), options, agent.RunOpts{CWD: cwd}, selectionOwner); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	if err := check(cfg, "agent_config.cursor.model"); err != nil {
+	if err := check(cfg, ""); err != nil {
 		return err
 	}
 	for _, role := range config.ReviewAgentRoles {
@@ -538,7 +546,7 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 			return nil, nil, fmt.Errorf("quota routing agent %q is no longer available", record.CurrentAgent())
 		}
 	}
-	owner := "agent_config.cursor.model"
+	owner := ""
 	if len(owners) > 0 {
 		owner = owners[0]
 	}
