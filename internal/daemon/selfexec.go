@@ -340,14 +340,21 @@ func startDetachedDaemon(p *paths.Paths) error {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
 
+	cmd := exec.Command(exe, "daemon", "run", "--root", p.Root())
+	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
+	return launchDetachedDaemon(p, cmd)
+}
+
+// launchDetachedDaemon starts cmd as a daemon detached from this process, its
+// output appended to the bootstrap log, and waits until that exact child
+// answers on the daemon socket.
+func launchDetachedDaemon(p *paths.Paths, cmd *exec.Cmd) error {
 	logFile, err := os.OpenFile(p.DaemonBootstrapLog(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open daemon bootstrap log: %w", err)
 	}
 	defer logFile.Close()
 
-	cmd := exec.Command(exe, "daemon", "run", "--root", p.Root())
-	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// Detach from parent process group so daemon survives CLI exit.

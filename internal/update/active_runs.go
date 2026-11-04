@@ -55,9 +55,6 @@ func (u *updater) confirmActiveRunsBeforeUpdate() error {
 // daemonCanRestartWhenIdle reports why the running daemon cannot wait for
 // active runs before restarting, or nil when it can.
 func (u *updater) daemonCanRestartWhenIdle() error {
-	if currentGOOS != "linux" && currentGOOS != "darwin" {
-		return errors.New("waiting for them is not supported on this platform")
-	}
 	if u.restartStatus == nil || u.scheduleRestart == nil {
 		return errors.New("the running daemon cannot wait for them")
 	}

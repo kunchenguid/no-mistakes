@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,9 +68,6 @@ type restartState struct {
 // ScheduleRestartWhenIdle schedules a restart through the executable file for
 // the first moment no run is executing. Calling it again changes nothing.
 func (m *RunManager) ScheduleRestartWhenIdle() (*ipc.RestartStatusResult, error) {
-	if runtime.GOOS == "windows" {
-		return nil, errors.New("restarting when idle is not supported on Windows; use `no-mistakes daemon restart` once no run is active")
-	}
 	if m.shuttingDown.Load() {
 		return nil, errors.New("daemon is shutting down")
 	}

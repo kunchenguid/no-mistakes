@@ -46,6 +46,14 @@ func TestMain(m *testing.M) {
 			os.Exit(2)
 		}
 		os.Exit(0)
+	case "restartable":
+		// RunRestartable as `daemon run` calls it: a scheduled restart
+		// executes this test binary again with the same environment.
+		if err := RunRestartable(); err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(2)
+		}
+		os.Exit(0)
 	case "bootstrap-sink":
 		if err := RunBootstrapLogSink(); err != nil {
 			_, _ = os.Stderr.WriteString(err.Error() + "\n")
