@@ -441,10 +441,11 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 }
 
 // ClaimLaunchReceiptWithPRText is ClaimLaunchReceipt that also requires the
-// run's supplied PR text to match prTextDigest ("" for none). That text is
-// written with the row and never changes, so checking it before the UPDATE is
-// as strong as an UPDATE predicate: a conflicting observer still cannot
-// consume `created`.
+// run's supplied PR text to match prTextDigest ("" for none). The digest is
+// checked on the row already read, and the UPDATE is pinned to that row's ID;
+// its PR text is written with the row and never changes, so a conflicting
+// observer cannot consume `created`, even when the row is inserted while this
+// call runs. With no row yet it returns nil, like any unclaimable receipt.
 func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest string, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
@@ -455,48 +456,37 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 		model, effort = request.Model, string(request.Effort)
 	}
 	prBaseBranch = strings.TrimSpace(prBaseBranch)
-	for {
-		existing, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
-		if err != nil {
-			return nil, false, err
-		}
-		if existing != nil && existing.PRTextDigest() != prTextDigest {
-			return existing, false, nil
-		}
-		r := &Run{}
-		err = scanRun(d.sql.QueryRow(
-			`UPDATE runs SET launch_receipt_claimed_at = ?
-			 WHERE repo_id = ? AND branch = ? AND launch_nonce = ?
-			   AND submitted_head_sha = ? AND launch_validation_generation = ? AND launch_intent_digest = ?
-			   AND (? = '' OR pr_base_branch = ?)
-			   AND (? = 0 OR omit_intent = ?)
-			   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
-			   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
-			   AND launch_receipt_claimed_at IS NULL
-			 RETURNING `+d.runColumns(),
-			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort,
-		), r)
-		if err == nil {
-			return r, true, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, false, fmt.Errorf("claim launch receipt: %w", err)
-		}
-		r, err = d.GetRunByLaunchNonce(repoID, branch, launchNonce)
-		if err != nil {
-			return nil, false, err
-		}
-		if r == nil || !r.PiProfile.Matches(request) || r.LaunchReceiptClaimedAt != nil ||
-			r.SubmittedHeadSHA == nil || *r.SubmittedHeadSHA != submittedHeadSHA ||
-			r.LaunchValidationGeneration == nil || *r.LaunchValidationGeneration != validationGeneration ||
-			r.LaunchIntentDigest == nil || *r.LaunchIntentDigest != intentDigest ||
-			prBaseBranch != "" && (r.PRBaseBranch == nil || *r.PRBaseBranch != prBaseBranch) ||
-			omitIntent && !r.OmitIntent {
-			return r, false, nil
-		}
-		// A creator committed a matching row after UPDATE missed. Retry instead
-		// of labelling the first observer as a replay.
+	existing, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
+	if err != nil || existing == nil {
+		return nil, false, err
 	}
+	if existing.PRTextDigest() != prTextDigest {
+		return existing, false, nil
+	}
+	r := &Run{}
+	err = scanRun(d.sql.QueryRow(
+		`UPDATE runs SET launch_receipt_claimed_at = ?
+		 WHERE id = ? AND repo_id = ? AND branch = ? AND launch_nonce = ?
+		   AND submitted_head_sha = ? AND launch_validation_generation = ? AND launch_intent_digest = ?
+		   AND (? = '' OR pr_base_branch = ?)
+		   AND (? = 0 OR omit_intent = ?)
+		   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
+		   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
+		   AND launch_receipt_claimed_at IS NULL
+		 RETURNING `+d.runColumns(),
+		now(), existing.ID, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort,
+	), r)
+	if err == nil {
+		return r, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, fmt.Errorf("claim launch receipt: %w", err)
+	}
+	r, err = d.GetRunByLaunchNonce(repoID, branch, launchNonce)
+	if err != nil {
+		return nil, false, err
+	}
+	return r, false, nil
 }
 
 // GetRunsByRepo returns all runs for a repo, newest first.

@@ -257,6 +257,37 @@ func TestPRTemplateCreateAppliesConfiguredTitleFormat(t *testing.T) {
 	}
 }
 
+func TestPRTemplateSuppliedTitleIgnoresAnEmptyDraftedTitle(t *testing.T) {
+	t.Parallel()
+	sctx, ag, _ := templateTestContext(t)
+	ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		data, _ := json.Marshal(prContent{Title: "", Body: filledPRTemplate})
+		return &agent.Result{Output: data}, nil
+	}
+	title := "Add the Bar helper"
+	sctx.Run.PRTitle = &title
+	env, logFile := fakeGH(t, "")
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	sctx.Env = append(env, "FAKE_CLI_PR_BODY_FILE="+bodyFile)
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatalf("an empty drafted title refused the template narrative: %v", err)
+	}
+	logs, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logs), "--title "+title) {
+		t.Fatalf("supplied title was not published:\n%s", logs)
+	}
+	body, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(body), filledPRTemplate) {
+		t.Fatalf("template narrative was not published:\n%s", body)
+	}
+}
+
 func TestPRTemplateUpdateAppliesConfiguredTitleFormat(t *testing.T) {
 	t.Parallel()
 	sctx, ag, _ := templateTestContext(t)

@@ -28,6 +28,10 @@ type PRStep struct {
 	// the GitHub host's user-attachments client. Tests inject a stub so they
 	// never talk to live GitHub.
 	mediaUploader userAssetUploader
+	// titleReplaced is set on the create path's copy when a supplied title
+	// will replace the drafted one, so the drafted title is neither validated
+	// nor formatted: discarded text must not block publishing.
+	titleReplaced bool
 }
 
 type prContent struct {
@@ -299,7 +303,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		content, err = s.buildSuppliedPRContent(sctx, branch, baseBranch, baseSHA, template, provider, bodyLimit)
 	} else {
-		content, err = s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
+		drafter := *s
+		drafter.titleReplaced = suppliedPRTitle(sctx) != ""
+		content, err = drafter.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 		if err == nil {
 			content, err = applySuppliedPRTitle(sctx, content)
 		}
@@ -637,14 +643,16 @@ Final diff paths and statuses:
 			content.Body = unwrapNestedPRBody(content.Body)
 			content.Body = stripGeneratedSections(content.Body)
 			content.Body = neutralizeAttestationMarkers(provider, content.Body)
-			if content.Title != "" && content.Body != "" {
-				originalTitle := content.Title
-				content.Title, err = renderPRTitle(sctx, content.Title)
-				if err != nil {
-					return prContent{}, err
-				}
-				if content.Title != originalTitle {
-					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
+			if (content.Title != "" || s.titleReplaced) && content.Body != "" {
+				if !s.titleReplaced {
+					originalTitle := content.Title
+					content.Title, err = renderPRTitle(sctx, content.Title)
+					if err != nil {
+						return prContent{}, err
+					}
+					if content.Title != originalTitle {
+						slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
+					}
 				}
 				if keepsPRUpdateText(sctx) {
 					return s.publishKeptDraft(sctx, provider, content.Title, content.Body, bodyLimit)
@@ -1803,9 +1811,12 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
 	}
-	title, err := renderPRTitle(sctx, "update pull request")
-	if err != nil {
-		return prContent{}, err
+	title := "update pull request"
+	if !s.titleReplaced {
+		var err error
+		if title, err = renderPRTitle(sctx, title); err != nil {
+			return prContent{}, err
+		}
 	}
 	diffSummary := strings.TrimSpace(finalDiff)
 	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"

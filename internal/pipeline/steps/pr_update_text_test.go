@@ -646,6 +646,27 @@ func TestPRSuppliedTitleTakesTheConfiguredTitleFormat(t *testing.T) {
 	}
 }
 
+func TestPRSuppliedTitleIgnoresAnInvalidDraftedTitleUnderTitleFormat(t *testing.T) {
+	t.Parallel()
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		data, _ := json.Marshal(prContent{Title: "drafted\nsecond line", Body: "## What Changed\n\n- drafted"})
+		return &agent.Result{Output: data}, nil
+	}}
+	sctx, env, logFile := suppliedPRContext(t, ag, suppliedPRTitleText, "")
+	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
+	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
+	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatalf("a discarded drafted title blocked publishing: %v", err)
+	}
+	if logs := string(mustRead(t, logFile)); !strings.Contains(logs, "--title PROJ-123: "+suppliedPRTitleText) {
+		t.Fatalf("supplied title was not published through title_format:\n%s", logs)
+	}
+	if body := string(mustRead(t, envEntry(env, "FAKE_CLI_PR_BODY_FILE"))); !strings.Contains(body, "- drafted") {
+		t.Fatalf("drafted body was not kept:\n%s", body)
+	}
+}
+
 func TestPRSuppliedBodyOverProviderBudgetFailsLoudly(t *testing.T) {
 	t.Parallel()
 	body := strings.Repeat("a", 4000)

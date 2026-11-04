@@ -154,15 +154,17 @@ Final diff paths and statuses:
 		return prContent{}, fmt.Errorf("draft pr.template narrative (template will not be replaced by a generic fallback): %w", err)
 	}
 	var content prContent
-	if result == nil || json.Unmarshal(result.Output, &content) != nil || strings.TrimSpace(content.Title) == "" || strings.TrimSpace(content.Body) == "" {
+	if result == nil || json.Unmarshal(result.Output, &content) != nil || (!s.titleReplaced && strings.TrimSpace(content.Title) == "") || strings.TrimSpace(content.Body) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid pr.template narrative; refusing generic fallback")
 	}
 	if err := acceptPRIntentBrief(sctx, content.IntentBrief); err != nil {
 		return prContent{}, err
 	}
-	content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
-	if err != nil {
-		return prContent{}, err
+	if !s.titleReplaced {
+		content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
+		if err != nil {
+			return prContent{}, err
+		}
 	}
 	if len(content.Body) > maxPullRequestBodyBytes || !utf8.ValidString(content.Body) || strings.ContainsRune(content.Body, '\x00') || hasPRAppendixMarkers(content.Body) {
 		return prContent{}, fmt.Errorf("agent returned invalid template narrative or reserved ownership markers")

@@ -578,6 +578,49 @@ func TestRunPRTextRoundTripAndClaimMatching(t *testing.T) {
 	if err != nil || !claimed || first == nil || first.ID != run.ID {
 		t.Fatalf("matching PR text claim = %#v, claimed=%v, err=%v", first, claimed, err)
 	}
+
+	// Mismatched claimers already polling when the row is inserted must not
+	// consume `created` for the caller whose text matches.
+	const racers = 8
+	mismatch := PRTextDigest(text.Title, "Other words.\n")
+	start := make(chan struct{})
+	errs := make(chan error, racers)
+	for range racers {
+		go func() {
+			<-start
+			for {
+				got, claimed, err := d.ClaimLaunchReceiptWithPRText(repo.ID, "feature", "nonce-pr-text-race", "head", generation, intentDigest, "", false, mismatch)
+				if err != nil || claimed {
+					if err == nil {
+						err = errors.New("mismatched racing claim consumed created")
+					}
+					errs <- err
+					return
+				}
+				if got != nil {
+					errs <- nil
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	raced, err := d.InsertRunWithPRText(repo.ID, "feature", "head", "base", &intent, "nonce-pr-text-race", generation, intentDigest, "", false, nil, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range racers {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if still, err := d.GetRun(raced.ID); err != nil || still.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("racing mismatched claim consumed created disposition: %v", err)
+	}
+	won, claimed, err := d.ClaimLaunchReceiptWithPRText(repo.ID, "feature", "nonce-pr-text-race", "head", generation, intentDigest, "", false, PRTextDigest(text.Title, text.Body))
+	if err != nil || !claimed || won == nil || won.ID != raced.ID {
+		t.Fatalf("matching claim after race = %#v, claimed=%v, err=%v", won, claimed, err)
+	}
 }
 
 func TestPRTextDigestSeparatesTitleFromBody(t *testing.T) {
