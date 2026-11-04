@@ -202,3 +202,30 @@ func TestWorktreeSteering_BoundsHostFilesystemSearch(t *testing.T) {
 		t.Errorf("steering preamble dropped the out-of-worktree read allowance:\n%s", preamble)
 	}
 }
+
+// TestWithSteering_EveryAgentOnlyAddsNewCommits pins the append-only commit rule
+// (issue #642): a fix agent that amended or squashed a commit left HEAD off the
+// pipeline's recorded head, so the next step's continuity check refused the run
+// with no way back. Every pipeline agent is wrapped by WithSteering, so the rule
+// must reach the prompt the agent actually receives, including the case that
+// stranded a real run (a finding asking to change a commit message) and the one
+// exception a step's own prompt grants (running or continuing a rebase or merge).
+func TestWithSteering_EveryAgentOnlyAddsNewCommits(t *testing.T) {
+	inner := &recordingAgent{name: "claude"}
+	steered := WithSteering(inner, filepath.Join(t.TempDir(), "evidence"))
+	if _, err := steered.Run(context.Background(), RunOpts{Prompt: "Fix the review findings."}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	normalized := strings.Join(strings.Fields(inner.gotOpts.Prompt), " ")
+	for _, want := range []string{
+		"Only add new commits on top of the current HEAD",
+		"Never amend, squash, reword, reorder, drop, or reset an existing commit",
+		"even when a finding or instruction asks you to change a commit message",
+		"report that you left history unchanged",
+		"unless your prompt explicitly asks you to run or continue a rebase or merge",
+	} {
+		if !strings.Contains(normalized, want) {
+			t.Errorf("steered prompt missing append-only commit rule %q:\n%s", want, inner.gotOpts.Prompt)
+		}
+	}
+}
