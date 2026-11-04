@@ -299,6 +299,19 @@ const (
 	StepStatusFailed           StepStatus = "failed"
 )
 
+// OperatorSkipReason is the skip_reason recorded when an operator skipped a
+// step explicitly (`--skip` at run start, or a skip response at its gate). It
+// keeps that decision apart from an automatic skip, which records its own
+// cause, and from a step skipped because the branch had nothing to validate,
+// which records none.
+const OperatorSkipReason = "skipped by operator"
+
+// IsOperatorSkipReason reports whether a recorded skip_reason marks an
+// explicit operator skip.
+func IsOperatorSkipReason(reason string) bool {
+	return strings.HasPrefix(reason, OperatorSkipReason)
+}
+
 // ApprovalAction represents user responses at approval points.
 type ApprovalAction string
 

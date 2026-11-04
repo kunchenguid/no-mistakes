@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -493,4 +495,95 @@ func scenarioReferenceCanEnd(after string) bool {
 	}
 	r, _ = utf8.DecodeRuneInString(next)
 	return unicode.IsSpace(r)
+}
+
+// notValidatedLiveHeading titles the callout that lists what this run did not
+// validate live. It is a generated section heading (isGeneratedSectionHeading),
+// so a stale or agent-copied callout is stripped before a body is rebuilt.
+const notValidatedLiveHeading = "## Not validated live"
+
+// maxValidationCalloutItems bounds the callout so a run with a long scenario
+// list cannot crowd the narrative out of a capped PR body. The omitted count is
+// stated, never silently dropped.
+const maxValidationCalloutItems = 20
+
+// validationCallout renders the run's Not validated live callout, or "" when
+// every scenario was driven live and nothing was excepted or skipped. It reads
+// the same step rows and Test evidence the Testing section and the axi run
+// view read (pipeline.CollectValidationGaps), and it is placed directly after
+// Intent, outside every fold, in every appendix mode: untested work must be
+// visible to a reviewer who never opens the Validation details.
+func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) string {
+	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
+		return ""
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return ""
+	}
+	in := pipeline.ValidationInput{}
+	for _, sr := range steps {
+		step := pipeline.ValidationStep{Name: string(sr.StepName), Status: string(sr.Status)}
+		if sr.SkipReason != nil {
+			step.SkipReason = *sr.SkipReason
+		}
+		in.Steps = append(in.Steps, step)
+		switch sr.StepName {
+		case types.StepTest:
+			rounds, err := sctx.DB.GetRoundsByStep(sr.RoundsStepID())
+			if err != nil {
+				return ""
+			}
+			in.Scenarios = collectTestingScenarios(sr, rounds)
+			in.Verdict = collectTestingVerdict(sr, rounds)
+			in.TestException = sr.TestOverrideReason()
+		case types.StepCI:
+			if sr.OverrideReason != nil {
+				in.CIOverride = *sr.OverrideReason
+			}
+		}
+	}
+	return neutralizeAttestationMarkers(provider, renderValidationCallout(pipeline.CollectValidationGaps(in), prBodyFlavorFor(provider)))
+}
+
+func renderValidationCallout(gaps pipeline.ValidationGaps, flavor prBodyFlavor) string {
+	if !gaps.HasGaps() {
+		return ""
+	}
+	var items []string
+	for _, u := range gaps.Untested {
+		items = append(items, fmt.Sprintf("- **Untested:** %s - %s", scenarioCell(u.Scenario, flavor), scenarioCell(u.Reason, flavor)))
+	}
+	for _, e := range gaps.Exceptions {
+		items = append(items, fmt.Sprintf("- **%s** (`%s`): %s", validationKindLabel(e.Kind), scenarioCell(e.Step, flavor), scenarioCell(e.Reason, flavor)))
+	}
+	if len(items) > maxValidationCalloutItems {
+		omitted := len(items) - maxValidationCalloutItems
+		items = append(items[:maxValidationCalloutItems], fmt.Sprintf("- ...and %d more not listed here", omitted))
+	}
+	var summary []string
+	if n := len(gaps.Untested); n > 0 {
+		summary = append(summary, fmt.Sprintf("%d of %d scenarios were not driven live against the product.", n, gaps.Total))
+	}
+	if n := len(gaps.Exceptions); n == 1 {
+		summary = append(summary, "1 exception or skip let this run continue without that validation.")
+	} else if n > 1 {
+		summary = append(summary, fmt.Sprintf("%d exceptions or skips let this run continue without that validation.", n))
+	}
+	return notValidatedLiveHeading + "\n\n⚠️ **" + strings.Join(summary, " ") + "**\n\n" + strings.Join(items, "\n")
+}
+
+func validationKindLabel(kind string) string {
+	switch kind {
+	case pipeline.ValidationKindTestException:
+		return "Test exception"
+	case pipeline.ValidationKindCIOverride:
+		return "CI override"
+	case pipeline.ValidationKindOperatorSkip:
+		return "Skipped by operator"
+	case pipeline.ValidationKindAutomaticSkip:
+		return "Skipped automatically"
+	default:
+		return kind
+	}
 }

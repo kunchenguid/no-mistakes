@@ -1090,30 +1090,27 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string, provi
 func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext, maxBytes int, provider scm.Provider) string {
 	body = stripGeneratedSections(body)
 	sections := appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxBytes, provider)
-	// Neutralized for the same reason as in prependIntentSection: intent is
-	// agent-extracted text placed ahead of the pipeline section.
-	cleaned := neutralizeAttestationMarkers(provider, publicPRIntent(sctx))
-	if cleaned == "" {
+	lead := prLeadSections(sctx, provider)
+	if lead == "" {
 		return sections
 	}
 
-	intent := "## Intent\n\n" + cleaned
 	separator := "\n\n"
-	if len(intent)+len(separator)+len(sections) <= maxBytes {
-		return intent + separator + sections
+	if len(lead)+len(separator)+len(sections) <= maxBytes {
+		return lead + separator + sections
 	}
-	sectionsBudget := maxBytes - len(separator) - len(intent)
+	sectionsBudget := maxBytes - len(separator) - len(lead)
 	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD))
 	if sectionsBudget > 0 && (minimumSectionsBytes == 0 || sectionsBudget >= minimumSectionsBytes) {
 		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget, provider)
-		return intent + separator + sections
+		return lead + separator + sections
 	}
 
-	intentBudget := maxBytes - len(separator) - len(sections)
-	if intentBudget <= 0 {
+	leadBudget := maxBytes - len(separator) - len(sections)
+	if leadBudget <= 0 {
 		return sections
 	}
-	return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
+	return truncateTextAtLineBoundary(lead, leadBudget, essentialPRBodyTruncationMarker()) + separator + sections
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string, provider scm.Provider) string {
@@ -1834,31 +1831,42 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues", "evidence":
+	case "intent", "not validated live", "risk assessment", "testing", "tests", "pipeline", "issues", "evidence":
 		return true
 	default:
 		return false
 	}
 }
 
-// prependIntentSection prepends a "## Intent" section sourced from the
-// already-extracted user intent. The intent text is reused verbatim (after
-// the same secret/adversarial scrubbing the agent prompt path applies)
-// rather than being paraphrased by the agent. Returns body unchanged when
-// no intent is available or publication is disabled.
+// prependIntentSection prepends the body's lead: a "## Intent" section
+// sourced from the already-extracted user intent, then the Not validated live
+// callout. The intent text is reused verbatim (after the same
+// secret/adversarial scrubbing the agent prompt path applies) rather than
+// being paraphrased by the agent. Returns body unchanged when there is no
+// intent to publish and nothing left unvalidated.
 func prependIntentSection(body string, sctx *pipeline.StepContext) string {
+	lead := prLeadSections(sctx, resolvedProviderForBody(sctx))
+	if lead == "" {
+		return body
+	}
+	if strings.TrimSpace(body) == "" {
+		return lead
+	}
+	return lead + "\n\n" + body
+}
+
+// prLeadSections is Intent plus the Not validated live callout. Both sit at
+// the top so they stay outside every fold and are the last narrative a capped
+// body sheds.
+func prLeadSections(sctx *pipeline.StepContext, provider scm.Provider) string {
 	// Intent is agent-extracted text that lands ahead of the pipeline section,
 	// so it can shadow the real attestation the same way the Testing section
 	// can. See appendGeneratedSectionsToCleanBodyWithinLimit.
-	cleaned := neutralizeAttestationMarkers(resolvedProviderForBody(sctx), publicPRIntent(sctx))
-	if cleaned == "" {
-		return body
+	intent := ""
+	if cleaned := neutralizeAttestationMarkers(provider, publicPRIntent(sctx)); cleaned != "" {
+		intent = "## Intent\n\n" + cleaned
 	}
-	section := "## Intent\n\n" + cleaned
-	if strings.TrimSpace(body) == "" {
-		return section
-	}
-	return section + "\n\n" + body
+	return joinBlocks(intent, validationCallout(sctx, provider))
 }
 
 func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {

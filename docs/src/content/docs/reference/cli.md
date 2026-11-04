@@ -275,9 +275,28 @@ Report those exceptions rather than describing Test as clean.
 It retains exit code 0: missing verification is not a failing code verdict.
 `run.automatic_skips` names each affected step and cause, and `run.head_sha` gives the full recorded head in both drive output and `axi status`.
 Report that missing evidence; this outcome does not establish CI readiness or a merge.
-Explicit per-run skips retain their existing behavior.
+Explicit per-run skips retain their existing outcome word.
 If the run also has a Test or CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible.
 Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
+
+`run.validation` lists what the run did not validate live, so a driving agent does not have to read the PR to find it.
+It appears in drive output, at the `checks-passed` stopping point, and in `axi status` whenever the run has a Test verdict, scenarios, or an exception:
+
+```text
+validation:
+  verdict: go
+  live: 2
+  total: 3
+  untested[1]{scenario,reason}:
+    refund reaches the provider,needs a live payment-provider credential that is not provided
+  exceptions[1]{step,kind,reason}:
+    document,operator-skip,no reason recorded
+```
+
+`verdict` is the Test verdict (`go`, `no-go`, `inconclusive`, `no-surface`, or `none`), and `live` of `total` scenarios were driven against the real product.
+`untested` names every scenario that was not, with the reason the Test step recorded.
+`exceptions` lists each decision that let the run continue without that validation: `test-exception` (the same reason as `run.test_override_reason`), `ci-override`, `operator-skip` (a step skipped with `--skip` or a skip response), and `automatic-skip` (the `run.automatic_skips` causes).
+The block never changes the outcome word; a `help` line asks the agent to report each untested scenario with its reason and each operator skip, and not to describe the run as fully validated.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
 ### Strict launch receipts
