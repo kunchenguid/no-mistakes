@@ -28,6 +28,10 @@ type PRStep struct {
 	// the GitHub host's user-attachments client. Tests inject a stub so they
 	// never talk to live GitHub.
 	mediaUploader userAssetUploader
+	// titleReplaced is set on the create path's copy when a supplied title
+	// will replace the drafted one, so the drafted title is neither validated
+	// nor formatted: discarded text must not block publishing.
+	titleReplaced bool
 }
 
 type prContent struct {
@@ -120,6 +124,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
+		logSuppliedPRTextUnused(sctx, "PR creation was skipped")
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
@@ -129,6 +134,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
+		logSuppliedPRTextUnused(sctx, "PR creation was skipped")
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
@@ -139,6 +145,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
+		logSuppliedPRTextUnused(sctx, "PR creation was skipped")
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
 
@@ -188,6 +195,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
+		logSuppliedPRTextUnused(sctx, "the pull request already exists, and supplied text applies only when a run creates it")
 		updated := existing
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
@@ -285,7 +293,23 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := claimClosingIssueRefs(sctx, host, provider); err != nil {
 		return nil, err
 	}
-	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
+	suppliedBody := suppliedPRBody(sctx) != ""
+	var content prContent
+	if suppliedBody {
+		// Like pr.template, an owned body is only promised where the created
+		// body can be read back and later runs can preserve it.
+		if _, ok := host.(scm.PRContentReader); !ok || !supportsPRTemplates(provider) {
+			return nil, fmt.Errorf("a supplied PR description requires raw PR content reads; this provider is unsupported")
+		}
+		content, err = s.buildSuppliedPRContent(sctx, branch, baseBranch, baseSHA, template, provider, bodyLimit)
+	} else {
+		drafter := *s
+		drafter.titleReplaced = suppliedPRTitle(sctx) != ""
+		content, err = drafter.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
+		if err == nil {
+			content, err = applySuppliedPRTitle(sctx, content)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -298,8 +322,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
-		if template != "" || keepsPRUpdateText(sctx) {
-			return nil, fmt.Errorf("%s create returned no readable PR identity", createdBodyOwner(template))
+		if template != "" || keepsPRUpdateText(sctx) || suppliedBody {
+			return nil, fmt.Errorf("%s create returned no readable PR identity", createdOwnedBodyOwner(template, suppliedBody))
 		}
 		if len(sctx.ClosingIssueRefs) > 0 {
 			return nil, fmt.Errorf("verify closing issues: created pull request identity is unavailable")
@@ -310,17 +334,18 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
-	if template != "" || keepsPRUpdateText(sctx) {
+	if template != "" || keepsPRUpdateText(sctx) || suppliedBody {
+		owner := createdOwnedBodyOwner(template, suppliedBody)
 		reader, ok := host.(scm.PRContentReader)
 		if !ok {
-			return nil, fmt.Errorf("provider cannot verify the created body for %s", createdBodyOwner(template))
+			return nil, fmt.Errorf("provider cannot verify the created body for %s", owner)
 		}
 		actual, err := reader.GetPRContent(ctx, created)
 		if err != nil {
-			return nil, fmt.Errorf("verify created PR for %s: %w", createdBodyOwner(template), err)
+			return nil, fmt.Errorf("verify created PR for %s: %w", owner, err)
 		}
 		if actual.Body != content.Body {
-			return nil, fmt.Errorf("created PR body differs from the proposed %s and evidence; refusing successful publication", createdBodyOwner(template))
+			return nil, fmt.Errorf("created PR body differs from the proposed %s and evidence; refusing successful publication", owner)
 		}
 	}
 	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
@@ -618,14 +643,16 @@ Final diff paths and statuses:
 			content.Body = unwrapNestedPRBody(content.Body)
 			content.Body = stripGeneratedSections(content.Body)
 			content.Body = neutralizeAttestationMarkers(provider, content.Body)
-			if content.Title != "" && content.Body != "" {
-				originalTitle := content.Title
-				content.Title, err = renderPRTitle(sctx, content.Title)
-				if err != nil {
-					return prContent{}, err
-				}
-				if content.Title != originalTitle {
-					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
+			if (content.Title != "" || s.titleReplaced) && content.Body != "" {
+				if !s.titleReplaced {
+					originalTitle := content.Title
+					content.Title, err = renderPRTitle(sctx, content.Title)
+					if err != nil {
+						return prContent{}, err
+					}
+					if content.Title != originalTitle {
+						slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
+					}
 				}
 				if keepsPRUpdateText(sctx) {
 					return s.publishKeptDraft(sctx, provider, content.Title, content.Body, bodyLimit)
@@ -648,6 +675,12 @@ func (s *PRStep) draftConfiguredPRTitle(sctx *pipeline.StepContext, branch, base
 		return "", fmt.Errorf("read final branch diff for PR title: %w", err)
 	}
 	inventory := prPromptInventory(sctx, paths, baseSHA)
+	// A run that supplied only the description drafts its title here even
+	// without pr.title_format, under the ordinary conventional-title rules.
+	titleRules := "- Do not include a branch identifier or any repository formatter prefix or suffix; those are applied deterministically after drafting."
+	if sctx.Config == nil || sctx.Config.PR.TitleFormat == "" {
+		titleRules = prTitlePromptRules(sctx) + "\n" + prTitleScopeRules(sctx)
+	}
 	prompt := fmt.Sprintf(`Draft only the bare concise pull request title text for the full final branch delta.
 
 Context:
@@ -658,12 +691,12 @@ Context:
 
 Rules:
 - Return only the title component in the structured title field.
-- Do not include a branch identifier or any repository formatter prefix or suffix; those are applied deterministically after drafting.
+%s
 - Derive the title from the final diff and inspect it directly when the paths below do not provide enough detail.
 - Do not invent behavior.
 
 Final diff paths and statuses:
-%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, inventory, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, titleRules, inventory, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
 	prompt += prIntentBriefPromptSection(sctx)
 	prompt += agent.MemoryFilesRule
 	schema := prTitleSchema
@@ -1778,9 +1811,12 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
 	}
-	title, err := renderPRTitle(sctx, "update pull request")
-	if err != nil {
-		return prContent{}, err
+	title := "update pull request"
+	if !s.titleReplaced {
+		var err error
+		if title, err = renderPRTitle(sctx, title); err != nil {
+			return prContent{}, err
+		}
 	}
 	diffSummary := strings.TrimSpace(finalDiff)
 	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
@@ -1796,6 +1832,13 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 		Title: title,
 		Body:  body,
 	}, nil
+}
+
+func createdOwnedBodyOwner(template string, suppliedBody bool) string {
+	if suppliedBody {
+		return "supplied PR description"
+	}
+	return createdBodyOwner(template)
 }
 
 func createdBodyOwner(template string) string {

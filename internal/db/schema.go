@@ -428,6 +428,11 @@ var migrationStatements = []string{
 	// Pin the opt-in total Review fix budget across recovery and restarts.
 	// NULL identifies a step started before this policy existed (unbounded).
 	`ALTER TABLE step_results ADD COLUMN review_max_fix_rounds INTEGER`,
+	// Caller-supplied PR title and description (axi run --pr-title /
+	// --pr-body-file). Written once, with the row, and NULL when not
+	// supplied; the PR step publishes them only when the run creates the PR.
+	`ALTER TABLE runs ADD COLUMN pr_title TEXT`,
+	`ALTER TABLE runs ADD COLUMN pr_body TEXT`,
 	// Run-history lookup indexes. Without them every run snapshot scans the
 	// whole step_results and step_rounds history once per step, and the branch
 	// joins (previous review, branch decisions) start from a full child-table

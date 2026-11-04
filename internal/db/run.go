@@ -1,6 +1,7 @@
 package db
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -112,11 +113,18 @@ type Run struct {
 	// ClosingIssueRefsLockedAt is non-nil once a PR body composition has sampled
 	// ClosingIssueRefs, after which a reattach can no longer add to them.
 	ClosingIssueRefsLockedAt *int64
-	CreatedAt                int64
-	UpdatedAt                int64
+	// PRTitle and PRBody are the caller-supplied PR title and description
+	// (axi run --pr-title / --pr-body-file), already validated. They are
+	// written only when the run is inserted, so a launch receipt can compare
+	// them without a race, and the PR step publishes them only when this run
+	// creates the PR. Nil means none was supplied.
+	PRTitle   *string
+	PRBody    *string
+	CreatedAt int64
+	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, created_at, updated_at`
 
 func (d *DB) runColumns() string {
 	intentCheck := "NULL"
@@ -140,6 +148,7 @@ func scanRun(row interface {
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
+		&r.PRTitle, &r.PRBody,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -176,6 +185,45 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 // duplicate defense across daemon processes; callers additionally serialize
 // selection under their branch lock.
 func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, profiles ...*agentcfg.PiProfile) (*Run, error) {
+	return d.InsertRunWithPRText(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, RunPRText{}, profiles...)
+}
+
+// RunPRText is a caller-supplied PR title and description. An empty field
+// means that part was not supplied.
+type RunPRText struct {
+	Title string
+	Body  string
+}
+
+// PRTextDigest binds a caller-supplied PR title and description for strict
+// launch receipts and reattach checks. It is "" when neither was supplied, and
+// each value is length-prefixed so no title/body split shares a digest.
+func PRTextDigest(title, body string) string {
+	if title == "" && body == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s\n%d:%s", len(title), title, len(body), body)))
+	return fmt.Sprintf("%x", sum)
+}
+
+// PRTextDigest is PRTextDigest of the run's stored PR text.
+func (r *Run) PRTextDigest() string {
+	if r == nil {
+		return ""
+	}
+	var title, body string
+	if r.PRTitle != nil {
+		title = *r.PRTitle
+	}
+	if r.PRBody != nil {
+		body = *r.PRBody
+	}
+	return PRTextDigest(title, body)
+}
+
+// InsertRunWithPRText is InsertRunWithIntentAndLaunchNonce that also stores
+// the caller-supplied PR text in the same row write.
+func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, profiles ...*agentcfg.PiProfile) (*Run, error) {
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err
@@ -217,9 +265,15 @@ func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA 
 		r.PRBaseBranch = &prBaseBranch
 	}
 	r.OmitIntent = omitIntent
+	if prText.Title != "" {
+		r.PRTitle = &prText.Title
+	}
+	if prText.Body != "" {
+		r.PRBody = &prText.Body
+	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -383,6 +437,16 @@ func (d *DB) GetRunByLaunchNonce(repoID, branch, launchNonce string) (*Run, erro
 // including an explicit PR base branch, is part of the UPDATE predicate, so a
 // conflicting observer cannot consume `created`.
 func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
+	return d.ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, omitIntent, "", profiles...)
+}
+
+// ClaimLaunchReceiptWithPRText is ClaimLaunchReceipt that also requires the
+// run's supplied PR text to match prTextDigest ("" for none). The digest is
+// checked on the row already read, and the UPDATE is pinned to that row's ID;
+// its PR text is written with the row and never changes, so a conflicting
+// observer cannot consume `created`, even when the row is inserted while this
+// call runs. With no row yet it returns nil, like any unclaimable receipt.
+func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest string, profiles ...*agentcfg.PiProfile) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
@@ -392,41 +456,37 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 		model, effort = request.Model, string(request.Effort)
 	}
 	prBaseBranch = strings.TrimSpace(prBaseBranch)
-	for {
-		r := &Run{}
-		err := scanRun(d.sql.QueryRow(
-			`UPDATE runs SET launch_receipt_claimed_at = ?
-			 WHERE repo_id = ? AND branch = ? AND launch_nonce = ?
-			   AND submitted_head_sha = ? AND launch_validation_generation = ? AND launch_intent_digest = ?
-			   AND (? = '' OR pr_base_branch = ?)
-			   AND (? = 0 OR omit_intent = ?)
-			   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
-			   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
-			   AND launch_receipt_claimed_at IS NULL
-			 RETURNING `+d.runColumns(),
-			now(), repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort,
-		), r)
-		if err == nil {
-			return r, true, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, false, fmt.Errorf("claim launch receipt: %w", err)
-		}
-		r, err = d.GetRunByLaunchNonce(repoID, branch, launchNonce)
-		if err != nil {
-			return nil, false, err
-		}
-		if r == nil || !r.PiProfile.Matches(request) || r.LaunchReceiptClaimedAt != nil ||
-			r.SubmittedHeadSHA == nil || *r.SubmittedHeadSHA != submittedHeadSHA ||
-			r.LaunchValidationGeneration == nil || *r.LaunchValidationGeneration != validationGeneration ||
-			r.LaunchIntentDigest == nil || *r.LaunchIntentDigest != intentDigest ||
-			prBaseBranch != "" && (r.PRBaseBranch == nil || *r.PRBaseBranch != prBaseBranch) ||
-			omitIntent && !r.OmitIntent {
-			return r, false, nil
-		}
-		// A creator committed a matching row after UPDATE missed. Retry instead
-		// of labelling the first observer as a replay.
+	existing, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
+	if err != nil || existing == nil {
+		return nil, false, err
 	}
+	if existing.PRTextDigest() != prTextDigest {
+		return existing, false, nil
+	}
+	r := &Run{}
+	err = scanRun(d.sql.QueryRow(
+		`UPDATE runs SET launch_receipt_claimed_at = ?
+		 WHERE id = ? AND repo_id = ? AND branch = ? AND launch_nonce = ?
+		   AND submitted_head_sha = ? AND launch_validation_generation = ? AND launch_intent_digest = ?
+		   AND (? = '' OR pr_base_branch = ?)
+		   AND (? = 0 OR omit_intent = ?)
+		   AND (? = '' OR json_extract(pi_profile, '$.model') = ?)
+		   AND (? = '' OR json_extract(pi_profile, '$.effort') = ?)
+		   AND launch_receipt_claimed_at IS NULL
+		 RETURNING `+d.runColumns(),
+		now(), existing.ID, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, prBaseBranch, omitIntent, omitIntent, model, model, effort, effort,
+	), r)
+	if err == nil {
+		return r, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, fmt.Errorf("claim launch receipt: %w", err)
+	}
+	r, err = d.GetRunByLaunchNonce(repoID, branch, launchNonce)
+	if err != nil {
+		return nil, false, err
+	}
+	return r, false, nil
 }
 
 // GetRunsByRepo returns all runs for a repo, newest first.

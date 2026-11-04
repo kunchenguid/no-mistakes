@@ -1007,13 +1007,13 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		baseSHA = strings.TrimSpace(params.ReconciledPreviousHead)
 	}
 	if params.LaunchNonce != "" {
-		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, params.PiProfile)
+		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
 		if err != nil {
 			return "", err
 		}
 		return receipt.RunID, nil
 	}
-	return m.startRun(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, params.PiProfile)
+	return m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
 }
 
 // HandleStartFreshRun creates or replays a proof-mode launch only after
@@ -1026,13 +1026,13 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartF
 	if repo == nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("unknown repo %s", params.RepoID)
 	}
-	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, params.PiProfile)
+	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
 }
 
 // startFreshLaunch owns proof identity under the branch lock. A nonce may
 // replay only its immutable submitted-head, generation, and persisted-intent
 // digest. It must never fall back to ordinary same-head reattachment.
-func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch string, omitIntent bool, trigger, planID string, closingIssues []string, profiles ...*agentcfg.PiProfile) (ipc.LaunchReceipt, error) {
+func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch string, omitIntent bool, trigger, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (ipc.LaunchReceipt, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return ipc.LaunchReceipt{}, err
@@ -1047,6 +1047,11 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 	if err != nil {
 		return ipc.LaunchReceipt{}, err
 	}
+	prText, err = normalizeRunPRText(prText)
+	if err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
+	requestPRTextDigest := db.PRTextDigest(prText.Title, prText.Body)
 
 	if strings.TrimSpace(intent) == "" {
 		return ipc.LaunchReceipt{}, fmt.Errorf("intent is required with launch_nonce")
@@ -1077,6 +1082,9 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			if omitIntent && !existing.OmitIntent {
 				return "", conflictingLaunchOmitIntent(launchNonce)
 			}
+			if existing.PRTextDigest() != requestPRTextDigest {
+				return "", conflictingLaunchPRText(launchNonce)
+			}
 
 			replayed, err := receiptForRun(existing, false)
 			if err != nil {
@@ -1093,7 +1101,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				receipt = replayed
 				return existing.ID, nil
 			}
-			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithPRText(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest)
 			if err != nil {
 				return "", err
 			}
@@ -1130,7 +1138,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				inheritedPRURL = inheritablePRURL(runs[0])
 			}
 		}
-		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, nil, request)
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, request)
 		if err != nil {
 			return "", err
 		}
@@ -1144,7 +1152,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				return "", err
 			}
 		} else {
-			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent)
+			claimedRun, claimed, err := m.db.ClaimLaunchReceiptWithPRText(repo.ID, branch, launchNonce, headSHA, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, requestPRTextDigest)
 			if err != nil {
 				return "", err
 			}
@@ -1189,6 +1197,24 @@ func conflictingLaunchPRBaseBranch(launchNonce string) error {
 
 func conflictingLaunchOmitIntent(launchNonce string) error {
 	return fmt.Errorf("conflicting launch_nonce %q is already bound to a run that publishes the Intent section", launchNonce)
+}
+
+func conflictingLaunchPRText(launchNonce string) error {
+	return fmt.Errorf("conflicting launch_nonce %q is already bound to a different supplied PR title or description", launchNonce)
+}
+
+// normalizeRunPRText re-checks the caller-supplied PR text the CLI already
+// validated: the push hook and IPC are boundaries a request can cross without
+// that CLI.
+func normalizeRunPRText(prText db.RunPRText) (db.RunPRText, error) {
+	title, err := steps.NormalizeRunPRTitle(prText.Title)
+	if err != nil {
+		return db.RunPRText{}, fmt.Errorf("pr title: %w", err)
+	}
+	if err := steps.ValidateRunPRBody(prText.Body); err != nil {
+		return db.RunPRText{}, fmt.Errorf("pr body: %w", err)
+	}
+	return db.RunPRText{Title: title, Body: prText.Body}, nil
 }
 
 func validateLaunchNonce(nonce string) error {
@@ -1253,7 +1279,7 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 // retarget can prove it is moving the same still-open review object.
 // A supplied clean caller head must match the selected head before any run
 // starts or is superseded. It never changes head selection.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -1337,7 +1363,26 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	// Closing references are structured run metadata and survive reruns: an
 	// explicit request is added to, never replaces, what the selected run carried.
 	closingIssues = append(append([]string(nil), selectedRun.ClosingIssueRefs...), closingIssues...)
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, profiles...)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, inheritRunPRText(selectedRun, prText), profiles...)
+}
+
+// inheritRunPRText keeps the selected run's supplied PR text, field by field,
+// unless this request supplies a replacement.
+func inheritRunPRText(run *db.Run, requested db.RunPRText) db.RunPRText {
+	inherited := db.RunPRText{}
+	if run != nil && run.PRTitle != nil {
+		inherited.Title = *run.PRTitle
+	}
+	if run != nil && run.PRBody != nil {
+		inherited.Body = *run.PRBody
+	}
+	if requested.Title != "" {
+		inherited.Title = requested.Title
+	}
+	if requested.Body != "" {
+		inherited.Body = requested.Body
+	}
+	return inherited
 }
 
 func inheritablePRURL(run *db.Run) string {
@@ -1554,15 +1599,20 @@ func loadRepoConfigAtSHA(ctx context.Context, dir, sha, purpose string) (*config
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, omitIntent, "", planID, closingIssues, profiles...)
+	return m.startRunWithPRText(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, prBaseBranch, omitIntent, planID, closingIssues, db.RunPRText{}, profiles...)
+}
+
+// startRunWithPRText is startRun with caller-supplied PR text.
+func (m *RunManager) startRunWithPRText(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, omitIntent, "", planID, closingIssues, prText, profiles...)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
 	return m.withBranchLock(repo.ID, branch, func() (string, error) {
-		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, nil, profiles...)
+		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, profiles...)
 	})
 }
 
@@ -1578,7 +1628,7 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 // startRunWithIntentSourceLocked performs run creation while the caller owns
 // the repository/branch lock. Proof fields are empty for ordinary launches,
 // and retry is nil for every run that does not continue a failed one.
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, retry *retryLaunch, profiles ...*agentcfg.PiProfile) (string, error) {
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, profiles ...*agentcfg.PiProfile) (string, error) {
 	sequence := m.reserveAdmission()
 	defer m.releaseAdmission(sequence)
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
@@ -1594,6 +1644,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	if m.shuttingDown.Load() {
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
+	}
+	// Refuse invalid supplied PR text before any active run is superseded.
+	prText, prTextErr := normalizeRunPRText(prText)
+	if prTextErr != nil {
+		trackStartFailure("invalid_pr_text")
+		return "", prTextErr
 	}
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep
@@ -1731,7 +1787,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// pr.publish_intent is enforced independently by the PR step.
 	storedOmitIntent := omitIntent || (globalCfg != nil && !globalCfg.Intent.PublishesIntentByDefault())
 
-	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, pin)
+	run, err := m.db.InsertRunWithPRText(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, pin)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)

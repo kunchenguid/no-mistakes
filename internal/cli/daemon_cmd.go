@@ -150,6 +150,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			prText, err := parsePRTextPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -184,6 +188,8 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				VerificationPlanID:     verificationPlanID,
 				ReconciledPreviousHead: reconciledPreviousHead,
 				ClosingIssueRefs:       closingIssues,
+				PRTitle:                prText.Title,
+				PRBody:                 prText.Body,
 			}, &result)
 		},
 	}
