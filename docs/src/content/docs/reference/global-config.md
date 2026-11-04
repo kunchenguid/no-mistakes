@@ -1518,13 +1518,15 @@ Parent directory for new run evidence. Global-only. A repository cannot set it.
 | Type | `string` |
 | Default | `<NM_HOME>/evidence` |
 
-Set `evidence_dir` to an absolute path, or a path that starts with `~`. New runs write `<evidence_dir>/<run-id>`. When the key is absent or empty, `test.evidence.local_root` still selects the parent, with `<NM_HOME>/evidence` as its default. A nonempty `evidence_dir` takes precedence over `local_root`.
+Set `evidence_dir` to an absolute path, `~`, or a path starting with `~/` (or `~\` on Windows). New runs write `<evidence_dir>/<run-id>`. When the key is absent or empty, `test.evidence.local_root` still selects the parent, with `<NM_HOME>/evidence` as its default. A nonempty `evidence_dir` takes precedence over `local_root`.
 
 If the directory is missing, not writable, not absolute after `~` expansion, or overlaps a default, configured, or recorded worktree placement, no-mistakes logs a warning and uses `<NM_HOME>/evidence`. It does not use `test.evidence.local_root` as that fallback. It does not create a missing directory, and it does not move a directory that already exists.
 
+If the default evidence directory also overlaps a worktree placement, run creation fails rather than writing evidence into a checkout.
+
 A run records its evidence directory at creation. A later change to `evidence_dir` does not retarget that run. A run recorded before this setting existed keeps resolving through `test.evidence.local_root`.
 
-On GitLab, the PR step uploads images from that run directory and embeds them in one `## Evidence` section. See [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
+For GitLab image uploads from that run directory, see [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
 
 ### test.evidence
 

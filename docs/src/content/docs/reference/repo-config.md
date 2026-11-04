@@ -346,6 +346,8 @@ Choose how much of the generated Risk, Testing, and Pipeline tail is visible aft
 
 `minimal` keeps a single risk line (the recorded level and rationale, on one line) and the pipeline attestation. Testing logs, pipeline round history, and the Risk and Pipeline headings are omitted. The attestation marker stays in its host-specific form: an HTML comment on GitHub, GitLab, Gitea, Forgejo, Azure, Cursor Origin, and provider plugins, and a visible text fence on an owned Bitbucket description. Ordinary unowned Bitbucket descriptions still omit the comment.
 
+GitLab's separate image Evidence section is unaffected by this setting; see [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
+
 An unrecognized value fails config parsing closed. Body size limits and truncation still apply in every mode. A templated body that cannot fit still fails instead of dropping author text. The marker remains the one `require-no-mistakes` binds to the PR head.
 
 ```yaml
