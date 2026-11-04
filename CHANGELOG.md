@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.110.0](https://github.com/kunchenguid/no-mistakes/compare/v1.109.0...v1.110.0) (2026-11-04)
+
+
+### Features
+
+* **cli:** add --pr-title and --pr-body-file to axi run and rerun ([#1700](https://github.com/kunchenguid/no-mistakes/issues/1700)) ([08a7e0d](https://github.com/kunchenguid/no-mistakes/commit/08a7e0d2b1ba3fc36eab03bba3355f13277b522a))
+* **cli:** add read-only branch publication snapshots ([#1321](https://github.com/kunchenguid/no-mistakes/issues/1321)) ([11947ea](https://github.com/kunchenguid/no-mistakes/commit/11947ea77b4b8ab8c9402eac689d07b1bcb6ee26))
+* **cli:** add standalone skill install command ([#1695](https://github.com/kunchenguid/no-mistakes/issues/1695)) ([18374c3](https://github.com/kunchenguid/no-mistakes/commit/18374c36079ea69a8b478d96d94e86e04a3c79b9))
+
+
+### Bug Fixes
+
+* **agent:** tell every pipeline agent to only add new commits ([#1703](https://github.com/kunchenguid/no-mistakes/issues/1703)) ([c67c8ae](https://github.com/kunchenguid/no-mistakes/commit/c67c8aec74fc6626d4ce2e306f42f41a89778550)), closes [#642](https://github.com/kunchenguid/no-mistakes/issues/642)
+
 ## [1.109.0](https://github.com/kunchenguid/no-mistakes/compare/v1.108.0...v1.109.0) (2026-11-03)
 
 
