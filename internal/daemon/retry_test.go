@@ -211,6 +211,8 @@ type retryFixtureOptions struct {
 	invocation db.AgentInvocation
 	// findings is the findings JSON the carried review round recorded.
 	findings *string
+	// prText is the caller-supplied PR text the failed source run carried.
+	prText db.RunPRText
 }
 
 func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
@@ -230,7 +232,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.profile != nil {
 		profiles = append(profiles, opts.profile)
 	}
-	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, profiles...)
+	source, err := d.InsertRunWithPRText(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, profiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,6 +671,19 @@ func TestRetryStartsWhenEveryProofHolds(t *testing.T) {
 	}
 	if got := f.executions.Load(); got != 2 {
 		t.Fatalf("executed %d steps, want review and test only", got)
+	}
+}
+
+func TestRetryInheritsTheSuppliedPRText(t *testing.T) {
+	text := db.RunPRText{Title: "Add widget", Body: "Our words.\n"}
+	f := newRetryFixture(t, retryFixtureOptions{prText: text})
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	run := waitForRunTerminalState(t, f.d, result.RunID)
+	if run.PRTitle == nil || *run.PRTitle != text.Title || run.PRBody == nil || *run.PRBody != text.Body {
+		t.Fatalf("retried run PR text = %v / %v", run.PRTitle, run.PRBody)
 	}
 }
 

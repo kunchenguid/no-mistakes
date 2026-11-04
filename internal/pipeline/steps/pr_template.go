@@ -154,15 +154,17 @@ Final diff paths and statuses:
 		return prContent{}, fmt.Errorf("draft pr.template narrative (template will not be replaced by a generic fallback): %w", err)
 	}
 	var content prContent
-	if result == nil || json.Unmarshal(result.Output, &content) != nil || strings.TrimSpace(content.Title) == "" || strings.TrimSpace(content.Body) == "" {
+	if result == nil || json.Unmarshal(result.Output, &content) != nil || (!s.titleReplaced && strings.TrimSpace(content.Title) == "") || strings.TrimSpace(content.Body) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid pr.template narrative; refusing generic fallback")
 	}
 	if err := acceptPRIntentBrief(sctx, content.IntentBrief); err != nil {
 		return prContent{}, err
 	}
-	content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
-	if err != nil {
-		return prContent{}, err
+	if !s.titleReplaced {
+		content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
+		if err != nil {
+			return prContent{}, err
+		}
 	}
 	if len(content.Body) > maxPullRequestBodyBytes || !utf8.ValidString(content.Body) || strings.ContainsRune(content.Body, '\x00') || hasPRAppendixMarkers(content.Body) {
 		return prContent{}, fmt.Errorf("agent returned invalid template narrative or reserved ownership markers")
@@ -178,6 +180,15 @@ Final diff paths and statuses:
 // completion is best effort, not an enforced policy. No H1s means no structural
 // requirements. Existing published narrative never goes through this check again.
 func validateTemplateStructure(template, body string) error {
+	if _, missing := missingTemplateHeading(template, body); missing {
+		return fmt.Errorf("agent changed, omitted or reordered a pr.template top-level # heading; refusing publication")
+	}
+	return nil
+}
+
+// missingTemplateHeading returns the first template H1 the body does not keep
+// in order.
+func missingTemplateHeading(template, body string) (string, bool) {
 	rest := templateStructureLines(body)
 	for _, line := range templateStructureLines(template) {
 		found := false
@@ -190,10 +201,10 @@ func validateTemplateStructure(template, body string) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("agent changed, omitted or reordered a pr.template top-level # heading; refusing publication")
+			return line, true
 		}
 	}
-	return nil
+	return "", false
 }
 
 func templateStructureLines(text string) []string {

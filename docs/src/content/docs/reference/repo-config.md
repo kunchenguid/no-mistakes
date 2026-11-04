@@ -285,6 +285,8 @@ If the complete author text, closing references, and evidence selected by [`pr.a
 
 Unconfigured, unowned descriptions retain ordinary narrative/fallback/size behavior; existing owned bodies retain author-safe updates even after the setting is removed. Providers without a raw content contract reject configured templates.
 
+A description supplied with [`axi run --pr-body-file`](/no-mistakes/reference/cli/#supplied-pr-title-and-description) replaces the agent's template fill when the run creates the PR, and is held to the same structural rule: it must keep every top-level `#` heading of the template, with the same text and in the same order, or the PR step fails with an error naming the missing heading before anything is published. Nothing else about the template is enforced on it. A supplied title likewise replaces the agent's title.
+
 **Provider caveats:** Azure DevOps' 4,000-character budget (and any non-zero `max_pr_body_chars` declared by a provider plugin) is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
 
 Provider contract tests use fake CLI/API responses and local HTTP fixtures, not live server acceptance. Exact server byte roundtrips, rendering, consistency and instance-specific limits remain unverified; a differing body readback fails visibly rather than being normalized into success.
@@ -363,7 +365,7 @@ Configure the title shape no-mistakes applies to newly created and updated pull 
 
 The template supports literal text and `{{.Branch}}` and `{{.Title}}` placeholders.
 `{{.Branch}}` is the normalized branch identifier resolved by [`commit.branch_pattern`](#commitbranch_pattern) or a matching machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) entry; its capture can be transformed by `commit.branch_replacement` from global config or that entry.
-`{{.Title}}` is the bare concise title text returned by the PR agent, or `update pull request` when ordinary drafting uses its deterministic fallback.
+`{{.Title}}` is the bare concise title text returned by the PR agent, a title supplied with [`axi run --pr-title`](/no-mistakes/reference/cli/#supplied-pr-title-and-description), or `update pull request` when ordinary drafting uses its deterministic fallback.
 For example, `title_format: "{{.Branch}}: {{.Title}}"` can render `PROJ-123: add widget` from a matching branch.
 The format is applied deterministically after drafting; its literal text is not sent to the agent as an instruction.
 
@@ -372,6 +374,7 @@ It must be valid UTF-8, contain only the two documented placeholders and literal
 The template source is limited to 1,024 bytes and 16 placeholders, and the rendered title must be non-empty and no more than 4,096 bytes.
 Providers can impose lower publication limits. GitLab titles are checked at its publication boundary and may contain at most 255 Unicode characters, including a preserved or requested draft marker.
 If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR publication fails safely instead of publishing a malformed title.
+Because the format redrafts the bare title on every managed update, a later run on a PR created with a supplied title replaces that title with a drafted one in this format.
 
 When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
 For a machine-local title convention that does not require repository configuration, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides).

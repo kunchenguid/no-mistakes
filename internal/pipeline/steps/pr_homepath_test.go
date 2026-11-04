@@ -642,3 +642,26 @@ func TestPRStep_BuildPRContentRedactsRunWorktreePaths(t *testing.T) {
 		}
 	}
 }
+
+// "Verbatim" stops at the publication boundary: a supplied description is
+// redacted like every other source before its integrity guard is stamped.
+func TestPRStep_SuppliedBodyIsRedactedBeforePublishing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	insertCompletedStep(t, sctx, types.StepReview, "", "")
+	title, body := "Keep evidence out of the worktree", "Evidence now lands under "+fixtureEvidenceDir+".\n"
+	sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
+	got, err := (&PRStep{}).buildSuppliedPRContent(sctx, "feature", "main", baseSHA, "", scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range homePathLeakNeedles {
+		if strings.Contains(got.Body, needle) {
+			t.Fatalf("supplied body leaked %q:\n%s", needle, got.Body)
+		}
+	}
+	if !strings.Contains(got.Body, "Evidence now lands under "+fixtureRedactedPath(".no-mistakes", "evidence", "run-1")) {
+		t.Fatalf("supplied body was not redacted in place:\n%s", got.Body)
+	}
+}
