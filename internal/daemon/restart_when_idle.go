@@ -41,6 +41,12 @@ var ErrRestartForUpdate = errors.New("daemon stopped to restart through its exec
 // restarted daemon serves them.
 var errRestartPending = errors.New("the daemon is restarting for an update; try again shortly")
 
+// errReplayDeferred reports that a restart was scheduled while held pushes
+// were replaying. The replay keeps the push, and every push after it, in its
+// own file, which the next daemon replays before anything held since: holding
+// it again would put it behind newer pushes to the same branch.
+var errReplayDeferred = errors.New("restart scheduled during held push replay")
+
 const defaultRestartIdlePoll = 500 * time.Millisecond
 
 type restartState struct {
@@ -190,6 +196,9 @@ func (m *RunManager) holdPushIfDeferred(params *ipc.PushReceivedParams, fromRepl
 	if !m.restart.pending.Load() && (fromReplay || !m.restart.replaying.Load()) {
 		return false, nil
 	}
+	if fromReplay {
+		return true, errReplayDeferred
+	}
 	if params.LaunchNonce != "" {
 		return true, errRestartPending
 	}
@@ -277,7 +286,9 @@ func (m *RunManager) replayHeldPushes(ctx context.Context) {
 
 // replayHeldPushFile hands every push in one claimed file to the push
 // handler and removes the file. A push that fails because the daemon is
-// stopping keeps the file, so it and the rest replay on the next start; any
+// stopping keeps the file, so it and the rest replay on the next start; a
+// restart scheduled mid-replay rewrites the file to the pushes not yet
+// started, which the next daemon replays before any push held since; any
 // other failure is logged and skipped so a bad push cannot loop forever. It
 // reports whether the replay may go on.
 func (m *RunManager) replayHeldPushFile(ctx context.Context, path string) bool {
@@ -288,7 +299,10 @@ func (m *RunManager) replayHeldPushFile(ctx context.Context, path string) bool {
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), ipc.MaxFrameBytes)
+	offset := 0
 	for scanner.Scan() {
+		start := offset
+		offset += len(scanner.Bytes()) + 1
 		if ctx.Err() != nil {
 			return false
 		}
@@ -302,6 +316,14 @@ func (m *RunManager) replayHeldPushFile(ctx context.Context, path string) bool {
 			continue
 		}
 		runID, err := m.handlePushReceived(ctx, &params, true)
+		if errors.Is(err, errReplayDeferred) {
+			if err := keepUnreplayedPushes(path, data[start:]); err != nil {
+				slog.Error("failed to keep the held pushes not yet replayed", "path", path, "error", err)
+			} else {
+				slog.Info("restart scheduled during held push replay; the rest replay first on the next start", "ref", params.Ref, "new", params.New)
+			}
+			return false
+		}
 		if err != nil {
 			if ctx.Err() != nil || m.shuttingDown.Load() {
 				slog.Warn("daemon stopping during held push replay; the rest replay on the next start", "ref", params.Ref, "new", params.New, "error", err)
@@ -321,6 +343,16 @@ func (m *RunManager) replayHeldPushFile(ctx context.Context, path string) bool {
 		return false
 	}
 	return true
+}
+
+// keepUnreplayedPushes replaces a claimed replay file with the pushes not yet
+// started, through a rename so a crash leaves either the old or the new file.
+func keepUnreplayedPushes(path string, rest []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, rest, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // gateClaimGuard orders an automatic gate resume (a parked gate that

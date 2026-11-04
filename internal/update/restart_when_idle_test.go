@@ -159,6 +159,7 @@ func TestUpdaterRunWhenIdleWithNoActiveRunRefusesAFailedProbe(t *testing.T) {
 
 // With no daemon listening there is nothing to protect: the plain path applies.
 func TestUpdaterRunWhenIdleWithNoActiveRunAndNoDaemonResetsImmediately(t *testing.T) {
+	stubDaemonAlive(t, false)
 	u, _, _, _ := newActiveRunUpdater(t)
 	finishActiveRuns(t, u.paths)
 	u.whenIdle = true
@@ -175,6 +176,36 @@ func TestUpdaterRunWhenIdleWithNoActiveRunAndNoDaemonResetsImmediately(t *testin
 	if !reset {
 		t.Fatal("update should use the plain reset when there is no daemon to protect")
 	}
+}
+
+// Greptile on #1697: a refused connection alone does not prove the daemon is
+// gone. One that is running but slow to accept could start a run during the
+// download, so the update refuses instead of restarting it at once.
+func TestUpdaterRunWhenIdleRefusesAnUnreachableDaemonThatIsStillRunning(t *testing.T) {
+	stubDaemonAlive(t, true)
+	u, execPath, _, _ := newActiveRunUpdater(t)
+	finishActiveRuns(t, u.paths)
+	u.whenIdle = true
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) {
+		return nil, fmt.Errorf("connect to daemon: %w", daemon.ErrDaemonNotReachable)
+	}
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
+	u.resetDaemon = func(bool) error { t.Fatal("reset must not run"); return nil }
+
+	err := u.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("update should refuse and offer --force, got %v", err)
+	}
+	if content, _ := os.ReadFile(execPath); string(content) != "old-binary" {
+		t.Fatalf("a refused update must leave the executable alone, got %q", content)
+	}
+}
+
+func stubDaemonAlive(t *testing.T, alive bool) {
+	t.Helper()
+	orig := daemonIsRunning
+	t.Cleanup(func() { daemonIsRunning = orig })
+	daemonIsRunning = func(*paths.Paths) (bool, error) { return alive, nil }
 }
 
 func TestRestartStatusWrapsAnUnreachableSocket(t *testing.T) {

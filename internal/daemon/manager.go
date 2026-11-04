@@ -1034,7 +1034,11 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 	runID, err := m.startRun(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, params.PiProfile)
 	if errors.Is(err, errRestartPending) {
 		// The restart was scheduled while this push waited for its branch:
-		// hold it rather than drop it, since the hook never retries.
+		// hold it rather than drop it, since the hook never retries. A
+		// replayed push stays in its replay file instead, ahead of newer ones.
+		if fromReplay {
+			return "", errReplayDeferred
+		}
 		if err := m.holdPush(params); err != nil {
 			return "", fmt.Errorf("hold push until the daemon restarts: %w", err)
 		}

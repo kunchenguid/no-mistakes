@@ -69,8 +69,12 @@ func (u *updater) daemonCanRestartWhenIdle() error {
 		if errors.Is(err, daemon.ErrRestartWhenIdleUnsupported) {
 			return errors.New("the running daemon is too old to wait for them")
 		}
+		// A refused connection proves nothing on its own: a running daemon
+		// that is slow to accept must not be restarted at once.
 		if errors.Is(err, daemon.ErrDaemonNotReachable) {
-			return errors.New("no daemon is running")
+			if alive, aliveErr := daemonIsRunning(u.paths); aliveErr == nil && !alive {
+				return errors.New("no daemon is running")
+			}
 		}
 		return &probeFailedError{err}
 	}

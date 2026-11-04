@@ -346,3 +346,69 @@ func TestPushRefusedByALateRestartIsHeld(t *testing.T) {
 		t.Fatalf("held pushes = %d, want the refused push held", got)
 	}
 }
+
+// Kun's triage on #1697: a second restart scheduled while held pushes replay
+// must not re-hold the unreplayed older pushes behind a fresh push held during
+// the replay, or the next daemon starts the older push last and it replaces
+// the newer run on the same branch. The unreplayed rest stays in the replay
+// file, which the next daemon replays first.
+func TestRestartDuringReplayKeepsTheUnreplayedPushesAheadOfNewerOnes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		schedule func(m *RunManager)
+	}{
+		{"scheduled before the push is handed over", func(m *RunManager) { m.restart.pending.Store(true) }},
+		{"scheduled while the push waits for its branch", func(m *RunManager) {
+			m.restart.beforeStartRun = func() { m.restart.pending.Store(true) }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, d := newParkedRunEnv(t)
+			repo, headSHA := setupTestGitRepo(t, p, d, "second-restart")
+			m := NewRunManager(d, p, nil)
+			gate := p.RepoDir(repo.ID)
+			older := &ipc.PushReceivedParams{Gate: gate, Ref: "refs/heads/feature-a", Old: zeroSHA, New: headSHA}
+			olderOther := &ipc.PushReceivedParams{Gate: gate, Ref: "refs/heads/feature-b", Old: zeroSHA, New: headSHA}
+			fresh := &ipc.PushReceivedParams{Gate: gate, Ref: "refs/heads/feature-a", Old: headSHA, New: zeroSHA[:39] + "f"}
+
+			// An earlier daemon's backlog is claimed for replay, and a fresh
+			// push arrived during the replay and was held behind it.
+			replayPath := p.HeldPushesFile() + ".replay"
+			for _, push := range []*ipc.PushReceivedParams{older, olderOther} {
+				if err := m.holdPush(push); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Rename(p.HeldPushesFile(), replayPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.holdPush(fresh); err != nil {
+				t.Fatal(err)
+			}
+
+			tc.schedule(m)
+			if m.replayHeldPushFile(t.Context(), replayPath) {
+				t.Fatal("replay should stop once another restart is scheduled")
+			}
+
+			replay, err := os.ReadFile(replayPath)
+			if err != nil {
+				t.Fatalf("unreplayed pushes should stay in the replay file: %v", err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(replay)), "\n")
+			if len(lines) != 2 || !strings.Contains(lines[0], "feature-a") || !strings.Contains(lines[1], "feature-b") {
+				t.Fatalf("replay file = %q, want both unreplayed pushes in arrival order", lines)
+			}
+			held, err := os.ReadFile(p.HeldPushesFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Split(strings.TrimSpace(string(held)), "\n"); len(got) != 1 || !strings.Contains(got[0], fresh.New) {
+				t.Fatalf("held pushes = %q, want only the fresh push, behind the replay file", got)
+			}
+			if run, err := d.GetActiveRun(repo.ID, "feature-a"); err != nil || run != nil {
+				t.Fatalf("deferred replay started a run: %+v, %v", run, err)
+			}
+		})
+	}
+}
