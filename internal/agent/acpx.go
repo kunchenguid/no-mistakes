@@ -18,9 +18,10 @@ import (
 const acpxScannerMaxTokenSize = 256 * 1024 * 1024
 
 type acpxAgent struct {
-	bin        string
-	target     string
-	rawCommand string
+	configOwner string
+	bin         string
+	target      string
+	rawCommand  string
 	// model is the harness-neutral model pin resolved by internal/agentcfg.
 	// no-mistakes never speaks ACP itself, so acpx's own --model is the only
 	// mechanism that reaches the target agent; empty leaves the target on its
@@ -58,6 +59,11 @@ func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	// RunOpts can change after admission. Recheck this actual invocation before
+	// handing a prompt to acpx, without carrying admission success forward.
+	if err := a.preflightCursor(ctx, opts, a.cursorModelOwner()); err != nil {
+		return nil, err
+	}
 	prompt := opts.Prompt
 	if len(opts.JSONSchema) > 0 {
 		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
@@ -67,7 +73,15 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		return nil, fmt.Errorf("acpx omp gate neutralization: %w", err)
 	}
 	args := a.buildArgs(rawCommand, opts)
-	cmd := exec.CommandContext(ctx, a.bin, args...)
+	bin := a.bin
+	if a.target == "cursor" {
+		var err error
+		bin, err = cursorExecutable(bin, opts.CWD, a.gitSafeEnv(opts.CWD, opts.Env))
+		if err != nil {
+			return nil, &CursorModelError{Status: CursorModelIndeterminate, Owner: a.cursorModelOwner(), Model: a.model}
+		}
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)

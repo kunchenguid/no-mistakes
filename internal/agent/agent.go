@@ -327,6 +327,8 @@ type InvocationWorkload struct {
 // ACPRegistryOverrides maps acpx target names, including first-class alias
 // targets, to raw ACP agent commands.
 type Options struct {
+	// CursorModelOwner identifies the configuration field for safe diagnostics.
+	CursorModelOwner     string
 	ACPRegistryOverrides map[string]string
 	Environment          runenv.Overlay
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
@@ -1359,7 +1361,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
+		return &acpxAgent{configOwner: opts.CursorModelOwner, bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	}
 	// Mapped flags follow the operator's raw agent_args_override flags, so they
 	// still precede no-mistakes' managed flags in every adapter's argv. A knob

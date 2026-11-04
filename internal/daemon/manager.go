@@ -248,6 +248,9 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if _, err := m.db.RunCommitIdentity(run.ID); err != nil {
 		return nil, err
 	}
+	if err := preflightCursorSelections(ctx, cfg, workDir, forgeEnvironment(forgeCtx)); err != nil {
+		return nil, err
+	}
 	ag, _, err := newPipelineAgent(ctx, cfg, pipelineEvidenceRoot(m.paths, cfg, run), exec.LookPath, forgeEnvironment(forgeCtx), quotaRecord)
 	if err != nil {
 		return nil, err
@@ -371,6 +374,76 @@ func (m *RunManager) pinnedRunGates(runID string) ([]config.Gate, error) {
 	return gates, nil
 }
 
+// Admission reuses the same effective profile and role precedence as agent
+// construction. Deduplication is local to this one admission and one context.
+func preflightCursorSelections(ctx context.Context, cfg *config.Config, cwd string, environment runenv.Overlay) error {
+	if steps.IsDemoMode() {
+		return nil
+	}
+	seen := map[string]bool{}
+	check := func(current *config.Config, owner string) error {
+		configured := current.Agents
+		if len(configured) == 0 {
+			configured = []types.AgentName{current.Agent}
+		}
+		maySelectCursor := false
+		for _, name := range configured {
+			target, ok := types.ACPTargetFor(name)
+			maySelectCursor = maySelectCursor || name == "" || name == types.AgentAuto || (ok && target == "cursor")
+		}
+		if !maySelectCursor {
+			return nil
+		}
+		if err := current.ResolveAgent(ctx, exec.LookPath); err != nil {
+			for _, name := range configured {
+				if target, ok := types.ACPTargetFor(name); ok && target == "cursor" {
+					return &agent.CursorModelError{Status: agent.CursorModelIndeterminate, Owner: owner, Model: current.AgentProfileFor(name).Model}
+				}
+			}
+			return err
+		}
+		names := current.Agents
+		if len(names) == 0 {
+			names = []types.AgentName{current.Agent}
+		}
+		for _, name := range names {
+			target, ok := types.ACPTargetFor(name)
+			if !ok || target != "cursor" {
+				continue
+			}
+			options := agent.Options{DisableProjectSettings: current.DisableProjectSettings, ACPRegistryOverrides: current.ACPRegistryOverrides, Profile: current.AgentProfileFor(name), Environment: environment}
+			key, _ := json.Marshal([]string{current.AgentPathFor(name), types.ACPRawCommand(target, current.ACPRegistryOverrides), options.Profile.Model})
+			if seen[string(key)] {
+				continue
+			}
+			seen[string(key)] = true
+			if err := agent.PreflightCursorModel(ctx, name, current.AgentPathFor(name), options, agent.RunOpts{CWD: cwd}, owner); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := check(cfg, "agent_config.cursor.model"); err != nil {
+		return err
+	}
+	for _, role := range config.ReviewAgentRoles {
+		entry, ok := cfg.ReviewAgents[role]
+		if !ok {
+			continue
+		}
+		for index, candidate := range append([]config.ReviewAgent{entry}, entry.Fallback...) {
+			owner := "review_agents." + role + ".model"
+			if index > 0 {
+				owner = fmt.Sprintf("review_agents.%s.fallback[%d].model", role, index-1)
+			}
+			if err := check(cfg.ForReviewAgent(candidate), owner); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay, quota *quotarouting.Record) (agent.Agent, *quotarouting.Record, error) {
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil, nil
@@ -385,7 +458,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		if !ok {
 			continue
 		}
-		next, err := newReviewRoleAgent(ctx, cfg, entry, evidenceRoot, lookPath, environment)
+		next, err := newReviewRoleAgent(ctx, cfg, entry, evidenceRoot, lookPath, environment, role)
 		if err != nil {
 			_ = primary.Close()
 			for _, existing := range roles {
@@ -409,13 +482,17 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	}), record, nil
 }
 
-func newReviewRoleAgent(ctx context.Context, cfg *config.Config, entry config.ReviewAgent, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
+func newReviewRoleAgent(ctx context.Context, cfg *config.Config, entry config.ReviewAgent, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay, role string) (agent.Agent, error) {
 	var created []agent.Agent
 	var models []string
-	for _, candidate := range append([]config.ReviewAgent{entry}, entry.Fallback...) {
+	for index, candidate := range append([]config.ReviewAgent{entry}, entry.Fallback...) {
 		roleConfig := cfg.ForReviewAgent(candidate)
 		roleConfig.QuotaRouting.Enabled = false
-		next, _, err := newConfiguredAgent(ctx, roleConfig, evidenceRoot, lookPath, environment, nil)
+		owner := "review_agents." + role + ".model"
+		if index > 0 {
+			owner = fmt.Sprintf("review_agents.%s.fallback[%d].model", role, index-1)
+		}
+		next, _, err := newConfiguredAgent(ctx, roleConfig, evidenceRoot, lookPath, environment, nil, owner)
 		if err != nil {
 			for _, existing := range created {
 				_ = existing.Close()
@@ -431,7 +508,7 @@ func newReviewRoleAgent(ctx context.Context, cfg *config.Config, entry config.Re
 	return agent.NewFallback(created, agent.WithReviewerQuotaFallback(models...)), nil
 }
 
-func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay, quota *quotarouting.Record) (agent.Agent, *quotarouting.Record, error) {
+func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay, quota *quotarouting.Record, owners ...string) (agent.Agent, *quotarouting.Record, error) {
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, nil, err
 	}
@@ -461,9 +538,14 @@ func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot st
 			return nil, nil, fmt.Errorf("quota routing agent %q is no longer available", record.CurrentAgent())
 		}
 	}
+	owner := "agent_config.cursor.model"
+	if len(owners) > 0 {
+		owner = owners[0]
+	}
 	created := make([]agent.Agent, 0, len(agents))
 	for _, name := range agents {
 		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+			CursorModelOwner:       owner,
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
 			Profile:                cfg.AgentProfileFor(name),
@@ -1954,8 +2036,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	if identityErr != nil {
 		return "", identityErr
 	}
-	// Cancel any active run for this repo+branch.
-	m.cancelActiveRuns(repo.ID, branch)
 
 	var runIntent *db.RunIntent
 	if strings.TrimSpace(storedIntent) != "" {
@@ -2240,6 +2320,15 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("resolve_forge_profile")
 		return "", fmt.Errorf("resolve forge profile: %w", err)
 	}
+
+	// Only the candidate owns this worktree. Catalog refusal leaves previous
+	// runs intact; its pending row already protects it from startup cleanup.
+	if err := preflightCursorSelections(ctx, cfg, wtDir, forgeEnvironment(forgeCtx)); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("cursor_model_preflight")
+		return "", err
+	}
+	m.cancelActiveRuns(repo.ID, branch, run.ID)
 
 	// Create agent. In demo mode, newPipelineAgent returns a no-op agent, and it
 	// wires review-role routing plus the trusted-opt-out gate-neutralization
@@ -2991,7 +3080,7 @@ func (m *RunManager) HandleHandoff(ctx context.Context, runID string) error {
 // concurrent pushes to upstream.
 // The cancellation cause is propagated to the executor via context.Cause,
 // which uses it as the run's error message in the DB.
-func (m *RunManager) cancelActiveRuns(repoID, branch string) {
+func (m *RunManager) cancelActiveRuns(repoID, branch string, except ...string) {
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
 		slog.Error("failed to query active runs for cancellation", "repo", repoID, "branch", branch, "error", err)
@@ -3011,6 +3100,9 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 
 	var toWait []chan struct{}
 	for _, run := range runs {
+		if len(except) > 0 && run.ID == except[0] {
+			continue
+		}
 		if run.Branch != branch {
 			continue
 		}

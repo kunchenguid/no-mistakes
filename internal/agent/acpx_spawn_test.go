@@ -44,9 +44,12 @@ func TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
 		agent   types.AgentName
 		target  string
 		command string
+		model   string
 	}{
 		{name: "cursor alias", agent: types.AgentCursor, target: "cursor", command: "cursor-agent acp"},
 		{name: "explicit acp:cursor target", agent: "acp:cursor", target: "cursor", command: "cursor-agent acp"},
+		{name: "cursor base pin", agent: types.AgentCursor, target: "cursor", command: "cursor-agent acp", model: "fixture-base"},
+		{name: "cursor parameterized pin", agent: "acp:cursor", target: "cursor", command: "cursor-agent acp", model: "fixture-model[mode=careful]"},
 		{name: "devin alias", agent: types.AgentDevin, target: "devin", command: "devin acp"},
 		{name: "explicit acp:devin target", agent: "acp:devin", target: "devin", command: "devin acp"},
 	} {
@@ -56,8 +59,11 @@ func TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
 			t.Setenv("NM_TEST_ACPX_ARGS_FILE", argsFile)
 			t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
 			stub := writeStubAcpx(t, dir)
+			if tc.target == "cursor" {
+				stub = writeCursorStubAcpx(t)
+			}
 
-			a, err := New(tc.agent, stub, nil)
+			a, err := NewWithOptions(tc.agent, stub, nil, Options{Profile: agentcfg.Profile{Model: tc.model}})
 			if err != nil {
 				t.Fatalf("New(%q): %v", tc.agent, err)
 			}
@@ -72,7 +78,19 @@ func TestAcpxAgent_Run_AliasSpawnsDefaultCommandWithoutOverrides(t *testing.T) {
 				t.Errorf("result text = %q, want stub acpx output", res.Text)
 			}
 
+			if tc.target == "cursor" {
+				raw, err := os.ReadFile(argsFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(string(raw), "exec\n") != 1 {
+					t.Fatal("expected exactly one model execution")
+				}
+			}
 			argv := readStubAcpxArgv(t, argsFile)
+			if tc.model != "" && !strings.Contains(strings.Join(argv, "\x00"), "--model\x00"+tc.model+"\x00") {
+				t.Fatalf("opaque model pin changed: %q", argv)
+			}
 			if len(argv) < 2 || argv[0] != "--agent" || argv[1] != tc.command {
 				t.Errorf("spawned argv = %q, want leading --agent %q", argv, tc.command)
 			}
@@ -321,4 +339,22 @@ exit 1
 	if want := estimateAcpxTokens(len(streamed)); res.Usage.OutputTokens != want {
 		t.Errorf("output tokens = %d, want the %d-token estimate of the text acpx streamed", res.Usage.OutputTokens, want)
 	}
+}
+
+// Cursor's spawn fixture supplies the public SDK now required before a prompt.
+func writeCursorStubAcpx(t *testing.T) string {
+	a, dir := cursorCatalogFixture(t, `export async function inspectAgentModels(){return {availableModelIds:['fixture-base','fixture-model[mode=careful]'],currentModelId:'fixture-base'}}`)
+	registry := `export function createAgentRegistry(){return {inspect:()=>({launch:{kind:'installed',argv:['synthetic-cursor','acp']}})}}`
+	cli := `#!/usr/bin/env node
+import fs from 'node:fs';
+fs.appendFileSync(process.env.NM_TEST_ACPX_ARGS_FILE,process.argv.slice(2).join('\n')+'\n');
+fs.writeFileSync(process.env.NM_TEST_ACPX_STDIN_FILE,fs.readFileSync(0));
+console.log(JSON.stringify({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',text:'cursor stub reply'}}}));
+`
+	for name, body := range map[string]string{"cli.js": cli, "registry.js": registry} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return a.bin
 }

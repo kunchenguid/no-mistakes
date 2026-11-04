@@ -244,6 +244,10 @@ var terminalNeedles = []struct {
 // API or network failure. It deliberately ignores ctx cancellation/deadline
 // errors so explicit cancellation is never silently retried.
 func classifyTransient(err error) (string, bool) {
+	var refusal *CursorModelError
+	if errors.As(err, &refusal) {
+		return "", false
+	}
 	if err == nil {
 		return "", false
 	}
@@ -325,6 +329,10 @@ func isTerminalRetryError(msg string) bool {
 // concrete shapes may trigger the quota-aware mid-run switch - transient
 // overload, unavailability, and parse failures never do.
 func IsQuotaExhaustionError(err error) bool {
+	var refusal *CursorModelError
+	if errors.As(err, &refusal) {
+		return false
+	}
 	if err == nil || IsStructuredOutputRejected(err) {
 		return false
 	}

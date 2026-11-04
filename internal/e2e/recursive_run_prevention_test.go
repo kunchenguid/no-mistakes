@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -283,6 +284,10 @@ func configureRecursiveIncidentAdapter(t *testing.T, h *Harness, agentName, exec
 			t.Fatalf("symlink cursor agent: %v", err)
 		}
 	}
+	acpxPath := filepath.Join(h.BinDir, executable)
+	if agentName == "cursor" {
+		acpxPath = installRecursiveCursorCatalogPackage(t, h, acpxPath)
+	}
 	config := fmt.Sprintf(`agent: %s
 log_level: debug
 acpx_path: %s
@@ -293,8 +298,39 @@ auto_fix:
   review: 0
   document: 0
   ci: 0
-`, agentName, filepath.Join(h.BinDir, executable))
+`, agentName, acpxPath)
 	if err := os.WriteFile(filepath.Join(h.NMHome, "config.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatalf("write %s config: %v", agentName, err)
 	}
+}
+
+// The Cursor row reaches the same incident wrapper after a synthetic public-SDK
+// catalog check. No real provider is launched and every authority assertion is
+// still exercised by the existing wrapper and fake agent.
+func installRecursiveCursorCatalogPackage(t *testing.T, h *Harness, wrapper string) string {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatal("Cursor ACP catalog fixture requires Node >=22.13")
+	}
+	dir := filepath.Join(h.BinDir, "cursor-acpx-sdk")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"package.json": `{"name":"acpx","type":"module","bin":{"acpx":"cli.js"},"exports":{"./runtime":"./runtime.js","./agent-registry":"./registry.js"}}`,
+		"runtime.js":   `export async function inspectAgentModels(){return {availableModelIds:['synthetic-default'],currentModelId:'synthetic-default'}}`,
+		"registry.js":  `export function createAgentRegistry(){return {inspect:()=>({launch:{kind:'installed',argv:['cursor-agent','acp']}})}}`,
+		"cli.js": fmt.Sprintf(`#!/usr/bin/env node
+import {spawn} from 'node:child_process';
+const child=spawn(%q,process.argv.slice(2),{stdio:'inherit'});
+child.on('error',()=>{process.exitCode=1});
+child.on('exit',(code)=>{process.exitCode=code??1});
+`, wrapper),
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return filepath.Join(dir, "cli.js")
 }
