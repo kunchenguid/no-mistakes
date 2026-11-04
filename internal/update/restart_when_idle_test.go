@@ -178,6 +178,43 @@ func TestUpdaterRunWhenIdleWithNoActiveRunAndNoDaemonResetsImmediately(t *testin
 	}
 }
 
+// Greptile on #1697: the --when-idle probe asks whether the daemon is running,
+// which clears a dead daemon's stale socket and PID file. The update must
+// still restart that daemon rather than report success with it stopped.
+func TestUpdaterRunWhenIdleRestartsADeadDaemonWhoseFilesTheProbeCleared(t *testing.T) {
+	u, _, _, _ := newActiveRunUpdater(t)
+	finishActiveRuns(t, u.paths)
+	if err := os.WriteFile(u.paths.PIDFile(), []byte("999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := daemonIsRunning
+	t.Cleanup(func() { daemonIsRunning = orig })
+	daemonIsRunning = func(p *paths.Paths) (bool, error) {
+		// Stands in for daemon.IsRunning finding the PID dead and removing
+		// its stale files.
+		_ = os.Remove(p.PIDFile())
+		_ = os.Remove(p.Socket())
+		return false, nil
+	}
+	u.whenIdle = true
+	u.restartStatus = func() (*ipc.RestartStatusResult, error) {
+		return nil, fmt.Errorf("connect to daemon: %w", daemon.ErrDaemonNotReachable)
+	}
+	u.scheduleRestart = func() (*ipc.RestartStatusResult, error) { t.Fatal("schedule must not run"); return nil, nil }
+	var expected *bool
+	u.resetDaemon = func(daemonExpected bool) error { expected = &daemonExpected; return nil }
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("update should proceed with no live daemon, got %v", err)
+	}
+	if expected == nil {
+		t.Fatal("update should reset the daemon")
+	}
+	if !*expected {
+		t.Fatal("reset daemonExpected = false, want true so the dead daemon is started again")
+	}
+}
+
 // Greptile on #1697: a refused connection alone does not prove the daemon is
 // gone. One that is running but slow to accept could start a run during the
 // download, so the update refuses instead of restarting it at once.

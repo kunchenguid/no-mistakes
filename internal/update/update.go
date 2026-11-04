@@ -235,10 +235,13 @@ func (u *updater) run(ctx context.Context) error {
 		fmt.Fprintf(u.stdoutWriter(), "%s is already up to date (%s)\n", u.appName, u.currentVersion)
 		return nil
 	}
+	// Read before the active-runs check: with --when-idle it probes whether the
+	// daemon is running, which clears a dead daemon's stale socket and PID
+	// file, and the reset must still restart that daemon.
+	daemonExpected := u.paths != nil && daemonArtifactsExist(u.paths)
 	if err := u.confirmActiveRunsBeforeUpdate(); err != nil {
 		return err
 	}
-	daemonExpected := u.paths != nil && daemonArtifactsExist(u.paths)
 	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
 		return err
 	}
