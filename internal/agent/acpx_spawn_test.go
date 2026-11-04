@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -311,24 +312,42 @@ func TestAcpxAgent_Run_FailedTurnEstimatesTheOutputItStreamed(t *testing.T) {
 	const streamed = "partial answer before acpx died"
 
 	dir := t.TempDir()
-	stub := filepath.Join(dir, "acpx")
-	script := `#!/bin/sh
-cat > /dev/null
-printf '{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","input_tokens":1200}}}\n'
-printf '{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"` + streamed + `"}}}\n'
-exit 1
+	catalogCounter := filepath.Join(dir, "catalog-calls")
+	modelCounter := filepath.Join(dir, "model-turns")
+	argsFile := filepath.Join(dir, "model-args.json")
+	quoted := func(value string) string { data, _ := json.Marshal(value); return string(data) }
+	// Controlled public-SDK metadata advertises its default. It is not a
+	// fabricated explicit pin or evidence of real-account inference success.
+	sdk, _ := cursorCatalogFixture(t, `import fs from 'node:fs'; export async function inspectAgentModels(options){
+if(JSON.stringify(options.agentCommand)!==JSON.stringify(['synthetic-cursor','--opaque'])) throw new Error('wrong fixture launch');
+fs.appendFileSync(`+quoted(catalogCounter)+`, 'catalog\n');
+return {availableModelIds:['fixture-base'],currentModelId:'fixture-base'};
+}`)
+	stub := sdk.bin
+	script := `#!/usr/bin/env node
+import fs from 'node:fs';
+fs.appendFileSync(` + quoted(modelCounter) + `, 'model\n');
+fs.writeFileSync(` + quoted(argsFile) + `,JSON.stringify(process.argv.slice(2)));
+fs.readFileSync(0);
+console.log(JSON.stringify({method:'session/update',params:{update:{sessionUpdate:'usage_update',input_tokens:1200}}}));
+console.log(JSON.stringify({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',text:` + quoted(streamed) + `}}}));
+process.exitCode=1;
 `
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	a, err := New(types.AgentCursor, stub, nil)
+	a, err := NewWithOptions(types.AgentCursor, stub, nil, Options{ACPRegistryOverrides: map[string]string{"cursor": "synthetic-cursor --opaque"}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	res, err := a.Run(context.Background(), RunOpts{Prompt: "review this change", CWD: dir})
 	if err == nil {
 		t.Fatal("expected the non-zero exit to fail the turn")
+	}
+	var preflight *CursorModelError
+	if errors.As(err, &preflight) {
+		t.Fatalf("usage fixture blocked by Cursor catalog preflight: status=%s; %v", preflight.Status, err)
 	}
 	if res == nil {
 		t.Fatal("a failed turn that reported usage must still return it")
@@ -338,6 +357,25 @@ exit 1
 	}
 	if want := estimateAcpxTokens(len(streamed)); res.Usage.OutputTokens != want {
 		t.Errorf("output tokens = %d, want the %d-token estimate of the text acpx streamed", res.Usage.OutputTokens, want)
+	}
+	for _, counter := range []struct{ path, want string }{{catalogCounter, "catalog\n"}, {modelCounter, "model\n"}} {
+		data, err := os.ReadFile(counter.path)
+		if err != nil || string(data) != counter.want {
+			t.Fatalf("fixture invocation counter = %q, %v; want exactly %q", data, err, counter.want)
+		}
+	}
+	var args []string
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range args {
+		if arg == "--model" {
+			t.Fatal("observed advertised default became a fabricated explicit pin")
+		}
 	}
 }
 
