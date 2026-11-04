@@ -504,11 +504,8 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	evidenceStarted := time.Now()
 	policy := evidenceReapPolicyFor(global)
 	roots := evidenceRootsFor(p, global, d)
-	for _, root := range roots {
-		reapEvidence(d, root, policy, now)
-	}
 	if len(roots) > 0 {
-		reapLegacyEvidence(d, roots[0], policy, now)
+		reapLegacyEvidence(d, roots[0], policy, now, roots[1:]...)
 	}
 	reapRunLogs(d, p.LogsDir(), policy, now)
 	logStartupPhase("evidence_cleanup", evidenceStarted)

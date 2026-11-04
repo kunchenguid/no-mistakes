@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // legacyEvidenceDirName is the fixed directory no-mistakes used to create
@@ -61,6 +63,39 @@ func evidenceRootFor(p *paths.Paths, global *config.GlobalConfig) string {
 	return roots[0]
 }
 
+func evidenceWorktreePaths(p *paths.Paths, global *config.GlobalConfig, d *db.DB) ([]string, error) {
+	dirs := []string{p.WorktreesDir()}
+	if global != nil {
+		for checkout, root := range global.WorktreeRoots {
+			dirs = append(dirs, checkout, root)
+		}
+	}
+	if d != nil {
+		recorded, err := d.GetRunWorktreeDirs()
+		if err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, recorded...)
+		repos, err := d.GetRepos()
+		if err != nil {
+			return nil, err
+		}
+		for _, repo := range repos {
+			dirs = append(dirs, repo.WorkingPath)
+		}
+	}
+	return dirs, nil
+}
+
+func evidencePlacementConflict(root string, worktreePaths []string) string {
+	for _, dir := range worktreePaths {
+		if dir != "" && (worktrees.Contains(dir, root) || worktrees.Contains(root, dir)) {
+			return dir
+		}
+	}
+	return ""
+}
+
 func evidenceRootsFor(p *paths.Paths, global *config.GlobalConfig, d *db.DB) []string {
 	if p == nil {
 		return nil
@@ -75,11 +110,16 @@ func evidenceRootsFor(p *paths.Paths, global *config.GlobalConfig, d *db.DB) []s
 	if warning != "" {
 		slog.Warn("evidence directory fallback", "detail", warning)
 	}
+	worktreePaths, err := evidenceWorktreePaths(p, global, d)
+	if err != nil {
+		slog.Warn("failed to discover worktree placements for evidence cleanup", "error", err)
+		return nil
+	}
 	seen := map[string]bool{}
 	var roots []string
 	add := func(candidate string) {
 		candidate = filepath.Clean(candidate)
-		if candidate == "" || candidate == "." || seen[candidate] {
+		if candidate == "" || candidate == "." || seen[candidate] || evidencePlacementConflict(candidate, worktreePaths) != "" {
 			return
 		}
 		seen[candidate] = true
@@ -108,8 +148,19 @@ func (m *RunManager) pinRunEvidenceDir(run *db.Run, global *config.GlobalConfig)
 		return nil
 	}
 	root, warning := m.paths.ResolveEvidenceRoot(global.EvidenceDir, config.Merge(global, &config.RepoConfig{}).Test.Evidence.LocalRoot)
+	worktreePaths, err := evidenceWorktreePaths(m.paths, global, m.db)
+	if err != nil {
+		return fmt.Errorf("read worktree placements: %w", err)
+	}
+	if conflict := evidencePlacementConflict(root, worktreePaths); conflict != "" {
+		warning = fmt.Sprintf("evidence directory %q overlaps worktree placement %q; using %s", root, conflict, m.paths.EvidenceDir())
+		root = m.paths.EvidenceDir()
+	}
 	if warning != "" {
 		slog.Warn("evidence directory fallback", "run_id", run.ID, "detail", warning)
+	}
+	if conflict := evidencePlacementConflict(root, worktreePaths); conflict != "" {
+		return fmt.Errorf("default evidence directory %q overlaps worktree placement %q", root, conflict)
 	}
 	dir := filepath.Join(root, run.ID)
 	if err := m.db.SetRunEvidenceDir(run.ID, dir); err != nil {
@@ -172,55 +223,66 @@ func pipelineEvidenceRoot(p *paths.Paths, cfg *config.Config, run *db.Run) strin
 // A directory whose run row is still pending or running is never touched, at
 // any step - the same active-run guard cleanupOrphanWorktrees uses, for the
 // same reason: only a settled run's leftovers are safe to remove.
-func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Time) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return // directory may not exist yet, which is the normal case
-	}
-
+func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Time, additionalRoots ...string) {
 	type candidate struct {
-		path     string
-		modTime  time.Time
-		isEmpty  bool
-		runID    string
-		reapable bool
+		path    string
+		modTime time.Time
+		isEmpty bool
+		runID   string
 	}
-	candidates := make([]candidate, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	var candidates []candidate
+	seen := map[string]bool{}
+	for _, root := range append([]string{root}, additionalRoots...) {
+		root = worktrees.Canonical(root)
+		if seen[root] {
 			continue
 		}
-		runID := entry.Name()
-		run, err := d.GetRun(runID)
-		if err != nil {
-			slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", err)
-			continue
-		}
-		if run == nil {
-			continue
-		}
-		if skip, reason := skipWorktreeCleanup(context.Background(), d, runID, run.WorktreePath()); skip {
-			slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", reason)
-			continue
-		}
-		path := filepath.Join(root, runID)
-		info, err := entry.Info()
+		seen[root] = true
+		entries, err := os.ReadDir(root)
 		if err != nil {
 			continue
 		}
-		inner, err := os.ReadDir(path)
-		if err != nil {
-			continue
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			runID := entry.Name()
+			run, err := d.GetRun(runID)
+			if err != nil {
+				slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", err)
+				continue
+			}
+			if run == nil {
+				continue
+			}
+			if skip, reason := skipWorktreeCleanup(context.Background(), d, runID, run.WorktreePath()); skip {
+				slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", reason)
+				continue
+			}
+			path := filepath.Join(root, runID)
+			if pinned := run.EvidencePath(); pinned != "" && worktrees.Canonical(pinned) != worktrees.Canonical(path) {
+				continue
+			}
+			if wt := run.WorktreePath(); wt != "" && evidencePlacementConflict(path, []string{wt}) != "" {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			inner, err := os.ReadDir(path)
+			if err != nil {
+				continue
+			}
+			candidates = append(candidates, candidate{
+				path:    path,
+				modTime: info.ModTime(),
+				isEmpty: len(inner) == 0,
+				runID:   runID,
+			})
 		}
-		candidates = append(candidates, candidate{
-			path:     path,
-			modTime:  info.ModTime(),
-			isEmpty:  len(inner) == 0,
-			runID:    runID,
-			reapable: true,
-		})
-	}
 
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].modTime.Before(candidates[j].modTime)
 	})
@@ -247,7 +309,7 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 	}
 
 	if removed > 0 {
-		slog.Info("reaped run evidence", "root", root, "removed", removed)
+		slog.Info("reaped run evidence", "roots", len(seen), "removed", removed)
 	}
 }
 
@@ -265,16 +327,14 @@ func removeEvidenceDir(path, runID string) bool {
 // moving files would not repair them, and a wholesale removal could delete
 // artifacts a run started before the upgrade is still writing. Reaping by the
 // same rules, with the same active-run guard, is bounded and surprises nobody.
-func reapLegacyEvidence(d *db.DB, current string, policy evidenceReapPolicy, now time.Time) {
+func reapLegacyEvidence(d *db.DB, current string, policy evidenceReapPolicy, now time.Time, additionalRoots ...string) {
 	legacy := filepath.Join(os.TempDir(), legacyEvidenceDirName)
-	if legacy == current {
-		return // an operator who pointed local_root back at it owns it now
-	}
-	if _, err := os.Stat(legacy); err != nil {
-		return
-	}
-	reapEvidence(d, legacy, policy, now)
+	roots := append([]string{current}, additionalRoots...)
+	roots = append(roots, legacy)
+	reapEvidence(d, roots[0], policy, now, roots[1:]...)
 	// Remove the root itself once it is empty; os.Remove fails harmlessly while
 	// anything remains.
-	_ = os.Remove(legacy)
+	if !worktrees.Contains(current, legacy) {
+		_ = os.Remove(legacy)
+	}
 }

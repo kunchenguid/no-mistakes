@@ -1520,7 +1520,7 @@ Parent directory for new run evidence. Global-only. A repository cannot set it.
 
 Set `evidence_dir` to an absolute path, or a path that starts with `~`. New runs write `<evidence_dir>/<run-id>`. The default is unchanged when the key is absent.
 
-If the directory is missing, not writable, not absolute after `~` expansion, or inside `<NM_HOME>/worktrees`, no-mistakes logs a warning and uses `<NM_HOME>/evidence`. It does not use `test.evidence.local_root` as that fallback. It does not create a missing directory, and it does not move a directory that already exists.
+If the directory is missing, not writable, not absolute after `~` expansion, or overlaps a default, configured, or recorded worktree placement, no-mistakes logs a warning and uses `<NM_HOME>/evidence`. It does not use `test.evidence.local_root` as that fallback. It does not create a missing directory, and it does not move a directory that already exists.
 
 A run records its evidence directory at creation. A later change to `evidence_dir` does not retarget that run. A run recorded before this setting existed keeps resolving through `test.evidence.local_root`.
 
@@ -1575,7 +1575,7 @@ no-mistakes reaps its recorded run directories itself rather than relying on an 
 
 - A finished run that produced no artifacts leaves nothing behind.
 - Recorded run directories older than `retention` are removed.
-- Whatever recorded run evidence survives is trimmed to `max_runs`, oldest first.
+- Whatever recorded run evidence survives across the current, historical, and legacy roots is trimmed to one shared `max_runs` budget, oldest first.
 - A run that is still pending or running is never touched.
 
 Reaping runs after each finished run and again at daemon startup. An upgraded daemon also drains the pre-relocation directory in the system temp directory under the same rules; nothing is migrated, because absolute paths recorded in older pull request bodies name the old location.

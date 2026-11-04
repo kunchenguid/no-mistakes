@@ -1611,3 +1611,20 @@ func (d *DB) GetRunEvidenceDirs() ([]string, error) {
 	}
 	return dirs, rows.Err()
 }
+
+func (d *DB) GetRunWorktreeDirs() ([]string, error) {
+	rows, err := d.sql.Query(`SELECT DISTINCT worktree_dir FROM runs WHERE worktree_dir IS NOT NULL AND worktree_dir != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var dirs []string
+	for rows.Next() {
+		var dir string
+		if err := rows.Scan(&dir); err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, rows.Err()
+}

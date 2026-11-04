@@ -780,15 +780,8 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	now := time.Now()
-	seenRoots := map[string]bool{}
-	for _, candidate := range append(evidenceRootsFor(m.paths, nil, m.db), root, filepath.Dir(removePath)) {
-		candidate = filepath.Clean(candidate)
-		if candidate == "" || candidate == "." || seenRoots[candidate] {
-			continue
-		}
-		seenRoots[candidate] = true
-		reapEvidence(m.db, candidate, policy, now)
-	}
+	roots := append(evidenceRootsFor(m.paths, nil, m.db), filepath.Dir(removePath))
+	reapLegacyEvidence(m.db, roots[0], policy, now, roots[1:]...)
 	reapWorktrees(m.db, m.paths, wtPolicy, now)
 	reapRunLogs(m.db, m.paths.LogsDir(), policy, now)
 }
