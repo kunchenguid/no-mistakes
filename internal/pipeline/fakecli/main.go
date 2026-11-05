@@ -245,6 +245,9 @@ func fakeGHHandler(args []string) {
 				source = repo
 			}
 			branch := "feature"
+			if data, err := os.ReadFile(os.Getenv("FAKE_CLI_PR_BODY_FILE") + ".branch"); err == nil {
+				branch = string(data)
+			}
 			if b := os.Getenv("FAKE_CLI_PR_HEAD_BRANCH"); b != "" {
 				branch = b
 			}
@@ -269,6 +272,11 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "list" {
+		if branch, ok := fakeCLIFlagValue(args, "--head"); ok {
+			if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
+				_ = os.WriteFile(path+".branch", []byte(branch), 0o644)
+			}
+		}
 		if hasPRListJSON {
 			fmt.Print(prListJSON)
 			os.Exit(0)

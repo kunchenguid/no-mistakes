@@ -24,6 +24,9 @@ import (
 
 // PRStep creates or updates a pull request via the provider CLI or API.
 type PRStep struct {
+	// host overrides the SCM boundary for tests of publication composition.
+	// Production always constructs the configured provider below.
+	host scm.Host
 	// mediaUploader uploads image/video evidence at PR render time. Nil uses
 	// the GitHub host's user-attachments client. Tests inject a stub so they
 	// never talk to live GitHub.
@@ -131,7 +134,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
-	host, skipReason := buildHost(sctx, provider)
+	host := s.host
+	var skipReason string
+	if host == nil {
+		host, skipReason = buildHost(sctx, provider)
+	}
 	if host == nil {
 		if err := refuseSkipWithClosingIssues(sctx, skipReason); err != nil {
 			return nil, err

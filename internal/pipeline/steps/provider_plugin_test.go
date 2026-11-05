@@ -96,7 +96,7 @@ func TestProviderPlugin_PRStepCreatesPRThroughPlugin(t *testing.T) {
 	statePath, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{})
 	completeCleanReview(t, sctx)
 
-	outcome, err := (&PRStep{}).Execute(sctx)
+	outcome, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx)
 	if err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestProviderPlugin_PRStepPublishesASuppliedBodyAndReadsItBack(t *testing.T)
 	title, body := "Supplied title", "Supplied narrative.\n"
 	sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
 
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
 	state, err := fakeplugin.Load(statePath)
@@ -166,7 +166,7 @@ func TestProviderPlugin_PRStepUpdatesExistingPR(t *testing.T) {
 	})
 	completeCleanReview(t, sctx)
 
-	outcome, err := (&PRStep{}).Execute(sctx)
+	outcome, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx)
 	if err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestProviderPlugin_PRStepClampsBodyToDeclaredLimit(t *testing.T) {
 	statePath, _ := fakeProviderPlugin(t, sctx, fakeplugin.State{MaxPRBodyChars: 600})
 	completeCleanReview(t, sctx)
 
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
 	state, err := fakeplugin.Load(statePath)

@@ -88,7 +88,7 @@ func TestPRStep_BriefIsSeparateFromStoredIntent(t *testing.T) {
 		}
 		return &agent.Result{Output: json.RawMessage(`{"title":"feat: add validation","body":"## What Changed\n\n- Add validation","intent_brief":{"goal":"Validate the submitted change","why":["Catch mistakes before execution"],"scope":["Check configured terms"],"out_of_scope":["Keep the default behavior unchanged"]}}`)}, nil
 	}}
-	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	repo, err := sctx.DB.InsertRepo(dir, "https://github.com/test/repo", "main")
 	if err != nil {
 		t.Fatal(err)

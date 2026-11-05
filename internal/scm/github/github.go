@@ -67,8 +67,9 @@ func (h *Host) WithRequiredReviews(reviewers []string, appID int64) *Host {
 }
 
 // NewWithFork builds a Host that opens PRs on repo using forkRepo as the head
-// repository owner. forkRepo is an "owner/name" slug; only the owner is needed
-// because gh pr create expects --head <owner>:<branch>. host is optional; see
+// repository owner. forkRepo is an "owner/name" slug: creation uses its owner
+// for --head <owner>:<branch>, and live-head proof checks the complete slug.
+// host is optional; see
 // New for its role in scoping the auth check. draft opens created PRs as drafts.
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string, draft bool) *Host {
 	h := New(cmd, cliAvailable, host, repo)

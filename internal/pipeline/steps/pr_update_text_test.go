@@ -85,6 +85,7 @@ func TestPRUpdateTextKeepOnUpdate(t *testing.T) {
 			gitCmd(t, dir, "add", "next.txt")
 			gitCmd(t, dir, "commit", "-m", "move the head")
 			sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+			recordPRTestPush(t, sctx)
 			if _, err := (&PRStep{}).Execute(sctx); err != nil {
 				t.Fatal(err)
 			}
@@ -432,11 +433,11 @@ const (
 )
 
 // suppliedPRContext is a create-path PR step whose run carries supplied text.
-func suppliedPRContext(t *testing.T, ag *mockAgent, title, body string) (*pipeline.StepContext, []string, string) {
+func suppliedPRContext(t *testing.T, ag *mockAgent, title, body string, branches ...string) (*pipeline.StepContext, []string, string) {
 	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	env, logFile := fakeGH(t, "")
-	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{}, branches...)
 	sctx.Env = env
 	if title != "" {
 		sctx.Run.PRTitle = &title
@@ -522,6 +523,7 @@ func TestPRSuppliedBodySurvivesALaterRegenerateRun(t *testing.T) {
 	gitCmd(t, sctx.WorkDir, "add", "next.txt")
 	gitCmd(t, sctx.WorkDir, "commit", "-m", "move the head")
 	sctx.Run.HeadSHA = gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
+	recordPRTestPush(t, sctx)
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
@@ -634,8 +636,7 @@ func TestPRSuppliedBodyOnlyFallsBackToTheOrdinaryTitleWhenDraftingFails(t *testi
 
 func TestPRSuppliedTitleTakesTheConfiguredTitleFormat(t *testing.T) {
 	t.Parallel()
-	sctx, _, logFile := suppliedPRContext(t, noDraftAgent(t), suppliedPRTitleText, suppliedPRBodyText)
-	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
+	sctx, _, logFile := suppliedPRContext(t, noDraftAgent(t), suppliedPRTitleText, suppliedPRBodyText, "feature/PROJ-123-add-widget")
 	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
@@ -652,8 +653,7 @@ func TestPRSuppliedTitleIgnoresAnInvalidDraftedTitleUnderTitleFormat(t *testing.
 		data, _ := json.Marshal(prContent{Title: "drafted\nsecond line", Body: "## What Changed\n\n- drafted"})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx, env, logFile := suppliedPRContext(t, ag, suppliedPRTitleText, "")
-	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
+	sctx, env, logFile := suppliedPRContext(t, ag, suppliedPRTitleText, "", "feature/PROJ-123-add-widget")
 	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {

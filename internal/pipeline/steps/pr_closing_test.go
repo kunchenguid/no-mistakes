@@ -649,7 +649,7 @@ func TestPRStep_GitHubClosesKeepsGitHubNeutralization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
 	body := readPRBodyFile(t, bodyFile)

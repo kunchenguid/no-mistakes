@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -17,11 +18,95 @@ import (
 
 // PR fixtures model their preceding successful Push step explicitly. Other
 // pipeline-step fixtures retain their original unpublished state.
-func newPRTestContext(t *testing.T, ag agent.Agent, dir, base, head string, cmds config.Commands) *pipeline.StepContext {
+func newPRTestContext(t *testing.T, ag agent.Agent, dir, base, head string, cmds config.Commands, branches ...string) *pipeline.StepContext {
 	t.Helper()
-	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, cmds)
+	sctx := newTestContext(t, ag, dir, base, head, cmds)
+	repo, err := sctx.DB.InsertRepo(dir, "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "refs/heads/feature"
+	if len(branches) > 0 {
+		branch = normalizedBranchRef(branches[0])
+	}
+	run, err := sctx.DB.InsertRun(repo.ID, branch, head, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.Repo, sctx.Run = repo, run
 	recordPRTestPush(t, sctx)
 	return sctx
+}
+
+// These tests exercise existing provider body/transport behavior. Their SCM
+// boundary supplies synthetic head proof; actual provider proof availability
+// and the GitHub wire contract are tested separately, without this injection.
+func newPRStepWithSyntheticProof(t *testing.T, sctx *pipeline.StepContext) *PRStep {
+	t.Helper()
+	recordPRTestPush(t, sctx)
+	host, reason := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil {
+		t.Fatalf("provider fixture unavailable: %s", reason)
+	}
+	return &PRStep{host: &prProofFixtureHost{Host: host, head: gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD"), branch: gitCmd(t, sctx.WorkDir, "branch", "--show-current")}}
+}
+
+type prProofFixtureHost struct {
+	scm.Host
+	head, branch string
+}
+
+func (h *prProofFixtureHost) VerifyPRHead(_ context.Context, pr *scm.PR, branch, head string) error {
+	if pr == nil || pr.URL == "" || branch != h.branch || head != h.head {
+		return errors.New("synthetic SCM proof does not match the real fixture commit and branch")
+	}
+	return nil
+}
+
+// Preserve optional provider interfaces used by author-safe updates and
+// closing-reference checks when decorating the underlying transport fixture.
+func (h *prProofFixtureHost) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, error) {
+	return h.Host.(scm.PRContentReader).GetPRContent(ctx, pr)
+}
+
+func (h *prProofFixtureHost) MaxPRBodyChars() int { return scm.HostMaxPRBodyChars(h.Host) }
+
+func TestPRStep_ProviderWithoutProofCannotPersistAURL(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	sctx.Env, _ = fakeGH(t, "")
+	host, reason := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil {
+		t.Fatal(reason)
+	}
+	// Erase only the optional proof interface at the external SCM boundary.
+	step := &PRStep{host: struct{ scm.Host }{host}}
+	out, err := step.Execute(sctx)
+	if !errors.Is(err, scm.ErrUnsupported) || out != nil {
+		t.Fatalf("unavailable proof succeeded: %+v %v", out, err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != head {
+		t.Fatalf("unverified publication or lost custody: %+v %v", run, err)
+	}
+}
+
+func TestPRStep_RefusesUnverifiedGitLabPR(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo"
+	sctx.Env, _ = fakeGlab(t, "")
+	recordPRTestPush(t, sctx)
+	out, err := (&PRStep{}).Execute(sctx)
+	if !errors.Is(err, scm.ErrUnsupported) || out != nil {
+		t.Fatalf("unavailable provider proof succeeded: %+v %v", out, err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != head {
+		t.Fatalf("unverified publication or lost custody: %+v %v", run, err)
+	}
 }
 
 func recordPRTestPush(t *testing.T, sctx *pipeline.StepContext) {

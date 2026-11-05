@@ -72,7 +72,7 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 	defer server.Close()
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Env = fakeBitbucketEnv(server.URL)
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
 	if !exists || !strings.Contains(body, "```text\n"+pipelineAttestationCommentPrefix) {
@@ -87,7 +87,7 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 	suffix := "\nCloses https://example.test/issues/9"
 	body = prefix + wrapPRAppendix(parts.appendix) + suffix
 	sctx.Config.PR.Template = ""
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
 	newHead := strings.Repeat("bc", 20)

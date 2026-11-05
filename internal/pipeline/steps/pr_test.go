@@ -208,7 +208,7 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 
-	step := &PRStep{}
+	step := newPRStepWithSyntheticProof(t, sctx)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 		}
 	})
 
-	step := &PRStep{}
+	step := newPRStepWithSyntheticProof(t, sctx)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -828,7 +828,7 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	step := &PRStep{}
+	step := newPRStepWithSyntheticProof(t, sctx)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -908,7 +908,7 @@ func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
 		}
 	})
 
-	step := &PRStep{}
+	step := newPRStepWithSyntheticProof(t, sctx)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -967,7 +967,7 @@ func TestPRStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 
-	step := &PRStep{}
+	step := newPRStepWithSyntheticProof(t, sctx)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1003,7 +1003,12 @@ func TestPRStep_UsesConfiguredTitleFormat(t *testing.T) {
 	}
 	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
-	sctx.Run.Branch = "refs/heads/PROJ/123"
+	branchRun, err := sctx.DB.InsertRun(sctx.Repo.ID, "refs/heads/PROJ/123", headSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run = branchRun
+	recordPRTestPush(t, sctx)
 	sctx.Config.Commit.BranchPattern = `^PROJ/([0-9]+)$`
 	sctx.Config.Commit.BranchReplacement = "PROJ-${1}"
 	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
@@ -1817,7 +1822,7 @@ func TestBuildPRBody_TruncatesOversizedIntentBeforeGeneratedSections(t *testing.
 func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	env, logFile := fakeGH(t, "")
+	env, _ := fakeGH(t, "")
 
 	ag := &mockAgent{
 		name: "test",
@@ -1861,7 +1866,7 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := readFakeGHBodyArg(t, logFile)
+	body := readFakeGHBodyArg(t, envEntry(env, "FAKE_CLI_PR_BODY_FILE"))
 	assertGitHubBodyLimitForTest(t, body)
 	attestation := parsePipelineAttestationForTest(t, body)
 	if attestation.HeadSHA != headSHA {
@@ -1940,7 +1945,7 @@ func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	env, logFile := fakeGH(t, "")
+	env, _ := fakeGH(t, "")
 
 	ag := &mockAgent{
 		name: "test",
@@ -1981,7 +1986,7 @@ func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := readFakeGHBodyArg(t, logFile)
+	body := readFakeGHBodyArg(t, envEntry(env, "FAKE_CLI_PR_BODY_FILE"))
 	assertGitHubBodyLimitForTest(t, body)
 	for _, want := range []string{
 		"## Intent",
@@ -2106,19 +2111,13 @@ func parsePipelineAttestationForTest(t *testing.T, body string) pipelineAttestat
 	return attestation
 }
 
-func readFakeGHBodyArg(t *testing.T, logFile string) string {
+func readFakeGHBodyArg(t *testing.T, bodyFile string) string {
 	t.Helper()
-	logData, err := os.ReadFile(logFile)
+	body, err := os.ReadFile(bodyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const marker = " --body "
-	log := string(logData)
-	idx := strings.LastIndex(log, marker)
-	if idx < 0 {
-		t.Fatalf("expected fake gh log to include --body, got:\n%s", log)
-	}
-	return strings.TrimSuffix(log[idx+len(marker):], "\n")
+	return string(body)
 }
 
 func assertGitHubBodyLimitForTest(t *testing.T, body string) {
@@ -2365,7 +2364,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 
-	step := &PRStep{}
+	step := newPRStepWithSyntheticProof(t, sctx)
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
