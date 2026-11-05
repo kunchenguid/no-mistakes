@@ -209,6 +209,15 @@ func fakeRecordSuccessHandler() {
 }
 
 func fakeGHHandler(args []string) {
+	if len(args) > 0 && args[0] == "api" && !isFakeGHPRPatch(args) {
+		if raw, ok := os.LookupEnv("FAKE_CLI_PR_PROOF_JSON"); ok {
+			if os.Getenv("FAKE_CLI_PR_PROOF_FAIL") == "1" {
+				os.Exit(1)
+			}
+			fmt.Print(raw)
+			os.Exit(0)
+		}
+	}
 	fakeGHHandlePRContentCommands(args, strings.Join(args, " "))
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
 	prBase := os.Getenv("FAKE_CLI_PR_BASE")
