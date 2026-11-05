@@ -44,7 +44,7 @@ func templateTestContext(t *testing.T) (*pipeline.StepContext, *mockAgent, strin
 		data, _ := json.Marshal(prContent{Title: "feat(pipeline): fill template", Body: filledPRTemplate})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{})
 	sctx.Config.PR.Template = name
 	sctx.Config.TrustedConfigSHA = trusted
 	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)

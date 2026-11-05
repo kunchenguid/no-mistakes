@@ -28,6 +28,7 @@ type Host struct {
 	host                string // repo's GitHub hostname; scopes the auth check
 	repo                string // "owner/name" slug for --repo; empty when unknown
 	forkOwner           string // fork owner for cross-repository PR heads
+	forkRepo            string // exact source repository for live-head proof
 	requiredReviews     []string
 	requiredReviewAppID int64
 	draft               bool // open created PRs as drafts (gh pr create --draft)
@@ -72,6 +73,7 @@ func (h *Host) WithRequiredReviews(reviewers []string, appID int64) *Host {
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string, draft bool) *Host {
 	h := New(cmd, cliAvailable, host, repo)
 	h.forkOwner = repoOwner(forkRepo)
+	h.forkRepo = forkRepo
 	h.draft = draft
 	return h
 }

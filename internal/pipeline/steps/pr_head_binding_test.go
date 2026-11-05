@@ -2,14 +2,45 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
+
+// PR fixtures model their preceding successful Push step explicitly. Other
+// pipeline-step fixtures retain their original unpublished state.
+func newPRTestContext(t *testing.T, ag agent.Agent, dir, base, head string, cmds config.Commands) *pipeline.StepContext {
+	t.Helper()
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, cmds)
+	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{HeadSHA: head, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(resolvePushURL(sctx)), Ref: normalizedBranchRef(sctx.Run.Branch)}); err != nil {
+		t.Fatal(err)
+	}
+	return sctx
+}
+
+func TestVerifyPublishedPR_ProviderWithoutProofFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	// Embedding Host supplies the ordinary provider methods, but supplies no
+	// PRHeadVerifier. Publication must not infer proof from the older interface.
+	host := struct{ scm.Host }{}
+	if err := verifyPublishedPR(sctx, host, nil); !errors.Is(err, scm.ErrUnsupported) {
+		t.Fatalf("missing capability was not refused: %v", err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != head || run.PRURL != nil {
+		t.Fatalf("refusal changed publication evidence: %+v %v", run, err)
+	}
+}
 
 // The oracle is issue #1433's successful-push contract. Real commits and the
 // durable SQLite push binding are independent of the synthetic forge response.
@@ -33,13 +64,17 @@ func TestPRStep_ExactPushedHeadPostcondition(t *testing.T) {
 					}
 					discovered = ""
 				}
-				env, _ := fakeGH(t, discovered)
+				env, logFile := fakeGH(t, discovered)
 				proof := map[string]any{
 					"number": number, "html_url": url, "state": "open", "merged": false,
 					"base": map[string]any{"repo": map[string]any{"full_name": "test/repo"}},
 					"head": map[string]any{"ref": "feature", "sha": head, "repo": map[string]any{"full_name": "test/repo", "owner": map[string]any{"login": "test"}}},
 				}
 				prHead := proof["head"].(map[string]any)
+				initialProof, err := json.Marshal(proof)
+				if err != nil {
+					t.Fatal(err)
+				}
 				switch fault {
 				case "wrong_sha", "moved_head":
 					prHead["sha"] = base
@@ -70,7 +105,7 @@ func TestPRStep_ExactPushedHeadPostcondition(t *testing.T) {
 					env = append(env, "FAKE_CLI_PR_PROOF_FAIL=1")
 				}
 				if fault == "moved_head" {
-					env = append(env, "FAKE_CLI_PR_PROOF_AFTER_UPDATE=1")
+					env = append(env, "FAKE_CLI_PR_PROOF_AFTER_UPDATE=1", "FAKE_CLI_PR_PROOF_INITIAL_JSON="+string(initialProof))
 				}
 				sctx.Env = env
 				binding := db.PushBinding{HeadSHA: head, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(resolvePushURL(sctx)), Ref: "refs/heads/feature"}
@@ -118,10 +153,16 @@ func TestPRStep_ExactPushedHeadPostcondition(t *testing.T) {
 				if fault == "" && (stored.PRURL == nil || *stored.PRURL != url) {
 					t.Fatalf("verified URL not persisted: %+v", stored.PRURL)
 				}
+				if fault == "moved_head" && route != "create" {
+					calls, err := os.ReadFile(logFile)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Count(string(calls), "api --hostname github.com repos/test/repo/pulls/42") != 2 {
+						t.Fatalf("must reread after mutation: %s", calls)
+					}
+				}
 			})
 		}
 	}
 }
-
-// Keep os linked here while fixtures are migrated to explicit proof responses.
-var _ = os.Environ

@@ -214,7 +214,42 @@ func fakeGHHandler(args []string) {
 			if os.Getenv("FAKE_CLI_PR_PROOF_FAIL") == "1" {
 				os.Exit(1)
 			}
+			if os.Getenv("FAKE_CLI_PR_PROOF_AFTER_UPDATE") == "1" {
+				body, _ := os.ReadFile(os.Getenv("FAKE_CLI_PR_BODY_FILE"))
+				if len(body) == 0 {
+					raw = os.Getenv("FAKE_CLI_PR_PROOF_INITIAL_JSON")
+				}
+			}
 			fmt.Print(raw)
+			os.Exit(0)
+		}
+		// Default PR fixtures represent the real local commit that their Push
+		// fixture published. Fault tests supply an independent explicit object.
+		for _, arg := range args {
+			if !fakeGHPullEndpoint.MatchString(arg) {
+				continue
+			}
+			head, err := exec.Command(os.Getenv("FAKE_CLI_REAL_GIT"), "rev-parse", "HEAD").Output()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			parts := strings.Split(arg, "/")
+			repo := parts[1] + "/" + parts[2]
+			branch := "feature"
+			if b := os.Getenv("FAKE_CLI_PR_HEAD_BRANCH"); b != "" {
+				branch = b
+			}
+			number, _ := strconv.Atoi(parts[4])
+			state := os.Getenv("FAKE_CLI_PR_STATE")
+			if state == "" {
+				state = "OPEN"
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"number": number, "html_url": "https://github.com/" + repo + "/pull/" + parts[4], "state": strings.ToLower(state), "merged": state == "MERGED",
+				"base": map[string]any{"repo": map[string]any{"full_name": repo}},
+				"head": map[string]any{"ref": branch, "sha": strings.TrimSpace(string(head)), "repo": map[string]any{"full_name": repo, "owner": map[string]string{"login": parts[1]}}},
+			})
 			os.Exit(0)
 		}
 	}

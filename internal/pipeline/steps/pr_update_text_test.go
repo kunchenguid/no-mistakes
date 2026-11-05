@@ -42,7 +42,7 @@ func TestPRUpdateTextKeepOnUpdate(t *testing.T) {
 				t.Fatal("keep update drafted a replacement")
 				return nil, nil
 			}}
-			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = append(env, "FAKE_CLI_PR_TITLE="+keptAuthorTitle)
 			sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 			sctx.Config.PR.Appendix = mode
@@ -119,7 +119,7 @@ func TestPRUpdateTextKeepOnCreate(t *testing.T) {
 		data, _ := json.Marshal(prContent{Title: title, Body: drafted})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
@@ -159,7 +159,7 @@ func TestPRUpdateTextKeepCreateThenUpdatePublishesOneIntent(t *testing.T) {
 		data, _ := json.Marshal(prContent{Title: "feat: x", Body: "## What Changed\n\n- x"})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = createEnv
 	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 	sctx.UserIntent = "Ship the intent exactly once."
@@ -204,7 +204,7 @@ func TestPRUpdateTextKeepCreateRefusesRewrittenBody(t *testing.T) {
 		data, _ := json.Marshal(prContent{Title: "feat: x", Body: "## What Changed\n\n- x"})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = append(env, "FAKE_CLI_PR_CREATE_REWRITE_BODY=1")
 	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
@@ -231,7 +231,7 @@ func TestPRUpdateTextKeepCreateRefusesUnreadableIdentity(t *testing.T) {
 		data, _ := json.Marshal(prContent{Title: "feat: x", Body: "## What Changed\n\n- x"})
 		return &agent.Result{Output: data}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = append(env, "FAKE_CLI_PR_CREATE_EMPTY=1")
 	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
@@ -269,7 +269,7 @@ func TestPRUpdateTextRegenerateRewrites(t *testing.T) {
 				data, _ := json.Marshal(prContent{Title: title, Body: drafted})
 				return &agent.Result{Output: data}, nil
 			}}
-			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = append(env, "FAKE_CLI_PR_TITLE="+keptAuthorTitle)
 			sctx.Config.PR.UpdateText = mode
 			sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
@@ -308,7 +308,7 @@ func TestPRUpdateTextKeepRefusesUnownedAttestation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 	_, err := (&PRStep{}).Execute(sctx)
@@ -400,7 +400,7 @@ func TestPRUpdateTextKeepOnCreatePublishesIntentOnEveryDraftPath(t *testing.T) {
 			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 			env, _ := fakeGH(t, "")
-			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test", runFn: run}, dir, baseSHA, headSHA, config.Commands{})
+			sctx := newPRTestContext(t, &mockAgent{name: "test", runFn: run}, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = env
 			sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
 			sctx.UserIntent = intent
@@ -436,7 +436,7 @@ func suppliedPRContext(t *testing.T, ag *mockAgent, title, body string) (*pipeli
 	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	env, logFile := fakeGH(t, "")
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newPRTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	if title != "" {
 		sctx.Run.PRTitle = &title
