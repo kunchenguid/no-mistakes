@@ -54,15 +54,15 @@ func (p *ReviewerProfile) ValidateRequest() error {
 		return fmt.Errorf("reviewer harness %q cannot be pinned: model and effort must both have verified selection mechanisms", p.Agent)
 	}
 	if len(p.Model) > 256 {
-		return fmt.Errorf("reviewer model must be an exact model identifier")
+		return fmt.Errorf("pinned reviewer model must be at most 256 characters, contain only [A-Za-z0-9._-/], and not start with '-'; a model valid in agent_config may still be refused as a pinned reviewer")
 	}
 	for _, c := range p.Model {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._-/", c)) {
-			return fmt.Errorf("reviewer model must be an exact model identifier")
+			return fmt.Errorf("pinned reviewer model must be at most 256 characters, contain only [A-Za-z0-9._-/], and not start with '-'; a model valid in agent_config may still be refused as a pinned reviewer")
 		}
 	}
 	if strings.HasPrefix(p.Model, "-") {
-		return fmt.Errorf("reviewer model must be an exact model identifier")
+		return fmt.Errorf("pinned reviewer model must be at most 256 characters, contain only [A-Za-z0-9._-/], and not start with '-'; a model valid in agent_config may still be refused as a pinned reviewer")
 	}
 	if p.Effort != "" {
 		effort, err := ParseEffort(string(p.Effort))

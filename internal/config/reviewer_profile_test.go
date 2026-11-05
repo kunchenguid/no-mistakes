@@ -83,3 +83,17 @@ func TestReviewerSelectionResolvesAndRefusesAmbiguousRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewerSelectionRefusesModelOutsidePinnedGrammar(t *testing.T) {
+	global, err := LoadGlobalFromBytes([]byte(`agent_config:
+  claude: {model: "opus[1m]", effort: high}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = global.ResolveReviewerProfile(&agentcfg.ReviewerProfile{Agent: types.AgentClaude})
+	want := "pinned reviewer model must be at most 256 characters, contain only [A-Za-z0-9._-/], and not start with '-'; a model valid in agent_config may still be refused as a pinned reviewer"
+	if err == nil || err.Error() != want {
+		t.Fatalf("resolve error = %v, want %q", err, want)
+	}
+}

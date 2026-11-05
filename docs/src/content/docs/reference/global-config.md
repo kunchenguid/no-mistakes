@@ -327,6 +327,10 @@ selection: `claude`, `codex`, `copilot`, `grok`, `opencode`, or `pi`.
 be pinned because they lack at least one of these mechanisms. Omitted model
 and effort fields inherit `agent_config` for the selected harness, and both
 must resolve before launch.
+Pinned reviewer model names are limited to 256 characters from
+`[A-Za-z0-9._-/]` and cannot start with `-`. A model valid in `agent_config`
+may still be refused as a pinned reviewer, including `opus[1m]`, Bedrock IDs
+containing `:`, and OpenCode IDs such as `ollama/qwen3:8b`.
 Unsupported tuning, unavailable binaries, and raw `agent_args_override` for
 the selected reviewer harness are refused before an active run is cancelled.
 For ordinary and proof-mode launches, reviewer availability and trusted
