@@ -147,6 +147,9 @@ func TestPushTranscriptHomesIsolateConcurrentRunsAndReadback(t *testing.T) {
 				}
 			}
 			unblock()
+			// The caller clone needs a fixture-only origin when the reloaded
+			// run is extracted there rather than in its disposable worktree.
+			gitCmd(t, repo.WorkingPath, "remote", "add", "origin", p.RepoDir(repo.ID))
 			for id, homes := range want {
 				run := waitForRunTerminalState(t, d, id)
 				if run.Status != types.RunCompleted || run.Intent == nil || *run.Intent != run.Branch || run.TranscriptHomes == nil || *run.TranscriptHomes != *homes {
