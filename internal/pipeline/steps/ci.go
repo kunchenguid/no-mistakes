@@ -459,8 +459,7 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads 
 
 // guardPublishedHead refuses to let a poll read checks for a head this run
 // owns nowhere. It reports the outcome to return (an adoption restart or a
-// park), whether this poll must stop short of the checks, and whether the
-// push-target read failed.
+// park), whether this poll must stop short of the checks, and any fatal error.
 //
 // A head the run does not own is adopted, but only when the PR state is KNOWN
 // to be open: the merged and closed arms end the run, so adopting under an
