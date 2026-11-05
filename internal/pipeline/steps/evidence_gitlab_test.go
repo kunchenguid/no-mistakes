@@ -45,6 +45,7 @@ func TestGitlabEvidenceSectionUploadsOnceAndRewritesOneSection(t *testing.T) {
 		EvidenceDir: runDir,
 		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
 		DB:          database,
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}},
 		Log:         func(string) {},
 	}
 
@@ -103,6 +104,84 @@ func (u *countingGitlabUploader) UploadProjectFile(context.Context, string) (git
 	return gitlab.ProjectUpload{Markdown: u.markdown, URL: u.url}, u.err
 }
 
+func TestGitlabEvidenceAttachMediaGatesUploads(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "shot.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uploader := &countingGitlabUploader{markdown: "![shot](/uploads/abc/shot.png)", url: "/uploads/abc/shot.png"}
+	step := &PRStep{gitlabUploader: uploader}
+	base := pipeline.StepContext{
+		Ctx:         context.Background(),
+		EvidenceDir: runDir,
+		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
+		Log:         func(string) {},
+	}
+	none := base
+	if got := step.gitlabEvidenceSection(&none, scm.ProviderGitLab); got != "" || uploader.calls != 0 {
+		t.Fatalf("no config section = %q uploads %d, want no upload", got, uploader.calls)
+	}
+	off := base
+	off.Config = &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: false}}}
+	if got := step.gitlabEvidenceSection(&off, scm.ProviderGitLab); got != "" || uploader.calls != 0 {
+		t.Fatalf("attach_media false section = %q uploads %d, want no upload", got, uploader.calls)
+	}
+	on := base
+	on.Config = &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}}
+	got := step.gitlabEvidenceSection(&on, scm.ProviderGitLab)
+	if uploader.calls != 1 || !strings.Contains(got, uploader.markdown) {
+		t.Fatalf("attach_media true section = %q uploads %d", got, uploader.calls)
+	}
+}
+
+func TestGitlabEvidenceReportsUnreadableImages(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "ok.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(runDir, "blocked.png")
+	if err := os.WriteFile(blocked, []byte("png"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(blocked, 0o644) })
+	hidden := filepath.Join(runDir, "hidden")
+	if err := os.Mkdir(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "inside.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(hidden, 0o755) })
+	var logs []string
+	uploader := &countingGitlabUploader{markdown: "![ok](/uploads/abc/ok.png)", url: "/uploads/abc/ok.png"}
+	step := &PRStep{gitlabUploader: uploader}
+	got := step.gitlabEvidenceSection(&pipeline.StepContext{
+		Ctx:         context.Background(),
+		EvidenceDir: runDir,
+		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}},
+		Log:         func(line string) { logs = append(logs, line) },
+	}, scm.ProviderGitLab)
+	if uploader.calls != 1 {
+		t.Fatalf("uploads = %d, want the readable image only", uploader.calls)
+	}
+	if !strings.Contains(got, "run/blocked.png") || !strings.Contains(got, "not uploaded:") || !strings.Contains(got, "run/hidden") {
+		t.Fatalf("section dropped an unreadable path:\n%s", got)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "unreadable") {
+		t.Fatalf("logs = %q, want the directory or file read failure", logs)
+	}
+}
+
 func TestGitlabEvidenceAttemptsEveryImageAndReportsRejections(t *testing.T) {
 	runDir := filepath.Join(t.TempDir(), "run")
 	if err := os.Mkdir(runDir, 0o755); err != nil {
@@ -119,7 +198,7 @@ func TestGitlabEvidenceAttemptsEveryImageAndReportsRejections(t *testing.T) {
 	}
 	uploader := &countingGitlabUploader{err: errors.New("attachment rejected by server")}
 	step := &PRStep{gitlabUploader: uploader}
-	sctx := &pipeline.StepContext{Ctx: context.Background(), EvidenceDir: runDir, Repo: &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"}, Log: func(string) {}}
+	sctx := &pipeline.StepContext{Ctx: context.Background(), EvidenceDir: runDir, Repo: &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"}, Config: &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}}, Log: func(string) {}}
 	got := step.gitlabEvidenceSection(sctx, scm.ProviderGitLab)
 	if uploader.calls != 52 {
 		t.Fatalf("upload attempts = %d, want every one of 52 images", uploader.calls)
@@ -140,6 +219,7 @@ func TestGitlabEvidenceIndependentOfTestingInEveryAppendixMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	sctx.Config.Test.Evidence.StoreInRepo = false
+	sctx.Config.Test.Evidence.AttachMedia = true
 	sctx.EvidenceDir = filepath.Join(t.TempDir(), sctx.Run.ID)
 	if err := os.Mkdir(sctx.EvidenceDir, 0o755); err != nil {
 		t.Fatal(err)

@@ -1,7 +1,11 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"mime"
+	"mime/multipart"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +30,35 @@ func TestParseProjectUploadRejectsAnythingButAnImageEmbed(t *testing.T) {
 		if _, err := parseProjectUpload([]byte(raw)); err == nil {
 			t.Fatalf("parseProjectUpload(%s) succeeded", raw)
 		}
+	}
+}
+
+func TestWriteUploadBodyStreamsTheFileIntoTheDestination(t *testing.T) {
+	payload := bytes.Repeat([]byte("png-bytes"), 8000)
+	path := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var dst bytes.Buffer
+	header, err := writeUploadBody(&dst, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, params, err := mime.ParseMediaType(strings.TrimPrefix(header, "Content-Type: "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := multipart.NewReader(&dst, params["boundary"])
+	part, err := reader.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) || part.FileName() != "shot.png" {
+		t.Fatalf("part %q len %d, want shot.png len %d", part.FileName(), len(got), len(payload))
 	}
 }
 

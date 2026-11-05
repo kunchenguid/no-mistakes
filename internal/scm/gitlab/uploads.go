@@ -120,8 +120,8 @@ func (h *Host) glabSupportsUploadForm(ctx context.Context) bool {
 }
 
 func writeUploadBody(w io.Writer, path string) (contentHeader string, err error) {
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	writer := multipart.NewWriter(w)
+	contentHeader = "Content-Type: " + writer.FormDataContentType()
 	filename := filepath.Base(path)
 	if filename == "." || filename == string(filepath.Separator) || filename == "" {
 		filename = "evidence" + filepath.Ext(path)
@@ -141,10 +141,7 @@ func writeUploadBody(w io.Writer, path string) (contentHeader string, err error)
 	if err := writer.Close(); err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(w, body); err != nil {
-		return "", err
-	}
-	return "Content-Type: " + writer.FormDataContentType(), nil
+	return contentHeader, nil
 }
 
 func uploadPartHeader(filename string) textproto.MIMEHeader {

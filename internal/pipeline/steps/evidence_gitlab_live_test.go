@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -59,6 +60,7 @@ func TestLiveGitLabEvidenceSectionOnThrowawayMR(t *testing.T) {
 		EvidenceDir: runDir,
 		Repo:        &db.Repo{UpstreamURL: "https://" + hostName + "/" + project + ".git"},
 		DB:          database,
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}},
 		Log:         func(line string) { t.Log(line) },
 	}
 
