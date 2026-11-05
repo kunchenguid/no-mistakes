@@ -34,7 +34,7 @@ func NewCodexReader() Reader { return &codexReader{} }
 func (r *codexReader) Name() string { return CodexReaderName }
 
 func (r *codexReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session, error) {
-	if err := opts.TranscriptHomes.Validate(); err != nil {
+	if err := opts.TranscriptHomes.ValidateCodex(); err != nil {
 		return nil, err
 	}
 	var codexHome string

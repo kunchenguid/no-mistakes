@@ -99,6 +99,9 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 		discovered, err := r.Discover(ctx, opts)
 		if err != nil {
 			slog.Debug("intent reader discover failed", "agent", r.Name(), "error", err)
+			if p.Logf != nil {
+				p.Logf("%s discovery disabled: %v", r.Name(), err)
+			}
 			continue
 		}
 		for _, s := range discovered {

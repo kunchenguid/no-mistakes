@@ -121,6 +121,131 @@ func TestPushTranscriptHomesInvalidSelectionWithExplicitIntent(t *testing.T) {
 	}
 }
 
+func TestPushTranscriptHomesProviderIsolationAndReadback(t *testing.T) {
+	for _, backend := range []string{"claude", "codex"} {
+		t.Run(backend, func(t *testing.T) {
+			home, daemonRoot := t.TempDir(), t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("CLAUDE_CONFIG_DIR", daemonRoot)
+			t.Setenv("CODEX_HOME", daemonRoot)
+			p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+				return []pipeline.Step{&transcriptHomesStep{backend: backend}}
+			})
+			repo, base := setupTestGitRepo(t, p, d, "provider-homes")
+			gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+			if err := os.WriteFile(filepath.Join(repo.WorkingPath, "test.txt"), []byte("changed\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, repo.WorkingPath, "commit", "-am", "change")
+			head := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+			gitCmd(t, repo.WorkingPath, "remote", "add", "origin", p.RepoDir(repo.ID))
+			for _, provider := range []string{"claude", "codex"} {
+				writeDaemonAccountTranscript(t, provider, filepath.Join(home, "."+provider), repo.WorkingPath, "OTHER_ACCOUNT default")
+				writeDaemonAccountTranscript(t, provider, daemonRoot, repo.WorkingPath, "OTHER_ACCOUNT daemon")
+			}
+			type homeCase struct {
+				name, invalid           string
+				claudeValid, codexValid bool
+			}
+			cases := []homeCase{{name: "both-valid", claudeValid: true, codexValid: true}}
+			for _, invalid := range []struct{ name, root string }{
+				{"relative", ".account-work"}, {"unexpanded", "~/account"}, {"unresolvable", ""},
+			} {
+				for _, valid := range []struct {
+					name          string
+					claude, codex bool
+				}{{"claude-valid", true, false}, {"codex-valid", false, true}, {"both-invalid", false, false}} {
+					cases = append(cases, homeCase{invalid.name + "-" + valid.name, invalid.root, valid.claude, valid.codex})
+				}
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					branch := backend + "-" + tc.name
+					claude, codex := tc.invalid, tc.invalid
+					if tc.claudeValid {
+						claude = filepath.Join(t.TempDir(), "selected claude account")
+						writeDaemonAccountTranscript(t, "claude", claude, repo.WorkingPath, branch)
+					}
+					if tc.codexValid {
+						codex = filepath.Join(t.TempDir(), "selected codex account")
+						writeDaemonAccountTranscript(t, "codex", codex, repo.WorkingPath, branch)
+					}
+					t.Setenv("HOME", "")
+					t.Setenv("USERPROFILE", "")
+					t.Setenv("CLAUDE_CONFIG_DIR", claude)
+					t.Setenv("CODEX_HOME", codex)
+					homes := runenv.CaptureTranscriptHomes()
+					t.Setenv("HOME", home)
+					t.Setenv("USERPROFILE", home)
+					t.Setenv("CLAUDE_CONFIG_DIR", daemonRoot)
+					t.Setenv("CODEX_HOME", daemonRoot)
+					gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/"+branch)
+					client, err := ipc.Dial(p.Socket())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer client.Close()
+					var result ipc.PushReceivedResult
+					if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+						Gate: p.RepoDir(repo.ID), Ref: "refs/heads/" + branch, Old: base, New: head, TranscriptHomes: homes,
+					}, &result); err != nil {
+						t.Fatal(err)
+					}
+					valid, key := tc.claudeValid, "CLAUDE_CONFIG_DIR"
+					if backend == "codex" {
+						valid, key = tc.codexValid, "CODEX_HOME"
+					}
+					check := func(run *db.Run) {
+						t.Helper()
+						if run == nil || run.Status != types.RunCompleted || run.TranscriptHomes == nil || *run.TranscriptHomes != *homes {
+							t.Fatalf("caller selection did not survive run admission/readback: %+v", run)
+						}
+						if valid && (run.Intent == nil || *run.Intent != branch || run.IntentSource == nil || *run.IntentSource != backend) {
+							t.Fatalf("valid %s account lost inference: %+v", backend, run)
+						}
+						if !valid && run.Intent != nil {
+							t.Fatalf("invalid %s account inferred intent: %q", backend, *run.Intent)
+						}
+					}
+					check(waitForRunTerminalState(t, d, result.RunID))
+					log, err := os.ReadFile(filepath.Join(p.RunLogDir(result.RunID), "intent.log"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !valid && !strings.Contains(string(log), key+" transcript home must be an absolute path") {
+						t.Fatalf("step log lacks rejected-home diagnostic: %s", log)
+					}
+					readback, err := db.Open(p.DB())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer readback.Close()
+					reloaded, err := readback.GetRun(result.RunID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					check(reloaded)
+					reloaded.Intent = nil
+					var logs []string
+					sctx := &pipeline.StepContext{
+						Ctx: context.Background(), Run: reloaded, Repo: repo, WorkDir: repo.WorkingPath,
+						DB: readback, Config: &config.Config{}, Log: func(line string) { logs = append(logs, line) },
+					}
+					out, err := (&transcriptHomesStep{backend: backend}).Execute(sctx)
+					if err != nil || out == nil || out.Skipped == valid {
+						t.Fatalf("readback inference: %+v, %v", out, err)
+					}
+					check(reloaded)
+					if !valid && !strings.Contains(strings.Join(logs, "\n"), key+" transcript home must be an absolute path") {
+						t.Fatalf("readback log lacks rejected-home diagnostic: %v", logs)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestPushTranscriptHomesIsolateConcurrentRunsAndReadback(t *testing.T) {
 	for _, backend := range []string{"claude", "codex"} {
 		t.Run(backend, func(t *testing.T) {

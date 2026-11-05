@@ -31,10 +31,16 @@ func TestCaptureTranscriptHomes(t *testing.T) {
 				want := TranscriptHomes{ClaudeConfigDir: claude, CodexHome: codex}
 				if key == "CLAUDE_CONFIG_DIR" {
 					want.ClaudeConfigDir = selection
+					if got.ValidateClaude() == nil || got.ValidateCodex() != nil {
+						t.Fatalf("Claude rejection affected Codex: %+v", got)
+					}
 				} else {
 					want.CodexHome = selection
+					if got.ValidateCodex() == nil || got.ValidateClaude() != nil {
+						t.Fatalf("Codex rejection affected Claude: %+v", got)
+					}
 				}
-				if *got != want || got.Validate() == nil {
+				if *got != want {
 					t.Fatalf("invalid selection = %+v, want %+v and disabled discovery", got, want)
 				}
 			}
@@ -49,7 +55,7 @@ func TestCaptureTranscriptHomes(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	got = CaptureTranscriptHomes()
-	if *got != (TranscriptHomes{}) || got.Validate() == nil {
+	if *got != (TranscriptHomes{}) || got.ValidateClaude() == nil || got.ValidateCodex() == nil {
 		t.Fatalf("unresolved defaults = %+v, want empty roots and disabled discovery", got)
 	}
 }

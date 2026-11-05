@@ -30,7 +30,7 @@ func claudeProjectDirName(cwd string) string {
 }
 
 func (r *claudeReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session, error) {
-	if err := opts.TranscriptHomes.Validate(); err != nil {
+	if err := opts.TranscriptHomes.ValidateClaude(); err != nil {
 		return nil, err
 	}
 	var configDir string

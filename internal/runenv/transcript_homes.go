@@ -30,16 +30,23 @@ func CaptureTranscriptHomes() *TranscriptHomes {
 	return &TranscriptHomes{ClaudeConfigDir: claude, CodexHome: codex}
 }
 
-func (h *TranscriptHomes) Validate() error {
+func (h *TranscriptHomes) ValidateClaude() error {
 	if h == nil {
 		return nil
 	}
-	for _, entry := range []struct{ name, path string }{
-		{"CLAUDE_CONFIG_DIR", h.ClaudeConfigDir}, {"CODEX_HOME", h.CodexHome},
-	} {
-		if !filepath.IsAbs(entry.path) || strings.ContainsRune(entry.path, 0) {
-			return fmt.Errorf("%s transcript home must be an absolute path", entry.name)
-		}
+	return validateTranscriptHome("CLAUDE_CONFIG_DIR", h.ClaudeConfigDir)
+}
+
+func (h *TranscriptHomes) ValidateCodex() error {
+	if h == nil {
+		return nil
+	}
+	return validateTranscriptHome("CODEX_HOME", h.CodexHome)
+}
+
+func validateTranscriptHome(name, path string) error {
+	if !filepath.IsAbs(path) || strings.ContainsRune(path, 0) {
+		return fmt.Errorf("%s transcript home must be an absolute path", name)
 	}
 	return nil
 }
