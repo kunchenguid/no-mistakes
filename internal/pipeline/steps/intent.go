@@ -192,7 +192,14 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		gitWorkDir = repo.WorkingPath
 	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, repo.DefaultBranch)
+	gitContext := *sctx
+	gitContext.WorkDir = gitWorkDir
+	baseBranch := effectivePRBaseBranch(&gitContext)
+	fallbackBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, baseBranch)
+	resolvedBaseSHA, err := resolveBranchBaseSHA(ctx, &gitContext, fallbackBaseSHA, baseBranch)
+	if err != nil {
+		return nil, err
+	}
 	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
@@ -208,7 +215,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	}
 
 	baseTime, err := git.CommitTime(ctx, gitWorkDir, resolvedBaseSHA)
-	if err != nil || git.IsZeroSHA(run.BaseSHA) {
+	if err != nil {
 		baseTime = time.Now().Add(-7 * 24 * time.Hour)
 	}
 	headTime, err := git.CommitTime(ctx, gitWorkDir, run.HeadSHA)

@@ -35,7 +35,7 @@ func (f *fakeIntentAgent) Close() error { return nil }
 func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	t.Helper()
 	repoDir = t.TempDir()
-	gitCmd(t, repoDir, "init")
+	gitCmd(t, repoDir, "init", "-b", "main")
 	gitCmd(t, repoDir, "config", "user.email", "test@example.com")
 	gitCmd(t, repoDir, "config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\n"), 0o644); err != nil {
@@ -44,6 +44,7 @@ func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "base")
 	base = gitCmd(t, repoDir, "rev-parse", "HEAD")
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +101,7 @@ func openIntentTestDB(t *testing.T) *db.DB {
 
 func newIntentIntegrationContext(t *testing.T, repoDir, base, head string, cfg *config.Config) *pipeline.StepContext {
 	t.Helper()
+	ensureHermeticOrigin(t, repoDir)
 	d := openIntentTestDB(t)
 	repo, err := d.InsertRepo(repoDir, "https://example.com/r.git", "main")
 	if err != nil {
@@ -222,7 +224,7 @@ func TestIntentStep_Integration_NoTranscriptIsNoOp(t *testing.T) {
 
 func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T) {
 	repoDir := t.TempDir()
-	gitCmd(t, repoDir, "init")
+	gitCmd(t, repoDir, "init", "-b", "main")
 	gitCmd(t, repoDir, "config", "user.email", "test@example.com")
 	gitCmd(t, repoDir, "config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(repoDir, "active.go"), []byte("package active\n"), 0o644); err != nil {
@@ -237,6 +239,7 @@ func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T)
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "base")
 	base := gitCmd(t, repoDir, "rev-parse", "HEAD")
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
 
 	for i := 0; i < 40; i++ {
 		if err := os.Remove(filepath.Join(repoDir, fmt.Sprintf("obsolete_%02d.go", i))); err != nil {
@@ -293,7 +296,7 @@ func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	repoDir, fakeHome, base, _ := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	gitCmd(t, repoDir, "checkout", "-b", "feature", base)
+	gitCmd(t, repoDir, "checkout", "-B", "feature", base)
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +327,7 @@ func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 
 func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 	originRepo := t.TempDir()
-	gitCmd(t, originRepo, "init")
+	gitCmd(t, originRepo, "init", "-b", "main")
 	gitCmd(t, originRepo, "config", "user.email", "test@example.com")
 	gitCmd(t, originRepo, "config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(originRepo, "internal_foo.go"), []byte("package foo\n"), 0o644); err != nil {
@@ -353,6 +356,7 @@ func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 	gitCmd(t, t.TempDir(), "clone", originRepo, pipelineWorkDir)
 	gitCmd(t, pipelineWorkDir, "config", "user.email", "test@example.com")
 	gitCmd(t, pipelineWorkDir, "config", "user.name", "Tester")
+	gitCmd(t, pipelineWorkDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(pipelineWorkDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -390,10 +394,6 @@ func TestIntentStep_Integration_ForcePushedOrphanedBaseSHA(t *testing.T) {
 	repoDir, fakeHome, _, _ := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	// Branch off main and add a feature commit that touches internal_foo.go.
-	// initIntentRepo's main HEAD already contains func Bar(), so vary the
-	// content here to produce a real diff between feature and main.
-	gitCmd(t, repoDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() { /* feature */ }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
