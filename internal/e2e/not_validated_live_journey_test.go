@@ -182,10 +182,43 @@ func TestNotValidatedLiveJourney(t *testing.T) {
 // against the reference provider-plugin forge (whose checks pass). Neither the
 // drive result, axi status, nor the published PR body may report a gap.
 func TestFullyLiveRunReportsNoValidationGaps(t *testing.T) {
+	const branch = "feature/fully-live"
+	h, statePath := pluginForgeRun(t, branch, []fakeplugin.Check{{Name: "build", Bucket: "pass", State: "SUCCESS"}})
+
+	out, err := h.Run("axi", "run", "--intent", "Let a customer refund an order", "--wait", "50s")
+	t.Logf("axi run output:\n%s", out)
+	if err != nil {
+		t.Fatalf("axi run: %v\n%s", err, out)
+	}
+	assertNoValidationGaps(t, "run", out, true)
+	status, err := h.Run("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	t.Logf("axi status output:\n%s", status)
+	assertNoValidationGaps(t, "status", status, false)
+
+	body := pluginPRBody(t, statePath)
+	t.Logf("published PR body:\n%s", body)
+	if !strings.Contains(body, "no-mistakes-pipeline-attestation") {
+		t.Fatalf("published body carries no attestation:\n%s", body)
+	}
+	if strings.Contains(body, "## Not validated live") || strings.Contains(body, "not driven live against the product.") {
+		t.Fatalf("fully live run published a Not validated live callout:\n%s", body)
+	}
+	if run := h.ActiveRun(branch); run != nil {
+		h.CancelRun(run.ID)
+	}
+}
+
+// pluginForgeRun prepares a fully live run on branch against the reference
+// provider-plugin forge, which reports checks for every PR, and returns the
+// harness and the forge state path.
+func pluginForgeRun(t *testing.T, branch string, checks []fakeplugin.Check) (*Harness, string) {
+	t.Helper()
 	const (
 		pluginHost = "ssm.example.com"
 		remoteURL  = "https://" + pluginHost + "/team/repo.git"
-		branch     = "feature/fully-live"
 	)
 	h := NewHarness(t, SetupOpts{
 		Agent:    "claude",
@@ -202,9 +235,7 @@ func TestFullyLiveRunReportsNoValidationGaps(t *testing.T) {
 	}
 	stateDir := filepath.Dir(h.AgentLog)
 	statePath := filepath.Join(stateDir, "provider-plugin-state.json")
-	if err := fakeplugin.Save(statePath, fakeplugin.State{
-		Checks: []fakeplugin.Check{{Name: "build", Bucket: "pass", State: "SUCCESS"}},
-	}); err != nil {
+	if err := fakeplugin.Save(statePath, fakeplugin.State{Checks: checks, FailedLogs: "build: exit status 1"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(fakeplugin.EnvState, statePath)
@@ -213,20 +244,11 @@ func TestFullyLiveRunReportsNoValidationGaps(t *testing.T) {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
 	h.CommitChange(branch, "refund.txt", "refund feature\n", "add refunds")
+	return h, statePath
+}
 
-	out, err := h.Run("axi", "run", "--intent", "Let a customer refund an order", "--wait", "50s")
-	t.Logf("axi run output:\n%s", out)
-	if err != nil {
-		t.Fatalf("axi run: %v\n%s", err, out)
-	}
-	assertNoValidationGaps(t, "run", out, true)
-	status, err := h.Run("axi", "status")
-	if err != nil {
-		t.Fatalf("status: %v\n%s", err, status)
-	}
-	t.Logf("axi status output:\n%s", status)
-	assertNoValidationGaps(t, "status", status, false)
-
+func pluginPRBody(t *testing.T, statePath string) string {
+	t.Helper()
 	state, err := fakeplugin.Load(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -234,16 +256,61 @@ func TestFullyLiveRunReportsNoValidationGaps(t *testing.T) {
 	if len(state.PRs) != 1 {
 		t.Fatalf("plugin PRs = %+v", state.PRs)
 	}
-	body := state.PRs[0].Body
-	t.Logf("published PR body:\n%s", body)
+	return state.PRs[0].Body
+}
+
+// TestCIGateSkipRefreshesTheNotValidatedLiveCallout drives a fully live run
+// whose CI check fails, so the CI step parks (the harness sets auto_fix.ci:
+// 0), and the operator skips it there. The PR body was published before CI with no
+// callout; after the skip the published body must list CI as skipped by the
+// operator, still lead with Intent, and keep its attestation.
+func TestCIGateSkipRefreshesTheNotValidatedLiveCallout(t *testing.T) {
+	const branch = "feature/ci-gate-skip"
+	h, statePath := pluginForgeRun(t, branch, []fakeplugin.Check{{Name: "build", Bucket: "fail", State: "FAILURE"}})
+
+	out, err := h.Run("axi", "run", "--intent", "Let a customer refund an order", "--wait", "50s")
+	t.Logf("axi run output:\n%s", out)
+	if err != nil {
+		t.Fatalf("axi run: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "gate:") || !strings.Contains(out, "step: ci") {
+		t.Fatalf("run did not park at the CI gate:\n%s", out)
+	}
+	before := pluginPRBody(t, statePath)
+	t.Logf("PR body before the CI decision:\n%s", before)
+	if strings.Contains(before, "## Not validated live") {
+		t.Fatalf("fully live run published a callout before CI:\n%s", before)
+	}
+
+	respond, err := h.Run("axi", "respond", "--step", "ci", "--action", "skip", "--wait", "50s")
+	t.Logf("axi respond output:\n%s", respond)
+	if err != nil {
+		t.Fatalf("respond: %v\n%s", err, respond)
+	}
+	body := pluginPRBody(t, statePath)
+	t.Logf("PR body after the CI skip:\n%s", body)
+	callout := strings.Index(body, "## Not validated live")
+	if callout < 0 {
+		t.Fatalf("CI skip did not refresh the callout:\n%s", body)
+	}
+	if !strings.Contains(body, "**Skipped by operator** (`ci`): no reason recorded") {
+		t.Errorf("refreshed callout does not list the CI skip")
+	}
+	if intent := strings.Index(body, "## Intent"); intent < 0 || intent > callout {
+		t.Errorf("callout does not follow Intent")
+	}
+	if changed := strings.Index(body, "## What Changed"); changed >= 0 && changed < callout {
+		t.Errorf("callout does not lead the narrative")
+	}
 	if !strings.Contains(body, "no-mistakes-pipeline-attestation") {
-		t.Fatalf("published body carries no attestation:\n%s", body)
+		t.Errorf("refresh dropped the attestation")
 	}
-	if strings.Contains(body, "## Not validated live") || strings.Contains(body, "not driven live against the product.") {
-		t.Fatalf("fully live run published a Not validated live callout:\n%s", body)
+	next := strings.Index(body[callout:], "\n\n## ")
+	if next < 0 {
+		t.Fatalf("no section follows the callout:\n%s", body)
 	}
-	if run := h.ActiveRun(branch); run != nil {
-		h.CancelRun(run.ID)
+	if without := body[:callout] + body[callout+next+2:]; without != before {
+		t.Errorf("refresh changed more than the callout:\nbefore:\n%s\nwithout the callout:\n%s", before, without)
 	}
 }
 

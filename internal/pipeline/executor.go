@@ -948,6 +948,11 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		if err := e.applyApprovalOverride(gate.step, gate.stepResult.ID, response); err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
+		if response.approvalOverride != "" {
+			if err := e.publishGateDecision(run, repo, gate.step, reconcileCtx, gate.stepResult.ID, duration); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+		}
 		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
@@ -973,6 +978,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if err := e.db.CompleteSkippedStep(gate.stepResult.ID, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult), types.OperatorSkipReason); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
+		}
+		if err := e.publishGateDecision(run, repo, gate.step, reconcileCtx, gate.stepResult.ID, duration); err != nil {
+			return e.failRun(run, repo, err, ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
@@ -1949,6 +1957,11 @@ rounds:
 				if err := e.applyApprovalOverride(step, sr.ID, response); err != nil {
 					return false, "", err
 				}
+				if response.approvalOverride != "" {
+					if err := e.publishGateDecision(run, repo, step, sctx, sr.ID, executionMS); err != nil {
+						return false, "", err
+					}
+				}
 				phaseStart = time.Now()
 				goto done
 
@@ -1957,6 +1970,9 @@ rounds:
 				e.recordDeclinedRound(currentRoundID, effectiveFindings, stepName, roundNum)
 				if err := e.db.CompleteSkippedStep(sr.ID, finalExitCode, executionMS, logPath, types.OperatorSkipReason); err != nil {
 					return false, "", fmt.Errorf("complete step %s (skip): %w", stepName, err)
+				}
+				if err := e.publishGateDecision(run, repo, step, sctx, sr.ID, executionMS); err != nil {
+					return false, "", err
 				}
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", &executionMS)
 				return false, "", nil
@@ -2143,6 +2159,25 @@ func (e *Executor) applyApprovalOverride(step Step, stepResultID string, respons
 	}
 	if dbErr := e.db.SetStepOverrideReason(stepResultID, response.approvalOverride); dbErr != nil {
 		return fmt.Errorf("record approval override reason for step %s: %w", step.Name(), dbErr)
+	}
+	return nil
+}
+
+// publishGateDecision runs step's GateDecisionPublisher, if it has one, after
+// a skip or an override approval was recorded. A failure fails the step and
+// is returned for the caller to fail the run.
+func (e *Executor) publishGateDecision(run *db.Run, repo *db.Repo, step Step, sctx *StepContext, stepResultID string, durationMS int64) error {
+	publisher, ok := step.(GateDecisionPublisher)
+	if !ok {
+		return nil
+	}
+	if err := publisher.PublishGateDecision(sctx); err != nil {
+		err = fmt.Errorf("step %s: publish gate decision: %w", step.Name(), err)
+		if dbErr := e.db.FailStep(stepResultID, err.Error(), durationMS); dbErr != nil {
+			slog.Warn("failed to mark step as failed in db", "step", step.Name(), "error", dbErr)
+		}
+		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusFailed), "", err.Error(), &durationMS)
+		return err
 	}
 	return nil
 }
