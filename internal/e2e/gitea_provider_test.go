@@ -18,7 +18,7 @@ import (
 // the real pipeline: self-hosted-host detection via tea's own config.yml
 // (Gitea carries no distinguishing hostname substring the way gitlab.com or
 // github.com do), buildHost wiring the gitea.Host, PR creation, and the CI
-// step reading PR state back through the same host. It mirrors
+// step refusing to persist a URL without live head proof. It mirrors
 // TestForkRouting's shape (a git URL rewrite standing in for the real
 // provider, a stubbed CLI shadowing the real one), using the tea stub added
 // to cmd/fakeagent alongside the existing gh stub.
@@ -72,11 +72,11 @@ func TestGiteaProviderJourney(t *testing.T) {
 	h.PushToGate(branchName)
 
 	run := h.WaitForRun(branchName, 90*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunFailed || !strings.Contains(deref(run.Error), "cannot prove the live PR identity and exact pushed head") {
+		t.Fatalf("unavailable proof did not fail closed: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	if run.PRURL == nil || !strings.HasPrefix(*run.PRURL, "http://"+giteaHost+"/"+repoSlug+"/pulls/") {
-		t.Fatalf("PR URL = %v, want a Gitea pull URL under %s/%s", run.PRURL, giteaHost, repoSlug)
+	if run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != run.HeadSHA {
+		t.Fatalf("unverified URL persisted or push evidence lost: %+v", run)
 	}
 
 	invocations := readTeaStubInvocations(t, teaLog)
