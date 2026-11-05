@@ -154,7 +154,8 @@ Run the pipeline and decide on its findings as they come up:
    because it seems slow. Both commands default to ` + "`--wait 8m`" + ` so a harness
    with a 10-minute tool cap gets a structured return instead of an unbounded
    hang. If the command returns because that wait elapsed, it is not a failed
-   run and does not mean the daemon is dead: re-run the command to reattach.
+   run and does not mean the daemon is dead: re-run ` + "`no-mistakes axi run`" + ` to reattach,
+   also after an ` + "`axi respond`" + ` whose wait elapsed.
    Keep the blocking ` + "`no-mistakes axi run`" + ` / ` + "`no-mistakes axi respond`" + ` call
    open, or background that same call if your harness needs to, and collect its
    return. Do not poll progress with separate ` + "`no-mistakes axi status`" + ` calls

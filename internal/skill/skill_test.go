@@ -117,7 +117,7 @@ func TestBodyDocumentsBlockingWaiting(t *testing.T) {
 		"`no-mistakes axi run`",
 		"`no-mistakes axi respond`",
 		"background that same call",
-		"re-run the command to reattach",
+		"re-run `no-mistakes axi run` to reattach",
 		"Do not poll progress with separate `no-mistakes axi status` calls or sleep loops",
 		"after a wait expiry, a refusal, or during recovery",
 		"never advances past a gate on its own",
