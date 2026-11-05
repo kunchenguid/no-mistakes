@@ -75,7 +75,10 @@ func TestExecutionContext_TestRepairAndEvidenceDelivery(t *testing.T) {
 // Git commands. It does not implement or certify an OS sandbox.
 func TestExecutionContext_LinkedGitReadsPreserveIdentity(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	seed := filepath.Join(root, "seed")
 	gate := filepath.Join(root, "gate.git")
 	work := filepath.Join(root, "assigned")
@@ -90,7 +93,7 @@ func TestExecutionContext_LinkedGitReadsPreserveIdentity(t *testing.T) {
 	blob := gitCmd(t, seed, "rev-parse", "HEAD:source.txt")
 	gitCmd(t, root, "clone", "--bare", seed, gate)
 	gitCmd(t, root, "--git-dir", gate, "worktree", "add", "--detach", work, head)
-	gitDir := gitCmd(t, work, "rev-parse", "--absolute-git-dir")
+	gitDir := filepath.Join(gate, "worktrees", "assigned")
 	paths := []string{filepath.Join(work, "source.txt"), filepath.Join(work, ".git"), filepath.Join(gitDir, "index"), filepath.Join(gate, "config")}
 	before := make(map[string][]byte)
 	for _, path := range paths {
