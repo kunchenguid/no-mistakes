@@ -146,6 +146,36 @@ func TestBuildSummaryTranscript_EndBoundDoesNotChangeSession(t *testing.T) {
 	}
 }
 
+func TestAgentSummarizer_CommitSecondPrecision(t *testing.T) {
+	end := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	sess := &Session{Messages: []Message{
+		{Role: RoleUser, Text: "same-second request", Timestamp: end.Add(200 * time.Millisecond)},
+		{Role: RoleAssistant, Text: "same-second completion", Timestamp: end.Add(999 * time.Millisecond)},
+		{Role: RoleUser, Text: "next-second request", Timestamp: end.Add(time.Second)},
+	}}
+	fa := &fakeAgent{output: `{"summary":"current task"}`}
+	_, err := NewAgentSummarizer(fa, "").Summarize(context.Background(), sess, SummaryContext{WindowEnd: end})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var packet struct{ Transcript string }
+	_, data, ok := strings.Cut(fa.lastPrompt, "\n---\n")
+	if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+		t.Fatal("summary request must carry a JSON packet")
+	}
+	for _, want := range []string{"same-second request", "same-second completion"} {
+		if !strings.Contains(packet.Transcript, want) {
+			t.Errorf("summary request dropped %q: %s", want, packet.Transcript)
+		}
+	}
+	if strings.Contains(packet.Transcript, "next-second request") {
+		t.Fatal("summary request included a later task")
+	}
+	if len(sess.Messages) != 3 || !sess.Messages[0].Timestamp.Equal(end.Add(200*time.Millisecond)) {
+		t.Fatal("summary filtering mutated the session")
+	}
+}
+
 func TestAgentSummarizer_FutureOnlyTranscript(t *testing.T) {
 	now := time.Now()
 	fa := &fakeAgent{output: `{"summary":"unrelated"}`}

@@ -134,7 +134,9 @@ func buildSummaryTranscript(sess *Session, change SummaryContext) string {
 	for _, m := range sess.Messages {
 		// Some reader formats lack per-message timestamps. Keep those turns as
 		// best-effort context, without treating them as proof of recency.
-		if !m.Timestamp.IsZero() && !change.WindowEnd.IsZero() && m.Timestamp.After(change.WindowEnd) {
+		// Git commit times have whole-second precision. Retain every turn in
+		// that second rather than treating its fractional part as later work.
+		if !m.Timestamp.IsZero() && !change.WindowEnd.IsZero() && m.Timestamp.Unix() > change.WindowEnd.Unix() {
 			continue
 		}
 		filtered.Messages = append(filtered.Messages, m)
