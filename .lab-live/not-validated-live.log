@@ -1,0 +1,909 @@
+=== RUN   TestNotValidatedLiveJourney
+=== RUN   TestNotValidatedLiveJourney/minimal
+    not_validated_live_journey_test.go:125: axi respond output:
+        run: running
+          intent: completed
+          rebase: completed
+          review: completed
+          test: completed
+          document: skipped
+          lint: running
+          ci: skipped
+          lint: completed
+          push: running
+          push: completed
+          pr: running
+          pr: completed
+        run: completed
+        run:
+          id: "01M6MWB807608RF2ZCQQVBW0ND"
+          branch: feature/not-validated-live
+          status: completed
+          head: b2afc45e
+          head_sha: b2afc45ed81b2e39a6c7cd6e2c71738c2d5e9389
+          test_override_reason: "live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+          verification_plan: none
+          pr: "https://github.com/example/closes/pull/100"
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,346
+            review,completed,0,323
+            test,completed,1,201
+            document,skipped,0,0
+            lint,completed,0,291
+            push,completed,0,654
+            pr,completed,0,222
+            ci,skipped,0,0
+          validation:
+            verdict: inconclusive
+            live: 2
+            total: 3
+            untested[1]{scenario,reason}:
+              refund reaches the payment provider,needs a live payment-provider sandbox credential this lab does not have
+            exceptions[3]{step,kind,reason}:
+              test,test-exception,"live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+              document,operator-skip,no reason recorded
+              ci,operator-skip,no reason recorded
+        outcome: passed-with-override
+        help[7]: "Report the approved Test exception, not a clean Test pass: live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand","1 of 3 scenarios were not validated live (see `run.validation.untested`); report each with its reason, and do not describe this run as fully validated.",The document step was skipped by the operator (no reason recorded); report it as not validated.,The ci step was skipped by the operator (no reason recorded); report it as not validated.,"Open the PR: https://github.com/example/closes/pull/100","Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+    not_validated_live_journey_test.go:132: axi status output:
+        run:
+          id: "01M6MWB807608RF2ZCQQVBW0ND"
+          branch: feature/not-validated-live
+          status: completed
+          head: b2afc45e
+          head_sha: b2afc45ed81b2e39a6c7cd6e2c71738c2d5e9389
+          test_override_reason: "live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+          verification_plan: none
+          pr: "https://github.com/example/closes/pull/100"
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,346
+            review,completed,0,323
+            test,completed,1,201
+            document,skipped,0,0
+            lint,completed,0,291
+            push,completed,0,654
+            pr,completed,0,222
+            ci,skipped,0,0
+          validation:
+            verdict: inconclusive
+            live: 2
+            total: 3
+            untested[1]{scenario,reason}:
+              refund reaches the payment provider,needs a live payment-provider sandbox credential this lab does not have
+            exceptions[3]{step,kind,reason}:
+              test,test-exception,"live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+              document,operator-skip,no reason recorded
+              ci,operator-skip,no reason recorded
+        outcome: passed-with-override
+    not_validated_live_journey_test.go:136: published PR body:
+        ## Intent
+        
+        Let a customer refund an order
+        
+        ## Not validated live
+        
+        ⚠️ **1 of 3 scenarios were not driven live against the product. 3 exceptions or skips let this run continue without that validation.**
+        
+        - **Untested:** refund reaches the payment provider - needs a live payment-provider sandbox credential this lab does not have
+        - **Test exception** (`test`): live validation verdict: inconclusive Test exception approved: provider sandbox is down; refund path reviewed by hand
+        - **Skipped by operator** (`document`): no reason recorded
+        - **Skipped by operator** (`ci`): no reason recorded
+        
+        ## What Changed
+        
+        Final changed paths and statuses:
+        
+        ```text
+        A	refund.txt
+        ```
+        
+        ✅ Low: synthetic clean response
+        
+        Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+        
+        <!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"b2afc45ed81b2e39a6c7cd6e2c71738c2d5e9389","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"skipped"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"skipped"}],"live_validation":{"verdict":"inconclusive","live":2,"total":3}} -->
+=== RUN   TestNotValidatedLiveJourney/collapsed
+    not_validated_live_journey_test.go:125: axi respond output:
+        run: running
+          intent: completed
+          rebase: completed
+          review: completed
+          test: completed
+          document: skipped
+          lint: running
+          ci: skipped
+          lint: completed
+          push: running
+          push: completed
+          pr: running
+          pr: completed
+        run: completed
+        run:
+          id: "01M6MWBEWTAK9PVXJ86JQ06YE6"
+          branch: feature/not-validated-live
+          status: completed
+          head: 4de870f0
+          head_sha: 4de870f01e2f3f9762185e5d53cfe294bd7b6f03
+          test_override_reason: "live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+          verification_plan: none
+          pr: "https://github.com/example/closes/pull/100"
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,300
+            review,completed,0,176
+            test,completed,1,125
+            document,skipped,0,0
+            lint,completed,0,206
+            push,completed,0,617
+            pr,completed,0,195
+            ci,skipped,0,0
+          validation:
+            verdict: inconclusive
+            live: 2
+            total: 3
+            untested[1]{scenario,reason}:
+              refund reaches the payment provider,needs a live payment-provider sandbox credential this lab does not have
+            exceptions[3]{step,kind,reason}:
+              test,test-exception,"live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+              document,operator-skip,no reason recorded
+              ci,operator-skip,no reason recorded
+        outcome: passed-with-override
+        help[7]: "Report the approved Test exception, not a clean Test pass: live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand","1 of 3 scenarios were not validated live (see `run.validation.untested`); report each with its reason, and do not describe this run as fully validated.",The document step was skipped by the operator (no reason recorded); report it as not validated.,The ci step was skipped by the operator (no reason recorded); report it as not validated.,"Open the PR: https://github.com/example/closes/pull/100","Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+    not_validated_live_journey_test.go:132: axi status output:
+        run:
+          id: "01M6MWBEWTAK9PVXJ86JQ06YE6"
+          branch: feature/not-validated-live
+          status: completed
+          head: 4de870f0
+          head_sha: 4de870f01e2f3f9762185e5d53cfe294bd7b6f03
+          test_override_reason: "live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+          verification_plan: none
+          pr: "https://github.com/example/closes/pull/100"
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,300
+            review,completed,0,176
+            test,completed,1,125
+            document,skipped,0,0
+            lint,completed,0,206
+            push,completed,0,617
+            pr,completed,0,195
+            ci,skipped,0,0
+          validation:
+            verdict: inconclusive
+            live: 2
+            total: 3
+            untested[1]{scenario,reason}:
+              refund reaches the payment provider,needs a live payment-provider sandbox credential this lab does not have
+            exceptions[3]{step,kind,reason}:
+              test,test-exception,"live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+              document,operator-skip,no reason recorded
+              ci,operator-skip,no reason recorded
+        outcome: passed-with-override
+    not_validated_live_journey_test.go:136: published PR body:
+        ## Intent
+        
+        Let a customer refund an order
+        
+        ## Not validated live
+        
+        ⚠️ **1 of 3 scenarios were not driven live against the product. 3 exceptions or skips let this run continue without that validation.**
+        
+        - **Untested:** refund reaches the payment provider - needs a live payment-provider sandbox credential this lab does not have
+        - **Test exception** (`test`): live validation verdict: inconclusive Test exception approved: provider sandbox is down; refund path reviewed by hand
+        - **Skipped by operator** (`document`): no reason recorded
+        - **Skipped by operator** (`ci`): no reason recorded
+        
+        ## What Changed
+        
+        Final changed paths and statuses:
+        
+        ```text
+        A	refund.txt
+        ```
+        
+        <details>
+        <summary>Validation</summary>
+        
+        ## Risk Assessment
+        
+        ✅ Low: synthetic clean response
+        
+        ## Testing
+        
+        drove the refund journey scenarios
+        
+        - Live validation: ⚠️ inconclusive - 2 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ⏸️ untested | no | needs a live payment-provider sandbox credential this lab does not have |
+        
+        - Outcome: ⚠️ 1 warning across 1 run (125ms)
+        
+        ## Pipeline
+        
+        Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+        
+        <!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"4de870f01e2f3f9762185e5d53cfe294bd7b6f03","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"skipped"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"skipped"}],"live_validation":{"verdict":"inconclusive","live":2,"total":3}} -->
+        
+        <details>
+        <summary>✅ **Intent** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Rebase** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Review** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>⚠️ **Test** - 1 warning</summary>
+        
+        - ⚠️ live validation verdict: inconclusive (2 of 3 scenarios were driven live against the product); untested: refund reaches the payment provider
+        - Live validation: ⚠️ inconclusive - 2 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ⏸️ untested | no | needs a live payment-provider sandbox credential this lab does not have |
+        
+        - `fakeagent: drove checkout, cart and refund`
+        </details>
+        
+        <details>
+        <summary>⏭️ **Document** - skipped</summary>
+        
+        Step was skipped.
+        </details>
+        
+        <details>
+        <summary>✅ **Lint** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Push** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        </details>
+=== RUN   TestNotValidatedLiveJourney/keep
+    not_validated_live_journey_test.go:125: axi respond output:
+        run: running
+          intent: completed
+          rebase: completed
+          review: completed
+          test: completed
+          document: skipped
+          lint: running
+          ci: skipped
+          lint: completed
+          push: running
+          push: completed
+          pr: running
+          pr: completed
+        run: completed
+        run:
+          id: "01M6MWBMK5PNGDKT768SC3BRWD"
+          branch: feature/not-validated-live
+          status: completed
+          head: a48f9cdd
+          head_sha: a48f9cdd940424b98972e57bc408a076ebfd2b96
+          test_override_reason: "live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+          verification_plan: none
+          pr: "https://github.com/example/closes/pull/100"
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,293
+            review,completed,0,115
+            test,completed,1,146
+            document,skipped,0,0
+            lint,completed,0,141
+            push,completed,0,409
+            pr,completed,0,171
+            ci,skipped,0,0
+          validation:
+            verdict: inconclusive
+            live: 2
+            total: 3
+            untested[1]{scenario,reason}:
+              refund reaches the payment provider,needs a live payment-provider sandbox credential this lab does not have
+            exceptions[3]{step,kind,reason}:
+              test,test-exception,"live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+              document,operator-skip,no reason recorded
+              ci,operator-skip,no reason recorded
+        outcome: passed-with-override
+        help[7]: "Report the approved Test exception, not a clean Test pass: live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand","1 of 3 scenarios were not validated live (see `run.validation.untested`); report each with its reason, and do not describe this run as fully validated.",The document step was skipped by the operator (no reason recorded); report it as not validated.,The ci step was skipped by the operator (no reason recorded); report it as not validated.,"Open the PR: https://github.com/example/closes/pull/100","Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+    not_validated_live_journey_test.go:132: axi status output:
+        run:
+          id: "01M6MWBMK5PNGDKT768SC3BRWD"
+          branch: feature/not-validated-live
+          status: completed
+          head: a48f9cdd
+          head_sha: a48f9cdd940424b98972e57bc408a076ebfd2b96
+          test_override_reason: "live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+          verification_plan: none
+          pr: "https://github.com/example/closes/pull/100"
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,293
+            review,completed,0,115
+            test,completed,1,146
+            document,skipped,0,0
+            lint,completed,0,141
+            push,completed,0,409
+            pr,completed,0,171
+            ci,skipped,0,0
+          validation:
+            verdict: inconclusive
+            live: 2
+            total: 3
+            untested[1]{scenario,reason}:
+              refund reaches the payment provider,needs a live payment-provider sandbox credential this lab does not have
+            exceptions[3]{step,kind,reason}:
+              test,test-exception,"live validation verdict: inconclusive\nTest exception approved: provider sandbox is down; refund path reviewed by hand"
+              document,operator-skip,no reason recorded
+              ci,operator-skip,no reason recorded
+        outcome: passed-with-override
+    not_validated_live_journey_test.go:136: published PR body:
+        ## What Changed
+        
+        Final changed paths and statuses:
+        
+        ```text
+        A	refund.txt
+        ```
+        
+        <!-- no-mistakes-pr-appendix:v1 sha256=4522d76375079e953210f552a6b6ba430ddb1f9b52b9187f90c03bdc8c1a859f -->
+        ## Intent
+        
+        Let a customer refund an order
+        
+        ## Not validated live
+        
+        ⚠️ **1 of 3 scenarios were not driven live against the product. 3 exceptions or skips let this run continue without that validation.**
+        
+        - **Untested:** refund reaches the payment provider - needs a live payment-provider sandbox credential this lab does not have
+        - **Test exception** (`test`): live validation verdict: inconclusive Test exception approved: provider sandbox is down; refund path reviewed by hand
+        - **Skipped by operator** (`document`): no reason recorded
+        - **Skipped by operator** (`ci`): no reason recorded
+        
+        <details>
+        <summary>Validation</summary>
+        
+        ## Risk Assessment
+        
+        ✅ Low: synthetic clean response
+        
+        ## Testing
+        
+        drove the refund journey scenarios
+        
+        - Live validation: ⚠️ inconclusive - 2 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ⏸️ untested | no | needs a live payment-provider sandbox credential this lab does not have |
+        
+        - Outcome: ⚠️ 1 warning across 1 run (145ms)
+        
+        ## Pipeline
+        
+        Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+        
+        <!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"a48f9cdd940424b98972e57bc408a076ebfd2b96","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"skipped"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"skipped"}],"live_validation":{"verdict":"inconclusive","live":2,"total":3}} -->
+        
+        <details>
+        <summary>✅ **Intent** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Rebase** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Review** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>⚠️ **Test** - 1 warning</summary>
+        
+        - ⚠️ live validation verdict: inconclusive (2 of 3 scenarios were driven live against the product); untested: refund reaches the payment provider
+        - Live validation: ⚠️ inconclusive - 2 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ⏸️ untested | no | needs a live payment-provider sandbox credential this lab does not have |
+        
+        - `fakeagent: drove checkout, cart and refund`
+        </details>
+        
+        <details>
+        <summary>⏭️ **Document** - skipped</summary>
+        
+        Step was skipped.
+        </details>
+        
+        <details>
+        <summary>✅ **Lint** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Push** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        </details>
+        <!-- /no-mistakes-pr-appendix:v1 -->
+--- PASS: TestNotValidatedLiveJourney (20.09s)
+    --- PASS: TestNotValidatedLiveJourney/minimal (8.32s)
+    --- PASS: TestNotValidatedLiveJourney/collapsed (6.85s)
+    --- PASS: TestNotValidatedLiveJourney/keep (4.93s)
+=== RUN   TestFullyLiveRunReportsNoValidationGaps
+    not_validated_live_journey_test.go:189: axi run output:
+        run: running
+          intent: completed
+          rebase: running
+          rebase: completed
+          review: running
+          review: completed
+          test: running
+          test: completed
+          document: running
+          document: completed
+          lint: running
+          lint: completed
+          push: running
+          push: completed
+          pr: running
+          pr: completed
+          ci: running
+        run:
+          id: "01M6MWBRYB5BBNH0GYKYJ7VADK"
+          branch: feature/fully-live
+          status: running
+          head: dff340b3
+          head_sha: dff340b3a65d5bffa4e5392094ce67cf3413c787
+          verification_plan: none
+          pr: "https://ssm.example.com/team/repo/pulls/1"
+          findings: none
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,313
+            review,completed,0,121
+            test,completed,0,140
+            document,completed,0,166
+            lint,completed,0,99
+            push,completed,0,442
+            pr,completed,0,180
+            ci,running,0,0
+          validation:
+            verdict: go
+            live: 3
+            total: 3
+          shared_work[1]{attributed_to,scope,duration_ms}:
+            document,document+lint housekeeping,166
+          active_steps[1]{step,status,active_for,round_active_for,last_activity,agent_pid,round}:
+            ci,running,0s,0s,"0s ago: log: all CI checks passed - still monitoring until merged or closed","",starting
+        outcome: checks-passed
+        help[4]: "CI checks passed - the PR is ready. Ask the user to review and merge it: https://ssm.example.com/team/repo/pulls/1","Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.","If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes it through Push automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run handed off, run aborted, idle-timeout, or auto-fix exhausted) use `no-mistakes rerun` to validate the selected gate or preserved head; it refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits."
+    not_validated_live_journey_test.go:198: axi status output:
+        run:
+          id: "01M6MWBRYB5BBNH0GYKYJ7VADK"
+          branch: feature/fully-live
+          status: running
+          head: dff340b3
+          head_sha: dff340b3a65d5bffa4e5392094ce67cf3413c787
+          verification_plan: none
+          pr: "https://ssm.example.com/team/repo/pulls/1"
+          findings: none
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,313
+            review,completed,0,121
+            test,completed,0,140
+            document,completed,0,166
+            lint,completed,0,99
+            push,completed,0,442
+            pr,completed,0,180
+            ci,running,0,0
+          validation:
+            verdict: go
+            live: 3
+            total: 3
+          shared_work[1]{attributed_to,scope,duration_ms}:
+            document,document+lint housekeeping,166
+          active_steps[1]{step,status,active_for,round_active_for,last_activity,agent_pid,round}:
+            ci,running,1s,1s,"1s ago: log: all CI checks passed - still monitoring until merged or closed","",starting
+    not_validated_live_journey_test.go:202: published PR body:
+        ## Intent
+        
+        Let a customer refund an order
+        
+        ## What Changed
+        
+        Final changed paths and statuses:
+        
+        ```text
+        A	refund.txt
+        ```
+        
+        ## Risk Assessment
+        
+        ✅ Low: synthetic clean response
+        
+        ## Testing
+        
+        drove the refund journey scenarios
+        
+        - Live validation: ✅ go - 3 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ✅ pass | live | fakeagent: refund reached the provider sandbox |
+        
+        ## Pipeline
+        
+        Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+        
+        <!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"dff340b3a65d5bffa4e5392094ce67cf3413c787","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"pending"}],"live_validation":{"verdict":"go","live":3,"total":3}} -->
+        
+        <details>
+        <summary>✅ **Intent** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Rebase** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Review** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Test** - passed</summary>
+        
+        ✅ No issues found.
+        - Live validation: ✅ go - 3 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ✅ pass | live | fakeagent: refund reached the provider sandbox |
+        
+        - `fakeagent: drove checkout, cart and refund`
+        </details>
+        
+        <details>
+        <summary>✅ **Document** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Lint** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Push** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+--- PASS: TestFullyLiveRunReportsNoValidationGaps (6.19s)
+=== RUN   TestCIGateSkipRefreshesTheNotValidatedLiveCallout
+    not_validated_live_journey_test.go:272: axi run output:
+        run: running
+          intent: completed
+          rebase: running
+          rebase: completed
+          review: running
+          review: completed
+          test: running
+          test: completed
+          document: running
+          document: completed
+          lint: running
+          lint: completed
+          push: running
+          push: completed
+          pr: running
+          pr: completed
+          ci: running
+          ci: awaiting_approval
+        run:
+          id: "01M6MWBZ3JMER9W2BFYCW9T70N"
+          branch: feature/ci-gate-skip
+          status: running
+          awaiting_agent: parked 0s
+          head: 78e42e8b
+          head_sha: 78e42e8bf72b27d798875f2c59017a03487ab20b
+          verification_plan: none
+          pr: "https://ssm.example.com/team/repo/pulls/1"
+          findings: 1 auto-fix
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,302
+            review,completed,0,114
+            test,completed,0,129
+            document,completed,0,159
+            lint,completed,0,113
+            push,completed,0,385
+            pr,completed,0,209
+            ci,awaiting_approval,1,141
+          validation:
+            verdict: go
+            live: 3
+            total: 3
+          shared_work[1]{attributed_to,scope,duration_ms}:
+            document,document+lint housekeeping,159
+        gate:
+          step: ci
+          status: awaiting_approval
+          summary: 1 CI check failing
+          findings[1]{id,severity,file,action,description}:
+            ci-1,error,"",auto-fix,"CI check failing: build - provider reported failure"
+        help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,"Run `no-mistakes axi respond --action fix --findings <ids> [--ignore <ids>]` to have the pipeline fix the selected findings (do not edit files yourself); list every finding below in `--findings` or `--ignore`, unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined by a later response",Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step ci --full` to read the complete step summary and log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+    not_validated_live_journey_test.go:280: PR body before the CI decision:
+        ## Intent
+        
+        Let a customer refund an order
+        
+        ## What Changed
+        
+        Final changed paths and statuses:
+        
+        ```text
+        A	refund.txt
+        ```
+        
+        ## Risk Assessment
+        
+        ✅ Low: synthetic clean response
+        
+        ## Testing
+        
+        drove the refund journey scenarios
+        
+        - Live validation: ✅ go - 3 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ✅ pass | live | fakeagent: refund reached the provider sandbox |
+        
+        ## Pipeline
+        
+        Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+        
+        <!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"78e42e8bf72b27d798875f2c59017a03487ab20b","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"pending"}],"live_validation":{"verdict":"go","live":3,"total":3}} -->
+        
+        <details>
+        <summary>✅ **Intent** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Rebase** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Review** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Test** - passed</summary>
+        
+        ✅ No issues found.
+        - Live validation: ✅ go - 3 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ✅ pass | live | fakeagent: refund reached the provider sandbox |
+        
+        - `fakeagent: drove checkout, cart and refund`
+        </details>
+        
+        <details>
+        <summary>✅ **Document** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Lint** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Push** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+    not_validated_live_journey_test.go:286: axi respond output:
+        run: running
+          intent: completed
+          rebase: completed
+          review: completed
+          test: completed
+          document: completed
+          lint: completed
+          push: completed
+          pr: completed
+          ci: skipped
+        run: completed
+        run:
+          id: "01M6MWBZ3JMER9W2BFYCW9T70N"
+          branch: feature/ci-gate-skip
+          status: completed
+          head: 78e42e8b
+          head_sha: 78e42e8bf72b27d798875f2c59017a03487ab20b
+          verification_plan: none
+          pr: "https://ssm.example.com/team/repo/pulls/1"
+          findings: 1 auto-fix
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,302
+            review,completed,0,114
+            test,completed,0,129
+            document,completed,0,159
+            lint,completed,0,113
+            push,completed,0,385
+            pr,completed,0,209
+            ci,skipped,1,141
+          validation:
+            verdict: go
+            live: 3
+            total: 3
+            exceptions[1]{step,kind,reason}:
+              ci,operator-skip,no reason recorded
+          shared_work[1]{attributed_to,scope,duration_ms}:
+            document,document+lint housekeeping,159
+        outcome: passed
+        help[4]: The ci step was skipped by the operator (no reason recorded); report it as not validated.,"Open the PR: https://ssm.example.com/team/repo/pulls/1","Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+    not_validated_live_journey_test.go:291: PR body after the CI skip:
+        ## Intent
+        
+        Let a customer refund an order
+        
+        ## Not validated live
+        
+        ⚠️ **1 exception or skip let this run continue without that validation.**
+        
+        - **Skipped by operator** (`ci`): no reason recorded
+        
+        ## What Changed
+        
+        Final changed paths and statuses:
+        
+        ```text
+        A	refund.txt
+        ```
+        
+        ## Risk Assessment
+        
+        ✅ Low: synthetic clean response
+        
+        ## Testing
+        
+        drove the refund journey scenarios
+        
+        - Live validation: ✅ go - 3 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ✅ pass | live | fakeagent: refund reached the provider sandbox |
+        
+        ## Pipeline
+        
+        Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+        
+        <!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"78e42e8bf72b27d798875f2c59017a03487ab20b","steps":[{"step":"intent","status":"completed"},{"step":"rebase","status":"completed"},{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"},{"step":"lint","status":"completed"},{"step":"push","status":"completed"},{"step":"pr","status":"running"},{"step":"ci","status":"pending"}],"live_validation":{"verdict":"go","live":3,"total":3}} -->
+        
+        <details>
+        <summary>✅ **Intent** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Rebase** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Review** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Test** - passed</summary>
+        
+        ✅ No issues found.
+        - Live validation: ✅ go - 3 of 3 scenarios driven live against the product
+        
+        | Scenario | Result | Live | Evidence |
+        | --- | --- | --- | --- |
+        | checkout succeeds | ✅ pass | live | fakeagent: checkout returned 200 |
+        | cart persists | ✅ pass | live | fakeagent: cart survived a reload |
+        | refund reaches the payment provider | ✅ pass | live | fakeagent: refund reached the provider sandbox |
+        
+        - `fakeagent: drove checkout, cart and refund`
+        </details>
+        
+        <details>
+        <summary>✅ **Document** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Lint** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+        
+        <details>
+        <summary>✅ **Push** - passed</summary>
+        
+        ✅ No issues found.
+        </details>
+--- PASS: TestCIGateSkipRefreshesTheNotValidatedLiveCallout (4.88s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2e	31.418s
