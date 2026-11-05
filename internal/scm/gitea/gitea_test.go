@@ -482,8 +482,8 @@ func TestGetChecksDistinguishesQueuedFromRunningJobsByStartedAt(t *testing.T) {
 		"tea pulls 7 --repo owner/repo --login work --output json": {
 			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
 		},
-		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
-			stdout: `[{"id":"10","status":"in_progress","branch":"feature/x","event":"push"}]`,
+		"tea api --login work /repos/owner/repo/actions/runs?limit=50": {
+			stdout: `{"workflow_runs":[{"id":"10","status":"in_progress","head_branch":"feature/x","event":"push"}]}`,
 		},
 		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
 			stdout: `{"jobs":[{"id":10,"name":"queued","status":"queued","head_sha":"abc123"},` +

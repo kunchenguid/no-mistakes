@@ -782,7 +782,7 @@ func TestCIStep_ConflictRepairClearsWhenRepairedChecksStartPending(t *testing.T)
 
 	polls := 0
 	step := &CIStep{
-		lastFixedChecks: encodeLastFixedChecks(nil, true),
+		lastFixedChecks: encodeLastFixedChecks(nil, true, ""),
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
 			if polls > 3 {

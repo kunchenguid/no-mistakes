@@ -1276,18 +1276,12 @@ func TestGetChecksDistinguishesQueuedFromRunningJobsByStartedAt(t *testing.T) {
 
 	// Queued and running jobs share the pending bucket, so started_at is what
 	// shows a queued job began running.
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab ci status --mr 123 --output json": {
-			stderr: "unknown flag: --mr\n",
-			code:   1,
-		},
-		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
-		},
-		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
-			stdout: `[{"id":9,"name":"queued","status":"pending","started_at":null},{"id":10,"name":"running","status":"running","started_at":"2026-04-24T04:10:00.000Z"}]` + "\n",
-		},
-	}), nil, "gitlab.example.com", "group/project")
+	host := New(gitlabTestCmdFactory(checksFixture(
+		`{"id":77,"status":"running"}`,
+		`[{"id":9,"name":"queued","status":"pending","started_at":null},{"id":10,"name":"running","status":"running","started_at":"2026-04-24T04:10:00.000Z"}]`,
+		"[]",
+		"[]",
+	)), nil, "gitlab.example.com", "group/project")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
