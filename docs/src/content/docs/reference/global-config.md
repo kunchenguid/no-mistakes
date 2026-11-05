@@ -1547,6 +1547,7 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. [`e
 | `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
 | `test.evidence.commit_message` | `string` | `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})` | Subject template for evidence-branch commits |
 | `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute parent for run evidence when `evidence_dir` is unset             |
+| `test.evidence.link_base_url` | `string` | unset                    | Opt-in `http(s)` base you serve the evidence parent at; every evidence file the PR body mentions then renders as a link to `<link_base_url>/<run-id>/<file>` (global-only) |
 | `test.evidence.retention`     | `string` | `336h` (14 days)         | How long a run's evidence survives; `unlimited`/`none`/`off`/`never` or a non-positive duration disables the bound |
 | `test.evidence.max_runs`      | `int`    | `200`                    | How many run directories survive regardless of age; `0` disables the bound |
 
@@ -1586,7 +1587,17 @@ Reaping runs after each finished run and again at daemon startup. An upgraded da
 
 `local_root` must be an absolute path outside `<NM_HOME>/worktrees`; a relative or managed-worktree path fails daemon startup and prevents new or recovered runs from starting. Because `retention` bounds how long a PR body's local artifact links keep resolving, raise it rather than lowering it if your reviews run long.
 
-The publication fields are global defaults. Repo config can override `store_in_repo`, `attach_media`, `compact`, `dir`, and `commit_message`; it can override `branch` only through the trusted default-branch copy. `local_root`, `retention`, and `max_runs` are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, or set the retention budget for a directory every repository on the machine shares.
+#### Evidence links
+
+`link_base_url` is opt-in and unset by default, and unset changes nothing: PR bodies render exactly as they do today. Set it to an absolute `http` or `https` URL when you serve the evidence parent (`evidence_dir`, or `local_root` when that is unset) over HTTP yourself, for example a synced folder behind a web server with its own access control. Every evidence file the PR body mentions then renders as a markdown link to `<link_base_url>/<run-id>/<file>`, mirroring the served layout `<evidence parent>/<run-id>/<file>`, so a reviewer opens a screenshot in a new tab instead of copying a local path out of the description:
+
+- In the Testing section, each local evidence file reference (an image, binary, or over-budget artifact that was neither published nor uploaded) becomes `- Evidence: [label](<link_base_url>/<run-id>/<file>)`, on every provider and in both `compact` presentations.
+- On GitLab, the `## Evidence` section is also written when `attach_media` is false: it lists each image under the run's evidence directory as such a link and uploads nothing. With `attach_media: true`, uploads continue as before and each entry's path mention becomes that link.
+- An artifact with its own `url`, a GitHub user-attachments upload, or a commit-pinned evidence-branch link keeps that rendering; the base only replaces local path citations.
+
+The value is trimmed of trailing slashes. A value that is not an absolute `http(s)` URL, carries credentials, or has a query or fragment fails configuration loading, in the global file and in a pushed repository copy alike. Hosting, access control, and how long the served copy survives are yours; the pipeline never checks that a link resolves, and `retention` still bounds the local copy. The setting is global-only like `local_root`: a repository cannot choose where a PR's evidence links point, so a `test.evidence.link_base_url` in `.no-mistakes.yaml` is ignored.
+
+The publication fields are global defaults. Repo config can override `store_in_repo`, `attach_media`, `compact`, `dir`, and `commit_message`; it can override `branch` only through the trusted default-branch copy. `local_root`, `retention`, `max_runs`, and `link_base_url` are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, set the retention budget for a directory every repository on the machine shares, or choose where a PR's evidence links point.
 
 `test.evidence.retention` and `test.evidence.max_runs` also bound `<NM_HOME>/logs/<run-id>` (per-run step logs), reaped on the same cadence rather than through a second config surface for the same kind of per-run diagnostic artifact.
 

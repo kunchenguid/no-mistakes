@@ -1,0 +1,249 @@
+package steps
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+const (
+	mr1016RunID          = "01M6NB7HE9AM2PB1JWRS60EN63"
+	mr1016LinkBase       = "https://vps.nevilleweb.sk/no-mistakes"
+	evidenceLinkTestBase = "https://evidence.example.com/no-mistakes"
+)
+
+// mr1016Fixture reads one file of the MR 1016 fixture under testdata.
+func mr1016Fixture(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "evidence_links", "mr1016", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// mr1016Expected is a rendered-section fixture with its {{EVIDENCE_DIR}}/
+// placeholder replaced by the run's evidence directory as the renderer cites
+// it: this platform's spelling, HTML-escaped inside <code>.
+func mr1016Expected(t *testing.T, name, evidenceDir string) string {
+	t.Helper()
+	text := strings.TrimRight(mr1016Fixture(t, name), "\n")
+	return strings.ReplaceAll(text, "{{EVIDENCE_DIR}}/", html.EscapeString(evidenceDir+string(filepath.Separator)))
+}
+
+// newMR1016Context rebuilds run 01M6NB7HE9AM2PB1JWRS60EN63's Test step on a
+// GitLab repository: the four screenshots and three transcripts its evidence
+// directory held, and the findings the step recorded, so the PR step renders
+// the same Testing section the merge request published.
+func newMR1016Context(t *testing.T) *pipeline.StepContext {
+	t.Helper()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	sctx.Repo.UpstreamURL = "https://gitlab.example.com/group/project.git"
+	sctx.EvidenceDir = filepath.Join(t.TempDir(), mr1016RunID)
+	for _, name := range []string{"hu-excluded.png", "both-pending.png", "hu-done-cz-pending.png", "rejected.png"} {
+		writeEvidenceFile(t, sctx.EvidenceDir, name, []byte("png-bytes"))
+	}
+	for _, name := range []string{"roundtrip.json", "concurrent.json", "rejected.json"} {
+		writeEvidenceFile(t, sctx.EvidenceDir, name, []byte(mr1016Fixture(t, name)))
+	}
+	escaped, err := json.Marshal(sctx.EvidenceDir + string(filepath.Separator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := strings.ReplaceAll(mr1016Fixture(t, "findings.json"), "{{EVIDENCE_DIR}}/", strings.Trim(string(escaped), `"`))
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+	return sctx
+}
+
+// TestPRStep_EvidenceLinkBaseURL_MR1016Fixture is the acceptance test for
+// test.evidence.link_base_url. The fixture is the Testing section a real
+// GitLab merge request (run 01M6NB7HE9AM2PB1JWRS60EN63) published, in which
+// every screenshot was a local path the reviewer had to copy out of the
+// description. Unset, the PR step still renders that section byte for byte
+// and adds no Evidence section. Set, every evidence file mention is a link
+// under the base with no local path left, and the Evidence section lists the
+// run's images as links without uploading anything.
+func TestPRStep_EvidenceLinkBaseURL_MR1016Fixture(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, base, testing, evidence string
+	}{
+		{name: "unset keeps the published body", testing: "testing.md"},
+		{name: "set links every evidence file", base: mr1016LinkBase, testing: "testing.linked.md", evidence: "evidence.linked.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sctx := newMR1016Context(t)
+			sctx.Config.Test.Evidence.LinkBaseURL = tc.base
+			var logs []string
+			sctx.Log = func(line string) { logs = append(logs, line) }
+			step := &PRStep{}
+
+			_, _, testingMD, evidenceMD := step.buildPipelineSection(sctx, scm.ProviderGitLab)
+			if want := mr1016Expected(t, tc.testing, sctx.EvidenceDir); testingMD != want {
+				t.Fatalf("Testing section differs from the fixture\n--- want ---\n%s\n--- got ---\n%s", want, testingMD)
+			}
+			wantEvidence := ""
+			if tc.evidence != "" {
+				wantEvidence = mr1016Expected(t, tc.evidence, sctx.EvidenceDir)
+			}
+			if evidenceMD != wantEvidence {
+				t.Fatalf("Evidence section differs from the fixture\n--- want ---\n%s\n--- got ---\n%s", wantEvidence, evidenceMD)
+			}
+
+			content, err := step.buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderGitLab, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			joinedLogs := strings.Join(logs, "\n")
+			if tc.base == "" {
+				if !strings.Contains(content.Body, "(local file: <code>") || strings.Contains(content.Body, "## Evidence") {
+					t.Fatalf("an unset base must publish today's body, got:\n%s", content.Body)
+				}
+				if strings.Contains(joinedLogs, "without uploading") {
+					t.Fatalf("an unset base must not enter link mode, logs:\n%s", joinedLogs)
+				}
+				return
+			}
+			for _, forbidden := range []string{"local file:", sctx.EvidenceDir} {
+				if strings.Contains(content.Body, forbidden) {
+					t.Fatalf("published body still cites a local path (%q):\n%s", forbidden, content.Body)
+				}
+			}
+			for _, section := range []string{testingMD, evidenceMD} {
+				if !strings.Contains(content.Body, section) {
+					t.Fatalf("published body lost a rendered section:\n%s", content.Body)
+				}
+			}
+			prefix := "](" + mr1016LinkBase + "/" + mr1016RunID + "/"
+			if strings.Count(testingMD, prefix) != 4 || strings.Count(evidenceMD, prefix) != 4 {
+				t.Fatalf("links = %d in Testing and %d in Evidence, want 4 each", strings.Count(testingMD, prefix), strings.Count(evidenceMD, prefix))
+			}
+			if !strings.Contains(joinedLogs, "without uploading") {
+				t.Fatalf("link mode must say so in the step log, got:\n%s", joinedLogs)
+			}
+		})
+	}
+}
+
+func TestEvidenceFileURL(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "01RUN")
+	for _, tc := range []struct {
+		name, base, dir, path, want string
+	}{
+		{name: "unset base", dir: runDir, path: filepath.Join(runDir, "shot.png")},
+		{name: "file in the run directory", base: evidenceLinkTestBase, dir: runDir, path: filepath.Join(runDir, "shot.png"), want: evidenceLinkTestBase + "/01RUN/shot.png"},
+		{name: "nested file with a space", base: evidenceLinkTestBase, dir: runDir, path: filepath.Join(runDir, "browser", "step 2.png"), want: evidenceLinkTestBase + "/01RUN/browser/step%202.png"},
+		{name: "file outside the run directory", base: evidenceLinkTestBase, dir: runDir, path: filepath.Join(filepath.Dir(runDir), "other.png")},
+		{name: "the run directory itself", base: evidenceLinkTestBase, dir: runDir, path: runDir},
+		{name: "unknown run directory", base: evidenceLinkTestBase, path: filepath.Join(runDir, "shot.png")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := evidenceFileURL(tc.base, tc.dir, tc.path); got != tc.want {
+				t.Fatalf("evidenceFileURL(%q, %q, %q) = %q, want %q", tc.base, tc.dir, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderEvidenceFileLinkEscapesTheLabel(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "01RUN")
+	got := renderEvidenceFileLink(evidenceLinkTestBase, runDir, filepath.Join(runDir, "cart.png"), "Cart [HU] & <b>")
+	want := "[Cart (HU) &amp; &lt;b&gt;](" + evidenceLinkTestBase + "/01RUN/cart.png)"
+	if got != want {
+		t.Fatalf("link = %q, want %q", got, want)
+	}
+	if got := renderEvidenceFileLink("", runDir, filepath.Join(runDir, "cart.png"), "Cart"); got != "" {
+		t.Fatalf("unset base rendered %q, want nothing", got)
+	}
+}
+
+// TestBuildTestingSummaryForPR_LinkBaseURLRendersLocalArtifactsAsLinks covers
+// every Testing-section path that cites a local evidence file: the compact
+// evidence line, the Source line of a captioned artifact, the expanded
+// presentation, and the no-HTML Bitbucket flavor. An artifact with its own
+// URL keeps it; the base only replaces local path citations.
+func TestBuildTestingSummaryForPR_LinkBaseURLRendersLocalArtifactsAsLinks(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	evidenceRoot := filepath.Join(t.TempDir(), "01RUN")
+	shot := filepath.Join(evidenceRoot, "checkout.png")
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q},{"kind":"screenshot","label":"Captioned screenshot","path":%q,"content":"Checkout completed visually."},{"kind":"screenshot","label":"Remote screenshot","url":"https://example.com/remote.png","path":%q}]}`, shot, shot, shot)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}}}
+	link := evidenceLinkTestBase + "/01RUN/checkout.png"
+	for _, tc := range []struct {
+		name     string
+		provider scm.Provider
+		compact  bool
+		want     []string
+	}{
+		{name: "compact", provider: scm.ProviderGitLab, compact: true, want: []string{"- Evidence: [Checkout screenshot](" + link + ")\n", "Source: [Captioned screenshot](" + link + ")\n"}},
+		{name: "compact markdown flavor", provider: scm.ProviderBitbucket, compact: true, want: []string{"- Evidence: [Checkout screenshot](" + link + ")\n", "Source: [Captioned screenshot](" + link + ")\n"}},
+		{name: "expanded", provider: scm.ProviderGitLab, compact: false, want: []string{"- Evidence: [Checkout screenshot](" + link + ")\n", "- Evidence: [Captioned screenshot](" + link + ")\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			md := buildPRTestingSummary(steps, rounds, "https://gitlab.example.com/group/project.git", "abc123", repoRoot, evidenceRoot, nil, tc.provider, nil, tc.compact, evidenceLinkTestBase)
+			for _, want := range append(tc.want, "- Evidence: [Remote screenshot](https://example.com/remote.png)") {
+				if !strings.Contains(md, want) {
+					t.Fatalf("missing %q in:\n%s", want, md)
+				}
+			}
+			for _, forbidden := range []string{"local file:", shot, "![Checkout screenshot]", "[Remote screenshot](" + evidenceLinkTestBase} {
+				if strings.Contains(md, forbidden) {
+					t.Fatalf("unexpected %q in:\n%s", forbidden, md)
+				}
+			}
+		})
+	}
+}
+
+// TestPRStep_LinkBaseURLYieldsToUploadedAttachments: a GitHub user-attachments
+// upload is still the rendering of choice, so the base changes nothing when
+// the upload succeeded and only replaces the local-path fallback when it did
+// not.
+func TestPRStep_LinkBaseURLYieldsToUploadedAttachments(t *testing.T) {
+	t.Parallel()
+	t.Run("upload succeeded", func(t *testing.T) {
+		t.Parallel()
+		uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+		body, _ := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
+			ctx.provider = scm.ProviderGitHub
+			ctx.Config.Test.Evidence.LinkBaseURL = evidenceLinkTestBase
+		})
+		if !strings.Contains(body, "![Checkout screenshot]("+testAttachmentURL+")") || strings.Contains(body, evidenceLinkTestBase) {
+			t.Fatalf("expected the uploaded attachment alone, got:\n%s", body)
+		}
+	})
+	t.Run("upload failed", func(t *testing.T) {
+		t.Parallel()
+		uploader := &stubMediaUploader{err: errors.New("upload refused")}
+		var evidenceDir string
+		body, _ := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
+			ctx.provider = scm.ProviderGitHub
+			ctx.Config.Test.Evidence.LinkBaseURL = evidenceLinkTestBase
+			evidenceDir = ctx.EvidenceDir
+		})
+		want := "- Evidence: [Checkout screenshot](" + evidenceLinkTestBase + "/" + filepath.Base(evidenceDir) + "/checkout.png)"
+		if !strings.Contains(body, want) || strings.Contains(body, "local file:") {
+			t.Fatalf("expected the local fallback to be a link %q, got:\n%s", want, body)
+		}
+	})
+}

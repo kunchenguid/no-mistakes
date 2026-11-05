@@ -106,6 +106,10 @@ type testingSummaryOptions struct {
 	// uploaded at PR render time. Nil means nothing was uploaded; the renderer
 	// then keeps today's local-path or commit-pinned link.
 	attachments map[string]string
+	// evidenceLinkBase is test.evidence.link_base_url, already normalized.
+	// Empty keeps local evidence files cited as local paths; set, every such
+	// citation is a link (evidence_links.go, the one owner of that rendering).
+	evidenceLinkBase string
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -349,10 +353,10 @@ func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.St
 }
 
 func BuildTestingSummaryForPRWithProvider(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider) string {
-	return buildPRTestingSummary(steps, rounds, upstreamURL, ref, repoRoot, evidenceRoot, links, provider, nil, true)
+	return buildPRTestingSummary(steps, rounds, upstreamURL, ref, repoRoot, evidenceRoot, links, provider, nil, true, "")
 }
 
-func buildPRTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider, attachments map[string]string, compact bool) string {
+func buildPRTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider, attachments map[string]string, compact bool, evidenceLinkBase string) string {
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
 	opts.flavor = prBodyFlavorFor(provider)
 	opts.compactArtifacts = compact
@@ -363,6 +367,7 @@ func buildPRTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepR
 	opts.evidenceRoot = evidenceRoot
 	opts.evidence = links
 	opts.attachments = attachments
+	opts.evidenceLinkBase = evidenceLinkBase
 	return buildTestingSummary(steps, rounds, opts)
 }
 
@@ -730,7 +735,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		if target != "" {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 		} else if localPath != "" {
-			b.WriteString(renderLocalArtifactLine(label, localPath, opts.flavor))
+			b.WriteString(renderLocalArtifactLine(label, localPath, opts))
 		}
 	}
 	if descriptionLine != "" {
@@ -777,7 +782,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		if target != "" {
 			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 		}
-		return renderLocalArtifactLine(label, localPath, opts.flavor)
+		return renderLocalArtifactLine(label, localPath, opts)
 	}
 
 	fenceBody, descriptionLine := caption, ""
@@ -789,7 +794,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if target != "" {
 		inner.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
 	} else if attachment == "" && !hasFile && localPath != "" {
-		inner.WriteString(renderLocalArtifactReference("Source", label, localPath, opts.flavor))
+		inner.WriteString(renderLocalArtifactReference("Source", label, localPath, opts))
 		inner.WriteString("\n")
 	}
 	if descriptionLine != "" {
@@ -1077,13 +1082,19 @@ func sameVolume(a, b string) bool {
 	return strings.EqualFold(filepath.VolumeName(a), filepath.VolumeName(b)) || filepath.VolumeName(a) == "" || filepath.VolumeName(b) == ""
 }
 
-func renderLocalArtifactLine(label, localPath string, flavor prBodyFlavor) string {
-	return renderLocalArtifactReference("- Evidence", label, localPath, flavor)
+func renderLocalArtifactLine(label, localPath string, opts testingSummaryOptions) string {
+	return renderLocalArtifactReference("- Evidence", label, localPath, opts)
 }
 
-func renderLocalArtifactReference(prefix, label, localPath string, flavor prBodyFlavor) string {
+// renderLocalArtifactReference cites an evidence file that has no published
+// or uploaded copy. With test.evidence.link_base_url set it is a link the
+// reviewer can open (evidence_links.go); otherwise it is the local path.
+func renderLocalArtifactReference(prefix, label, localPath string, opts testingSummaryOptions) string {
+	if link := renderEvidenceFileLink(opts.evidenceLinkBase, opts.evidenceRoot, localPath, label); link != "" {
+		return fmt.Sprintf("%s: %s\n", prefix, link)
+	}
 	path := "<code>" + html.EscapeString(localPath) + "</code>"
-	if flavor == prBodyMarkdown {
+	if opts.flavor == prBodyMarkdown {
 		path = "`" + localPath + "`"
 	}
 	return fmt.Sprintf("%s: %s (local file: %s)\n", prefix, html.EscapeString(label), path)

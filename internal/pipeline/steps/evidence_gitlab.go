@@ -24,6 +24,12 @@ type gitlabEvidenceUploader interface {
 // gitlabEvidenceSection uploads this run's images and returns one Evidence
 // section. GitLab only. A later render strips the previous section and writes
 // this one again, reusing an upload when the file hash was already sent.
+//
+// With test.evidence.link_base_url set, every entry names its file as a link
+// under that base (evidence_links.go, shared with the Testing section). When
+// uploads are off, that is the whole entry: the section lists the run's
+// images as links and nothing leaves the machine. When uploads are on, the
+// link replaces the path mention and the uploaded embed follows it as before.
 func (s *PRStep) gitlabEvidenceSection(sctx *pipeline.StepContext, provider scm.Provider) string {
 	if provider != scm.ProviderGitLab || sctx == nil || sctx.Repo == nil {
 		return ""
@@ -32,46 +38,65 @@ func (s *PRStep) gitlabEvidenceSection(sctx *pipeline.StepContext, provider scm.
 	if runDir == "" {
 		return ""
 	}
-	if ok, reason := gitlabEvidenceUploadEnabled(sctx); !ok {
-		sctx.Log("skipping GitLab evidence uploads: " + reason)
+	uploadOK, uploadReason := gitlabEvidenceUploadEnabled(sctx)
+	linkBase := evidenceLinkBase(sctx.Config)
+	if !uploadOK && linkBase == "" {
+		sctx.Log("skipping GitLab evidence uploads: " + uploadReason)
 		return ""
 	}
-	project := gitlab.ProjectPath(sctx.Repo.UpstreamURL)
-	if project == "" {
-		sctx.Log("skipping GitLab evidence uploads: project path is unknown")
-		return ""
+	project := ""
+	if uploadOK {
+		project = gitlab.ProjectPath(sctx.Repo.UpstreamURL)
+		if project == "" {
+			sctx.Log("skipping GitLab evidence uploads: project path is unknown")
+			return ""
+		}
+		project = strings.ToLower(resolvedHost(sctx, sctx.Repo.UpstreamURL)) + "/" + project
+	} else {
+		sctx.Log("listing GitLab evidence images as links under " + linkBase + " without uploading: " + uploadReason)
 	}
-	project = strings.ToLower(resolvedHost(sctx, sctx.Repo.UpstreamURL)) + "/" + project
 	images, problems, err := gitlabEvidenceImages(runDir)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("skipping GitLab evidence uploads: %v", err))
 		return ""
 	}
+	// mention is how an entry names its file: the link when link_base_url is
+	// set, else the path relative to the evidence parent in a code span.
+	mention := func(rel, path string) string {
+		if link := renderEvidenceFileLink(linkBase, runDir, path, rel); link != "" {
+			return link
+		}
+		return "`" + strings.ReplaceAll(rel, "`", "'") + "`"
+	}
 	var lines []string
 	for _, problem := range problems {
 		sctx.Log(fmt.Sprintf("GitLab evidence file unreadable at %s: %s", problem.rel, problem.reason))
-		lines = append(lines, gitlabEvidenceNotUploaded(problem.rel, problem.reason))
+		lines = append(lines, gitlabEvidenceNotUploaded(mention(problem.rel, problem.path), problem.reason))
 	}
 	var uploader gitlabEvidenceUploader
 	for _, image := range images {
+		if !uploadOK {
+			lines = append(lines, mention(image.rel, image.path))
+			continue
+		}
 		markdown, ok := s.cachedGitlabEvidence(sctx, project, image)
 		if !ok {
 			if uploader == nil {
 				uploader = s.resolveGitlabUploader(sctx, provider)
 				if uploader == nil {
-					lines = append(lines, gitlabEvidenceNotUploaded(image.rel, "GitLab uploader unavailable"))
+					lines = append(lines, gitlabEvidenceNotUploaded(mention(image.rel, image.path), "GitLab uploader unavailable"))
 					continue
 				}
 			}
 			uploaded, err := uploader.UploadProjectFile(sctx.Ctx, image.path)
 			if err != nil {
 				sctx.Log(fmt.Sprintf("GitLab evidence upload failed for %s: %v", image.rel, err))
-				lines = append(lines, gitlabEvidenceNotUploaded(image.rel, err.Error()))
+				lines = append(lines, gitlabEvidenceNotUploaded(mention(image.rel, image.path), err.Error()))
 				continue
 			}
 			if err := validateGitlabEvidenceMarkdown(uploaded); err != nil {
 				sctx.Log(fmt.Sprintf("GitLab evidence upload for %s returned unusable markdown: %v", image.rel, err))
-				lines = append(lines, gitlabEvidenceNotUploaded(image.rel, err.Error()))
+				lines = append(lines, gitlabEvidenceNotUploaded(mention(image.rel, image.path), err.Error()))
 				continue
 			}
 			markdown = uploaded.Markdown
@@ -84,7 +109,7 @@ func (s *PRStep) gitlabEvidenceSection(sctx *pipeline.StepContext, provider scm.
 		} else {
 			sctx.Log(fmt.Sprintf("reused GitLab evidence upload for %s", image.rel))
 		}
-		lines = append(lines, fmt.Sprintf("`%s`\n\n%s", strings.ReplaceAll(image.rel, "`", "'"), markdown))
+		lines = append(lines, mention(image.rel, image.path)+"\n\n"+markdown)
 	}
 	if len(lines) == 0 {
 		return ""
@@ -144,13 +169,14 @@ func gitlabEvidenceUploadEnabled(sctx *pipeline.StepContext) (bool, string) {
 	return true, ""
 }
 
-func gitlabEvidenceNotUploaded(rel, reason string) string {
-	rel = strings.ReplaceAll(rel, "`", "'")
+// gitlabEvidenceNotUploaded lists a file the section could not embed; mention
+// is the entry's already-rendered file name (link or code span).
+func gitlabEvidenceNotUploaded(mention, reason string) string {
 	reason = strings.Join(strings.Fields(reason), " ")
 	if reason == "" {
 		reason = "unreadable"
 	}
-	return fmt.Sprintf("`%s` - not uploaded: %s", rel, reason)
+	return fmt.Sprintf("%s - not uploaded: %s", mention, reason)
 }
 
 func validateGitlabEvidenceMarkdown(upload gitlab.ProjectUpload) error {
@@ -182,6 +208,7 @@ func uploadURLFromMarkdown(markdown string) string {
 }
 
 type gitlabEvidenceProblem struct {
+	path   string
 	rel    string
 	reason string
 }
@@ -194,7 +221,7 @@ func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, problems
 			if path == root && os.IsNotExist(walkErr) {
 				return nil
 			}
-			problems = append(problems, gitlabEvidenceProblem{rel: gitlabEvidenceRel(parent, path), reason: walkErr.Error()})
+			problems = append(problems, gitlabEvidenceProblem{path: path, rel: gitlabEvidenceRel(parent, path), reason: walkErr.Error()})
 			return nil
 		}
 		if entry.IsDir() {
@@ -215,7 +242,7 @@ func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, problems
 		}
 		digest, err := mediaFileDigest(path)
 		if err != nil {
-			problems = append(problems, gitlabEvidenceProblem{rel: filepath.ToSlash(rel), reason: err.Error()})
+			problems = append(problems, gitlabEvidenceProblem{path: path, rel: filepath.ToSlash(rel), reason: err.Error()})
 			return nil
 		}
 		images = append(images, gitlabEvidenceImage{

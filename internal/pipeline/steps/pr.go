@@ -922,7 +922,7 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 	if sctx.Config != nil {
 		compact = sctx.Config.Test.Evidence.Compact
 	}
-	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds), compact)
+	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds), compact, evidenceLinkBase(sctx.Config))
 	evidenceMD = s.gitlabEvidenceSection(sctx, provider)
 	return pipelineMD, riskLine, testingMD, evidenceMD
 }
