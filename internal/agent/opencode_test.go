@@ -51,7 +51,7 @@ func TestOpencodeAgent_FullFlow(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if len(body.Parts) != 1 || body.Parts[0].Text != prompt {
+			if len(body.Parts) != 1 || !strings.Contains(body.Parts[0].Text, prompt) {
 				t.Error("OpenCode did not receive the complete execution context")
 			} else {
 				assertBackingGitPrompt(t, body.Parts[0].Text)

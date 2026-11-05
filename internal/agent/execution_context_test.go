@@ -69,7 +69,7 @@ done`, `{"type":"result","subtype":"success","is_error":false,"result":"done"}`}
 				t.Fatal(err)
 			}
 			prompt := "Perform the assigned phase.\n" + ExecutionContextPromptSection(dir)
-			a := tc.newAgent(bin)
+			a := WithSteering(tc.newAgent(bin), "")
 			t.Cleanup(func() { _ = a.Close() })
 			if _, err := a.Run(context.Background(), RunOpts{Prompt: prompt, CWD: dir}); err != nil {
 				t.Fatal(err)
@@ -84,4 +84,18 @@ done`, `{"type":"result","subtype":"success","is_error":false,"result":"done"}`}
 			assertBackingGitPrompt(t, string(got))
 		})
 	}
+}
+
+func TestExecutionContextPrompt_OpenCodeV2Delivery(t *testing.T) {
+	f := &opencodeV2Fixture{pages: []string{v2Page(`{"summary":"done"}`)}, defaultModel: true}
+	a := v2Agent(f.server(t))
+	dir := t.TempDir()
+	prompt := ExecutionContextPromptSection(dir)
+	if _, err := a.Run(context.Background(), RunOpts{Prompt: prompt, CWD: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.prompt, prompt) {
+		t.Fatal("OpenCode V2 did not receive the complete generated execution context")
+	}
+	assertBackingGitPrompt(t, f.prompt)
 }

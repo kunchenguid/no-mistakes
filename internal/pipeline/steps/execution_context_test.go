@@ -55,7 +55,7 @@ func TestExecutionContext_TestRepairAndEvidenceDelivery(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: json.RawMessage(`{"summary":"no runtime surface","findings":[],"tested":[],"testing_summary":"prompt contract only","artifacts":[],"scenarios":[],"verdict":"no-surface"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"summary":"no runtime surface","findings":[],"tested":["inspected generated prompt contract"],"testing_summary":"prompt contract only","artifacts":[],"scenarios":[{"name":"generated instruction contract","result":"untested","live":false,"evidence":"","reason":"synthetic prompt-delivery fixture has no runtime product surface"}],"verdict":"no-surface"}`)}, nil
 	}}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
