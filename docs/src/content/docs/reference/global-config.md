@@ -331,6 +331,8 @@ Pinned reviewer model names are limited to 256 characters from
 `[A-Za-z0-9._-/]` and cannot start with `-`. A model valid in `agent_config`
 may still be refused as a pinned reviewer, including `opus[1m]`, Bedrock IDs
 containing `:`, and OpenCode IDs such as `ollama/qwen3:8b`.
+Pi reviewers also require the provider-qualified model ID described under
+[per-run Pi profiles](#per-run-pi-profiles).
 Unsupported tuning, unavailable binaries, and raw `agent_args_override` for
 the selected reviewer harness are refused before an active run is cancelled.
 For ordinary and proof-mode launches, reviewer availability and trusted
@@ -596,7 +598,7 @@ agent_args_override:
 
 Do not put a model flag under `opencode` here: these flags go to `opencode serve`, which exits with usage on an unknown option. Use `agent_config.opencode.model` instead.
 
-For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. An opt-in [per-run Pi profile](#per-run-pi-profiles) still keeps its pinned model and effort for that run's lifetime. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). For immutable selection rules, see [per-run Pi profiles](#per-run-pi-profiles) and [reviewer profiles](#per-run-reviewer-profiles). For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
 
 ### forge_profiles
 

@@ -769,7 +769,7 @@ no-mistakes rerun --closes 95
 no-mistakes rerun --pr-body-file ./pr.md
 ```
 
-`--model` and `--effort` opt this new run into a [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles), with the same precedence and validation as `axi run`. Omitting both retains current global-config behavior; a prior run's model pin is not inherited.
+For selection, precedence, and inheritance rules, see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) and [per-run reviewer profiles](/no-mistakes/reference/global-config/#per-run-reviewer-profiles).
 
 Starts a new pipeline run from the current gate branch, except when the latest
 terminal run has a verified unpublished head whose custody has not been
