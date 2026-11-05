@@ -171,6 +171,9 @@ func TestRenderEvidenceFileLinkEscapesTheDestination(t *testing.T) {
 	runDir := filepath.Join(t.TempDir(), "01RUN")
 	for _, tc := range []struct{ name, base, file, want string }{
 		{name: "closing parenthesis in base", base: "https://evidence.example.com/archive)", file: "shot.png", want: "[shot](https://evidence.example.com/archive%29/01RUN/shot.png)"},
+		{name: "HTML entity in base", base: "https://evidence.example.com/&copy;", file: "shot.png", want: "[shot](https://evidence.example.com/%26copy;/01RUN/shot.png)"},
+		{name: "HTML entity in filename", base: "https://evidence.example.com/archive", file: "&copy;.png", want: "[shot](https://evidence.example.com/archive/01RUN/%26copy%3B.png)"},
+		{name: "already escaped ampersand in base", base: "https://evidence.example.com/%26copy;", file: "shot.png", want: "[shot](https://evidence.example.com/%26copy;/01RUN/shot.png)"},
 		{name: "parentheses in base", base: "https://evidence.example.com/(archive)", file: "shot.png", want: "[shot](https://evidence.example.com/%28archive%29/01RUN/shot.png)"},
 		{name: "angle brackets and space in base", base: "https://evidence.example.com/<archive copy>", file: "shot.png", want: "[shot](https://evidence.example.com/%3Carchive%20copy%3E/01RUN/shot.png)"},
 		{name: "backslash in base", base: `https://evidence.example.com/archive\copy`, file: "shot.png", want: "[shot](https://evidence.example.com/archive%5Ccopy/01RUN/shot.png)"},

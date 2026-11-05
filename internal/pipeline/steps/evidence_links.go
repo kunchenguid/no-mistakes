@@ -74,6 +74,7 @@ func renderEvidenceFileLink(base, evidenceDir, path, label string) string {
 		"(", "%28", ")", "%29",
 		"<", "%3C", ">", "%3E",
 		" ", "%20", "\\", "%5C",
+		"&", "%26",
 	).Replace(target)
 	return fmt.Sprintf("[%s](%s)", html.EscapeString(markdownAltText(label)), target)
 }
