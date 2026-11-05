@@ -112,28 +112,39 @@ func TestGitlabEvidenceAttachMediaGatesUploads(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "shot.png"), []byte("png"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	uploader := &countingGitlabUploader{markdown: "![shot](/uploads/abc/shot.png)", url: "/uploads/abc/shot.png"}
-	step := &PRStep{gitlabUploader: uploader}
-	base := pipeline.StepContext{
-		Ctx:         context.Background(),
-		EvidenceDir: runDir,
-		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
-		Log:         func(string) {},
-	}
-	none := base
-	if got := step.gitlabEvidenceSection(&none, scm.ProviderGitLab); got != "" || uploader.calls != 0 {
-		t.Fatalf("no config section = %q uploads %d, want no upload", got, uploader.calls)
-	}
-	off := base
-	off.Config = &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: false}}}
-	if got := step.gitlabEvidenceSection(&off, scm.ProviderGitLab); got != "" || uploader.calls != 0 {
-		t.Fatalf("attach_media false section = %q uploads %d, want no upload", got, uploader.calls)
-	}
-	on := base
-	on.Config = &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}}
-	got := step.gitlabEvidenceSection(&on, scm.ProviderGitLab)
-	if uploader.calls != 1 || !strings.Contains(got, uploader.markdown) {
-		t.Fatalf("attach_media true section = %q uploads %d", got, uploader.calls)
+	attach := true
+	detach := false
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+		want int
+	}{
+		{name: "configuration unavailable"},
+		{name: "default", cfg: config.Merge(&config.GlobalConfig{}, &config.RepoConfig{}), want: 1},
+		{name: "global disabled", cfg: config.Merge(&config.GlobalConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &detach}}}, &config.RepoConfig{})},
+		{name: "repository disabled", cfg: config.Merge(&config.GlobalConfig{}, &config.RepoConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &detach}}})},
+		{name: "explicitly enabled", cfg: config.Merge(&config.GlobalConfig{}, &config.RepoConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &attach}}}), want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			uploader := &countingGitlabUploader{markdown: "![shot](/uploads/abc/shot.png)", url: "/uploads/abc/shot.png"}
+			step := &PRStep{gitlabUploader: uploader}
+			got := step.gitlabEvidenceSection(&pipeline.StepContext{
+				Ctx:         context.Background(),
+				EvidenceDir: runDir,
+				Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
+				Config:      tc.cfg,
+				Log:         func(string) {},
+			}, scm.ProviderGitLab)
+			if uploader.calls != tc.want {
+				t.Fatalf("uploads = %d, want %d", uploader.calls, tc.want)
+			}
+			if tc.want == 0 && got != "" {
+				t.Fatalf("disabled section = %q, want empty", got)
+			}
+			if tc.want == 1 && !strings.Contains(got, uploader.markdown) {
+				t.Fatalf("enabled section = %q, want uploaded image", got)
+			}
+		})
 	}
 }
 
