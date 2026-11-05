@@ -171,7 +171,10 @@ func TestSummaryContext_SanitizesBeforeClamping(t *testing.T) {
 
 func TestExtract_CacheIsBoundToChangeAndWindow(t *testing.T) {
 	now := time.Now()
-	sess := &Session{AgentName: "claude", SessionID: "long", LastMsgKey: "unchanged", LastActivity: now, Messages: []Message{{Text: "edit current.txt"}}}
+	sess := &Session{AgentName: "claude", SessionID: "long", LastMsgKey: "unchanged", LastActivity: now, Messages: []Message{
+		{Text: "earlier requirement", Timestamp: now.Add(-90 * time.Minute)},
+		{Text: "edit current.txt", Timestamp: now.Add(-30 * time.Minute)},
+	}}
 	cache := NewMemCache()
 	cache.Put(cacheKeyFor(sess), "obsolete transcript-only summary", "claude", "long")
 	fa := &fakeAgent{output: `{"summary":"first change"}`}
@@ -196,5 +199,67 @@ func TestExtract_CacheIsBoundToChangeAndWindow(t *testing.T) {
 	window, err := Extract(context.Background(), p)
 	if err != nil || window.Summary != "new window" {
 		t.Fatalf("changed window reused old summary: %+v, %v", window, err)
+	}
+}
+
+func TestExtract_CacheTracksScopedContent(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*ExtractParams, *Session)
+		wantReuse bool
+	}{
+		{"fallback-start-drift", func(p *ExtractParams, _ *Session) { p.BaseTime = p.BaseTime.Add(time.Nanosecond) }, true},
+		{"end-drift", func(p *ExtractParams, _ *Session) { p.HeadTime = p.HeadTime.Add(time.Nanosecond) }, true},
+		{"excluded-transcript", func(_ *ExtractParams, s *Session) { s.Messages[1].Text = "other earlier requirement" }, true},
+		{"redacted-transcript", func(_ *ExtractParams, s *Session) { s.Messages[4].Text = "use ghp_" + strings.Repeat("b", 30) }, true},
+		{"start-includes-turn", func(p *ExtractParams, _ *Session) { p.BaseTime = p.BaseTime.Add(-time.Hour) }, false},
+		{"start-excludes-turn", func(p *ExtractParams, _ *Session) { p.BaseTime = now.Add(-20 * time.Minute) }, false},
+		{"end-includes-turn", func(p *ExtractParams, _ *Session) { p.HeadTime = p.HeadTime.Add(2 * time.Minute) }, false},
+		{"end-excludes-turn", func(p *ExtractParams, _ *Session) { p.HeadTime = now.Add(-45 * time.Minute) }, false},
+		{"base", func(p *ExtractParams, _ *Session) { p.Change.Base = "other-base" }, false},
+		{"head", func(p *ExtractParams, _ *Session) { p.Change.Head = "other-head" }, false},
+		{"diff", func(p *ExtractParams, _ *Session) { p.Change.Diff = "other patch" }, false},
+		{"session", func(_ *ExtractParams, s *Session) { s.SessionID = "other-session" }, false},
+		{"transcript", func(_ *ExtractParams, s *Session) { s.Messages[0].Text = "edit current.txt differently" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := &Session{AgentName: "claude", SessionID: "long", LastMsgKey: "unchanged", LastActivity: now, Messages: []Message{
+				{Text: "edit current.txt"},
+				{Text: "earlier requirement", Timestamp: now.Add(-7*24*time.Hour - 30*time.Minute)},
+				{Text: "current requirement", Timestamp: now.Add(-30 * time.Minute)},
+				{Text: "future requirement", Timestamp: now.Add(time.Minute)},
+				{Text: "use " + fakeGitHubPAT},
+			}}
+			fa := &fakeAgent{output: `{"summary":"original summary"}`}
+			p := ExtractParams{
+				OriginCWD:  t.TempDir(),
+				DiffFiles:  []string{"current.txt"},
+				BaseTime:   now.Add(-7 * 24 * time.Hour),
+				HeadTime:   now,
+				Readers:    []Reader{&staticReader{name: "claude", sessions: []*Session{sess}}},
+				Cache:      NewMemCache(),
+				Summarizer: NewAgentSummarizer(fa, ""),
+				Change:     ChangeContext{Base: "base", Head: "head", Diff: "patch"},
+			}
+			first, err := Extract(context.Background(), p)
+			if err != nil || first.Summary != "original summary" {
+				t.Fatalf("first extraction = %+v, %v", first, err)
+			}
+			tc.mutate(&p, sess)
+			fa.lastPrompt = ""
+			fa.output = `{"summary":"fresh summary"}`
+			second, err := Extract(context.Background(), p)
+			want := "fresh summary"
+			if tc.wantReuse {
+				want = "original summary"
+			}
+			if err != nil || second.Summary != want {
+				t.Fatalf("second extraction = %+v, %v, want %q", second, err, want)
+			}
+			if (fa.lastPrompt == "") != tc.wantReuse {
+				t.Fatalf("summary agent invocation did not match cache reuse = %v", tc.wantReuse)
+			}
+		})
 	}
 }
