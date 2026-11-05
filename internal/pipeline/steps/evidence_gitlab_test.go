@@ -150,6 +150,11 @@ func TestGitlabEvidenceReportsUnreadableImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(blocked, 0o644) })
+	if _, err := os.ReadFile(blocked); err == nil {
+		t.Skip("file permissions do not deny reads on this platform")
+	} else if !os.IsPermission(err) {
+		t.Fatal(err)
+	}
 	hidden := filepath.Join(runDir, "hidden")
 	if err := os.Mkdir(hidden, 0o755); err != nil {
 		t.Fatal(err)
@@ -161,6 +166,11 @@ func TestGitlabEvidenceReportsUnreadableImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(hidden, 0o755) })
+	if _, err := os.ReadDir(hidden); err == nil {
+		t.Skip("directory permissions do not deny reads on this platform")
+	} else if !os.IsPermission(err) {
+		t.Fatal(err)
+	}
 	var logs []string
 	uploader := &countingGitlabUploader{markdown: "![ok](/uploads/abc/ok.png)", url: "/uploads/abc/ok.png"}
 	step := &PRStep{gitlabUploader: uploader}
