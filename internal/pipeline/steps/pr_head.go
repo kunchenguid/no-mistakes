@@ -27,6 +27,15 @@ func verifyPublishedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) er
 	if *run.PushTargetKind != kind || *run.PushTargetFingerprint != branchsync.TargetFingerprint(resolvePushURL(sctx)) || *run.PushRef != normalizedBranchRef(run.Branch) || normalizedBranchRef(run.Branch) != normalizedBranchRef(sctx.Run.Branch) {
 		return fmt.Errorf("verify published PR: successful push binding does not match this run's repository target and branch")
 	}
+	if kind == "fork" {
+		// A fork belongs to its parent's forge instance. Equal owner/repository
+		// slugs on different hosts cannot identify the pushed repository.
+		sourceHost := scm.ResolveHost(sctx.Ctx, sctx.Repo.ForkURL)
+		reviewHost := resolvedHost(sctx, sctx.Repo.UpstreamURL)
+		if sourceHost == "" || reviewHost == "" || !strings.EqualFold(sourceHost, reviewHost) {
+			return fmt.Errorf("verify published PR: successful push binding names a different forge host than the review object")
+		}
+	}
 	verifier, ok := host.(scm.PRHeadVerifier)
 	if !ok {
 		return fmt.Errorf("verify published PR: provider cannot prove the live PR identity and exact pushed head: %w", scm.ErrUnsupported)

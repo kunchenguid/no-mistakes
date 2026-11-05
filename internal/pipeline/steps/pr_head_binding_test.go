@@ -109,6 +109,32 @@ func TestPRStep_RefusesUnverifiedGitLabPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_RejectsForkPushOnADifferentForge(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	sctx.Repo.ForkURL = "https://other.example/test/repo.git"
+	sctx.Env, _ = fakeGH(t, "")
+	raw, err := json.Marshal(map[string]any{
+		"number": 99, "html_url": "https://github.com/test/repo/pull/99", "state": "open", "merged": false,
+		"base": map[string]any{"repo": map[string]string{"full_name": "test/repo"}},
+		"head": map[string]any{"ref": "feature", "sha": head, "repo": map[string]any{"full_name": "test/repo", "owner": map[string]string{"login": "test"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.Env = append(sctx.Env, "FAKE_CLI_PR_PROOF_JSON="+string(raw))
+	recordPRTestPush(t, sctx)
+	out, err := (&PRStep{}).Execute(sctx)
+	if err == nil || out != nil {
+		t.Fatalf("PR on another forge certified the push: %+v %v", out, err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != head {
+		t.Fatalf("unverified URL or lost push evidence: %+v %v", run, err)
+	}
+}
+
 func recordPRTestPush(t *testing.T, sctx *pipeline.StepContext) {
 	t.Helper()
 	kind := "upstream"
