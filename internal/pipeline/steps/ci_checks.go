@@ -506,8 +506,6 @@ func getCIChecks(ctx context.Context, host scm.Host, pr *scm.PR) ([]scm.Check, s
 	return checks, observedHead, moved, err
 }
 
-// pendingObservations belongs to one Execute invocation. Missing, ambiguous, or
-// unavailable evidence never supplies idle credit to a later observation.
 // A negative window disables the stall park.
 func pendingCheckIdleWindow(cfg *config.Config) time.Duration {
 	if cfg == nil || cfg.CIStallTimeout == 0 {
@@ -521,6 +519,8 @@ type pendingObservation struct {
 	since time.Time
 }
 
+// pendingObservations belongs to one Execute invocation. Missing, ambiguous, or
+// unavailable evidence never supplies idle credit to a later observation.
 type pendingObservations struct {
 	window time.Duration
 	head   string
@@ -551,7 +551,7 @@ func (p *pendingObservations) observe(head string, checks []scm.Check, reruns ch
 	for _, check := range checks {
 		key := pendingObservationKey(check)
 		_, rerunning := reruns.rollup[check.Name]
-		if !check.Pending() || check.AwaitingApproval || rerunning || counts[key] != 1 {
+		if !check.Pending() || check.HeldForHuman() || rerunning || counts[key] != 1 {
 			continue
 		}
 		previous, ok := p.checks[key]

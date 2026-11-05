@@ -706,7 +706,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			cancel()
 		}
 
-		// Check CI status - wait for all checks to complete before escalating
+		// Read check evidence; a known merge conflict can escalate independently.
 		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, observedHead, _, err := getCIChecks(ctx, host, pr)
 		if observedHead != "" && observedHead != lastCheckHeadSHA {
@@ -893,7 +893,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					return nil, err
 				}
 			}
-			stalled := pending.observe(pr.HeadSHA, checks, s.transientReruns, now())
+			checkHead := pr.HeadSHA
+			if observedHead != "" {
+				checkHead = observedHead
+			}
+			stalled := pending.observe(checkHead, checks, s.transientReruns, now())
 			if len(stalled) > 0 {
 				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 					return nil, err
