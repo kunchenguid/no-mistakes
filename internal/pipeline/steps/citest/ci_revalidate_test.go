@@ -367,8 +367,11 @@ func TestCIStep_AdoptionFailsClosedWhenTheLiveBaseIsUnreported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.PRBaseBranch != nil {
+	if run.ObservedBaseBranch != nil {
 		t.Fatalf("observed base = %q, want no base recorded", *run.ObservedBaseBranch)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("target base = %q, want no base recorded", *run.PRBaseBranch)
 	}
 	if run.HeadSHA != headSHA {
 		t.Fatalf("durable run head = %s, want the validated %s", run.HeadSHA, headSHA)
@@ -400,8 +403,11 @@ func TestCIStep_AdoptionRefusesAnUnusableLiveBaseName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.PRBaseBranch != nil {
+	if run.ObservedBaseBranch != nil {
 		t.Fatalf("observed base = %q, want no base recorded", *run.ObservedBaseBranch)
+	}
+	if run.PRBaseBranch != nil {
+		t.Fatalf("target base = %q, want no base recorded", *run.PRBaseBranch)
 	}
 	if run.HeadSHA != headSHA {
 		t.Fatalf("durable run head = %s, want the validated %s", run.HeadSHA, headSHA)
