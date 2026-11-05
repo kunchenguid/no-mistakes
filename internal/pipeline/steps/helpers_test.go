@@ -189,7 +189,7 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 	ensureHermeticOrigin(t, workDir)
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	database, err := db.Open(dbPath)
+	database, err := stepstest.OpenNewDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

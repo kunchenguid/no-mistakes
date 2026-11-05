@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -899,7 +900,7 @@ func TestRetireResolvedReruns(t *testing.T) {
 func TestRetireResolvedRerunsRetriesAfterPersistenceFailure(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
-	database, err := db.Open(dbPath)
+	database, err := stepstest.OpenNewDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
