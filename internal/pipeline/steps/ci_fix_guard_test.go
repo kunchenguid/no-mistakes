@@ -172,6 +172,27 @@ func TestCIRepair_DeclinedDirtyWorkIsNotCommitted(t *testing.T) {
 	}
 }
 
+func TestCIRepair_DeclinedAgentCommitIsNotPublished(t *testing.T) {
+	f := newCIGuardFixture(t, false, func(dir string) {
+		if err := os.WriteFile(filepath.Join(dir, "agent.txt"), []byte("agent commit\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := runGit(t, dir, "add", "agent.txt"); err != nil {
+			t.Fatalf("stage: %v: %s", err, out)
+		}
+		if out, err := runGit(t, dir, "commit", "-m", "agent commit"); err != nil {
+			t.Fatalf("commit: %v: %s", err, out)
+		}
+	}, `{"summary":"external failure","code_change_needed":false}`)
+	outcome := f.repairRound(t)
+	if got := f.remoteHead(t); got != f.headSHA {
+		t.Errorf("remote moved to %s", got)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the declined repair parked", outcome)
+	}
+}
+
 func TestCIRepair_ResolvedMergeStillPublishes(t *testing.T) {
 	f := newCIGuardFixture(t, true, func(dir string) {
 		out, err := runGit(t, dir, "merge", "--squash", "main")

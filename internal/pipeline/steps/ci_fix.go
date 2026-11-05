@@ -358,15 +358,9 @@ CI logs:
 		return ciRepairResult{}, err
 	}
 	// A declined conclusion is decided before commitRepair. Otherwise the
-	// controller commits this round's uncommitted work and publishes it.
+	// controller commits or publishes this round's work.
 	if !rebase && conclusionErr == nil && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
-		status, statusErr := stepGitRun(sctx, "status", "--porcelain")
-		if statusErr != nil {
-			return ciRepairResult{}, fmt.Errorf("check CI changes: %w", statusErr)
-		}
-		if strings.TrimSpace(status) != "" {
-			return ciRepairResult{NoCodeChangeNeeded: true, Summary: conclusion.Summary}, nil
-		}
+		return ciRepairResult{NoCodeChangeNeeded: true, Summary: conclusion.Summary}, nil
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
 	if mergeConflict && rebaseBaseResolved {
