@@ -597,7 +597,7 @@ func TestPRStep_GitLabClosesRendersAndVerifiesOnTheMR(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	step := &PRStep{}
+	step := newPRStepWithSyntheticProof(t, sctx)
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +649,7 @@ func TestPRStep_GitHubClosesKeepsGitHubNeutralization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
 	body := readPRBodyFile(t, bodyFile)
