@@ -33,7 +33,7 @@ func (s *heldStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	s.once.Do(func() { close(s.started) })
 	select {
 	case <-s.released:
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{ReviewApprovedHeadSHA: sctx.Run.HeadSHA}, nil
 	case <-sctx.Ctx.Done():
 		return nil, sctx.Ctx.Err()
 	}
