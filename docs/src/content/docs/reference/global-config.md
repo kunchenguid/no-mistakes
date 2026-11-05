@@ -395,8 +395,8 @@ the run pin. Native `--model`, `--provider`, `--models`,
 rather than combining two selection mechanisms.
 
 The daemon resolves the values once and stores `runs.pi_profile` atomically
-with run creation. That field cannot be changed or cleared. Each invocation,
-retry, fresh review, resumed fixer, and daemon recovery uses that pin; later
+with run creation. That field cannot be changed or cleared. The pin survives
+retries and daemon recovery. Later
 global model, effort, agent-chain, role, or raw selection-flag changes cannot
 replace it. Recovery still enforces trusted repository policies and refuses
 unusable configuration or a missing Pi binary rather than switching harnesses.
@@ -1453,7 +1453,7 @@ repository_overrides:
 Each role the entry names replaces the global entry for that role whole, including its `fallback` and `after_round`; roles it omits keep the global value. Above, `acme/widget` reviews on OpenCode and still fixes on Codex, and every other repository keeps both global roles. An entry without `review_agents` changes nothing.
 Entries are validated at load with the same rules and messages as the global block, prefixed with the override's normalized remote.
 The entry is matched against the registered repository's remote, so a pushed branch can never select it, and the repository's own `.no-mistakes.yaml` still cannot set `review_agents`.
-Like the global block, a [per-run Pi profile](#per-run-pi-profiles) pin replaces every role and refuses a non-Pi one.
+For run-pin precedence and eligibility, see [per-run Pi profiles](#per-run-pi-profiles) and [per-run reviewer profiles](#per-run-reviewer-profiles).
 
 #### Machine-local commands
 

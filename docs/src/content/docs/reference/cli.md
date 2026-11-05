@@ -219,7 +219,7 @@ Reattaching with a `--base-branch` that differs from the active run's stored tar
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
-The same omit-to-reattach rule applies to `--model`/`--effort` against an active run's [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles); a different selection cannot change that pin.
+For profile reattachment rules, see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) and [per-run reviewer profiles](/no-mistakes/reference/global-config/#per-run-reviewer-profiles).
 
 ### Closing issues
 
@@ -292,18 +292,19 @@ no-mistakes axi run --intent "the user's goal" \
 After durable creation or claim, AXI writes a TOON `launch_receipt` object to stdout **before** driving the run.
 The receipt remains available to a caller that captures stdout even if driving later stops at a gate or fails.
 It contains `run_id`, `disposition` (`created` or `reused`), `launch_nonce`, `validation_generation`, `branch`, `head_sha`, `submitted_head_sha`, and `intent_digest`.
+When the run has a reviewer pin, it also contains `reviewer_profile` with `agent`, `model`, and `effort`.
 Both head fields contain the full, immutable submitted commit SHA; `intent_digest` is the lowercase SHA-256 digest of the exact persisted intent bytes, including whitespace.
 Raw intent is not included in receipts, and generic run/status output does not expose the nonce binding or intent digest.
 
 The nonce is scoped to the repository and branch.
 The first successful receipt claim returns `created`; subsequent matching claims return `reused` for that same run, including after the gate or pipeline head advances.
-A conflicting submitted head, validation generation, intent, or [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) is refused.
+A conflicting submitted head, validation generation, or intent is refused.
 A different nonce creates a distinct run rather than reattaching to a same-head run; both post-receive creation and the up-to-date-push fallback follow this contract.
 The up-to-date-push fallback preserves the latest same-head run's PR URL unless its recorded PR state is closed or merged, including when an explicit `--base-branch` retargets that PR.
 An explicit `--base-branch` is persisted on creation and must match the stored per-run base on replay; omitting it on replay preserves the stored base.
 A supplied `--pr-title` or `--pr-body-file` is bound the same way: a replay must supply the same text as the run, or none when the run has none.
 A replay that adds `--no-publish-intent` against a run bound to publish the section is refused for the same reason; the stored omit decision folds in the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default at creation, so a replay without the flag still matches a run whose row omits publication.
-Explicit `--model`/`--effort` must match a stored pin the same way; omitting both preserves it.
+For profile matching on replay and receipt claims, see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) and [per-run reviewer profiles](/no-mistakes/reference/global-config/#per-run-reviewer-profiles).
 A conflicting claim does not consume the first `created` disposition.
 Without the two proof flags, ordinary reattachment is unchanged, and historical runs without a nonce are not adopted into a proof binding.
 

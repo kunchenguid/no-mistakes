@@ -30,8 +30,8 @@ var baseRoleFor = map[string]string{
 	RoleFixerAfterRound:    RoleFixer,
 }
 
-// ReviewAgent pins one review-loop role to an explicit harness. Empty model or
-// effort inherits agent_config for that harness; native argument overrides win.
+// ReviewAgent selects one review-loop role. For configured entries, empty model
+// or effort inherits agent_config for that harness. Native argument overrides win.
 type ReviewAgent struct {
 	// Pinned is runtime-only and cannot be selected through configuration.
 	Pinned bool            `yaml:"-"`
