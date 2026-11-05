@@ -26,6 +26,13 @@ import (
 // has scenarios and an "untested" state; the Test prompt adds its own
 // scenario-shaped version of the same rule.
 //
+// History is append-only for the same reason the pipeline's own correction
+// commits are (issue #642): a fix agent that amended or squashed a commit left
+// HEAD off the recorded head, assertPipelineHeadContinuity correctly refused
+// the run, and recovery had no way back. The rule lives here because every
+// pipeline agent is steered; the one exception is a rebase or merge that the
+// step's own prompt asks for (the Rebase step and CI's base-branch repair).
+//
 // evidenceRoot is the one out-of-worktree location the preamble permits, and it
 // is supplied by the caller rather than computed here. This used to be a
 // package-level string that rebuilt the evidence path from os.TempDir()
@@ -45,6 +52,7 @@ func WorktreeSteering(evidenceRoot string) string {
 - You may read files outside the worktree and run read-only commands, but every other intentional write must stay inside the worktree.
 - Do not search the host filesystem. Never run a filesystem-wide search such as `+"`find /`"+` or `+"`mdfind /`"+`, and never hunt the machine for an installed tool. A `+"`-maxdepth`"+` or `+"`-xdev`"+` flag does not make a whole-root search bounded, so it does not license one. Bounded searches inside the worktree, inside an external evidence path a prompt explicitly names, or inside a repository-local path you were given remain fine.
 - If a tool you need is not on PATH and no repository-local path is supplied, do not search the machine for it: report the missing tool and the work it blocked in your normal result, with the concrete reason, and stop searching there. A missing tool blocks only the search and any verification that needs it: still do every other part of your task, including any edits you were asked to make.
+- Only add new commits on top of the current HEAD. Never amend, squash, reword, reorder, drop, or reset an existing commit, and never otherwise rewrite history, unless your prompt explicitly asks you to run or continue a rebase or merge. The pipeline records the head it validated, and a rewritten history strands the run. This holds even when a finding or instruction asks you to change a commit message or an existing commit: make any file changes it needs as new work, and report that you left history unchanged.
 
 `, location)
 }

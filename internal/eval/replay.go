@@ -246,7 +246,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		evaluation.CompletedAt = time.Now().Unix()
 		return evaluation
 	}
-	cfg, err := replayConfig(c)
+	cfg, err := replayConfig(ctx, c, workDir)
 	if err != nil {
 		evaluation.Error = safeurl.RedactText(err.Error())
 		evaluation.CompletedAt = time.Now().Unix()
@@ -468,7 +468,7 @@ func restoreCase(ctx context.Context, store *Store, c Case, root string) (string
 	return workDir, nil
 }
 
-func replayConfig(c Case) (*config.Config, error) {
+func replayConfig(ctx context.Context, c Case, workDir string) (*config.Config, error) {
 	global, err := config.LoadGlobal(filepath.Join(c.Dir, "config", "global.yaml"))
 	if err != nil {
 		return nil, fmt.Errorf("load captured global config: %w", err)
@@ -481,6 +481,11 @@ func replayConfig(c Case) (*config.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load captured repo config: %w", err)
 	}
+	trusted, err := repoConfigAt(ctx, workDir, c.TrustedConfigSHA)
+	if err != nil {
+		return nil, fmt.Errorf("load captured trusted review ignores: %w", err)
+	}
+	repo.TrustedIgnorePatterns = trusted.IgnorePatterns
 	return config.Merge(global, repo), nil
 }
 

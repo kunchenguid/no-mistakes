@@ -8,12 +8,12 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `review.agent_timeout`, `review.max_fix_rounds`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.required_reviews`, `ci.review_bot_comments`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `ci.release_after_checks_pass`, `ci.instructions`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `intent.check`, `pr.template`, `pr.publish_intent`, `pr.intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
-If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
+If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent. The pre-admission `intent.check` fetch is the exception: if that fetch fails, intent checks are unavailable/off for that launch, a warning is logged, and the same failed result is reused by trusted-config loading without retrying.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, intent extraction settings, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `intent.check`, `pr.intent`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -62,13 +62,17 @@ disable_project_settings: true
 
 # Optional PR settings.
 # base_branch is read from the trusted default branch.
-# template, publish_intent, and appendix are trusted publication policy.
+# template, publish_intent, intent, and appendix are trusted publication policy.
+# intent.check is also trusted and rejects or warns before agent work.
 # See pr.appendix below for presentation modes and inheritance.
 # title_format is a repository convention and is read from this branch.
 pr:
   base_branch: develop
   # template: .github/pull_request_template.md
   # publish_intent: false
+  # intent:
+  #   format: brief # raw (default) | brief
+  #   sections: [why, scope, out_of_scope]
   # appendix: collapsed # full | collapsed | minimal
   # title_format: "{{.Branch}}: {{.Title}}"
 
@@ -89,6 +93,8 @@ ci:
   rebase_behind: false
   carry_review_on_replay: false
   required_reviews: [] # opt in with: [coderabbit]
+  # instructions: |
+  #   Regenerate golden files with `make fixtures`; never hand-edit them.
 
 # How a base branch that moved under your branch is integrated.
 # Read only from the trusted default branch.
@@ -263,13 +269,13 @@ For example, commit this template and the configuration to the default branch:
 - [ ] Maintainer approves rollout
 ```
 
-On a new or empty PR, the agent makes a best effort to follow template instructions and fill applicable sections from the final branch delta. Only top-level ATX `#` headings outside fenced examples are structurally required, with their trimmed text and order retained. Lower-level headings (`##`–`######`) and task lines are editable: the model may remove inapplicable sections/options, select supported choices, and fill checkbox rationale placeholders. It is instructed not to invent behavior/tests or falsely claim human signoff; human approval boxes must not be marked complete. Subordinate completion and factual correctness are best effort, not mechanically guaranteed. No fixed `What Changed` heading is imposed. This is ordinary Markdown, not a variable/loop/plugin language, and there is no implicit template discovery. Template headings such as `Testing` remain author narrative; the generated appendix follows that narrative. [`pr.appendix`](#prappendix) chooses whether its recorded evidence is expanded, folded, or reduced to a risk line and the attestation. Extra evidence headings are intentional in the default `full` mode: this does **not** satisfy a policy requiring only the template's headings or bytes. `collapsed` and `minimal` keep the template as the visible body.
+On a new or empty PR, the agent makes a best effort to follow template instructions and fill applicable sections from the final branch delta. Only top-level ATX `#` headings outside fenced examples are structurally required, with their trimmed text and order retained. Lower-level headings (`##`–`######`) and task lines are editable: the model may remove inapplicable sections/options, select supported choices, and fill checkbox rationale placeholders. It is instructed not to invent behavior/tests or falsely claim human signoff; human approval boxes must not be marked complete. Subordinate completion and factual correctness are best effort, not mechanically guaranteed. No fixed `What Changed` heading is imposed. This is ordinary Markdown, not a variable/loop/plugin language, and there is no implicit template discovery. Template headings such as `Testing` remain author narrative; the generated appendix follows that narrative. [`pr.appendix`](#prappendix) chooses whether its recorded evidence is expanded, folded, or reduced to a risk line and the attestation. Extra evidence headings are intentional in the default `full` mode: this does **not** satisfy a policy requiring only the template's headings or bytes. `collapsed` and `minimal` reduce the generated tail; GitLab image evidence remains visible as described in [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
 
 The path is read as a literal Git tree entry, never through the pushed worktree filesystem. Absolute/Windows paths, traversal, ref expressions, symlinks, submodules, missing/unreadable files, empty/non-UTF-8/NUL-containing content, and files over 16 KiB fail rather than silently replacing the template with a generic summary. Raw no-mistakes ownership/attestation markers are reserved. Invalid agent output, missing/changed/reordered required H1 headings, and agent failure also fail template drafting rather than using the ordinary fallback. Templates without H1 headings have no structural heading requirements; they are not malformed for that reason. Matching retains the existing ordered-subsequence contract: extra headings are allowed. The structural guard is not a full Markdown parser, a visibility/uniqueness proof, or a template policy engine; it does not enforce subordinate sections, checkbox states, or placeholder completion.
 
 #### Author-preserving regeneration
 
-A templated PR contains one delimited, integrity-checked generated appendix. Later runs preserve live author text before and after it, including human checkbox choices and explicit issue-closing lines, and refresh only that appendix. They do not re-fill the narrative. An author's title is also preserved unless `pr.title_format` is configured; that explicit repository convention redrafts the bare title and applies the format on every managed update. Changing or removing `pr.template` does not regenerate an already owned narrative; edit it on the PR when it needs updating. The full intent remains available to reviewers. Removing the generated Intent section is controlled separately below.
+A templated PR contains one delimited, integrity-checked generated appendix. Later runs preserve live author text before and after it, including human checkbox choices and explicit issue-closing lines, and refresh only that appendix. They do not re-fill the narrative. An author's title is also preserved unless `pr.title_format` is configured; that explicit repository convention redrafts the bare title and applies the format on every managed update. Changing or removing `pr.template` does not regenerate an already owned narrative; edit it on the PR when it needs updating. The original intent remains review criteria, while the public section follows [`pr.intent`](#printent). Removing the generated Intent section is controlled separately below.
 
 Ownership is never inferred from a heading's name. An existing author-only body can be adopted without model rewriting. **Legacy descriptions containing an unowned attestation require explicit author reconciliation** before template mode can adopt them: separate/remove their obsolete generated evidence while retaining the desired author text and closing references, then retry. Do not manufacture ownership markers by hand. An edited appendix, missing/duplicate/malformed markers, or a competing attestation fails rather than risking discarded author content. Put author additions outside the generated appendix. The integrity guard detects accidental edits; it is not authentication or a cryptographic signature by no-mistakes.
 
@@ -278,6 +284,8 @@ Updates read the live raw body before deciding which publication path applies. M
 If the complete author text, closing references, and evidence selected by [`pr.appendix`](#prappendix) cannot fit the publication budget, the step fails instead of truncating them. Evidence rendering retains its existing artifact presentation limits; this adds no body-level eviction to make a template fit. Pre-push and CI-repair restamping update the appendix's integrity guard together with its head-bound attestation, without changing author text.
 
 Unconfigured, unowned descriptions retain ordinary narrative/fallback/size behavior; existing owned bodies retain author-safe updates even after the setting is removed. Providers without a raw content contract reject configured templates.
+
+A description supplied with [`axi run --pr-body-file`](/no-mistakes/reference/cli/#supplied-pr-title-and-description) replaces the agent's template fill when the run creates the PR, and is held to the same structural rule: it must keep every top-level `#` heading of the template, with the same text and in the same order, or the PR step fails with an error naming the missing heading before anything is published. Nothing else about the template is enforced on it. A supplied title likewise replaces the agent's title.
 
 **Provider caveats:** Azure DevOps' 4,000-character budget (and any non-zero `max_pr_body_chars` declared by a provider plugin) is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
 
@@ -293,11 +301,33 @@ Control publication of the **generated `Intent` section**, independently of inte
 | Default | `true` (missing or `null` also preserves the default) |
 | Trust | Trusted default branch only, regardless of `allow_repo_commands`; the caller-side counterpart is the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default and the per-run `axi run --no-publish-intent` flag |
 
-`false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
+`false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. When intent publication is suppressed, no brief is generated. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
 
 A contributor can keep the section off for their own runs without touching this repository policy: `axi run --no-publish-intent` records a tighten-only omission on the run, and an operator can set the global `intent.publish_intent: false` default. Both compose with this field and can only reduce publication: the trusted repository policy is the ceiling, and a caller can never publish intent on a repository whose trusted config disabled it. Neither signal changes what review, test, document, lint, or CI auto-fix prompts receive. The caller-side omission goes one step further than this repository policy: the PR-drafting turns (ordinary narrative, title-only fallback, and repository-template narrative) receive no intent text at all and draft from the diff and commit messages only, so no paraphrase of the withheld intent can reach the public PR. The intent is withheld, never scanned for: there is no output filter.
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
+
+### pr.intent
+
+Configure the reviewer-facing rendering of the generated `Intent` section. This repository-only setting is read from the trusted default branch, regardless of `allow_repo_commands`. It is not available in global config or `repository_overrides`.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `pr.intent.format` | `string` | `raw` |
+| `pr.intent.sections` | `string[]` | `why`, `scope`, `out_of_scope` when format is `brief` |
+
+```yaml
+pr:
+  intent:
+    format: brief
+    sections: [why, scope, out_of_scope]
+```
+
+`raw` preserves today's Intent rendering. `brief` asks the existing PR-drafting turn for a separate structured value: a one-line goal and selected bullet lists. The code renders the selected sections as `### Why`, `### Scope`, and `### Out of scope` headings, in the configured order. Empty lists are omitted. Valid section names are `why`, `scope`, and `out_of_scope`; duplicates and unknown names fail config loading. If `sections` is empty or omitted, brief mode uses all three in that order.
+
+The original run intent remains unchanged and continues to guide review. The Intent step does not rewrite it. Brief output is drafted as a separate value alongside the PR narrative, then rendered as headings and bullets. It is limited to a 200-character goal, up to three 220-character bullets per section, and 2,500 characters total. A missing or invalid brief fails publication; no path falls back to publishing the raw intent. `pr.publish_intent: false` and caller-side intent omission suppress the section and skip brief generation.
+
+This format structures the Intent section; it is not a general PR-body privacy filter. The separate What Changed narrative and other evidence can still contain sensitive text.
 
 ### pr.appendix
 
@@ -315,6 +345,8 @@ Choose how much of the generated Risk, Testing, and Pipeline tail is visible aft
 `collapsed` folds those three sections into one closed `Validation` details block. The narrative, and the Intent section when it is published, stay outside the block. Within the body limit, opening the block shows the same recorded evidence `full` would have published. If an ordinary body exceeds the limit, Testing is dropped before pipeline history is shortened; the attestation is retained. Bitbucket Cloud escapes raw HTML, so `collapsed` stays on the `full` appendix there instead of printing the details tags as text.
 
 `minimal` keeps a single risk line (the recorded level and rationale, on one line) and the pipeline attestation. Testing logs, pipeline round history, and the Risk and Pipeline headings are omitted. The attestation marker stays in its host-specific form: an HTML comment on GitHub, GitLab, Gitea, Forgejo, Azure, Cursor Origin, and provider plugins, and a visible text fence on an owned Bitbucket description. Ordinary unowned Bitbucket descriptions still omit the comment.
+
+GitLab's separate image Evidence section is unaffected by this setting; see [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
 
 An unrecognized value fails config parsing closed. Body size limits and truncation still apply in every mode. A templated body that cannot fit still fails instead of dropping author text. The marker remains the one `require-no-mistakes` binds to the PR head.
 
@@ -335,7 +367,7 @@ Configure the title shape no-mistakes applies to newly created and updated pull 
 
 The template supports literal text and `{{.Branch}}` and `{{.Title}}` placeholders.
 `{{.Branch}}` is the normalized branch identifier resolved by [`commit.branch_pattern`](#commitbranch_pattern) or a matching machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides) entry; its capture can be transformed by `commit.branch_replacement` from global config or that entry.
-`{{.Title}}` is the bare concise title text returned by the PR agent, or `update pull request` when ordinary drafting uses its deterministic fallback.
+`{{.Title}}` is the bare concise title text returned by the PR agent, a title supplied with [`axi run --pr-title`](/no-mistakes/reference/cli/#supplied-pr-title-and-description), or `update pull request` when ordinary drafting uses its deterministic fallback.
 For example, `title_format: "{{.Branch}}: {{.Title}}"` can render `PROJ-123: add widget` from a matching branch.
 The format is applied deterministically after drafting; its literal text is not sent to the agent as an instruction.
 
@@ -344,6 +376,7 @@ It must be valid UTF-8, contain only the two documented placeholders and literal
 The template source is limited to 1,024 bytes and 16 placeholders, and the rendered title must be non-empty and no more than 4,096 bytes.
 Providers can impose lower publication limits. GitLab titles are checked at its publication boundary and may contain at most 255 Unicode characters, including a preserved or requested draft marker.
 If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR publication fails safely instead of publishing a malformed title.
+Because the format redrafts the bare title on every managed update, a later run on a PR created with a supplied title replaces that title with a drafted one in this format.
 
 When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
 For a machine-local title convention that does not require repository configuration, see global [`repository_overrides`](/no-mistakes/reference/global-config/#repository_overrides).
@@ -450,6 +483,29 @@ review:
 
 The trade-off is latency against precision. A question costs the run a park - tens of minutes to hours of wall clock, waiting on you - and buys a review that decided the point instead of handing you a finding to rule on. Repositories whose changes rarely turn on product intent will not get much for that wait; repositories where the reviewer regularly cannot tell deliberate from accidental will.
 
+### review.max_fix_rounds
+
+An opt-in limit on **total Review fix rounds per run**, counting automatic fixes and explicit `axi respond --action fix` requests together. The initial review does not spend a fix round; each allowed fix includes its full rereview. Schema retries, review-question answers, and coverage-only continuations do not spend another fix round.
+
+| | |
+|---|---|
+| Type | non-negative integer |
+| Default | `0` (unlimited, preserving existing behavior) |
+| Source | trusted default-branch repository config only |
+
+```yaml
+review:
+  max_fix_rounds: 2
+```
+
+`auto_fix.review` still limits automatic fixes independently. For example, `auto_fix.review: 1` and `review.max_fix_rounds: 2` allow one automatic fix and one further explicitly requested fix. With `auto_fix.review: 0`, both allowed fixes must be requested explicitly.
+
+When the final allowed rereview leaves findings, Review **parks** with every remaining finding and a `review-fix-rounds-exhausted` notice showing the used/maximum fix rounds. Further fix requests return `fix_rounds_exhausted` without releasing the gate or recording a selection. `axi --yes` and TUI yolo leave this gate for an explicit decision. Inspect the findings, then explicitly approve, skip, or abort; when the same gate also holds a [protected-path refusal](#protected_paths), approve is rejected too, so only skip or abort remain. The limit never approves, lowers severity, drops findings, or starts another fix by itself. A clean, fully covered final rereview still passes normally, and a clean one that parks only for missing coverage carries no notice, so `complete-coverage` can still continue it.
+
+The limit is pinned before Review starts and survives daemon recovery and validation restarts in that run. Editing config does not extend or reduce an active run's budget. A new run gets a fresh budget; a run already in Review before this feature remains unbounded. The pushed branch cannot set, change, or remove the limit, even with `allow_repo_commands: true`. Negative and non-integer values fail configuration loading.
+
+This is a round-count budget, not a cumulative time or token budget, a change to rereview scope, or a cancellation/custody mechanism. Other steps are unaffected.
+
 ### review.agent_timeout
 
 A shorter stall budget for each Review-step agent invocation in this repository, so small, low-risk changes can be bounded more tightly than the machine-wide default.
@@ -506,9 +562,10 @@ Prose changes only. Do not request test coverage.
 
 `path` uses the same matcher and syntax as [`ignore_patterns`](#ignore_patterns), including the rule that `*` never crosses a `/`, so `**/*.go` covers a single directory level rather than every Go file.
 
-The review step appends only the blocks whose `path` matches at least one changed file, in the order they appear in the file.
+The review step appends blocks in configured order when at least one matched file remains in the review scope defined below.
 Two entries with the same `path` **and** the same `instructions` are injected once. The same instruction text under two different `path` values is injected once per path, because each block states its own scope. Two entries with the same `path` and different `instructions` are both injected.
 Matching runs against the full changed-file list and is deliberately **not** filtered by `ignore_patterns`: that field is read from the pushed branch, so filtering here would let a contributor drop one of your rules from the review of their own branch.
+Paths matched by repository or machine-local rules remain required review coverage even when the pushed branch ignores them, unless the trusted default branch's own `ignore_patterns` also excludes them. A path excluded only by the trusted copy remains reviewable if the pushed copy includes it. Each rendered block lists only its paths in that settled review scope, and a block with no remaining paths is omitted. Review takes the empty-scope shortcut only when neither non-ignored changes nor required instruction-covered paths remain.
 
 Blocks augment the built-in review instructions; they cannot disable them, and a finding the reviewer raises from a block goes through the same severity and action model as any other finding.
 With nothing configured, or nothing matching the change, the review prompt is exactly what it would be without this setting.
@@ -633,7 +690,7 @@ Do not rely on a configured command to leave a background server or watcher runn
 
 ### ignore_patterns
 
-Paths to exclude from review and documentation checks.
+Paths to exclude from review and documentation checks. Review also enforces the instruction-covered paths described under [`review.path_instructions`](#reviewpath_instructions).
 
 | | |
 | --- | --- |
@@ -672,7 +729,7 @@ Patterns use the same syntax as [`ignore_patterns`](#ignore_patterns). Empty or 
 
 Before staging an automatic Review, Test, Document, Lint, or CI repair, an operator-authorized repository gate repair, or a Push leftover commit, the pipeline checks the index and worktree for dirty protected paths. This includes staged and unstaged modifications, deletions, both ends of renames, and individual untracked files inside new directories. A match refuses the entire commit and parks the step at an operator approval gate naming the path and rule. The index and all working files stay as they were; nothing is restored, unstaged, discarded, or partially committed. The Push check also covers formatter changes and residue from earlier steps. [Daemon & Worktrees](/no-mistakes/concepts/daemon/#what-it-does) owns retention across terminal cleanup and crash recovery.
 
-A protected-path refusal always requires an explicit response, including under AXI `--yes` and TUI yolo mode. CI does not retry its fixer, and automatic gate reconciliation cannot clear the refusal, even if the PR closes. Approval is rejected because it would skip unfinished work: inspect and resolve the reported edit, then use `no-mistakes axi respond --action fix` to retry the step, including its commit and publication. Deliberate skip and abort behavior is unchanged.
+A protected-path refusal always requires an explicit response, including under AXI `--yes` and TUI yolo mode. CI does not retry its fixer, and automatic gate reconciliation cannot clear the refusal, even if the PR closes. Approval is rejected because it would skip unfinished work: inspect and resolve the reported edit, then use `no-mistakes axi respond --action fix` to retry the step, including its commit and publication. When the refused commit was Review's last allowed fix round under [`review.max_fix_rounds`](#reviewmax_fix_rounds), fix is refused too, so only skip or abort remain. Deliberate skip and abort behavior is unchanged.
 
 For CI, that explicit fix finishes the retained repair before normal monitoring can report `checks-passed`, even if forge checks turned green while parked or the response selects only an added finding. It uses the existing [repair revalidation policy](#cirevalidate_repairs), including mandatory revalidation from Review for a rebased conflict repair, and the existing publication guards. If the retained repair cannot finish, the refusal remains available for another explicit fix response.
 
@@ -779,13 +836,19 @@ Reruns are skipped when:
 ### ci.required_reviews
 
 An optional list of external reviewers that must finish before the CI monitor reports `checks-passed`.
-The default is `[]`; the only supported reviewer profile is `coderabbit` on GitHub.com.
+The default is `[]`; `coderabbit` is supported on GitHub.com, GitHub Enterprise Server (GHES) with its instance-local GitHub App ID pinned, and GitLab.
 Enable it in the trusted default branch's `.no-mistakes.yaml`:
 
 ```yaml
 ci:
   required_reviews: [coderabbit]
+  # GHES only: the immutable CodeRabbit GitHub App ID on this GHES instance.
+  required_review_app_id: 12345
+  # GitLab: immutable CodeRabbit account ID.
+  required_review_bot_id: "123456789"
 ```
+
+Omit `required_review_app_id` on GitHub.com; no-mistakes uses the documented app ID `347564` there. GHES requires this positive ID from that instance's CodeRabbit app; it does not infer identity from the mutable app slug. GitLab requires `required_review_bot_id` to match the CodeRabbit account's immutable ID. These settings are trusted-only, like the rest of `ci`.
 
 The whole `ci` block is trusted-only, even with `allow_repo_commands: true`.
 A pushed branch cannot disable the requirement or enable it for itself.
@@ -793,13 +856,12 @@ A repository value overrides the operator's global list; an explicit `[]` disabl
 Unknown or duplicate reviewer names fail configuration loading.
 
 CodeRabbit must already be installed for the repository by its administrator.
-no-mistakes uses the existing GitHub CLI authentication for read-only observation and adds no CodeRabbit credentials or installation flow.
+no-mistakes uses the provider CLI's existing authentication for read-only observation and adds no CodeRabbit credentials or installation flow.
 When the list is empty, no additional completion checks are made.
 Existing CI and Greptile behavior stays unchanged. CodeRabbit is recognized as a review bot only when this list names `coderabbit`: otherwise an installed CodeRabbit's check is an ordinary CI check and its review-thread comments are never findings, exactly as if no-mistakes had no CodeRabbit support. Once opted in, failed CodeRabbit checks use the same review-bot findings path as Greptile.
 
-Completion requires the latest `CodeRabbit` check run from GitHub.com app ID `347564`, a nonempty immutable check-run ID, `status: completed`, `conclusion: success`, and a `head_sha` matching the exact current PR head.
-The adapter pins the check query to that SHA and verifies the live PR head before and after discovery.
-Names, slugs, formal approvals, and review/comment bodies cannot establish completion.
+On GitHub.com/GHES, completion requires the latest `CodeRabbit` check run from the trusted app ID (`347564` on GitHub.com, or the configured instance-local ID on GHES), a nonempty immutable check-run ID, `status: completed`, `conclusion: success`, and a `head_sha` matching the exact current PR head. GitLab requires a comment from the configured bot account newer than the current source revision, and no unresolved bot thread; this timestamp-based check is weaker than an exact-SHA status check. GitLab compares against the MR version's `created_at` for the matching `head_commit_sha` and rereads the live PR head after discovery.
+Names, slugs, formal approvals, and review/comment bodies alone cannot establish completion.
 Unresolved CodeRabbit review-thread comments from the verified GitHub bot account become bounded `ask-user` findings in the existing review model, even when the required completion check succeeded.
 Every page of review threads and of each unresolved thread's comments is read; a response that cannot prove it is complete (missing comment nodes, an invalid page cursor, or an unreadable later page) leaves the review unverified rather than clean.
 Their bodies are untrusted evidence and cannot instruct the fix agent; the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns that shared handling.
@@ -816,10 +878,7 @@ That name or output title vetoes completion even alongside another successful ch
 A separately named rate-limit check remains blocking while GitHub still returns it among the latest checks at that head; no-mistakes does not guess from comment text that the limit has cleared.
 The monitor never posts review commands, requests a paid review, or retries a review on the provider's behalf.
 
-Strict gating on GitLab and other forges is unsupported and parks with an explicit unsupported finding when enabled.
-GitLab approvals and discussion activity are not a documented CodeRabbit completion signal.
-GitHub Enterprise Server is also unsupported because its separately installed app has a different immutable identity.
-Leave this setting empty on those platforms to retain normal CI behavior.
+Bitbucket, Azure DevOps, Gitea, Forgejo, Cursor Origin, and arbitrary provider plugins remain unsupported and park with an explicit unsupported finding when enabled. GitLab comment bodies are never treated as instructions or proof. See [CodeRabbit GitLab docs](https://docs.coderabbit.ai/platforms/gitlab-com) and the [GitLab Discussions API](https://docs.gitlab.com/api/discussions/).
 
 This gates no-mistakes readiness, not direct forge merges or merge-queue synthetic commits.
 The merge caller must recheck readiness for the current head and bind its merge request to that SHA.
@@ -986,7 +1045,7 @@ A value set here wins over the operator's own [`ci.carry_review_on_replay`](/no-
 
 ### ci.release_after_checks_pass
 
-Whether the CI step finishes the run at its checks verdict instead of monitoring the pull request until it is merged or closed.
+Whether the CI step finishes the run at its checks verdict instead of monitoring the pull request until it is merged, closed, declined, or handed off.
 
 | | |
 |---|---|
@@ -999,11 +1058,30 @@ ci:
   release_after_checks_pass: true
 ```
 
-- **`false` (default)** is what the step has always done: once every check is green the run records readiness and keeps watching the PR until it is merged, closed, or declined, and a later base-branch advance or conflict is still repaired on its own.
+- **`false` (default)** is what the step has always done: once every check is green the run records readiness and keeps watching the PR until it is merged, closed, or declined, unless an operator explicitly hands off the green monitor; a later base-branch advance or conflict is still repaired on its own.
 - **`true`** finishes the step at that point. The run completes with the `checks_passed` status, releases its worktree, and reports `outcome: checks-passed`; whether and when the PR is merged is then the user's decision, and nothing observes the merge afterwards, so the recorded CI duration stops at the checks verdict instead of including the wait for a merge.
 
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot opt itself into the shorter run, or out of it.
 A value set here wins over the operator's own [`ci.release_after_checks_pass`](/no-mistakes/reference/global-config/#cirelease_after_checks_pass) in both directions.
+
+### ci.instructions
+
+Repository-specific guidance for the agent that repairs a red check or a merge conflict on the pull request.
+
+| | |
+|---|---|
+| Type | `string` (multiline) |
+| Default | Empty (off) |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  instructions: |
+    Regenerate golden files with `make fixtures`; never hand-edit them.
+```
+
+When set, the [CI step](/no-mistakes/reference/pipeline-steps/#ci) adds the text to every CI repair prompt, in a labeled section after the built-in rules. It adds to those rules and never relaxes them: the fixer must still fix a failing check the change caused.
+Like the rest of the `ci` block, it is read only from the trusted default-branch copy of this file, so a pushed branch cannot steer the agent that repairs it. It is not accepted in the global config, since the guidance describes one repository.
 
 ### rebase.strategy
 
@@ -1103,8 +1181,29 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `intent.threshold` | `float` | Inherits from global (default `0.2`) |
 | `intent.slack_days` | `int` | Inherits from global (default `3`) |
 | `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
+| `intent.check` | `object` | Additive with global policy; mode defaults to `off` |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+
+#### intent.check
+
+Configure deterministic checks for explicit, inherited, or inferred run intent. This block is read only from the trusted default branch, regardless of `allow_repo_commands`; other intent-extraction fields keep their existing pushed-branch behavior.
+
+```yaml
+intent:
+  check:
+    mode: reject # off (default) | warn | reject
+    terms:
+      - "internal project label"
+    patterns:
+      - '(?i)run-[a-z0-9-]+'
+```
+
+`terms` match case-insensitive literal substrings. `patterns` use Go RE2 regular expressions and are case-sensitive unless the expression enables `(?i)`. Global and trusted repository rules combine additively; the stronger mode wins, so a repository cannot turn off a global warning or rejection. A pushed-branch policy cannot add, remove, or weaken rules.
+
+`off` performs no checks. `warn` records a private local warning and continues. `reject` stops the run before it can supersede another run or launch an agent. The same policy checks intent inferred later from a transcript before the summary is stored. `--skip intent` does not bypass the check. Warnings, errors, and logs name only rule indexes, never the matched text; warnings are not published as findings.
+
+Each config layer accepts at most 32 terms and patterns combined, at most 256 bytes per rule, and at most 8 KiB of rule text. Invalid modes, empty or oversized rules, over-limit policies, and invalid RE2 expressions fail config loading.
 
 ### test.prepare
 
@@ -1180,13 +1279,13 @@ Fields not set here inherit from global config and then the built-in defaults.
 | Field | Type | Default |
 | --- | --- | --- |
 | `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
-| `test.evidence.attach_media` | `bool` | Inherits from global (default `true`) |
+| `test.evidence.attach_media` | `bool` | Inherits from global; see [provider defaults](/no-mistakes/reference/global-config/#testevidence) |
 | `test.evidence.compact` | `bool` | Inherits from global (default `true`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 | `test.evidence.branch` | `string` | Inherits from global (default `no-mistakes/evidence`) |
 | `test.evidence.commit_message` | `string` | Inherits from global (default `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})`) |
 
-By default, test evidence is written to `<NM_HOME>/evidence/<run-id>`. Where it is stored locally and how long it is kept are global-only settings; see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence).
+By default, test evidence is written to `<NM_HOME>/evidence/<run-id>`. Where it is stored locally and how long it is kept are global-only settings; see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence). [`evidence_dir`](/no-mistakes/reference/global-config/#evidence_dir) is also global-only. A repository file that sets it fails to load. [`test.evidence.link_base_url`](/no-mistakes/reference/global-config/#evidence-links) is global-only too, like `local_root`: a repository value is ignored.
 For GitHub repositories, set `store_in_repo: true` to also publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
 `compact: false` opts into expanded PR Testing presentation with inline previews while retaining published artifact links. See [global config](/no-mistakes/reference/global-config/#testevidence) for rendering details and publication requirements.
 

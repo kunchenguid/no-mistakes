@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestPROmitIntentSuppressionIsTightenOnly(t *testing.T) {
@@ -160,6 +161,35 @@ func TestPRPublishIntentSuppressionCoversDefaultAgentAndFallback(t *testing.T) {
 						t.Fatal("suppression removed full intent from model context")
 					}
 				}
+			}
+		})
+	}
+}
+
+// A supplied description is author narrative, not intent: the Intent section
+// still lands in the appendix under the same publication controls.
+func TestPRSuppliedBodyPublishesIntentUnderTheSameControls(t *testing.T) {
+	t.Parallel()
+	for _, omit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("omit=%v", omit), func(t *testing.T) {
+			t.Parallel()
+			dir, base, head := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			insertCompletedStep(t, sctx, types.StepReview, "", "")
+			title, body := "Supplied title", "Supplied narrative."
+			sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
+			sctx.Run.OmitIntent = omit
+			sctx.UserIntent = "Ship the supplied description."
+			got, err := (&PRStep{}).buildSuppliedPRContent(sctx, "feature", "main", base, "", scm.ProviderGitHub, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts, err := parsePROwnedBody(got.Body)
+			if err != nil || parts.before != body+"\n\n" {
+				t.Fatalf("narrative = %q, %v", parts.before, err)
+			}
+			if strings.Contains(parts.appendix, "## Intent\n\nShip the supplied description.") == omit {
+				t.Fatalf("omit=%v: appendix Intent section wrong:\n%s", omit, parts.appendix)
 			}
 		})
 	}

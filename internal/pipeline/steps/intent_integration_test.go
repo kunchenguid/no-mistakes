@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
@@ -34,7 +35,7 @@ func (f *fakeIntentAgent) Close() error { return nil }
 func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	t.Helper()
 	repoDir = t.TempDir()
-	gitCmd(t, repoDir, "init")
+	gitCmd(t, repoDir, "init", "-b", "main")
 	gitCmd(t, repoDir, "config", "user.email", "test@example.com")
 	gitCmd(t, repoDir, "config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\n"), 0o644); err != nil {
@@ -43,6 +44,7 @@ func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "base")
 	base = gitCmd(t, repoDir, "rev-parse", "HEAD")
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +58,9 @@ func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	transcript := `{"type":"user","cwd":` + testJSONString(t, repoDir) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Bar() to internal_foo.go"}}
-{"type":"assistant","cwd":` + testJSONString(t, repoDir) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(repoDir, "internal_foo.go")) + `}}]}}
+	stamp := testJSONString(t, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	transcript := `{"type":"user","cwd":` + testJSONString(t, repoDir) + `,"timestamp":` + stamp + `,"uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Bar() to internal_foo.go"}}
+{"type":"assistant","cwd":` + testJSONString(t, repoDir) + `,"timestamp":` + stamp + `,"uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(repoDir, "internal_foo.go")) + `}}]}}
 `
 	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(transcript), 0o644); err != nil {
 		t.Fatal(err)
@@ -98,6 +101,7 @@ func openIntentTestDB(t *testing.T) *db.DB {
 
 func newIntentIntegrationContext(t *testing.T, repoDir, base, head string, cfg *config.Config) *pipeline.StepContext {
 	t.Helper()
+	ensureHermeticOrigin(t, repoDir)
 	d := openIntentTestDB(t)
 	repo, err := d.InsertRepo(repoDir, "https://example.com/r.git", "main")
 	if err != nil {
@@ -153,6 +157,30 @@ func TestIntentStep_Integration_AttachesSummaryToRun(t *testing.T) {
 	}
 }
 
+func TestIntentStep_RejectsInferredIntentWithoutPersistingOrEchoingIt(t *testing.T) {
+	repoDir, _, base, head := initIntentRepo(t)
+	cfg := &config.Config{Intent: config.Intent{
+		Enabled: true,
+		Check:   config.IntentCheck{Mode: config.IntentCheckReject, Terms: []string{"secret-title"}},
+	}}
+	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
+	step := &IntentStep{runIntent: func(context.Context, *pipeline.StepContext) (*intent.Result, error) {
+		return &intent.Result{Summary: "secret-title from the operator"}, nil
+	}}
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("matched inferred intent was accepted")
+	} else if strings.Contains(err.Error(), "secret-title") || !strings.Contains(err.Error(), "terms[0]") {
+		t.Fatalf("rejection disclosed input or omitted rule index: %v", err)
+	}
+	got, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Intent != nil {
+		t.Fatalf("rejected inferred intent was persisted: %q", *got.Intent)
+	}
+}
+
 func TestIntentStep_Integration_DisabledIsNoOp(t *testing.T) {
 	repoDir, fakeHome, base, head := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
@@ -196,7 +224,7 @@ func TestIntentStep_Integration_NoTranscriptIsNoOp(t *testing.T) {
 
 func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T) {
 	repoDir := t.TempDir()
-	gitCmd(t, repoDir, "init")
+	gitCmd(t, repoDir, "init", "-b", "main")
 	gitCmd(t, repoDir, "config", "user.email", "test@example.com")
 	gitCmd(t, repoDir, "config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(repoDir, "active.go"), []byte("package active\n"), 0o644); err != nil {
@@ -211,6 +239,7 @@ func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T)
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "base")
 	base := gitCmd(t, repoDir, "rev-parse", "HEAD")
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
 
 	for i := 0; i < 40; i++ {
 		if err := os.Remove(filepath.Join(repoDir, fmt.Sprintf("obsolete_%02d.go", i))); err != nil {
@@ -230,8 +259,9 @@ func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T)
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	transcript := `{"type":"user","cwd":` + testJSONString(t, repoDir) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Run() to active.go"}}
-{"type":"assistant","cwd":` + testJSONString(t, repoDir) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(repoDir, "active.go")) + `}}]}}
+	stamp := testJSONString(t, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	transcript := `{"type":"user","cwd":` + testJSONString(t, repoDir) + `,"timestamp":` + stamp + `,"uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Run() to active.go"}}
+{"type":"assistant","cwd":` + testJSONString(t, repoDir) + `,"timestamp":` + stamp + `,"uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(repoDir, "active.go")) + `}}]}}
 `
 	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(transcript), 0o644); err != nil {
 		t.Fatal(err)
@@ -266,7 +296,7 @@ func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	repoDir, fakeHome, base, _ := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	gitCmd(t, repoDir, "checkout", "-b", "feature", base)
+	gitCmd(t, repoDir, "checkout", "-B", "feature", base)
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +327,7 @@ func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 
 func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 	originRepo := t.TempDir()
-	gitCmd(t, originRepo, "init")
+	gitCmd(t, originRepo, "init", "-b", "main")
 	gitCmd(t, originRepo, "config", "user.email", "test@example.com")
 	gitCmd(t, originRepo, "config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(originRepo, "internal_foo.go"), []byte("package foo\n"), 0o644); err != nil {
@@ -313,8 +343,9 @@ func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	transcript := `{"type":"user","cwd":` + testJSONString(t, originRepo) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Bar() to internal_foo.go"}}
-{"type":"assistant","cwd":` + testJSONString(t, originRepo) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(originRepo, "internal_foo.go")) + `}}]}}
+	stamp := testJSONString(t, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	transcript := `{"type":"user","cwd":` + testJSONString(t, originRepo) + `,"timestamp":` + stamp + `,"uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Bar() to internal_foo.go"}}
+{"type":"assistant","cwd":` + testJSONString(t, originRepo) + `,"timestamp":` + stamp + `,"uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(originRepo, "internal_foo.go")) + `}}]}}
 `
 	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(transcript), 0o644); err != nil {
 		t.Fatal(err)
@@ -325,6 +356,7 @@ func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 	gitCmd(t, t.TempDir(), "clone", originRepo, pipelineWorkDir)
 	gitCmd(t, pipelineWorkDir, "config", "user.email", "test@example.com")
 	gitCmd(t, pipelineWorkDir, "config", "user.name", "Tester")
+	gitCmd(t, pipelineWorkDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(pipelineWorkDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -362,10 +394,6 @@ func TestIntentStep_Integration_ForcePushedOrphanedBaseSHA(t *testing.T) {
 	repoDir, fakeHome, _, _ := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	// Branch off main and add a feature commit that touches internal_foo.go.
-	// initIntentRepo's main HEAD already contains func Bar(), so vary the
-	// content here to produce a real diff between feature and main.
-	gitCmd(t, repoDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() { /* feature */ }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

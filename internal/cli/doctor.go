@@ -110,7 +110,12 @@ func newDoctorCmd() *cobra.Command {
 				if p != nil {
 					alive, _ := daemon.IsRunning(p)
 					if alive {
-						ok("daemon        ", "running")
+						// A daemon holding pushes for a restart must not look idle.
+						if status, err := daemon.RestartStatus(p); err == nil && status.Pending {
+							warn("daemon        ", "running; "+daemon.DescribePendingRestart(status))
+						} else {
+							ok("daemon        ", "running")
+						}
 					} else {
 						warn("daemon        ", "stopped")
 					}
@@ -195,7 +200,11 @@ func doctorForgeProfiles(
 	sort.Strings(hosts)
 	allOK := true
 	for _, profileHost := range hosts {
-		remote := "git@" + profileHost + ":no-mistakes/doctor.git"
+		host, owner := config.SplitForgeProfileKey(profileHost)
+		if owner == "" {
+			owner = "no-mistakes"
+		}
+		remote := "git@" + host + ":" + owner + "/doctor.git"
 		resolved, err := forgecontext.Resolve(ctx, config.ForgeProfiles{profileHost: profiles[profileHost]}, remote, "")
 		label := fmt.Sprintf("%-14s", "forge "+profileHost)
 		if err != nil {

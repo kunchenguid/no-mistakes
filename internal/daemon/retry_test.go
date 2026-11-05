@@ -212,6 +212,8 @@ type retryFixtureOptions struct {
 	invocation db.AgentInvocation
 	// findings is the findings JSON the carried review round recorded.
 	findings *string
+	// prText is the caller-supplied PR text the failed source run carried.
+	prText db.RunPRText
 }
 
 func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
@@ -225,6 +227,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	f := &retryFixture{p: p, d: d, repo: repo, submitted: submitted, callerHead: submitted, executions: &executions}
 	if opts.beforeSource != nil {
 		opts.beforeSource(t, f)
+		submitted = f.submitted
 	}
 	var profiles []agentcfg.RunSelection
 	if opts.profile != nil {
@@ -233,7 +236,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 	if opts.reviewer != nil {
 		profiles = append(profiles, opts.reviewer)
 	}
-	source, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, profiles...)
+	source, err := d.InsertRunWithPRText(repo.ID, "main", submitted, submitted, &db.RunIntent{Summary: "keep it", Source: db.RunIntentSourceAgent, Score: 1}, "", "", "", "", false, opts.plan, opts.prText, profiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,6 +266,7 @@ func newRetryFixture(t *testing.T, opts retryFixtureOptions) *retryFixture {
 				inv := db.AgentInvocation{RunID: source.ID, StepName: string(types.StepReview), Round: 1, Purpose: "review", Agent: "claude", Model: "claude-opus-1", SessionMode: "fresh", StartedAt: 1, CompletedAt: 2, ExitStatus: "ok"}
 				if opts.invocation.Agent != "" {
 					inv.Agent, inv.Model, inv.Purpose, inv.Round = opts.invocation.Agent, opts.invocation.Model, opts.invocation.Purpose, opts.invocation.Round
+					inv.ConfiguredModel = opts.invocation.ConfiguredModel
 				}
 				_, err = d.InsertAgentInvocation(inv)
 			}
@@ -375,6 +379,25 @@ func (f *retryFixture) stepRow(t *testing.T, name types.StepName) *db.StepResult
 	}
 	t.Fatalf("source run has no %s step", name)
 	return nil
+}
+
+func TestRetryRejectsTrustedRepoIntentBeforeAdmission(t *testing.T) {
+	f := newRetryFixture(t, retryFixtureOptions{beforeSource: func(t *testing.T, f *retryFixture) {
+		f.submitted = commitTrustedRepoConfig(t, f.repo, "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nintent:\n  check:\n    mode: reject\n    terms: [\"keep it\"]\n")
+		f.callerHead = f.submitted
+	}})
+
+	_, err := f.retry(t, f.source.ID)
+	if err == nil || !strings.Contains(err.Error(), "intent rejected by configured rules: terms[0]") || strings.Contains(err.Error(), "keep it") {
+		t.Fatalf("retry rejection = %v, want trusted rule index without inherited intent", err)
+	}
+	runs, err := f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("rejected retry created a run: count=%d err=%v", len(runs), err)
+	}
+	if f.executions.Load() != 0 {
+		t.Fatalf("rejected retry executed %d pipeline steps", f.executions.Load())
+	}
 }
 
 func TestRetryRefusesUnlessEveryProofHolds(t *testing.T) {
@@ -557,10 +580,10 @@ func TestRetryRefusesACarriedReviewFromAnotherConfiguration(t *testing.T) {
 			writeFakeAgents(t, f.p, "codex", "", "claude", "codex")
 		}},
 		{name: "recorded repository configuration differs from the one a retry would use", opts: retryFixtureOptions{repoYAML: "review:\n  conversation: true\n"}, reason: []string{"repository configuration changed", "review"}, change: func(t *testing.T, f *retryFixture) {}},
-		{name: "review role model changed", opts: retryFixtureOptions{invocation: db.AgentInvocation{Agent: "codex", Model: "gpt-old", Purpose: "review", Round: 1}}, reason: []string{"agent_config.codex.model is now gpt-new"}, change: func(t *testing.T, f *retryFixture) {
+		{name: "review role model changed", opts: retryFixtureOptions{invocation: db.AgentInvocation{Agent: "codex", Model: "gpt-old", Purpose: "review", Round: 1}}, reason: []string{"effective model for codex is now gpt-new"}, change: func(t *testing.T, f *retryFixture) {
 			writeFakeAgents(t, f.p, "claude", "review_agents:\n  reviewer:\n    agent: codex\n    model: gpt-new\n", "claude", "codex")
 		}},
-		{name: "agent model changed", reason: []string{"agent_config.claude.model is now sonnet"}, change: func(t *testing.T, f *retryFixture) {
+		{name: "agent model changed", reason: []string{"effective model for claude is now sonnet"}, change: func(t *testing.T, f *retryFixture) {
 			writeFakeAgents(t, f.p, "claude", "agent_config:\n  claude:\n    model: sonnet\n", "claude")
 		}},
 		{name: "recorded global configuration changed", opts: retryFixtureOptions{globalYAML: "agent: claude\n"}, reason: []string{"global configuration changed", "agent_path_override"}, change: func(t *testing.T, f *retryFixture) {
@@ -652,6 +675,19 @@ func TestRetryStartsWhenEveryProofHolds(t *testing.T) {
 	}
 	if got := f.executions.Load(); got != 2 {
 		t.Fatalf("executed %d steps, want review and test only", got)
+	}
+}
+
+func TestRetryInheritsTheSuppliedPRText(t *testing.T) {
+	text := db.RunPRText{Title: "Add widget", Body: "Our words.\n"}
+	f := newRetryFixture(t, retryFixtureOptions{prText: text})
+	result, err := f.retry(t, f.source.ID)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	run := waitForRunTerminalState(t, f.d, result.RunID)
+	if run.PRTitle == nil || *run.PRTitle != text.Title || run.PRBody == nil || *run.PRBody != text.Body {
+		t.Fatalf("retried run PR text = %v / %v", run.PRTitle, run.PRBody)
 	}
 }
 
@@ -853,5 +889,114 @@ func (f *retryFixture) requireNothingLaunched(t *testing.T) {
 	}
 	if got := f.executions.Load(); got != 0 {
 		t.Errorf("refusal executed %d steps", got)
+	}
+}
+
+func TestRetryCarriesConfiguredReviewerFallbacks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the agent stand-ins are POSIX shell scripts")
+	}
+	for _, purpose := range []string{"review", "review-coverage"} {
+		for _, role := range []string{"reviewer", "reviewer_after_round"} {
+			for _, harness := range []string{"codex", "pi"} {
+				t.Run(purpose+"/"+role+"/"+harness, func(t *testing.T) {
+					round := 1
+					if role == "reviewer_after_round" {
+						round = 2
+					}
+					configured := "provider-two/available"
+					inv := db.AgentInvocation{Agent: harness, Model: "available", Purpose: purpose, Round: round, ConfiguredModel: &configured}
+					if harness == "codex" {
+						inv.ConfiguredModel = nil
+					}
+					f := newRetryFixture(t, retryFixtureOptions{failInTest: true, invocation: inv, beforeSource: func(t *testing.T, f *retryFixture) {
+						extra := fmt.Sprintf("review_agents:\n  %s:\n    agent: codex\n    model: exhausted\n    fallback:\n      - {agent: %s, model: provider-two/available}\n", role, harness)
+						writeFakeAgents(t, f.p, "codex", extra, "codex", "pi")
+					}})
+					result, err := f.retry(t, f.source.ID)
+					if err != nil {
+						t.Fatalf("retry: %v", err)
+					}
+					if run := waitForRunTerminalState(t, f.d, result.RunID); run.Status != types.RunCompleted || result.Step != types.StepTest {
+						t.Fatalf("retry = %+v, run = %s", result, run.Status)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRetryReviewerFallbackNativeModelOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the agent stand-ins are POSIX shell scripts")
+	}
+	for _, purpose := range []string{"review", "review-coverage"} {
+		for _, role := range []string{"reviewer", "reviewer_after_round"} {
+			for _, tc := range []struct {
+				name, configured, served string
+				refused                  bool
+			}{
+				{"unchanged", "other/sonnet", "opus", false},
+				{"configured candidate changed", "previous/sonnet", "opus", true},
+				{"served model differs", "other/sonnet", "sonnet", true},
+			} {
+				t.Run(purpose+"/"+role+"/"+tc.name, func(t *testing.T) {
+					round := 1
+					if role == "reviewer_after_round" {
+						round = 2
+					}
+					inv := db.AgentInvocation{Agent: "pi", Model: tc.served, Purpose: purpose, Round: round, ConfiguredModel: &tc.configured}
+					f := newRetryFixture(t, retryFixtureOptions{failInTest: true, invocation: inv, beforeSource: func(t *testing.T, f *retryFixture) {
+						extra := fmt.Sprintf("agent_args_override:\n  pi: [--model, account/opus]\nreview_agents:\n  %s:\n    agent: codex\n    model: exhausted\n    fallback:\n      - {agent: pi, model: other/sonnet}\n", role)
+						writeFakeAgents(t, f.p, "codex", extra, "codex", "pi")
+					}})
+					result, err := f.retry(t, f.source.ID)
+					if tc.refused {
+						if err == nil || !strings.Contains(err.Error(), "compatible configuration proof failed") {
+							t.Fatalf("retry = %+v, error = %v, want configuration refusal", result, err)
+						}
+						f.requireNothingLaunched(t)
+						return
+					}
+					if err != nil {
+						t.Fatalf("retry with unchanged native override: %v", err)
+					}
+					if run := waitForRunTerminalState(t, f.d, result.RunID); run.Status != types.RunCompleted || result.Step != types.StepTest {
+						t.Fatalf("retry = %+v, run = %s", result, run.Status)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRetryRefusesRemovedOrChangedReviewerFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the agent stand-ins are POSIX shell scripts")
+	}
+	for _, tc := range []struct{ name, extra, configured string }{
+		{"removed", "review_agents:\n  reviewer: {agent: codex, model: exhausted}\n", ""},
+		{"changed model", "review_agents:\n  reviewer:\n    agent: codex\n    fallback: [{agent: pi, model: replacement}]\n", ""},
+		{"changed provider", "review_agents:\n  reviewer:\n    agent: codex\n    fallback: [{agent: pi, model: provider-three/available}]\n", "provider-two/available"},
+		{"fixer cannot use reviewer fallback", "review_agents:\n  reviewer:\n    agent: codex\n    fallback: [{agent: pi, model: available}]\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inv := db.AgentInvocation{Agent: "pi", Model: "available", Purpose: "review", Round: 1}
+			if tc.configured != "" {
+				inv.ConfiguredModel = &tc.configured
+			}
+			if tc.name == "fixer cannot use reviewer fallback" {
+				inv.Purpose = "review-fix"
+			}
+			f := newRetryFixture(t, retryFixtureOptions{failInTest: true, invocation: inv, beforeSource: func(t *testing.T, f *retryFixture) {
+				writeFakeAgents(t, f.p, "codex", tc.extra, "codex", "pi")
+			}})
+			if result, err := f.retry(t, f.source.ID); err == nil || !strings.Contains(err.Error(), "compatible configuration proof failed") {
+				t.Fatalf("retry = %+v, error = %v, want configuration refusal", result, err)
+			}
+			if f.executions.Load() != 0 {
+				t.Fatal("refused retry executed steps")
+			}
+		})
 	}
 }

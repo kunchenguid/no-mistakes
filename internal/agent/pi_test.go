@@ -417,13 +417,13 @@ func TestPiAgent_SchemaRejectedOutputStillReportsUsage(t *testing.T) {
 func TestPiAgent_ExitFailureStillReportsParsedUsage(t *testing.T) {
 	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
 cat > /dev/null
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":11,"output":7,"cacheRead":9,"cacheWrite":2}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","model":"reported-model","provider":"reported-provider","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":11,"output":7,"cacheRead":9,"cacheWrite":2}}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 1
 `, strings.Join([]string{
 		"@echo off",
 		"more > nul",
-		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":11,\"output\":7,\"cacheRead\":9,\"cacheWrite\":2}}}",
+		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"model\":\"reported-model\",\"provider\":\"reported-provider\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":11,\"output\":7,\"cacheRead\":9,\"cacheWrite\":2}}}",
 		"echo {\"type\":\"agent_end\",\"messages\":[]}",
 		"exit /b 1",
 	}, "\r\n"))
@@ -437,6 +437,9 @@ exit 1
 	}
 	if result == nil {
 		t.Fatal("exit failure must still return parsed usage")
+	}
+	if result.Model != "reported-model" || result.ModelProvider != "reported-provider" {
+		t.Fatalf("exit failure lost served identity: %+v", result)
 	}
 	if result.Usage.InputTokens != 22 || result.Usage.OutputTokens != 7 ||
 		result.Usage.CacheReadTokens != 9 || !result.UsageReported {
@@ -597,20 +600,23 @@ func TestPiAgent_RunRejectsEmptyOutput(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakePi(t, dir, `#!/bin/sh
 cat > /dev/null
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"   "}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","model":"reported-model","provider":"reported-provider","content":[{"type":"text","text":"   "}]}}'
 `, strings.Join([]string{
 		"@echo off",
 		"more > nul",
-		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"   \"}]}}",
+		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"model\":\"reported-model\",\"provider\":\"reported-provider\",\"content\":[{\"type\":\"text\",\"text\":\"   \"}]}}",
 	}, "\r\n"))
 
 	pa := &piAgent{bin: bin}
-	_, err := pa.Run(context.Background(), RunOpts{
+	result, err := pa.Run(context.Background(), RunOpts{
 		Prompt: "review",
 		CWD:    t.TempDir(),
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+	if result == nil || result.Model != "reported-model" || result.ModelProvider != "reported-provider" {
+		t.Fatalf("empty output lost served identity: %+v", result)
 	}
 	if !strings.Contains(err.Error(), "no text output") {
 		t.Errorf("expected 'no text output', got: %v", err)

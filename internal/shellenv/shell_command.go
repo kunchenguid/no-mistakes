@@ -3,12 +3,59 @@ package shellenv
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 	"time"
 )
+
+// groupProbeInterval is the cadence ShellCommandGroupActive re-probes a
+// command's process group or job on while its settle window runs.
+const groupProbeInterval = 25 * time.Millisecond
+
+// groupMemberReportLimit bounds how many surviving members the active
+// verdict names. A pathological agent could leave dozens of children; the
+// error only needs enough to identify them.
+const groupMemberReportLimit = 4
+
+// groupMemberCommandLimit bounds each reported member's command text so the
+// error stays a single readable line.
+const groupMemberCommandLimit = 120
+
+// groupMember names one process still inside a command's process group or
+// job after the leader exited. command is the member's command line on Unix
+// or its image path on Windows; it is empty when the platform probe could
+// not read it.
+type groupMember struct {
+	pid     int
+	command string
+}
+
+// formatGroupMembers renders the surviving members an active verdict names:
+// "pid 39456 (sleep 1.2), pid 66195", bounded to groupMemberReportLimit with
+// a trailing "and N more" when the list was longer.
+func formatGroupMembers(members []groupMember) string {
+	names := make([]string, 0, min(len(members), groupMemberReportLimit)+1)
+	for i, m := range members {
+		if i == groupMemberReportLimit {
+			names = append(names, fmt.Sprintf("and %d more", len(members)-i))
+			break
+		}
+		command := m.command
+		if len(command) > groupMemberCommandLimit {
+			command = command[:groupMemberCommandLimit] + "..."
+		}
+		if command == "" {
+			names = append(names, fmt.Sprintf("pid %d", m.pid))
+		} else {
+			names = append(names, fmt.Sprintf("pid %d (%s)", m.pid, command))
+		}
+	}
+	return strings.Join(names, ", ")
+}
 
 type shellOutputPipe struct {
 	reader *os.File

@@ -72,6 +72,10 @@ func (p *Paths) Socket() string     { return filepath.Join(p.root, "socket") }
 func (p *Paths) PIDFile() string    { return filepath.Join(p.root, "daemon.pid") }
 func (p *Paths) ConfigFile() string { return filepath.Join(p.root, "config.yaml") }
 
+// HeldPushesFile records pushes received while a daemon waits to restart for
+// an update. The restarted daemon starts them and removes the file.
+func (p *Paths) HeldPushesFile() string { return filepath.Join(p.root, "held-pushes.jsonl") }
+
 // RunInputsDir holds private immutable input snapshots, separate from publishable evidence.
 func (p *Paths) RunInputsDir() string { return filepath.Join(p.root, "run-inputs") }
 
@@ -134,6 +138,77 @@ func (p *Paths) ValidateEvidenceRoot(configured string) error {
 // RunEvidenceDir is the evidence directory for a single run.
 func (p *Paths) RunEvidenceDir(configured, runID string) string {
 	return filepath.Join(p.EvidenceRoot(configured), runID)
+}
+
+// ResolveEvidenceRoot picks the directory new runs write evidence under.
+// evidenceDir is the global evidence_dir setting. When it is set, a usable
+// absolute directory wins over localRoot. A missing, relative, or unwritable
+// evidence_dir falls back to the app-root default (not localRoot) so a bad
+// value cannot silently land on a different custom root. An empty evidenceDir
+// keeps today's local_root behavior. This does not move directories that
+// already exist; callers pin the result onto the run.
+func (p *Paths) ResolveEvidenceRoot(evidenceDir, localRoot string) (root, warning string) {
+	defaultRoot := p.EvidenceDir()
+	configured := strings.TrimSpace(evidenceDir)
+	if configured == "" {
+		return p.EvidenceRoot(localRoot), ""
+	}
+	expanded := expandEvidenceHome(configured)
+	if !filepath.IsAbs(expanded) {
+		return defaultRoot, fmt.Sprintf("evidence_dir %q is not an absolute path; using %s", configured, defaultRoot)
+	}
+	clean := filepath.Clean(expanded)
+	if err := writableEvidenceDir(clean); err != nil {
+		return defaultRoot, fmt.Sprintf("evidence_dir %q is missing or not writable (%v); using %s", clean, err, defaultRoot)
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = resolved
+	}
+	if p.evidenceRootInsideWorktrees(clean) {
+		return defaultRoot, fmt.Sprintf("evidence_dir %q is inside managed worktrees %q; using %s", clean, p.WorktreesDir(), defaultRoot)
+	}
+	return clean, ""
+}
+
+func (p *Paths) evidenceRootInsideWorktrees(root string) bool {
+	worktrees := filepath.Clean(p.WorktreesDir())
+	rel, err := filepath.Rel(worktrees, filepath.Clean(root))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func expandEvidenceHome(path string) string {
+	path = strings.TrimSpace(path)
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, "~\\") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
+}
+
+func writableEvidenceDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+	f, err := os.CreateTemp(path, ".nm-evidence-write-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
 }
 
 func (p *Paths) ReposDir() string { return filepath.Join(p.root, "repos") }

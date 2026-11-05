@@ -121,6 +121,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 
 	var usage TokenUsage
 	var lastMessage string
+	var resultReceived bool
 	var codexErr string
 	var threadID string
 	metrics := newCodexMetricsAccumulator()
@@ -135,15 +136,17 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		}
 		return res
 	}
-	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
+	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &resultReceived, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		retErr := fmt.Errorf("codex parse events: %w", err)
-		emitAgentExited(opts, "codex", pid, retErr)
-		return partialResult(), retErr
+		if !started.closedByWaitDelay(err) || lastMessage == "" || codexErr != "" {
+			stderrWG.Wait()
+			retErr := fmt.Errorf("codex parse events (result received: %t): %w", resultReceived, err)
+			emitAgentExited(opts, "codex", pid, retErr)
+			return partialResult(), retErr
+		}
 	}
 
-	waitErr := started.wait()
+	waitErr := started.waitKeepingResult(lastMessage != "" && codexErr == "")
 	stderrWG.Wait()
 	// Stderr can retain a recovered request's diagnostic after a successful
 	// turn. Only a failed exit makes it authoritative; JSONL error events are
@@ -360,7 +363,7 @@ type codexUsage struct {
 // evidence (round-trips, tool calls + categories, subprocess wait time). It is
 // clocked by time.Now as events arrive, so a tool item's started->completed gap
 // is its real subprocess wall time.
-func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
+func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, resultReceived *bool, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
@@ -402,6 +405,7 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		case "item.completed":
 			metrics.onItem(event.Type, event.Item, time.Now())
 			if event.Item != nil && event.Item.Type == "agent_message" {
+				*resultReceived = true
 				*lastMessage = event.Item.Text
 				if onChunk != nil {
 					onChunk(event.Item.Text)
@@ -503,6 +507,12 @@ func codexFillNullableFields(value, schema any) bool {
 	return changed
 }
 
+// addAdditionalPropertiesFalse rewrites a parsed JSON schema in place into the
+// shape a strict function schema requires: every object level carries
+// additionalProperties: false and a required list naming every property, and a
+// property the caller left optional becomes nullable instead of omittable.
+// This normalizes Codex's output schema file; Pi uses piStrictToolSchema to
+// keep concrete property types for compatibility with legacy tool validation.
 func addAdditionalPropertiesFalse(value any) {
 	schema, ok := value.(map[string]any)
 	if !ok {

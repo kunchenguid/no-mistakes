@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // Without --closes the body never gains a closing reference, even though
@@ -211,7 +212,7 @@ func TestPROwnershipUpdateRecomputesIssuesFromLatestAuthorText(t *testing.T) {
 		return nil
 	}}
 	sctx := &pipeline.StepContext{Ctx: context.Background(), ClosingIssueRefs: []string{"95"}}
-	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(content), "", "", appendix, 0); err != nil {
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: content.Title, Body: content.Body}, "", "", appendix, 0); err != nil {
 		t.Fatal(err)
 	}
 	if host.writes != 1 || strings.Contains(host.body, "Fixes #95") || strings.Count(host.body, "Closes #95") != 1 {
@@ -704,5 +705,29 @@ func TestGitLabClosingCoverageRejectsTabs(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// A supplied description is narrative like any other: a closing keyword in it
+// is neutralized, and only --closes publishes a live reference.
+func TestPRStep_SuppliedBodyClosesOnlyThroughTheIssuesSection(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	insertCompletedStep(t, sctx, types.StepReview, "", "")
+	title, body := "Add widget", "Adds the widget.\n\nCloses #95\n"
+	sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"95"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	published := readPRBodyFile(t, bodyFile)
+	if got := strings.Join(extractClosingKeywordLines(published, githubClosingGrammar), "|"); got != "Closes #95" || !strings.Contains(published, "## Issues\n\nCloses #95") {
+		t.Fatalf("closing lines = %q, want only the Issues section's Closes #95:\n%s", got, published)
 	}
 }

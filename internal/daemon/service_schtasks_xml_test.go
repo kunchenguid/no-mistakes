@@ -62,6 +62,11 @@ type windowsTaskDefinition struct {
 		LogonType string `xml:"LogonType"`
 		RunLevel  string `xml:"RunLevel"`
 	} `xml:"Principals>Principal"`
+	Settings struct {
+		DisallowStartIfOnBatteries string `xml:"DisallowStartIfOnBatteries"`
+		StopIfGoingOnBatteries     string `xml:"StopIfGoingOnBatteries"`
+		ExecutionTimeLimit         string `xml:"ExecutionTimeLimit"`
+	} `xml:"Settings"`
 	Command   string `xml:"Actions>Exec>Command"`
 	Arguments string `xml:"Actions>Exec>Arguments"`
 }
@@ -76,6 +81,26 @@ func parseWindowsTaskDefinition(t *testing.T, definition string) windowsTaskDefi
 		t.Fatalf("parse task definition: %v\n%s", err, definition)
 	}
 	return task
+}
+
+func assertWindowsTaskAllowsLongRunningOnBattery(t *testing.T, task windowsTaskDefinition) {
+	t.Helper()
+	if task.Settings.DisallowStartIfOnBatteries != "false" {
+		t.Errorf("DisallowStartIfOnBatteries = %q, want false", task.Settings.DisallowStartIfOnBatteries)
+	}
+	if task.Settings.StopIfGoingOnBatteries != "false" {
+		t.Errorf("StopIfGoingOnBatteries = %q, want false", task.Settings.StopIfGoingOnBatteries)
+	}
+	if task.Settings.ExecutionTimeLimit != "PT0S" {
+		t.Errorf("ExecutionTimeLimit = %q, want PT0S (no limit)", task.Settings.ExecutionTimeLimit)
+	}
+}
+
+func TestRenderWindowsTaskXMLAllowsLongRunningOnBattery(t *testing.T) {
+	t.Parallel()
+
+	task := parseWindowsTaskDefinition(t, renderWindowsTaskXML(`C:\nm.exe`, `C:\nm-home`, stubWindowsTaskAccount))
+	assertWindowsTaskAllowsLongRunningOnBattery(t, task)
 }
 
 // Issue #1192: an any-user ONLOGON trigger cannot be registered from a

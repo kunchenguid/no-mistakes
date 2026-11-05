@@ -44,9 +44,10 @@ type AgentInvocation struct {
 	// Purpose is the pipeline duty served: review, review-fix,
 	// test-evidence, housekeeping, document, lint, pr, intent, or a
 	// step-derived default.
-	Purpose string
-	Agent   string
-	Model   string
+	Purpose         string
+	Agent           string
+	Model           string
+	ConfiguredModel *string
 	// ModelProvider is the provider that served the model (openai, anthropic,
 	// ...). Nil when the adapter cannot report it.
 	ModelProvider *string
@@ -118,7 +119,7 @@ type AgentInvocation struct {
 
 // agentInvocationColumns is the canonical column order shared by insert and
 // select so the placeholder list and scan destinations cannot drift apart.
-const agentInvocationColumns = `id, run_id, step_name, round, purpose, agent, model, model_provider,
+const agentInvocationColumns = `id, run_id, step_name, round, purpose, agent, model, model_provider, configured_model,
 	session_mode, session_key, fallback_reason,
 	started_at, completed_at, duration_ms, subprocess_wait_ms, exit_status, failure_category,
 	input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -129,7 +130,7 @@ const agentInvocationColumns = `id, run_id, step_name, round, purpose, agent, mo
 	workload_files, workload_lines, finding_count`
 
 // agentInvocationInsertPlaceholders has one '?' per agentInvocationColumns entry.
-const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?,
+const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?,
 	?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?,
@@ -146,7 +147,7 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 	_, err := d.sql.Exec(
 		`INSERT INTO agent_invocations (`+agentInvocationColumns+`)
 		 VALUES (`+agentInvocationInsertPlaceholders+`)`,
-		inv.ID, inv.RunID, inv.StepName, inv.Round, inv.Purpose, inv.Agent, inv.Model, inv.ModelProvider,
+		inv.ID, inv.RunID, inv.StepName, inv.Round, inv.Purpose, inv.Agent, inv.Model, inv.ModelProvider, inv.ConfiguredModel,
 		inv.SessionMode, inv.SessionKey, inv.FallbackReason,
 		inv.StartedAt, inv.CompletedAt, inv.DurationMS, inv.SubprocessWaitMS, inv.ExitStatus, inv.FailureCategory,
 		inv.InputTokens, inv.OutputTokens, inv.CacheReadTokens, inv.CacheCreationTokens,
@@ -210,7 +211,7 @@ type scanner interface {
 func scanAgentInvocation(row scanner) (AgentInvocation, error) {
 	var inv AgentInvocation
 	if err := row.Scan(
-		&inv.ID, &inv.RunID, &inv.StepName, &inv.Round, &inv.Purpose, &inv.Agent, &inv.Model, &inv.ModelProvider,
+		&inv.ID, &inv.RunID, &inv.StepName, &inv.Round, &inv.Purpose, &inv.Agent, &inv.Model, &inv.ModelProvider, &inv.ConfiguredModel,
 		&inv.SessionMode, &inv.SessionKey, &inv.FallbackReason,
 		&inv.StartedAt, &inv.CompletedAt, &inv.DurationMS, &inv.SubprocessWaitMS, &inv.ExitStatus, &inv.FailureCategory,
 		&inv.InputTokens, &inv.OutputTokens, &inv.CacheReadTokens, &inv.CacheCreationTokens,

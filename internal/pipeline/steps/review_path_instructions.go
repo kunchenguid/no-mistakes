@@ -28,6 +28,58 @@ type pathInstructionMatches struct {
 	UnusableIDs  []string
 }
 
+// reviewPathsAndInstructions settles coverage and guidance together. Matching
+// uses the complete diff; only the trusted default branch can exclude a path
+// claimed by a rule. The rendered blocks name exactly their reviewable files.
+func reviewPathsAndInstructions(changed []string, cfg *config.Config, log func(string)) ([]string, string) {
+	sources := cfg.Review.PathInstructionSources()
+	matches := make([]pathInstructionMatches, len(sources))
+	covered := make(map[string]bool)
+	for i, source := range sources {
+		matches[i] = matchPathInstructions(changed, source.Entries)
+		for _, block := range matches[i].Blocks {
+			for _, file := range block.Files {
+				covered[file] = true
+			}
+		}
+	}
+	keep := make(map[string]bool)
+	for _, file := range reviewablePaths(changed, cfg.IgnorePatterns) {
+		keep[file] = true
+	}
+	for _, file := range reviewablePaths(changed, cfg.TrustedIgnorePatterns) {
+		if covered[file] {
+			keep[file] = true
+		}
+	}
+	var reviewable []string
+	for _, file := range changed {
+		if keep[file] {
+			reviewable = append(reviewable, file)
+		}
+	}
+	var instructions string
+	for i, source := range sources {
+		scoped := matches[i]
+		scoped.Blocks = nil
+		for _, block := range matches[i].Blocks {
+			var files []string
+			for _, file := range block.Files {
+				if keep[file] {
+					files = append(files, file)
+				}
+			}
+			if len(files) > 0 {
+				block.Files = files
+				scoped.Blocks = append(scoped.Blocks, block)
+			}
+		}
+		logPathInstructions(log, source.Label, scoped)
+		instructions += reviewPathInstructionsSection(source.Heading, scoped)
+	}
+	return reviewable, instructions
+}
+
 // matchPathInstructions selects the trusted rules whose glob matches at least
 // one changed path, in config order.
 //
@@ -35,7 +87,7 @@ type pathInstructionMatches struct {
 // ignore_patterns comes from the pushed branch, so filtering here would let a
 // contributor delete a maintainer's rule from the review of their own branch by
 // adding that rule's glob to their ignore list. Which files the reviewer is
-// asked to look at is a separate question, answered by reviewablePaths.
+// asked to look at is settled by reviewPathsAndInstructions.
 //
 // Globs follow the same rules as ignore_patterns (matchIgnorePattern), so a
 // maintainer has one path-matching model to learn. Two entries with the same

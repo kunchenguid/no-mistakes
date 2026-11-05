@@ -51,6 +51,7 @@ func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agen
 		}
 		attempts++
 		attemptOpts := opts
+		attemptOpts.ConfiguredModel = attempt.ConfiguredModel
 		attemptOpts.Session = attempt.Session
 		attemptOpts.SessionFallback = attempt.SessionFallback
 		a.record(ctx, attemptOpts, attempt.Agent, attempt.Result, attempt.Err, attempt.StartedAt, attempt.CompletedAt)
@@ -86,6 +87,10 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		CompletedAt: completedAt.Unix(),
 		DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
 		ExitStatus:  "ok",
+	}
+	if opts.ConfiguredModel != "" {
+		model := opts.ConfiguredModel
+		inv.ConfiguredModel = &model
 	}
 	if opts.SessionFallback && opts.SessionFallbackReason != "" {
 		reason := opts.SessionFallbackReason

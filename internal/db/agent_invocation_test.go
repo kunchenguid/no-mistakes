@@ -60,7 +60,7 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 	// Fully populated row.
 	full := AgentInvocation{
 		RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex",
-		Model: "gpt-5.6-sol", ModelProvider: strPtr("openai"),
+		Model: "gpt-5.6-sol", ModelProvider: strPtr("openai"), ConfiguredModel: strPtr("openai/gpt-5.6-sol"),
 		SessionMode: InvocationModeFallback, SessionKey: "key1", FallbackReason: strPtr(FallbackReasonExit),
 		StartedAt: 1, CompletedAt: 2, DurationMS: 5000, SubprocessWaitMS: int64Ptr(1200),
 		ExitStatus: "ok", InputTokens: intPtr(2500), OutputTokens: intPtr(250), CacheReadTokens: intPtr(1800),
@@ -91,7 +91,8 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("got %d rows, want 2", len(got))
 	}
 	f := got[0]
-	if f.ModelProvider == nil || *f.ModelProvider != "openai" ||
+	if f.ConfiguredModel == nil || *f.ConfiguredModel != "openai/gpt-5.6-sol" ||
+		f.ModelProvider == nil || *f.ModelProvider != "openai" ||
 		f.FallbackReason == nil || *f.FallbackReason != FallbackReasonExit ||
 		f.SubprocessWaitMS == nil || *f.SubprocessWaitMS != 1200 ||
 		f.CacheCreationTokens == nil || *f.CacheCreationTokens != 0 ||
@@ -106,6 +107,7 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		"OutputTokens":     m.OutputTokens == nil,
 		"CacheReadTokens":  m.CacheReadTokens == nil,
 		"ModelProvider":    m.ModelProvider == nil,
+		"ConfiguredModel":  m.ConfiguredModel == nil,
 		"FallbackReason":   m.FallbackReason == nil,
 		"SubprocessWaitMS": m.SubprocessWaitMS == nil,
 		"CacheCreation":    m.CacheCreationTokens == nil,
@@ -463,7 +465,7 @@ func TestOpenMigratesSessionFidelityColumns(t *testing.T) {
 	}
 	// Simulate a pre-fidelity table by dropping the new columns, then insert a
 	// legacy row that has no fidelity data.
-	for _, col := range []string{"model_provider", "fallback_reason", "subprocess_wait_ms",
+	for _, col := range []string{"model_provider", "configured_model", "fallback_reason", "subprocess_wait_ms",
 		"fresh_input_tokens", "reasoning_tokens", "model_roundtrips", "tool_calls", "finding_count"} {
 		if _, err := d.sql.Exec(`ALTER TABLE agent_invocations DROP COLUMN ` + col); err != nil {
 			t.Fatalf("drop %s: %v", col, err)
@@ -495,7 +497,7 @@ func TestOpenMigratesSessionFidelityColumns(t *testing.T) {
 	if legacy.InputTokens == nil || *legacy.InputTokens != 500 {
 		t.Fatalf("legacy input tokens = %v, want 500", legacy.InputTokens)
 	}
-	if legacy.ModelProvider != nil || legacy.SubprocessWaitMS != nil ||
+	if legacy.ConfiguredModel != nil || legacy.ModelProvider != nil || legacy.SubprocessWaitMS != nil ||
 		legacy.ModelRoundtrips != nil || legacy.ToolCalls != nil || legacy.FindingCount != nil {
 		t.Fatalf("legacy row must read new columns as unknown, got %+v", legacy)
 	}

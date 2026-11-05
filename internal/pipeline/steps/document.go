@@ -41,6 +41,9 @@ const documentPlacementPolicy = `Documentation placement policy (fail-safe defau
 // stale, replacing the old "be exhaustive across the corpus" instruction.
 const documentScopeDiscipline = `Scope discipline:
 - Only touch documentation this change made stale, plus direct contradictions that analysis reveals.
+- Prompt files or prompt text loaded by the product at runtime are executable behavior, even when written in Markdown or prose. Do not reword runtime-loaded prompts as documentation cleanup.
+- Do not restore tests or content that this branch deliberately removed. Read the diff and intent to distinguish a deliberate removal from stale documentation.
+- Respect the run's intent restrictions on files. Later recorded human decisions supersede conflicting original intent. Report an unresolved finding when a documentation repair cannot respect those restrictions.
 - Do not opportunistically rewrite, expand, or restructure unrelated documentation, and do not perform a broad documentation architecture migration here.
 - When a larger consolidation is warranted but out of scope, leave this change safe and report one finding proposing the follow-up instead of multiplying edits.
 - Preserve load-bearing user guidance, security rationale, compatibility constraints, and onboarding material. A long document is not a defect by itself; duplication and wrong placement are.

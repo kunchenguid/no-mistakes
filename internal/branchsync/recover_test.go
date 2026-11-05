@@ -253,6 +253,17 @@ func assertKeepLocalRecoveryOffer(t *testing.T, state State) {
 	}
 }
 
+func assertPinnedKeepLocalOffer(t *testing.T, state State, ref string) {
+	t.Helper()
+	assertKeepLocalRecoveryOffer(t, state)
+	if state.Safety != "blocked_pipeline_owned_recoverable" {
+		t.Fatalf("pinned keep-local safety = %s, want blocked_pipeline_owned_recoverable", state.Safety)
+	}
+	if !strings.Contains(state.Error, ref) || !strings.Contains(state.Error, "are not on the branch") {
+		t.Fatalf("pinned keep-local note = %q", state.Error)
+	}
+}
+
 func assertManualReconciliationOffer(t *testing.T, state State) {
 	t.Helper()
 	if state.Safety != "blocked_recover_manual_reconciliation" {
@@ -500,7 +511,9 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
 	inspected := f.service.InspectCached(f.ctx)
-	assertManualReconciliationOffer(t, inspected)
+	if inspected.NextAction != nil && strings.Contains(inspected.NextAction.Command, "--keep-local") {
+		t.Fatalf("dirty worktree was offered keep-local: %#v", inspected.NextAction)
+	}
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
 		t.Fatalf("recover dirty = %#v", state)
@@ -530,7 +543,7 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	mustRun(t, f.local, "commit", "-m", "diverging rescope")
 	divergedHead := mustRun(t, f.local, "rev-parse", "HEAD")
 	inspected := f.service.InspectCached(f.ctx)
-	assertManualReconciliationOffer(t, inspected)
+	assertPinnedKeepLocalOffer(t, inspected, f.anchorRef())
 
 	refused := f.service.Recover(f.ctx, false)
 	if refused.Recovered || refused.Safety != "blocked_recover_diverged" || refused.Relation != RelationDiverged {
@@ -2630,6 +2643,54 @@ func TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines(t
 	}
 }
 
+func TestCancelledRebasedRewriteOffersKeepLocalAndTheCommandSucceeds(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunCancelled, func(t *testing.T, pipelineDir string) {
+		mustWrite(t, filepath.Join(pipelineDir, "feature.txt"), "feature one\nfeature two guarded\n")
+		mustRun(t, pipelineDir, "commit", "-am", "no-mistakes(review): guard the second line")
+	})
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+
+	state := f.service.InspectCached(f.ctx)
+	assertPinnedKeepLocalOffer(t, state, f.anchorRef())
+
+	kept := f.service.Recover(f.ctx, true)
+	if !kept.Recovered || kept.Changed {
+		t.Fatalf("offered keep-local = %#v", kept)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("HEAD = %s, want submitted %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("pipeline commits left %s: %s", f.anchorRef(), got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("branch content = %q", got)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("custody not stamped")
+	}
+}
+
+func TestUnverifiedTerminalHeadGetsNoRecoveryOffer(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunCancelled, func(t *testing.T, pipelineDir string) {
+		mustWrite(t, filepath.Join(pipelineDir, "feature.txt"), "feature one\nfeature two guarded\n")
+		mustRun(t, pipelineDir, "commit", "-am", "no-mistakes(review): guard the second line")
+	})
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction != nil && state.NextAction.Code == "recover_custody" {
+		t.Fatalf("unverified head offered recovery: %#v", state.NextAction)
+	}
+}
+
 // TestRecoverRebasedPreservedHeadRefusesConcurrentCommitWithoutLosingIt is the
 // no-data-loss-under-concurrency regression. A commit landing after every
 // precondition was observed and after containment was proven must not be
@@ -3060,4 +3121,27 @@ func TestAdoptPublishedRefusesReplacedPushTarget(t *testing.T) {
 			t.Fatalf("gate lane = %s, want the untouched pre-rebase head %s", got, f.preserved)
 		}
 	})
+}
+
+func TestInspectDoesNotOfferPinnedKeepLocalWhenMovedGateHeadConflictsWithGateAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+	writer := filepath.Join(t.TempDir(), "writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "other.txt"), "independent gate work\n")
+	mustRun(t, writer, "add", "other.txt")
+	mustRun(t, writer, "commit", "-m", "independent gate work")
+	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+	mustRun(t, f.gate, "update-ref", custody.RecoveryGateRef(f.run.ID), f.submitted)
+
+	assertManualReconciliationOffer(t, f.service.InspectCached(f.ctx))
+	if kept := f.service.Recover(f.ctx, true); kept.Recovered {
+		t.Fatalf("keep-local recovered despite conflicting gate anchor: %#v", kept)
+	}
 }

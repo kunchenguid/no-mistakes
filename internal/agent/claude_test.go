@@ -118,6 +118,7 @@ func TestParseClaudeEvents_AssistantMessage(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -156,6 +157,7 @@ func TestParseClaudeEvents_ResultEvent(t *testing.T) {
 		nil,
 		&usage,
 		&result,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -199,6 +201,7 @@ func TestParseClaudeEvents_LargeAssistantEvent(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -229,6 +232,7 @@ func TestParseClaudeEvents_MultipleEvents(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		&result,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -266,6 +270,7 @@ func TestParseClaudeEvents_NoSeparatorForFirstMessage(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -293,6 +298,7 @@ func TestParseClaudeEvents_NoSeparatorAfterToolOnlyEvent(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -318,6 +324,7 @@ func TestParseClaudeEvents_DoesNotSeparateSplitAssistantReply(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -342,6 +349,7 @@ func TestParseClaudeEvents_SkipsMalformedLines(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -355,7 +363,7 @@ func TestParseClaudeEvents_CacheTokens(t *testing.T) {
 	events := `{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10},"content":[]}}
 `
 	var usage TokenUsage
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,7 +389,7 @@ func TestParseClaudeEvents_MultipleContentBlocksUsage(t *testing.T) {
 	var text strings.Builder
 	if err := parseClaudeEvents(context.Background(), strings.NewReader(events), func(chunk string) {
 		text.WriteString(chunk)
-	}, &usage, &result); err != nil {
+	}, &usage, &result, nil); err != nil {
 		t.Fatal(err)
 	}
 	if usage.InputTokens != 31_000 || usage.OutputTokens != 500 ||
@@ -414,7 +422,7 @@ func TestParseClaudeEvents_CumulativeUsage(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var usage TokenUsage
-			if err := parseClaudeEvents(context.Background(), strings.NewReader(strings.Join(tc.events, "\n")), nil, &usage, nil); err != nil {
+			if err := parseClaudeEvents(context.Background(), strings.NewReader(strings.Join(tc.events, "\n")), nil, &usage, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			if usage.InputTokens != 31_000*tc.messages || usage.OutputTokens != 500*tc.messages ||
@@ -434,7 +442,7 @@ func TestParseClaudeEvents_ContextCancellation(t *testing.T) {
 	events := `{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"ok"}]}}
 `
 	var usage TokenUsage
-	err := parseClaudeEvents(ctx, strings.NewReader(events), nil, &usage, nil)
+	err := parseClaudeEvents(ctx, strings.NewReader(events), nil, &usage, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -446,7 +454,7 @@ func TestParseClaudeEvents_ErrorResult(t *testing.T) {
 	var usage TokenUsage
 	var result *claudeResult
 
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -538,7 +546,7 @@ func TestParseClaudeEvents_ResultCapturesRawEvent(t *testing.T) {
 	var usage TokenUsage
 	var result *claudeResult
 
-	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result)
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1008,6 +1016,50 @@ func TestClaudeAgent_NonzeroExitStillFailsWhenNativeChildrenMustComplete(t *test
 	}
 }
 
+// Issue #1659: a turn whose result is already on stdout must not idle until its
+// budget while background work holds the session open. The 10s context stands
+// in for the step budget; the helper's background work outlasts it.
+func TestClaudeAgent_BackgroundWorkAfterResult(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "result-background-result")
+	old := claudeResultGrace
+	claudeResultGrace = 200 * time.Millisecond
+	t.Cleanup(func() { claudeResultGrace = old })
+	run := func(requireCompletedChildren bool) (*Result, error, time.Duration) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		start := time.Now()
+		res, err := newClaudeStdinHelperAgent(t).runOnce(ctx, RunOpts{
+			Prompt:                   "test",
+			CWD:                      t.TempDir(),
+			JSONSchema:               json.RawMessage(`{"type":"object","required":["ok"]}`),
+			RequireCompletedChildren: requireCompletedChildren,
+		})
+		return res, err, time.Since(start)
+	}
+
+	t.Run("completed children required fails promptly", func(t *testing.T) {
+		_, err, took := run(true)
+		if err == nil || !strings.Contains(err.Error(), "background work outlived the result") {
+			t.Fatalf("err = %v, want the background-work refusal", err)
+		}
+		if took > 5*time.Second {
+			t.Fatalf("took %s, want a prompt failure inside the budget", took)
+		}
+	})
+	t.Run("otherwise ends on the result", func(t *testing.T) {
+		res, err, took := run(false)
+		if err != nil {
+			t.Fatalf("err = %v, want the finished result", err)
+		}
+		if string(res.Output) != `{"ok":true}` {
+			t.Fatalf("output = %s, want the first result", res.Output)
+		}
+		if took > 5*time.Second {
+			t.Fatalf("took %s, want the result after a short grace", took)
+		}
+	})
+}
+
 func TestClaudeAgent_NonzeroExitWithoutUsableResultStillFails(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1112,6 +1164,14 @@ func TestClaudeStdinHelper(t *testing.T) {
 			os.Exit(1)
 		}
 		emitClaudeHelperResult()
+		return
+	case "result-background-result":
+		// Replays issue #1659's captured stream: a result, background work that
+		// holds the session open, a second result once that work ends, then EOF.
+		emitClaudeHelperResult()
+		time.Sleep(30 * time.Second)
+		_, _ = io.WriteString(os.Stdout, `{"type":"system","subtype":"task_notification","session_id":"helper-session"}`+"\n")
+		_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session","structured_output":{"ok":false}}`+"\n")
 		return
 	case "result-then-fail":
 		emitClaudeHelperResult()
@@ -1232,7 +1292,7 @@ func parseClaudeStream(t *testing.T, stream string) *claudeResult {
 	t.Helper()
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(context.Background(), strings.NewReader(stream), nil, &usage, &result); err != nil {
+	if err := parseClaudeEvents(context.Background(), strings.NewReader(stream), nil, &usage, &result, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result == nil {

@@ -9,11 +9,60 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// TestTestStep_PromptBoundsCompletionAndStatesBudget pins issue #1576: the
+// evidence turn must be told to stop widening once its proportionate list has
+// results, to leave nothing it started running in the background when it
+// returns, and how much wall-clock time it has, so a finished verdict is not
+// lost at the budget cut.
+func TestTestStep_PromptBoundsCompletionAndStatesBudget(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		timeout, working time.Duration
+		wantBudget       string
+	}{
+		{"default budget", 0, 0, "at most 30m0s of wall-clock time"},
+		{"configured budget", 45 * time.Minute, 0, "at most 45m0s of wall-clock time"},
+		{"still-working cap extends the wall clock", 10 * time.Minute, 40 * time.Minute, "at most 40m0s of wall-clock time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config.TestAgentTimeout = tc.timeout
+			sctx.Config.TestAgentWorkingTimeout = tc.working
+
+			if _, err := (&TestStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			prompt := ag.calls[0].Prompt
+			for _, want := range []string{
+				"Once every scenario in your proportionate list has a recorded result, stop widening",
+				"Spend a remaining budget finishing the list you derived, not expanding it",
+				tc.wantBudget,
+				"no verdict, no scenarios, and no artifacts",
+				"Nothing you started may still be running in the background when you return your result",
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("expected evidence prompt to contain %q\nprompt:\n%s", want, prompt)
+				}
+			}
+		})
+	}
+}
 
 // TestTestStep_PromptDerivesScenariosAndMarksLive pins the live-validation
 // prompt contract: the step asks for named scenarios driven against the real

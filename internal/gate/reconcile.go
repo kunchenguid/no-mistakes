@@ -142,9 +142,10 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 			return plan, fmt.Errorf("compare private mirror content for %s: %w", branchRef, err)
 		}
 		// Recovery anchors are the tool's own sanctioned preservation record:
-		// terminalization pins every verified unpublished head at
-		// refs/no-mistakes/recover/<run>, and PreserveRecoveryAnchor never
-		// replaces evidence (a conflicting anchor fails closed). A commit that
+		// terminalization pins unpublished heads under recover/, and rewritten
+		// remote recovery pins superseded pushes under recover-rewritten/ in
+		// the worktree or gate. PreserveRecoveryAnchor never replaces evidence
+		// (a conflicting anchor fails closed). A commit that
 		// one of those anchors keeps reachable is not at risk of being lost, so
 		// it is re-derived out of the at-risk set instead of deadlocking the
 		// recover -> rerun -> push loop that wrote the anchor in the first
@@ -152,7 +153,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 		// surviving content still has to be proven by the checks above for any
 		// commit no anchor holds.
 		satisfiers := reconcileSatisfiers(runOwnedHeads)
-		preserved, err := preservedByRecoveryAnchors(ctx, gateDir, liveHead, atRiskCommits)
+		preserved, err := preservedByRecoveryAnchors(ctx, gateDir, liveHead, atRiskCommits, workDir)
 		if err != nil {
 			return plan, fmt.Errorf("inspect recovery anchors for %s: %w", branchRef, err)
 		}
@@ -316,19 +317,28 @@ func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) boo
 // deliberate, immutable preservation evidence rather than by accident.
 const recoveryAnchorPrefix = "refs/no-mistakes/recover/"
 
+// Rewritten-remote recovery uses a separate, generation-scoped namespace to
+// preserve each superseded push without replacing earlier custody evidence.
+const rewrittenRecoveryAnchorPrefix = "refs/no-mistakes/recover-rewritten/"
+
 type recoveryAnchor struct {
 	ref  string
 	head string
 }
 
 // listRecoveryAnchors returns the direct commit targets under
-// refs/no-mistakes/recover/. for-each-ref reports a direct commit ref as
+// refs/no-mistakes/recover/ and recover-rewritten/ by default. for-each-ref
+// reports a direct commit ref as
 // exactly three fields and a symbolic ref with a fourth %(symref) field, so a
 // symbolic, zero, or non-commit target is skipped rather than dereferenced:
 // it contributes no preservation evidence, and skipping is the conservative
 // direction (nothing gets credited).
-func listRecoveryAnchors(ctx context.Context, gateDir string) ([]recoveryAnchor, error) {
-	out, err := git.Run(ctx, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(objecttype) %(symref)", recoveryAnchorPrefix)
+func listRecoveryAnchors(ctx context.Context, repoDir string, prefixes ...string) ([]recoveryAnchor, error) {
+	if len(prefixes) == 0 {
+		prefixes = []string{recoveryAnchorPrefix, rewrittenRecoveryAnchorPrefix}
+	}
+	args := append([]string{"for-each-ref", "--format=%(refname) %(objectname) %(objecttype) %(symref)"}, prefixes...)
+	out, err := git.Run(ctx, repoDir, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +368,7 @@ func reconcileSatisfiers(runOwnedHeads []string) []string {
 	if hasRunOwnedHead(runOwnedHeads) {
 		satisfiers = append(satisfiers, "the private head being exactly the publishing run's Run.SubmittedHeadSHA or Run.LastPushedSHA (Decision 41-A)")
 	}
-	return append(satisfiers, "a refs/no-mistakes/recover/<run> recovery anchor reaching the commit")
+	return append(satisfiers, "a refs/no-mistakes/recover/<run> or refs/no-mistakes/recover-rewritten/<run>/<generation> recovery anchor reaching the commit")
 }
 
 func joinSatisfiers(satisfiers []string) string {
@@ -376,9 +386,9 @@ func joinSatisfiers(satisfiers []string) string {
 const maxRecoveryCandidates = 512
 
 // preservedByRecoveryAnchors reports, for each candidate commit only, a
-// recovery anchor that keeps it reachable in the gate repository. Reachable
-// means reachable: the anchor's history contains the commit, so the object and
-// its history survive whatever happens to the private branch ref.
+// recovery anchor that keeps it reachable in the gate or invoking worktree.
+// Reachable means reachable: the anchor's history contains the commit, so the
+// object and its history survive whatever happens to the private branch ref.
 //
 // The membership scan excludes liveHead as well as the anchors. The candidates
 // are private-only commits, so that walk is bounded by the private-only range
@@ -391,7 +401,7 @@ const maxRecoveryCandidates = 512
 // checks are responsible for proving. It exists so that the sanctioned
 // recover -> rerun -> push loop cannot deadlock against the very anchor that
 // loop wrote to declare the work preserved.
-func preservedByRecoveryAnchors(ctx context.Context, gateDir, liveHead string, commits []string) (map[string]string, error) {
+func preservedByRecoveryAnchors(ctx context.Context, gateDir, liveHead string, commits []string, workDirs ...string) (map[string]string, error) {
 	preserved := make(map[string]string)
 	if len(commits) == 0 {
 		return preserved, nil
@@ -399,6 +409,24 @@ func preservedByRecoveryAnchors(ctx context.Context, gateDir, liveHead string, c
 	anchors, err := listRecoveryAnchors(ctx, gateDir)
 	if err != nil {
 		return nil, err
+	}
+	// recoverRemoteRewritten prefers the invoking worktree when it has the
+	// superseded object. Consult those direct anchors too, staging their exact
+	// targets for the same bounded membership proof in the gate. Fetching by
+	// ref with an expected commit fails closed if it moved. No durable ref is
+	// created or replaced while planning; apply still archives the exact
+	// private head before deleting its branch.
+	for _, workDir := range workDirs {
+		local, err := listRecoveryAnchors(ctx, workDir, rewrittenRecoveryAnchorPrefix)
+		if err != nil {
+			return nil, err
+		}
+		for _, anchor := range local {
+			if err := git.FetchRemoteRef(ctx, gateDir, workDir, anchor.ref, anchor.head); err != nil {
+				return nil, fmt.Errorf("stage rewritten recovery anchor %s: %w", anchor.ref, err)
+			}
+			anchors = append(anchors, anchor)
+		}
 	}
 	if len(anchors) == 0 {
 		return preserved, nil

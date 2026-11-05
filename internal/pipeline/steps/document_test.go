@@ -218,6 +218,47 @@ func TestDocumentStep_PromptAppliesPlacementPolicy(t *testing.T) {
 	}
 }
 
+// Runtime prompts and deliberate removals remain outside documentation
+// cleanup in both the standalone and combined document+lint passes.
+func TestDocumentStep_PromptPreservesRuntimePromptsAndDeliberateRemovals(t *testing.T) {
+	t.Parallel()
+	for _, lintCommand := range []string{"", "exit 0"} {
+		name := "document"
+		if lintCommand == "" {
+			name = "housekeeping"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: lintCommand})
+			sctx.UserIntent = "Document the structured question without editing prompts. Keep the obsolete test removed."
+			if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(ag.calls) != 1 {
+				t.Fatalf("agent calls = %d, want 1", len(ag.calls))
+			}
+			for _, want := range []string{
+				"Prompt files or prompt text loaded by the product at runtime are executable behavior, even when written in Markdown or prose",
+				"Do not reword runtime-loaded prompts as documentation cleanup",
+				"Do not restore tests or content that this branch deliberately removed",
+				"Respect the run's intent restrictions on files",
+				sctx.UserIntent,
+			} {
+				if !strings.Contains(ag.calls[0].Prompt, want) {
+					t.Errorf("document prompt missing %q", want)
+				}
+			}
+		})
+	}
+}
+
 // TestDocumentStep_TrustedPolicyInstructionsAugmentPrompt proves a
 // repository's own ownership map (config document.instructions, loaded only
 // from the trusted default branch) reaches the prompt as an augmentation of

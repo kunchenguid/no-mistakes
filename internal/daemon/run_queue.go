@@ -116,6 +116,7 @@ func (m *RunManager) pumpQueue() {
 		m.executors[next.runID] = next.executor
 		m.cancels[next.runID] = next.cancel
 		m.dones[next.runID] = next.done
+		m.ciWakes[next.runID] = make(chan struct{}, 1)
 		slog.Info("starting admitted run", "run_id", next.runID, "branch", next.branch)
 		next.spawn()
 	}

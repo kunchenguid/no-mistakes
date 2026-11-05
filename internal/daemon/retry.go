@@ -27,10 +27,11 @@ import (
 // continues: the run itself, whose record the executor re-proves and carries,
 // and the audit link written before the continuation can execute anything.
 type retryLaunch struct {
-	source     *db.Run
-	link       db.RunRetry
-	gates      []config.Gate
-	checkpoint *pipeline.RetryCheckpoint
+	source      *db.Run
+	link        db.RunRetry
+	gates       []config.Gate
+	checkpoint  *pipeline.RetryCheckpoint
+	intentCheck config.IntentCheck
 }
 
 // record writes the audit link and the failed run's exact intent onto the
@@ -90,6 +91,9 @@ func refuseRetry(runID, proof, format string, args ...any) error {
 // recorded global configuration, and the agent and model that served each
 // carried step are the ones a new run would use.
 func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, callerHeadSHA string) (*db.RunRetry, error) {
+	if m.restartPending() {
+		return nil, errRestartPending
+	}
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return nil, fmt.Errorf("get repo: %w", err)
@@ -103,10 +107,15 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 		if err != nil {
 			return "", err
 		}
+		source := launch.source
+		if source.Intent != nil && launch.intentCheck.Mode == config.IntentCheckReject {
+			if matches := launch.intentCheck.Match(*source.Intent); len(matches) > 0 {
+				return "", fmt.Errorf("retry intent rejected by configured rules: %s", strings.Join(matches, ", "))
+			}
+		}
 		if m.afterRetryProof != nil {
 			m.afterRetryProof()
 		}
-		source := launch.source
 		prBaseBranch := ""
 		if source.PRBaseBranch != nil {
 			prBaseBranch = strings.TrimSpace(*source.PRBaseBranch)
@@ -118,7 +127,7 @@ func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, cal
 		if source.ReviewerProfile != nil {
 			profiles = append(profiles, agentcfg.InheritReviewerProfile(source.ReviewerProfile))
 		}
-		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, launch, profiles...)
+		continuation, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, source.HeadSHA, source.BaseSHA, "retry", nil, "", "", "", "", "", prBaseBranch, source.OmitIntent, inheritablePRURL(source), "", source.ClosingIssueRefs, inheritRunPRText(source, db.RunPRText{}), launch, profiles...)
 		link = launch.link
 		link.RunID = continuation
 		return continuation, err
@@ -188,7 +197,8 @@ func (m *RunManager) proveRetry(ctx context.Context, repo *db.Repo, branch, runI
 	default:
 		return nil, refuseRetry(runID, "matching head", "the clean local head %s is not the run's preserved head %s; inspect `no-mistakes axi status` and follow `branch_sync.next_action.command` (`no-mistakes axi sync --recover` adopts the preserved head) before retrying", callerHeadSHA, source.HeadSHA)
 	}
-	if err := m.proveRetryConfiguration(ctx, repo, source, gates, checkpoint); err != nil {
+	intentCheck, err := m.proveRetryConfiguration(ctx, repo, source, gates, checkpoint)
+	if err != nil {
 		return nil, refuseRetry(runID, "compatible configuration", "%v", err)
 	}
 	failed := checkpoint.Failed()
@@ -196,7 +206,7 @@ func (m *RunManager) proveRetry(ctx context.Context, repo *db.Repo, branch, runI
 	if failed.Error != nil {
 		sourceError = *failed.Error
 	}
-	return &retryLaunch{source: source, gates: gates, checkpoint: checkpoint, link: db.RunRetry{
+	return &retryLaunch{source: source, gates: gates, checkpoint: checkpoint, intentCheck: intentCheck, link: db.RunRetry{
 		SourceRunID:       source.ID,
 		StepName:          failed.StepName,
 		SourceRound:       checkpoint.Round,
@@ -243,25 +253,28 @@ func (m *RunManager) provePreservedHead(ctx context.Context, repo *db.Repo, sour
 // configuration that produced every carried step result to be the one a new
 // run would use: the repository configuration the carried Review rounds
 // recorded, and the agent that served the carried steps.
-func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo, source *db.Run, pinned []config.Gate, checkpoint *pipeline.RetryCheckpoint) error {
+func (m *RunManager) proveRetryConfiguration(ctx context.Context, repo *db.Repo, source *db.Run, pinned []config.Gate, checkpoint *pipeline.RetryCheckpoint) (config.IntentCheck, error) {
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
-		return fmt.Errorf("load global config: %w", err)
+		return config.IntentCheck{}, fmt.Errorf("load global config: %w", err)
 	}
 	if source.PiProfile != nil {
 		resolved, err := globalCfg.ResolvePiProfile(source.PiProfile)
 		if err != nil {
-			return fmt.Errorf("the run's model profile no longer resolves: %w", err)
+			return config.IntentCheck{}, fmt.Errorf("the run's model profile no longer resolves: %w", err)
 		}
 		if *resolved != *source.PiProfile {
-			return fmt.Errorf("the run's model profile now resolves to %s/%s instead of %s/%s", resolved.Model, resolved.Effort, source.PiProfile.Model, source.PiProfile.Effort)
+			return config.IntentCheck{}, fmt.Errorf("the run's model profile now resolves to %s/%s instead of %s/%s", resolved.Model, resolved.Effort, source.PiProfile.Model, source.PiProfile.Effort)
 		}
 	}
 	cfg, currentRepoCfg, err := m.effectiveConfigBeforeRun(ctx, repo, source.HeadSHA, globalCfg, "retry configuration")
 	if err != nil {
-		return err
+		return config.IntentCheck{}, err
 	}
-	return m.proveConfigurationMatches(ctx, source, globalCfg, cfg, currentRepoCfg, pinned, checkpoint)
+	if err := m.proveConfigurationMatches(ctx, source, globalCfg, cfg, currentRepoCfg, pinned, checkpoint); err != nil {
+		return config.IntentCheck{}, err
+	}
+	return cfg.Intent.Check, nil
 }
 
 // proveConfigurationMatches compares a resolved configuration with the one the
@@ -397,23 +410,40 @@ func (m *RunManager) proveCarriedAgent(ctx context.Context, source *db.Run, cfg 
 				}
 				resolved = true
 			}
-			expected := cfgForInvocation(cfg, inv)
-			name := types.AgentName(inv.Agent)
-			if name != expected.Agent && !slices.Contains(expected.Agents, name) {
-				return fmt.Errorf("carried step %s ran on agent %s, which is no longer selected (agent is now %s); rerun the pipeline instead", inv.StepName, inv.Agent, expected.Agent)
+			var mismatch error
+			for _, expected := range configsForInvocation(cfg, inv) {
+				name := types.AgentName(inv.Agent)
+				if name != expected.Agent && !slices.Contains(expected.Agents, name) {
+					if mismatch == nil {
+						mismatch = fmt.Errorf("carried step %s ran on agent %s, which is no longer selected (agent is now %s); rerun the pipeline instead", inv.StepName, inv.Agent, expected.Agent)
+					}
+					continue
+				}
+				model := expected.AgentProfileFor(name).Model
+				if inv.ConfiguredModel != nil && *inv.ConfiguredModel != model {
+					mismatch = fmt.Errorf("carried step %s used configured model %s, which is no longer selected for %s; rerun the pipeline instead", inv.StepName, *inv.ConfiguredModel, inv.Agent)
+					continue
+				}
+				model = agentcfg.EffectiveModel(name, expected.AgentProfileFor(name), expected.AgentArgsFor(name))
+				if model != "" && inv.Model != "" && !strings.Contains(inv.Model, model) && !agentcfg.ServedMatchesRequested(model, inv.Model, "") {
+					mismatch = fmt.Errorf("carried step %s ran %s on model %s, but the effective model for %s is now %s; rerun the pipeline instead", inv.StepName, inv.Agent, inv.Model, inv.Agent, model)
+					continue
+				}
+				mismatch = nil
+				break
 			}
-			if model := expected.AgentProfileFor(name).Model; model != "" && inv.Model != "" && !strings.Contains(inv.Model, model) {
-				return fmt.Errorf("carried step %s ran %s on model %s, but agent_config.%s.model is now %s; rerun the pipeline instead", inv.StepName, inv.Agent, inv.Model, inv.Agent, model)
+			if mismatch != nil {
+				return mismatch
 			}
 		}
 	}
 	return nil
 }
 
-// cfgForInvocation returns the configuration that would serve inv in a new run,
+// configsForInvocation returns the configurations eligible to serve inv in a new run,
 // selecting a review_agents role from the call's Purpose and Round the way
 // newPipelineAgent routes it.
-func cfgForInvocation(cfg *config.Config, inv db.AgentInvocation) *config.Config {
+func configsForInvocation(cfg *config.Config, inv db.AgentInvocation) []*config.Config {
 	var role, lateRole string
 	switch inv.Purpose {
 	case "review", "review-coverage":
@@ -421,17 +451,25 @@ func cfgForInvocation(cfg *config.Config, inv db.AgentInvocation) *config.Config
 	case "review-fix":
 		role, lateRole = config.RoleFixer, config.RoleFixerAfterRound
 	default:
-		return cfg
+		return []*config.Config{cfg}
 	}
 	if late, ok := cfg.ReviewAgents[lateRole]; ok {
 		if from := cfg.ReviewAgentTakeoverRound(lateRole); from > 0 && inv.Round >= from {
-			return cfg.ForReviewAgent(late)
+			return reviewCandidateConfigs(cfg, late)
 		}
 	}
 	if entry, ok := cfg.ReviewAgents[role]; ok {
-		return cfg.ForReviewAgent(entry)
+		return reviewCandidateConfigs(cfg, entry)
 	}
-	return cfg
+	return []*config.Config{cfg}
+}
+
+func reviewCandidateConfigs(cfg *config.Config, entry config.ReviewAgent) []*config.Config {
+	configs := []*config.Config{cfg.ForReviewAgent(entry)}
+	for _, candidate := range entry.Fallback {
+		configs = append(configs, cfg.ForReviewAgent(candidate))
+	}
+	return configs
 }
 
 // proveAtLaunch repeats the configuration proof against the configuration the
@@ -453,10 +491,11 @@ func (r *retryLaunch) proveAtLaunch(ctx context.Context, m *RunManager, globalCf
 // directory a refused retry created, so the failed run stays the branch's
 // latest run and can be retried again once the cause is fixed.
 func (m *RunManager) discardRefusedRetryRun(runID string, cfg *config.Config) {
+	evidenceDir := m.recordedRunEvidenceDir(cfg, runID)
 	if err := m.db.DeleteRun(runID); err != nil {
 		m.db.UpdateRunError(runID, fmt.Sprintf("discard refused retry: %s", err))
 	}
-	os.RemoveAll(m.paths.RunEvidenceDir(cfg.Test.Evidence.LocalRoot, runID))
+	os.RemoveAll(evidenceDir)
 }
 
 // RetryProofConversation names the proof that a carried Review's question
@@ -487,9 +526,8 @@ func (m *RunManager) carryReviewConversation(r *retryLaunch, cfg *config.Config,
 			asked = true
 		}
 	}
-	local := cfg.Test.Evidence.LocalRoot
-	src := reviewqa.Dir(m.paths.RunEvidenceDir(local, r.source.ID))
-	dst := reviewqa.Dir(m.paths.RunEvidenceDir(local, runID))
+	src := reviewqa.Dir(m.recordedRunEvidenceDir(cfg, r.source.ID))
+	dst := reviewqa.Dir(m.recordedRunEvidenceDir(cfg, runID))
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		if asked {

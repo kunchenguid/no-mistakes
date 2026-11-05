@@ -222,3 +222,32 @@ func TestExecutor_AccumulatesParkedDuration(t *testing.T) {
 		t.Fatal("awaiting marker must be clear after resume")
 	}
 }
+
+func TestPerfRecordingReviewerFallbackConfiguredModels(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	chain := agent.NewFallback([]agent.Agent{
+		&fallbackUsageAgent{name: "pi", err: errors.New("insufficient_quota")},
+		&fallbackUsageAgent{name: "pi", result: &agent.Result{Text: "reviewed", Model: "reported-model", ModelProvider: "reported-provider"}},
+	}, agent.WithReviewerQuotaFallback("provider-one/exhausted", "provider-two/available"))
+	defer chain.Close()
+	wrapped := &perfRecordingAgent{inner: chain, db: database, runID: run.ID, stepName: types.StepReview, round: func() int { return 1 }}
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows = %+v, error = %v", rows, err)
+	}
+	for i, row := range rows {
+		want := []string{"provider-one/exhausted", "provider-two/available"}[i]
+		if row.Agent != "pi" || row.ConfiguredModel == nil || *row.ConfiguredModel != want {
+			t.Fatalf("row %d lost configured identity: %+v", i, row)
+		}
+	}
+	if rows[0].Model != "" || rows[0].ModelProvider != nil || rows[0].ExitStatus != "error" {
+		t.Fatalf("failed row invented a served identity: %+v", rows[0])
+	}
+	if rows[1].Model != "reported-model" || rows[1].ModelProvider == nil || *rows[1].ModelProvider != "reported-provider" || rows[1].ExitStatus != "ok" {
+		t.Fatalf("successful row lost served identity: %+v", rows[1])
+	}
+}

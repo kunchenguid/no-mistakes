@@ -194,7 +194,9 @@ func (e opencodeToolEvidence) marker() error {
 // replayed in a fresh session: it ran a tool, or nothing available proves it
 // did not.
 func opencodeReplayUnsafe(err error) bool {
-	return errors.Is(err, errOpencodeToolsAlreadyRan) || errors.Is(err, errOpencodeToolActivityUnknown)
+	var failure *opencodeMessageFailure
+	return (errors.As(err, &failure) && failure.toolActivity) ||
+		errors.Is(err, errOpencodeToolsAlreadyRan) || errors.Is(err, errOpencodeToolActivityUnknown)
 }
 
 // resolveOpencodeToolEvidence answers the gate's question from what the

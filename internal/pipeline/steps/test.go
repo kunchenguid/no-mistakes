@@ -24,6 +24,17 @@ var _ pipeline.ApprovalOverrideVerifier = (*TestStep)(nil)
 
 func (s *TestStep) Name() types.StepName { return types.StepTest }
 
+// Both turns need the same scope: the repair turn leaves an unauthorized
+// remedy unapplied, and the evidence turn reports the unresolved failure.
+const testRepairScopeRules = `
+
+Repair scope:
+- Tests or product code, including shared libraries and prompts, may be fixed when the repair is required by the change under validation and respects its intent.
+- Do not tune product logic or prompts to a single scenario's literal wording or scripted ordering. Derive the expected behavior from the intended product contract, not from the scenario's exact inputs.
+- If the proposed repair would contradict explicit intent, edit a file the intent puts off limits, or change product policy beyond the change under validation, do not apply or commit that repair. Leave the failure unresolved for a human decision. Later recorded human decisions supersede conflicting original intent.
+- In a repair turn, leave such a repair unapplied and summarize the unresolved failure. The following evidence turn must reassess unresolved failures under these same scope rules.
+- In the evidence turn, when resolving a failure would require such a repair, report a warning finding with action "ask-user" instead of making the repair. Name the proposed repair and the intent restriction or product-policy change that needs a human decision. Do not classify that repair as "auto-fix".`
+
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
@@ -85,6 +96,7 @@ Rules:
 - Make the smallest correct root-cause fix.
 - Do not refactor beyond what is needed for that root-cause fix.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
+- Inspect specific environment variables by name if you need them; do not print the whole environment (env, printenv, set, export -p, or similar), because this transcript is persisted.
 - Do NOT run linters, formatters, or static analysis tools.
 - Reproduce the specific failing case first (the exact test, package, script, or check named in the findings), then re-run only that focused verification after the fix.
 - Await every required check and read its actual exit status. Stop disposable browser and server children before returning success. Report incomplete verification honestly.
@@ -100,7 +112,7 @@ Rules:
 			testRunbookSections(sctx),
 			fixSummaryRules(sctx, s.Name()),
 			historySection,
-		)
+		) + testRepairScopeRules
 		if repair := testRepairFindings(sctx.PreviousFindings); repair != "" {
 			fixPrompt += `
 
@@ -249,6 +261,8 @@ Derive the scenarios:
 - Turn that intent into a short list of named scenarios. Each scenario is one concrete thing an end user does and one observable result that proves it, named so a reviewer who never saw this change can tell what was exercised.
 - Where the intent names a failure mode, a guard, or a boundary, add an adversarial scenario that actively tries to break it rather than only confirming the happy path.
 - Keep the list proportionate to the change: cover what this change actually alters, not the whole product.
+- Once every scenario in your proportionate list has a recorded result, stop widening: author no further scenarios or fixtures, capture the evidence artifacts, and return your verdict and testing_summary then. Spend a remaining budget finishing the list you derived, not expanding it. This bounds expansion, not coverage: every scenario on the list still has to be driven.
+- This turn has at most %s of wall-clock time. When it runs out the turn is stopped and its result is lost: no verdict, no scenarios, and no artifacts. Scope the list and each scenario's evidence to finish well inside it.
 
 Drive each scenario:
 - Stand the product up the way an end user runs it, in an isolated environment, and drive each scenario end-to-end against that running product.
@@ -261,6 +275,7 @@ Drive each scenario:
 - Never guess a pass, and never mark a scenario live because you believe it would work.
 - Report every scenario in the "scenarios" array with name, result ("pass", "fail", or "untested"), live, evidence, and reason.
 - Await every required production build, browser run, and other check child before reporting a final "go". A background launch, early structured result, or completion notification does not prove that a check passed.
+- Nothing you started may still be running in the background when you return your result. Before returning, wait for or stop every background shell or job, monitor or watch, and scheduled wake-up you started. Background work that outlives the result keeps the turn open until the budget cuts it, and the finished result is lost.
 - Stop disposable browser and server children before exiting. The native boundary refuses successful exits with children still in its owned process group.
 - Read each required child's actual exit status and retained result evidence. Do not mask a failed check with a later successful shell command or report detached work as completed.
 - If any required check is still running, has an unknown result, or lacks evidence, do not report "go". Use "no-go" for a known failure or unsafe change, and "inconclusive" when completion or evidence cannot be established. Record the outstanding check and the missing result.
@@ -287,6 +302,7 @@ Evidence:
 - Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use artifact path for file artifacts, artifact url for externally visible artifacts, and artifact content for short logs or command output that should be shown directly in the PR.
 - If a scenario fails, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and re-drive that scenario.
+- Inspect specific environment variables by name if you need them; do not print the whole environment (env, printenv, set, export -p, or similar), because this transcript is persisted.
 
 Rules:
 - Do NOT run linters, formatters, or static analysis tools.
@@ -304,11 +320,12 @@ Rules:
 		sctx.Run.HeadSHA,
 		configuredTestCommand,
 		runbook,
+		max(testAgentTimeout(sctx), testAgentWorkingTimeout(sctx)),
 		evidenceGuidance,
 		fallbackGuidance,
 		reassessHistory,
 		agent.MemoryFilesRule,
-	)
+	) + testRepairScopeRules
 	findings, err := runTestAnalyzer(sctx, evidencePrompt)
 	if err != nil {
 		if errors.Is(err, errTestAgentTimeout) {

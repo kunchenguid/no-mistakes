@@ -116,6 +116,98 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	}
 }
 
+func TestIntentCheckRejectsBeforeSupersedingAndCannotBeSkipped(t *testing.T) {
+	started := make(chan struct{})
+	step := &mockSlowStep{name: types.StepReview, started: started}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	global, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	global = append(global, []byte("\nintent:\n  check:\n    mode: reject\n    terms: [captain-secret]\n")...)
+	if err := os.WriteFile(p.ConfigFile(), global, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo, headSHA := setupTestGitRepo(t, p, d, "intent-check-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: headSHA, New: headSHA, Intent: "safe intent",
+	}, &first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original run did not start")
+	}
+
+	const rejected = "include the CAPTAIN-SECRET title in this intent"
+	var second ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: headSHA, New: headSHA,
+		Intent: rejected, SkipSteps: []types.StepName{types.StepIntent},
+	}, &second)
+	if err == nil || !strings.Contains(err.Error(), "terms[0]") || strings.Contains(err.Error(), "CAPTAIN-SECRET") {
+		t.Fatalf("intent rejection = %v, want rule index only", err)
+	}
+	active, err := d.GetActiveRun(repo.ID, "main")
+	if err != nil || active == nil || active.ID != first.RunID || active.Status != types.RunRunning {
+		t.Fatalf("rejected launch superseded active run: active=%+v err=%v", active, err)
+	}
+	runs, err := d.GetRunsByRepo(repo.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("rejected launch created a run: count=%d err=%v", len(runs), err)
+	}
+}
+
+func TestTrustedRepoIntentCheckRejectsBeforeSuperseding(t *testing.T) {
+	started := make(chan struct{})
+	step := &mockSlowStep{name: types.StepReview, started: started}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	repo, _ := setupTestGitRepo(t, p, d, "trusted-intent-check-repo")
+	headSHA := commitTrustedRepoConfig(t, repo, "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nintent:\n  check:\n    mode: reject\n    terms: [captain-secret]\n")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: headSHA, New: headSHA, Intent: "safe intent",
+	}, &first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original run did not start")
+	}
+
+	const rejected = "include the captain-secret title in this intent"
+	var second ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: headSHA, New: headSHA, Intent: rejected,
+	}, &second)
+	if err == nil || !strings.Contains(err.Error(), "terms[0]") || strings.Contains(err.Error(), "captain-secret") {
+		t.Fatalf("intent rejection = %v, want rule index only", err)
+	}
+	active, err := d.GetActiveRun(repo.ID, "main")
+	if err != nil || active == nil || active.ID != first.RunID || active.Status != types.RunRunning {
+		t.Fatalf("trusted-policy rejection superseded active run: active=%+v err=%v", active, err)
+	}
+	runs, err := d.GetRunsByRepo(repo.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("trusted-policy rejection created a run: count=%d err=%v", len(runs), err)
+	}
+}
+
 func TestProofLaunchReceiptBindsIndependentGenerationAndFirstObserver(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
@@ -175,6 +267,50 @@ func TestProofLaunchReceiptBindsIndependentGenerationAndFirstObserver(t *testing
 	}
 	if _, err := call("nonce-1", generation, intent+" changed"); err == nil {
 		t.Fatal("changed intent reused a nonce")
+	}
+}
+
+func TestProofLaunchReceiptBindsTheSuppliedPRText(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	repo, headSHA := setupTestGitRepo(t, p, d, "proof-pr-text-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	const nonce, generation, intent = "nonce-pr-text", "generation-001", "exact intent"
+	start := func(title, body string) (ipc.StartFreshRunResult, error) {
+		var result ipc.StartFreshRunResult
+		err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+			RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+			LaunchNonce: nonce, ValidationGeneration: generation, PRTitle: title, PRBody: body,
+		}, &result)
+		return result, err
+	}
+	claim := func(digest string) error {
+		var result ipc.ClaimLaunchReceiptResult
+		return client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+			RepoID: repo.ID, Branch: "main", LaunchNonce: nonce, SubmittedHeadSHA: headSHA,
+			ValidationGeneration: generation, IntentDigest: digestIntent(intent), PRTextDigest: digest,
+		}, &result)
+	}
+
+	first, err := start("Add widget", "Our words.\n")
+	if err != nil || first.Receipt.Disposition != "created" {
+		t.Fatalf("first launch = %#v, %v", first.Receipt, err)
+	}
+	if replay, err := start("Add widget", "Our words.\n"); err != nil || replay.Receipt.RunID != first.Receipt.RunID {
+		t.Fatalf("identical replay = %#v, %v", replay.Receipt, err)
+	}
+	if _, err := start("Add widget", "Other words.\n"); err == nil || !strings.Contains(err.Error(), "supplied PR title or description") {
+		t.Fatalf("changed description reused a nonce: %v", err)
+	}
+	if err := claim(db.PRTextDigest("Add widget", "Our words.\n")); err != nil {
+		t.Fatalf("matching claim: %v", err)
+	}
+	if err := claim(""); err == nil || !strings.Contains(err.Error(), "supplied PR title or description") {
+		t.Fatalf("claim without the PR text was served: %v", err)
 	}
 }
 
@@ -874,6 +1010,70 @@ func TestRerunInheritsIntentAndClosingIssuesFromSelectedRun(t *testing.T) {
 	}
 	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,owner/repo#9" {
 		t.Fatalf("closing issue references = %q, want inherited set", refs)
+	}
+}
+
+func TestSuppliedPRTextPersistsAndRerunInheritsOrReplacesIt(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	_, headSHA := setupTestGitRepo(t, p, d, "pr-text-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	push := func(title, body string) (string, error) {
+		var result ipc.PushReceivedResult
+		err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			Gate: p.RepoDir("pr-text-repo"), Ref: "refs/heads/main",
+			Old: "0000000000000000000000000000000000000000", New: headSHA,
+			PRTitle: title, PRBody: body,
+		}, &result)
+		return result.RunID, err
+	}
+	rerun := func(title, body string) *db.Run {
+		t.Helper()
+		var result ipc.RerunResult
+		if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: "pr-text-repo", Branch: "main", PRTitle: title, PRBody: body}, &result); err != nil {
+			t.Fatal(err)
+		}
+		return waitForRunTerminalState(t, d, result.RunID)
+	}
+	text := func(run *db.Run) string {
+		var title, body string
+		if run.PRTitle != nil {
+			title = *run.PRTitle
+		}
+		if run.PRBody != nil {
+			body = *run.PRBody
+		}
+		return title + "|" + body
+	}
+
+	if _, err := push("bad\ntitle", ""); err == nil || !strings.Contains(err.Error(), "pr title") {
+		t.Fatalf("daemon accepted an invalid title: %v", err)
+	}
+	first, err := push("  Add widget  ", "Our words.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := text(waitForRunTerminalState(t, d, first)); got != "Add widget|Our words.\n" {
+		t.Fatalf("pushed run PR text = %q", got)
+	}
+	if got := text(rerun("", "")); got != "Add widget|Our words.\n" {
+		t.Fatalf("rerun did not inherit the PR text: %q", got)
+	}
+	if got := text(rerun("New title", "")); got != "New title|Our words.\n" {
+		t.Fatalf("rerun --pr-title did not replace only the title: %q", got)
+	}
+	superseding, err := push("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := text(waitForRunTerminalState(t, d, superseding)); got != "|" {
+		t.Fatalf("a plain push inherited PR text: %q", got)
 	}
 }
 

@@ -106,14 +106,16 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Resu
 	pp := &piParser{onChunk: opts.OnChunk}
 	if err := pp.parse(ctx, started.stdout); err != nil {
 		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		err = errors.Join(err, piStdinError(<-stdinErrCh))
-		retErr := fmt.Errorf("pi parse events: %w", err)
-		emitAgentExited(opts, "pi", pid, retErr)
-		return failedResult(pp.usage, pp.sessionID), retErr
+		if !started.closedByWaitDelay(err) || !pp.agentEnded {
+			stderrWG.Wait()
+			err = errors.Join(err, piStdinError(<-stdinErrCh))
+			retErr := fmt.Errorf("pi parse events (result received: %t): %w", pp.agentEnded, err)
+			emitAgentExited(opts, "pi", pid, retErr)
+			return pp.failedResult(), retErr
+		}
 	}
 
-	waitErr := started.wait()
+	waitErr := started.waitKeepingResult(pp.agentEnded)
 	stderrWG.Wait()
 	stdinErr := piStdinError(<-stdinErrCh)
 	stderr := strings.TrimSpace(string(stderrBuf))
@@ -121,24 +123,24 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Resu
 		if stderr != "" {
 			retErr := fmt.Errorf("pi exited: %w: %s", errors.Join(waitErr, stdinErr), stderr)
 			emitAgentExited(opts, "pi", pid, retErr)
-			return failedResult(pp.usage, pp.sessionID), retErr
+			return pp.failedResult(), retErr
 		}
 		retErr := fmt.Errorf("pi exited: %w", errors.Join(waitErr, stdinErr))
 		emitAgentExited(opts, "pi", pid, retErr)
-		return failedResult(pp.usage, pp.sessionID), retErr
+		return pp.failedResult(), retErr
 	}
 	if stdinErr != nil {
 		if stderr != "" {
 			stdinErr = fmt.Errorf("%w: %s", stdinErr, stderr)
 		}
 		emitAgentExited(opts, "pi", pid, stdinErr)
-		return failedResult(pp.usage, pp.sessionID), stdinErr
+		return pp.failedResult(), stdinErr
 	}
 
 	if pp.assistantError != "" {
 		retErr := fmt.Errorf("pi reported error: %s", pp.assistantError)
 		emitAgentExited(opts, "pi", pid, retErr)
-		return failedResult(pp.usage, pp.sessionID), retErr
+		return pp.failedResult(), retErr
 	}
 
 	text := pp.finalText()
@@ -151,10 +153,13 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Resu
 			}
 			retErr = RejectStructuredOutput(retErr)
 			emitAgentExited(opts, "pi", pid, retErr)
-			return failedResult(pp.usage, pp.sessionID), retErr
+			return pp.failedResult(), retErr
 		}
 	}
 	res, err := finalizeTextResult("pi", text, opts.JSONSchema, pp.usage)
+	if res == nil {
+		res = pp.failedResult()
+	}
 	if res != nil {
 		res.Model = pp.model
 		res.ModelProvider = pp.provider
@@ -180,6 +185,18 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts, strict bool) (*Resu
 	}
 	emitAgentExited(opts, "pi", pid, err)
 	return res, err
+}
+
+func (p *piParser) failedResult() *Result {
+	res := failedResult(p.usage, p.sessionID)
+	if res == nil && (p.model != "" || p.provider != "") {
+		res = &Result{}
+	}
+	if res != nil {
+		res.Model = p.model
+		res.ModelProvider = p.provider
+	}
+	return res
 }
 
 func piStdinError(err error) error {
@@ -314,7 +331,10 @@ type piParser struct {
 	usage          TokenUsage
 	seenUsage      map[string]struct{}
 	assistantError string
-	outputTools    map[string]string
+	// agentEnded is set once pi's agent_end event arrives: the run finished
+	// and its result is complete even if the process exit is not observed.
+	agentEnded  bool
+	outputTools map[string]string
 }
 
 func (p *piParser) parse(ctx context.Context, r io.Reader) error {
@@ -365,6 +385,7 @@ func (p *piParser) handleEvent(event map[string]any) {
 		p.rememberAssistant(event["message"])
 		p.recordAssistantUsage(event["message"])
 	case "agent_end":
+		p.agentEnded = true
 		p.rememberAgentEnd(event["messages"])
 	case "tool_execution_end":
 		p.rememberOutputTool(event)

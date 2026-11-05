@@ -434,7 +434,7 @@ func TestCIStep_CommitRepair_UnfinishedMergeAfterAnAgentCommitIsRefused(t *testi
 	gitCmd(t, dir, "merge", "--no-ff", "--no-commit", side)
 
 	_, err := (&CIStep{}).commitRepair(sctx, "repair", nil)
-	if err == nil || !strings.Contains(err.Error(), "not a linear chain") {
+	if err == nil || !strings.Contains(err.Error(), "merge is in progress") {
 		t.Fatalf("err = %v, want a refusal of the unfinished merge", err)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != agentHead {

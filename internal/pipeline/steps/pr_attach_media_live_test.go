@@ -86,7 +86,7 @@ func TestPRMediaOptOutWithRealGH(t *testing.T) {
 			}
 			var logs []string
 			sctx.Log = func(line string) { logs = append(logs, line) }
-			_, _, markdown := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
+			_, _, markdown, _ := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
 			recorded, err := os.ReadFile(calls)
 			if err != nil {
 				t.Fatal(err)

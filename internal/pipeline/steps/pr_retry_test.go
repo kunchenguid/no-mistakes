@@ -41,7 +41,7 @@ func TestPRStep_ACarriedStepReportsTheRoundsOfTheRunItWasCarriedFrom(t *testing.
 		t.Fatal(err)
 	}
 
-	pipelineMD, _, _ := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
+	pipelineMD, _, _, _ := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
 	if !strings.Contains(pipelineMD, "the handler dereferences a nil config") || !strings.Contains(pipelineMD, "**Review**") {
 		t.Fatalf("pipeline section does not report the carried review's finding and fix:\n%s", pipelineMD)
 	}

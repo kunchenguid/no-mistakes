@@ -36,8 +36,9 @@ type Agent interface {
 // RunOpts configures a single agent invocation.
 type RunOpts struct {
 	Prompt string
-	// RequireCompletedChildren refuses a successful native agent exit while
-	// its owned process group or job still has children, or cannot be probed.
+	// RequireCompletedChildren refuses a successful native agent exit if its
+	// owned process group or job still has children after the bounded settle
+	// window, or completion cannot be verified.
 	// It does not verify detached checks or their exit statuses.
 	RequireCompletedChildren bool
 	// Env appends invocation-scoped environment entries to the agent process.
@@ -76,7 +77,8 @@ type RunOpts struct {
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
-	OnAttempt func(Attempt)
+	OnAttempt       func(Attempt)
+	ConfiguredModel string
 }
 
 // IsStructuredOutputRejected reports whether an invocation completed but its
@@ -126,6 +128,7 @@ func RejectStructuredOutput(err error) error {
 // invocation. An Agent may make several attempts when it retries transient
 // failures or moves to a fallback provider.
 type Attempt struct {
+	ConfiguredModel string
 	Agent           string
 	Result          *Result
 	Err             error

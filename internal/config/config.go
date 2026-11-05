@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -69,7 +70,7 @@ const (
 	// Global-config-only; a pushed branch cannot change it.
 	DefaultGateReconcileTimeout = 30 * time.Second
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
-	// merged, closed, or the run is aborted - never self-terminate".
+	// merged, closed, handed off, or aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
 	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)
@@ -210,7 +211,8 @@ type GlobalConfig struct {
 	// run's quota evidence is read from.
 	QuotaProviders map[string]string `yaml:"-"`
 	// ReviewAgents selects independent review-loop harnesses and profiles.
-	// Global-only: repository input must not select credential/model profiles.
+	// Operator-only: a repository_overrides entry may replace roles for its
+	// remote, but repository config can never select credential/model profiles.
 	ReviewAgents map[string]ReviewAgent `yaml:"review_agents"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
@@ -250,6 +252,11 @@ type GlobalConfig struct {
 	GateReconcileInterval time.Duration `yaml:"-"`
 	GateReconcileTimeout  time.Duration `yaml:"-"`
 	LogLevel              string        `yaml:"log_level"`
+	// EvidenceDir is the global-only parent directory for new run evidence.
+	// Empty keeps <NM_HOME>/evidence (or test.evidence.local_root). A missing
+	// or unwritable value falls back to the app-root default at resolution
+	// time; already-pinned runs are not moved. A repository cannot set it.
+	EvidenceDir string `yaml:"evidence_dir"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -320,6 +327,7 @@ type globalConfigRaw struct {
 	ReviewAgentWorkingTimeout string                     `yaml:"review_agent_working_timeout"`
 	TestAgentWorkingTimeout   string                     `yaml:"test_agent_working_timeout"`
 	LogLevel                  string                     `yaml:"log_level"`
+	EvidenceDir               string                     `yaml:"evidence_dir"`
 	SessionReuse              *bool                      `yaml:"session_reuse"`
 	AutoFix                   AutoFixRaw                 `yaml:"auto_fix"`
 	CI                        CIRaw                      `yaml:"ci"`
@@ -345,29 +353,47 @@ type globalConfigRaw struct {
 	Providers           ProvidersRaw                 `yaml:"providers"`
 }
 
-// ForgeProfile selects one isolated provider CLI configuration directory.
+// ForgeProfile selects one isolated provider CLI configuration directory, or
+// one GitHub login already signed in to a gh configuration.
 // ExpectedLogin optionally pins the account the profile must be signed in as;
-// resolution fails closed when the profile's active login differs. It carries
-// an account name only, never credentials.
+// resolution fails closed when the profile's active login differs. GHUser
+// selects an account signed in to the ambient gh configuration by name; its
+// token is read once per run and never stored. Both carry an account name only, never credentials.
 type ForgeProfile struct {
 	GHConfigDir   string `yaml:"gh_config_dir"`
 	GLabConfigDir string `yaml:"glab_config_dir"`
 	ExpectedLogin string `yaml:"expected_login"`
+	GHUser        string `yaml:"gh_user"`
 }
 
-// ForgeProfiles maps a remote host token to its machine-local provider profile.
+// IsGitHub reports whether the profile routes through the gh CLI.
+func (p ForgeProfile) IsGitHub() bool {
+	return p.GHConfigDir != "" || p.GHUser != ""
+}
+
+// ForgeProfiles maps a remote host token, optionally scoped to one repository
+// owner as "host/owner", to its machine-local provider profile.
 type ForgeProfiles map[string]ForgeProfile
+
+// SplitForgeProfileKey splits a forge_profiles key into its host token and
+// optional repository owner. A plain host key returns an empty owner.
+func SplitForgeProfileKey(key string) (host, owner string) {
+	host, owner, _ = strings.Cut(key, "/")
+	return host, owner
+}
 
 // RepositoryOverride contains machine-local settings for one normalized remote.
 // Review, Document, and Test are additive guidance only: they are rendered
 // alongside the repository's trusted rules and can never replace or remove them.
+// ReviewAgents replaces the global review_agents entry for each role it names.
 type RepositoryOverride struct {
-	Commit   GlobalCommitRaw            `yaml:"commit"`
-	PR       RepositoryPRRaw            `yaml:"pr"`
-	Commands map[string]CommandOverride `yaml:"commands"`
-	Review   OperatorReviewRaw          `yaml:"review"`
-	Document DocumentRaw                `yaml:"document"`
-	Test     RepositoryTestRaw          `yaml:"test"`
+	Commit       GlobalCommitRaw            `yaml:"commit"`
+	PR           RepositoryPRRaw            `yaml:"pr"`
+	Commands     map[string]CommandOverride `yaml:"commands"`
+	Review       OperatorReviewRaw          `yaml:"review"`
+	Document     DocumentRaw                `yaml:"document"`
+	Test         RepositoryTestRaw          `yaml:"test"`
+	ReviewAgents map[string]ReviewAgent     `yaml:"review_agents"`
 }
 
 // RepositoryTestRaw is the test block a repository_overrides entry may set:
@@ -395,6 +421,9 @@ type RepositoryPRRaw struct {
 	TitleFormat *string `yaml:"title_format"`
 	Template    string  `yaml:"template"`
 	Appendix    string  `yaml:"appendix"`
+	// UpdateText is keep or regenerate. Only a matching repository_overrides
+	// entry can set it. Empty means regenerate.
+	UpdateText string `yaml:"update_text"`
 }
 
 // RepositoryOverrides maps remote URLs to machine-local per-repository settings.
@@ -406,6 +435,9 @@ type RepoConfig struct {
 	Agents         []types.AgentName `yaml:"-"`
 	Commands       Commands          `yaml:"commands"`
 	IgnorePatterns []string          `yaml:"ignore_patterns"`
+	// TrustedIgnorePatterns preserves the default branch's authorized exclusions
+	// when review instructions override exclusions from the pushed branch.
+	TrustedIgnorePatterns []string `yaml:"-"`
 	// ProtectedPaths prevents automatic staging of dirty matching paths. It is
 	// trusted-only, regardless of allow_repo_commands, so a pushed branch cannot
 	// remove the maintainer's protection from its own fixes.
@@ -497,8 +529,27 @@ type DocumentRaw struct {
 	Instructions string `yaml:"instructions"`
 }
 
+// reviewFixRoundLimit rejects fractional YAML numbers instead of silently
+// truncating them to an integer budget.
+type reviewFixRoundLimit int
+
+func (l *reviewFixRoundLimit) UnmarshalYAML(node *yaml.Node) error {
+	if node.Tag != "!!int" {
+		return fmt.Errorf("review.max_fix_rounds must be a non-negative integer")
+	}
+	var value int
+	if err := node.Decode(&value); err != nil {
+		return fmt.Errorf("review.max_fix_rounds: %w", err)
+	}
+	*l = reviewFixRoundLimit(value)
+	return nil
+}
+
 // ReviewRaw is the YAML representation of review-step settings.
 type ReviewRaw struct {
+	// MaxFixRounds bounds all Review fix rounds, automatic and explicit.
+	// Zero preserves the unbounded default. Trusted repository config only.
+	MaxFixRounds reviewFixRoundLimit `yaml:"max_fix_rounds"`
 	// Conversation turns the review conversation on: the reviewer may emit the
 	// larger questions it cannot settle itself, keep reviewing while they are
 	// open, and be resumed with the answers. Off (the default), the review step
@@ -527,6 +578,18 @@ type ReviewRaw struct {
 	AgentTimeout string `yaml:"agent_timeout"`
 }
 
+// PRIntentRaw configures the public presentation of the run's unchanged intent.
+type PRIntentRaw struct {
+	Format   string   `yaml:"format"`
+	Sections []string `yaml:"sections"`
+}
+
+// PRIntent is the resolved public Intent presentation.
+type PRIntent struct {
+	Format   string
+	Sections []string
+}
+
 // PRRaw is the YAML representation of pull-request settings.
 type PRRaw struct {
 	// BaseBranch selects the forge branch a PR targets. It is gate-control
@@ -534,12 +597,13 @@ type PRRaw struct {
 	// repository explicitly opts into pushed-branch settings with
 	// allow_repo_commands.
 	BaseBranch string `yaml:"base_branch"`
-	// Template, PublishIntent, and Appendix remain trusted-only even when
-	// allow_repo_commands is enabled. An empty Appendix inherits machine-local
-	// defaults, falling back to full.
-	Template      string `yaml:"template"`
-	PublishIntent *bool  `yaml:"publish_intent"`
-	Appendix      string `yaml:"appendix"`
+	// Template, PublishIntent, Appendix, and Intent remain trusted-only even
+	// when allow_repo_commands is enabled. An empty Appendix inherits
+	// machine-local defaults, falling back to full.
+	Template      string      `yaml:"template"`
+	PublishIntent *bool       `yaml:"publish_intent"`
+	Appendix      string      `yaml:"appendix"`
+	Intent        PRIntentRaw `yaml:"intent"`
 	// TitleFormat controls PR title rendering when set. It is a non-executing
 	// repository convention and is therefore read from the pushed branch.
 	TitleFormat *string `yaml:"title_format"`
@@ -737,7 +801,9 @@ type AutoFixRaw struct {
 // CIRaw is the YAML representation of CI-step settings.
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type CIRaw struct {
-	RequiredReviews []string `yaml:"required_reviews"`
+	RequiredReviews     []string `yaml:"required_reviews"`
+	RequiredReviewAppID *int64   `yaml:"required_review_app_id"`
+	RequiredReviewBotID *string  `yaml:"required_review_bot_id"`
 
 	RerunTransient *int `yaml:"rerun_transient"`
 	// RevalidateRepairs is a pointer so an explicit `false` in a repository's
@@ -753,12 +819,19 @@ type CIRaw struct {
 	// ReleaseAfterChecksPass is a pointer for the same reason as
 	// RevalidateRepairs: a repository must be able to opt back out.
 	ReleaseAfterChecksPass *bool `yaml:"release_after_checks_pass"`
+	// Instructions is repository-only guidance for the CI fixer; see
+	// CI.Instructions.
+	Instructions string `yaml:"instructions"`
 }
 
 // CI holds the resolved CI-step settings.
 type CI struct {
 	// RequiredReviews names external reviewers whose completion gates readiness.
 	RequiredReviews []string
+	// RequiredReviewAppID pins the host-local CodeRabbit GitHub App identity (GHES only).
+	RequiredReviewAppID int64
+	// RequiredReviewBotID pins the CodeRabbit account identity on GitLab.
+	RequiredReviewBotID string
 
 	// RerunTransient is how many times the CI step may re-run a single check
 	// the provider reported as cancelled - the one terminal outcome it
@@ -830,13 +903,13 @@ type CI struct {
 	CarryReviewOnReplay bool
 
 	// ReleaseAfterChecksPass makes the CI step finish the run at its checks
-	// verdict instead of monitoring the pull request until it is merged or
-	// closed.
+	// verdict instead of monitoring the pull request until it is merged, closed,
+	// declined, or explicitly handed off.
 	//
 	// false (default): the step records readiness and keeps polling, which is
 	// the behavior every run has had until now - a later base-branch advance or
 	// conflict is repaired and the merge itself is observed, bounded by
-	// ci_timeout.
+	// ci_timeout, unless an operator explicitly hands off the green monitor.
 	//
 	// true: the green observation ends the step, and the run completes with the
 	// checks_passed status, releasing its worktree and its lane while the merge
@@ -845,6 +918,10 @@ type CI struct {
 	// (see VISION.md's cost and consent rules). A trusted repository config may
 	// set it for its own workflow.
 	ReleaseAfterChecksPass bool
+	// Instructions is the trusted repository's guidance for the CI fixer,
+	// added to every CI repair prompt. It is trusted-only with the rest of the
+	// ci block, so a pushed branch cannot steer the agent repairing it.
+	Instructions string
 }
 
 // RebaseRaw is the YAML representation of rebase-step settings.
@@ -965,6 +1042,8 @@ type Config struct {
 	NoCI bool
 	// Providers holds the resolved provider-specific settings.
 	Providers Providers
+	// TrustedIgnorePatterns is the default branch's authorized review exclusions.
+	TrustedIgnorePatterns []string
 }
 
 // ProvidersRaw is the YAML representation of provider-specific settings,
@@ -1057,10 +1136,14 @@ type OriginProvider struct {
 type PR struct {
 	BaseBranch string
 	Template   string
+	Intent     PRIntent
 	// Nil preserves the historical default: publish the extracted intent.
 	PublishIntent *bool
 	// Appendix is full, collapsed, or minimal. Empty preserves full.
-	Appendix    string
+	Appendix string
+	// UpdateText is keep or regenerate. Empty means regenerate. It is set only
+	// from a matching repository_overrides entry.
+	UpdateText  string
 	TitleFormat string
 }
 
@@ -1081,6 +1164,8 @@ type Document struct {
 // decides whether the reviewer may ask questions while it works. The two
 // operator lists come from the global config and only ever add rules.
 type Review struct {
+	// MaxFixRounds is the opt-in total Review fix-round budget (0 = unlimited).
+	MaxFixRounds int
 	// Conversation is true when the reviewer may ask the operator questions
 	// mid-pass. It gates the whole protocol: the prompt section, the
 	// conversation files, the question findings that park the gate, the
@@ -1210,8 +1295,9 @@ type EvidenceRaw struct {
 	// Compact controls PR testing-section presentation only; pushed-readable.
 	Compact *bool `yaml:"compact"`
 	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// when the PR body is rendered. It defaults on so default-config PRs stop
-	// citing local disk paths for screenshots; set false to opt out even when
+	// and images to GitLab project uploads when explicitly enabled. It defaults
+	// on for GitHub so default-config PRs stop citing local disk paths for
+	// screenshots; set false to opt out even when
 	// store_in_repo is true. The orphan-branch store is independent: when both
 	// are on, the PR body carries both the commit-pinned link and the attachment.
 	// Like store_in_repo, this is pushed-readable.
@@ -1239,6 +1325,17 @@ type EvidenceRaw struct {
 	LocalRoot *string `yaml:"local_root"`
 	Retention *string `yaml:"retention"`
 	MaxRuns   *int    `yaml:"max_runs"`
+	// LinkBaseURL links structured local evidence references for an operator
+	// who serves their evidence parent
+	// (evidence_dir or local_root) over HTTP themselves. Unset keeps today's
+	// local-path rendering byte for byte. It is global-only for the same
+	// reason as LocalRoot: a pushed branch must never choose where a PR's
+	// evidence links point, so Merge resolves it from GlobalConfig alone and
+	// a repository value is IGNORED, never refused at parse time: the round
+	// provenance record serializes the effective RepoConfig and reads it back
+	// through LoadRepoFromBytes, so an earlier draft that refused the key by
+	// name broke eval capture for every run.
+	LinkBaseURL *string `yaml:"link_base_url"`
 }
 
 // Test is the resolved test-step config. Prepare, BaseAttribution,
@@ -1269,8 +1366,13 @@ type Evidence struct {
 	Compact     bool
 	StoreInRepo bool
 	AttachMedia bool
-	Dir         string
-	Branch      string
+
+	// GitLabAttachMedia resolves the same attach_media setting, defaulting off
+	// for GitLab so uploading real-data screenshots requires explicit opt-in.
+	GitLabAttachMedia bool
+
+	Dir    string
+	Branch string
 	// CommitMessage is the configured subject template; empty keeps the
 	// built-in subject (see RenderCommitMessage).
 	CommitMessage string
@@ -1281,6 +1383,9 @@ type Evidence struct {
 	LocalRoot string
 	Retention time.Duration
 	MaxRuns   int
+	// LinkBaseURL is the normalized test.evidence.link_base_url (trimmed, no
+	// trailing slash). Empty keeps evidence files cited as local paths.
+	LinkBaseURL string
 }
 
 // EvalRaw is the YAML representation of local evaluation-corpus settings.
@@ -1408,10 +1513,11 @@ func warnRetiredJev(raw retiredJev) {
 // IntentRaw is the YAML representation of user-intent extraction settings.
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type IntentRaw struct {
-	Enabled         *bool    `yaml:"enabled"`
-	Threshold       *float64 `yaml:"threshold"`
-	SlackDays       *int     `yaml:"slack_days"`
-	DisabledReaders []string `yaml:"disabled_readers"`
+	Enabled         *bool          `yaml:"enabled"`
+	Threshold       *float64       `yaml:"threshold"`
+	SlackDays       *int           `yaml:"slack_days"`
+	DisabledReaders []string       `yaml:"disabled_readers"`
+	Check           IntentCheckRaw `yaml:"check"`
 }
 
 // GlobalIntentRaw is the global config's `intent:` block. It extends the
@@ -1444,6 +1550,7 @@ type Intent struct {
 	Threshold       float64
 	SlackDays       int
 	DisabledReaders map[string]bool
+	Check           IntentCheck
 }
 
 type agentList []types.AgentName
@@ -1548,7 +1655,8 @@ forgejo_axi_path: forgejo-axi
 # watch it keeps afterwards. Each base-branch advance re-arms this timer.
 # Set to "unlimited", "none", "off", "never", or any non-positive duration
 # to disable the timeout. By default the monitor keeps watching after checks
-# are green; ci.release_after_checks_pass ends the run at readiness.
+# are green; ci.release_after_checks_pass ends the run at readiness, and
+# no-mistakes axi handoff ends it explicitly for human review.
 # See docs/src/content/docs/reference/global-config.md#ci_timeout.
 ci_timeout: "168h"
 
@@ -1778,15 +1886,15 @@ ci:
   carry_review_on_replay: false
 
   # Whether the CI step finishes the run as soon as every check is green
-  # instead of monitoring the pull request until it is merged or closed.
-  # Defaults to false, which is what the step has always done: the run stays
-  # open, keeps watching the PR, and can still auto-rebase it if the base branch
-  # later conflicts. Set true to record the checks-passed verdict and release
-  # the run there (outcome: checks-passed, run status: checks_passed), so the
-  # run's worktree and lane are not held for a human merge decision - the
-  # recorded CI duration then measures CI only. CI readiness is still recorded
-  # either way; a repository that sets ci.release_after_checks_pass on its own
-  # default branch overrides this value.
+  # instead of monitoring the pull request until it is merged, closed, or
+  # explicitly handed off. Defaults to false, which is what the step has
+  # always done: the run stays open, keeps watching the PR, and can still
+  # auto-rebase it if the base branch later conflicts. Set true to record the
+  # checks-passed verdict and release the run there (outcome: checks-passed,
+  # run status: checks_passed), so the run's worktree and lane are not held for
+  # a human merge decision - the recorded CI duration then measures CI only.
+  # CI readiness is still recorded either way; a repository that sets
+  # ci.release_after_checks_pass on its own default branch overrides this value.
   release_after_checks_pass: false
 
 # Auto-fix commit subject template. Available variables: {{.Step}}, {{.Summary}}, and {{.Branch}}.
@@ -1838,9 +1946,20 @@ intent:
 # directory timer: retention ages run directories out (default 14 days) and
 # max_runs caps how many survive regardless of age (default 200). Set retention
 # to "unlimited", or either to 0, to disable that bound. local_root moves the
-# directory to another disk and must be an absolute path. These three are
-# global-only - a repository's .no-mistakes.yaml cannot change where this
-# machine writes evidence or how long it keeps it.
+# directory to another disk and must be an absolute path. evidence_dir is the
+# other way to move it: a ~/path is expanded, and a missing or unwritable
+# directory falls back to <NM_HOME>/evidence with a warning. A run keeps the
+# directory it started with. These settings are global-only - a repository's
+# .no-mistakes.yaml cannot change where this machine writes evidence or how
+# long it keeps it.
+# link_base_url is for an operator who serves that evidence parent over HTTP
+# themselves (a synced folder behind a web server, say). See Evidence links
+# in docs/src/content/docs/reference/global-config.md for the linked surfaces
+# and precedence. On GitLab, with uploads off, the Evidence section lists
+# the run's images as links without uploading them. Unset
+# leaves PR bodies unchanged. Global-only like local_root; a repository value
+# is ignored. Hosting and access control of the served copy are yours.
+# evidence_dir: ~/Dropbox/no-mistakes-evidence
 # commit_message templates the evidence-branch commit subject with
 # {{.Branch}} and {{.RunID}}; it follows commit.fix_message's template rules.
 # test:
@@ -1853,6 +1972,7 @@ intent:
 #     local_root: /var/lib/no-mistakes/evidence
 #     retention: 720h
 #     max_runs: 50
+#     link_base_url: https://evidence.example.com/no-mistakes
 
 # Local review evaluation corpus, used by "no-mistakes eval" to compare
 # agent candidates, pinned to an explicit model and reasoning effort, against
@@ -2731,7 +2851,13 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if !repoOnly.AutoFix.Gates.IsZero() {
 		return nil, fmt.Errorf("auto_fix.gates is repository-only; configure it on the trusted default branch")
 	}
+	if strings.TrimSpace(raw.CI.Instructions) != "" {
+		return nil, fmt.Errorf("ci.instructions is repository-only; configure it on the trusted default branch")
+	}
 	if err := validatePRAppendix(raw.PR.Appendix); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	if err := validateIntentCheck(&raw.Intent.Check); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
 	if err := validateGlobalCommitRaw(raw.Commit); err != nil {
@@ -2747,6 +2873,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
 	if err := validateRequiredReviews(raw.CI.RequiredReviews); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	if err := validateRequiredReviewAppID(raw.CI.RequiredReviewAppID); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	if err := validateRequiredReviewBotID(raw.CI.RequiredReviewBotID); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
 	if err := validateRebaseRaw(raw.Rebase); err != nil {
@@ -2915,6 +3047,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
 	}
+	cfg.EvidenceDir = strings.TrimSpace(raw.EvidenceDir)
 	if raw.SessionReuse != nil {
 		cfg.SessionReuse = *raw.SessionReuse
 	}
@@ -2974,21 +3107,45 @@ func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
 		if _, exists := profiles[host]; exists {
 			return nil, fmt.Errorf("invalid forge_profiles: duplicate host %q after case normalization", host)
 		}
+		hostToken, owner := SplitForgeProfileKey(host)
+		if hostToken == "" {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: host must not be empty", host)
+		}
+		if strings.Contains(host, "/") && (owner == "" || strings.ContainsAny(owner, "/ \t")) {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: an owner-scoped key must be host/owner with a single owner segment", host)
+		}
 		ghDir := strings.TrimSpace(profile.GHConfigDir)
 		glabDir := strings.TrimSpace(profile.GLabConfigDir)
-		if (ghDir == "") == (glabDir == "") {
+		profile.GHUser = strings.TrimSpace(profile.GHUser)
+		profile.ExpectedLogin = strings.TrimSpace(profile.ExpectedLogin)
+		if profile.GHUser != "" {
+			if glabDir != "" {
+				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user selects a GitHub account and cannot be combined with glab_config_dir", host)
+			}
+			if ghDir != "" {
+				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user selects a login in the ambient gh configuration and cannot be combined with gh_config_dir", host)
+			}
+			if profile.ExpectedLogin != "" {
+				return nil, fmt.Errorf("invalid forge_profiles.%s: gh_user already selects the login; remove expected_login", host)
+			}
+			if !validGitHubLogin(profile.GHUser) {
+				return nil, fmt.Errorf("invalid forge_profiles.%s.gh_user: %q is not a GitHub login", host, profile.GHUser)
+			}
+		} else if (ghDir == "") == (glabDir == "") {
 			return nil, fmt.Errorf("invalid forge_profiles.%s: exactly one of gh_config_dir or glab_config_dir is required", host)
+		}
+		if owner != "" && profile.GHUser == "" {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: owner-scoped keys are supported only for gh_user profiles", host)
 		}
 		profile.GHConfigDir = ghDir
 		profile.GLabConfigDir = glabDir
-		profile.ExpectedLogin = strings.TrimSpace(profile.ExpectedLogin)
 		if ghDir != "" {
 			normalized, err := normalizeForgeProfilePath(ghDir)
 			if err != nil {
 				return nil, fmt.Errorf("invalid forge_profiles.%s.gh_config_dir: %w", host, err)
 			}
 			profile.GHConfigDir = normalized
-		} else {
+		} else if glabDir != "" {
 			normalized, err := normalizeForgeProfilePath(glabDir)
 			if err != nil {
 				return nil, fmt.Errorf("invalid forge_profiles.%s.glab_config_dir: %w", host, err)
@@ -2998,6 +3155,21 @@ func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
 		profiles[host] = profile
 	}
 	return profiles, nil
+}
+
+// validGitHubLogin accepts the characters GitHub and GitHub Enterprise logins
+// use (managed-user logins add "_"). It refuses a leading "-" so the value can
+// never read as a flag when it is handed to gh.
+func validGitHubLogin(login string) bool {
+	if login == "" || strings.HasPrefix(login, "-") {
+		return false
+	}
+	for _, r := range login {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeForgeProfilePath(value string) (string, error) {
@@ -3089,12 +3261,16 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	// LoadGlobalFromBytes uses to refuse the repository-only auto_fix.gates.
 	var globalOnly struct {
 		QuotaRouting yaml.Node `yaml:"quota_routing"`
+		EvidenceDir  yaml.Node `yaml:"evidence_dir"`
 	}
 	if err := yaml.Unmarshal(data, &globalOnly); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if !globalOnly.QuotaRouting.IsZero() {
 		return nil, fmt.Errorf("quota_routing is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
+	}
+	if !globalOnly.EvidenceDir.IsZero() {
+		return nil, fmt.Errorf("evidence_dir is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
 	}
 	cfg := &RepoConfig{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -3119,6 +3295,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if err := validateIntentCheck(&cfg.Intent.Check); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	if err := validateGates(cfg.Gates); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
@@ -3126,6 +3305,12 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateRequiredReviews(cfg.CI.RequiredReviews); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateRequiredReviewAppID(cfg.CI.RequiredReviewAppID); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateRequiredReviewBotID(cfg.CI.RequiredReviewBotID); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateRebaseRaw(cfg.Rebase); err != nil {
@@ -3167,6 +3352,30 @@ func validatePRRaw(pr PRRaw) error {
 	if err := validatePRAppendix(pr.Appendix); err != nil {
 		return err
 	}
+	if err := validatePRIntent(pr.Intent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePRIntent(intent PRIntentRaw) error {
+	format := strings.ToLower(strings.TrimSpace(intent.Format))
+	if format != "" && format != "raw" && format != "brief" {
+		return fmt.Errorf("pr.intent.format must be raw or brief")
+	}
+	seen := make(map[string]bool, len(intent.Sections))
+	for i, section := range intent.Sections {
+		section = strings.ToLower(strings.TrimSpace(section))
+		switch section {
+		case "why", "scope", "out_of_scope":
+		default:
+			return fmt.Errorf("pr.intent.sections[%d] must be why, scope, or out_of_scope", i)
+		}
+		if seen[section] {
+			return fmt.Errorf("pr.intent.sections[%d] duplicates %q", i, section)
+		}
+		seen[section] = true
+	}
 	return nil
 }
 
@@ -3184,6 +3393,9 @@ func validatePRRaw(pr PRRaw) error {
 // invalid block has to fail here, before it merges, rather than brick the
 // repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
+	if review.MaxFixRounds < 0 {
+		return fmt.Errorf("review.max_fix_rounds must be non-negative (0 means unlimited)")
+	}
 	if review.AgentTimeout != "" {
 		if _, err := parsePositiveDuration("review.agent_timeout", review.AgentTimeout); err != nil {
 			return err
@@ -3300,8 +3512,8 @@ func validatePathInstructionGlob(pattern string) error {
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
 // budget) is trusted-only because every rerun it authorizes is another
 // provider-side workflow run billed to the repository. These gate-control
-// fields ignore allowRepoCommands, as do pr.template, pr.publish_intent, and
-// pr.appendix.
+// fields ignore allowRepoCommands, as do pr.template, pr.publish_intent,
+// pr.appendix, pr.intent, and intent.check.
 // PR.BaseBranch is the explicit exception: the
 // allowRepoCommands opt-in also permits a pushed PR target because it controls
 // where a maintainer-authorized PR lands, not code execution.
@@ -3315,10 +3527,12 @@ func validatePathInstructionGlob(pattern string) error {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, core-step auto-fix, commit, intent, test,
-// PR title format, and providers) are always taken from the pushed copy, matching prior behavior,
-// since they cannot run arbitrary shell, select a process, or spend the
-// maintainer's CI minutes.
+// Non-executing fields (ignore patterns, core-step auto-fix, commit, most
+// intent and test settings, PR title format, and providers) are always taken
+// from the pushed copy, matching prior behavior, since they cannot run
+// arbitrary shell, select a process, or spend the maintainer's CI minutes.
+// intent.check and pr.intent are exceptions: they control admission and public
+// rendering, so they come only from the trusted default-branch copy.
 // The exceptions inside test are prepare, which eagerly runs setup before an
 // agent-only Test, base_attribution, which re-runs a failing commands.test on
 // the base commit, evidence.branch, which names a git ref the daemon pushes
@@ -3330,7 +3544,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	effective.TrustedIgnorePatterns = nil
 	if trusted != nil {
+		effective.TrustedIgnorePatterns = append([]string(nil), trusted.IgnorePatterns...)
 		effective.Document = trusted.Document
 		effective.ProtectedPaths = append([]string(nil), trusted.ProtectedPaths...)
 		// review.path_instructions steers the gate agent that reviews the pushed
@@ -3424,6 +3640,8 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.PR.Template = trusted.PR.Template
 		effective.PR.PublishIntent = trusted.PR.PublishIntent
 		effective.PR.Appendix = trusted.PR.Appendix
+		effective.PR.Intent = trusted.PR.Intent
+		effective.Intent.Check = trusted.Intent.Check
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.ProtectedPaths = nil
@@ -3445,6 +3663,8 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.PR.Template = ""
 		effective.PR.PublishIntent = nil
 		effective.PR.Appendix = ""
+		effective.PR.Intent = PRIntentRaw{}
+		effective.Intent.Check = IntentCheckRaw{}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -3487,6 +3707,7 @@ func intentDefaults() Intent {
 		Threshold:       0.2,
 		SlackDays:       3,
 		DisabledReaders: map[string]bool{},
+		Check:           IntentCheck{Mode: IntentCheckOff},
 	}
 }
 
@@ -3546,6 +3767,7 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 	if src.Evidence.AttachMedia != nil {
 		dst.Evidence.AttachMedia = *src.Evidence.AttachMedia
+		dst.Evidence.GitLabAttachMedia = *src.Evidence.AttachMedia
 	}
 	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
 		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)
@@ -3576,6 +3798,11 @@ func applyEvidenceStorageOverrides(dst *Evidence, src *EvidenceRaw) {
 	}
 	if src.MaxRuns != nil && *src.MaxRuns >= 0 {
 		dst.MaxRuns = *src.MaxRuns
+	}
+	if src.LinkBaseURL != nil {
+		if base, err := normalizeEvidenceLinkBaseURL(*src.LinkBaseURL); err == nil {
+			dst.LinkBaseURL = base
+		}
 	}
 }
 
@@ -3765,7 +3992,40 @@ func validateTestRaw(test TestRaw) error {
 	if test.Evidence.MaxRuns != nil && *test.Evidence.MaxRuns < 0 {
 		return fmt.Errorf("test.evidence.max_runs must be 0 (keep every run) or greater, got %d", *test.Evidence.MaxRuns)
 	}
+	if test.Evidence.LinkBaseURL != nil {
+		if _, err := normalizeEvidenceLinkBaseURL(*test.Evidence.LinkBaseURL); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// normalizeEvidenceLinkBaseURL validates test.evidence.link_base_url and
+// returns it trimmed with no trailing slash, so <base>/<run-id>/<file> joins
+// cleanly. Only an absolute http(s) URL with a host is accepted: the value is
+// published verbatim in every PR body, so a scheme a browser will not follow,
+// embedded credentials, or a query or fragment the run path would land after
+// are refused when the config loads instead of surfacing as dead links. Empty
+// is the off state.
+func normalizeEvidenceLinkBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(raw, " \t\r\n") {
+		return "", fmt.Errorf("test.evidence.link_base_url must not contain whitespace, got %q", raw)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("test.evidence.link_base_url must be an absolute http or https URL, got %q", raw)
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("test.evidence.link_base_url must not carry credentials, got %q", raw)
+	}
+	if strings.ContainsAny(raw, "?#") {
+		return "", fmt.Errorf("test.evidence.link_base_url must not carry a query or fragment, got %q", raw)
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 // applyProvidersOverrides applies non-nil raw values onto resolved defaults.
@@ -3848,6 +4108,12 @@ func validateRebaseRaw(r RebaseRaw) error {
 func applyCIOverrides(dst *CI, src *CIRaw) {
 	if src.RequiredReviews != nil {
 		dst.RequiredReviews = append([]string{}, src.RequiredReviews...)
+	}
+	if src.RequiredReviewAppID != nil {
+		dst.RequiredReviewAppID = *src.RequiredReviewAppID
+	}
+	if src.RequiredReviewBotID != nil {
+		dst.RequiredReviewBotID = *src.RequiredReviewBotID
 	}
 
 	if src.RerunTransient != nil {
@@ -3976,6 +4242,9 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	// word on how many workflow runs their project is billed for.
 	applyCIOverrides(&ci, &global.CI)
 	applyCIOverrides(&ci, &repo.CI)
+	// Like test.instructions, the guidance describes one repository, so it is
+	// never taken from global config; repo is already trusted-only here.
+	ci.Instructions = strings.TrimSpace(repo.CI.Instructions)
 
 	// The repo value is trusted-only (EffectiveRepoConfig sourced it from the
 	// default branch), so a maintainer's chosen integration shape survives a
@@ -3987,6 +4256,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	intent := intentDefaults()
 	applyIntentOverrides(&intent, &global.Intent.IntentRaw)
 	applyIntentOverrides(&intent, &repo.Intent)
+	intent.Check = MergeIntentChecks(global.Intent.Check, repo.Intent.Check)
 
 	test := testDefaults()
 	applyTestOverrides(&test, &global.Test)
@@ -4053,6 +4323,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	pr := PR{
 		BaseBranch:    strings.TrimSpace(repo.PR.BaseBranch),
 		Template:      repo.PR.Template,
+		Intent:        PRIntent{Format: repo.PR.Intent.Format, Sections: append([]string(nil), repo.PR.Intent.Sections...)},
 		PublishIntent: repo.PR.PublishIntent,
 		Appendix:      repo.PR.Appendix,
 	}
@@ -4066,6 +4337,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		if pr.Appendix == "" {
 			pr.Appendix = override.PR.Appendix
 		}
+		pr.UpdateText = override.PR.UpdateText
 	}
 	if pr.Appendix == "" {
 		pr.Appendix = global.PR.Appendix
@@ -4121,6 +4393,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// separate sources rather than overlaid: they can only add rules, never
 		// replace or remove the repository's.
 		Review: Review{
+			MaxFixRounds:           int(repo.Review.MaxFixRounds),
 			Conversation:           repo.Review.Conversation,
 			PathInstructions:       resolvePathInstructions(repo.Review.PathInstructions),
 			GlobalPathInstructions: resolvePathInstructions(global.Review.PathInstructions),
@@ -4133,6 +4406,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
 		NoCI:                   repo.NoCI,
+		TrustedIgnorePatterns:  append([]string(nil), repo.TrustedIgnorePatterns...),
 	}
 
 	// repo.Review is trusted-only (EffectiveRepoConfig). The repository value
@@ -4149,6 +4423,13 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		cfg.Review.RepositoryPathInstructions = resolvePathInstructions(override.Review.PathInstructions)
 		cfg.Document.RepositoryInstructions = strings.TrimSpace(override.Document.Instructions)
 		cfg.Test.RepositoryInstructions = strings.TrimSpace(override.Test.Instructions)
+		if len(override.ReviewAgents) > 0 {
+			// Per role: a named role replaces the global entry, the rest keep it.
+			roles := make(map[string]ReviewAgent, len(global.ReviewAgents)+len(override.ReviewAgents))
+			maps.Copy(roles, global.ReviewAgents)
+			maps.Copy(roles, override.ReviewAgents)
+			cfg.ReviewAgents = roles
+		}
 	}
 
 	if repo.Agent != "" {

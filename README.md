@@ -128,7 +128,7 @@ make build   # Build bin/no-mistakes with version info
 make test    # Run go test -race ./... (excludes the e2e suite)
 make e2e     # Run the tagged end-to-end agent journey suite
 make e2e-record # Re-record e2e fixtures when agent wire formats change
-make lint    # Check generated skill drift and run go vet ./...
+make lint    # Check generated skill and Windows resource drift, run go vet ./...
 make skill   # Regenerate committed no-mistakes skill files
 make fmt     # Run gofmt -w .
 make demo    # Regenerate demo.gif and demo.mp4 (needs vhs and ffmpeg)

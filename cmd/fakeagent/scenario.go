@@ -182,7 +182,7 @@ const reviewPromptMarker = "Review the code changes and return structured findin
 // fabricated - is passed through untouched so coverage tests can still
 // exercise the gate; only an absent field is filled, and only on a review
 // turn. The fill is the same set the step computes for that round: the
-// files changed between the prompt's base commit and the worktree, minus
+// pipeline's coverage checklist, or for older prompts the changed files minus
 // the prompt's ignore patterns. This escape lives in the fake agent alone;
 // there is no production default that stands in for a missing record.
 func withReviewCoverage(wd, prompt string, a Action) Action {
@@ -217,6 +217,21 @@ func withReviewCoverage(wd, prompt string, a Action) Action {
 // returned as an empty, non-nil slice when nothing is reviewable so the
 // field is still reported.
 func reviewCoverageForPrompt(wd, prompt string) ([]string, error) {
+	if _, tail, present := strings.Cut(prompt, "\nChanged files this review is held to ("); present {
+		_, tail, _ = strings.Cut(tail, "\n")
+		paths := []string{}
+		for _, line := range strings.Split(tail, "\n") {
+			if strings.HasPrefix(line, "- A complete review pass ") {
+				return paths, nil
+			}
+			file, ok := strings.CutPrefix(line, "- ")
+			if !ok || file == "" {
+				return nil, errors.New("malformed review coverage checklist")
+			}
+			paths = append(paths, file)
+		}
+		return nil, errors.New("unterminated review coverage checklist")
+	}
 	base := promptContextValue(prompt, "base commit")
 	if base == "" {
 		return nil, errors.New("review prompt has no base commit line")
