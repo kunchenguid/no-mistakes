@@ -166,6 +166,26 @@ func TestEvidenceFileURL(t *testing.T) {
 	}
 }
 
+func TestRenderEvidenceFileLinkEscapesTheDestination(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "01RUN")
+	for _, tc := range []struct{ name, base, file, want string }{
+		{name: "closing parenthesis in base", base: "https://evidence.example.com/archive)", file: "shot.png", want: "[shot](https://evidence.example.com/archive%29/01RUN/shot.png)"},
+		{name: "parentheses in base", base: "https://evidence.example.com/(archive)", file: "shot.png", want: "[shot](https://evidence.example.com/%28archive%29/01RUN/shot.png)"},
+		{name: "angle brackets and space in base", base: "https://evidence.example.com/<archive copy>", file: "shot.png", want: "[shot](https://evidence.example.com/%3Carchive%20copy%3E/01RUN/shot.png)"},
+		{name: "backslash in base", base: `https://evidence.example.com/archive\copy`, file: "shot.png", want: "[shot](https://evidence.example.com/archive%5Ccopy/01RUN/shot.png)"},
+		{name: "already escaped base and filename", base: "https://evidence.example.com/archive%29", file: "shot (1).png", want: "[shot](https://evidence.example.com/archive%29/01RUN/shot%20%281%29.png)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := renderEvidenceFileLink(tc.base, runDir, filepath.Join(runDir, tc.file), "shot")
+			if got != tc.want {
+				t.Fatalf("link = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRenderEvidenceFileLinkEscapesTheLabel(t *testing.T) {
 	t.Parallel()
 	runDir := filepath.Join(t.TempDir(), "01RUN")
