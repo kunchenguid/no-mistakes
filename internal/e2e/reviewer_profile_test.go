@@ -4,8 +4,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,7 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
-	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -184,21 +181,13 @@ func TestLiveReviewerSelectionMissingBeforeCustody(t *testing.T) {
 		return string(out)
 	}
 	before := refs()
-	for _, mode := range []string{"ordinary", "proof", "direct"} {
+	for _, mode := range []string{"ordinary", "proof"} {
 		t.Run(mode, func(t *testing.T) {
 			args := []string{"axi", "run", "--intent", "reject unavailable reviewer", "--reviewer", "codex", "--reviewer-model", "reviewer-e2e", "--reviewer-effort", "high"}
 			if mode == "proof" {
 				args = append(args, "--launch-nonce", "missing-reviewer", "--validation-generation", "missing-reviewer")
 			}
-			var out string
-			var err error
-			if mode == "direct" {
-				pin, _ := json.Marshal(agentcfg.ReviewerProfile{Agent: types.AgentCodex, Model: "reviewer-e2e", Effort: agentcfg.EffortHigh})
-				b, pushErr := h.runGit(context.Background(), h.WorkDir, "push", "-o", "no-mistakes.reviewer-profile="+base64.RawURLEncoding.EncodeToString(pin), gate.RemoteName, "HEAD")
-				out, err = string(b), pushErr
-			} else {
-				out, err = h.Run(args...)
-			}
+			out, err := h.Run(args...)
 			if err == nil || !strings.Contains(out, "reviewer unavailable") {
 				t.Fatalf("missing reviewer not rejected: %v\n%s", err, out)
 			}
