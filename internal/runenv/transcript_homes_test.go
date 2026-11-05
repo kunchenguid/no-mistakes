@@ -11,24 +11,45 @@ func TestCaptureTranscriptHomes(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
-	got, err := CaptureTranscriptHomes()
-	if err != nil || got.ClaudeConfigDir != filepath.Join(home, ".claude") || got.CodexHome != filepath.Join(home, ".codex") {
-		t.Fatalf("defaults = %+v, %v", got, err)
+	got := CaptureTranscriptHomes()
+	if got.ClaudeConfigDir != filepath.Join(home, ".claude") || got.CodexHome != filepath.Join(home, ".codex") {
+		t.Fatalf("defaults = %+v", got)
 	}
 	claude := filepath.Join(t.TempDir(), "claude account")
 	codex := filepath.Join(t.TempDir(), "codex account")
 	t.Setenv("CLAUDE_CONFIG_DIR", claude)
 	t.Setenv("CODEX_HOME", codex)
-	got, err = CaptureTranscriptHomes()
-	if err != nil || got.ClaudeConfigDir != claude || got.CodexHome != codex {
-		t.Fatalf("explicit homes = %+v, %v", got, err)
+	got = CaptureTranscriptHomes()
+	if got.ClaudeConfigDir != claude || got.CodexHome != codex {
+		t.Fatalf("explicit homes = %+v", got)
 	}
 	for _, key := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME"} {
 		t.Run(key, func(t *testing.T) {
-			t.Setenv(key, "relative-account")
-			if _, err := CaptureTranscriptHomes(); err == nil {
-				t.Fatal("relative account must not resolve against the daemon's cwd")
+			for _, selection := range []string{"relative-account", "~/account"} {
+				t.Setenv(key, selection)
+				got := CaptureTranscriptHomes()
+				want := TranscriptHomes{ClaudeConfigDir: claude, CodexHome: codex}
+				if key == "CLAUDE_CONFIG_DIR" {
+					want.ClaudeConfigDir = selection
+				} else {
+					want.CodexHome = selection
+				}
+				if *got != want || got.Validate() == nil {
+					t.Fatalf("invalid selection = %+v, want %+v and disabled discovery", got, want)
+				}
 			}
 		})
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	got = CaptureTranscriptHomes()
+	if got.ClaudeConfigDir != claude || got.CodexHome != codex {
+		t.Fatalf("explicit homes without HOME = %+v", got)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	got = CaptureTranscriptHomes()
+	if *got != (TranscriptHomes{}) || got.Validate() == nil {
+		t.Fatalf("unresolved defaults = %+v, want empty roots and disabled discovery", got)
 	}
 }

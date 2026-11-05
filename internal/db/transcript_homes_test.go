@@ -22,6 +22,11 @@ func TestRunTranscriptHomesSurviveReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	invalidHomes := &runenv.TranscriptHomes{ClaudeConfigDir: "", CodexHome: "~/account"}
+	invalidRun, err := d.InsertRunWithTranscriptHomes(repo.ID, "invalid-home", "head", "base", nil, "", "", "", "", false, nil, RunPRText{}, invalidHomes)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +38,10 @@ func TestRunTranscriptHomesSurviveReopen(t *testing.T) {
 	got, err := d.GetRun(run.ID)
 	if err != nil || got == nil || got.TranscriptHomes == nil || *got.TranscriptHomes != *homes {
 		t.Fatalf("reopened homes = %+v, %v", got, err)
+	}
+	invalidGot, err := d.GetRun(invalidRun.ID)
+	if err != nil || invalidGot == nil || invalidGot.TranscriptHomes == nil || *invalidGot.TranscriptHomes != *invalidHomes {
+		t.Fatalf("reopened invalid homes = %+v, %v", invalidGot, err)
 	}
 	// Read-only commands must still work before the new migration is applied.
 	if _, err := d.sql.Exec(`ALTER TABLE runs DROP COLUMN transcript_homes`); err != nil {

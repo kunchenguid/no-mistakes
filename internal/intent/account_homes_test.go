@@ -92,6 +92,18 @@ func TestExtractAccountHomes(t *testing.T) {
 					t.Errorf("root %q: got %+v, err %v, want %s", tc.root, got, err, tc.want)
 				}
 			}
+			for _, root := range []string{"", ".codex-work", "~/account", "invalid\x00account"} {
+				homes := &runenv.TranscriptHomes{ClaudeConfigDir: root, CodexHome: root}
+				sessions, err := reader.Discover(context.Background(), DiscoverOpts{HomeDir: home, OriginCWD: repo, TranscriptHomes: homes})
+				if len(sessions) != 0 || err == nil || !strings.Contains(err.Error(), "transcript home must be an absolute path") {
+					t.Errorf("invalid home %q: sessions %+v, error %v, want no sessions and diagnostic", root, sessions, err)
+				}
+				if root != "" {
+					if got, err := extract(root); got != nil || err != ErrNoMatch {
+						t.Errorf("invalid home %q: got %+v, %v, want no match", root, got, err)
+					}
+				}
+			}
 			if got, err := extract(filepath.Join(t.TempDir(), "missing")); err != ErrNoMatch || got != nil {
 				t.Errorf("missing selected home: got %+v, %v, want no match", got, err)
 			}

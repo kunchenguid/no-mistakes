@@ -97,6 +97,30 @@ func writeDaemonAccountTranscript(t *testing.T, backend, root, repo, text string
 	}
 }
 
+func TestPushTranscriptHomesInvalidSelectionWithExplicitIntent(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&steps.IntentStep{}}
+	})
+	repo, head := setupTestGitRepo(t, p, d, "invalid-transcript-home")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	homes := &runenv.TranscriptHomes{ClaudeConfigDir: "", CodexHome: ".codex-work"}
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: head, New: head,
+		Intent: "explicit fixture intent", TranscriptHomes: homes,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.Status != types.RunCompleted || run.Intent == nil || *run.Intent != "explicit fixture intent" || run.TranscriptHomes == nil || *run.TranscriptHomes != *homes {
+		t.Fatalf("invalid transcript homes blocked explicit intent: %+v", run)
+	}
+}
+
 func TestPushTranscriptHomesIsolateConcurrentRunsAndReadback(t *testing.T) {
 	for _, backend := range []string{"claude", "codex"} {
 		t.Run(backend, func(t *testing.T) {

@@ -251,8 +251,9 @@ func TestAxiRunIntentStrictClaimUsesResolvedBytes(t *testing.T) {
 // A synthetic no-op gate push reaches AXI's existing rerun fallback. The fake
 // server records the request and returns a completed run; no agent or forge runs.
 func TestNoMistakesBinary_IntentTransport(t *testing.T) {
-	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude account"))
-	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex account"))
+	wantHomes := runenv.TranscriptHomes{ClaudeConfigDir: filepath.Join(t.TempDir(), "claude account"), CodexHome: filepath.Join(t.TempDir(), "codex account")}
+	t.Setenv("CLAUDE_CONFIG_DIR", wantHomes.ClaudeConfigDir)
+	t.Setenv("CODEX_HOME", wantHomes.CodexHome)
 	bin := buildNoMistakesBinary(t)
 	requests := make(chan ipc.RerunParams, 8)
 	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
@@ -308,9 +309,8 @@ func TestNoMistakesBinary_IntentTransport(t *testing.T) {
 		}
 		select {
 		case request := <-requests:
-			wantHomes, err := runenv.CaptureTranscriptHomes()
-			if err != nil || request.TranscriptHomes == nil || *request.TranscriptHomes != *wantHomes {
-				t.Fatalf("rerun lost caller homes: %+v, %v", request.TranscriptHomes, err)
+			if request.TranscriptHomes == nil || *request.TranscriptHomes != wantHomes {
+				t.Fatalf("rerun lost caller homes: %+v, want %+v", request.TranscriptHomes, wantHomes)
 			}
 			if request.Intent != want || request.RepoID != repo.ID || request.CallerHeadSHA != head {
 				t.Fatalf("request = %+v; want intent %q, repo %q, head %q", request, want, repo.ID, head)
@@ -324,6 +324,15 @@ func TestNoMistakesBinary_IntentTransport(t *testing.T) {
 	t.Run("argv without shell", func(t *testing.T) { run(t, []string{"--intent", text}, "", "", text) })
 	t.Run("file", func(t *testing.T) { run(t, []string{"--intent-file", path}, "", "", text) })
 	t.Run("stdin", func(t *testing.T) { run(t, []string{"--intent", "-"}, text, "", text) })
+	t.Run("invalid home with explicit intent", func(t *testing.T) {
+		original := wantHomes
+		defer func() { wantHomes = original }()
+		for _, selection := range []string{".codex-work", "~/account"} {
+			t.Setenv("CODEX_HOME", selection)
+			wantHomes.CodexHome = selection
+			run(t, []string{"--intent", text}, "", "", text)
+		}
+	})
 	if runtime.GOOS != "windows" {
 		t.Run("caller shell substitution is not CLI evaluation", func(t *testing.T) {
 			run(t, nil, "", "\"$1\" axi run --intent \"restore `printf SHELL_MARKER` guard\"", "restore SHELL_MARKER guard")

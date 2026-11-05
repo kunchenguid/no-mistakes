@@ -261,9 +261,6 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 // InsertRunWithTranscriptHomes records discovery roots in the creation write,
 // before a run can be observed or resumed by the daemon.
 func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, profiles ...*agentcfg.PiProfile) (*Run, error) {
-	if err := homes.Validate(); err != nil {
-		return nil, err
-	}
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err

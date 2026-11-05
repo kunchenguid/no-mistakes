@@ -43,16 +43,17 @@ func TestNotifyPushCarriesTranscriptHomes(t *testing.T) {
 		t.Fatal(err)
 	}
 	cliGit(t, local, "clone", "--bare", local, p.RepoDir(repo.ID))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	for _, custom := range []bool{false, true} {
+		want := &runenv.TranscriptHomes{ClaudeConfigDir: filepath.Join(home, ".claude"), CodexHome: filepath.Join(home, ".codex")}
 		t.Setenv("CLAUDE_CONFIG_DIR", "")
 		t.Setenv("CODEX_HOME", "")
 		if custom {
-			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude account"))
-			t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex account"))
-		}
-		want, err := runenv.CaptureTranscriptHomes()
-		if err != nil {
-			t.Fatal(err)
+			want = &runenv.TranscriptHomes{ClaudeConfigDir: filepath.Join(t.TempDir(), "claude account"), CodexHome: filepath.Join(t.TempDir(), "codex account")}
+			t.Setenv("CLAUDE_CONFIG_DIR", want.ClaudeConfigDir)
+			t.Setenv("CODEX_HOME", want.CodexHome)
 		}
 		if out, err := executeCmd("daemon", "notify-push", "--gate", p.RepoDir(repo.ID), "--ref", "refs/heads/feature", "--old", "base", "--new", "head"); err != nil {
 			t.Fatalf("notify-push: %v: %s", err, out)

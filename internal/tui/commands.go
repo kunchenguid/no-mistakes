@@ -75,10 +75,7 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 	branch := m.run.Branch
 	previousRunID := m.run.ID
 	return func() tea.Msg {
-		homes, err := runenv.CaptureTranscriptHomes()
-		if err != nil {
-			return rerunErrMsg{err: err, requestID: requestID}
-		}
+		homes := runenv.CaptureTranscriptHomes()
 		var rerun ipc.RerunResult
 		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{TranscriptHomes: homes, RepoID: repoID, Branch: branch, PreviousRunID: previousRunID}, &rerun); err != nil {
 			return rerunErrMsg{err: err, requestID: requestID}

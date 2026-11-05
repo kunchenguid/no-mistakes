@@ -17,21 +17,17 @@ type TranscriptHomes struct {
 	CodexHome       string `json:"codex_home"`
 }
 
-func CaptureTranscriptHomes() (*TranscriptHomes, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
+func CaptureTranscriptHomes() *TranscriptHomes {
+	home, _ := os.UserHomeDir()
 	claude := os.Getenv("CLAUDE_CONFIG_DIR")
-	if claude == "" {
+	if claude == "" && home != "" {
 		claude = filepath.Join(home, ".claude")
 	}
 	codex := os.Getenv("CODEX_HOME")
-	if codex == "" {
+	if codex == "" && home != "" {
 		codex = filepath.Join(home, ".codex")
 	}
-	homes := &TranscriptHomes{ClaudeConfigDir: claude, CodexHome: codex}
-	return homes, homes.Validate()
+	return &TranscriptHomes{ClaudeConfigDir: claude, CodexHome: codex}
 }
 
 func (h *TranscriptHomes) Validate() error {
@@ -49,9 +45,6 @@ func (h *TranscriptHomes) Validate() error {
 }
 
 func (h TranscriptHomes) Value() (driver.Value, error) {
-	if err := h.Validate(); err != nil {
-		return nil, err
-	}
 	b, err := json.Marshal(h)
 	return string(b), err
 }
@@ -69,5 +62,5 @@ func (h *TranscriptHomes) Scan(src any) error {
 	if err := json.Unmarshal(b, h); err != nil {
 		return fmt.Errorf("invalid persisted transcript homes")
 	}
-	return h.Validate()
+	return nil
 }

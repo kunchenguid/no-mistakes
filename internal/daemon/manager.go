@@ -1694,9 +1694,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
 	}
-	if err := homes.Validate(); err != nil {
-		return "", err
-	}
 	if m.restartPending() {
 		trackStartFailure("restart_pending")
 		return "", errRestartPending
