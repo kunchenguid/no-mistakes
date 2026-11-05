@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -66,38 +67,40 @@ func TestTestStep_HangingEvidenceAgentParksForADecision(t *testing.T) {
 
 func TestTestStep_StreamingEvidenceAfterStallBudgetCompletes(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	const stall = 80 * time.Millisecond
-	done := time.NewTimer(stall + stall/2)
-	defer done.Stop()
-	ag := &mockAgent{
-		name: "slow-evidence-agent",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			tick := time.NewTicker(5 * time.Millisecond)
-			defer tick.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-done.C:
-					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"user runs the command","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)}, nil
-				case <-tick.C:
-					opts.OnChunk("testing\n")
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		const stall = 80 * time.Millisecond
+		ag := &mockAgent{
+			name: "slow-evidence-agent",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				done := time.NewTimer(stall + stall/2)
+				defer done.Stop()
+				tick := time.NewTicker(5 * time.Millisecond)
+				defer tick.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-done.C:
+						return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"user runs the command","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)}, nil
+					case <-tick.C:
+						opts.OnChunk("testing\n")
+					}
 				}
-			}
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.TestAgentTimeout = stall
-	sctx.Config.TestAgentWorkingTimeout = 4 * stall
+			},
+		}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Config.TestAgentTimeout = stall
+		sctx.Config.TestAgentWorkingTimeout = 4 * stall
 
-	outcome, err := (&TestStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatalf("working Test agent cut at the stall budget: %v", err)
-	}
-	if outcome == nil || outcome.NeedsApproval {
-		t.Fatalf("outcome = %#v, want a completed Test pass", outcome)
-	}
+		outcome, err := (&TestStep{}).Execute(sctx)
+		if err != nil {
+			t.Fatalf("working Test agent cut at the stall budget: %v", err)
+		}
+		if outcome == nil || outcome.NeedsApproval {
+			t.Fatalf("outcome = %#v, want a completed Test pass", outcome)
+		}
+	})
 }
 
 func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
@@ -456,55 +459,57 @@ func noGoTestGateJSON(testedHead string) string {
 
 func TestTestStep_RepeatedCutKeepsRefusingUnvalidatedWork(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	calls := 0
-	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		calls++
-		if calls == 1 {
-			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
-				return nil, err
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		calls := 0
+		ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			calls++
+			if calls == 1 {
+				if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
 			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Fixing = true
+		sctx.PreviousFindings = noGoTestGateJSON(headSHA)
+		sctx.Config.TestAgentTimeout = 250 * time.Millisecond
+
+		first, err := (&TestStep{}).Execute(sctx)
+		if err != nil {
+			t.Fatalf("repair round error = %v", err)
 		}
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Fixing = true
-	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
-	sctx.Config.TestAgentTimeout = 250 * time.Millisecond
+		repaired := sctx.Run.HeadSHA
+		if repaired == headSHA || !pipeline.HasUnvalidatedWorkRefusal(first.Findings) {
+			t.Fatalf("repair round findings = %s, want the unvalidated repair commit refused", first.Findings)
+		}
 
-	first, err := (&TestStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatalf("repair round error = %v", err)
-	}
-	repaired := sctx.Run.HeadSHA
-	if repaired == headSHA || !pipeline.HasUnvalidatedWorkRefusal(first.Findings) {
-		t.Fatalf("repair round findings = %s, want the unvalidated repair commit refused", first.Findings)
-	}
-
-	parked, err := types.ParseFindingsJSON(first.Findings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	budgetCut, err := types.MarshalFindingsJSON(types.FilterFindings(parked, []string{types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sctx.PreviousFindings = budgetCut
-	second, err := (&TestStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatalf("validation-only round error = %v", err)
-	}
-	if calls != 3 {
-		t.Fatalf("agent calls = %d, want the second round to run only the evidence turn", calls)
-	}
-	if !pipeline.HasUnvalidatedWorkRefusal(second.Findings) {
-		t.Fatalf("findings = %s, want the repeated cut to keep refusing the repair no evidence turn validated", second.Findings)
-	}
-	if work := testFindingByID(t, second.Findings, types.FindingIDTestAgentUnvalidatedWork).Description; !strings.Contains(work, "log -p "+headSHA+".."+repaired) {
-		t.Fatalf("finding = %q, want the range since the last validated head", work)
-	}
+		parked, err := types.ParseFindingsJSON(first.Findings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		budgetCut, err := types.MarshalFindingsJSON(types.FilterFindings(parked, []string{types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sctx.PreviousFindings = budgetCut
+		second, err := (&TestStep{}).Execute(sctx)
+		if err != nil {
+			t.Fatalf("validation-only round error = %v", err)
+		}
+		if calls != 3 {
+			t.Fatalf("agent calls = %d, want the second round to run only the evidence turn", calls)
+		}
+		if !pipeline.HasUnvalidatedWorkRefusal(second.Findings) {
+			t.Fatalf("findings = %s, want the repeated cut to keep refusing the repair no evidence turn validated", second.Findings)
+		}
+		if work := testFindingByID(t, second.Findings, types.FindingIDTestAgentUnvalidatedWork).Description; !strings.Contains(work, "log -p "+headSHA+".."+repaired) {
+			t.Fatalf("finding = %q, want the range since the last validated head", work)
+		}
+	})
 }
 
 func TestTestStep_RepairCutKeepsTheFindingsItWasFixing(t *testing.T) {
@@ -725,54 +730,56 @@ func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			dir, baseSHA, headSHA := setupGitRepo(t)
-			var prompts []string
-			ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-				prompts = append(prompts, opts.Prompt)
-				if len(prompts) == 1 && tt.repair {
-					return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+			synctest.Test(t, func(t *testing.T) {
+				dir, baseSHA, headSHA := setupGitRepo(t)
+				var prompts []string
+				ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					prompts = append(prompts, opts.Prompt)
+					if len(prompts) == 1 && tt.repair {
+						return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+					}
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}}
+				sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+				sctx.Fixing = true
+				parked := `{"findings":[{"id":"` + types.FindingIDTestAgentTimeout + `","severity":"warning","action":"ask-user","description":"budget cut"},` +
+					`{"id":"` + types.FindingIDTestAgentUnvalidatedWork + `","severity":"warning","action":"ask-user","description":"approval is refused"},` +
+					strings.TrimPrefix(noGoTestGateJSON(headSHA), `{"findings":[`)
+				selected, deferred := answerTestPark(t, parked, tt.selection...)
+				answered, err := types.ParseFindingsJSON(selected)
+				if err != nil {
+					t.Fatal(err)
 				}
-				<-ctx.Done()
-				return nil, ctx.Err()
-			}}
-			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-			sctx.Config.TestAgentTimeout = 20 * time.Millisecond
-			sctx.Fixing = true
-			parked := `{"findings":[{"id":"` + types.FindingIDTestAgentTimeout + `","severity":"warning","action":"ask-user","description":"budget cut"},` +
-				`{"id":"` + types.FindingIDTestAgentUnvalidatedWork + `","severity":"warning","action":"ask-user","description":"approval is refused"},` +
-				strings.TrimPrefix(noGoTestGateJSON(headSHA), `{"findings":[`)
-			selected, deferred := answerTestPark(t, parked, tt.selection...)
-			answered, err := types.ParseFindingsJSON(selected)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for i := range answered.Items {
-				if slices.Contains(testBudgetCutIDs, answered.Items[i].ID) {
-					answered.Items[i].UserInstructions = guidance
+				for i := range answered.Items {
+					if slices.Contains(testBudgetCutIDs, answered.Items[i].ID) {
+						answered.Items[i].UserInstructions = guidance
+					}
 				}
-			}
-			if sctx.PreviousFindings, err = types.MarshalFindingsJSON(answered); err != nil {
-				t.Fatal(err)
-			}
-			sctx.DeferredFindings = deferred
+				if sctx.PreviousFindings, err = types.MarshalFindingsJSON(answered); err != nil {
+					t.Fatal(err)
+				}
+				sctx.DeferredFindings = deferred
 
-			if _, err := (&TestStep{}).Execute(sctx); err != nil {
-				t.Fatalf("Execute() error = %v", err)
-			}
-			wantCalls := 1
-			if tt.repair {
-				wantCalls = 2
-			}
-			if len(prompts) != wantCalls {
-				t.Fatalf("agent calls = %d, want %d", len(prompts), wantCalls)
-			}
-			evidence := prompts[len(prompts)-1]
-			if !strings.Contains(evidence, "Operator guidance for this validation (from the decision on the Test agent budget cut):\n"+guidance+"\n") {
-				t.Fatalf("evidence prompt lacks the operator's budget-cut guidance:\n%s", evidence)
-			}
-			if n := strings.Count(evidence, guidance); n != 1 {
-				t.Fatalf("evidence prompt carries the operator's guidance %d times, want once:\n%s", n, evidence)
-			}
+				if _, err := (&TestStep{}).Execute(sctx); err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				wantCalls := 1
+				if tt.repair {
+					wantCalls = 2
+				}
+				if len(prompts) != wantCalls {
+					t.Fatalf("agent calls = %d, want %d", len(prompts), wantCalls)
+				}
+				evidence := prompts[len(prompts)-1]
+				if !strings.Contains(evidence, "Operator guidance for this validation (from the decision on the Test agent budget cut):\n"+guidance+"\n") {
+					t.Fatalf("evidence prompt lacks the operator's budget-cut guidance:\n%s", evidence)
+				}
+				if n := strings.Count(evidence, guidance); n != 1 {
+					t.Fatalf("evidence prompt carries the operator's guidance %d times, want once:\n%s", n, evidence)
+				}
+			})
 		})
 	}
 }

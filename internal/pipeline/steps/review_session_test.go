@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -341,34 +342,36 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 
 func TestReviewFixerSession_FreshFallbackTimeoutExcludesResumeActivity(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &sessionFallbackTimeoutAgent{}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ReviewAgentTimeout = 500 * time.Millisecond
-	sctx.Config.SessionReuse = true
-	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"id":"f-1","severity":"error","description":"fix this","action":"auto-fix"}]}`
-	if err := sctx.DB.UpsertRunAgentSession(sctx.Run.ID, string(pipeline.SessionRoleFixer), ag.Name(), "stale-session"); err != nil {
-		t.Fatalf("store fixer session: %v", err)
-	}
-	sctx.Sessions = pipeline.NewRunSessions(sctx.DB, sctx.Run.ID, ag, true)
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		ag := &sessionFallbackTimeoutAgent{}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Config.ReviewAgentTimeout = 500 * time.Millisecond
+		sctx.Config.SessionReuse = true
+		sctx.Fixing = true
+		sctx.PreviousFindings = `{"findings":[{"id":"f-1","severity":"error","description":"fix this","action":"auto-fix"}]}`
+		if err := sctx.DB.UpsertRunAgentSession(sctx.Run.ID, string(pipeline.SessionRoleFixer), ag.Name(), "stale-session"); err != nil {
+			t.Fatalf("store fixer session: %v", err)
+		}
+		sctx.Sessions = pipeline.NewRunSessions(sctx.DB, sctx.Run.ID, ag, true)
 
-	_, err := (&ReviewStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected the fresh fixer session to time out")
-	}
-	if ag.calls != 2 {
-		t.Fatalf("agent calls = %d, want failed resume and fresh fallback", ag.calls)
-	}
-	if !strings.Contains(err.Error(), "produced no output at all") {
-		t.Fatalf("error = %q, want fresh fallback silence", err)
-	}
-	if strings.Contains(err.Error(), "last produced output") {
-		t.Fatalf("error = %q, dead resume activity must not describe the fresh fallback", err)
-	}
-	if !strings.Contains(err.Error(), "pid=7272") {
-		t.Fatalf("error = %q, want silence attributed to the fresh fixer subprocess", err)
-	}
+		_, err := (&ReviewStep{}).Execute(sctx)
+		if err == nil {
+			t.Fatal("expected the fresh fixer session to time out")
+		}
+		if ag.calls != 2 {
+			t.Fatalf("agent calls = %d, want failed resume and fresh fallback", ag.calls)
+		}
+		if !strings.Contains(err.Error(), "produced no output at all") {
+			t.Fatalf("error = %q, want fresh fallback silence", err)
+		}
+		if strings.Contains(err.Error(), "last produced output") {
+			t.Fatalf("error = %q, dead resume activity must not describe the fresh fallback", err)
+		}
+		if !strings.Contains(err.Error(), "pid=7272") {
+			t.Fatalf("error = %q, want silence attributed to the fresh fixer subprocess", err)
+		}
+	})
 }
 
 // TestReviewLoop_OtherStepsStaySessionIsolated proves the reviewer/fixer

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -466,98 +467,102 @@ func TestReviewStep_LateCompletionAfterInvocationDeadlineIsRejected(t *testing.T
 
 func TestReviewStep_StreamingPastStallBudgetCompletes(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	const stall = 80 * time.Millisecond
-	done := time.NewTimer(stall + stall/2)
-	defer done.Stop()
-	ag := &mockAgent{
-		name: "slow-reviewer",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			tick := time.NewTicker(5 * time.Millisecond)
-			defer tick.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-done.C:
-					return &agent.Result{Output: json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
-				case <-tick.C:
-					opts.OnChunk("reviewing\n")
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		const stall = 80 * time.Millisecond
+		ag := &mockAgent{
+			name: "slow-reviewer",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				done := time.NewTimer(stall + stall/2)
+				defer done.Stop()
+				tick := time.NewTicker(5 * time.Millisecond)
+				defer tick.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-done.C:
+						return &agent.Result{Output: json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
+					case <-tick.C:
+						opts.OnChunk("reviewing\n")
+					}
 				}
-			}
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ReviewAgentTimeout = stall
-	sctx.Config.ReviewAgentWorkingTimeout = 4 * stall
+			},
+		}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Config.ReviewAgentTimeout = stall
+		sctx.Config.ReviewAgentWorkingTimeout = 4 * stall
 
-	outcome, err := (&ReviewStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatalf("working review cut at the stall budget: %v", err)
-	}
-	if outcome == nil {
-		t.Fatal("expected a completed review outcome")
-	}
+		outcome, err := (&ReviewStep{}).Execute(sctx)
+		if err != nil {
+			t.Fatalf("working review cut at the stall budget: %v", err)
+		}
+		if outcome == nil {
+			t.Fatal("expected a completed review outcome")
+		}
+	})
 }
 
 func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{
-		name: "progress-only-reviewer",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			ticker := time.NewTicker(2 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-ticker.C:
-					opts.OnChunk(`{"findings":[],"risk_level":"low"}`)
+	synctest.Test(t, func(t *testing.T) {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		ag := &mockAgent{
+			name: "progress-only-reviewer",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				ticker := time.NewTicker(2 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-ticker.C:
+						opts.OnChunk(`{"findings":[],"risk_level":"low"}`)
+					}
 				}
-			}
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ReviewAgentTimeout = 40 * time.Millisecond
+			},
+		}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Config.ReviewAgentTimeout = 40 * time.Millisecond
 
-	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
-	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
-		t.Fatal("expected progress-only review to hit its invocation budget")
-	}
-	run, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.ReviewApprovedHeadSHA != nil {
-		t.Fatalf("progress-only review gained approval authority: %#v", run.ReviewApprovedHeadSHA)
-	}
-	if run.Error == nil {
-		t.Fatal("durable timeout error is nil")
-	}
-	if strings.Contains(*run.Error, "produced no output at all") || strings.Contains(*run.Error, "silent for") {
-		t.Fatalf("actively streaming review was mislabelled silent: %q", *run.Error)
-	}
-	if !strings.Contains(*run.Error, "invocation budget") || !strings.Contains(*run.Error, "last produced output") {
-		t.Fatalf("timeout diagnosis did not separate the stall budget from measured activity: %q", *run.Error)
-	}
-	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(steps) != 1 {
-		t.Fatalf("step results = %d, want 1", len(steps))
-	}
-	if steps[0].FindingsJSON != nil {
-		t.Fatalf("progress JSON was published as findings: %q", *steps[0].FindingsJSON)
-	}
-	rounds, err := sctx.DB.GetRoundsByStep(steps[0].ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rounds) != 0 {
-		t.Fatalf("progress-only review published %d completed round(s)", len(rounds))
-	}
+		exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+		if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+			t.Fatal("expected progress-only review to hit its invocation budget")
+		}
+		run, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.ReviewApprovedHeadSHA != nil {
+			t.Fatalf("progress-only review gained approval authority: %#v", run.ReviewApprovedHeadSHA)
+		}
+		if run.Error == nil {
+			t.Fatal("durable timeout error is nil")
+		}
+		if strings.Contains(*run.Error, "produced no output at all") || strings.Contains(*run.Error, "silent for") {
+			t.Fatalf("actively streaming review was mislabelled silent: %q", *run.Error)
+		}
+		if !strings.Contains(*run.Error, "invocation budget") || !strings.Contains(*run.Error, "last produced output") {
+			t.Fatalf("timeout diagnosis did not separate the stall budget from measured activity: %q", *run.Error)
+		}
+		steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(steps) != 1 {
+			t.Fatalf("step results = %d, want 1", len(steps))
+		}
+		if steps[0].FindingsJSON != nil {
+			t.Fatalf("progress JSON was published as findings: %q", *steps[0].FindingsJSON)
+		}
+		rounds, err := sctx.DB.GetRoundsByStep(steps[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rounds) != 0 {
+			t.Fatalf("progress-only review published %d completed round(s)", len(rounds))
+		}
+	})
 }
 
 func TestReviewStep_FixMode(t *testing.T) {
