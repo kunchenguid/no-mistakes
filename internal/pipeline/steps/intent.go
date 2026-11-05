@@ -214,8 +214,10 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		return nil, fmt.Errorf("intent change context: %w", err)
 	}
 
-	baseTime, err := git.CommitTime(ctx, gitWorkDir, resolvedBaseSHA)
-	if err != nil {
+	// Preserve session discovery's push-time window independently of the
+	// branch range used to describe the change. A merge-base can move on rebase.
+	baseTime, err := git.CommitTime(ctx, gitWorkDir, fallbackBaseSHA)
+	if err != nil || git.IsZeroSHA(run.BaseSHA) {
 		baseTime = time.Now().Add(-7 * 24 * time.Hour)
 	}
 	headTime, err := git.CommitTime(ctx, gitWorkDir, run.HeadSHA)

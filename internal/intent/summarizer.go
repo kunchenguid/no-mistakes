@@ -25,8 +25,9 @@ type ChangeContext struct {
 	Diff string
 }
 
-// SummaryContext carries the same time window used to discover sessions. It
-// narrows only summarization; matching and disambiguation retain the full session.
+// SummaryContext carries the session discovery window. Only WindowEnd bounds
+// message times: a rebase can move WindowStart past the original request. The
+// branch diff identifies the task; matching and disambiguation keep the session.
 type SummaryContext struct {
 	Change      ChangeContext
 	WindowStart time.Time
@@ -134,7 +135,7 @@ func buildSummaryTranscript(sess *Session, change SummaryContext) string {
 	for _, m := range sess.Messages {
 		// Some reader formats lack per-message timestamps. Keep those turns as
 		// best-effort context, without treating them as proof of recency.
-		if !m.Timestamp.IsZero() && ((!change.WindowStart.IsZero() && m.Timestamp.Before(change.WindowStart)) || (!change.WindowEnd.IsZero() && m.Timestamp.After(change.WindowEnd))) {
+		if !m.Timestamp.IsZero() && !change.WindowEnd.IsZero() && m.Timestamp.After(change.WindowEnd) {
 			continue
 		}
 		filtered.Messages = append(filtered.Messages, m)

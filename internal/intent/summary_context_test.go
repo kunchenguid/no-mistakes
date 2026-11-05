@@ -122,7 +122,7 @@ func TestAgentSummarizer_PiMessageTimes(t *testing.T) {
 	}
 }
 
-func TestBuildSummaryTranscript_WindowDoesNotChangeSession(t *testing.T) {
+func TestBuildSummaryTranscript_EndBoundDoesNotChangeSession(t *testing.T) {
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
 	sess := &Session{Messages: []Message{
@@ -133,12 +133,12 @@ func TestBuildSummaryTranscript_WindowDoesNotChangeSession(t *testing.T) {
 		{Text: "unknown-time"},
 	}}
 	got := buildSummaryTranscript(sess, SummaryContext{WindowStart: start, WindowEnd: end})
-	for _, want := range []string{"at-start", "at-end", "unknown-time"} {
+	for _, want := range []string{"older", "at-start", "at-end", "unknown-time"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q: %s", want, got)
 		}
 	}
-	if strings.Contains(got, "older") || strings.Contains(got, "later") {
+	if strings.Contains(got, "later") {
 		t.Fatalf("out-of-window text: %s", got)
 	}
 	if len(sess.Messages) != 5 || sess.Messages[0].Text != "older" {
@@ -146,10 +146,10 @@ func TestBuildSummaryTranscript_WindowDoesNotChangeSession(t *testing.T) {
 	}
 }
 
-func TestAgentSummarizer_NoRelevantTranscript(t *testing.T) {
+func TestAgentSummarizer_FutureOnlyTranscript(t *testing.T) {
 	now := time.Now()
 	fa := &fakeAgent{output: `{"summary":"unrelated"}`}
-	_, err := NewAgentSummarizer(fa, "").Summarize(context.Background(), &Session{Messages: []Message{{Text: "old task", Timestamp: now.Add(-time.Hour)}}}, SummaryContext{WindowStart: now, WindowEnd: now})
+	_, err := NewAgentSummarizer(fa, "").Summarize(context.Background(), &Session{Messages: []Message{{Text: "future task", Timestamp: now.Add(time.Hour)}}}, SummaryContext{WindowStart: now, WindowEnd: now})
 	if err == nil || fa.lastPrompt != "" {
 		t.Fatal("empty scoped transcript must not invent intent from the diff")
 	}
@@ -194,11 +194,17 @@ func TestExtract_CacheIsBoundToChangeAndWindow(t *testing.T) {
 	if err != nil || again.Summary != "second change" {
 		t.Fatalf("identical change missed cache: %+v, %v", again, err)
 	}
-	fa.output = `{"summary":"new window"}`
+	fa.output = `{"summary":"wrong start-dependent call"}`
 	p.BaseTime = p.BaseTime.Add(-time.Hour)
 	window, err := Extract(context.Background(), p)
-	if err != nil || window.Summary != "new window" {
-		t.Fatalf("changed window reused old summary: %+v, %v", window, err)
+	if err != nil || window.Summary != "second change" {
+		t.Fatalf("discovery start changed summary reuse: %+v, %v", window, err)
+	}
+	fa.output = `{"summary":"new end bound"}`
+	p.HeadTime = p.HeadTime.Add(-time.Hour)
+	window, err = Extract(context.Background(), p)
+	if err != nil || window.Summary != "new end bound" {
+		t.Fatalf("changed scoped transcript reused old summary: %+v, %v", window, err)
 	}
 }
 
@@ -211,10 +217,11 @@ func TestExtract_CacheTracksScopedContent(t *testing.T) {
 	}{
 		{"fallback-start-drift", func(p *ExtractParams, _ *Session) { p.BaseTime = p.BaseTime.Add(time.Nanosecond) }, true},
 		{"end-drift", func(p *ExtractParams, _ *Session) { p.HeadTime = p.HeadTime.Add(time.Nanosecond) }, true},
-		{"excluded-transcript", func(_ *ExtractParams, s *Session) { s.Messages[1].Text = "other earlier requirement" }, true},
+		{"older-transcript", func(_ *ExtractParams, s *Session) { s.Messages[1].Text = "other earlier requirement" }, false},
+		{"excluded-transcript", func(_ *ExtractParams, s *Session) { s.Messages[3].Text = "other future requirement" }, true},
 		{"redacted-transcript", func(_ *ExtractParams, s *Session) { s.Messages[4].Text = "use ghp_" + strings.Repeat("b", 30) }, true},
-		{"start-includes-turn", func(p *ExtractParams, _ *Session) { p.BaseTime = p.BaseTime.Add(-time.Hour) }, false},
-		{"start-excludes-turn", func(p *ExtractParams, _ *Session) { p.BaseTime = now.Add(-20 * time.Minute) }, false},
+		{"earlier-discovery-start", func(p *ExtractParams, _ *Session) { p.BaseTime = p.BaseTime.Add(-time.Hour) }, true},
+		{"later-discovery-start", func(p *ExtractParams, _ *Session) { p.BaseTime = now.Add(-20 * time.Minute) }, true},
 		{"end-includes-turn", func(p *ExtractParams, _ *Session) { p.HeadTime = p.HeadTime.Add(2 * time.Minute) }, false},
 		{"end-excludes-turn", func(p *ExtractParams, _ *Session) { p.HeadTime = now.Add(-45 * time.Minute) }, false},
 		{"base", func(p *ExtractParams, _ *Session) { p.Change.Base = "other-base" }, false},

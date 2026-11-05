@@ -113,6 +113,7 @@ func TestIntentStep_SummarizesValidatedChange(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := 0
+			discoveryStartedAt := time.Now()
 			sctx.Agent = &intentChangeAgent{run: func(opts agent.RunOpts) (*agent.Result, error) {
 				calls++
 				if !strings.Contains(opts.Prompt, base) || !strings.Contains(opts.Prompt, head) {
@@ -124,7 +125,7 @@ func TestIntentStep_SummarizesValidatedChange(t *testing.T) {
 				if len(opts.Prompt) > 150*1024 {
 					t.Fatalf("unbounded prompt: %d bytes", len(opts.Prompt))
 				}
-				for _, forbidden := range []string{"OLD_TASK", "FUTURE_TASK", "UNCOMMITTED_SENTINEL", fakeGitHubPAT, "<system>"} {
+				for _, forbidden := range []string{"FUTURE_TASK", "UNCOMMITTED_SENTINEL", fakeGitHubPAT, "<system>"} {
 					if strings.Contains(opts.Prompt, forbidden) {
 						t.Fatalf("prompt contains excluded or unsafe data %q", forbidden)
 					}
@@ -141,10 +142,17 @@ func TestIntentStep_SummarizesValidatedChange(t *testing.T) {
 				if packet.Change.Base != base || packet.Change.Head != head {
 					t.Fatal("wrong change range")
 				}
-				if !packet.WindowStart.Equal(baseTime.Add(-24*time.Hour)) || !packet.WindowEnd.Equal(headTime) {
+				if !packet.WindowEnd.Equal(headTime) {
 					t.Fatal("wrong discovery window")
 				}
-				if !strings.Contains(packet.Transcript, "LATER_TASK") {
+				if kind == "zero-base" {
+					if packet.WindowStart.Before(discoveryStartedAt.Add(-8*24*time.Hour)) || packet.WindowStart.After(time.Now().Add(-8*24*time.Hour)) {
+						t.Fatal("zero-base discovery must retain its seven-day fallback plus slack")
+					}
+				} else if !packet.WindowStart.Equal(baseTime.Add(-24 * time.Hour)) {
+					t.Fatal("discovery must retain its push-base window")
+				}
+				if !strings.Contains(packet.Transcript, "LATER_TASK") || !strings.Contains(packet.Transcript, "OLD_TASK") {
 					t.Fatal("missing relevant user request")
 				}
 				if !strings.Contains(packet.Change.Diff, "current.txt") || strings.Contains(packet.Change.Diff, "old.txt") {
@@ -174,7 +182,7 @@ func TestIntentStep_SummarizesValidatedChange(t *testing.T) {
 }
 
 func TestIntentStep_RepushSummarizesWholeBranch(t *testing.T) {
-	for _, selection := range []string{"default", "run-base", "repo-base"} {
+	for _, selection := range []string{"default", "run-base", "repo-base", "rebased", "zero-base-rebased"} {
 		t.Run(selection, func(t *testing.T) {
 			sctx := newIntentStepContext(t)
 			dir := sctx.WorkDir
@@ -182,6 +190,10 @@ func TestIntentStep_RepushSummarizesWholeBranch(t *testing.T) {
 			withFakeHome(t, home)
 			headTime := time.Now().UTC().Truncate(time.Second)
 			baseTime := headTime.Add(-48 * time.Hour)
+			rebased := selection == "rebased" || selection == "zero-base-rebased"
+			if rebased {
+				baseTime = headTime.Add(-6 * 24 * time.Hour)
+			}
 			write := func(name, text string) {
 				t.Helper()
 				if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
@@ -201,7 +213,7 @@ func TestIntentStep_RepushSummarizesWholeBranch(t *testing.T) {
 			gitCmd(t, dir, "config", "user.email", "test@example.com")
 			write("baseline.txt", "baseline\n")
 			base := commit(baseTime, "integration baseline")
-			if selection != "default" {
+			if selection == "run-base" || selection == "repo-base" {
 				gitCmd(t, dir, "checkout", "-b", "release")
 				baseTime = headTime.Add(-24 * time.Hour)
 				write("release.txt", "release baseline\n")
@@ -214,19 +226,37 @@ func TestIntentStep_RepushSummarizesWholeBranch(t *testing.T) {
 					sctx.Config.PR.BaseBranch = "release"
 				}
 			}
+			requestTime := baseTime.Add(30 * time.Minute)
 			gitCmd(t, dir, "checkout", "-b", "feature")
 			write("feature.txt", "feature X with strict validation\n")
-			firstHead := commit(headTime.Add(-time.Hour), "feature X")
+			discoveryBaseTime := headTime.Add(-time.Hour)
+			firstHead := commit(discoveryBaseTime, "feature X")
+			if rebased {
+				gitCmd(t, dir, "checkout", "main")
+				write("upstream.txt", "new integration work\n")
+				baseTime = headTime.Add(-30 * time.Minute)
+				base = commit(baseTime, "advance integration branch")
+				gitCmd(t, dir, "checkout", "feature")
+				gitCmd(t, dir, "rebase", "main")
+				firstHead = gitCmd(t, dir, "rev-parse", "HEAD")
+				discoveryBaseTime = baseTime
+			}
 			write("fix.txt", "validation review fix\n")
 			head := commit(headTime, "review fix")
 			ensureHermeticOrigin(t, dir)
 			sctx.Run.BaseSHA, sctx.Run.HeadSHA = firstHead, head
+			if selection == "zero-base-rebased" {
+				sctx.Run.BaseSHA = strings.Repeat("0", 40)
+			}
 			sctx.Config.Intent.SlackDays = 0
+			if rebased {
+				sctx.Config.Intent.SlackDays = 3
+			}
 			project := filepath.Join(home, ".claude", "projects", "synthetic")
 			if err := os.MkdirAll(project, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			transcript := `{"type":"user","cwd":` + testJSONString(t, dir) + `,"timestamp":` + testJSONString(t, baseTime.Add(30*time.Minute).Format(time.RFC3339)) + `,"uuid":"original","message":{"role":"user","content":"Build feature X in feature.txt with strict validation"}}` + "\n" +
+			transcript := `{"type":"user","cwd":` + testJSONString(t, dir) + `,"timestamp":` + testJSONString(t, requestTime.Format(time.RFC3339)) + `,"uuid":"original","message":{"role":"user","content":"Build feature X in feature.txt with strict validation"}}` + "\n" +
 				`{"type":"user","cwd":` + testJSONString(t, dir) + `,"timestamp":` + testJSONString(t, headTime.Add(-time.Minute).Format(time.RFC3339)) + `,"uuid":"fix","message":{"role":"user","content":"Keep feature X and fix validation in fix.txt"}}` + "\n"
 			path := filepath.Join(project, "long-session.jsonl")
 			if err := os.WriteFile(path, []byte(transcript), 0o600); err != nil {
@@ -236,6 +266,7 @@ func TestIntentStep_RepushSummarizesWholeBranch(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := 0
+			discoveryStartedAt := time.Now()
 			sctx.Agent = &intentChangeAgent{run: func(opts agent.RunOpts) (*agent.Result, error) {
 				calls++
 				var packet struct {
@@ -250,8 +281,15 @@ func TestIntentStep_RepushSummarizesWholeBranch(t *testing.T) {
 				if packet.Change.Base != base || packet.Change.Head != head {
 					t.Fatalf("summary range = %s..%s, want %s..%s", packet.Change.Base, packet.Change.Head, base, head)
 				}
-				if !packet.WindowStart.Equal(baseTime) || !packet.WindowEnd.Equal(headTime) {
-					t.Fatal("discovery window must cover the whole branch")
+				if !packet.WindowEnd.Equal(headTime) {
+					t.Fatal("discovery must retain the submitted head time")
+				}
+				if selection == "zero-base-rebased" {
+					if packet.WindowStart.Before(discoveryStartedAt.Add(-10*24*time.Hour)) || packet.WindowStart.After(time.Now().Add(-10*24*time.Hour)) {
+						t.Fatal("zero-base discovery must retain its seven-day fallback plus slack")
+					}
+				} else if !packet.WindowStart.Equal(discoveryBaseTime.Add(-time.Duration(sctx.Config.Intent.SlackDays) * 24 * time.Hour)) {
+					t.Fatal("discovery must retain its push-base window independently of the branch range")
 				}
 				for _, want := range []string{"+feature X with strict validation", "+validation review fix"} {
 					if !strings.Contains(packet.Change.Diff, want) {
