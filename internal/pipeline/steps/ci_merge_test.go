@@ -17,6 +17,7 @@ import (
 )
 
 func TestCIStep_HandoffWakeRechecksGreenReadiness(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	prURL := "https://github.com/test/repo/pull/42"
@@ -60,6 +61,7 @@ func TestCIStep_HandoffWakeRechecksGreenReadiness(t *testing.T) {
 }
 
 func TestCIStep_ReadinessWriteFailureWarnsAndKeepsMonitoring(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, checks, warning string
 	}{
@@ -67,6 +69,7 @@ func TestCIStep_ReadinessWriteFailureWarnsAndKeepsMonitoring(t *testing.T) {
 		{"clear", `invalid check response`, "could not clear CI readiness"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 			prURL := "https://github.com/test/repo/pull/42"
@@ -90,6 +93,7 @@ func TestCIStep_ReadinessWriteFailureWarnsAndKeepsMonitoring(t *testing.T) {
 }
 
 func TestCIStep_ReadinessClearFailureWithPendingHandoffKeepsIssueObservation(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	prURL := "https://github.com/test/repo/pull/42"
@@ -115,6 +119,7 @@ func TestCIStep_ReadinessClearFailureWithPendingHandoffKeepsIssueObservation(t *
 }
 
 func TestCIStep_ReadinessWriteFailureRetriesOnNextPoll(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	prURL := "https://github.com/test/repo/pull/42"
