@@ -197,6 +197,13 @@ func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []strin
 	var b, prose strings.Builder
 	rest := clean
 	for len(rest) > 0 {
+		// A reference the cell already carries as a link is complete:
+		// rewriting a filename inside it would break the link.
+		if n := scenarioExistingReferenceSpan(rest); n > 0 {
+			prose.WriteString(rest[:n])
+			rest = rest[n:]
+			continue
+		}
 		if scenarioReferenceCanStart(clean, len(clean)-len(rest)) {
 			if label, path, n := matchScenarioEvidenceReference(rest, opts.evidenceRoot, names); n > 0 {
 				if link := renderEvidenceFileLink(opts.evidenceLinkBase, opts.evidenceRoot, path, label); link != "" {
@@ -214,6 +221,51 @@ func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []strin
 	}
 	b.WriteString(plain(prose.String()))
 	return escapePipelineFoldMarkers(b.String())
+}
+
+// scenarioExistingReferenceSpan returns the length of a Markdown construct at
+// the start of rest that is already a complete reference and is never
+// rewritten: an inline link or image, an autolink, or a bare URL. It returns
+// 0 when none starts here.
+func scenarioExistingReferenceSpan(rest string) int {
+	text := rest
+	if strings.HasPrefix(text, "![") {
+		text = text[1:]
+	}
+	if strings.HasPrefix(text, "[") {
+		if open := strings.Index(text, "]("); open >= 0 {
+			if close := strings.IndexByte(text[open+2:], ')'); close >= 0 {
+				return len(rest) - len(text) + open + 2 + close + 1
+			}
+		}
+	}
+	if strings.HasPrefix(rest, "<") {
+		if end := strings.IndexByte(rest, '>'); end > 0 && scenarioStartsWithURL(rest[1:end]) {
+			return end + 1
+		}
+	}
+	if scenarioStartsWithURL(rest) {
+		if end := strings.IndexFunc(rest, unicode.IsSpace); end >= 0 {
+			return end
+		}
+		return len(rest)
+	}
+	return 0
+}
+
+// scenarioStartsWithURL reports whether s begins with a scheme followed by
+// "://", the shape of a bare URL or an autolink body.
+func scenarioStartsWithURL(s string) bool {
+	i := strings.Index(s, "://")
+	if i <= 0 || i > 16 {
+		return false
+	}
+	for _, r := range s[:i] {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '+' && r != '-' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // matchScenarioEvidenceReference returns the file reference at the start of

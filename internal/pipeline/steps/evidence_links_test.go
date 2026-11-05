@@ -383,3 +383,41 @@ func TestScenarioEvidenceCellLinksSymlinkedRootReferences(t *testing.T) {
 		}
 	}
 }
+
+// TestScenarioEvidenceCellLeavesExistingLinksAlone: a cell that already
+// carries a Markdown link, an image, an autolink, or a bare URL naming an
+// evidence file is a complete reference. It renders exactly as it does with
+// the setting unset, and only plain filename text around it becomes a link.
+func TestScenarioEvidenceCellLeavesExistingLinksAlone(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "01RUN")
+	writeEvidenceFile(t, root, "shot.png", []byte("png"))
+	names := evidenceFileNames(root)
+	opts := testingSummaryOptions{flavor: prBodyHTML, evidenceRoot: root, evidenceLinkBase: evidenceLinkTestBase}
+	linked := "[shot.png](" + evidenceLinkTestBase + "/01RUN/shot.png)"
+	for _, cell := range []string{
+		"[shot.png](https://example.com/shot.png)",
+		"![shot.png](https://example.com/shot.png)",
+		"<https://example.com/shot.png>",
+		"https://example.com/shot.png",
+		"[view shot.png here](https://example.com/shot.png)",
+	} {
+		t.Run(cell, func(t *testing.T) {
+			t.Parallel()
+			if got, want := scenarioEvidenceCell(cell, opts, names), scenarioCell(cell, prBodyHTML); got != want {
+				t.Fatalf("existing reference %q was rewritten to %q, want %q", cell, got, want)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, cell, want string }{
+		{"link then plain name", "[shot.png](https://example.com/shot.png); shot.png", "[shot.png](https://example.com/shot.png); " + linked},
+		{"plain name then bare URL", "see shot.png and https://example.com/shot.png", "see " + linked + " and https://example.com/shot.png"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := scenarioEvidenceCell(tc.cell, opts, names); got != tc.want {
+				t.Fatalf("cell %q = %q, want %q", tc.cell, got, tc.want)
+			}
+		})
+	}
+}
