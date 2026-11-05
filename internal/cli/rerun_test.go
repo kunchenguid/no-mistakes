@@ -347,8 +347,8 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						if currentHead == wantHead {
 							t.Fatal("fixture did not advance the caller HEAD")
 						}
-						if params["caller_head_sha"] != currentHead {
-							t.Errorf("fallback sent stale caller head %s, want current clean head %s", params["caller_head_sha"], currentHead)
+						if params.CallerHeadSHA != currentHead {
+							t.Errorf("fallback sent stale caller head %s, want current clean head %s", params.CallerHeadSHA, currentHead)
 						}
 						gateHead := cliGit(t, gateDir, "rev-parse", "refs/heads/main")
 						wantGate := wantHead
@@ -358,7 +358,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						if gateHead != wantGate {
 							t.Fatalf("gate head = %s, want %s", gateHead, wantGate)
 						}
-						t.Logf("startup=%s current=%s gate=%s request=%s", wantHead, currentHead, gateHead, params["caller_head_sha"])
+						t.Logf("startup=%s current=%s gate=%s request=%s", wantHead, currentHead, gateHead, params.CallerHeadSHA)
 					})
 				}
 			}
