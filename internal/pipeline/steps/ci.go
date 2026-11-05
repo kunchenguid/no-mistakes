@@ -371,11 +371,9 @@ func (s *CIStep) recordHeadRewriteOverride(sctx *pipeline.StepContext, liveHead 
 var errMergedHeadUnproven = errors.New("the provider cannot prove which head merged")
 
 // verifyMergedHead returns the head the provider merged, or a refusal. Hosts
-// that advertise merged proof answer from it; a host without merged proof is
-// asked for the head it reports for the pull request, through the same check
-// read the monitor already trusts (adapters that report an observed head bind
-// it to the pull request's live head). A host that answers neither leaves the
-// merge unproven, which is a refusal and never a completion.
+// that advertise merged proof answer from it; other hosts must supply
+// independent head evidence through observedMergedHead. Neither path can
+// complete a merge whose head is unproven or outside ownHeads.
 func verifyMergedHead(ctx context.Context, host scm.Host, pr *scm.PR, ownHeads []string) (string, error) {
 	if host.Capabilities().MergedProof {
 		return verifyMergedProof(ctx, host, pr, ownHeads)

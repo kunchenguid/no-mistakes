@@ -497,8 +497,9 @@ type Host interface {
 }
 
 // PRBaseBranchReader is implemented by providers that can read the target
-// branch of an existing PR by its durable identity. CI uses it when a run is
-// resumed after repository configuration changes.
+// branch of an existing PR by its durable identity. CI uses the live base for
+// conflict repairs and base-tip monitoring despite repository configuration
+// changes, and to align change scope before restarting at Review.
 type PRBaseBranchReader interface {
 	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
 }
