@@ -90,6 +90,56 @@ func TestCIStep_StalledChecksParkWithoutReadiness(t *testing.T) {
 	}
 }
 
+func TestCIStep_StalledChecksPreserveRequiredReviewBotComments(t *testing.T) {
+	t.Parallel()
+	dir, base, head := stepstest.SetupGitRepo(t)
+	sctx := stepstest.NewTestContextWithDBRecords(t, nil, dir, base, head, config.Commands{})
+	checks := `[{"name":"build","state":"PENDING","bucket":"pending"}]`
+	sctx.Env = append(stepstest.FakeCIGHMergeable(t, "OPEN", checks, "MERGEABLE"),
+		"FAKE_CLI_PR_HEAD_SHA="+head,
+		"FAKE_CLI_EXTERNAL_REVIEWS="+externalReviewPayload(head, "completed", "success", ""),
+		`FAKE_CLI_REVIEW_COMMENTS=[{"author":"coderabbitai","author_id":136622811,"body":"Fix error handling","path":"main.go","line":7}]`)
+	sctx.Config.CI.RequiredReviews = []string{"coderabbit"}
+	sctx.Config.CITimeout = time.Hour
+	url := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &url
+	start := time.Unix(1700000000, 0)
+	now := start
+	step := (&steps.CIStep{}).SetNow(func() time.Time { return now }).SetPollIntervalOverride(5 * time.Minute).SetWaitForNextPoll(func(context.Context, time.Duration) error {
+		now = now.Add(5 * time.Minute)
+		if now.Sub(start) > 20*time.Minute {
+			t.Fatal("stalled check did not park")
+		}
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval || outcome.AutoFixable || now.Sub(start) != 20*time.Minute {
+		t.Fatalf("unexpected outcome at %v: %+v", now.Sub(start), outcome)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("expected bot comment and stalled check: %+v", findings)
+	}
+	var botComment, stalled bool
+	for _, item := range findings.Items {
+		if item.Category == types.FindingCategoryCIReviewBot && item.File == "main.go" && item.Line == 7 && item.Description == "coderabbitai: Fix error handling" && item.Action == types.ActionAskUser {
+			botComment = true
+		}
+		if item.Check == "build" && item.Action == types.ActionAskUser {
+			stalled = true
+		}
+	}
+	if !botComment || !stalled {
+		t.Fatalf("missing anchored bot comment or stalled check: %+v", findings)
+	}
+}
+
 func TestCIStep_StallWindowRequiresContinuousUnchangedEvidence(t *testing.T) {
 	t.Parallel()
 	const queued = `{"__typename":"CheckRun","name":"build","status":"QUEUED","detailsUrl":"https://github.com/test/repo/actions/runs/1/job/1","startedAt":"2026-10-10T00:00:00Z"}`

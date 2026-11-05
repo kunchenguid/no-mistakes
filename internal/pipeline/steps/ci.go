@@ -904,7 +904,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				}
 				unresolvedCancelled = mergeCheckNames(unresolvedCancelled, s.transientReruns.cancelledWithoutRerun(checks))
 				findings := ciObservationFindings(ciIssues{
-					provider: host.Provider(), checks: checks, failing: failing,
+					requiredReviews: requiredReviews(sctx),
+					provider:        host.Provider(), checks: checks, failing: failing,
 					unresolvedCancelled: unresolvedCancelled, mergeConflict: mergeConflict,
 					reruns: s.transientReruns.used, botComments: reviewBotComments(sctx, host, pr, checks),
 					greenBots: reviewBotCommentsAlways(sctx),
