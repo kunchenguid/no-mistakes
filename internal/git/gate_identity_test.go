@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -53,7 +54,7 @@ func TestGateIdentityRefusesNonGateWithoutMutation(t *testing.T) {
 				if err == nil {
 					t.Error("accepted a non-gate target")
 				} else {
-					for _, want := range []string{path, resolved} {
+					for _, want := range []string{fmt.Sprintf("intended %q", path), fmt.Sprintf("resolved %q", resolved)} {
 						if !strings.Contains(err.Error(), want) {
 							t.Errorf("refusal %q does not name path %q", err, want)
 						}
@@ -71,12 +72,16 @@ func TestGateIdentityRefusesNonGateWithoutMutation(t *testing.T) {
 }
 
 func TestGateIdentityBarePathsRemainIdempotent(t *testing.T) {
-	for _, form := range []string{"absolute", "relative", "symlink", "symlink-parent"} {
+	for _, form := range []string{"absolute", "empty-directory", "relative", "symlink", "symlink-parent"} {
 		t.Run(form, func(t *testing.T) {
 			base := t.TempDir()
 			bare := filepath.Join(base, "gate.git")
 			path := bare
 			switch form {
+			case "empty-directory":
+				if err := os.MkdirAll(bare, 0o755); err != nil {
+					t.Fatal(err)
+				}
 			case "relative":
 				cwd, err := os.Getwd()
 				if err != nil {

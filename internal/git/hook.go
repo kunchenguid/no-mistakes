@@ -344,6 +344,11 @@ func IsolateHooksPath(ctx context.Context, bareDir string) error {
 }
 
 func EnsureHooksPathIsolation(ctx context.Context, bareDir string) (bool, error) {
+	verifiedDir, err := bareRepositoryIdentity(ctx, bareDir)
+	if err != nil {
+		return false, err
+	}
+	bareDir = verifiedDir
 	if _, err := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.hookspath"); err != nil {
 		if isWorktreeConfigUnsupported(err) {
 			return false, nil
