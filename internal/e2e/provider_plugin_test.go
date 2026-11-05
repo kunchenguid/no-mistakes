@@ -62,9 +62,7 @@ func TestProviderPluginJourney(t *testing.T) {
 	if run.Status != types.RunFailed || !strings.Contains(deref(run.Error), "cannot prove the live PR identity and exact pushed head") {
 		t.Fatalf("unavailable proof did not fail closed: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	if run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != run.HeadSHA {
-		t.Fatalf("unverified URL persisted or push evidence lost: %+v", run)
-	}
+	assertUnverifiedPRRetainsPush(t, h, run.ID)
 
 	state, err := fakeplugin.Load(statePath)
 	if err != nil {

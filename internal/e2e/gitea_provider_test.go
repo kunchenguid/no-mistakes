@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -75,9 +77,7 @@ func TestGiteaProviderJourney(t *testing.T) {
 	if run.Status != types.RunFailed || !strings.Contains(deref(run.Error), "cannot prove the live PR identity and exact pushed head") {
 		t.Fatalf("unavailable proof did not fail closed: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	if run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != run.HeadSHA {
-		t.Fatalf("unverified URL persisted or push evidence lost: %+v", run)
-	}
+	assertUnverifiedPRRetainsPush(t, h, run.ID)
 
 	invocations := readTeaStubInvocations(t, teaLog)
 	if len(invocations) == 0 {
@@ -111,6 +111,22 @@ func TestGiteaProviderJourney(t *testing.T) {
 	}
 	if sawWrongLogin {
 		t.Fatalf("a tea invocation targeted the wrong login: %+v", invocations)
+	}
+}
+
+func assertUnverifiedPRRetainsPush(t *testing.T, h *Harness, runID string) {
+	t.Helper()
+	database, err := db.OpenReadOnly(paths.WithRoot(h.NMHome).DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	run, err := database.GetRun(runID)
+	if err != nil || run == nil {
+		t.Fatalf("read durable run: %+v %v", run, err)
+	}
+	if run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != run.HeadSHA {
+		t.Fatalf("unverified URL persisted or push evidence lost: %+v", run)
 	}
 }
 
