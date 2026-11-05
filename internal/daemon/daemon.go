@@ -1481,7 +1481,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.PiProfile)
+		runID, err := mgr.handleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.TranscriptHomes, p.PiProfile)
 		if err != nil {
 			return nil, err
 		}

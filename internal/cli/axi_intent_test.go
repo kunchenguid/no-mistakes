@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -250,6 +251,8 @@ func TestAxiRunIntentStrictClaimUsesResolvedBytes(t *testing.T) {
 // A synthetic no-op gate push reaches AXI's existing rerun fallback. The fake
 // server records the request and returns a completed run; no agent or forge runs.
 func TestNoMistakesBinary_IntentTransport(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude account"))
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex account"))
 	bin := buildNoMistakesBinary(t)
 	requests := make(chan ipc.RerunParams, 8)
 	olderDaemonFixture(t, nil, func(srv *ipc.Server) {
@@ -305,6 +308,10 @@ func TestNoMistakesBinary_IntentTransport(t *testing.T) {
 		}
 		select {
 		case request := <-requests:
+			wantHomes, err := runenv.CaptureTranscriptHomes()
+			if err != nil || request.TranscriptHomes == nil || *request.TranscriptHomes != *wantHomes {
+				t.Fatalf("rerun lost caller homes: %+v, %v", request.TranscriptHomes, err)
+			}
 			if request.Intent != want || request.RepoID != repo.ID || request.CallerHeadSHA != head {
 				t.Fatalf("request = %+v; want intent %q, repo %q, head %q", request, want, repo.ID, head)
 			}

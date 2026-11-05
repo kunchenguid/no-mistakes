@@ -1027,7 +1027,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 		baseSHA = strings.TrimSpace(params.ReconciledPreviousHead)
 	}
 	if params.LaunchNonce != "" {
-		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
+		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "push", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile)
 		if err != nil {
 			return "", err
 		}
@@ -1036,7 +1036,7 @@ func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushRec
 	if m.restart.beforeStartRun != nil {
 		m.restart.beforeStartRun()
 	}
-	runID, err := m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
+	runID, err := m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile)
 	if errors.Is(err, errRestartPending) {
 		// The restart was scheduled while this push waited for its branch:
 		// hold it rather than drop it, since the hook never retries. A
@@ -1065,13 +1065,13 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartF
 	if repo == nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("unknown repo %s", params.RepoID)
 	}
-	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
+	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, params.OmitIntent, "fresh", params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.TranscriptHomes, params.PiProfile)
 }
 
 // startFreshLaunch owns proof identity under the branch lock. A nonce may
 // replay only its immutable submitted-head, generation, and persisted-intent
 // digest. It must never fall back to ordinary same-head reattachment.
-func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch string, omitIntent bool, trigger, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (ipc.LaunchReceipt, error) {
+func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, validationGeneration, prBaseBranch string, omitIntent bool, trigger, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...*agentcfg.PiProfile) (ipc.LaunchReceipt, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return ipc.LaunchReceipt{}, err
@@ -1177,7 +1177,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				inheritedPRURL = inheritablePRURL(runs[0])
 			}
 		}
-		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, request)
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, homes, request)
 		if err != nil {
 			return "", err
 		}
@@ -1319,6 +1319,10 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 // A supplied clean caller head must match the selected head before any run
 // starts or is superseded. It never changes head selection.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
+	return m.handleRerun(ctx, repoID, branch, previousRunID, skipSteps, intent, prBaseBranch, omitIntent, callerHeadSHA, planID, closingIssues, prText, nil, profiles...)
+}
+
+func (m *RunManager) handleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...*agentcfg.PiProfile) (string, error) {
 	if m.restartPending() {
 		return "", errRestartPending
 	}
@@ -1405,7 +1409,10 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	// Closing references are structured run metadata and survive reruns: an
 	// explicit request is added to, never replaces, what the selected run carried.
 	closingIssues = append(append([]string(nil), selectedRun.ClosingIssueRefs...), closingIssues...)
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, inheritRunPRText(selectedRun, prText), profiles...)
+	if homes == nil {
+		homes = selectedRun.TranscriptHomes
+	}
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, selectedRun.OmitIntent || omitIntent, inheritablePRURL(selectedRun), planID, closingIssues, inheritRunPRText(selectedRun, prText), homes, profiles...)
 }
 
 // inheritRunPRText keeps the selected run's supplied PR text, field by field,
@@ -1641,20 +1648,20 @@ func loadRepoConfigAtSHA(ctx context.Context, dir, sha, purpose string) (*config
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
-	return m.startRunWithPRText(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, prBaseBranch, omitIntent, planID, closingIssues, db.RunPRText{}, profiles...)
+	return m.startRunWithPRText(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, prBaseBranch, omitIntent, planID, closingIssues, db.RunPRText{}, nil, profiles...)
 }
 
 // startRunWithPRText is startRun with caller-supplied PR text.
-func (m *RunManager) startRunWithPRText(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, omitIntent, "", planID, closingIssues, prText, profiles...)
+func (m *RunManager) startRunWithPRText(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...*agentcfg.PiProfile) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, omitIntent, "", planID, closingIssues, prText, homes, profiles...)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, homes *runenv.TranscriptHomes, profiles ...*agentcfg.PiProfile) (string, error) {
 	return m.withBranchLock(repo.ID, branch, func() (string, error) {
-		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, profiles...)
+		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, prText, nil, homes, profiles...)
 	})
 }
 
@@ -1670,7 +1677,7 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 // startRunWithIntentSourceLocked performs run creation while the caller owns
 // the repository/branch lock. Proof fields are empty for ordinary launches,
 // and retry is nil for every run that does not continue a failed one.
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, profiles ...*agentcfg.PiProfile) (string, error) {
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, prText db.RunPRText, retry *retryLaunch, homes *runenv.TranscriptHomes, profiles ...*agentcfg.PiProfile) (string, error) {
 	sequence := m.reserveAdmission()
 	defer m.releaseAdmission(sequence)
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
@@ -1686,6 +1693,9 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	if m.shuttingDown.Load() {
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
+	}
+	if err := homes.Validate(); err != nil {
+		return "", err
 	}
 	if m.restartPending() {
 		trackStartFailure("restart_pending")
@@ -1833,7 +1843,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// pr.publish_intent is enforced independently by the PR step.
 	storedOmitIntent := omitIntent || (globalCfg != nil && !globalCfg.Intent.PublishesIntentByDefault())
 
-	run, err := m.db.InsertRunWithPRText(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, pin)
+	run, err := m.db.InsertRunWithTranscriptHomes(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, storedOmitIntent, plan, prText, homes, pin)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)

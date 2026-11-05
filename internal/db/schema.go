@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS runs (
     base_sha                TEXT NOT NULL,
     worktree_dir            TEXT,
     evidence_dir            TEXT,
+	transcript_homes        TEXT,
     submitted_head_sha      TEXT,
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
@@ -462,4 +463,7 @@ CREATE INDEX IF NOT EXISTS idx_step_rounds_step_round ON step_rounds (step_resul
 CREATE INDEX IF NOT EXISTS idx_runs_repo_branch_created_id ON runs (repo_id, branch, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_status_created_id ON runs (status, created_at DESC, id DESC);
 COMMIT;`,
+	// Caller transcript roots are immutable launch context. Historical runs
+	// retain NULL and the pre-existing default discovery paths.
+	`ALTER TABLE runs ADD COLUMN transcript_homes TEXT`,
 }

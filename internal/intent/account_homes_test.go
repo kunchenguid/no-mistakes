@@ -3,13 +3,14 @@ package intent
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
 
 // Every transcript and SQLite row is invented, including the competing account.
@@ -79,15 +80,7 @@ func TestExtractAccountHomes(t *testing.T) {
 					Threshold: 0.2, Readers: []Reader{reader}, Summarizer: accountSummarizer{}, Cache: cache,
 				}
 				if root != "" {
-					// JSON keeps this regression runnable against the unfixed API:
-					// that version ignores the homes and reads the competing default.
-					b, err := json.Marshal(map[string]any{"TranscriptHomes": map[string]string{"claude_config_dir": root, "codex_home": root}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := json.Unmarshal(b, &p); err != nil {
-						t.Fatal(err)
-					}
+					p.TranscriptHomes = &runenv.TranscriptHomes{ClaudeConfigDir: root, CodexHome: root}
 				}
 				return Extract(context.Background(), p)
 			}

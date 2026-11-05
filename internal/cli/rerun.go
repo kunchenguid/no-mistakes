@@ -9,6 +9,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/spf13/cobra"
 )
 
@@ -96,8 +97,12 @@ func newRerunCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				homes, err := runenv.CaptureTranscriptHomes()
+				if err != nil {
+					return err
+				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 

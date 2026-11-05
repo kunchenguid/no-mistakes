@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/closingissues"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/verificationplan"
 )
@@ -88,6 +89,8 @@ type Run struct {
 	IntentCheckJSON *string `json:"-"`
 	IntentSessionID *string
 	IntentScore     *float64
+	// TranscriptHomes is immutable caller context, local to discovery.
+	TranscriptHomes *runenv.TranscriptHomes `json:"-"`
 	// LaunchNonce, LaunchValidationGeneration, and LaunchIntentDigest are
 	// nullable for ordinary and historical rows. Together they bind one opaque
 	// proof request to this run; only receipt-specific IPC exposes them.
@@ -131,7 +134,7 @@ type Run struct {
 	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), ci_released_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, %s, launch_nonce, launch_validation_generation, launch_intent_digest, launch_receipt_claimed_at, pr_base_branch, COALESCE(omit_intent, 0), pi_profile, COALESCE(quota_routing, ''), verification_plan, closing_issue_refs, closing_issue_refs_locked_at, pr_title, pr_body, %s, %s, created_at, updated_at`
 
 func (d *DB) runColumns() string {
 	intentCheck := "NULL"
@@ -146,7 +149,11 @@ func (d *DB) runColumns() string {
 	if d.hasColumn("runs", "evidence_dir") {
 		evidenceDir = "evidence_dir"
 	}
-	return fmt.Sprintf(runColumns, intentCheck, evidenceDir)
+	transcriptHomes := "NULL"
+	if d.hasColumn("runs", "transcript_homes") {
+		transcriptHomes = "transcript_homes"
+	}
+	return fmt.Sprintf(runColumns, intentCheck, evidenceDir, transcriptHomes)
 }
 
 func scanRun(row interface {
@@ -163,7 +170,7 @@ func scanRun(row interface {
 		&r.LaunchNonce, &r.LaunchValidationGeneration, &r.LaunchIntentDigest, &r.LaunchReceiptClaimedAt,
 		&r.PRBaseBranch, &r.OmitIntent, &r.PiProfile, &r.QuotaRouting, &r.VerificationPlan,
 		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
-		&r.PRTitle, &r.PRBody, &r.EvidenceDir,
+		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -248,6 +255,15 @@ func (r *Run) PRTextDigest() string {
 // InsertRunWithPRText is InsertRunWithIntentAndLaunchNonce that also stores
 // the caller-supplied PR text in the same row write.
 func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, profiles ...*agentcfg.PiProfile) (*Run, error) {
+	return d.InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, prText, nil, profiles...)
+}
+
+// InsertRunWithTranscriptHomes records discovery roots in the creation write,
+// before a run can be observed or resumed by the daemon.
+func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, profiles ...*agentcfg.PiProfile) (*Run, error) {
+	if err := homes.Validate(); err != nil {
+		return nil, err
+	}
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err
@@ -265,6 +281,7 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 		NoMistakesVersion:  &version,
 		NoMistakesBuildSHA: &buildSHA,
 		PiProfile:          pin,
+		TranscriptHomes:    homes,
 		Status:             types.RunPending,
 		CreatedAt:          ts,
 		UpdatedAt:          ts,
@@ -296,8 +313,8 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 		r.PRBody = &prText.Body
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
