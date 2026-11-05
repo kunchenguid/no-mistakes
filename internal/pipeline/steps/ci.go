@@ -698,6 +698,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		}
 
+		if mergeConflict && unlimited {
+			tipCtx, cancel := context.WithTimeout(ctx, defaultBaseBranchTipResolveWindow)
+			if tip, resolved := baseBranchTip(tipCtx); resolved {
+				pollBaseTip = tip
+			}
+			cancel()
+		}
+
 		// Check CI status - wait for all checks to complete before escalating
 		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, observedHead, _, err := getCIChecks(ctx, host, pr)
@@ -717,7 +725,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if err != nil {
 			pending = pendingObservations{window: pending.window}
 			previousRepair, _ := decodeLastFixedChecks(s.lastFixedChecks)
-			if mergeConflict && !previousRepair.MergeConflict {
+			if mergeConflict && (!previousRepair.MergeConflict || previousRepair.conflictBaseChanged(pollBaseTip)) {
 				if readyErr := setCIMonitorReadiness(sctx, false, false); readyErr != nil {
 					return nil, readyErr
 				}
@@ -943,13 +951,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
 				lastMonitorLog = ciMonitorStatus{}
-				if mergeConflict && unlimited {
-					tipCtx, cancel := context.WithTimeout(ctx, defaultBaseBranchTipResolveWindow)
-					if tip, resolved := baseBranchTip(tipCtx); resolved {
-						pollBaseTip = tip
-					}
-					cancel()
-				}
 				if repairRerunStarted {
 					// This poll is the one that showed the repaired head's
 					// checks starting; the issues beside them may predate the

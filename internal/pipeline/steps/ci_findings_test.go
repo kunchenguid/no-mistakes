@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/plugin"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -575,7 +576,7 @@ func TestCIResumedRepairStaleHeadErrorWaitsInsteadOfFailing(t *testing.T) {
 func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
 	t.Parallel()
 	for _, category := range []string{types.FindingCategoryCIMergeConflict, types.FindingCategoryCIBehindBase} {
-		for _, snapshot := range []string{"empty", "partial", "stale-head", "head-error"} {
+		for _, snapshot := range []string{"empty", "partial", "stale-head", "head-error", "read-error", "protocol-error", "plugin-timeout"} {
 			t.Run(category+"/"+snapshot, func(t *testing.T) {
 				t.Parallel()
 				dir, baseSHA, headSHA := setupGitRepo(t)
@@ -601,8 +602,20 @@ func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
 					host.observedHead = "other-head"
 				case "head-error":
 					host.err = scm.ErrHeadChanged
+				case "read-error":
+					host.err = errors.New("checks unavailable")
+				case "protocol-error":
+					host.err = plugin.ErrProtocol
+				case "plugin-timeout":
+					host.err = fmt.Errorf("%w: %w", plugin.ErrProtocol, plugin.ErrTimeout)
 				}
 				outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+				if snapshot == "protocol-error" || snapshot == "plugin-timeout" {
+					if !errors.Is(err, plugin.ErrProtocol) || outcome != nil || len(ag.calls) != 0 {
+						t.Fatalf("repair = %#v, %v, calls %d; want plugin failure without repair", outcome, err, len(ag.calls))
+					}
+					return
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -626,8 +639,8 @@ func TestCIResumedRepairRejectedChecksStillRepairsRebase(t *testing.T) {
 
 func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
 	t.Parallel()
-	for _, withRejectedCheck := range []bool{false, true} {
-		t.Run(fmt.Sprint(withRejectedCheck), func(t *testing.T) {
+	for _, snapshot := range []string{"no-check", "empty", "read-error"} {
+		t.Run(snapshot, func(t *testing.T) {
 			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
@@ -641,7 +654,7 @@ func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
 			if len(selected.Items) != 1 || selected.Items[0].CheckID != "github-check-run:42" {
 				t.Fatalf("green comment finding = %+v", selected.Items)
 			}
-			if withRejectedCheck {
+			if snapshot != "no-check" {
 				selected.Items = append(selected.Items, Finding{ID: "failed", Category: types.FindingCategoryCICheck, Check: "test", Description: "rejected-check-marker"})
 			}
 			encoded, err := json.Marshal(selected)
@@ -650,6 +663,9 @@ func TestCIResumedRepairGreenReviewBotCommentReachesFixer(t *testing.T) {
 			}
 			sctx.PreviousFindings = string(encoded)
 			host := &completionSnapshotHost{checks: checks}
+			if snapshot == "read-error" {
+				host.err = errors.New("checks unavailable")
+			}
 			outcome, err := (&CIStep{}).repairFromFindings(sctx, host, &scm.PR{Number: "42"})
 			if err != nil {
 				t.Fatal(err)
