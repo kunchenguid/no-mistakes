@@ -71,8 +71,11 @@ func (h *Host) VerifyPRHead(ctx context.Context, pr *scm.PR, branch, pushedHead 
 	if live.Head.Ref != branch || !strings.EqualFold(live.Head.Repo.FullName, source) || !strings.EqualFold(live.Head.Repo.Owner.Login, repoOwner(source)) {
 		return fmt.Errorf("verify PR head: source repository, owner or branch does not match the push target")
 	}
-	if !completeObjectID(live.Head.SHA) || !strings.EqualFold(live.Head.SHA, pushedHead) {
-		return fmt.Errorf("verify PR head: %w: live head %q does not equal successfully pushed head %s", scm.ErrHeadChanged, live.Head.SHA, pushedHead)
+	if !completeObjectID(live.Head.SHA) {
+		return fmt.Errorf("verify PR head: live head is missing or invalid")
+	}
+	if !strings.EqualFold(live.Head.SHA, pushedHead) {
+		return fmt.Errorf("verify PR head: %w does not equal successfully pushed head %s", &scm.PRHeadChangedError{HeadSHA: live.Head.SHA}, pushedHead)
 	}
 	return nil
 }

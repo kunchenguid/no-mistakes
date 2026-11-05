@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 func TestVerifyPRHead(t *testing.T) {
 	t.Parallel()
 	for _, fork := range []string{"", "fork/renamed"} {
-		for _, fault := range []string{"", "sha", "missing_sha", "branch", "owner", "source", "repository", "url", "number", "closed", "merged", "missing_state", "missing_merged", "null", "malformed", "lookup"} {
+		for _, fault := range []string{"", "sha", "missing_sha", "branch", "owner", "owner_and_sha", "source", "repository", "url", "number", "closed", "merged", "missing_state", "missing_merged", "null", "malformed", "lookup"} {
 			t.Run(fork+"/"+fault, func(t *testing.T) {
 				t.Parallel()
 				head := strings.Repeat("a", 40)
@@ -32,6 +33,9 @@ func TestVerifyPRHead(t *testing.T) {
 					liveHead["ref"] = "other"
 				case "owner":
 					repo["owner"] = map[string]any{"login": "other"}
+				case "owner_and_sha":
+					repo["owner"] = map[string]any{"login": "other"}
+					liveHead["sha"] = strings.Repeat("b", 40)
 				case "source":
 					repo["full_name"] = "other/repo"
 				case "repository":
@@ -67,6 +71,13 @@ func TestVerifyPRHead(t *testing.T) {
 				err = h.VerifyPRHead(context.Background(), &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}, "feature", head)
 				if (err != nil) != (fault != "") {
 					t.Fatalf("fault %q: %v", fault, err)
+				}
+				var changed *scm.PRHeadChangedError
+				if errors.As(err, &changed) != (fault == "sha") {
+					t.Fatalf("only a valid identity with a different SHA may be retried: %v", err)
+				}
+				if fault == "sha" && (changed.HeadSHA != strings.Repeat("b", 40) || !errors.Is(err, scm.ErrHeadChanged)) {
+					t.Fatalf("missing observed head or mismatch classification: %v", err)
 				}
 			})
 		}

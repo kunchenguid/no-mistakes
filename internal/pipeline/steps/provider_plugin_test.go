@@ -96,7 +96,7 @@ func TestProviderPlugin_PRStepCreatesPRThroughPlugin(t *testing.T) {
 	statePath, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{})
 	completeCleanReview(t, sctx)
 
-	outcome, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx)
+	outcome, err := (&PRStep{}).Execute(sctx)
 	if err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
@@ -114,6 +114,9 @@ func TestProviderPlugin_PRStepCreatesPRThroughPlugin(t *testing.T) {
 	pr := state.PRs[0]
 	if pr.HeadBranch != "feature" || pr.BaseBranch != "main" || !pr.Draft || pr.Title == "" || !strings.Contains(pr.Body, "feature.txt") {
 		t.Fatalf("created PR = %+v", pr)
+	}
+	if !strings.Contains(pr.Body, "PR head proof unavailable for provider plugin:ssm") {
+		t.Fatalf("missing provider proof limitation: %s", pr.Body)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
@@ -138,7 +141,7 @@ func TestProviderPlugin_PRStepPublishesASuppliedBodyAndReadsItBack(t *testing.T)
 	title, body := "Supplied title", "Supplied narrative.\n"
 	sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
 
-	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
 	state, err := fakeplugin.Load(statePath)
@@ -166,7 +169,7 @@ func TestProviderPlugin_PRStepUpdatesExistingPR(t *testing.T) {
 	})
 	completeCleanReview(t, sctx)
 
-	outcome, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx)
+	outcome, err := (&PRStep{}).Execute(sctx)
 	if err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
@@ -283,7 +286,7 @@ func TestProviderPlugin_PRStepClampsBodyToDeclaredLimit(t *testing.T) {
 	statePath, _ := fakeProviderPlugin(t, sctx, fakeplugin.State{MaxPRBodyChars: 600})
 	completeCleanReview(t, sctx)
 
-	if _, err := newPRStepWithSyntheticProof(t, sctx).Execute(sctx); err != nil {
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatalf("PR step: %v", err)
 	}
 	state, err := fakeplugin.Load(statePath)
@@ -295,6 +298,52 @@ func TestProviderPlugin_PRStepClampsBodyToDeclaredLimit(t *testing.T) {
 	}
 	if got := scm.PRBodyLen(state.PRs[0].Body); got > 600 {
 		t.Fatalf("PR body is %d characters, over the declared limit 600", got)
+	}
+	if !strings.Contains(state.PRs[0].Body, "PR head proof unavailable for provider plugin:ssm") {
+		t.Fatalf("body budget dropped the proof limitation: %s", state.PRs[0].Body)
+	}
+}
+
+func TestProviderPlugin_PRStepRecordsUnavailableHeadProof(t *testing.T) {
+	for _, mode := range []string{config.PRAppendixFull, config.PRAppendixCollapsed, config.PRAppendixMinimal} {
+		for _, route := range []string{"create", "update", "owned"} {
+			t.Run(mode+"/"+route, func(t *testing.T) {
+				t.Parallel()
+				dir, base, head := setupGitRepo(t)
+				sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+				seed := fakeplugin.State{}
+				if route == "update" {
+					seed.PRs = []fakeplugin.PR{{Number: "7", URL: "https://git.example.com/team/repo/pulls/7", HeadBranch: "feature", BaseBranch: "main", State: "open", Title: "existing", Body: "old body"}}
+				}
+				statePath, _ := fakeProviderPlugin(t, sctx, seed)
+				completeCleanReview(t, sctx)
+				sctx.Config.PR.Appendix = mode
+				if route == "owned" {
+					title, body := "Supplied title", "Author narrative.\n"
+					sctx.Run.PRTitle, sctx.Run.PRBody = &title, &body
+				}
+				var logs []string
+				sctx.Log = func(line string) { logs = append(logs, line) }
+				step := &PRStep{}
+				out, err := step.Execute(sctx)
+				if err != nil || out == nil || out.PRURL == "" {
+					t.Fatalf("publication failed: %+v %v", out, err)
+				}
+				if route == "owned" {
+					if _, err := step.Execute(sctx); err != nil {
+						t.Fatalf("owned update failed: %v", err)
+					}
+				}
+				state, err := fakeplugin.Load(statePath)
+				if err != nil || len(state.PRs) != 1 {
+					t.Fatalf("published state: %+v %v", state, err)
+				}
+				const notice = "PR head proof unavailable for provider plugin:ssm; the exact pushed head was not verified."
+				if !strings.Contains(state.PRs[0].Body, notice) || !strings.Contains(strings.Join(logs, "\n"), notice) {
+					t.Fatalf("missing limitation record: logs=%v body=%s", logs, state.PRs[0].Body)
+				}
+			})
+		}
 	}
 }
 

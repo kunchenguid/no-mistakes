@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
@@ -71,28 +72,33 @@ func (h *prProofFixtureHost) GetPRContent(ctx context.Context, pr *scm.PR) (scm.
 
 func (h *prProofFixtureHost) MaxPRBodyChars() int { return scm.HostMaxPRBodyChars(h.Host) }
 
-func TestPRStep_ProviderWithoutProofCannotPersistAURL(t *testing.T) {
+func TestPRStep_ProviderWithoutProofPublishesWithNotice(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
 	sctx.Env, _ = fakeGH(t, "")
+	completeCleanReview(t, sctx)
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
 	host, reason := buildHost(sctx, resolvedProvider(sctx))
 	if host == nil {
 		t.Fatal(reason)
 	}
-	// Erase only the optional proof interface at the external SCM boundary.
 	step := &PRStep{host: struct{ scm.Host }{host}}
 	out, err := step.Execute(sctx)
-	if !errors.Is(err, scm.ErrUnsupported) || out != nil {
-		t.Fatalf("unavailable proof succeeded: %+v %v", out, err)
+	if err != nil || out == nil || out.PRURL == "" {
+		t.Fatalf("provider without proof failed: %+v %v", out, err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "PR head proof unavailable") || !strings.Contains(readPRBodyFile(t, envEntry(sctx.Env, "FAKE_CLI_PR_BODY_FILE")), "PR head proof unavailable") {
+		t.Fatal("provider proof limitation was not recorded in output and body")
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != head {
-		t.Fatalf("unverified publication or lost custody: %+v %v", run, err)
+	if err != nil || run.PRURL == nil || *run.PRURL != out.PRURL || run.LastPushedSHA == nil || *run.LastPushedSHA != head {
+		t.Fatalf("missing publication or lost custody: %+v %v", run, err)
 	}
 }
 
-func TestPRStep_RefusesUnverifiedGitLabPR(t *testing.T) {
+func TestPRStep_GitLabPublishesWithoutHeadProof(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
@@ -100,12 +106,12 @@ func TestPRStep_RefusesUnverifiedGitLabPR(t *testing.T) {
 	sctx.Env, _ = fakeGlab(t, "")
 	recordPRTestPush(t, sctx)
 	out, err := (&PRStep{}).Execute(sctx)
-	if !errors.Is(err, scm.ErrUnsupported) || out != nil {
-		t.Fatalf("unavailable provider proof succeeded: %+v %v", out, err)
+	if err != nil || out == nil || out.PRURL == "" {
+		t.Fatalf("provider without proof failed: %+v %v", out, err)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || run.PRURL != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != head {
-		t.Fatalf("unverified publication or lost custody: %+v %v", run, err)
+	if err != nil || run.PRURL == nil || *run.PRURL != out.PRURL || run.LastPushedSHA == nil || *run.LastPushedSHA != head {
+		t.Fatalf("missing publication or lost custody: %+v %v", run, err)
 	}
 }
 
@@ -146,15 +152,13 @@ func recordPRTestPush(t *testing.T, sctx *pipeline.StepContext) {
 	}
 }
 
-func TestVerifyPublishedPR_ProviderWithoutProofFailsClosed(t *testing.T) {
+func TestVerifyPublishedPR_ProviderWithoutProofKeepsPriorBehavior(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
 	sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
-	// Embedding Host supplies the ordinary provider methods, but supplies no
-	// PRHeadVerifier. Publication must not infer proof from the older interface.
 	host := struct{ scm.Host }{}
-	if err := verifyPublishedPR(sctx, host, nil); !errors.Is(err, scm.ErrUnsupported) {
-		t.Fatalf("missing capability was not refused: %v", err)
+	if err := verifyPublishedPR(sctx, host, nil); err != nil {
+		t.Fatalf("missing optional capability blocked publication: %v", err)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != head || run.PRURL != nil {
@@ -166,7 +170,7 @@ func TestVerifyPublishedPR_ProviderWithoutProofFailsClosed(t *testing.T) {
 // durable SQLite push binding are independent of the synthetic forge response.
 func TestPRStep_ExactPushedHeadPostcondition(t *testing.T) {
 	for _, route := range []string{"create", "update", "persisted"} {
-		for _, fault := range []string{"", "wrong_sha", "moved_head", "missing_sha", "wrong_repository", "wrong_source_repository", "wrong_owner", "wrong_branch", "closed", "merged", "unreadable", "lookup_failed", "missing_push", "wrong_push_target", "wrong_push_ref"} {
+		for _, fault := range []string{"", "wrong_sha", "moved_head", "missing_sha", "wrong_repository", "wrong_source_repository", "wrong_owner", "wrong_branch", "closed", "merged", "unreadable", "lookup_failed", "missing_push", "active_push", "wrong_push_target", "wrong_push_ref"} {
 			t.Run(route+"/"+fault, func(t *testing.T) {
 				t.Parallel()
 				dir, base, head := setupGitRepo(t)
@@ -240,6 +244,16 @@ func TestPRStep_ExactPushedHeadPostcondition(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if fault == "active_push" {
+					if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if fault == "missing_push" || fault == "active_push" || fault == "wrong_push_target" || fault == "wrong_push_ref" {
+					if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"95"}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				var logs []string
 				sctx.Log = func(line string) { logs = append(logs, line) }
 				outcome, executeErr := (&PRStep{}).Execute(sctx)
@@ -273,6 +287,15 @@ func TestPRStep_ExactPushedHeadPostcondition(t *testing.T) {
 				if fault == "" && (stored.PRURL == nil || *stored.PRURL != url) {
 					t.Fatalf("verified URL not persisted: %+v", stored.PRURL)
 				}
+				if fault == "missing_push" || fault == "active_push" || fault == "wrong_push_target" || fault == "wrong_push_ref" {
+					calls, err := os.ReadFile(logFile)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if stored.ClosingIssueRefsLockedAt != nil || strings.Contains(string(calls), "pr create") || strings.Contains(string(calls), "--method PATCH") {
+						t.Fatalf("invalid binding claimed references or mutated the forge: %+v\n%s", stored, calls)
+					}
+				}
 				if fault == "moved_head" && route != "create" {
 					calls, err := os.ReadFile(logFile)
 					if err != nil {
@@ -284,5 +307,100 @@ func TestPRStep_ExactPushedHeadPostcondition(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type prLagFixtureHost struct {
+	scm.Host
+	verify func(context.Context, *scm.PR, string, string) error
+}
+
+func (h *prLagFixtureHost) VerifyPRHead(ctx context.Context, pr *scm.PR, branch, head string) error {
+	return h.verify(ctx, pr, branch, head)
+}
+
+func TestPRStep_WaitsForPreviousPushedHead(t *testing.T) {
+	for _, route := range []string{"create", "update", "persisted"} {
+		t.Run(route, func(t *testing.T) {
+			t.Parallel()
+			dir, base, head := setupGitRepo(t)
+			sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			sctx.Run.LastPushedSHA = &base
+			url := "https://github.com/test/repo/pull/42"
+			discovered := url
+			if route == "create" {
+				discovered = ""
+			}
+			if route == "persisted" {
+				discovered = ""
+				sctx.Run.PRURL = &url
+				if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, url); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sctx.Env, _ = fakeGH(t, discovered)
+			host, reason := buildHost(sctx, resolvedProvider(sctx))
+			if host == nil {
+				t.Fatal(reason)
+			}
+			calls := 0
+			step := &PRStep{host: &prLagFixtureHost{Host: host, verify: func(_ context.Context, pr *scm.PR, branch, pushed string) error {
+				calls++
+				if pr == nil || branch != "feature" || pushed != head {
+					t.Fatalf("unbound proof request: %+v %s %s", pr, branch, pushed)
+				}
+				if calls == 1 {
+					return &scm.PRHeadChangedError{HeadSHA: base}
+				}
+				return nil
+			}}}
+			out, err := step.Execute(sctx)
+			if err != nil || out == nil || out.PRURL == "" || calls < 2 {
+				t.Fatalf("lagging previous head did not converge: %+v %v calls=%d", out, err, calls)
+			}
+		})
+	}
+}
+
+func TestVerifyPublishedPR_RetriesOnlyPreviousHeadWithAHardCap(t *testing.T) {
+	for _, fault := range []string{"previous", "unrelated", "missing", "lookup", "no_previous"} {
+		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
+			dir, base, head := setupGitRepo(t)
+			sctx := newPRTestContext(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+			sctx.Run.LastPushedSHA = &base
+			if fault == "no_previous" {
+				sctx.Run.LastPushedSHA = nil
+			}
+			calls := 0
+			host := &prLagFixtureHost{verify: func(ctx context.Context, _ *scm.PR, _, _ string) error {
+				calls++
+				if _, ok := ctx.Deadline(); !ok {
+					t.Fatal("proof read has no deadline")
+				}
+				switch fault {
+				case "unrelated":
+					return &scm.PRHeadChangedError{HeadSHA: strings.Repeat("a", 40)}
+				case "missing":
+					return &scm.PRHeadChangedError{}
+				case "lookup":
+					return errors.New("lookup failed")
+				default:
+					return &scm.PRHeadChangedError{HeadSHA: base}
+				}
+			}}
+			start := time.Now()
+			err := verifyPublishedPR(sctx, host, &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"})
+			if err == nil {
+				t.Fatal("unverified head succeeded")
+			}
+			if fault == "previous" {
+				if !errors.Is(err, context.DeadlineExceeded) || calls < 2 || time.Since(start) > 5*time.Second {
+					t.Fatalf("previous head did not stop at deadline: %v calls=%d elapsed=%s", err, calls, time.Since(start))
+				}
+			} else if calls != 1 {
+				t.Fatalf("retried %s: %d reads", fault, calls)
+			}
+		})
 	}
 }

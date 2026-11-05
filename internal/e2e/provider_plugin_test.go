@@ -15,8 +15,7 @@ import (
 // TestProviderPluginJourney drives a full run against a host no built-in
 // provider recognizes, with PR and CI handled by an operator-configured
 // provider plugin: the global provider_plugins block is read by the real
-// loader and the PR step refuses to certify an object when the current plugin
-// protocol cannot supply the required source repository and owner proof.
+// loader.
 // The plugin is the reference fake (internal/scm/plugin/fakeplugin) behind
 // the fakeagent binary, so the test exercises only the public CLI contract.
 func TestProviderPluginJourney(t *testing.T) {
@@ -59,10 +58,16 @@ func TestProviderPluginJourney(t *testing.T) {
 	h.PushToGate(branchName)
 
 	run := h.WaitForRun(branchName, 150*time.Second)
-	if run.Status != types.RunFailed || !strings.Contains(deref(run.Error), "cannot prove the live PR identity and exact pushed head") {
-		t.Fatalf("unavailable proof did not fail closed: status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	assertUnverifiedPRRetainsPush(t, h, run.ID)
+	wantURL := "https://" + pluginHost + "/" + repoPath + "/pulls/1"
+	if run.PRURL == nil || *run.PRURL != wantURL {
+		t.Fatalf("PR URL = %v, want %s", run.PRURL, wantURL)
+	}
+	if !strings.Contains(readStepLog(t, h, run.ID, "pr"), "PR head proof unavailable for provider plugin:ssm") {
+		t.Fatal("run output did not record unavailable head proof")
+	}
 
 	state, err := fakeplugin.Load(statePath)
 	if err != nil {
@@ -72,11 +77,14 @@ func TestProviderPluginJourney(t *testing.T) {
 		t.Fatalf("plugin PRs = %+v", state.PRs)
 	}
 	pr := state.PRs[0]
-	if pr.HeadBranch != branchName || pr.BaseBranch != "main" || pr.State != "open" {
-		t.Fatalf("plugin PR = %+v, want %s -> main still open", pr, branchName)
+	if pr.HeadBranch != branchName || pr.BaseBranch != "main" || pr.State != "merged" || pr.HeadSHA != run.HeadSHA {
+		t.Fatalf("plugin PR = %+v, want %s -> main merged at %s", pr, branchName, run.HeadSHA)
 	}
 	if strings.TrimSpace(pr.Body) == "" || strings.TrimSpace(pr.Title) == "" {
 		t.Fatalf("PR title/body not published: title=%q body=%q", pr.Title, pr.Body)
+	}
+	if !strings.Contains(pr.Body, "PR head proof unavailable for provider plugin:ssm") {
+		t.Fatalf("published body did not record unavailable head proof: %s", pr.Body)
 	}
 	t.Logf("PR title: %s\nPR body:\n%s", pr.Title, pr.Body)
 
@@ -94,7 +102,7 @@ func TestProviderPluginJourney(t *testing.T) {
 			t.Fatalf("remote URL carries credentials: %q", call.Flag("remote-url"))
 		}
 	}
-	for _, op := range []string{"status", "pr find", "pr create"} {
+	for _, op := range []string{"status", "pr find", "pr create", "pr view", "pr checks", "pr merged"} {
 		if ops[op] == 0 {
 			t.Fatalf("pipeline never ran %q; subcommands: %v", op, ops)
 		}
@@ -102,8 +110,5 @@ func TestProviderPluginJourney(t *testing.T) {
 	if ops["pr create"] != 1 {
 		t.Fatalf("pr create ran %d times; subcommands: %v", ops["pr create"], ops)
 	}
-	if ops["pr checks"] != 0 || ops["pr merged"] != 0 {
-		t.Fatalf("unverified PR reached CI: %v", ops)
-	}
-	t.Logf("plugin subcommands: %v; unverified PR URL was not persisted", ops)
+	t.Logf("plugin subcommands: %v\nPR: %s merged at %s", ops, *run.PRURL, pr.HeadSHA)
 }

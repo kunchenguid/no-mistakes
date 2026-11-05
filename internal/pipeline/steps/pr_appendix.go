@@ -65,7 +65,11 @@ func wrapValidation(inner string) string {
 // carries that comment inside a text fence, and the fence is kept so the
 // marker stays visible there.
 func minimalTail(risk, pipelineMD string, provider scm.Provider) string {
-	return joinBlocks(oneLineRisk(neutralizeAttestationMarkers(provider, risk)), noMistakesPRSignature, carriedAttestation(pipelineMD))
+	intro := noMistakesPRSignature
+	if rest, ok := strings.CutPrefix(pipelineMD, "## Pipeline\n\n"); ok {
+		intro, _, _ = strings.Cut(rest, "\n\n")
+	}
+	return joinBlocks(oneLineRisk(neutralizeAttestationMarkers(provider, risk)), intro, carriedAttestation(pipelineMD))
 }
 
 func oneLineRisk(risk string) string {

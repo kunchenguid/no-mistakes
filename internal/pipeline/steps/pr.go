@@ -35,6 +35,8 @@ type PRStep struct {
 	// will replace the drafted one, so the drafted title is neither validated
 	// nor formatted: discarded text must not block publishing.
 	titleReplaced bool
+
+	headProofUnavailable string
 	// gitlabUploader uploads image evidence to a GitLab project. Nil uses the
 	// GitLab host. Tests inject a stub so they never talk to live GitLab.
 	gitlabUploader gitlabEvidenceUploader
@@ -114,7 +116,10 @@ type pipelineUpdateGroup struct {
 func (s *PRStep) Name() types.StepName { return types.StepPR }
 
 func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	step := *s
+	s = &step
 	sctx.PublicIntentBrief = ""
+	s.headProofUnavailable = ""
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
@@ -157,6 +162,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		logSuppliedPRTextUnused(sctx, "PR creation was skipped")
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
+	}
+
+	if _, err := publishedPRPushBinding(sctx, host); err != nil {
+		return nil, err
+	}
+	if _, ok := host.(scm.PRHeadVerifier); !ok {
+		s.headProofUnavailable = fmt.Sprintf("PR head proof unavailable for provider %s; the exact pushed head was not verified.", provider)
+		sctx.Log(s.headProofUnavailable)
 	}
 
 	// Capture live author content before model drafting. An unreadable
@@ -922,6 +935,14 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
 	}
 	pipelineMD, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
+	if s.headProofUnavailable != "" {
+		intro := noMistakesPRSignature + " " + s.headProofUnavailable
+		if pipelineMD == "" {
+			pipelineMD = "## Pipeline\n\n" + intro + "\n\n"
+		} else {
+			pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature, intro, 1)
+		}
+	}
 	// The review conversation rides inside the Pipeline section as an ordinary
 	// `### ` group, so the existing body-budget logic can drop it whole rather
 	// than competing with the attestation it must never displace.

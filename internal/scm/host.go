@@ -491,11 +491,20 @@ type PRBaseBranchReader interface {
 
 // PRHeadVerifier proves from a fresh provider read that the exact review object
 // is open in the configured repository and has the configured source repository,
-// owner, branch and pushed head. Providers without this proof fail publication
-// closed, rather than treating discovery or historical checks as evidence.
+// owner, branch and pushed head.
 type PRHeadVerifier interface {
 	VerifyPRHead(ctx context.Context, pr *PR, branch, pushedHead string) error
 }
+
+type PRHeadChangedError struct {
+	HeadSHA string
+}
+
+func (e *PRHeadChangedError) Error() string {
+	return fmt.Sprintf("%s: live head %q", ErrHeadChanged, e.HeadSHA)
+}
+
+func (e *PRHeadChangedError) Unwrap() error { return ErrHeadChanged }
 
 // PRBaseRetargeter is implemented by providers that can change an existing
 // PR's target branch. The PR step uses it when a per-run --base-branch override
