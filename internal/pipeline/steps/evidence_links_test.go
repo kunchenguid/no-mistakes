@@ -401,16 +401,29 @@ func TestScenarioEvidenceCellLeavesExistingLinksAlone(t *testing.T) {
 		"<https://example.com/shot.png>",
 		"https://example.com/shot.png",
 		"[view shot.png here](https://example.com/shot.png)",
+		"[shot.png](https://example.com/a(b))",
+		`[shot.png](https://example.com/a(b) "shot.png")`,
+		`![shot.png](https://example.com/a(b) "shot.png")`,
+		`[shot.png](https://example.com/a(b) 'shot.png')`,
+		`[shot.png](https://example.com/a(b) (shot.png))`,
+		`![shot.png](<https://example.com/a(b)> "shot.png")`,
+		`[shot.png](https://example.com/a\(b\) "a \"shot.png\" title")`,
 	} {
 		t.Run(cell, func(t *testing.T) {
 			t.Parallel()
-			if got, want := scenarioEvidenceCell(cell, opts, names), scenarioCell(cell, prBodyHTML); got != want {
-				t.Fatalf("existing reference %q was rewritten to %q, want %q", cell, got, want)
+			for _, flavor := range []prBodyFlavor{prBodyHTML, prBodyMarkdown} {
+				flavored := opts
+				flavored.flavor = flavor
+				if got, want := scenarioEvidenceCell(cell, flavored, names), scenarioCell(cell, flavor); got != want {
+					t.Fatalf("existing reference %q (flavor %v) was rewritten to %q, want %q", cell, flavor, got, want)
+				}
 			}
 		})
 	}
 	for _, tc := range []struct{ name, cell, want string }{
 		{"link then plain name", "[shot.png](https://example.com/shot.png); shot.png", "[shot.png](https://example.com/shot.png); " + linked},
+		{"titled link then plain name", `[shot.png](https://example.com/a(b) "shot.png"); shot.png`, `[shot.png](https://example.com/a(b) &#34;shot.png&#34;); ` + linked},
+		{"titled image then plain name", `![shot.png](<https://example.com/a(b)> (shot.png)); shot.png`, `![shot.png](&lt;https://example.com/a(b)&gt; (shot.png)); ` + linked},
 		{"plain name then bare URL", "see shot.png and https://example.com/shot.png", "see " + linked + " and https://example.com/shot.png"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

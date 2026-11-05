@@ -234,8 +234,8 @@ func scenarioExistingReferenceSpan(rest string) int {
 	}
 	if strings.HasPrefix(text, "[") {
 		if open := strings.Index(text, "]("); open >= 0 {
-			if close := strings.IndexByte(text[open+2:], ')'); close >= 0 {
-				return len(rest) - len(text) + open + 2 + close + 1
+			if n := scenarioInlineLinkSuffixSpan(text[open+2:]); n > 0 {
+				return len(rest) - len(text) + open + 2 + n
 			}
 		}
 	}
@@ -249,6 +249,80 @@ func scenarioExistingReferenceSpan(rest string) int {
 			return end
 		}
 		return len(rest)
+	}
+	return 0
+}
+
+func scenarioInlineLinkSuffixSpan(text string) int {
+	i := 0
+	space := func() {
+		for i < len(text) && strings.ContainsRune(" \t\r\n", rune(text[i])) {
+			i++
+		}
+	}
+	space()
+	if i < len(text) && text[i] == '<' {
+		i++
+		for i < len(text) && text[i] != '>' {
+			if text[i] == '<' || text[i] == '\n' || text[i] == '\r' {
+				return 0
+			}
+			if text[i] == '\\' && i+1 < len(text) {
+				i++
+			}
+			i++
+		}
+		if i == len(text) {
+			return 0
+		}
+		i++
+	} else {
+		depth := 0
+		for i < len(text) {
+			c := text[i]
+			if c == '\\' && i+1 < len(text) {
+				i += 2
+				continue
+			}
+			if strings.ContainsRune(" \t\r\n", rune(c)) || (c == ')' && depth == 0) {
+				break
+			}
+			if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+			}
+			i++
+		}
+		if depth != 0 {
+			return 0
+		}
+	}
+	endDestination := i
+	space()
+	if i > endDestination && i < len(text) && strings.ContainsRune("\"'(", rune(text[i])) {
+		close := text[i]
+		if close == '(' {
+			close = ')'
+		}
+		i++
+		for i < len(text) && text[i] != close {
+			if close == ')' && text[i] == '(' {
+				return 0
+			}
+			if text[i] == '\\' && i+1 < len(text) {
+				i++
+			}
+			i++
+		}
+		if i == len(text) {
+			return 0
+		}
+		i++
+		space()
+	}
+	if i < len(text) && text[i] == ')' {
+		return i + 1
 	}
 	return 0
 }
