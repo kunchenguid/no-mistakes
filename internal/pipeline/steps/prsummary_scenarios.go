@@ -193,27 +193,33 @@ func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []strin
 		return scenarioCell(text, opts.flavor)
 	}
 	clean := truncateScenarioCell(sanitizePromptText(text))
+	rendered, _ := renderScenarioEvidenceReferences(clean, opts, names, true)
+	return escapePipelineFoldMarkers(rendered)
+}
+
+func renderScenarioEvidenceReferences(clean string, opts testingSummaryOptions, names []string, codeSpans bool) (string, bool) {
+	linked := false
 	plain := func(s string) string { return strings.ReplaceAll(escapePRText(s, opts.flavor), "|", "\\|") }
 	var b, prose strings.Builder
 	rest := clean
 	for len(rest) > 0 {
-		// A code span is one unit: it becomes the link only when its whole
-		// content is one file reference, and is otherwise left as written,
-		// so generated Markdown never sits inside retained backticks.
-		if content, n := scenarioCodeSpan(rest); n > 0 {
-			trimmed := strings.TrimSpace(content)
-			if label, path, m := matchScenarioEvidenceReference(trimmed, opts.evidenceRoot, names); m > 0 && m == len(trimmed) {
-				if link := renderEvidenceFileLink(opts.evidenceLinkBase, opts.evidenceRoot, path, label); link != "" {
+		if codeSpans {
+			if content, n := scenarioCodeSpan(rest); n > 0 {
+				trimmed := strings.TrimSpace(content)
+				if _, _, m := matchScenarioEvidenceReference(trimmed, opts.evidenceRoot, names); m > 0 && m == len(trimmed) {
+					content = trimmed
+				}
+				if rendered, found := renderScenarioEvidenceReferences(content, opts, names, false); found {
 					b.WriteString(plain(prose.String()))
 					prose.Reset()
-					b.WriteString(strings.ReplaceAll(link, "|", "\\|"))
-					rest = rest[n:]
-					continue
+					b.WriteString(rendered)
+					linked = true
+				} else {
+					prose.WriteString(rest[:n])
 				}
+				rest = rest[n:]
+				continue
 			}
-			prose.WriteString(rest[:n])
-			rest = rest[n:]
-			continue
 		}
 		// A reference the cell already carries as a link is complete:
 		// rewriting a filename inside it would break the link.
@@ -228,6 +234,7 @@ func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []strin
 					b.WriteString(plain(prose.String()))
 					prose.Reset()
 					b.WriteString(strings.ReplaceAll(link, "|", "\\|"))
+					linked = true
 					rest = rest[n:]
 					continue
 				}
@@ -238,7 +245,7 @@ func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []strin
 		rest = rest[size:]
 	}
 	b.WriteString(plain(prose.String()))
-	return escapePipelineFoldMarkers(b.String())
+	return b.String(), linked
 }
 
 // scenarioExistingReferenceSpan returns the length of a Markdown construct at

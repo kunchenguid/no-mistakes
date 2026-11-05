@@ -318,7 +318,9 @@ func TestScenarioEvidenceCellLinksCompleteFileReferences(t *testing.T) {
 		{"single quoted relative name", "see 'roundtrip.json' here", "see " + roundtrip + " here"},
 		{"quoted absolute path", "see `" + abs + "` here", "see " + roundtrip + " here"},
 		{"double backticked relative name", "see `` roundtrip.json `` here", "see " + roundtrip + " here"},
-		{"code span holding two names stays literal", "`roundtrip.json; browser/step 2.png` then roundtrip.json", "`roundtrip.json; browser/step 2.png` then " + roundtrip},
+		{"code span holding two names links both", "`roundtrip.json; browser/step 2.png` then roundtrip.json", roundtrip + "; " + step2 + " then " + roundtrip},
+		{"grouped span with prose and absolute path", "`see " + abs + "; browser/step 2.png and notes`", "see " + roundtrip + "; " + step2 + " and notes"},
+		{"double backtick grouped span", "``roundtrip.json; browser/step 2.png``", roundtrip + "; " + step2},
 		{"name followed by comma", "roundtrip.json, then notes", roundtrip + ", then notes"},
 		{"longest punctuation filename", "roundtrip.json,extra", "[roundtrip.json,extra](" + evidenceLinkTestBase + "/01RUN/roundtrip.json%2Cextra)"},
 		{"sentence punctuation", "Captured roundtrip.json.", "Captured " + roundtrip + "."},
@@ -394,6 +396,7 @@ func TestScenarioEvidenceCellLeavesExistingLinksAlone(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(t.TempDir(), "01RUN")
 	writeEvidenceFile(t, root, "shot.png", []byte("png"))
+	writeEvidenceFile(t, root, "roundtrip.json", []byte("{}"))
 	names := evidenceFileNames(root)
 	opts := testingSummaryOptions{flavor: prBodyHTML, evidenceRoot: root, evidenceLinkBase: evidenceLinkTestBase}
 	linked := "[shot.png](" + evidenceLinkTestBase + "/01RUN/shot.png)"
@@ -412,7 +415,7 @@ func TestScenarioEvidenceCellLeavesExistingLinksAlone(t *testing.T) {
 		`[shot.png](https://example.com/a\(b\) "a \"shot.png\" title")`,
 		`[![shot.png](https://example.com/a)](https://example.com/b "shot.png")`,
 		`[a \[shot.png\] b](https://example.com/c)`,
-		"`shot.png; roundtrip.json`",
+		"`go test ./...`",
 	} {
 		t.Run(cell, func(t *testing.T) {
 			t.Parallel()
@@ -433,6 +436,7 @@ func TestScenarioEvidenceCellLeavesExistingLinksAlone(t *testing.T) {
 		{"bracketed prose before a plain name", "[HU] shot.png; [CZ](https://example.com)", "[HU] " + linked + "; [CZ](https://example.com)"},
 		{"bracketed name is not a link", "[shot.png]", "[" + linked + "]"},
 		{"double backtick single name", "``shot.png``", linked},
+		{"grouped code span", "`shot.png; roundtrip.json`", linked + "; [roundtrip.json](" + evidenceLinkTestBase + "/01RUN/roundtrip.json)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
