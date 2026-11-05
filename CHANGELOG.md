@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.111.0](https://github.com/kunchenguid/no-mistakes/compare/v1.110.0...v1.111.0) (2026-11-05)
+
+
+### Features
+
+* **daemon:** add update --when-idle with deferred daemon restart ([#1697](https://github.com/kunchenguid/no-mistakes/issues/1697)) ([90ff92e](https://github.com/kunchenguid/no-mistakes/commit/90ff92e6371fa21250efecabba52af52a76e0356))
+* **pipeline:** support configurable links to local test evidence ([#1713](https://github.com/kunchenguid/no-mistakes/issues/1713)) ([c5d9830](https://github.com/kunchenguid/no-mistakes/commit/c5d983030f967f903eaaa45d1093b63d9a4cd4e4))
+* **pipeline:** upload GitLab evidence images and configure storage ([#1705](https://github.com/kunchenguid/no-mistakes/issues/1705)) ([8295a55](https://github.com/kunchenguid/no-mistakes/commit/8295a5594ef879edc14235ac51de76b919b8c29c))
+
+
+### Bug Fixes
+
+* **intent:** ground inferred intent in the current branch change ([#1709](https://github.com/kunchenguid/no-mistakes/issues/1709)) ([8736a7a](https://github.com/kunchenguid/no-mistakes/commit/8736a7a7bf7286f33a572745df1538c5910ae0bc))
+* **pipeline:** apply shared subject budget to CI repair prompts ([#1710](https://github.com/kunchenguid/no-mistakes/issues/1710)) ([78a5851](https://github.com/kunchenguid/no-mistakes/commit/78a58515fb2e8b761295f1c27bec35dff5ca924c))
+* **pipeline:** keep declined and unfinished CI repairs unpublished ([#1714](https://github.com/kunchenguid/no-mistakes/issues/1714)) ([ed70eef](https://github.com/kunchenguid/no-mistakes/commit/ed70eef70f54c8bf692721bb921f396963100370))
+* **pipeline:** tell the test agent to read environment variables by name ([#1712](https://github.com/kunchenguid/no-mistakes/issues/1712)) ([4d7333f](https://github.com/kunchenguid/no-mistakes/commit/4d7333f3cae2ed7bb271cb69d0e1d4e6d13280cf))
+
 ## [1.110.0](https://github.com/kunchenguid/no-mistakes/compare/v1.109.0...v1.110.0) (2026-11-04)
 
 
