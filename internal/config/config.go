@@ -1325,8 +1325,8 @@ type EvidenceRaw struct {
 	LocalRoot *string `yaml:"local_root"`
 	Retention *string `yaml:"retention"`
 	MaxRuns   *int    `yaml:"max_runs"`
-	// LinkBaseURL turns every evidence file a PR body mentions into a link,
-	// <base>/<run-id>/<file>, for an operator who serves their evidence parent
+	// LinkBaseURL links structured local evidence references for an operator
+	// who serves their evidence parent
 	// (evidence_dir or local_root) over HTTP themselves. Unset keeps today's
 	// local-path rendering byte for byte. It is global-only for the same
 	// reason as LocalRoot: a pushed branch must never choose where a PR's
@@ -1953,10 +1953,10 @@ intent:
 # .no-mistakes.yaml cannot change where this machine writes evidence or how
 # long it keeps it.
 # link_base_url is for an operator who serves that evidence parent over HTTP
-# themselves (a synced folder behind a web server, say): every evidence file
-# the PR body mentions then renders as a link to <link_base_url>/<run-id>/<file>
-# instead of a local path to copy and paste, and on GitLab the Evidence
-# section lists the run's images as those links without uploading them. Unset
+# themselves (a synced folder behind a web server, say). See Evidence links
+# in docs/src/content/docs/reference/global-config.md for the linked surfaces
+# and precedence. On GitLab, with uploads off, the Evidence section lists
+# the run's images as links without uploading them. Unset
 # leaves PR bodies unchanged. Global-only like local_root; a repository value
 # is ignored. Hosting and access control of the served copy are yours.
 # evidence_dir: ~/Dropbox/no-mistakes-evidence

@@ -13,17 +13,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 )
 
-// test.evidence.link_base_url turns every evidence file the PR body mentions
-// into a link, for an operator who serves the run evidence parent
+// test.evidence.link_base_url links structured local evidence references,
+// for an operator who serves the run evidence parent
 // (evidence_dir or test.evidence.local_root) over HTTP themselves - a synced
 // folder behind a web server, say. A reviewer then opens a screenshot in a new
 // tab instead of copying a local path out of the description.
 //
 // This file is the ONE owner of that rendering. The Testing section's local
-// artifact references (renderLocalArtifactReference) and the GitLab Evidence
-// section (gitlabEvidenceSection) both call renderEvidenceFileLink, so the two
-// surfaces cannot drift apart, and an unset base returns "" from every helper
-// here so each caller keeps today's rendering byte for byte.
+// artifact references and transcript sources (renderLocalArtifactReference),
+// scenario Evidence cells (renderScenarioEvidenceReferences), and the GitLab
+// Evidence section (gitlabEvidenceSection) call renderEvidenceFileLink so
+// escaping cannot drift between surfaces. Callers preserve existing remote
+// artifact links and free-form prose; an unset base keeps their prior output.
 //
 // The URL mirrors the served directory layout: <base>/<run-id>/<file>, where
 // the run ID is the evidence directory's own name and <file> is the path
