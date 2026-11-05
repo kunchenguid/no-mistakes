@@ -207,15 +207,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		}
 		// The repair was published, so the monitor stays on this run and
 		// waits for the provider to re-run the checks against the new head.
-		// The executor marked the step fixing for this round; it is monitoring
-		// again now, and the readiness consumers (checks-passed, the TUI's
-		// active CI indicator) read a running status.
 		sctx.Log("CI repair published, resuming monitoring for the checks to re-run...")
-		if sctx.MarkRunning != nil {
-			if err := sctx.MarkRunning(); err != nil {
-				return nil, err
-			}
-		}
 		return nil, nil
 	}
 	if repair.NoCodeChangeNeeded {

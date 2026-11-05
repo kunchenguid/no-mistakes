@@ -482,6 +482,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 			return &pipeline.StepOutcome{RestartFrom: repair.restartFrom(), Findings: sctx.DeferredFindings}, nil
 		}
+		// Every repair path that falls through resumes monitoring, including
+		// discarded check targets and a fixer that produced no changes.
+		// Readiness consumers require the step to be running, not fixing.
+		if sctx.MarkRunning != nil {
+			if err := sctx.MarkRunning(); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never

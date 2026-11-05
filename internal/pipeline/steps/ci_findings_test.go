@@ -715,6 +715,47 @@ func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
 	}
 }
 
+func TestCIStep_DiscardedRepairTargetsResumeRunningBeforeGreenChecks(t *testing.T) {
+	t.Parallel()
+	for _, snapshot := range []string{"read-error", "empty", "green", "pending", "no-targets"} {
+		t.Run(snapshot, func(t *testing.T) {
+			t.Parallel()
+			f := newCIRepairFixture(t, false, nil)
+			f.sctx.Fixing = true
+			f.sctx.PreviousFindings = `{"findings":[{"id":"ci-1","category":"ci-check","check":"test","severity":"error","action":"auto-fix","description":"failed"}]}`
+			switch snapshot {
+			case "read-error":
+				f.sctx.Env = fakeCIGHChecksError(t, "OPEN", "MERGEABLE", "temporary provider failure")
+			case "empty":
+				f.sctx.Env = fakeCIGH(t, "OPEN", `[]`)
+			case "green":
+				f.sctx.Env = fakeCIGH(t, "OPEN", behindBaseGreenChecks)
+			case "pending":
+				f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"IN_PROGRESS","bucket":"pending"}]`)
+			case "no-targets":
+				f.sctx.PreviousFindings = `{"findings":[]}`
+			}
+			f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_PR_HEAD_SHA="+f.headSHA)
+			greenEnv := append(fakeCIGH(t, "OPEN", behindBaseGreenChecks), "FAKE_CLI_PR_HEAD_SHA="+f.headSHA)
+			marked := 0
+			f.sctx.MarkRunning = func() error {
+				marked++
+				// The next observation succeeds, as after a transient read error.
+				f.sctx.Env = greenEnv
+				return nil
+			}
+			f.sctx.Config.CI.ReleaseAfterChecksPass = true
+			outcome, err := f.run(t)
+			if err != nil || outcome == nil || outcome.NeedsApproval || outcome.CIReadyNoCI == nil {
+				t.Fatalf("outcome = %#v, err = %v; want green release; log:\n%s", outcome, err, f.log())
+			}
+			if marked != 1 || len(f.sctx.Agent.(*mockAgent).calls) != 0 {
+				t.Fatalf("MarkRunning calls = %d, fixer calls = %d; want one transition without a repair", marked, len(f.sctx.Agent.(*mockAgent).calls))
+			}
+		})
+	}
+}
+
 func TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun(t *testing.T) {
 	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
