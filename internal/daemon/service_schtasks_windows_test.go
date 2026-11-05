@@ -44,6 +44,7 @@ func TestInstallWindowsTaskRegistersUserScopedLogonTask(t *testing.T) {
 		t.Fatalf("query registered task: %v", err)
 	}
 	task := parseWindowsTaskDefinition(t, string(exported))
+	assertWindowsTaskAllowsLongRunningOnBattery(t, task)
 	if len(task.LogonTriggers) != 1 {
 		t.Fatalf("logon triggers = %d, want 1\n%s", len(task.LogonTriggers), exported)
 	}
