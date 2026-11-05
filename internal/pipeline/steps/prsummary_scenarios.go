@@ -197,6 +197,24 @@ func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []strin
 	var b, prose strings.Builder
 	rest := clean
 	for len(rest) > 0 {
+		// A code span is one unit: it becomes the link only when its whole
+		// content is one file reference, and is otherwise left as written,
+		// so generated Markdown never sits inside retained backticks.
+		if content, n := scenarioCodeSpan(rest); n > 0 {
+			trimmed := strings.TrimSpace(content)
+			if label, path, m := matchScenarioEvidenceReference(trimmed, opts.evidenceRoot, names); m > 0 && m == len(trimmed) {
+				if link := renderEvidenceFileLink(opts.evidenceLinkBase, opts.evidenceRoot, path, label); link != "" {
+					b.WriteString(plain(prose.String()))
+					prose.Reset()
+					b.WriteString(strings.ReplaceAll(link, "|", "\\|"))
+					rest = rest[n:]
+					continue
+				}
+			}
+			prose.WriteString(rest[:n])
+			rest = rest[n:]
+			continue
+		}
 		// A reference the cell already carries as a link is complete:
 		// rewriting a filename inside it would break the link.
 		if n := scenarioExistingReferenceSpan(rest); n > 0 {
@@ -233,9 +251,9 @@ func scenarioExistingReferenceSpan(rest string) int {
 		text = text[1:]
 	}
 	if strings.HasPrefix(text, "[") {
-		if open := strings.Index(text, "]("); open >= 0 {
-			if n := scenarioInlineLinkSuffixSpan(text[open+2:]); n > 0 {
-				return len(rest) - len(text) + open + 2 + n
+		if close := scenarioBracketSpan(text); close > 0 && close < len(text) && text[close] == '(' {
+			if n := scenarioInlineLinkSuffixSpan(text[close+1:]); n > 0 {
+				return len(rest) - len(text) + close + 1 + n
 			}
 		}
 	}
@@ -251,6 +269,55 @@ func scenarioExistingReferenceSpan(rest string) int {
 		return len(rest)
 	}
 	return 0
+}
+
+// scenarioBracketSpan returns the index just past the "]" that closes the "["
+// at the start of text, honoring nested brackets (a clickable image's own
+// text) and backslash escapes, or 0 when it is never closed.
+func scenarioBracketSpan(text string) int {
+	depth := 0
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return 0
+}
+
+// scenarioCodeSpan returns the content and the total length of the inline
+// code span at the start of rest - a backtick run closed by a run of the same
+// length - or n == 0 when rest does not start with a closed span.
+func scenarioCodeSpan(rest string) (content string, n int) {
+	if !strings.HasPrefix(rest, "`") {
+		return "", 0
+	}
+	run := 0
+	for run < len(rest) && rest[run] == '`' {
+		run++
+	}
+	for i := run; i < len(rest); {
+		if rest[i] != '`' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(rest) && rest[j] == '`' {
+			j++
+		}
+		if j-i == run {
+			return rest[run:i], j
+		}
+		i = j
+	}
+	return "", 0
 }
 
 func scenarioInlineLinkSuffixSpan(text string) int {
@@ -349,7 +416,7 @@ func scenarioStartsWithURL(s string) bool {
 func matchScenarioEvidenceReference(rest, root string, names []string) (label, path string, n int) {
 	reference := rest
 	var quote byte
-	if len(reference) > 0 && strings.ContainsRune("`\"'", rune(reference[0])) {
+	if len(reference) > 0 && strings.ContainsRune("\"'", rune(reference[0])) {
 		quote = reference[0]
 		reference = reference[1:]
 	}

@@ -317,6 +317,8 @@ func TestScenarioEvidenceCellLinksCompleteFileReferences(t *testing.T) {
 		{"double quoted relative name", "see \"roundtrip.json\" here", "see " + roundtrip + " here"},
 		{"single quoted relative name", "see 'roundtrip.json' here", "see " + roundtrip + " here"},
 		{"quoted absolute path", "see `" + abs + "` here", "see " + roundtrip + " here"},
+		{"double backticked relative name", "see `` roundtrip.json `` here", "see " + roundtrip + " here"},
+		{"code span holding two names stays literal", "`roundtrip.json; browser/step 2.png` then roundtrip.json", "`roundtrip.json; browser/step 2.png` then " + roundtrip},
 		{"name followed by comma", "roundtrip.json, then notes", roundtrip + ", then notes"},
 		{"longest punctuation filename", "roundtrip.json,extra", "[roundtrip.json,extra](" + evidenceLinkTestBase + "/01RUN/roundtrip.json%2Cextra)"},
 		{"sentence punctuation", "Captured roundtrip.json.", "Captured " + roundtrip + "."},
@@ -408,6 +410,9 @@ func TestScenarioEvidenceCellLeavesExistingLinksAlone(t *testing.T) {
 		`[shot.png](https://example.com/a(b) (shot.png))`,
 		`![shot.png](<https://example.com/a(b)> "shot.png")`,
 		`[shot.png](https://example.com/a\(b\) "a \"shot.png\" title")`,
+		`[![shot.png](https://example.com/a)](https://example.com/b "shot.png")`,
+		`[a \[shot.png\] b](https://example.com/c)`,
+		"`shot.png; roundtrip.json`",
 	} {
 		t.Run(cell, func(t *testing.T) {
 			t.Parallel()
@@ -425,6 +430,9 @@ func TestScenarioEvidenceCellLeavesExistingLinksAlone(t *testing.T) {
 		{"titled link then plain name", `[shot.png](https://example.com/a(b) "shot.png"); shot.png`, `[shot.png](https://example.com/a(b) &#34;shot.png&#34;); ` + linked},
 		{"titled image then plain name", `![shot.png](<https://example.com/a(b)> (shot.png)); shot.png`, `![shot.png](&lt;https://example.com/a(b)&gt; (shot.png)); ` + linked},
 		{"plain name then bare URL", "see shot.png and https://example.com/shot.png", "see " + linked + " and https://example.com/shot.png"},
+		{"bracketed prose before a plain name", "[HU] shot.png; [CZ](https://example.com)", "[HU] " + linked + "; [CZ](https://example.com)"},
+		{"bracketed name is not a link", "[shot.png]", "[" + linked + "]"},
+		{"double backtick single name", "``shot.png``", linked},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
