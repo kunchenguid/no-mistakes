@@ -428,9 +428,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		repair, err := s.retryProtectedPathRepair(sctx)
 		if err != nil {
-			if outcome := unfinishedGitRepairOutcome(err, Findings{}, ""); outcome != nil {
-				return outcome, nil
-			}
 			return nil, err
 		}
 		retryRefusal = false
