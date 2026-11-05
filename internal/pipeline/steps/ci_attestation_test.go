@@ -493,12 +493,26 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 // This fixture has no available GitLab host, so publication skips attestation
 // interaction. GitLab with an available host supports raw reads and restamping;
 // provider identity alone no longer causes the skip.
-func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) {
+// TestCIStep_PublishRepairSkipsAttestationWhenProviderCLIIsUnavailable: a
+// provider whose CLI cannot run gets no attestation write, and the repair
+// still publishes. The fixture's PATH keeps the machine's real PATH behind
+// the fake gh, so this test used to reach a developer's real glab, which
+// refused the fixture's local remote and parked the repair as unsettled; CI
+// passed it only because no glab is installed there. The fake CLI shadows
+// glab and fails its auth check instead, which is the case the test is about.
+func TestCIStep_PublishRepairSkipsAttestationWhenProviderCLIIsUnavailable(t *testing.T) {
 	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
 	f.sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	f.sctx.Run.PRURL = &gitlabPR
+	for _, entry := range f.sctx.Env {
+		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
+			fakeBin, _, _ := strings.Cut(value, string(os.PathListSeparator))
+			linkTestBinary(t, fakeBin, "glab")
+		}
+	}
+	f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_AUTH_ERR=glab is not logged in to gitlab.com")
 	writeCIFix(f.dir)
 
 	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
@@ -508,8 +522,11 @@ func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) 
 	if !repair.HeadAdvanced || repair.Revalidate {
 		t.Fatalf("repair = %+v, want a published head advance without attestation", repair)
 	}
+	if !strings.Contains(f.log(), "skipping attestation write") {
+		t.Fatalf("expected the unavailable provider CLI to skip the attestation write:\n%s", f.log())
+	}
 	if strings.Contains(f.log(), "pipeline attestation") || strings.Contains(f.log(), "attestation rebind") {
-		t.Fatalf("expected no attestation interaction at all for a non-GitHub provider:\n%s", f.log())
+		t.Fatalf("expected no attestation interaction at all when the provider CLI is unavailable:\n%s", f.log())
 	}
 }
 

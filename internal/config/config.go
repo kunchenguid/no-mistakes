@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -1324,6 +1325,17 @@ type EvidenceRaw struct {
 	LocalRoot *string `yaml:"local_root"`
 	Retention *string `yaml:"retention"`
 	MaxRuns   *int    `yaml:"max_runs"`
+	// LinkBaseURL links structured local evidence references for an operator
+	// who serves their evidence parent
+	// (evidence_dir or local_root) over HTTP themselves. Unset keeps today's
+	// local-path rendering byte for byte. It is global-only for the same
+	// reason as LocalRoot: a pushed branch must never choose where a PR's
+	// evidence links point, so Merge resolves it from GlobalConfig alone and
+	// a repository value is IGNORED, never refused at parse time: the round
+	// provenance record serializes the effective RepoConfig and reads it back
+	// through LoadRepoFromBytes, so an earlier draft that refused the key by
+	// name broke eval capture for every run.
+	LinkBaseURL *string `yaml:"link_base_url"`
 }
 
 // Test is the resolved test-step config. Prepare, BaseAttribution,
@@ -1371,6 +1383,9 @@ type Evidence struct {
 	LocalRoot string
 	Retention time.Duration
 	MaxRuns   int
+	// LinkBaseURL is the normalized test.evidence.link_base_url (trimmed, no
+	// trailing slash). Empty keeps evidence files cited as local paths.
+	LinkBaseURL string
 }
 
 // EvalRaw is the YAML representation of local evaluation-corpus settings.
@@ -1937,6 +1952,13 @@ intent:
 # directory it started with. These settings are global-only - a repository's
 # .no-mistakes.yaml cannot change where this machine writes evidence or how
 # long it keeps it.
+# link_base_url is for an operator who serves that evidence parent over HTTP
+# themselves (a synced folder behind a web server, say). See Evidence links
+# in docs/src/content/docs/reference/global-config.md for the linked surfaces
+# and precedence. On GitLab, with uploads off, the Evidence section lists
+# the run's images as links without uploading them. Unset
+# leaves PR bodies unchanged. Global-only like local_root; a repository value
+# is ignored. Hosting and access control of the served copy are yours.
 # evidence_dir: ~/Dropbox/no-mistakes-evidence
 # commit_message templates the evidence-branch commit subject with
 # {{.Branch}} and {{.RunID}}; it follows commit.fix_message's template rules.
@@ -1950,6 +1972,7 @@ intent:
 #     local_root: /var/lib/no-mistakes/evidence
 #     retention: 720h
 #     max_runs: 50
+#     link_base_url: https://evidence.example.com/no-mistakes
 
 # Local review evaluation corpus, used by "no-mistakes eval" to compare
 # agent candidates, pinned to an explicit model and reasoning effort, against
@@ -3776,6 +3799,11 @@ func applyEvidenceStorageOverrides(dst *Evidence, src *EvidenceRaw) {
 	if src.MaxRuns != nil && *src.MaxRuns >= 0 {
 		dst.MaxRuns = *src.MaxRuns
 	}
+	if src.LinkBaseURL != nil {
+		if base, err := normalizeEvidenceLinkBaseURL(*src.LinkBaseURL); err == nil {
+			dst.LinkBaseURL = base
+		}
+	}
 }
 
 // parseEvidenceRetention interprets test.evidence.retention. The keyword
@@ -3964,7 +3992,40 @@ func validateTestRaw(test TestRaw) error {
 	if test.Evidence.MaxRuns != nil && *test.Evidence.MaxRuns < 0 {
 		return fmt.Errorf("test.evidence.max_runs must be 0 (keep every run) or greater, got %d", *test.Evidence.MaxRuns)
 	}
+	if test.Evidence.LinkBaseURL != nil {
+		if _, err := normalizeEvidenceLinkBaseURL(*test.Evidence.LinkBaseURL); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// normalizeEvidenceLinkBaseURL validates test.evidence.link_base_url and
+// returns it trimmed with no trailing slash, so <base>/<run-id>/<file> joins
+// cleanly. Only an absolute http(s) URL with a host is accepted: the value is
+// published verbatim in every PR body, so a scheme a browser will not follow,
+// embedded credentials, or a query or fragment the run path would land after
+// are refused when the config loads instead of surfacing as dead links. Empty
+// is the off state.
+func normalizeEvidenceLinkBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(raw, " \t\r\n") {
+		return "", fmt.Errorf("test.evidence.link_base_url must not contain whitespace, got %q", raw)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("test.evidence.link_base_url must be an absolute http or https URL, got %q", raw)
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("test.evidence.link_base_url must not carry credentials, got %q", raw)
+	}
+	if strings.ContainsAny(raw, "?#") {
+		return "", fmt.Errorf("test.evidence.link_base_url must not carry a query or fragment, got %q", raw)
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 // applyProvidersOverrides applies non-nil raw values onto resolved defaults.

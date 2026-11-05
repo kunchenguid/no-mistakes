@@ -339,6 +339,9 @@ func escapedStdoutHolder(t *testing.T, dir string) string {
 // schema (runTestAnalyzer). Under exactly those options a cleanly exited agent
 // whose result was fully written must finish even when an escaped descendant
 // keeps stdout open until WaitDelay force-closes it.
+// Keep these native-agent subtests sequential: they write executable fixtures,
+// and a concurrent fork can briefly inherit another fixture's writable fd,
+// causing exec to fail with ETXTBSY even after the writer closes its copy.
 func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	tests := []struct {
@@ -357,7 +360,6 @@ func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			res, err := tt.run(t, dir, escapedStdoutHolder(t, dir))
 			if err != nil {
@@ -392,7 +394,6 @@ func TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild(t *testing
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			_, err := tt.run(t, dir, ownedStdoutHolder(t, dir))
 			if errors.Is(err, context.DeadlineExceeded) && strings.Contains(err.Error(), "native check completion is unverified:") {
@@ -436,7 +437,6 @@ func TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			res, err := tt.run(t, dir, finishingOwnedChild(t, dir))
 			if err != nil {

@@ -286,3 +286,126 @@ func TestGitlabEvidenceIndependentOfTestingInEveryAppendixMode(t *testing.T) {
 		})
 	}
 }
+
+// TestGitlabEvidenceLinkBaseListsImagesAsLinksWithoutUploading: with uploads
+// off and test.evidence.link_base_url set, the Evidence section is still
+// written, every image is a link under the base, and nothing is uploaded.
+func TestGitlabEvidenceLinkBaseListsImagesAsLinksWithoutUploading(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "01RUN")
+	if err := os.MkdirAll(filepath.Join(runDir, "browser"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"shot.png", filepath.Join("browser", "step 2.png"), "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(runDir, name), []byte("bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var logs []string
+	uploader := &countingGitlabUploader{markdown: "![shot](/uploads/abc/shot.png)", url: "/uploads/abc/shot.png"}
+	step := &PRStep{gitlabUploader: uploader}
+	got := step.gitlabEvidenceSection(&pipeline.StepContext{
+		Ctx:         context.Background(),
+		EvidenceDir: runDir,
+		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{LinkBaseURL: evidenceLinkTestBase}}},
+		Log:         func(line string) { logs = append(logs, line) },
+	}, scm.ProviderGitLab)
+	if uploader.calls != 0 {
+		t.Fatalf("uploads = %d, want none", uploader.calls)
+	}
+	want := "## Evidence\n\n[01RUN/browser/step 2.png](" + evidenceLinkTestBase + "/01RUN/browser/step%202.png)\n\n[01RUN/shot.png](" + evidenceLinkTestBase + "/01RUN/shot.png)"
+	if got != want {
+		t.Fatalf("section = %q, want %q", got, want)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "without uploading") {
+		t.Fatalf("logs = %q, want the link-mode line", logs)
+	}
+}
+
+// TestGitlabEvidenceLinkBaseWithUploadsLinksThePathMention: with uploads on,
+// the base does not change what is uploaded; it turns each entry's path
+// mention into the link, including an entry whose upload was rejected.
+func TestGitlabEvidenceLinkBaseWithUploadsLinksThePathMention(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "01RUN")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "shot.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx := func() *pipeline.StepContext {
+		return &pipeline.StepContext{
+			Ctx:         context.Background(),
+			EvidenceDir: runDir,
+			Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
+			Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{GitLabAttachMedia: true, LinkBaseURL: evidenceLinkTestBase}}},
+			Log:         func(string) {},
+		}
+	}
+	mention := "[01RUN/shot.png](" + evidenceLinkTestBase + "/01RUN/shot.png)"
+
+	uploader := &countingGitlabUploader{markdown: "![shot](/uploads/abc/shot.png)", url: "/uploads/abc/shot.png"}
+	got := (&PRStep{gitlabUploader: uploader}).gitlabEvidenceSection(sctx(), scm.ProviderGitLab)
+	if uploader.calls != 1 {
+		t.Fatalf("uploads = %d, want 1", uploader.calls)
+	}
+	if want := "## Evidence\n\n" + mention + "\n\n" + uploader.markdown; got != want {
+		t.Fatalf("section = %q, want %q", got, want)
+	}
+
+	rejecting := &countingGitlabUploader{err: errors.New("413 attachment too large")}
+	got = (&PRStep{gitlabUploader: rejecting}).gitlabEvidenceSection(sctx(), scm.ProviderGitLab)
+	if want := "## Evidence\n\n" + mention + " - not uploaded: 413 attachment too large"; got != want {
+		t.Fatalf("rejected section = %q, want %q", got, want)
+	}
+}
+
+// TestGitlabEvidenceLinkOnlyModeReadsNoImageBytes: listing links needs file
+// names only, so an image the step cannot read is still listed as a link and
+// the walk records no digest; the upload walk still reports the same file.
+func TestGitlabEvidenceLinkOnlyModeReadsNoImageBytes(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "01RUN")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(runDir, "blocked.png")
+	if err := os.WriteFile(blocked, []byte("png"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(blocked, 0o644) })
+	if _, err := os.ReadFile(blocked); err == nil {
+		t.Skip("file permissions do not deny reads on this platform")
+	} else if !os.IsPermission(err) {
+		t.Fatal(err)
+	}
+
+	listed, problems, err := gitlabEvidenceImages(runDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 || len(listed) != 1 || listed[0].digest != "" {
+		t.Fatalf("link-only walk = %+v, problems %+v; want one undigested image and no read", listed, problems)
+	}
+	hashed, problems, err := gitlabEvidenceImages(runDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hashed) != 0 || len(problems) != 1 {
+		t.Fatalf("upload walk = %+v, problems %+v; want the unreadable file reported", hashed, problems)
+	}
+
+	uploader := &countingGitlabUploader{markdown: "![blocked](/uploads/abc/blocked.png)", url: "/uploads/abc/blocked.png"}
+	got := (&PRStep{gitlabUploader: uploader}).gitlabEvidenceSection(&pipeline.StepContext{
+		Ctx:         context.Background(),
+		EvidenceDir: runDir,
+		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{LinkBaseURL: evidenceLinkTestBase}}},
+		Log:         func(string) {},
+	}, scm.ProviderGitLab)
+	if want := "## Evidence\n\n[01RUN/blocked.png](" + evidenceLinkTestBase + "/01RUN/blocked.png)"; got != want || uploader.calls != 0 {
+		t.Fatalf("section = %q (uploads %d), want %q with no upload", got, uploader.calls, want)
+	}
+}
