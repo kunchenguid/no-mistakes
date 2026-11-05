@@ -29,7 +29,8 @@ type ExtractParams struct {
 	DiffFiles []string
 	// Change is the exact Git range and diff under validation, for summarization.
 	Change ChangeContext
-	// BaseTime is the committer time of the base SHA.
+	// BaseTime anchors session discovery before SlackDays is subtracted. It
+	// need not be the committer time of Change.Base, which scopes the branch diff.
 	BaseTime time.Time
 	// HeadTime is the committer time of the head SHA.
 	HeadTime time.Time
