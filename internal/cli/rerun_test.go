@@ -211,10 +211,17 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				}
 				return &ipc.GetActiveRunResult{}, nil
 			})
-			requests := make(chan map[string]string, 1)
+			type capturedRerun struct {
+				ipc.RerunParams
+				fields map[string]json.RawMessage
+			}
+			requests := make(chan capturedRerun, 1)
 			srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
-				var params map[string]string
-				if err := json.Unmarshal(raw, &params); err != nil {
+				var params capturedRerun
+				if err := json.Unmarshal(raw, &params.RerunParams); err != nil {
+					return nil, err
+				}
+				if err := json.Unmarshal(raw, &params.fields); err != nil {
 					return nil, err
 				}
 				requests <- params
@@ -241,13 +248,13 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				t.Fatal(err)
 			}
 			params := <-requests
-			if params["caller_head_sha"] != wantHead || params["repo_id"] != repo.ID || params["intent"] != "keep the caller's changes" {
+			if params.CallerHeadSHA != wantHead || params.RepoID != repo.ID || params.Intent != "keep the caller's changes" {
 				t.Fatalf("rerun request = %v, want caller head %q and original repo/intent", params, wantHead)
 			}
 			if !strings.Contains(out.String(), "Rerun started") {
 				t.Fatalf("missing rerun confirmation: %s", out.String())
 			}
-			if _, present := params["caller_head_sha"]; dirty && present {
+			if _, present := params.fields["caller_head_sha"]; dirty && present {
 				t.Fatal("dirty caller must omit caller_head_sha from the wire request")
 			}
 			t.Logf("CLI output: %sIPC request: %v", out.String(), params)
@@ -270,7 +277,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
 				params = <-requests
-				if params["caller_head_sha"] != wantHead {
+				if params.CallerHeadSHA != wantHead {
 					t.Fatalf("AXI omitted known head: %v", params)
 				}
 				t.Logf("AXI no-op push fallback IPC request: %v; run_id=%s", params, runID)
@@ -301,7 +308,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 								t.Fatalf("matching capture: run=%q err=%v", runID, err)
 							}
 							params := <-requests
-							if params["caller_head_sha"] != capturedHead || params["verification_plan_id"] != plan.ID {
+							if params.CallerHeadSHA != capturedHead || params.VerificationPlanID != plan.ID {
 								t.Fatalf("capture binding lost: %v", params)
 							}
 							return
