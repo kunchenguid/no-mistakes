@@ -847,6 +847,35 @@ func TestTestStep_RepairPromptLeavesOutTheBudgetCutFindings(t *testing.T) {
 	}
 }
 
+func TestTestStep_RepairAndEvidencePromptsForbidDumpingTheEnvironment(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	var prompts []string
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompts = append(prompts, opts.Prompt)
+		if len(prompts) == 1 {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"test-1","severity":"error","category":"test-command","description":"configured test command failed with exit code 1"}]}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 2 || !strings.Contains(prompts[0], "Fix the failing tests") || !strings.Contains(prompts[1], "Derive the scenarios") {
+		t.Fatalf("prompts = %q, want a repair turn then an evidence turn", prompts)
+	}
+	const rule = "Inspect specific environment variables by name if you need them; do not print the whole environment"
+	for i, name := range []string{"repair", "evidence"} {
+		if !strings.Contains(prompts[i], rule) {
+			t.Errorf("%s prompt lacks the by-name environment rule %q:\n%s", name, rule, prompts[i])
+		}
+	}
+}
+
 func TestTestStep_EvidenceAgentCannotClaimAReservedBudgetCutID(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

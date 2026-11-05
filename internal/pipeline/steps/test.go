@@ -96,6 +96,7 @@ Rules:
 - Make the smallest correct root-cause fix.
 - Do not refactor beyond what is needed for that root-cause fix.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
+- Inspect specific environment variables by name if you need them; do not print the whole environment (env, printenv, set, export -p, or similar), because this transcript is persisted.
 - Do NOT run linters, formatters, or static analysis tools.
 - Reproduce the specific failing case first (the exact test, package, script, or check named in the findings), then re-run only that focused verification after the fix.
 - Await every required check and read its actual exit status. Stop disposable browser and server children before returning success. Report incomplete verification honestly.
@@ -301,6 +302,7 @@ Evidence:
 - Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use artifact path for file artifacts, artifact url for externally visible artifacts, and artifact content for short logs or command output that should be shown directly in the PR.
 - If a scenario fails, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and re-drive that scenario.
+- Inspect specific environment variables by name if you need them; do not print the whole environment (env, printenv, set, export -p, or similar), because this transcript is persisted.
 
 Rules:
 - Do NOT run linters, formatters, or static analysis tools.
