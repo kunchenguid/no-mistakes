@@ -21,7 +21,7 @@ import (
 var cleanupOldExecutable = update.CleanupOldExecutable
 var maybeHandleBackgroundCheck = update.MaybeHandleBackgroundCheck
 var prepareDaemonRunStdio = daemon.PrepareRunStdio
-var runDaemon = daemon.Run
+var runDaemon = daemon.RunRestartable
 
 func main() {
 	os.Exit(run())

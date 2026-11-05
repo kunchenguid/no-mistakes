@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
@@ -57,6 +58,8 @@ type updater struct {
 	now                func() time.Time
 	spawnBackground    func(currentVersion string) error
 	resetDaemon        func(daemonExpected bool) error
+	restartStatus      func() (*ipc.RestartStatusResult, error)
+	scheduleRestart    func() (*ipc.RestartStatusResult, error)
 	paths              *paths.Paths
 	disableBackground  bool
 	nixStoreInstall    bool
@@ -64,13 +67,23 @@ type updater struct {
 	includePrereleases bool
 	assumeYes          bool
 	force              bool
+	// whenIdle is the --when-idle request. restartWhenIdle is set when it was
+	// requested and the running daemon can wait: the update then installs the
+	// new version and schedules the daemon's restart instead of restarting it
+	// now.
+	whenIdle        bool
+	restartWhenIdle bool
+	runsWereActive  bool
 }
 
 type RunOptions struct {
 	Beta  bool
 	Yes   bool
 	Force bool
-	Stdin io.Reader
+	// WhenIdle lets active runs finish on the current version and restarts
+	// the daemon on the new one once no run is executing.
+	WhenIdle bool
+	Stdin    io.Reader
 }
 
 func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
@@ -81,6 +94,7 @@ func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
 	u.includePrereleases = opts.Beta
 	u.assumeYes = opts.Yes
 	u.force = opts.Force
+	u.whenIdle = opts.WhenIdle
 	if opts.Stdin != nil {
 		u.stdin = opts.Stdin
 	}
@@ -142,6 +156,8 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		resetDaemon: func(daemonExpected bool) error {
 			return defaultResetDaemon(p, daemonExpected, execPath)
 		},
+		restartStatus:   func() (*ipc.RestartStatusResult, error) { return daemon.RestartStatus(p) },
+		scheduleRestart: func() (*ipc.RestartStatusResult, error) { return daemon.ScheduleRestart(p) },
 	}, nil
 }
 
@@ -219,10 +235,13 @@ func (u *updater) run(ctx context.Context) error {
 		fmt.Fprintf(u.stdoutWriter(), "%s is already up to date (%s)\n", u.appName, u.currentVersion)
 		return nil
 	}
+	// Read before the active-runs check: with --when-idle it probes whether the
+	// daemon is running, which clears a dead daemon's stale socket and PID
+	// file, and the reset must still restart that daemon.
+	daemonExpected := u.paths != nil && daemonArtifactsExist(u.paths)
 	if err := u.confirmActiveRunsBeforeUpdate(); err != nil {
 		return err
 	}
-	daemonExpected := u.paths != nil && daemonArtifactsExist(u.paths)
 	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
 		return err
 	}
@@ -252,6 +271,14 @@ func (u *updater) run(ctx context.Context) error {
 	}
 	if err := replaceExecutable(u.executablePath, binaryData); err != nil {
 		return err
+	}
+	if u.restartWhenIdle {
+		status, err := u.scheduleRestart()
+		if err != nil {
+			return fmt.Errorf("updated %s to %s, but could not schedule the daemon restart: %w; run `%s daemon restart --when-idle`", u.appName, plan.LatestVersion, err, u.appName)
+		}
+		fmt.Fprintf(u.stdoutWriter(), "updated %s from %s to %s; %s\n", u.appName, u.currentVersion, plan.LatestVersion, daemon.DescribeScheduledRestart(status))
+		return nil
 	}
 	if u.resetDaemon != nil {
 		if err := u.resetDaemon(daemonExpected); err != nil {

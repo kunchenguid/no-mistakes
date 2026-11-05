@@ -70,6 +70,7 @@ type RunManager struct {
 	maxConcurrentRuns int
 	wg                sync.WaitGroup // tracks background run goroutines
 	shuttingDown      atomic.Bool    // prevents new runs during shutdown
+	restart           restartState   // restart scheduled for an update; see restart_when_idle.go
 
 	afterRetryProof func() // test seam: runs between HandleRetry's proof and the launch
 	db              *db.DB
@@ -533,6 +534,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	executor.SetCIMonitorLifecycle(m.transitionCIMonitorLifecycle)
 	executor.SetCIWake(m.ciWake)
 	executor.SetHandoffPending(m.handoffPending)
+	executor.SetGateClaimGuard(m.gateClaimGuard)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
 		go func() {
@@ -978,6 +980,12 @@ func assertTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, trus
 // A proof-mode push creates an unclaimed row: the first matching observer
 // receives the sole `created` disposition by atomically claiming it.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
+	return m.handlePushReceived(ctx, params, false)
+}
+
+// handlePushReceived is HandlePushReceived; fromReplay marks a push an
+// earlier daemon held, which replayHeldPushes starts ahead of fresh pushes.
+func (m *RunManager) handlePushReceived(ctx context.Context, params *ipc.PushReceivedParams, fromReplay bool) (string, error) {
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
 	if git.IsZeroSHA(params.New) {
@@ -994,6 +1002,13 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 	if repo == nil {
 		return "", fmt.Errorf("unknown repo for gate %s", params.Gate)
+	}
+	// While a restart for an update is scheduled, or held pushes are still
+	// replaying, a plain push is held and started by the restarted daemon, so
+	// it runs on the new version in arrival order. A proof-mode launch waits
+	// for its receipt, so it is refused instead.
+	if held, err := m.holdPushIfDeferred(params, fromReplay); held {
+		return "", err
 	}
 
 	branch := branchFromRef(params.Ref)
@@ -1013,12 +1028,31 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		}
 		return receipt.RunID, nil
 	}
-	return m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
+	if m.restart.beforeStartRun != nil {
+		m.restart.beforeStartRun()
+	}
+	runID, err := m.startRunWithPRText(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch, params.OmitIntent, params.VerificationPlanID, params.ClosingIssueRefs, db.RunPRText{Title: params.PRTitle, Body: params.PRBody}, params.PiProfile)
+	if errors.Is(err, errRestartPending) {
+		// The restart was scheduled while this push waited for its branch:
+		// hold it rather than drop it, since the hook never retries. A
+		// replayed push stays in its replay file instead, ahead of newer ones.
+		if fromReplay {
+			return "", errReplayDeferred
+		}
+		if err := m.holdPush(params); err != nil {
+			return "", fmt.Errorf("hold push until the daemon restarts: %w", err)
+		}
+		return "", nil
+	}
+	return runID, err
 }
 
 // HandleStartFreshRun creates or replays a proof-mode launch only after
 // checking the creation context under the repository/branch lock.
 func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartFreshRunParams) (ipc.LaunchReceipt, error) {
+	if m.restartPending() {
+		return ipc.LaunchReceipt{}, errRestartPending
+	}
 	repo, err := m.db.GetRepo(params.RepoID)
 	if err != nil {
 		return ipc.LaunchReceipt{}, fmt.Errorf("get repo: %w", err)
@@ -1280,6 +1314,9 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 // A supplied clean caller head must match the selected head before any run
 // starts or is superseded. It never changes head selection.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string, omitIntent bool, callerHeadSHA, planID string, closingIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
+	if m.restartPending() {
+		return "", errRestartPending
+	}
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -1644,6 +1681,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	if m.shuttingDown.Load() {
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
+	}
+	if m.restartPending() {
+		trackStartFailure("restart_pending")
+		return "", errRestartPending
 	}
 	// Refuse invalid supplied PR text before any active run is superseded.
 	prText, prTextErr := normalizeRunPRText(prText)
@@ -2075,6 +2116,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	executor.SetCIMonitorLifecycle(m.transitionCIMonitorLifecycle)
 	executor.SetCIWake(m.ciWake)
 	executor.SetHandoffPending(m.handoffPending)
+	executor.SetGateClaimGuard(m.gateClaimGuard)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
 	if retry != nil {
@@ -2388,6 +2430,11 @@ func (m *RunManager) HandleRespond(runID string, step types.StepName, action typ
 // declines, user instructions, and user-authored findings to the executor, and
 // returns the dispositions the response recorded.
 func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions *pipeline.FixInstructions, addedFindings []types.Finding, approvalReason string, options ...pipeline.ResponseOptions) (pipeline.RespondDispositions, error) {
+	release, err := m.beginGateResponse()
+	if err != nil {
+		return pipeline.RespondDispositions{}, err
+	}
+	defer release()
 	m.mu.Lock()
 	exec, ok := m.executors[runID]
 	m.mu.Unlock()
@@ -2429,6 +2476,11 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 // The write happens before the release decision, so a failure to resume never
 // loses the answer - the next answer, or a recovered gate, finds it on disk.
 func (m *RunManager) HandleAnswerReviewQuestion(runID, questionID, answer, answeredBy string) (*ipc.AnswerReviewQuestionResult, error) {
+	release, err := m.beginGateResponse()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	questionID = strings.TrimSpace(questionID)
 	answer = strings.TrimSpace(answer)
 	if questionID == "" || answer == "" {

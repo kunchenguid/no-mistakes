@@ -936,6 +936,7 @@ no-mistakes update
 no-mistakes update --beta
 no-mistakes update -y
 no-mistakes update --force
+no-mistakes update --when-idle
 ```
 
 Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path (on macOS and Linux the newly installed binary's `daemon start` rewrites the service definition) and falling back to a detached daemon if service startup is unavailable or fails.
@@ -945,6 +946,7 @@ Version discovery reads a `channels.json` manifest from the GitHub release-asset
 If the daemon is running from a different executable path, update still prompts before replacing it; pass `-y`/`--yes` to answer that prompt non-interactively.
 If the daemon executable path cannot be determined, the update aborts before replacement.
 If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
+With `--when-idle`, update installs the new binary and schedules the daemon restart for when no run is executing, instead of resetting it now.
 When the running binary resolves into `/nix/store`, update prints that self-update is unavailable for Nix installs and exits without a version check; upgrade through Nix instead (see [Installation](/no-mistakes/start-here/installation/#nix)).
 On macOS, removes the quarantine extended attribute.
 [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping)
@@ -1002,9 +1004,11 @@ Restart the daemon.
 ```sh
 no-mistakes daemon restart
 no-mistakes daemon restart --force
+no-mistakes daemon restart --when-idle
 ```
 
 Stops the current daemon and starts it again. This works whether the daemon is currently running or not.
+With `--when-idle` and a running daemon, schedules the restart for when no run is executing instead, holding new gate pushes until then.
 [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping)
 owns the active-run guard, the scope of `--force`, and recursive
 validation-step containment.

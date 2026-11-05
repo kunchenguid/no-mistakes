@@ -91,6 +91,9 @@ func refuseRetry(runID, proof, format string, args ...any) error {
 // recorded global configuration, and the agent and model that served each
 // carried step are the ones a new run would use.
 func (m *RunManager) HandleRetry(ctx context.Context, repoID, branch, runID, callerHeadSHA string) (*db.RunRetry, error) {
+	if m.restartPending() {
+		return nil, errRestartPending
+	}
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return nil, fmt.Errorf("get repo: %w", err)
