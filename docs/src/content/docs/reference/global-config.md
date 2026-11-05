@@ -321,15 +321,18 @@ no-mistakes axi run --intent "the user's goal" \
   --reviewer codex --reviewer-model gpt-5.4 --reviewer-effort high
 ```
 
-`--reviewer` requires an explicit harness. Omitted model and effort fields
-inherit `agent_config` for that harness, and both must resolve before launch.
+`--reviewer` requires an explicit harness with verified model and effort
+selection: `claude`, `codex`, `copilot`, `grok`, `opencode`, or `pi`.
+`cursor`, `devin`, every `acp:<target>`, `rovodev`, and `antigravity` cannot
+be pinned because they lack at least one of these mechanisms. Omitted model
+and effort fields inherit `agent_config` for the selected harness, and both
+must resolve before launch.
 Unsupported tuning, unavailable binaries, and raw `agent_args_override` for
 the selected reviewer harness are refused before an active run is cancelled.
 For ordinary and proof-mode launches, reviewer availability and trusted
 instruction-suppression policy are checked before a push changes private-gate
-refs or takes custody. Direct pushes carrying a reviewer selection receive
-the same check at push admission. An older daemon without reviewer-resolution
-support is refused before submission.
+refs or takes custody. An older daemon without reviewer-resolution support is
+refused before submission.
 Model availability and authentication remain the harness's responsibility.
 
 The resolved harness, model and effort are stored atomically in

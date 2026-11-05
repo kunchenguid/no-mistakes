@@ -227,6 +227,8 @@ func newAxiRunCmd() *cobra.Command {
 			"configured review-role profiles and survives config edits, retries and recovery.\n" +
 			"--reviewer selects an independent immutable reviewer harness. Its model and\n" +
 			"effort come from --reviewer-model/--reviewer-effort or agent_config defaults.\n" +
+			"Supported reviewer pins: claude, codex, copilot, grok, opencode, pi. Both\n" +
+			"model and effort must resolve; harnesses without both mechanisms are refused.\n" +
 			"It overrides reviewer routing, including a Pi run pin, without changing the\n" +
 			"primary or fixer. Reruns inherit it unless explicitly replaced.\n" +
 			"Omit flags to reattach; a different selection cannot change an active run.\n\n" +
@@ -1130,12 +1132,6 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 		toon.Field{Key: "head_sha", Value: receipt.HeadSHA},
 		toon.Field{Key: "submitted_head_sha", Value: receipt.SubmittedHeadSHA},
 		toon.Field{Key: "intent_digest", Value: receipt.IntentDigest},
-	}
-	if receipt.PiProfile != nil {
-		fields = append(fields, toon.Field{Key: "pi_profile", Value: toon.NewObject(
-			toon.Field{Key: "model", Value: receipt.PiProfile.Model},
-			toon.Field{Key: "effort", Value: string(receipt.PiProfile.Effort)},
-		)})
 	}
 	if receipt.ReviewerProfile != nil {
 		fields = append(fields, toon.Field{Key: "reviewer_profile", Value: toon.NewObject(

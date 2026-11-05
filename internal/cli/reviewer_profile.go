@@ -14,7 +14,7 @@ import (
 
 func bindReviewerFlags(cmd *cobra.Command) {
 	for _, flag := range []struct{ name, help string }{
-		{"reviewer", "explicit reviewer harness, pinned independently of the primary agent"},
+		{"reviewer", "explicit reviewer harness (claude, codex, copilot, grok, opencode, pi), pinned independently of the primary agent"},
 		{"reviewer-model", "reviewer model (defaults to agent_config for its harness)"},
 		{"reviewer-effort", "reviewer effort (defaults to agent_config for its harness)"},
 	} {

@@ -1340,18 +1340,12 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if strings.TrimSpace(p.Gate) == "" {
 			return nil, fmt.Errorf("gate path is required")
 		}
-		repoID, err := ownedGateRepoID(mgr.paths, p.Gate)
-		if err != nil {
+		if _, err := ownedGateRepoID(mgr.paths, p.Gate); err != nil {
 			return nil, err
 		}
 		result, err := classify(ctx, "", false, true)
 		if err != nil {
 			return nil, err
-		}
-		if !result.Nested && p.ReviewerProfile != nil {
-			if _, err := mgr.resolveReviewerProfile(ctx, repoID, p.ReviewerProfile); err != nil {
-				return nil, err
-			}
 		}
 		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
 	})

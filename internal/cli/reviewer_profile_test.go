@@ -7,17 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/spf13/cobra"
@@ -83,10 +80,32 @@ func TestReviewerSelectionFlagsPushOptionsAndStatus(t *testing.T) {
 	render := &cobra.Command{}
 	render.SetOut(&out)
 	emitLaunchReceipt(render, ipc.LaunchReceipt{PiProfile: &agentcfg.PiProfile{Model: "openai/writer", Effort: agentcfg.EffortLow}, ReviewerProfile: pin})
-	for _, want := range []string{"pi_profile:", "model: openai/writer", "reviewer_profile:", "model: reviewer"} {
+	for _, want := range []string{"reviewer_profile:", "agent: codex", "model: reviewer", "effort: high"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("receipt missing %q: %s", want, out.String())
 		}
+	}
+	if strings.Contains(out.String(), "pi_profile:") || strings.Contains(out.String(), "openai/writer") {
+		t.Fatalf("receipt exposed an unrelated Pi profile: %s", out.String())
+	}
+}
+
+func TestReviewerSelectionUnsupportedHarnessesRefusedByName(t *testing.T) {
+	for _, harness := range []string{"cursor", "devin", "acp:custom", "rovodev", "antigravity"} {
+		t.Run(harness, func(t *testing.T) {
+			for _, tuning := range [][]string{nil, {"--reviewer-model", "gpt-5"}, {"--reviewer-effort", "high"}, {"--reviewer-model", "gpt-5", "--reviewer-effort", "high"}} {
+				for _, cmd := range []*cobra.Command{newAxiRunCmd(), newRerunCmd()} {
+					if err := cmd.ParseFlags(append([]string{"--reviewer", harness}, tuning...)); err != nil {
+						t.Fatal(err)
+					}
+					_, err := reviewerFromFlags(cmd)
+					want := fmt.Sprintf("reviewer harness %q cannot be pinned", harness)
+					if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "model and effort") {
+						t.Fatalf("%s %v: got %v, want named refusal %q", cmd.Name(), tuning, err, want)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -120,10 +139,9 @@ func TestReviewerSelectionBadFlagsRefuseWithoutLeakingInput(t *testing.T) {
 
 func TestReviewerSelectionRejectedBeforeGateSubmission(t *testing.T) {
 	bin := buildNoMistakesBinary(t)
-	for _, mode := range []string{"ordinary", "proof", "direct"} {
+	for _, mode := range []string{"ordinary", "proof"} {
 		t.Run(mode, func(t *testing.T) {
 			calls := make(chan *agentcfg.ReviewerProfile, 4)
-			var available atomic.Bool
 			olderDaemonFixture(t, nil, func(srv *ipc.Server) {
 				srv.Handle(ipc.MethodClaimLaunchReceipt, func(context.Context, json.RawMessage) (interface{}, error) {
 					return &ipc.ClaimLaunchReceiptResult{}, nil
@@ -138,17 +156,6 @@ func TestReviewerSelectionRejectedBeforeGateSubmission(t *testing.T) {
 					}
 					calls <- params.ReviewerProfile
 					return nil, fmt.Errorf("requested reviewer unavailable")
-				})
-				srv.Handle(ipc.MethodAdmitPush, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
-					var params ipc.AdmitPushParams
-					if err := json.Unmarshal(raw, &params); err != nil {
-						return nil, err
-					}
-					calls <- params.ReviewerProfile
-					if !available.Load() {
-						return nil, fmt.Errorf("requested reviewer unavailable")
-					}
-					return &ipc.AdmitPushResult{}, nil
 				})
 			})
 			writeGlobalConfig(t, "")
@@ -178,25 +185,11 @@ func TestReviewerSelectionRejectedBeforeGateSubmission(t *testing.T) {
 			pin := &agentcfg.ReviewerProfile{Agent: "codex", Model: "reviewer", Effort: agentcfg.EffortHigh}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			var cmd *exec.Cmd
-			if mode == "direct" {
-				exe, err := os.Executable()
-				if err != nil {
-					t.Fatal(err)
-				}
-				script := strings.Replace(git.PreReceiveHookScript(), "NM_BIN='"+exe+"'", "NM_BIN='"+bin+"'", 1)
-				if err := os.WriteFile(filepath.Join(gateDir, "hooks", "pre-receive"), []byte(script), 0755); err != nil {
-					t.Fatal(err)
-				}
-				args := []string{"push", "-o", formatReviewerPushOptions(pin)[0], gate.RemoteName, "HEAD:refs/heads/feature/omit"}
-				cmd = exec.CommandContext(ctx, "git", args...)
-			} else {
-				args := []string{"axi", "run", "--intent", "validate independent reviewer", "--reviewer", "codex", "--reviewer-model", pin.Model, "--reviewer-effort", string(pin.Effort)}
-				if mode == "proof" {
-					args = append(args, "--launch-nonce", "reviewer-request", "--validation-generation", "reviewer-generation")
-				}
-				cmd = exec.CommandContext(ctx, bin, args...)
+			args := []string{"axi", "run", "--intent", "validate independent reviewer", "--reviewer", "codex", "--reviewer-model", pin.Model, "--reviewer-effort", string(pin.Effort)}
+			if mode == "proof" {
+				args = append(args, "--launch-nonce", "reviewer-request", "--validation-generation", "reviewer-generation")
 			}
+			cmd := exec.CommandContext(ctx, bin, args...)
 			out, err := cmd.CombinedOutput()
 			if err == nil || !strings.Contains(string(out), "reviewer unavailable") {
 				t.Fatalf("unavailable reviewer accepted: %v\n%s", err, out)
@@ -204,23 +197,13 @@ func TestReviewerSelectionRejectedBeforeGateSubmission(t *testing.T) {
 			select {
 			case got := <-calls:
 				if got == nil || *got != *pin {
-					t.Fatalf("reviewer lost at admission: %+v", got)
+					t.Fatalf("reviewer lost at pre-push resolution: %+v", got)
 				}
 			default:
 				t.Fatal("reviewer availability boundary was not called")
 			}
 			if after := cliGit(t, gateDir, "show-ref"); after != before {
 				t.Fatalf("rejected reviewer changed refs: before=%s after=%s", before, after)
-			}
-			if mode == "direct" {
-				available.Store(true)
-				cmd = exec.CommandContext(ctx, "git", "push", "-o", formatReviewerPushOptions(pin)[0], gate.RemoteName, "HEAD:refs/heads/feature/omit")
-				if out, err := cmd.CombinedOutput(); err != nil {
-					t.Fatalf("available reviewer rejected: %v\n%s", err, out)
-				}
-				if got := cliGit(t, gateDir, "rev-parse", "refs/heads/feature/omit"); got != cliGit(t, local, "rev-parse", "HEAD") {
-					t.Fatal("successful admission did not update gate ref")
-				}
 			}
 		})
 	}

@@ -50,6 +50,9 @@ func (p *ReviewerProfile) ValidateRequest() error {
 	if !Known(p.Agent) {
 		return fmt.Errorf("reviewer requires an explicit supported harness")
 	}
+	if MechanismFor(p.Agent, KnobModel) == MechanismUnsupported || MechanismFor(p.Agent, KnobEffort) == MechanismUnsupported {
+		return fmt.Errorf("reviewer harness %q cannot be pinned: model and effort must both have verified selection mechanisms", p.Agent)
+	}
 	if len(p.Model) > 256 {
 		return fmt.Errorf("reviewer model must be an exact model identifier")
 	}

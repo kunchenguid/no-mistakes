@@ -236,7 +236,7 @@ func TestReviewerSelectionFreshLaunchDoesNotInherit(t *testing.T) {
 	}
 }
 
-func TestReviewerSelectionPrePushResolutionAndAdmission(t *testing.T) {
+func TestReviewerSelectionPrePushResolution(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepReview}} })
 	repo, _ := setupTestGitRepo(t, p, d, "reviewer-admission")
 	client, err := ipc.Dial(p.Socket())
@@ -266,21 +266,13 @@ func TestReviewerSelectionPrePushResolutionAndAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := gitOutput(t, p.RepoDir(repo.ID), "show-ref")
-			for _, admission := range []bool{false, true} {
-				var callErr error
-				if admission {
-					var result ipc.AdmitPushResult
-					callErr = client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: p.RepoDir(repo.ID), ReviewerProfile: pin}, &result)
-				} else {
-					var resolved agentcfg.ReviewerProfile
-					callErr = client.Call(ipc.MethodResolveReviewerProfile, &ipc.ResolveReviewerProfileParams{RepoID: repo.ID, ReviewerProfile: pin}, &resolved)
-					if callErr == nil && resolved != *pin {
-						t.Fatalf("resolution changed pin: %+v", resolved)
-					}
-				}
-				if tc.wantErr == "" && callErr != nil || tc.wantErr != "" && (callErr == nil || !strings.Contains(callErr.Error(), tc.wantErr)) {
-					t.Fatalf("admission=%t: %v, want %q", admission, callErr, tc.wantErr)
-				}
+			var resolved agentcfg.ReviewerProfile
+			callErr := client.Call(ipc.MethodResolveReviewerProfile, &ipc.ResolveReviewerProfileParams{RepoID: repo.ID, ReviewerProfile: pin}, &resolved)
+			if callErr == nil && resolved != *pin {
+				t.Fatalf("resolution changed pin: %+v", resolved)
+			}
+			if tc.wantErr == "" && callErr != nil || tc.wantErr != "" && (callErr == nil || !strings.Contains(callErr.Error(), tc.wantErr)) {
+				t.Fatalf("resolution: %v, want %q", callErr, tc.wantErr)
 			}
 			if after := gitOutput(t, p.RepoDir(repo.ID), "show-ref"); after != before {
 				t.Fatalf("reviewer preflight changed refs: before=%s after=%s", before, after)

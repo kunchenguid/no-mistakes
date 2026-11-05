@@ -354,8 +354,7 @@ type GateContextParams struct {
 // AdmitPushParams asks whether a local receive hook's authenticated process
 // ancestry is allowed to mutate a managed gate ref.
 type AdmitPushParams struct {
-	Gate            string                    `json:"gate"`
-	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
+	Gate string `json:"gate"`
 }
 
 type ResolveReviewerProfileParams struct {
