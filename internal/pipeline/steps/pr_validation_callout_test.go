@@ -238,3 +238,51 @@ func TestRenderValidationCallout_ListsEveryUntestedScenario(t *testing.T) {
 		}
 	}
 }
+
+// A reason that names a home path is published in its redacted form. The
+// completeness check must compare against that same redacted callout, or it
+// refuses a valid body with a misleading budget error.
+func TestPRBody_HomePathReasonIsPublishedRedacted(t *testing.T) {
+	t.Parallel()
+	const rawPath = "/home/alice/provider.key"
+	for _, keep := range []bool{false, true} {
+		name := "regenerate"
+		if keep {
+			name = "keep"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				data, _ := json.Marshal(prContent{Title: "feat: refunds", Body: "## What Changed\n\n- add refunds"})
+				return &agent.Result{Output: data}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config.PR.Appendix = config.PRAppendixMinimal
+			scenarios := []types.TestScenario{{Name: "refund reaches the provider", Result: types.ScenarioResultUntested, Reason: "missing " + rawPath}}
+			insertCompletedStep(t, sctx, types.StepTest, liveValidatedFindingsJSON(t, scenarios, types.TestVerdictGo, headSHA), "")
+			var body string
+			if keep {
+				env, _ := fakeGH(t, "")
+				sctx.Env = env
+				sctx.Config.PR.UpdateText = config.PRUpdateTextKeep
+				if _, err := (&PRStep{}).Execute(sctx); err != nil {
+					t.Fatalf("publication refused a home-path reason: %v", err)
+				}
+				body = string(mustRead(t, envEntry(env, "FAKE_CLI_PR_BODY_FILE")))
+			} else {
+				content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+				if err != nil {
+					t.Fatalf("publication refused a home-path reason: %v", err)
+				}
+				body = content.Body
+			}
+			if strings.Contains(body, rawPath) {
+				t.Fatalf("published body leaks the home path:\n%s", body)
+			}
+			if !strings.Contains(body, "**Untested:** refund reaches the provider - missing ") || !strings.Contains(body, "provider.key") {
+				t.Fatalf("published callout lost the redacted reason:\n%s", body)
+			}
+		})
+	}
+}

@@ -502,12 +502,10 @@ func scenarioReferenceCanEnd(after string) bool {
 // so a stale or agent-copied callout is stripped before a body is rebuilt.
 const notValidatedLiveHeading = "## Not validated live"
 
-// validationCallout renders the run's Not validated live callout, or "" when
-// every scenario was driven live and nothing was excepted or skipped. It reads
-// the same step rows and Test evidence the Testing section and the axi run
-// view read (pipeline.CollectValidationGaps), and it is placed directly after
-// Intent, outside every fold, in every appendix mode: untested work must be
-// visible to a reviewer who never opens the Validation details.
+// requireValidationCallout refuses a publishable body that does not carry the
+// complete callout. body has already been through publication redaction, so
+// the expected callout goes through the same redaction before the comparison:
+// a reason naming a home or worktree path is published in its redacted form.
 func requireValidationCallout(body string, sctx *pipeline.StepContext, provider scm.Provider, bodyLimit int) error {
 	callout, err := validationCallout(sctx, provider)
 	if err != nil {
@@ -516,6 +514,7 @@ func requireValidationCallout(body string, sctx *pipeline.StepContext, provider 
 	if callout == "" {
 		return nil
 	}
+	callout = redactPRContent(prContent{Body: callout}, sctx.WorkDir, nmWorktreesRoot()).Body
 	if !strings.Contains(body, callout) {
 		return fmt.Errorf("PR body budget cannot fit the complete Not validated live callout")
 	}
@@ -525,6 +524,12 @@ func requireValidationCallout(body string, sctx *pipeline.StepContext, provider 
 	return nil
 }
 
+// validationCallout renders the run's Not validated live callout, or "" when
+// every scenario was driven live and nothing was excepted or skipped. It reads
+// the same step rows and Test evidence the Testing section and the axi run
+// view read (pipeline.CollectValidationGaps), and it is placed directly after
+// Intent, outside every fold, in every appendix mode: untested work must be
+// visible to a reviewer who never opens the Validation details.
 func validationCallout(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
 		return "", nil
