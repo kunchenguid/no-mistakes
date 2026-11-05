@@ -37,11 +37,11 @@ When you run `no-mistakes init` in a repo:
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
 6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
-7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
+7. It handles the user-level `/no-mistakes` agent skill as described in the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init), which owns installation and skip behavior.
 8. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.
-If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed. A `no-mistakes` remote that is not this home's own gate wiring is never rewritten; see [`no-mistakes init`](/no-mistakes/reference/cli/#no-mistakes-init) for when init refuses it.
+If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, and origin/default-branch metadata are repaired or updated where needed. A `no-mistakes` remote that is not this home's own gate wiring is never rewritten; see [`no-mistakes init`](/no-mistakes/reference/cli/#no-mistakes-init) for when init refuses it.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
 A checkout is one repository however its path is spelled: when no stored working path matches exactly, lookup falls back to filesystem identity (`os.SameFile`), so a case variant on a case-insensitive volume or a symlinked spelling resolves to the registered repository from the main checkout and from any linked worktree, and `init` refreshes it instead of registering a second one. The stored path keeps the spelling it was first recorded with. Directories that differ only in case on a case-sensitive volume stay separate repositories.
 If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
@@ -122,10 +122,15 @@ If survival cannot be proven, the whole private-only range is reported as at
 risk.
 
 **Recovery-anchor preservation credit (issue #1233):** a private-only commit
-that a `refs/no-mistakes/recover/<run>` anchor reaches is *preserved*, so it is
-re-derived out of the at-risk set. Those anchors are the tool's own sanctioned
-preservation record - terminalization pins every verified unpublished head at
-that ref before the managed worktree can be removed, and
+that a `refs/no-mistakes/recover/<run>` or
+`refs/no-mistakes/recover-rewritten/<run>/<generation>` anchor reaches is
+*preserved*, so it is re-derived out of the at-risk set. Those anchors are the
+tool's own sanctioned preservation record - terminalization pins every verified
+unpublished head under `recover/` before the managed worktree can be removed;
+rewritten-remote recovery pins each superseded push under `recover-rewritten/`
+in the invoking worktree or gate. Reconciliation consults both locations for
+rewritten recovery anchors, staging their verified objects in the gate without
+creating or replacing durable refs during planning.
 `custody.PreserveRecoveryAnchor` never replaces evidence (a conflicting or
 symbolic anchor fails closed and is never dereferenced). The credit exists so
 the sanctioned `sync --recover` -> rerun -> push loop cannot deadlock against

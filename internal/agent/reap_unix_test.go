@@ -339,6 +339,9 @@ func escapedStdoutHolder(t *testing.T, dir string) string {
 // schema (runTestAnalyzer). Under exactly those options a cleanly exited agent
 // whose result was fully written must finish even when an escaped descendant
 // keeps stdout open until WaitDelay force-closes it.
+// Keep these native-agent subtests sequential: they write executable fixtures,
+// and a concurrent fork can briefly inherit another fixture's writable fd,
+// causing exec to fail with ETXTBSY even after the writer closes its copy.
 func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	tests := []struct {
@@ -357,7 +360,6 @@ func TestNativeAgents_FinishedResultSurvivesEscapedStdoutHolder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			res, err := tt.run(t, dir, escapedStdoutHolder(t, dir))
 			if err != nil {
@@ -392,14 +394,68 @@ func TestNativeAgents_RequireCompletedChildrenRefusesActiveOwnedChild(t *testing
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			_, err := tt.run(t, dir, ownedStdoutHolder(t, dir))
+			if errors.Is(err, context.DeadlineExceeded) && strings.Contains(err.Error(), "native check completion is unverified:") {
+				// A ps probe that uses up the settle window must also refuse
+				// completion, but cannot certify the member's current identity.
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), "agent exited with active owned children") {
 				t.Fatalf("Run error = %v, want refusal for active owned children", err)
 			}
+			// The refusal must name the surviving member so a wild report
+			// identifies which process refused to exit (issue #1614).
+			member := waitForPidFile(t, filepath.Join(dir, "owned.pid"), 5*time.Second)
+			if !strings.Contains(err.Error(), "pid "+strconv.Itoa(member)) || !strings.Contains(err.Error(), "(sleep 120)") {
+				t.Fatalf("Run error = %v, want member pid %d and its command named", err, member)
+			}
 		})
 	}
+}
+
+// TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild is the
+// issue #1614 regression: a member of the agent's own process group that was
+// still finishing when the leader exited must not fail the run - the bounded
+// re-probe sees it leave inside the settle window. A single-shot probe (the
+// old behavior) refused this shape outright.
+func TestNativeAgents_RequireCompletedChildrenAcceptsFinishingOwnedChild(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	tests := []struct {
+		name string
+		run  func(t *testing.T, dir, holder string) (*Result, error)
+	}{
+		{"claude", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeClaudeResult(t, dir, holder, schema)
+		}},
+		{"codex", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakeCodexResult(t, dir, holder, schema)
+		}},
+		{"pi", func(t *testing.T, dir, holder string) (*Result, error) {
+			return runFakePiResult(t, dir, holder)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			res, err := tt.run(t, dir, finishingOwnedChild(t, dir))
+			if err != nil {
+				t.Fatalf("Run = %v, want the finished result", err)
+			}
+			if res.Text != "ok" && string(res.Output) != `{"ok":true}` {
+				t.Fatalf("result = text %q output %q, want the finished result", res.Text, res.Output)
+			}
+		})
+	}
+}
+
+// finishingOwnedChild leaves a member in the agent's own process group that
+// outlives the leader by well under the settle window, with its stdio detached
+// so it does not hold the agent's pipes - the shape a test runner's last
+// worker or a toolchain helper mid-shutdown takes (issue #1614).
+func finishingOwnedChild(t *testing.T, dir string) string {
+	t.Helper()
+	return "( sleep 0.4 ) >/dev/null 2>&1 &\n"
 }
 
 // ownedStdoutHolder leaves a child in the agent's own process group holding

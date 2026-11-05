@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -25,6 +26,11 @@ const claudeMaxRetries = 3
 var errNoStructuredOutput = errors.New("claude returned no structured output")
 
 const claudeScannerMaxTokenSize = 256 * 1024 * 1024
+
+// claudeResultGrace is how long a process may stay open after writing a
+// finished result. Print mode exits within a second of it unless background
+// work it started (a background shell, a Monitor watch) holds the session open.
+var claudeResultGrace = 10 * time.Second
 
 // claudeAPIErrorMessageMaxRunes bounds the CLI's API error text in a step
 // failure message.
@@ -155,7 +161,33 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	var usage TokenUsage
 	var result *claudeResult
 	var stdoutTail claudeStdoutTail
-	if err := parseClaudeEvents(ctx, io.TeeReader(started.stdout, &stdoutTail), opts.OnChunk, &usage, &result); err != nil {
+	// A finished result ends the turn: background work the agent started can
+	// hold print mode open long past it (issue #1659), so after a grace the
+	// process group is stopped rather than left idling to the budget.
+	var graceTimer *time.Timer
+	onResult := func(r *claudeResult) {
+		if graceTimer == nil && claudeFinishedWithOutput(r, opts.JSONSchema) {
+			graceTimer = time.AfterFunc(claudeResultGrace, func() {
+				started.terminate()
+				started.closePipes()
+			})
+		}
+	}
+	err = parseClaudeEvents(ctx, io.TeeReader(started.stdout, &stdoutTail), opts.OnChunk, &usage, &result, onResult)
+	if graceTimer != nil && !graceTimer.Stop() {
+		// RequireCompletedChildren never counts a result as success while
+		// work the agent started is still running (#1449), so it fails here.
+		if opts.RequireCompletedChildren {
+			_ = started.wait()
+			stderrWG.Wait()
+			retErr := fmt.Errorf("claude completion is unverified: background work outlived the result by %s", claudeResultGrace)
+			emitAgentExited(opts, "claude", pid, retErr)
+			return resultFromUsage(usage), retErr
+		}
+		if opts.OnChunk != nil {
+			opts.OnChunk(fmt.Sprintf("claude stayed open %s after completing its result; stopping it", claudeResultGrace))
+		}
+	} else if err != nil {
 		err = started.waitAfterParseError(err)
 		if !started.closedByWaitDelay(err) || !claudeFinishedWithOutput(result, opts.JSONSchema) {
 			stderrWG.Wait()
@@ -526,7 +558,8 @@ const claudeStructuredOutputTool = "StructuredOutput"
 
 // parseClaudeEvents reads JSONL from the reader and dispatches events.
 // It accumulates token usage and captures the final result event.
-func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult) error {
+// onResult, when set, is called with each result event as it is parsed.
+func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult, onResult func(*claudeResult)) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
 	var textBuf string
@@ -632,6 +665,9 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 					model:            lastModel,
 
 					usageLimitReached: usageLimitReached,
+				}
+				if onResult != nil {
+					onResult(*result)
 				}
 			}
 		}

@@ -148,7 +148,7 @@ func TestPROwnershipUpdateMergesLatestAuthorEdits(t *testing.T) {
 		return nil
 	}}
 	sctx := &pipeline.StepContext{Ctx: context.Background()}
-	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(content), "", "", appendix+"\nNew recorded fact.", 0); err != nil {
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: content.Title, Body: content.Body}, "", "", appendix+"\nNew recorded fact.", 0); err != nil {
 		t.Fatal(err)
 	}
 	if host.writes != 1 || !strings.Contains(host.body, "Human updated checkbox label") || !strings.HasSuffix(host.body, "Fixes test/other#9") || !strings.Contains(host.body, "New recorded fact.") {
@@ -190,7 +190,7 @@ func TestPROwnershipUpdateFailuresNeverReadAsSuccess(t *testing.T) {
 			case "size":
 				initial.Body = strings.Repeat("Author content\n", maxPullRequestBodyBytes)
 			}
-			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent(initial), "", "", appendix+"\nNew fact", 0)
+			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent{Title: initial.Title, Body: initial.Body}, "", "", appendix+"\nNew fact", 0)
 			if err == nil || host.writes != wantWrites {
 				t.Fatalf("err=%v, writes=%d want %d", err, host.writes, wantWrites)
 			}

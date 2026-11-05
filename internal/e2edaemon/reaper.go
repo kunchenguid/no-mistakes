@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 // ReapResult summarizes one reaper pass.
@@ -157,6 +159,7 @@ func tryDaemonStop(e Entry) bool {
 		"NO_MISTAKES_NO_UPDATE_CHECK=1",
 	)
 	cmd.Dir = os.TempDir()
+	winproc.Harden(cmd)
 	_ = cmd.Run()
 	// Consider stop successful when no matching process remains.
 	if e.PID > 0 {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -79,7 +80,7 @@ func Run() (retErr error) {
 	defer lifecycleLog.Close()
 	initLogger(lifecycleLog, "info")
 	defer func() {
-		if retErr != nil {
+		if retErr != nil && !errors.Is(retErr, ErrRestartForUpdate) {
 			slog.Error("daemon failed", "error", retErr)
 		}
 	}()
@@ -264,7 +265,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 			}
 		}
 	}()
-	slog.Info("daemon process launched", "pid", pidRecord.PID)
+	slog.Info("daemon process launched", "pid", pidRecord.PID, "version", buildinfo.CurrentVersion())
 
 	// Recovery remains exclusive and completes before IPC is bound.
 	recoverOnStartup(d, p, mgr, layout)
@@ -284,6 +285,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 		})
 	}
 
+	mgr.restart.trigger = func() { doShutdown("restart for update") }
 	registerHandlers(srv, mgr, d, func() { doShutdown("ipc request") })
 
 	// Handle OS signals
@@ -306,6 +308,8 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 	logStartupPhase("ipc_bind", bindStarted)
 
 	serveErrCh := make(chan error, 1)
+	// Held pushes from before a restart start ahead of any fresh push.
+	mgr.restart.replaying.Store(heldPushesWaiting(p.HeldPushesFile()))
 	go func() { serveErrCh <- srv.ServeReady() }()
 	healthStarted := time.Now()
 	if err := confirmLocalIPCHealth(p, 2*time.Second); err != nil {
@@ -315,6 +319,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 	}
 	logStartupPhase("ipc_health", healthStarted)
 	slog.Info("daemon ready", "socket", socketPath, "pid", os.Getpid(), "startup_ms", time.Since(startupStarted).Milliseconds())
+	go mgr.replayHeldPushes(ctx)
 
 	if err := <-serveErrCh; err != nil {
 		return fmt.Errorf("serve: %w", err)
@@ -328,6 +333,10 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 			os.Remove(pidPath)
 			os.Remove(socketPath)
 		}
+	}
+	if mgr.restart.due.Load() {
+		slog.Info("daemon stopped; restarting through its executable for an update")
+		return ErrRestartForUpdate
 	}
 	slog.Info("daemon stopped")
 	return nil
@@ -494,9 +503,10 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// tell a crashed run's leftovers from work still in flight.
 	evidenceStarted := time.Now()
 	policy := evidenceReapPolicyFor(global)
-	root := evidenceRootFor(p, global)
-	reapEvidence(d, root, policy, now)
-	reapLegacyEvidence(d, root, policy, now)
+	roots := evidenceRootsFor(p, global, d)
+	if len(roots) > 0 {
+		reapLegacyEvidence(d, roots[0], policy, now, roots[1:]...)
+	}
 	reapRunLogs(d, p.LogsDir(), policy, now)
 	logStartupPhase("evidence_cleanup", evidenceStarted)
 
@@ -1169,6 +1179,17 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.HealthResult{Status: "ok"}, nil
 	})
 
+	srv.Handle(ipc.MethodScheduleRestart, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		return mgr.ScheduleRestartWhenIdle()
+	})
+
+	srv.Handle(ipc.MethodRestartStatus, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return mgr.RestartStatus(), nil
+	})
+
 	srv.Handle(ipc.MethodShutdown, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err
@@ -1344,7 +1365,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PiProfile)
+		run, claimed, err := d.ClaimLaunchReceiptWithPRText(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.PiProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
@@ -1360,6 +1381,9 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if p.OmitIntent && !run.OmitIntent {
 			return nil, conflictingLaunchOmitIntent(p.LaunchNonce)
 		}
+		if run.PRTextDigest() != p.PRTextDigest {
+			return nil, conflictingLaunchPRText(p.LaunchNonce)
+		}
 
 		receipt, err := receiptForRun(run, claimed)
 		if err != nil {
@@ -1374,6 +1398,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	// Capability probe for --no-publish-intent: see ipc.ProbeOmitIntentResult.
 	srv.Handle(ipc.MethodProbeOmitIntent, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeOmitIntentResult{OK: true}, nil
+	})
+
+	// Capability probe for --pr-title / --pr-body-file: see ipc.ProbeRunPRTextResult.
+	srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeRunPRTextResult{OK: true}, nil
 	})
 
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1452,7 +1481,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, p.PiProfile)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.PiProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1655,6 +1684,12 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
+	}
+	if r.PRTitle != nil {
+		info.PRTitleDigest = db.PRTextDigest(*r.PRTitle, "")
+	}
+	if r.PRBody != nil {
+		info.PRBodyDigest = db.PRTextDigest("", *r.PRBody)
 	}
 	if link, err := d.GetRunRetry(r.ID); err == nil && link != nil {
 		info.RetryOf = &ipc.RunRetryInfo{RunID: link.SourceRunID, Step: link.StepName, Round: link.SourceRound, Error: link.SourceError, CheckpointHeadSHA: link.CheckpointHeadSHA}

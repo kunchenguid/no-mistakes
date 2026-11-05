@@ -48,6 +48,7 @@ func newAxiCmd() *cobra.Command {
 	cmd.AddCommand(newAxiStatusCmd())
 	cmd.AddCommand(newAxiSyncCmd())
 	cmd.AddCommand(newAxiLogsCmd())
+	cmd.AddCommand(newAxiRoundsCmd())
 	cmd.AddCommand(newAxiAbortCmd())
 	cmd.AddCommand(newAxiRetryCmd())
 	cmd.AddCommand(newAxiHandoffCmd())
@@ -69,6 +70,7 @@ type axiEnvOptions struct {
 	ensureDaemonConn                       bool
 	deferGlobalConfigErrorForRunningDaemon bool
 	explicitRunID                          string
+	readOnlyDB                             bool
 }
 
 func (e *axiEnv) close() {
@@ -97,7 +99,17 @@ func openAxiRunEnv() (*axiEnv, error) {
 }
 
 func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
-	p, d, err := openResources()
+	var p *paths.Paths
+	var d *db.DB
+	var err error
+	if opts.readOnlyDB {
+		p, err = paths.New()
+		if err == nil {
+			d, err = db.OpenReadOnly(p.DB())
+		}
+	} else {
+		p, d, err = openResources()
+	}
 	if err != nil {
 		return nil, err
 	}

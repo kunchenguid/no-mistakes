@@ -305,6 +305,58 @@ func TestArchiveRecoveryConfirmationUsesOnlyGuardedKeepLocalAction(t *testing.T)
 	}
 }
 
+func TestPinnedHeadRecoveryConfirmationKeepsTheLocalHead(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-pinned", Branch: "feature", Status: types.RunCancelled}
+	m := NewModel("socket", nil, run)
+	stranded := branchsync.State{
+		State: branchsync.StatePipelineOwned, Relation: branchsync.RelationDiverged, Safety: "blocked_pipeline_owned_recoverable",
+		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline: branchsync.PipelineState{RunID: run.ID, Status: "cancelled", Phase: "pre_push", CurrentHead: strings.Repeat("c", 40)},
+		Recovery: &branchsync.RecoveryEvidence{
+			Source: "pinned_head", RunID: run.ID, Branch: "feature",
+			RequiredHead: strings.Repeat("a", 40), PreservedHead: strings.Repeat("c", 40),
+			KeepLocal: true, Proof: "verified",
+		},
+		NextAction: &branchsync.NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"},
+	}
+	m.branchSync = &stranded
+	called := false
+	m.syncRecover = func(keepLocal bool) branchsync.State {
+		called = true
+		if !keepLocal {
+			t.Fatal("pinned-head recovery did not use keep-local")
+		}
+		recovered := stranded
+		recovered.Recovered = true
+		return recovered
+	}
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	for _, want := range []string{"are not on the branch", "u recover custody"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("pinned-head status missing %q:\n%s", want, view)
+		}
+	}
+	next, cmd := m.handleKey(keyMsg("u"))
+	m = next.(Model)
+	if cmd != nil || !m.recoverConfirm {
+		t.Fatal("pinned-head recovery did not open confirmation")
+	}
+	confirmation := stripANSI(m.View())
+	if !strings.Contains(confirmation, "are not on the branch") {
+		t.Fatalf("pinned-head confirmation:\n%s", confirmation)
+	}
+	next, cmd = m.handleKey(keyMsg("enter"))
+	m = next.(Model)
+	if cmd == nil || called {
+		t.Fatal("pinned-head recovery did not wait for its command")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if !called || !m.branchSync.Recovered {
+		t.Fatalf("pinned-head recovery result = %#v", m.branchSync)
+	}
+}
+
 // TestActivePipelineOwnedStateOffersNoRecoveryAction pins that the recovery
 // affordance never appears while the owning run is still active.
 func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {

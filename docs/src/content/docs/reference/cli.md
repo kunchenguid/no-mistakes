@@ -31,17 +31,22 @@ Initialize or refresh the gate for the current repository.
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
 no-mistakes init --worktree-root ~/work/my-repo-runs
+no-mistakes init --skip-user-skill
 ```
 
-| Flag              | Type     | Default | Description                                                                                      |
-| ----------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--fork-url`      | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
-| `--worktree-root` | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
+| Flag                | Type     | Default | Description                                                                                      |
+| ------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `--fork-url`        | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--worktree-root`   | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
+| `--skip-user-skill` | `bool`   | `false` | Do not install or refresh the `/no-mistakes` agent skill at user level                           |
 
-Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md` (unless you pass `--skip-user-skill`), and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies serve Claude Code (`~/.claude/skills`) and agents that use the vendor-neutral `~/.agents/skills` convention (Codex, OpenCode, Rovo Dev, and Pi) across all repos. Grok Build is a pipeline runner and does not consume this installed skill.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
+With `--skip-user-skill`, `init` does not run the skill installer at all: neither user-level `SKILL.md` is created, refreshed, or otherwise touched (including through the symlink layouts above), and a missing skills directory is not created.
+Everything else about `init` is unchanged, and it reports `skipped: --skip-user-skill` on its skill line.
+The flag applies to that run only and is not remembered, so a later `init` without it installs or refreshes the skill again.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass `--fork-url` with your fork remote URL.
@@ -61,7 +66,7 @@ It refuses to register a checkout that contains a directory an existing [`worktr
 It also refuses to register anything while `~/.no-mistakes/config.yaml` does not load, naming the fault, because the daemon refuses to start on that same config.
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
-It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
+It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and, unless you pass `--skip-user-skill`, the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
@@ -70,7 +75,19 @@ On a fresh init and on a refresh alike, `init` decides from the literal `no-mist
 When the checkout's `.git` is shared with another no-mistakes home (another `NM_HOME`, for example a linked worktree used by another OS account), that remote names the other home's gate, so the refusal names both gates and prints the per-account rewrite `git config --global 'url.<this gate>.insteadOf' '<other gate>'`, with both paths shell-quoted so it can be pasted as is.
 With that rewrite in your own global git config, `init` leaves the shared remote alone and your pushes through it reach your own gate; a rolled-back init or an `eject` from your home leaves it in place too.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
-Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
+Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place. Passing `--skip-user-skill` is not a failure: the installer never runs and the gate is set up as usual.
+
+## no-mistakes skill install
+
+Install or refresh the `/no-mistakes` agent skill independently of repository setup.
+
+```sh
+no-mistakes skill install
+```
+
+Writes the skill bundled with the current binary to `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, using the same installer as `init` and following the same symlink layouts. Re-running the command overwrites stale skill content. Installation errors return a nonzero exit status.
+
+This command works outside a Git repository and does not register a gate or start the daemon. To control when the user-level skill is installed, run `init --skip-user-skill` for repository setup and `skill install` separately when wanted.
 
 ## no-mistakes ci-workflow
 
@@ -128,6 +145,7 @@ no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
 no-mistakes axi run --intent "the user's goal" --no-publish-intent
 no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#12
+no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --pr-body-file ./pr.md
 ```
 
 | Flag            | Type     | Default | Description                                                                                          |
@@ -140,6 +158,8 @@ no-mistakes axi run --intent "the user's goal" --closes 95 --closes owner/repo#1
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
+| `--pr-title` | `string` | (none) | PR title used verbatim when this run creates the PR; see [Supplied PR title and description](#supplied-pr-title-and-description) |
+| `--pr-body-file` | `string` | (none) | Read the PR description used verbatim when this run creates the PR; `-` reads stdin to EOF |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
@@ -207,6 +227,14 @@ The same omit-to-reattach rule applies to `--model`/`--effort` against an active
 The references are persisted on the run and survive daemon restarts, fix rounds, rebases, and that run's PR-body refreshes; `no-mistakes rerun` inherits them, and its own `--closes` adds to them. They can also be passed on a plain gate push as repeated `-o no-mistakes.closes=<ref>` push options; a gate push without them starts a run with none, and its PR-body refresh drops the `## Issues` section. Reattaching with `--closes` adds references to the active run until its PR body has been composed; after that the request is refused with an explicit error rather than reported as applied. Before starting a run with `--closes`, `axi run` refuses a running daemon too old to honor it, and rejects `--closes` combined with `--skip pr` as a usage error; a run whose PR step is skipped any other way fails at that step instead (see the [PR step](/no-mistakes/reference/pipeline-steps/#pr)).
 
 `--closes` is supported on providers that close issues from the pull request body: GitHub and GitLab. On another forge the PR step fails rather than publish a PR that silently closes nothing; a GitLab subgroup reference on a non-GitLab provider is refused the same way, since that forge would read it as a different repository's reference. The forge closes the issue only when the PR merges into the repository's default branch (and, on GitLab, unless automatic issue closing is disabled for the project); a PR merged into another branch does not close it.
+
+### Supplied PR title and description
+
+`--pr-title TEXT` and `--pr-body-file PATH` supply the PR's title and description, for teams with a description convention. They are used only when this run **creates** the PR; the PR step then adds the usual appendix (Intent, the evidence in the configured [`pr.appendix`](/no-mistakes/reference/repo-config/#prappendix) mode, the `## Issues` section) and the attestation after the description. Either flag works alone: a run with only `--pr-title` drafts the description as usual, and a run with only `--pr-body-file` drafts the title. Without either flag nothing changes. A supplied description needs a provider that supports [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate); on a host without raw PR-content reads the PR step fails, as template mode does. See the [PR step](/no-mistakes/reference/pipeline-steps/#pr) for how each is published and what later runs keep.
+
+There is no inline description flag, because Markdown with backticks and dollars is exactly the text a caller's shell expands; pass a file or `--pr-body-file -` to read stdin to EOF. `--pr-body-file -` and `--intent -` cannot both read stdin. The title is trimmed and must be one non-empty line of at most 4,096 bytes of valid UTF-8 with no control, bidi, or invisible format characters. The description must be non-blank, valid UTF-8, at most **49,122 bytes** (the same single push-option transport as [intent](#intent-input)), free of control characters other than tab, newline, and carriage return, free of bidi override and isolate characters, and must not contain no-mistakes appendix or attestation markers. Every refusal is a usage error before any push; the daemon re-checks the same rules. A description that is valid but does not fit the provider's body budget together with the appendix fails at the PR step instead of being truncated.
+
+Both values are persisted on the run, survive daemon restarts, and are inherited by `no-mistakes rerun` and [`axi retry`](#no-mistakes-axi-retry); a plain gate push carries neither unless it passes the `-o no-mistakes.pr-title=<base64>` and `-o no-mistakes.pr-body=<base64>` push options. Reattaching with a title or description that differs from the active run's is refused; omit the flags to reattach. Like `--closes`, `axi run` refuses a running daemon too old to honor them and rejects them combined with `--skip pr`. A run whose PR step is skipped any other way, or that finds the PR already open, logs that the supplied text went unused.
 Ordinary reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
@@ -270,6 +298,7 @@ A conflicting submitted head, validation generation, intent, or [pinned Pi profi
 A different nonce creates a distinct run rather than reattaching to a same-head run; both post-receive creation and the up-to-date-push fallback follow this contract.
 The up-to-date-push fallback preserves the latest same-head run's PR URL unless its recorded PR state is closed or merged, including when an explicit `--base-branch` retargets that PR.
 An explicit `--base-branch` is persisted on creation and must match the stored per-run base on replay; omitting it on replay preserves the stored base.
+A supplied `--pr-title` or `--pr-body-file` is bound the same way: a replay must supply the same text as the run, or none when the run has none.
 A replay that adds `--no-publish-intent` against a run bound to publish the section is refused for the same reason; the stored omit decision folds in the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default at creation, so a replay without the flag still matches a run whose row omits publication.
 Explicit `--model`/`--effort` must match a stored pin the same way; omitting both preserves it.
 A conflicting claim does not consume the first `created` disposition.
@@ -376,7 +405,7 @@ Answering requires an active run, because only its executor can resume the revie
 
 ## no-mistakes axi status
 
-When `--run` is omitted, show this branch's run: its active run, else its most recent one.
+Without `--run` or `--branch`, show the current branch's run: its active run, else its most recent one.
 Resolution is scoped to the current branch and never falls back to another branch's run, because one clone commonly has several worktrees on different branches.
 On a successful status response, when the current branch has no run of its own - including a detached `HEAD`, which owns no branch and so reports `current_branch: unknown` - the output carries no run object at all.
 It reports `current_branch`, `runs_on_current_branch: 0` where a branch is known, and the recent-runs listing, so an unrelated run can never be read as this worktree's.
@@ -388,11 +417,13 @@ An explicit `--run <id>` rendered under `run:` while the current branch is unkno
 ```sh
 no-mistakes axi status
 no-mistakes axi status --run <id>
+no-mistakes axi status --branch feature/example
 ```
 
 | Flag    | Type     | Default            | Description               |
 | ------- | -------- | ------------------ | ------------------------- |
 | `--run` | `string` | current-branch run | Inspect a specific run ID |
+| `--branch` | `string` | (none) | Read a publication snapshot for this exact branch in the invoking registered repository; mutually exclusive with `--run` |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
@@ -407,6 +438,38 @@ For older active runs with no recorded activity timestamp, AXI falls back to the
 Finding descriptions are always rendered in full, so an `ask-user` finding can be relayed verbatim. Gate summaries are bounded in this default status view because a command gate's summary carries its command output; a truncated summary discloses its original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.
 Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
 Cached home and status rendering performs no network read and labels the remote observation `pipeline_push`; only explicit sync check or apply reports `live` freshness.
+
+### Branch publication snapshot
+
+`axi status --branch <name>` is a separate, read-only TOON surface (`schema: branch-publication.v1`) for a user or an automation that merges pull requests. It selects the **newest-created** run, not the active-run-preferred selection used by ordinary status. The exact branch need not be checked out or even exist as a local ref. Linked worktrees resolve to their registered repository. This mode reads existing storage without creating or migrating it, contacting the daemon or forge, fetching, updating refs, or advancing the pipeline. It emits no telemetry and successful snapshots offer no mutation commands. An unregistered-repository error may suggest `no-mistakes init`; the query itself never initializes it.
+
+The complete branch inventory, selected run, pinned plan and step states come from **one database read transaction**. Gate pins are read with the inventory, and step records are read in one batch for the entire inventory. The snapshot proves recorded state at query time, not live forge state, and is not a lock against a new run or publication after the read. It does not decide whether to merge or whether a published descendant of the reviewed head is acceptable.
+
+| Field | Meaning |
+| --- | --- |
+| `scope.repository_id`, `scope.branch` | Registered local repository identity and exact branch shared by every inventory row. The selected run repeats both. |
+| `inventory_complete` | Always `true` on success; `runs` is uncapped and contains every stored run on that repository and branch. |
+| `creation_order` | `created_at DESC, id DESC`: newest timestamp first, then lexicographically greatest full ID on a timestamp tie. This is a total order, not inferred chronology from the ID. |
+| `newest_run_id` | Full ID of the first inventory row, also selected under `run`; `null` for an empty branch. |
+| `run.created_at`, `runs[].created_at` | Exact stored creation timestamp in Unix seconds, with no display rounding. Together with each full `id`, this is the authoritative creation-order key. |
+| `run.status`, `runs[].status` | Recorded run lifecycle state, including `pending`, `running`, and terminal states. |
+| `run.current_step`, `runs[].current_step` | Active or parked step, otherwise the first recorded pending step for a nonterminal run; `null` for terminal runs or when no phase is recorded. Step states distinguish Review from CI monitoring. |
+| `run.outcome` | Existing terminal outcome vocabulary (including `passed`, qualified passes, failure and cancellation); `null` while nonterminal. |
+| `run.head_sha` | Full mutable run head, **not** publication or Review authority. |
+| `run.reviewed_head_sha` | Full durable Review-approved head, distinct from `head_sha` and `last_pushed_sha`; `null` when approval is unavailable or revoked. |
+| `run.last_pushed_sha`, `run.last_pushed_at`, `run.push_generation` | Exact last durable publication head, publication time in Unix seconds, and monotonically increasing publication generation; never inferred from Git refs or the mutable head. |
+| `run.push_target_kind`, `run.push_target_fingerprint`, `run.push_ref` | Durable target kind (`upstream` or `fork`), credential-free target fingerprint, and full published `refs/heads/<branch>` ref. |
+| `run.push_active` | Durable marker that a pipeline phase currently owns a possible branch-head update. A recorded last publication is not evidence that an active publication has settled. |
+| `run.pr` | Recorded PR URL, or `null`; no live PR lookup is performed. |
+| `run.steps` | Ordered plan through CI, including every pinned repository command gate. Rows have one-based `position`, exact `step`, `recorded`, and `status`. An absent required record is `recorded: false, status: null`, never silently counted as pending or completed. A step not in this plan was not configured for the run. An absent gate pin means the core plan for legacy runs. |
+| `runs` | Complete same-branch inventory with full `id`, `created_at`, `status`, and `current_step`, in creation order. |
+| `other_running_run_ids` | IDs of **all other** same-branch `pending` or `running` runs, including older ones; excludes the selected run. |
+
+Publication fields are unconditional: each appears even when its recorded value is `null`. Legacy or incomplete provenance remains unavailable, never synthesized. If the stored schema predates Review approval or publication columns, their values remain `null` without migrating storage; an absent `push_active` marker reports `false`. Malformed scope, stored identities, SHAs, statuses, timestamps, gate pins or step records, and unreadable or incompatible storage exit nonzero with `error`, not an empty success. A genuinely empty branch succeeds with `newest_run_id: null`, `run: null`, empty `runs` and `other_running_run_ids`, and `inventory_complete: true`.
+
+The target fingerprint uses the existing `branchsync.TargetFingerprint` algorithm: lowercase hexadecimal SHA-256 of the UTF-8 canonical target string. Canonicalization trims surrounding whitespace; for a parseable URL with a nonempty scheme it removes the fragment, and for HTTP(S) also removes user information and lowercases scheme and host; it then removes one trailing `/`. A non-URL target only has whitespace and one trailing `/` removed. SSH and HTTPS spellings are not interchangeable fingerprints. Compare using the exact configured push-target spelling with this normalization, not an unrelated transport URL. The query deliberately does not substitute today's registered target URL for a run's historical publication target.
+
+For example, a merge automation can compare its live PR head with `run.last_pushed_sha`, inspect every required pre-CI step and the CI phase, and check the complete inventory for competing runs. It must handle `null` provenance explicitly; a mutable head, green forge checks, or an older passing run is not a substitute for the newest run's publication record.
 
 ## no-mistakes axi sync
 
@@ -465,11 +528,12 @@ For equal or ahead worktrees where the preserved head is already locally reachab
 For behind or diverged worktrees, recovery verifies the preserved head at the run-specific recovery ref in the local gate and fetches it into the anchor before moving or refusing. Legacy recorded heads that remain available as unreferenced gate objects are anchored before recovery continues.
 A clean behind worktree fast-forwards.
 A diverged worktree is adopted only when the preserved head provably carries every local change, proven by an executable three-way merge whose result is exactly the preserved head's tree.
+When the local head exists only in the worktree and the preserved head only in the gate, status proves the relationship without importing anything (the objects are read through a throwaway union of the two object stores) and offers plain `--recover` only when recovery will succeed. If instead the local head already carries every change the preserved head made (the same three-way merge with the roles swapped), recovery anchors the preserved head, leaves the branch and worktree where they are, and returns custody at the local head; the preserved commits stay reachable at `refs/no-mistakes/recover/<run>`. A genuinely divergent pair, unrelated histories, a dirty worktree, or a conflicting recovery ref still refuse and keep both copies.
 This covers a pipeline rebase onto a newer base without requiring the gate branch to advance to the preserved head.
 Terminalization pins a verified unpublished pipeline head under a run-specific recovery ref, so recovery does not require the gate branch itself to have advanced. If the verified recorded head is absent from both the worktree and an accessible gate and the recovery refs are compatible, status still offers `recover_custody`, but the command is `--recover --keep-local` rather than taking that head. Plain `--recover` without `--keep-local` still refuses.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>`, then moves the branch with Git operations that refuse on their own rather than after a preceding check: an atomic compare-and-swap on the branch ref, and a working-tree update that aborts instead of overwriting a modified or untracked file.
 The proof is deliberately narrow and never uses patch identity, which discards hunk locations and whitespace and so cannot tell a genuine replay from a same-shaped edit elsewhere.
-Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
+Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses plain `--recover` with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change. When the worktree is clean and that verified head is already pinned at `refs/no-mistakes/recover/<run>` in an accessible gate, status offers `no-mistakes axi sync --recover --keep-local`. The branch stays where it is. The pipeline commits stay at that ref and are not on the branch. An unverified terminal head is not offered that keep-local command.
 A dirty worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it. `--keep-local` is also the recovery when an accessible gate confirms that the verified recorded head is missing and the recovery refs are compatible: the operator is keeping the current local head and discarding those unpublished commits, so that missing object does not block the path. One `--keep-local` call releases the full stranded stack: genuinely missing heads are explicitly discarded, while still-available heads are anchored under their run-specific recovery refs first. Unverified or conflicting evidence on any run blocks the release before any custody stamp. If the gate branch moved independently, recovery first preserves that head under `refs/no-mistakes/recover-gate/<run>`; a conflicting pre-existing anchor makes recovery refuse, and a concurrent gate push wins the compare-and-swap and also makes recovery refuse.
 
@@ -509,6 +573,57 @@ Without `--full`, the summary is bounded like the gate's and long logs show the 
 Step logs include native subprocess agent lifecycle lines such as `codex started pid=4242`, `codex exited pid=4242 status=success`, and transient retry messages when the selected agent supports lifecycle events.
 They also include fix-loop markers such as `auto-fix round 1/3 starting after round 1` and `user-fix round starting after round 2`.
 `--step` accepts the nine core step names and valid repository gate names such as `gate.test.mutation-budget`. Use the exact gate name shown by `axi status`.
+
+## no-mistakes axi rounds
+
+Read the stored findings and decisions for every execution round of one step, in ascending round order.
+This is a read-only export for local tools that need round history without depending on the SQLite schema.
+It does not start or contact the daemon, run migrations, change a gate, or emit telemetry.
+
+```sh
+no-mistakes axi rounds --step review
+no-mistakes axi rounds --step review --run <id> --json
+no-mistakes axi rounds --step gate.test.mutation-budget --json
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--step` | `string` | (none) | Required core step or repository gate name |
+| `--run` | `string` | current-branch run | Inspect exactly this run, including from outside a checkout |
+| `--json` | `bool` | `false` | Emit JSON instead of TOON |
+
+Implicit run selection follows [`axi status`](#no-mistakes-axi-status): this branch's active run, then its most recent run, never another branch's.
+A detached HEAD requires `--run`.
+An unknown run, an unrecorded step, an unreadable database, or malformed stored findings or decisions exits 1 rather than reporting a clean history.
+A missing or invalid `--step` exits 2.
+Errors produced by the query use `error` in the selected encoding; JSON errors also carry `schema_version`.
+An existing step without recorded rounds succeeds with `rounds: []`.
+There is no fallback to the step's latest findings and no pagination or truncation.
+An active run's export is a snapshot; a subsequent call may include more rounds or a newly recorded decision.
+
+### JSON contract (version 1)
+
+The top-level keys are `schema_version` (currently `1`), `run_id`, `step`, and `rounds` (an ordered array).
+Each round has these fields:
+
+- `round`: the step-local round number; identify a round by `(run_id, step, round)`, not by finding ID alone.
+- `trigger`: the recorded execution trigger, such as `initial`, `auto_fix`, legacy `user_fix`, `coverage`, `answer`, or `retry`; consumers must allow new trigger values.
+- `summary` and `findings`: the round's complete summary and array of finding objects, or `null` when absent.
+  Finding fields are preserved, including optional fields and instructions; consumers must ignore unknown fields.
+  TOON prints an integer outside ±(2^53−1) as a quoted decimal string to keep it exact; `--json` keeps it a number.
+  An explicit empty findings array stays `[]` and does not mean that earlier findings were resolved.
+- `selected_finding_ids`: IDs selected for fixing **after this round**, or `null` when no selection was recorded.
+  `[]` is an explicit selection of nothing, distinct from no decision.
+- `selection_source`: the recorded source (`user`, `auto_fix`, or `user_declined`), or `null`.
+  An automatic selection does not mean the user declined the remaining findings.
+  `user_declined` does not distinguish approve, skip, and abort; this export does not infer a verdict or whether a fix succeeded.
+- `response_origin`: the recorded caller classification (`interactive`, `auto_yes`, or `unknown`).
+- `user_findings`: the merged finding array dispatched after user edits or additions, or `null` when absent.
+- `fix_summary`: the recorded fix result, or `null` when absent.
+- `duration_ms` and `created_at`: recorded duration in milliseconds and creation time in Unix seconds.
+
+Consumers should tolerate additive fields and new source/origin values; incompatible changes require a new `schema_version`.
+The export excludes internal configuration snapshots and does not publish anything remotely, but finding descriptions and instructions can still contain private repository information.
 
 ## no-mistakes axi handoff
 
@@ -646,6 +761,7 @@ no-mistakes rerun --intent "the revised user goal"
 no-mistakes rerun --model openai-codex/gpt-5.4 --effort high
 no-mistakes rerun --no-publish-intent
 no-mistakes rerun --closes 95
+no-mistakes rerun --pr-body-file ./pr.md
 ```
 
 `--model` and `--effort` opt this new run into a [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles), with the same precedence and validation as `axi run`. Omitting both retains current global-config behavior; a prior run's model pin is not inherited.
@@ -685,6 +801,8 @@ failed step instead of repeating every completed step.
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
+| `--pr-title` | `string` | (none) | Replace the inherited [supplied PR title](#supplied-pr-title-and-description); used only if this rerun creates the PR |
+| `--pr-body-file` | `string` | (none) | Replace the inherited supplied PR description from a file, or `-` for stdin |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
 
@@ -796,7 +914,7 @@ Checks:
 - Agent runners: native binaries `claude`, `codex`, `grok`, `acli`, `opencode`, `pi`, `copilot`, and `agy` (Antigravity), plus the optional ACP bridge `acpx`
 - ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`, and `devin` plus `acpx` for `devin`
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
-- Every configured [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry, reported as `forge <host>`: the profile resolves and validates, its provider CLI is installed, and that CLI is authenticated for the profile's host
+- Every configured [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry, reported as `forge <key>` (for example `forge github.com` or `forge github.com/owner`): the profile resolves and validates, its provider CLI is installed, and that CLI is authenticated for the profile's host
 - Every configured [`provider_plugins`](/no-mistakes/reference/global-config/#provider_plugins) entry, reported as `plugin <name>`: that its command executable resolves
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
@@ -818,6 +936,7 @@ no-mistakes update
 no-mistakes update --beta
 no-mistakes update -y
 no-mistakes update --force
+no-mistakes update --when-idle
 ```
 
 Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path (on macOS and Linux the newly installed binary's `daemon start` rewrites the service definition) and falling back to a detached daemon if service startup is unavailable or fails.
@@ -827,6 +946,7 @@ Version discovery reads a `channels.json` manifest from the GitHub release-asset
 If the daemon is running from a different executable path, update still prompts before replacing it; pass `-y`/`--yes` to answer that prompt non-interactively.
 If the daemon executable path cannot be determined, the update aborts before replacement.
 If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
+With `--when-idle`, update installs the new binary and schedules the daemon restart for when no run is executing, instead of resetting it now.
 When the running binary resolves into `/nix/store`, update prints that self-update is unavailable for Nix installs and exits without a version check; upgrade through Nix instead (see [Installation](/no-mistakes/start-here/installation/#nix)).
 On macOS, removes the quarantine extended attribute.
 [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping)
@@ -884,9 +1004,11 @@ Restart the daemon.
 ```sh
 no-mistakes daemon restart
 no-mistakes daemon restart --force
+no-mistakes daemon restart --when-idle
 ```
 
 Stops the current daemon and starts it again. This works whether the daemon is currently running or not.
+With `--when-idle` and a running daemon, schedules the restart for when no run is executing instead, holding new gate pushes until then.
 [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping)
 owns the active-run guard, the scope of `--force`, and recursive
 validation-step containment.

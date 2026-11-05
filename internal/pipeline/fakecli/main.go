@@ -259,6 +259,13 @@ func fakeGHHandler(args []string) {
 			os.Exit(0)
 		}
 		fakeGHStorePRBody(args)
+		if os.Getenv("FAKE_CLI_PR_CREATE_REWRITE_BODY") == "1" {
+			if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
+				if data, err := os.ReadFile(path); err == nil {
+					_ = os.WriteFile(path, append(data, []byte("\nrewritten by host\n")...), 0o644)
+				}
+			}
+		}
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
 	}

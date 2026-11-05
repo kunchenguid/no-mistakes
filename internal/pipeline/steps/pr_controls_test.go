@@ -307,7 +307,7 @@ func TestDraftBodyFittedToLimitDoesNotGrowAtThePublicationBoundary(t *testing.T)
 	t.Parallel()
 	const limit = 3000
 	what := neutralizeAttestationMarkers(scm.ProviderGitHub, "## What Changed\n\n"+strings.Repeat("- \\u001b stray\n", 2000))
-	body := assembleDraftPRBody(&pipeline.StepContext{}, what, "low risk", "", "", limit, scm.ProviderGitHub)
+	body := assembleDraftPRBody(&pipeline.StepContext{}, what, "low risk", "", "", "", limit, scm.ProviderGitHub)
 	if got := redactPRContent(prContent{Body: body}, "", "").Body; got != body || scm.PRBodyLen(got) > limit {
 		t.Fatalf("boundary changed a fitted body (%d units, limit %d)", scm.PRBodyLen(got), limit)
 	}

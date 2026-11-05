@@ -98,6 +98,9 @@ type StepContext struct {
 	// explicit `--intent` is the author's own goal statement, while an
 	// inferred summary comes from a local agent transcript.
 	UserIntent string
+	// PublicIntentBrief is the PR-step's bounded rendering of UserIntent when
+	// trusted pr.intent.format is brief. It is never used as review criteria.
+	PublicIntentBrief string
 	// IntentSource records the provenance of UserIntent so steps can weigh
 	// its authority. db.RunIntentSourceAgent ("agent") means the driving
 	// agent supplied it explicitly via `axi run --intent`; db.RunIntentSourceRerun

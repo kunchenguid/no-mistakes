@@ -450,8 +450,8 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 // assembleDraftPRBody assembles an ordinary drafted body and appends the
 // Issues section last, reserving its room up front so body-limit truncation
 // sheds generated evidence rather than a closing reference.
-func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) string {
-	section := issuesSection(sctx, "")
+func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) string {
+	section := joinBlocks(neutralizeAttestationMarkers(provider, evidenceMD), issuesSection(sctx, ""))
 	reserve := 0
 	if section != "" {
 		reserve = len("\n\n" + section)
@@ -461,6 +461,9 @@ func assembleDraftPRBody(sctx *pipeline.StepContext, whatChanged, riskLine, test
 			reserve = scm.PRBodyLen("\n\n" + section)
 		}
 		if bodyLimit-reserve <= 0 {
+			if evidenceMD != "" {
+				return appendIssuesSection(assemblePRBody(sctx, whatChanged, riskLine, testingMD, pipelineMD, bodyLimit, provider), section)
+			}
 			// The section alone does not fit. Omit it rather than pass a
 			// non-positive (unlimited) budget; the pre-publication check then
 			// refuses a body that would drop a closing reference.

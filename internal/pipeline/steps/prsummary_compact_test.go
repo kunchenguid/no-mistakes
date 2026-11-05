@@ -17,7 +17,7 @@ func TestPRTestingSummary_ExpandedAttachmentsKeepLinksAndVideoParagraph(t *testi
 		"demo.mp4":   "https://github.com/user-attachments/assets/video",
 		"screen.png": "https://github.com/user-attachments/assets/image",
 	}
-	md := buildPRTestingSummary(steps, rounds, evidenceTestUpstream, "abc123", "", "", nil, scm.ProviderGitHub, attachments, false)
+	md := buildPRTestingSummary(steps, rounds, evidenceTestUpstream, "abc123", "", "", nil, scm.ProviderGitHub, attachments, false, "")
 	for _, want := range []string{
 		"- Evidence: [Demo](https://github.com/example/widgets/blob/abc123/demo.mp4)",
 		"- Evidence: [Screen](https://github.com/example/widgets/blob/abc123/screen.png)",
@@ -55,7 +55,7 @@ func TestPRTestingSummary_EvidenceCompact(t *testing.T) {
 			if !cfg.Test.Evidence.StoreInRepo {
 				t.Fatal("store_in_repo not enabled")
 			}
-			md := buildPRTestingSummary(steps, rounds, evidenceTestUpstream, "head", t.TempDir(), root, links, scm.ProviderGitHub, nil, cfg.Test.Evidence.Compact)
+			md := buildPRTestingSummary(steps, rounds, evidenceTestUpstream, "head", t.TempDir(), root, links, scm.ProviderGitHub, nil, cfg.Test.Evidence.Compact, "")
 			for _, artifact := range []struct{ label, path string }{{"Screen", "screen.png"}, {"Log", "run.txt"}, {"Demo", "demo.mp4"}, {"Animation", "animation.gif"}} {
 				want := "[" + artifact.label + "](" + links.blobBase + artifact.path + ")"
 				if !strings.Contains(md, want) {

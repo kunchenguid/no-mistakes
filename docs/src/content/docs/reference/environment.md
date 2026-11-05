@@ -228,7 +228,7 @@ Directory holding gh's `hosts.yml`, consulted when detecting self-hosted GitHub 
 | Type    | `string` |
 | Default | (none)   |
 
-When the upstream hostname is not `github.com`, no-mistakes reads gh's configured hosts from `$GH_CONFIG_DIR/hosts.yml` to decide whether the host is a GitHub Enterprise instance. It takes precedence over `XDG_CONFIG_HOME`. A selected [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry overrides this variable for that run and removes `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`, and `GH_REPO` from all child processes. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
+When the upstream hostname is not `github.com`, no-mistakes reads gh's configured hosts from `$GH_CONFIG_DIR/hosts.yml` to decide whether the host is a GitHub Enterprise instance. It takes precedence over `XDG_CONFIG_HOME`. A selected [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry overrides this variable for that run (a `gh_user` profile leaves it as is) and removes `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`, and `GH_REPO` from all child processes; a `gh_user` profile then sets `GH_TOKEN` (or `GH_ENTERPRISE_TOKEN` on a GitHub Enterprise Server host) to the selected login's token for that run. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
 
 ## `TEA_CONFIG_DIR`
 
@@ -291,7 +291,7 @@ When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and 
 Mutation pageviews are sent alongside command events, so command status and duration remain available.
 They include only flag-derived context: `/axi/run` records booleans such as whether `--yes` or `--skip` was supplied and whether explicit intent was supplied through any [intent input transport](/no-mistakes/reference/cli/#intent-input); `/axi/respond` records the sanitized action and whether `--yes` was present. The intent boolean does not distinguish text, file, and stdin input, and intent input rejected by the CLI resolver emits no `axi-run` command event or pageview.
 
-Read-only surfaces (`axi` home, `axi status`, `axi logs`, `status`, `runs`) emit no telemetry at all, so agent status polling cannot flood remote analytics. Mutation surfaces (`axi run`, `axi respond`, `axi abort`, `axi retry`, `axi handoff`, run lifecycle, approvals, and fixes) stay full-fidelity.
+Read-only surfaces (`axi` home, `axi status`, `axi logs`, `axi rounds`, `status`, `runs`) emit no telemetry at all, so agent status polling cannot flood remote analytics. Mutation surfaces (`axi run`, `axi respond`, `axi abort`, `axi retry`, `axi handoff`, run lifecycle, approvals, and fixes) stay full-fidelity.
 Each explicit human CLI, AXI, or TUI branch-sync check/apply attempt emits one command event and no additional pageview.
 Its fields are bounded enums and booleans only: surface, mode, state, relation, target kind, pipeline phase, PR state, result, refusal reason, dirty state, and duration.
 It never sends a SHA, run ID, path, branch name, URL, remote name, or command argument.

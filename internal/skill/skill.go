@@ -154,13 +154,16 @@ Run the pipeline and decide on its findings as they come up:
    because it seems slow. Both commands default to ` + "`--wait 8m`" + ` so a harness
    with a 10-minute tool cap gets a structured return instead of an unbounded
    hang. If the command returns because that wait elapsed, it is not a failed
-   run and does not mean the daemon is dead: inspect with ` + "`no-mistakes axi status`" + `
-   and re-run ` + "`axi run`" + ` or ` + "`axi respond`" + ` to reattach. A slow live daemon is
-   retried after a health probe rather than treated as I/O failure. To check
-   progress without disturbing the run, use ` + "`no-mistakes axi status`" + ` from a
-   separate call.
-   A long-running call is working, not stalled - background it if your harness
-   needs to, but the run **never advances past a gate on its own**. Read every
+   run and does not mean the daemon is dead: re-run ` + "`no-mistakes axi run`" + ` to reattach,
+   also after an ` + "`axi respond`" + ` whose wait elapsed.
+   Keep the blocking ` + "`no-mistakes axi run`" + ` / ` + "`no-mistakes axi respond`" + ` call
+   open, or background that same call if your harness needs to, and collect its
+   return. Do not poll progress with separate ` + "`no-mistakes axi status`" + ` calls
+   or sleep loops. Use ` + "`axi status`" + ` to inspect a run after a wait expiry,
+   a refusal, or during recovery, not as a progress-polling loop.
+   A slow live daemon is retried after a health probe rather than treated as
+   I/O failure. A long-running call is working, not stalled, but the run
+   **never advances past a gate on its own**. Read every
    return; on a ` + "`gate:`" + `, respond; loop until an ` + "`outcome:`" + `. Never idle-wait
    for the run to move forward by itself.
    When that status output includes ` + "`awaiting_agent: parked <duration>`" + ` under the run,
@@ -325,7 +328,7 @@ Before any post-pipeline local commit or fresh run, read the structured ` + "`br
 Only when its ` + "`next_action.code`" + ` is ` + "`sync`" + `, run ` + "`no-mistakes axi sync`" + ` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked and names ` + "`git checkout --detach <pushed-sha>`" + `, which moves no branch ref.
 If it reports ` + "`next_action.code`" + ` is ` + "`continue_active_run`" + `, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
-When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, run its exact ` + "`next_action.command`" + ` rather than reconstructing one. That is ` + "`no-mistakes axi sync --recover`" + ` to take a still-available preserved pipeline head, or ` + "`no-mistakes axi sync --recover --keep-local`" + ` in two keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits, or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain ` + "`--recover`" + ` or ` + "`rerun`" + ` for a reported keep-local action. ` + "`no-mistakes rerun`" + ` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
+When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, run its exact ` + "`next_action.command`" + ` rather than reconstructing one. That is ` + "`no-mistakes axi sync --recover`" + ` to take a still-available preserved pipeline head, or ` + "`no-mistakes axi sync --recover --keep-local`" + ` in three keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits; when that verified head is already pinned at ` + "`refs/no-mistakes/recover/<run>`" + ` in the gate, containment does not prove it carries your local work, and the command keeps your branch while those pipeline commits stay at that ref and are not on the branch; or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain ` + "`--recover`" + ` or ` + "`rerun`" + ` for a reported keep-local action. An unverified terminal head is not offered that recovery. ` + "`no-mistakes rerun`" + ` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
 Ordinary recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under ` + "`refs/no-mistakes/recover-local/<run>`" + `.
 The ordinary containment proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
 When a run failed in a step after Test without touching the code (a Document or Lint fetch error) and its recorded head was never verified, recovery still returns custody at that head once your clean checkout sits exactly on it and the gate proves the head is the reviewed result plus the pipeline's own later commits on top of the live gate branch; recovery never moves a behind worktree onto an unverified head, so check that exact head out first.
@@ -446,6 +449,7 @@ no-mistakes axi respond --run <id> --action approve   # answer a specific run's 
 - A non-terminal run object may include ` + "`awaiting_agent: parked <duration>`" + ` immediately after ` + "`status`" + `; that means the run is parked at a gate. Only an implicitly resolved current-branch gate offers bare ` + "`axi respond`" + `; an explicit ` + "`--run <id>`" + ` status is inspection-only even when its branch matches, because the branch may have a newer active run, and names ` + "`axi respond --run <id>`" + ` as its response command. Follow the response's ` + "`help`" + `.
 - A run object with a ` + "`running`" + ` or ` + "`fixing`" + ` step may include an ` + "`active_steps`" + ` table. ` + "`active_for`" + ` is the enclosing step duration; ` + "`round_active_for`" + ` is the displayed execution or fix round duration and resets for a fix round. Older runs without round timing leave ` + "`round_active_for`" + ` empty.
 - The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
+- With ` + "`--branch <name>`" + `, ` + "`axi status`" + ` drops that current-branch scope and reads the exact named branch's newest-run publication snapshot and complete run inventory, read-only.
 - Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.
 - Exit codes: ` + "`0`" + ` success, no-op, or normal decision gates, ` + "`1`" + ` failed or cancelled final outcomes, ` + "`2`" + ` bad usage.
 

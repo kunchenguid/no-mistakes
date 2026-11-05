@@ -28,6 +28,19 @@ var templatePRContentSchema = json.RawMessage(`{
  }, "required":["title","body"]
 }`)
 
+var templatePRContentBriefSchema = json.RawMessage(`{
+ "type":"object", "properties":{
+ "title":{"type":"string","description":"Concise pull request title text"},
+ "body":{"type":"string","description":"Filled repository template as plain Markdown; preserve its top-level ATX # headings in order; best-effort fill applicable sections"},
+ "intent_brief":{"type":"object","properties":{
+   "goal":{"type":"string","maxLength":200},
+   "why":{"type":"array","maxItems":3,"items":{"type":"string","maxLength":220}},
+   "scope":{"type":"array","maxItems":3,"items":{"type":"string","maxLength":220}},
+   "out_of_scope":{"type":"array","maxItems":3,"items":{"type":"string","maxLength":220}}
+ },"required":["goal","why","scope","out_of_scope"],"additionalProperties":false}
+ }, "required":["title","body","intent_brief"]
+}`)
+
 func supportsPRTemplates(provider scm.Provider) bool {
 	// Provider plugins implement raw content reads through the required
 	// "pr view" subcommand, which is the whole contract templates and
@@ -130,18 +143,28 @@ Trusted repository template (JSON string):
 
 Final diff paths and statuses:
 %s%s%s`, branch, baseBranch, baseSHA, sctx.Run.HeadSHA, titleRules, scopeRules, quoted, inventory, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+	prompt += prIntentBriefPromptSection(sctx)
 	prompt += agent.MemoryFilesRule
-	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: templatePRContentSchema, OnChunk: sctx.LogChunk})
+	schema := templatePRContentSchema
+	if needsPRIntentBrief(sctx) {
+		schema = templatePRContentBriefSchema
+	}
+	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: schema, OnChunk: sctx.LogChunk})
 	if err != nil {
 		return prContent{}, fmt.Errorf("draft pr.template narrative (template will not be replaced by a generic fallback): %w", err)
 	}
 	var content prContent
-	if result == nil || json.Unmarshal(result.Output, &content) != nil || strings.TrimSpace(content.Title) == "" || strings.TrimSpace(content.Body) == "" {
+	if result == nil || json.Unmarshal(result.Output, &content) != nil || (!s.titleReplaced && strings.TrimSpace(content.Title) == "") || strings.TrimSpace(content.Body) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid pr.template narrative; refusing generic fallback")
 	}
-	content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
-	if err != nil {
+	if err := acceptPRIntentBrief(sctx, content.IntentBrief); err != nil {
 		return prContent{}, err
+	}
+	if !s.titleReplaced {
+		content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
+		if err != nil {
+			return prContent{}, err
+		}
 	}
 	if len(content.Body) > maxPullRequestBodyBytes || !utf8.ValidString(content.Body) || strings.ContainsRune(content.Body, '\x00') || hasPRAppendixMarkers(content.Body) {
 		return prContent{}, fmt.Errorf("agent returned invalid template narrative or reserved ownership markers")
@@ -157,6 +180,15 @@ Final diff paths and statuses:
 // completion is best effort, not an enforced policy. No H1s means no structural
 // requirements. Existing published narrative never goes through this check again.
 func validateTemplateStructure(template, body string) error {
+	if _, missing := missingTemplateHeading(template, body); missing {
+		return fmt.Errorf("agent changed, omitted or reordered a pr.template top-level # heading; refusing publication")
+	}
+	return nil
+}
+
+// missingTemplateHeading returns the first template H1 the body does not keep
+// in order.
+func missingTemplateHeading(template, body string) (string, bool) {
 	rest := templateStructureLines(body)
 	for _, line := range templateStructureLines(template) {
 		found := false
@@ -169,10 +201,10 @@ func validateTemplateStructure(template, body string) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("agent changed, omitted or reordered a pr.template top-level # heading; refusing publication")
+			return line, true
 		}
 	}
-	return nil
+	return "", false
 }
 
 func templateStructureLines(text string) []string {
@@ -195,16 +227,40 @@ func templateStructureLines(text string) []string {
 }
 
 func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, true)
-	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
-		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
+	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
+		return "", fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
+	}
+	evidence, err := s.recordedPREvidence(sctx, provider)
+	if err != nil {
+		return "", err
 	}
 	parts := []string{}
 	if intent := publicPRIntent(sctx); intent != "" {
 		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
 	}
-	if evidence := appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider); evidence != "" {
+	if evidence != "" {
 		parts = append(parts, evidence)
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	pipelineMD, risk, testing, evidence := s.buildPipelineSectionFor(sctx, provider, true)
+	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
+		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
+	}
+	return joinBlocks(appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider), neutralizeAttestationMarkers(provider, evidence)), nil
+}
+
+// publishKeptDraft stores the ordinary narrative above the full owned appendix
+// (Intent included), whichever drafting path produced the narrative.
+// A later update refreshes that appendix through the template preservation path.
+func (s *PRStep) publishKeptDraft(sctx *pipeline.StepContext, provider scm.Provider, title, narrative string, bodyLimit int) (prContent, error) {
+	evidence, err := s.buildPRAppendix(sctx, provider)
+	if err != nil {
+		return prContent{}, err
+	}
+	narrative = neutralizeAttestationMarkers(resolvedProviderForBody(sctx), stripGeneratedSections(narrative))
+	evidence = appendIssuesSection(evidence, issuesSection(sctx, narrative))
+	return composeOwnedPRContent(prOwnedBody{before: narrative}, title, evidence, bodyLimit, sctx.WorkDir, nmWorktreesRoot())
 }

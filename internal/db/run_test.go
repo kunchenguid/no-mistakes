@@ -536,6 +536,102 @@ func TestOmitIntentRoundTripAndClaimMatching(t *testing.T) {
 	}
 }
 
+func TestRunPRTextRoundTripAndClaimMatching(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := RunIntent{Summary: "exact persisted intent", Source: RunIntentSourceAgent, Score: 1}
+	const generation = "generation-pr-text-001"
+	const intentDigest = "pr-text-intent-digest"
+	text := RunPRText{Title: "Add widget", Body: "Our words.\n"}
+	run, err := d.InsertRunWithPRText(repo.ID, "feature", "head", "base", &intent, "nonce-pr-text", generation, intentDigest, "", false, nil, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PRTitle == nil || *stored.PRTitle != text.Title || stored.PRBody == nil || *stored.PRBody != text.Body {
+		t.Fatalf("stored PR text = %v / %v", stored.PRTitle, stored.PRBody)
+	}
+	plain, err := d.InsertRun(repo.ID, "other", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.GetRun(plain.ID); err != nil || got.PRTitle != nil || got.PRBody != nil || got.PRTextDigest() != "" {
+		t.Fatalf("run without supplied text = %#v, %v", got, err)
+	}
+
+	for _, mismatch := range []string{"", PRTextDigest(text.Title, "Other words.\n")} {
+		conflicting, claimed, err := d.ClaimLaunchReceiptWithPRText(repo.ID, "feature", "nonce-pr-text", "head", generation, intentDigest, "", false, mismatch)
+		if err != nil || claimed || conflicting == nil || conflicting.ID != run.ID {
+			t.Fatalf("mismatched PR text claim = %#v, claimed=%v, err=%v", conflicting, claimed, err)
+		}
+	}
+	if still, err := d.GetRun(run.ID); err != nil || still.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("mismatched PR text claim consumed created disposition: %v", err)
+	}
+	first, claimed, err := d.ClaimLaunchReceiptWithPRText(repo.ID, "feature", "nonce-pr-text", "head", generation, intentDigest, "", false, PRTextDigest(text.Title, text.Body))
+	if err != nil || !claimed || first == nil || first.ID != run.ID {
+		t.Fatalf("matching PR text claim = %#v, claimed=%v, err=%v", first, claimed, err)
+	}
+
+	// Mismatched claimers already polling when the row is inserted must not
+	// consume `created` for the caller whose text matches.
+	const racers = 8
+	mismatch := PRTextDigest(text.Title, "Other words.\n")
+	start := make(chan struct{})
+	errs := make(chan error, racers)
+	for range racers {
+		go func() {
+			<-start
+			for {
+				got, claimed, err := d.ClaimLaunchReceiptWithPRText(repo.ID, "feature", "nonce-pr-text-race", "head", generation, intentDigest, "", false, mismatch)
+				if err != nil || claimed {
+					if err == nil {
+						err = errors.New("mismatched racing claim consumed created")
+					}
+					errs <- err
+					return
+				}
+				if got != nil {
+					errs <- nil
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	raced, err := d.InsertRunWithPRText(repo.ID, "feature", "head", "base", &intent, "nonce-pr-text-race", generation, intentDigest, "", false, nil, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range racers {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if still, err := d.GetRun(raced.ID); err != nil || still.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("racing mismatched claim consumed created disposition: %v", err)
+	}
+	won, claimed, err := d.ClaimLaunchReceiptWithPRText(repo.ID, "feature", "nonce-pr-text-race", "head", generation, intentDigest, "", false, PRTextDigest(text.Title, text.Body))
+	if err != nil || !claimed || won == nil || won.ID != raced.ID {
+		t.Fatalf("matching claim after race = %#v, claimed=%v, err=%v", won, claimed, err)
+	}
+}
+
+func TestPRTextDigestSeparatesTitleFromBody(t *testing.T) {
+	if PRTextDigest("", "") != "" {
+		t.Fatal("no supplied text must have no digest")
+	}
+	if PRTextDigest("a\n1:b", "") == PRTextDigest("a", "b") || PRTextDigest("ab", "") == PRTextDigest("a", "b") {
+		t.Fatal("different title/body splits share a digest")
+	}
+}
+
 func TestClaimLaunchReceiptAtomicallyReturnsCreatedOnce(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

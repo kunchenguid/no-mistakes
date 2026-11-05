@@ -192,7 +192,8 @@ func validateProviderPluginsAgainstForgeProfiles(plugins ProviderPlugins, profil
 	}
 	sort.Strings(hosts)
 	for _, host := range hosts {
-		if name, ok := plugins.selectHost(host); ok {
+		hostToken, _ := SplitForgeProfileKey(host)
+		if name, ok := plugins.selectHost(hostToken); ok {
 			return fmt.Errorf("invalid forge_profiles.%s: host is also claimed by provider_plugins.%s", host, name)
 		}
 	}

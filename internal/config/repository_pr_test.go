@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,40 @@ func TestRepositoryPRValidation(t *testing.T) {
 		if _, err := LoadGlobalFromBytes([]byte("repository_overrides:\n  https://github.com/acme/widget:\n    pr:\n      " + field + "\n")); err == nil {
 			t.Errorf("invalid or out-of-scope field %q accepted", field)
 		}
+	}
+}
+
+func TestRepositoryPRUpdateText(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"", PRUpdateTextKeep, PRUpdateTextRegenerate} {
+		data := fmt.Sprintf("repository_overrides:\n  https://github.com/acme/widget.git:\n    pr:\n      update_text: %q\n", value)
+		global, err := LoadGlobalFromBytes([]byte(data))
+		if err != nil {
+			t.Fatalf("update_text %q: %v", value, err)
+		}
+		cfg := MergeForRemote(global, &RepoConfig{}, "git@github.com:acme/widget.git")
+		if cfg.PR.UpdateText != value || cfg.PR.KeepsUpdateText() != (value == PRUpdateTextKeep) {
+			t.Fatalf("update_text %q: got %q keep=%v", value, cfg.PR.UpdateText, cfg.PR.KeepsUpdateText())
+		}
+		other := MergeForRemote(global, &RepoConfig{}, "git@github.com:acme/other.git")
+		if other.PR.KeepsUpdateText() || other.PR.UpdateText != "" {
+			t.Fatalf("unmatched remote inherited %q", other.PR.UpdateText)
+		}
+	}
+	for _, value := range []string{"KEEP", "keep ", "preserve", "full", "true"} {
+		data := fmt.Sprintf("repository_overrides:\n  https://github.com/acme/widget.git:\n    pr:\n      update_text: %q\n", value)
+		if _, err := LoadGlobalFromBytes([]byte(data)); err == nil || !strings.Contains(err.Error(), "update_text") {
+			t.Fatalf("update_text %q: %v", value, err)
+		}
+	}
+	if _, err := LoadGlobalFromBytes([]byte("pr:\n  update_text: keep\n")); err == nil || !strings.Contains(err.Error(), "update_text") {
+		t.Fatalf("machine-wide update_text: %v", err)
+	}
+	repo, err := LoadRepoFromBytes([]byte("pr:\n  update_text: keep\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := MergeForRemote(DefaultGlobalConfig(), repo, "git@github.com:acme/widget.git"); got.PR.KeepsUpdateText() {
+		t.Fatal("repository config enabled update_text")
 	}
 }

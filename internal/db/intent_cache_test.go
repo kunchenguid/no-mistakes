@@ -39,6 +39,26 @@ func TestUpdateRunIntent_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunIntentCheckIsPinnedAndImmutable(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/intent-check", "git@github.com:user/intent-check.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const policy = `{"mode":"reject","terms":["private"]}`
+	if err := d.SetRunIntentCheck(run.ID, policy); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil || got.IntentCheckJSON == nil || *got.IntentCheckJSON != policy {
+		t.Fatalf("pinned intent policy = %v, err = %v", got.IntentCheckJSON, err)
+	}
+	if err := d.SetRunIntentCheck(run.ID, `{"mode":"off"}`); err == nil {
+		t.Fatal("intent policy was overwritten")
+	}
+}
+
 func TestIntentCache_PutGet(t *testing.T) {
 	d := openTestDB(t)
 
