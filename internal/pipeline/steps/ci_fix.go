@@ -157,6 +157,10 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
 		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
 	}
+	if outcome := unfinishedGitRepairOutcome(err, targets.Findings, sctx.DeferredFindings); outcome != nil {
+		sctx.Log(err.Error())
+		return outcome, nil
+	}
 	if err != nil {
 		// An ordinary fix failure is cheap to repeat and often works the next
 		// time: the next settled observation re-emits the findings and the
@@ -349,6 +353,14 @@ CI logs:
 	if rebase {
 		s.replayBase = rebaseBaseSHA
 		defer func() { s.replayBase = "" }()
+	}
+	if err := refuseUnfinishedGitOperation(sctx); err != nil {
+		return ciRepairResult{}, err
+	}
+	// A declined conclusion is decided before commitRepair. Otherwise the
+	// controller commits or publishes this round's work.
+	if !rebase && conclusionErr == nil && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
+		return ciRepairResult{NoCodeChangeNeeded: true, Summary: conclusion.Summary}, nil
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
 	if mergeConflict && rebaseBaseResolved {
@@ -691,7 +703,25 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 	return s.recordRepair(sctx, head)
 }
 
+func unfinishedGitRepairOutcome(err error, findings Findings, deferred string) *pipeline.StepOutcome {
+	var unfinished *unfinishedGitOperationError
+	if !errors.As(err, &unfinished) {
+		return nil
+	}
+	items := append([]Finding{}, findings.Items...)
+	findings.Items = append(items, Finding{
+		ID:          "ci-unfinished-git",
+		Severity:    types.FindingSeverityError,
+		Description: unfinished.Error(),
+		Action:      types.ActionAskUser,
+	})
+	return ciRepairParkOutcome(findings, deferred, unfinished.Error())
+}
+
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
+	if err := refuseUnfinishedGitOperation(sctx); err != nil {
+		return ciRepairResult{}, err
+	}
 	render := func() (string, error) {
 		repairSummary := summary
 		if repairSummary == "" {
