@@ -83,14 +83,10 @@ func TestGateIdentityBarePathsRemainIdempotent(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "relative":
-				cwd, err := os.Getwd()
-				if err != nil {
-					t.Fatal(err)
-				}
-				path, err = filepath.Rel(cwd, bare)
-				if err != nil {
-					t.Fatal(err)
-				}
+				// The checkout and TempDir may be on different Windows drives.
+				// Anchor relative discovery inside the fixture's own directory.
+				t.Chdir(base)
+				path = "gate.git"
 			case "symlink-parent":
 				alias := filepath.Join(t.TempDir(), "alias")
 				if err := os.Symlink(base, alias); err != nil {
