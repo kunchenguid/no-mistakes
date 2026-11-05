@@ -750,6 +750,8 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	sctx.ForgeContext = forgeCtx
+	sctx.Env = append(sctx.Env, "FAKE_CLI_PR_SOURCE_REPO=fork-owner/no-mistakes")
+	recordPRTestPush(t, sctx)
 
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {

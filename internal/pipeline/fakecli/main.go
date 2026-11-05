@@ -236,6 +236,10 @@ func fakeGHHandler(args []string) {
 			}
 			parts := strings.Split(arg, "/")
 			repo := parts[1] + "/" + parts[2]
+			source := os.Getenv("FAKE_CLI_PR_SOURCE_REPO")
+			if source == "" {
+				source = repo
+			}
 			branch := "feature"
 			if b := os.Getenv("FAKE_CLI_PR_HEAD_BRANCH"); b != "" {
 				branch = b
@@ -248,7 +252,7 @@ func fakeGHHandler(args []string) {
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
 				"number": number, "html_url": "https://github.com/" + repo + "/pull/" + parts[4], "state": strings.ToLower(state), "merged": state == "MERGED",
 				"base": map[string]any{"repo": map[string]any{"full_name": repo}},
-				"head": map[string]any{"ref": branch, "sha": strings.TrimSpace(string(head)), "repo": map[string]any{"full_name": repo, "owner": map[string]string{"login": parts[1]}}},
+				"head": map[string]any{"ref": branch, "sha": strings.TrimSpace(string(head)), "repo": map[string]any{"full_name": source, "owner": map[string]string{"login": strings.Split(source, "/")[0]}}},
 			})
 			os.Exit(0)
 		}
@@ -281,6 +285,13 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
+		if fields, _ := fakeCLIFlagValue(args, "--json"); fields == "baseRefName" {
+			if prBase == "" {
+				prBase = "main"
+			}
+			fmt.Println(prBase)
+			os.Exit(0)
+		}
 		if strings.Contains(strings.Join(args, " "), "--json state") {
 			state := os.Getenv("FAKE_CLI_PR_STATE")
 			if state == "" {
@@ -310,7 +321,16 @@ func fakeGHHandler(args []string) {
 				}
 			}
 		}
-		fmt.Println("https://github.com/test/repo/pull/99")
+		repo, ok := fakeCLIFlagValue(args, "--repo")
+		if !ok {
+			repo = "test/repo"
+		}
+		host := "github.com"
+		parts := strings.Split(repo, "/")
+		if len(parts) == 3 {
+			host, repo = parts[0], strings.Join(parts[1:], "/")
+		}
+		fmt.Println("https://" + host + "/" + repo + "/pull/99")
 		os.Exit(0)
 	}
 	os.Exit(1)

@@ -20,10 +20,19 @@ import (
 func newPRTestContext(t *testing.T, ag agent.Agent, dir, base, head string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
 	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, cmds)
-	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{HeadSHA: head, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(resolvePushURL(sctx)), Ref: normalizedBranchRef(sctx.Run.Branch)}); err != nil {
+	recordPRTestPush(t, sctx)
+	return sctx
+}
+
+func recordPRTestPush(t *testing.T, sctx *pipeline.StepContext) {
+	t.Helper()
+	kind := "upstream"
+	if sctx.Repo.ForkURL != "" {
+		kind = "fork"
+	}
+	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{HeadSHA: sctx.Run.HeadSHA, TargetKind: kind, TargetFingerprint: branchsync.TargetFingerprint(resolvePushURL(sctx)), Ref: normalizedBranchRef(sctx.Run.Branch)}); err != nil {
 		t.Fatal(err)
 	}
-	return sctx
 }
 
 func TestVerifyPublishedPR_ProviderWithoutProofFailsClosed(t *testing.T) {
