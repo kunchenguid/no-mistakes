@@ -55,7 +55,9 @@ func (s *PRStep) gitlabEvidenceSection(sctx *pipeline.StepContext, provider scm.
 	} else {
 		sctx.Log("listing GitLab evidence images as links under " + linkBase + " without uploading: " + uploadReason)
 	}
-	images, problems, err := gitlabEvidenceImages(runDir)
+	// The digest only keys the upload cache, so link-only mode lists the
+	// files without reading a single image byte.
+	images, problems, err := gitlabEvidenceImages(runDir, uploadOK)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("skipping GitLab evidence uploads: %v", err))
 		return ""
@@ -213,7 +215,11 @@ type gitlabEvidenceProblem struct {
 	reason string
 }
 
-func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, problems []gitlabEvidenceProblem, err error) {
+// gitlabEvidenceImages lists the image files under runDir, sorted by their
+// path relative to the evidence parent. With digest set, each image is read
+// and hashed for the upload cache; without it, no image content is read and
+// digest stays empty.
+func gitlabEvidenceImages(runDir string, digest bool) (images []gitlabEvidenceImage, problems []gitlabEvidenceProblem, err error) {
 	root := filepath.Clean(runDir)
 	parent := filepath.Dir(root)
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -240,16 +246,16 @@ func gitlabEvidenceImages(runDir string) (images []gitlabEvidenceImage, problems
 		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 			return nil
 		}
-		digest, err := mediaFileDigest(path)
-		if err != nil {
-			problems = append(problems, gitlabEvidenceProblem{path: path, rel: filepath.ToSlash(rel), reason: err.Error()})
-			return nil
+		image := gitlabEvidenceImage{path: path, rel: filepath.ToSlash(rel)}
+		if digest {
+			sum, err := mediaFileDigest(path)
+			if err != nil {
+				problems = append(problems, gitlabEvidenceProblem{path: path, rel: filepath.ToSlash(rel), reason: err.Error()})
+				return nil
+			}
+			image.digest = sum
 		}
-		images = append(images, gitlabEvidenceImage{
-			path:   path,
-			rel:    filepath.ToSlash(rel),
-			digest: digest,
-		})
+		images = append(images, image)
 		return nil
 	})
 	if err != nil {

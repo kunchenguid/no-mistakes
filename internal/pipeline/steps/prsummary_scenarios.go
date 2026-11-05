@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -122,6 +123,11 @@ func renderScenarioTable(scenarios []types.TestScenario, opts testingSummaryOpti
 	var b strings.Builder
 	b.WriteString("| Scenario | Result | Live | Evidence |\n")
 	b.WriteString("| --- | --- | --- | --- |\n")
+	// The evidence directory is listed once per table, not once per cell.
+	var names []string
+	if opts.evidenceLinkBase != "" && opts.evidenceRoot != "" {
+		names = evidenceFileNames(opts.evidenceRoot)
+	}
 	rows := 0
 	for _, scenario := range scenarios {
 		name := scenarioCell(scenario.Name, flavor)
@@ -142,7 +148,7 @@ func renderScenarioTable(scenarios []types.TestScenario, opts testingSummaryOpti
 			scenarioResultEmoji(result),
 			result,
 			live,
-			scenarioEvidenceCell(basis, opts),
+			scenarioEvidenceCell(basis, opts, names),
 		))
 		rows++
 	}
@@ -177,31 +183,96 @@ func truncateScenarioCell(text string) string {
 	return strings.TrimSpace(string(runes[:maxScenarioCellRunes])) + "…"
 }
 
-func scenarioEvidenceCell(text string, opts testingSummaryOptions) string {
+// scenarioEvidenceCell renders the Evidence column. With link_base_url set,
+// every complete reference to a file under the run's evidence directory
+// becomes a link: a name as the test agent wrote it, relative to that
+// directory (nested paths and spaces included, matched against the files that
+// exist, longest first), or an absolute path inside it, linked by its relative
+// name. Everything else stays prose. names is evidenceFileNames of the root.
+func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []string) string {
 	if opts.evidenceLinkBase == "" || opts.evidenceRoot == "" {
 		return scenarioCell(text, opts.flavor)
 	}
 	clean := truncateScenarioCell(sanitizePromptText(text))
-	var b strings.Builder
-	for _, token := range strings.FieldsFunc(clean, func(r rune) bool { return r == ';' || r == ',' || unicode.IsSpace(r) }) {
-		start := strings.Index(clean, token)
-		b.WriteString(clean[:start])
-		path := filepath.Join(opts.evidenceRoot, filepath.FromSlash(token))
-		link := ""
-		if filepath.IsLocal(token) {
-			if _, inside := artifactPathRelativeToRoot(path, opts.evidenceRoot); inside {
-				if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-					link = renderEvidenceFileLink(opts.evidenceLinkBase, opts.evidenceRoot, path, token)
+	plain := func(s string) string { return strings.ReplaceAll(escapePRText(s, opts.flavor), "|", "\\|") }
+	var b, prose strings.Builder
+	rest := clean
+	for len(rest) > 0 {
+		if scenarioReferenceCanStart(clean, len(clean)-len(rest)) {
+			if label, path, n := matchScenarioEvidenceReference(rest, opts.evidenceRoot, names); n > 0 {
+				if link := renderEvidenceFileLink(opts.evidenceLinkBase, opts.evidenceRoot, path, label); link != "" {
+					b.WriteString(plain(prose.String()))
+					prose.Reset()
+					b.WriteString(strings.ReplaceAll(link, "|", "\\|"))
+					rest = rest[n:]
+					continue
 				}
 			}
 		}
-		if link != "" {
-			b.WriteString(strings.ReplaceAll(link, "|", "\\|"))
-		} else {
-			b.WriteString(strings.ReplaceAll(escapePRText(token, opts.flavor), "|", "\\|"))
-		}
-		clean = clean[start+len(token):]
+		r, size := utf8.DecodeRuneInString(rest)
+		prose.WriteRune(r)
+		rest = rest[size:]
 	}
-	b.WriteString(clean)
+	b.WriteString(plain(prose.String()))
 	return escapePipelineFoldMarkers(b.String())
+}
+
+// matchScenarioEvidenceReference returns the file reference at the start of
+// rest - the longest existing relative name, else an absolute path inside the
+// evidence root - as its link label, its filesystem path, and the number of
+// bytes it spans; n is 0 when rest starts with no file reference.
+func matchScenarioEvidenceReference(rest, root string, names []string) (label, path string, n int) {
+	for _, name := range names {
+		if strings.HasPrefix(rest, name) && scenarioReferenceCanEnd(rest[len(name):]) {
+			return name, filepath.Join(root, filepath.FromSlash(name)), len(name)
+		}
+	}
+	end := strings.IndexFunc(rest, func(r rune) bool { return r == ';' || r == ',' || unicode.IsSpace(r) })
+	if end < 0 {
+		end = len(rest)
+	}
+	token := strings.TrimRight(rest[:end], ".)]")
+	if token == "" || !filepath.IsAbs(token) {
+		return "", "", 0
+	}
+	rel, inside := artifactPathRelativeToRoot(token, root)
+	if !inside {
+		return "", "", 0
+	}
+	if info, err := os.Stat(token); err != nil || !info.Mode().IsRegular() {
+		return "", "", 0
+	}
+	return filepath.ToSlash(rel), token, len(token)
+}
+
+// scenarioReferenceCanStart reports whether a file reference may begin at
+// byte offset pos of text: at the start, or after whitespace or a separator.
+func scenarioReferenceCanStart(text string, pos int) bool {
+	if pos == 0 {
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(text[:pos])
+	return unicode.IsSpace(r) || strings.ContainsRune(";,([|", r)
+}
+
+// scenarioReferenceCanEnd reports whether a file reference that ends where
+// after begins is complete: the cell ends, a separator or whitespace follows,
+// or a sentence-ending period does.
+func scenarioReferenceCanEnd(after string) bool {
+	if after == "" {
+		return true
+	}
+	r, size := utf8.DecodeRuneInString(after)
+	if unicode.IsSpace(r) || strings.ContainsRune(";,)]|", r) {
+		return true
+	}
+	if r != '.' {
+		return false
+	}
+	next := after[size:]
+	if next == "" {
+		return true
+	}
+	r, _ = utf8.DecodeRuneInString(next)
+	return unicode.IsSpace(r)
 }

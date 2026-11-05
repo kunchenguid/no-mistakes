@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -281,4 +282,67 @@ func TestPRStep_LinkBaseURLYieldsToUploadedAttachments(t *testing.T) {
 			t.Fatalf("expected the local fallback to be a link %q, got:\n%s", want, body)
 		}
 	})
+}
+
+// TestScenarioEvidenceCellLinksCompleteFileReferences: with the base set, a
+// scenario cell links every complete reference to a file that exists under
+// the evidence root - a nested name with a space, an absolute in-root path, a
+// name before sentence punctuation - and leaves prose, unknown names, and
+// partial matches plain. The review conversation directory is never a
+// candidate. Unset, the cell is today's cell byte for byte.
+func TestScenarioEvidenceCellLinksCompleteFileReferences(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "01RUN")
+	writeEvidenceFile(t, filepath.Join(root, "browser"), "step 2.png", []byte("png"))
+	writeEvidenceFile(t, root, "roundtrip.json", []byte("{}"))
+	writeEvidenceFile(t, filepath.Join(root, reviewqa.DirName), "questions.ndjson", []byte("{}"))
+	names := evidenceFileNames(root)
+	if got, want := strings.Join(names, ","), "browser/step 2.png,roundtrip.json"; got != want {
+		t.Fatalf("evidenceFileNames = %q, want %q", got, want)
+	}
+	opts := testingSummaryOptions{flavor: prBodyHTML, evidenceRoot: root, evidenceLinkBase: evidenceLinkTestBase}
+	abs := filepath.Join(root, "roundtrip.json")
+	step2 := "[browser/step 2.png](" + evidenceLinkTestBase + "/01RUN/browser/step%202.png)"
+	roundtrip := "[roundtrip.json](" + evidenceLinkTestBase + "/01RUN/roundtrip.json)"
+	for _, tc := range []struct{ name, cell, want string }{
+		{"name with a space", "browser/step 2.png; roundtrip.json", step2 + "; " + roundtrip},
+		{"absolute path inside the root", "see " + abs + " and notes", "see " + roundtrip + " and notes"},
+		{"sentence punctuation", "Captured roundtrip.json.", "Captured " + roundtrip + "."},
+		{"unknown name and prose", "missing.png, then roundtrip.json | extra", "missing.png, then " + roundtrip + " \\| extra"},
+		{"partial names are not references", "myroundtrip.json and roundtrip.json2", "myroundtrip.json and roundtrip.json2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := scenarioEvidenceCell(tc.cell, opts, names); got != tc.want {
+				t.Fatalf("cell %q = %q, want %q", tc.cell, got, tc.want)
+			}
+		})
+	}
+	unset := testingSummaryOptions{flavor: prBodyHTML, evidenceRoot: root}
+	if got, want := scenarioEvidenceCell("browser/step 2.png; roundtrip.json", unset, nil), scenarioCell("browser/step 2.png; roundtrip.json", prBodyHTML); got != want {
+		t.Fatalf("unset cell = %q, want today's %q", got, want)
+	}
+}
+
+// TestEvidenceFileURLFollowsASymlinkedEvidenceRoot: an artifact may record
+// the real path of a file under a symlinked evidence root; the URL still names
+// the configured directory and the file.
+func TestEvidenceFileURLFollowsASymlinkedEvidenceRoot(t *testing.T) {
+	t.Parallel()
+	real := filepath.Join(t.TempDir(), "real")
+	writeEvidenceFile(t, real, "shot.png", []byte("png"))
+	linkDir := filepath.Join(t.TempDir(), "01RUN")
+	if err := os.Symlink(real, linkDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	realShot, err := filepath.EvalSymlinks(filepath.Join(real, "shot.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := evidenceLinkTestBase + "/01RUN/shot.png"
+	for _, path := range []string{realShot, filepath.Join(linkDir, "shot.png")} {
+		if got := evidenceFileURL(evidenceLinkTestBase, linkDir, path); got != want {
+			t.Fatalf("evidenceFileURL(%q) = %q, want %q", path, got, want)
+		}
+	}
 }

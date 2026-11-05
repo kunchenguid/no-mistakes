@@ -3,11 +3,14 @@ package steps
 import (
 	"fmt"
 	"html"
+	"io/fs"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 )
 
 // test.evidence.link_base_url turns every evidence file the PR body mentions
@@ -38,7 +41,11 @@ func evidenceLinkBase(cfg *config.Config) string {
 
 // evidenceFileURL returns <base>/<run-id>/<file> for a file under the run's
 // evidence directory, or "" when the base is unset, the directory is unknown,
-// or the file is not inside it. Every path segment is percent-escaped.
+// or the file is not inside it. Containment is the same symlink-aware check
+// the artifact allowlist uses (artifactPathRelativeToRoot), so an artifact
+// that records the real path of a file under a symlinked evidence root is
+// still linked; the run segment keeps the configured directory's own name,
+// which is what the operator serves. Every path segment is percent-escaped.
 func evidenceFileURL(base, evidenceDir, path string) string {
 	if base == "" || evidenceDir == "" || path == "" {
 		return ""
@@ -48,8 +55,8 @@ func evidenceFileURL(base, evidenceDir, path string) string {
 	if runID == "" || runID == "." || runID == ".." || runID == string(filepath.Separator) {
 		return ""
 	}
-	rel, err := filepath.Rel(runDir, filepath.Clean(path))
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, ok := artifactPathRelativeToRoot(filepath.Clean(path), runDir)
+	if !ok {
 		return ""
 	}
 	segments := []string{url.PathEscape(runID)}
@@ -77,4 +84,41 @@ func renderEvidenceFileLink(base, evidenceDir, path, label string) string {
 		"&", "%26",
 	).Replace(target)
 	return fmt.Sprintf("[%s](%s)", html.EscapeString(markdownAltText(label)), target)
+}
+
+// evidenceFileNames lists the regular files under the run's evidence
+// directory as slash-separated paths relative to it, longest first, so a
+// scenario cell can be scanned for complete file references - names with
+// spaces and nested paths included - instead of whitespace tokens. The
+// review conversation directory is never listed: it is never published.
+func evidenceFileNames(root string) []string {
+	root = filepath.Clean(root)
+	var names []string
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if entry.Name() == reviewqa.DirName && path != root {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." {
+			return nil
+		}
+		names = append(names, filepath.ToSlash(rel))
+		return nil
+	})
+	sort.Slice(names, func(i, j int) bool {
+		if len(names[i]) != len(names[j]) {
+			return len(names[i]) > len(names[j])
+		}
+		return names[i] < names[j]
+	})
+	return names
 }

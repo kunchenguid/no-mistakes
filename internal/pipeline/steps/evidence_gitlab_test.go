@@ -361,3 +361,51 @@ func TestGitlabEvidenceLinkBaseWithUploadsLinksThePathMention(t *testing.T) {
 		t.Fatalf("rejected section = %q, want %q", got, want)
 	}
 }
+
+// TestGitlabEvidenceLinkOnlyModeReadsNoImageBytes: listing links needs file
+// names only, so an image the step cannot read is still listed as a link and
+// the walk records no digest; the upload walk still reports the same file.
+func TestGitlabEvidenceLinkOnlyModeReadsNoImageBytes(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "01RUN")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(runDir, "blocked.png")
+	if err := os.WriteFile(blocked, []byte("png"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(blocked, 0o644) })
+	if _, err := os.ReadFile(blocked); err == nil {
+		t.Skip("file permissions do not deny reads on this platform")
+	} else if !os.IsPermission(err) {
+		t.Fatal(err)
+	}
+
+	listed, problems, err := gitlabEvidenceImages(runDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 || len(listed) != 1 || listed[0].digest != "" {
+		t.Fatalf("link-only walk = %+v, problems %+v; want one undigested image and no read", listed, problems)
+	}
+	hashed, problems, err := gitlabEvidenceImages(runDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hashed) != 0 || len(problems) != 1 {
+		t.Fatalf("upload walk = %+v, problems %+v; want the unreadable file reported", hashed, problems)
+	}
+
+	uploader := &countingGitlabUploader{markdown: "![blocked](/uploads/abc/blocked.png)", url: "/uploads/abc/blocked.png"}
+	got := (&PRStep{gitlabUploader: uploader}).gitlabEvidenceSection(&pipeline.StepContext{
+		Ctx:         context.Background(),
+		EvidenceDir: runDir,
+		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{LinkBaseURL: evidenceLinkTestBase}}},
+		Log:         func(string) {},
+	}, scm.ProviderGitLab)
+	if want := "## Evidence\n\n[01RUN/blocked.png](" + evidenceLinkTestBase + "/01RUN/blocked.png)"; got != want || uploader.calls != 0 {
+		t.Fatalf("section = %q (uploads %d), want %q with no upload", got, uploader.calls, want)
+	}
+}
