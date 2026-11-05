@@ -292,7 +292,7 @@ func TestPRStep_LinkBaseURLYieldsToUploadedAttachments(t *testing.T) {
 // candidate. Unset, the cell is today's cell byte for byte.
 func TestScenarioEvidenceCellLinksCompleteFileReferences(t *testing.T) {
 	t.Parallel()
-	root := filepath.Join(t.TempDir(), "01RUN")
+	root := filepath.Join(t.TempDir(), "Test Evidence", "01RUN")
 	writeEvidenceFile(t, filepath.Join(root, "browser"), "step 2.png", []byte("png"))
 	writeEvidenceFile(t, root, "roundtrip.json", []byte("{}"))
 	writeEvidenceFile(t, filepath.Join(root, reviewqa.DirName), "questions.ndjson", []byte("{}"))
@@ -300,6 +300,10 @@ func TestScenarioEvidenceCellLinksCompleteFileReferences(t *testing.T) {
 	if got, want := strings.Join(names, ","), "browser/step 2.png,roundtrip.json"; got != want {
 		t.Fatalf("evidenceFileNames = %q, want %q", got, want)
 	}
+	writeEvidenceFile(t, root, "shot,one.png", []byte("png"))
+	writeEvidenceFile(t, root, "shot;two.png", []byte("png"))
+	writeEvidenceFile(t, root, "roundtrip.json,extra", []byte("{}"))
+	names = evidenceFileNames(root)
 	opts := testingSummaryOptions{flavor: prBodyHTML, evidenceRoot: root, evidenceLinkBase: evidenceLinkTestBase}
 	abs := filepath.Join(root, "roundtrip.json")
 	step2 := "[browser/step 2.png](" + evidenceLinkTestBase + "/01RUN/browser/step%202.png)"
@@ -307,12 +311,24 @@ func TestScenarioEvidenceCellLinksCompleteFileReferences(t *testing.T) {
 	for _, tc := range []struct{ name, cell, want string }{
 		{"name with a space", "browser/step 2.png; roundtrip.json", step2 + "; " + roundtrip},
 		{"absolute path inside the root", "see " + abs + " and notes", "see " + roundtrip + " and notes"},
+		{"absolute comma filename", filepath.Join(root, "shot,one.png"), "[shot,one.png](" + evidenceLinkTestBase + "/01RUN/shot%2Cone.png)"},
+		{"absolute semicolon filename", filepath.Join(root, "shot;two.png"), "[shot;two.png](" + evidenceLinkTestBase + "/01RUN/shot%3Btwo.png)"},
+		{"backticked relative name", "see `roundtrip.json` here", "see " + roundtrip + " here"},
+		{"double quoted relative name", "see \"roundtrip.json\" here", "see " + roundtrip + " here"},
+		{"single quoted relative name", "see 'roundtrip.json' here", "see " + roundtrip + " here"},
+		{"quoted absolute path", "see `" + abs + "` here", "see " + roundtrip + " here"},
+		{"name followed by comma", "roundtrip.json, then notes", roundtrip + ", then notes"},
+		{"longest punctuation filename", "roundtrip.json,extra", "[roundtrip.json,extra](" + evidenceLinkTestBase + "/01RUN/roundtrip.json%2Cextra)"},
 		{"sentence punctuation", "Captured roundtrip.json.", "Captured " + roundtrip + "."},
 		{"unknown name and prose", "missing.png, then roundtrip.json | extra", "missing.png, then " + roundtrip + " \\| extra"},
 		{"partial names are not references", "myroundtrip.json and roundtrip.json2", "myroundtrip.json and roundtrip.json2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			unset := testingSummaryOptions{flavor: prBodyHTML, evidenceRoot: root}
+			if got, want := scenarioEvidenceCell(tc.cell, unset, names), scenarioCell(tc.cell, prBodyHTML); got != want {
+				t.Fatalf("unset cell = %q, want today's %q", got, want)
+			}
 			if got := scenarioEvidenceCell(tc.cell, opts, names); got != tc.want {
 				t.Fatalf("cell %q = %q, want %q", tc.cell, got, tc.want)
 			}
@@ -343,6 +359,27 @@ func TestEvidenceFileURLFollowsASymlinkedEvidenceRoot(t *testing.T) {
 	for _, path := range []string{realShot, filepath.Join(linkDir, "shot.png")} {
 		if got := evidenceFileURL(evidenceLinkTestBase, linkDir, path); got != want {
 			t.Fatalf("evidenceFileURL(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestScenarioEvidenceCellLinksSymlinkedRootReferences(t *testing.T) {
+	t.Parallel()
+	real := filepath.Join(t.TempDir(), "Test Evidence", "real")
+	writeEvidenceFile(t, real, "shot.png", []byte("png"))
+	root := filepath.Join(t.TempDir(), "01RUN")
+	if err := os.Symlink(real, root); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testingSummaryOptions{flavor: prBodyHTML, evidenceRoot: root, evidenceLinkBase: evidenceLinkTestBase}
+	want := "[shot.png](" + evidenceLinkTestBase + "/01RUN/shot.png)"
+	for _, reference := range []string{"shot.png", filepath.Join(root, "shot.png"), filepath.Join(resolved, "shot.png")} {
+		if got := scenarioEvidenceCell(reference, opts, evidenceFileNames(root)); got != want {
+			t.Fatalf("cell %q = %q, want %q", reference, got, want)
 		}
 	}
 }

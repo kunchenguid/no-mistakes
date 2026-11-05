@@ -2,7 +2,6 @@ package steps
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -222,27 +221,46 @@ func scenarioEvidenceCell(text string, opts testingSummaryOptions, names []strin
 // evidence root - as its link label, its filesystem path, and the number of
 // bytes it spans; n is 0 when rest starts with no file reference.
 func matchScenarioEvidenceReference(rest, root string, names []string) (label, path string, n int) {
-	for _, name := range names {
-		if strings.HasPrefix(rest, name) && scenarioReferenceCanEnd(rest[len(name):]) {
-			return name, filepath.Join(root, filepath.FromSlash(name)), len(name)
+	reference := rest
+	var quote byte
+	if len(reference) > 0 && strings.ContainsRune("`\"'", rune(reference[0])) {
+		quote = reference[0]
+		reference = reference[1:]
+	}
+	offsets := []int{0}
+	if absoluteRoot, err := filepath.Abs(root); err == nil {
+		for _, dir := range []string{absoluteRoot, resolveArtifactPathSymlinks(absoluteRoot)} {
+			prefix := strings.TrimRight(dir, string(filepath.Separator)) + string(filepath.Separator)
+			if strings.HasPrefix(reference, prefix) {
+				offsets = append(offsets, len(prefix))
+			}
 		}
 	}
-	end := strings.IndexFunc(rest, func(r rune) bool { return r == ';' || r == ',' || unicode.IsSpace(r) })
-	if end < 0 {
-		end = len(rest)
+	for _, name := range names {
+		for _, offset := range offsets {
+			candidate := name
+			if offset > 0 {
+				candidate = filepath.FromSlash(name)
+			}
+			if !strings.HasPrefix(reference[offset:], candidate) {
+				continue
+			}
+			end := offset + len(candidate)
+			if quote != 0 {
+				if end >= len(reference) || reference[end] != quote {
+					continue
+				}
+				end++
+			}
+			if scenarioReferenceCanEnd(reference[end:]) {
+				if quote != 0 {
+					end++
+				}
+				return name, filepath.Join(root, filepath.FromSlash(name)), end
+			}
+		}
 	}
-	token := strings.TrimRight(rest[:end], ".)]")
-	if token == "" || !filepath.IsAbs(token) {
-		return "", "", 0
-	}
-	rel, inside := artifactPathRelativeToRoot(token, root)
-	if !inside {
-		return "", "", 0
-	}
-	if info, err := os.Stat(token); err != nil || !info.Mode().IsRegular() {
-		return "", "", 0
-	}
-	return filepath.ToSlash(rel), token, len(token)
+	return "", "", 0
 }
 
 // scenarioReferenceCanStart reports whether a file reference may begin at
@@ -252,7 +270,7 @@ func scenarioReferenceCanStart(text string, pos int) bool {
 		return true
 	}
 	r, _ := utf8.DecodeLastRuneInString(text[:pos])
-	return unicode.IsSpace(r) || strings.ContainsRune(";,([|", r)
+	return unicode.IsSpace(r) || strings.ContainsRune(";,([|`\"'", r)
 }
 
 // scenarioReferenceCanEnd reports whether a file reference that ends where
@@ -263,7 +281,7 @@ func scenarioReferenceCanEnd(after string) bool {
 		return true
 	}
 	r, size := utf8.DecodeRuneInString(after)
-	if unicode.IsSpace(r) || strings.ContainsRune(";,)]|", r) {
+	if unicode.IsSpace(r) || strings.ContainsRune(";,)]|`\"'", r) {
 		return true
 	}
 	if r != '.' {

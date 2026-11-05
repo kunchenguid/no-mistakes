@@ -92,7 +92,7 @@ func renderEvidenceFileLink(base, evidenceDir, path, label string) string {
 // spaces and nested paths included - instead of whitespace tokens. The
 // review conversation directory is never listed: it is never published.
 func evidenceFileNames(root string) []string {
-	root = filepath.Clean(root)
+	root = resolveArtifactPathSymlinks(filepath.Clean(root))
 	var names []string
 	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
