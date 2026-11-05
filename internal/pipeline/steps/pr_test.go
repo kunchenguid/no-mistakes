@@ -161,6 +161,7 @@ func TestPRStep_UsesResolvedForgeProviderForSelfHostedRemote(t *testing.T) {
 			Unset: []string{"GH_TOKEN"},
 		},
 	}
+	recordPRTestPush(t, sctx)
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)

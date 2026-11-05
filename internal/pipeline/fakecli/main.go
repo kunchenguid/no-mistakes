@@ -236,6 +236,10 @@ func fakeGHHandler(args []string) {
 			}
 			parts := strings.Split(arg, "/")
 			repo := parts[1] + "/" + parts[2]
+			host, ok := fakeCLIFlagValue(args, "--hostname")
+			if !ok {
+				host = "github.com"
+			}
 			source := os.Getenv("FAKE_CLI_PR_SOURCE_REPO")
 			if source == "" {
 				source = repo
@@ -250,7 +254,7 @@ func fakeGHHandler(args []string) {
 				state = "OPEN"
 			}
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
-				"number": number, "html_url": "https://github.com/" + repo + "/pull/" + parts[4], "state": strings.ToLower(state), "merged": state == "MERGED",
+				"number": number, "html_url": "https://" + host + "/" + repo + "/pull/" + parts[4], "state": strings.ToLower(state), "merged": state == "MERGED",
 				"base": map[string]any{"repo": map[string]any{"full_name": repo}},
 				"head": map[string]any{"ref": branch, "sha": strings.TrimSpace(string(head)), "repo": map[string]any{"full_name": source, "owner": map[string]string{"login": strings.Split(source, "/")[0]}}},
 			})
