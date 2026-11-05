@@ -376,7 +376,7 @@ Choose how much of the generated Risk, Testing, and Pipeline tail is visible aft
 
 GitLab's separate image Evidence section is unaffected by this setting; see [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
 
-In every mode, a run that left anything unvalidated live gets a `## Not validated live` section directly after Intent and ahead of the narrative, so it is never inside the `Validation` fold and survives `minimal`. It lists each untested scenario with its recorded reason, an approved Test exception, a CI override, and each step the operator skipped; operator skips currently show `no reason recorded`. A run with every scenario driven live and no exceptions has no such section. On an owned body it sits inside the owned appendix.
+The mode-independent `Not validated live` callout is documented with the PR-step behavior below; appendix mode does not suppress it.
 
 An unrecognized value fails config parsing closed. Body size limits and truncation still apply in every mode. On providers without head proof, every mode retains the head-proof-unavailable notice and any attestation the body carries. If ordinary body truncation would lose either, the body is reduced to that notice and attestation, dropping the narrative and other sections. If these cannot fit, publication fails before the PR is created or updated. A templated body that cannot fit still fails instead of dropping author text. The marker remains the one `require-no-mistakes` binds to the PR head.
 
