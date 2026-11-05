@@ -506,13 +506,14 @@ func TestCIStep_PublishRepairSkipsAttestationWhenProviderCLIIsUnavailable(t *tes
 	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
 	f.sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	f.sctx.Run.PRURL = &gitlabPR
-	for _, entry := range f.sctx.Env {
-		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
-			fakeBin, _, _ := strings.Cut(value, string(os.PathListSeparator))
-			linkTestBinary(t, fakeBin, "glab")
-		}
-	}
-	f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_AUTH_ERR=glab is not logged in to gitlab.com")
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "glab")
+	logFile := filepath.Join(t.TempDir(), "glab.log")
+	// Only authentication is needed here. The shared fake's auth-error path
+	// keeps this fixture independent of an installed, authenticated glab.
+	f.sctx.Env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE": "ci-gh", "FAKE_CLI_AUTH_ERR": "fixture host unavailable", "FAKE_CLI_LOG": logFile,
+	})
 	writeCIFix(f.dir)
 
 	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check", nil)
@@ -526,7 +527,11 @@ func TestCIStep_PublishRepairSkipsAttestationWhenProviderCLIIsUnavailable(t *tes
 		t.Fatalf("expected the unavailable provider CLI to skip the attestation write:\n%s", f.log())
 	}
 	if strings.Contains(f.log(), "pipeline attestation") || strings.Contains(f.log(), "attestation rebind") {
-		t.Fatalf("expected no attestation interaction at all when the provider CLI is unavailable:\n%s", f.log())
+		t.Fatalf("expected no attestation interaction for an unavailable GitLab host:\n%s", f.log())
+	}
+	calls, err := os.ReadFile(logFile)
+	if err != nil || !strings.Contains(string(calls), "auth status") || strings.Contains(string(calls), "mr ") {
+		t.Fatalf("unavailable host made unexpected provider calls: %s, err=%v", calls, err)
 	}
 }
 
