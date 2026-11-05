@@ -392,6 +392,9 @@ type fakeBitbucketCIAPI struct {
 	stepsByPath    map[string]string
 	stepLogsByPath map[string]string
 	prSourceSHA    string
+	// beforeStatuses runs before the statuses answer, so a test can land a
+	// rewrite exactly inside one poll's check read.
+	beforeStatuses func()
 	prStateCalls   int
 	statusesCalls  int
 	pipelinesCalls int
@@ -422,6 +425,9 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}},"destination":{"branch":{"name":"main"}}}`, api.prState, api.prSourceSHA)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
 			api.statusesCalls++
+			if api.beforeStatuses != nil {
+				api.beforeStatuses()
+			}
 			api.lastStatusesQ = r.URL.Query().Get("q")
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, api.statusesJSON)

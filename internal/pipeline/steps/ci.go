@@ -1030,6 +1030,41 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				}
 				continue
 			}
+			// A provider that binds no head to its check read (Bitbucket,
+			// Gitea, Forgejo, Azure DevOps and Origin read statuses against the
+			// pull request rather than a commit) cannot prove these results
+			// describe the head this run validated. The poll's earlier
+			// push-target read is not enough on its own: a rewrite that lands
+			// between that read and this one would hand back the foreign head's
+			// green checks and establish readiness for a commit no step here
+			// saw. Re-read the push target now and require it to still serve an
+			// owned head, which binds the unbound read to the branch this run
+			// published. Refusing every unbound read outright would leave no
+			// run on those providers ever ready, so this is the smallest binding
+			// that keeps readiness reachable.
+			if strings.TrimSpace(observedHead) == "" {
+				liveHead, readErr := publishedBranchHead(sctx)
+				if readErr != nil || !s.ciRunOwnsHead(sctx, liveHead) {
+					lastMonitorLog = ciMonitorStatus{}
+					if readErr != nil {
+						sctx.Log(fmt.Sprintf("warning: could not re-read the published branch head after an unbound check read, so no check result is used this poll: %v", readErr))
+					} else {
+						sctx.Log(fmt.Sprintf("the check read binds no head and the push target now serves %s, which this run owns nowhere, so no result from it can establish readiness for %s", shortSHA(liveHead), shortSHA(sctx.Run.HeadSHA)))
+					}
+					if err := clearCIMonitorReadyForIssues(sctx); err != nil {
+						return nil, err
+					}
+					consecutiveUnreadPolls++
+					if consecutiveUnreadPolls >= consecutiveCheckErrorLimit {
+						sctx.Log(fmt.Sprintf("no check could be read for a head this run owns on %d consecutive polls, parking for a decision", consecutiveUnreadPolls))
+						return ciTerminalRepairOutcome(ciUnownedHeadStallOutcome(), Findings{}, sctx.DeferredFindings), nil
+					}
+					if _, err := waitForPoll(); err != nil {
+						return nil, err
+					}
+					continue
+				}
+			}
 			// The checks just read belong to a head this run owns, which is the
 			// only thing that clears the unread-poll bound.
 			consecutiveUnreadPolls = 0
