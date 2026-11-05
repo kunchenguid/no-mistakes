@@ -139,7 +139,7 @@ func buildSummaryTranscript(sess *Session, change SummaryContext) string {
 		}
 		filtered.Messages = append(filtered.Messages, m)
 	}
-	return truncateSummaryText(buildTranscriptBlock(&filtered), maxTranscriptBytes)
+	return buildTranscriptBlock(&filtered)
 }
 
 func sanitizeSummaryText(text string, limit int) string {
