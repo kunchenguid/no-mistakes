@@ -251,6 +251,11 @@ type GlobalConfig struct {
 	GateReconcileInterval time.Duration `yaml:"-"`
 	GateReconcileTimeout  time.Duration `yaml:"-"`
 	LogLevel              string        `yaml:"log_level"`
+	// EvidenceDir is the global-only parent directory for new run evidence.
+	// Empty keeps <NM_HOME>/evidence (or test.evidence.local_root). A missing
+	// or unwritable value falls back to the app-root default at resolution
+	// time; already-pinned runs are not moved. A repository cannot set it.
+	EvidenceDir string `yaml:"evidence_dir"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -321,6 +326,7 @@ type globalConfigRaw struct {
 	ReviewAgentWorkingTimeout string                     `yaml:"review_agent_working_timeout"`
 	TestAgentWorkingTimeout   string                     `yaml:"test_agent_working_timeout"`
 	LogLevel                  string                     `yaml:"log_level"`
+	EvidenceDir               string                     `yaml:"evidence_dir"`
 	SessionReuse              *bool                      `yaml:"session_reuse"`
 	AutoFix                   AutoFixRaw                 `yaml:"auto_fix"`
 	CI                        CIRaw                      `yaml:"ci"`
@@ -1288,8 +1294,9 @@ type EvidenceRaw struct {
 	// Compact controls PR testing-section presentation only; pushed-readable.
 	Compact *bool `yaml:"compact"`
 	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// when the PR body is rendered. It defaults on so default-config PRs stop
-	// citing local disk paths for screenshots; set false to opt out even when
+	// and images to GitLab project uploads when explicitly enabled. It defaults
+	// on for GitHub so default-config PRs stop citing local disk paths for
+	// screenshots; set false to opt out even when
 	// store_in_repo is true. The orphan-branch store is independent: when both
 	// are on, the PR body carries both the commit-pinned link and the attachment.
 	// Like store_in_repo, this is pushed-readable.
@@ -1347,8 +1354,13 @@ type Evidence struct {
 	Compact     bool
 	StoreInRepo bool
 	AttachMedia bool
-	Dir         string
-	Branch      string
+
+	// GitLabAttachMedia resolves the same attach_media setting, defaulting off
+	// for GitLab so uploading real-data screenshots requires explicit opt-in.
+	GitLabAttachMedia bool
+
+	Dir    string
+	Branch string
 	// CommitMessage is the configured subject template; empty keeps the
 	// built-in subject (see RenderCommitMessage).
 	CommitMessage string
@@ -1919,9 +1931,13 @@ intent:
 # directory timer: retention ages run directories out (default 14 days) and
 # max_runs caps how many survive regardless of age (default 200). Set retention
 # to "unlimited", or either to 0, to disable that bound. local_root moves the
-# directory to another disk and must be an absolute path. These three are
-# global-only - a repository's .no-mistakes.yaml cannot change where this
-# machine writes evidence or how long it keeps it.
+# directory to another disk and must be an absolute path. evidence_dir is the
+# other way to move it: a ~/path is expanded, and a missing or unwritable
+# directory falls back to <NM_HOME>/evidence with a warning. A run keeps the
+# directory it started with. These settings are global-only - a repository's
+# .no-mistakes.yaml cannot change where this machine writes evidence or how
+# long it keeps it.
+# evidence_dir: ~/Dropbox/no-mistakes-evidence
 # commit_message templates the evidence-branch commit subject with
 # {{.Branch}} and {{.RunID}}; it follows commit.fix_message's template rules.
 # test:
@@ -3008,6 +3024,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
 	}
+	cfg.EvidenceDir = strings.TrimSpace(raw.EvidenceDir)
 	if raw.SessionReuse != nil {
 		cfg.SessionReuse = *raw.SessionReuse
 	}
@@ -3221,12 +3238,16 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	// LoadGlobalFromBytes uses to refuse the repository-only auto_fix.gates.
 	var globalOnly struct {
 		QuotaRouting yaml.Node `yaml:"quota_routing"`
+		EvidenceDir  yaml.Node `yaml:"evidence_dir"`
 	}
 	if err := yaml.Unmarshal(data, &globalOnly); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if !globalOnly.QuotaRouting.IsZero() {
 		return nil, fmt.Errorf("quota_routing is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
+	}
+	if !globalOnly.EvidenceDir.IsZero() {
+		return nil, fmt.Errorf("evidence_dir is global-only; configure it in ~/.no-mistakes/config.yaml on this machine")
 	}
 	cfg := &RepoConfig{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -3723,6 +3744,7 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 	if src.Evidence.AttachMedia != nil {
 		dst.Evidence.AttachMedia = *src.Evidence.AttachMedia
+		dst.Evidence.GitLabAttachMedia = *src.Evidence.AttachMedia
 	}
 	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
 		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)

@@ -1510,10 +1510,29 @@ Partial matches older than 24 hours are rejected unless their raw score is at le
 If exactly one accepted candidate has a raw score of at least `0.85`, that decisive candidate wins before recency ranking.
 Otherwise, accepted candidates are ranked by confidence, which combines the raw score with a small recency boost, with ties going to the most recent matching session, and ambiguous accepted candidates may be disambiguated by the configured pipeline agent.
 
+### evidence_dir
+
+Parent directory for new run evidence. Global-only. A repository cannot set it.
+
+| | |
+| ---- | -------- |
+| Type | `string` |
+| Default | `<NM_HOME>/evidence` |
+
+Set `evidence_dir` to an absolute path, `~`, or a path starting with `~/` (or `~\` on Windows). New runs write `<evidence_dir>/<run-id>`. When the key is absent or empty, `test.evidence.local_root` still selects the parent, with `<NM_HOME>/evidence` as its default. A nonempty `evidence_dir` takes precedence over `local_root`.
+
+If the directory is missing, not writable, not absolute after `~` expansion, or overlaps a default, configured, or recorded worktree placement, no-mistakes logs a warning and uses `<NM_HOME>/evidence`. It does not use `test.evidence.local_root` as that fallback. It does not create a missing directory, and it does not move a directory that already exists.
+
+If the default evidence directory also overlaps a worktree placement, run creation fails rather than writing evidence into a checkout.
+
+A run records its evidence directory at creation. A later change to `evidence_dir` does not retarget that run. A run recorded before this setting existed keeps resolving through `test.evidence.local_root`.
+
+For GitLab image uploads from that run directory, see [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
+
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On GitHub.com/GHEC, supported image and video artifacts are also uploaded when the PR is rendered; see `attach_media` below.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. [`evidence_dir`](#evidence_dir) moves that parent for new runs. On GitHub.com/GHEC, supported image and video artifacts are also uploaded when the PR is rendered; see `attach_media` below.
 
 |      |          |
 | ---- | -------- |
@@ -1522,12 +1541,12 @@ By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On 
 | Field                         | Type     | Default                  | Description                                                                |
 | ----------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
 | `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence artifacts to the repository's orphan evidence branch |
-| `test.evidence.attach_media`  | `bool`   | `true`                   | Upload image and video evidence to GitHub user-attachments when the PR is rendered |
+| `test.evidence.attach_media`  | `bool`   | GitHub: `true`; GitLab: `false` | Upload evidence when the PR is rendered: images/videos to GitHub user-attachments, images to GitLab project uploads |
 | `test.evidence.compact`       | `bool`   | `true`                   | Keep the PR Testing section compact; set `false` for inline previews and expanded details |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
 | `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
 | `test.evidence.commit_message` | `string` | `no-mistakes: evidence for {{.Branch}} (run {{.RunID}})` | Subject template for evidence-branch commits |
-| `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute directory where run evidence is written on local disk             |
+| `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute parent for run evidence when `evidence_dir` is unset             |
 | `test.evidence.retention`     | `string` | `336h` (14 days)         | How long a run's evidence survives; `unlimited`/`none`/`off`/`never` or a non-positive duration disables the bound |
 | `test.evidence.max_runs`      | `int`    | `200`                    | How many run directories survive regardless of age; `0` disables the bound |
 
@@ -1537,8 +1556,9 @@ Non-compact sections are taller and can approach GitHub's PR body size limit soo
 
 The test step always collects evidence outside the worktree, so artifacts never enter the branch under validation.
 On GitHub.com and GitHub Enterprise Cloud, image and video artifacts that pass GitHub's attach rules (png, jpg, jpeg, gif, webp, svg, mp4, mov, webm; images at most 10 MiB and videos at most 100 MiB) are uploaded to GitHub user-attachments when the PR body is rendered, unless `attach_media` is false. Setting `attach_media: false` disables uploads even when `store_in_repo: true`; evidence-branch publication and its commit-pinned links remain enabled.
-Uploads need the raw GitHub token, which the PR step reads once per PR render with `gh auth token`; when that read fails, the step logs one line and skips every remaining upload in that render instead of asking again per file. If your `gh` sits behind a credential vault or disclosure gate that prompts before it releases the token, set `attach_media: false` so the PR step never asks for it.
-The testing section embeds the returned image markdown or bare video URL so remote reviewers can open the media. Upload is fail-closed: any error, unsupported type, oversize file, GitHub Enterprise Server, non-GitHub forge, or GitHub App/Actions token falls back to the configured evidence presentation rather than a dead attachment URL. Published evidence retains commit-pinned links, with previews when `compact: false`; unpublished local artifacts retain local references. Text artifacts remain inline or collapsible according to `compact`.
+The same setting gates GitLab evidence uploads, which require explicit `attach_media: true` in global or repository config. With missing or empty configuration, or when it is false, the PR step does not upload images to the GitLab project and does not add an Evidence section for them.
+GitHub uploads need the raw GitHub token, which the PR step reads once per PR render with `gh auth token`; when that read fails, the step logs one line and skips every remaining upload in that render instead of asking again per file. If your `gh` sits behind a credential vault or disclosure gate that prompts before it releases the token, set `attach_media: false` so the PR step never asks for it.
+For GitHub attachments, the testing section embeds the returned image markdown or bare video URL so remote reviewers can open the media. Upload is fail-closed: any error, unsupported type, oversize file, GitHub Enterprise Server, non-GitHub forge, or GitHub App/Actions token falls back to the configured evidence presentation rather than a dead attachment URL. Published evidence retains commit-pinned links, with previews when `compact: false`; unpublished local artifacts retain local references. Text artifacts remain inline or collapsible according to `compact`.
 When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
 Published text files get the same home-directory redaction as the PR title and body, so a path under the operator's home is committed with that part rewritten to `~`. Before that, the run's worktree root, and any path into another run worktree under `<NM_HOME>/worktrees/<repo-id>/<run-id>`, is rewritten to `{run-worktree}` (a bare `<NM_HOME>/worktrees` or `<NM_HOME>/worktrees/<repo-id>` to `{worktrees}`), because the repo id is a hash of the local checkout path and `NM_HOME` may sit outside the home directory. Binary and visual artifacts are published as written, and the local evidence files are never changed.
 When both `attach_media` and `store_in_repo` apply, the testing section carries the user-attachments embed in addition to the commit-pinned git link.
@@ -1548,18 +1568,18 @@ Branch slashes become nested directories, unsafe branch characters are replaced,
 `commit_message` supports literal text and two placeholders: `{{.Branch}}` (the code branch name) and `{{.RunID}}` (the run ID). It follows the same template restrictions, size limits, and unsafe-character rules as [`commit.fix_message`](#commitfix_message); an invalid template fails configuration loading, and a subject that fails validation at publish time leaves the evidence unpublished.
 The publisher never force-pushes. It appends to the fetched evidence-branch tip with a fast-forward push, retries one lost race, and refuses to use the run branch, default branch, or an existing branch whose tip lacks the `.no-mistakes-evidence` marker.
 Publication is also refused when the remote cannot be read or pushed, an artifact exceeds 64 MiB, a run exceeds 500 files or 256 MiB, or another writer wins the retry. The PR body then keeps its local rendering instead of adding links that would not resolve.
-Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
+Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed. GitLab image uploads are independent of these publication settings; see [Pull request](/no-mistakes/reference/pipeline-steps/#pull-request).
 Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
 
 #### Local storage and cleanup
 
-Evidence lives under the app root rather than the system temp directory. On Linux the daemon runs from a service unit that does not export `TMPDIR`, so the old temp-directory default resolved to the shared `/tmp`, which current Ubuntu mounts as a RAM-backed `tmpfs`. The app root is disk backed on macOS, Linux, and Windows alike.
+The default evidence location is under the app root rather than the system temp directory; [`evidence_dir`](#evidence_dir) and `local_root` can select a different parent. On Linux the daemon runs from a service unit that does not export `TMPDIR`, so the old temp-directory default resolved to the shared `/tmp`, which current Ubuntu mounts as a RAM-backed `tmpfs`. The app root is disk backed on macOS, Linux, and Windows alike.
 
-no-mistakes reaps its recorded run directories itself rather than relying on an operating-system temp cleaner. Unrecognized directories under a custom `local_root` are left untouched.
+no-mistakes reaps its recorded run directories itself rather than relying on an operating-system temp cleaner. Unrecognized directories under an evidence root are left untouched.
 
 - A finished run that produced no artifacts leaves nothing behind.
 - Recorded run directories older than `retention` are removed.
-- Whatever recorded run evidence survives is trimmed to `max_runs`, oldest first.
+- Whatever recorded run evidence survives across the current, historical, and legacy roots is trimmed to one shared `max_runs` budget, oldest first.
 - A run that is still pending or running is never touched.
 
 Reaping runs after each finished run and again at daemon startup. An upgraded daemon also drains the pre-relocation directory in the system temp directory under the same rules; nothing is migrated, because absolute paths recorded in older pull request bodies name the old location.

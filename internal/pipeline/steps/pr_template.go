@@ -245,11 +245,11 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 }
 
 func (s *PRStep) recordedPREvidence(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, true)
+	pipelineMD, risk, testing, evidence := s.buildPipelineSectionFor(sctx, provider, true)
 	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
 		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
 	}
-	return appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider), nil
+	return joinBlocks(appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD, provider), neutralizeAttestationMarkers(provider, evidence)), nil
 }
 
 // publishKeptDraft stores the ordinary narrative above the full owned appendix

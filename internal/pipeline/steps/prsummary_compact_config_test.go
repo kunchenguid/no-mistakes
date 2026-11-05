@@ -39,7 +39,7 @@ func TestPRStep_TestingSummaryUsesResolvedCompactSetting(t *testing.T) {
 			}
 			sctx.Config = config.Merge(&config.GlobalConfig{}, repo)
 			sctx.Config.Test.Evidence.AttachMedia = false
-			_, _, md := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
+			_, _, md, _ := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
 			if tc.compact {
 				if md != "## Testing\n\nChecks passed." {
 					t.Fatalf("default output changed:\n%s", md)

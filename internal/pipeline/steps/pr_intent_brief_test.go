@@ -345,7 +345,7 @@ func TestPRStep_BriefModeFailsClosedWithoutStructuredOutput(t *testing.T) {
 
 func TestFallbackPRContentRefusesRawIntentInBriefMode(t *testing.T) {
 	sctx := &pipeline.StepContext{Config: &config.Config{PR: config.PR{Intent: config.PRIntent{Format: "brief"}}}, UserIntent: "private raw intent"}
-	if _, err := (&PRStep{}).fallbackPRContent(sctx, "", "", "", "", 0, scm.ProviderGitHub); err == nil || strings.Contains(err.Error(), "private raw intent") {
+	if _, err := (&PRStep{}).fallbackPRContent(sctx, "", "", "", "", "", 0, scm.ProviderGitHub); err == nil || strings.Contains(err.Error(), "private raw intent") {
 		t.Fatalf("fallback error = %v, want a non-disclosing fail-closed error", err)
 	}
 }

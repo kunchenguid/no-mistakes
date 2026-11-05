@@ -32,6 +32,9 @@ type PRStep struct {
 	// will replace the drafted one, so the drafted title is neither validated
 	// nor formatted: discarded text must not block publishing.
 	titleReplaced bool
+	// gitlabUploader uploads image evidence to a GitLab project. Nil uses the
+	// GitLab host. Tests inject a stub so they never talk to live GitLab.
+	gitlabUploader gitlabEvidenceUploader
 }
 
 type prContent struct {
@@ -545,13 +548,8 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return content, nil
 	}
 	redacted := redactPRContent(content, sctx.WorkDir, nmWorktreesRoot())
-	// Component text is cleaned before it is budgeted, so redaction should not
-	// grow the body. If it does, the body was never fitted to the limit: refuse
-	// rather than send one the provider rejects or truncates.
-	if len(redacted.Body) > len(content.Body) {
-		if err := validateOwnedPRBudget(redacted.Body, bodyLimit); err != nil {
-			return prContent{}, err
-		}
+	if err := validateOwnedPRBudget(redacted.Body, bodyLimit); err != nil {
+		return prContent{}, err
 	}
 	return redacted, nil
 }
@@ -579,9 +577,9 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
 	inventory := prPromptInventory(sctx, finalDiff, baseSHA)
-	var pipelineMD, riskLine, testingMD string
+	var pipelineMD, riskLine, testingMD, evidenceMD string
 	if !keepsPRUpdateText(sctx) {
-		pipelineMD, riskLine, testingMD = s.buildPipelineSection(sctx, provider)
+		pipelineMD, riskLine, testingMD, evidenceMD = s.buildPipelineSection(sctx, provider)
 		if marker := extractPipelineAttestationMarker(pipelineMD); marker != "" &&
 			((bodyLimit > 0 && scm.PRBodyLen(marker) > bodyLimit) || len(marker) > maxPullRequestBodyBytes) {
 			return prContent{}, fmt.Errorf("pipeline attestation exceeds PR body limit")
@@ -628,7 +626,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		fallback, fallbackErr := s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+		fallback, fallbackErr := s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 		return fallback, fallbackErr
 	}
 
@@ -657,7 +655,7 @@ Final diff paths and statuses:
 				if keepsPRUpdateText(sctx) {
 					return s.publishKeptDraft(sctx, provider, content.Title, content.Body, bodyLimit)
 				}
-				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+				content.Body = assembleDraftPRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 				return content, nil
 			}
 		}
@@ -666,7 +664,7 @@ Final diff paths and statuses:
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid configured public Intent brief")
 	}
-	return s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+	return s.fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 }
 
 func (s *PRStep) draftConfiguredPRTitle(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string) (string, error) {
@@ -882,15 +880,15 @@ func renderPRTitle(sctx *pipeline.StepContext, title string) (string, error) {
 // produces the deterministic pipeline, risk, and testing sections. These are
 // scoped to this run's own steps and rounds, so they already describe only
 // the final terminal state each step reached in this run.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD string) {
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD, evidenceMD string) {
 	return s.buildPipelineSectionFor(sctx, provider, false)
 }
 
-func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD, riskLine, testingMD string) {
+func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD, riskLine, testingMD, evidenceMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return "", "", ""
+		return "", "", "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
@@ -925,7 +923,8 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 		compact = sctx.Config.Test.Evidence.Compact
 	}
 	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds), compact)
-	return pipelineMD, riskLine, testingMD
+	evidenceMD = s.gitlabEvidenceSection(sctx, provider)
+	return pipelineMD, riskLine, testingMD, evidenceMD
 }
 
 // unwrapNestedPRBody detects when the agent returned the body as a
@@ -1780,7 +1779,7 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues":
+	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues", "evidence":
 		return true
 	default:
 		return false
@@ -1807,7 +1806,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
+func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD, evidenceMD string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	if needsPRIntentBrief(sctx) && strings.TrimSpace(sctx.PublicIntentBrief) == "" {
 		return prContent{}, fmt.Errorf("cannot publish configured public Intent brief without a valid draft")
 	}
@@ -1827,7 +1826,7 @@ func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLi
 	if keepsPRUpdateText(sctx) {
 		return s.publishKeptDraft(sctx, provider, title, body, bodyLimit)
 	}
-	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
+	body = assembleDraftPRBody(sctx, body, riskLine, testingMD, pipelineMD, evidenceMD, bodyLimit, provider)
 	return prContent{
 		Title: title,
 		Body:  body,

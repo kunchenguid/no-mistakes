@@ -242,6 +242,17 @@ func (e *Executor) runEvidenceDir(runID string) string {
 	if e.paths == nil {
 		return ""
 	}
+	// A pin written at run creation wins over a since-changed evidence_dir.
+	// A run from before the column existed has no pin and keeps the
+	// local_root resolution, so setting evidence_dir does not retarget it.
+	if e.db != nil && runID != "" {
+		run, err := e.db.GetRun(runID)
+		if err != nil {
+			slog.Warn("evidence dir pin unreadable; using the configured root", "run_id", runID, "error", err)
+		} else if run != nil && run.EvidencePath() != "" {
+			return run.EvidencePath()
+		}
+	}
 	configured := ""
 	if e.config != nil {
 		configured = e.config.Test.Evidence.LocalRoot

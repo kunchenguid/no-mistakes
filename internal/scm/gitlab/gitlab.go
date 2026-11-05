@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,6 +31,9 @@ type Host struct {
 	draft               bool   // open created MRs as drafts (glab mr create --draft)
 	requiredReviews     []string
 	requiredReviewBotID string
+	// formProbeOnce records whether this glab has api --form. See uploads.go.
+	formProbeOnce sync.Once
+	formProbeOK   bool
 }
 
 // New builds a Host. cliAvailable reports whether the glab binary is
