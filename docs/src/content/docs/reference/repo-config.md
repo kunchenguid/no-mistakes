@@ -1279,7 +1279,7 @@ Fields not set here inherit from global config and then the built-in defaults.
 | Field | Type | Default |
 | --- | --- | --- |
 | `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
-| `test.evidence.attach_media` | `bool` | Inherits from global (default `true`) |
+| `test.evidence.attach_media` | `bool` | Inherits from global; see [provider defaults](/no-mistakes/reference/global-config/#testevidence) |
 | `test.evidence.compact` | `bool` | Inherits from global (default `true`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 | `test.evidence.branch` | `string` | Inherits from global (default `no-mistakes/evidence`) |
