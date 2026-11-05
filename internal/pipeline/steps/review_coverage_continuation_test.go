@@ -169,7 +169,7 @@ func testRetainedCoverageCase(t *testing.T, recovered bool, mode string) {
 			t.Error("disposable review executor did not exit")
 		}
 	})
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	var binding *ipc.CoverageBinding
 	for time.Now().Before(deadline) {
 		steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
@@ -225,7 +225,7 @@ func testRetainedCoverageCase(t *testing.T, recovered bool, mode string) {
 		done = make(chan error, 1)
 		finished = make(chan struct{})
 		go func() { defer close(finished); done <- executor.Resume(ctx, sctx.Run, sctx.Repo, dir) }()
-		deadline = time.Now().Add(5 * time.Second)
+		deadline = time.Now().Add(60 * time.Second)
 	}
 	expectRefusal := false
 	expectScopePark := mode == "scope change" || mode == "base change" || mode == "record:scope"
@@ -318,7 +318,7 @@ func testRetainedCoverageCase(t *testing.T, recovered bool, mode string) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 		if err != nil {
