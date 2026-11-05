@@ -258,7 +258,7 @@ func NewTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	database, err := db.Open(dbPath)
+	database, err := OpenNewDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

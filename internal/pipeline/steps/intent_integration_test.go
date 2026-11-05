@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
 
 // fakeIntentAgent always returns a canned summary - bypasses any real LLM.
@@ -91,7 +92,7 @@ func withFakeHome(t *testing.T, fakeHome string) {
 func openIntentTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	dir := t.TempDir()
-	d, err := db.Open(filepath.Join(dir, "test.sqlite"))
+	d, err := stepstest.OpenNewDB(filepath.Join(dir, "test.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

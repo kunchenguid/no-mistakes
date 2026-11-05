@@ -8,13 +8,14 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func newRoundHistoryContext(t *testing.T) (*pipeline.StepContext, string) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	database, err := db.Open(dbPath)
+	database, err := stepstest.OpenNewDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
