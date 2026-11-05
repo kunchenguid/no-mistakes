@@ -12,8 +12,10 @@ import (
 )
 
 func TestCIStep_NoHandoffReadinessClearFailsClosed(t *testing.T) {
+	t.Parallel()
 	for _, retry := range []bool{false, true} {
 		t.Run(map[bool]string{false: "issues", true: "protected-path retry"}[retry], func(t *testing.T) {
+			t.Parallel()
 			dir, base, head := setupGitRepo(t)
 			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
 			url := "https://github.com/test/repo/pull/42"
@@ -57,8 +59,10 @@ func TestCIStep_NoHandoffReadinessClearFailsClosed(t *testing.T) {
 }
 
 func TestCIStep_TimeoutClearsReadinessOnlyForPendingHandoff(t *testing.T) {
+	t.Parallel()
 	for _, pending := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no handoff", true: "pending handoff"}[pending], func(t *testing.T) {
+			t.Parallel()
 			dir, base, head := setupGitRepo(t)
 			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
 			url := "https://github.com/test/repo/pull/42"
