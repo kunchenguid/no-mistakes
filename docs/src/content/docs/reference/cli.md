@@ -65,7 +65,9 @@ Two refusals apply to every `init`, with or without the flag.
 It refuses to register a checkout that contains a directory an existing [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry points at, naming that entry, because registering it is what would make the placement unusable and stop the daemon; place the checkout elsewhere or repoint the entry first.
 It also refuses to register anything while `~/.no-mistakes/config.yaml` does not load, naming the fault, because the daemon refuses to start on that same config.
 
-Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
+Before reinitializing a nonempty gate directory or changing hook-path isolation, no-mistakes verifies that the intended path resolves to the bare repository itself. A working repository, its `.git` directory, a linked worktree or its Git directory, or a stale directory that discovers an enclosing repository is refused before those Git configuration writes. Identity refusals name the intended and resolved paths, or report the resolved path as unavailable when discovery fails. A missing or empty gate directory can still be initialized.
+
+Re-running `init` on an already-initialized repo with a valid bare gate succeeds and reports `Gate already initialized (refreshed)`.
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and, unless you pass `--skip-user-skill`, the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
