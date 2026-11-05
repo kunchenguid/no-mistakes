@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,7 +185,7 @@ func TestNotValidatedLiveJourney(t *testing.T) {
 // drive result, axi status, nor the published PR body may report a gap.
 func TestFullyLiveRunReportsNoValidationGaps(t *testing.T) {
 	const branch = "feature/fully-live"
-	h, statePath := pluginForgeRun(t, branch, []fakeplugin.Check{{Name: "build", Bucket: "pass", State: "SUCCESS"}})
+	h, statePath := pluginForgeRun(t, branch, []fakeplugin.Check{{Name: "build", Bucket: "pass", State: "SUCCESS"}}, "", false)
 
 	out, err := h.Run("axi", "run", "--intent", "Let a customer refund an order", "--wait", "50s")
 	t.Logf("axi run output:\n%s", out)
@@ -213,8 +215,10 @@ func TestFullyLiveRunReportsNoValidationGaps(t *testing.T) {
 
 // pluginForgeRun prepares a fully live run on branch against the reference
 // provider-plugin forge, which reports checks for every PR, and returns the
-// harness and the forge state path.
-func pluginForgeRun(t *testing.T, branch string, checks []fakeplugin.Check) (*Harness, string) {
+// harness and the forge state path. A non-empty appendix is committed as the
+// trusted pr.appendix mode, and keep sets machine-local pr.update_text: keep
+// so the body carries an owned appendix.
+func pluginForgeRun(t *testing.T, branch string, checks []fakeplugin.Check, appendix string, keep bool) (*Harness, string) {
 	t.Helper()
 	const (
 		pluginHost = "ssm.example.com"
@@ -227,7 +231,7 @@ func pluginForgeRun(t *testing.T, branch string, checks []fakeplugin.Check) (*Ha
 			"  ssm:\n" +
 			"    command: " + fakeplugin.ExecutableName + "\n" +
 			"    hosts: [" + pluginHost + "]\n" +
-			"    timeout: 30s\n",
+			"    timeout: 30s\n" + keepUpdateText(keep, remoteURL),
 	})
 	configureGitURLRewrite(t, h, remoteURL, h.UpstreamDir)
 	if out, err := h.runGit(t.Context(), h.WorkDir, "remote", "set-url", "origin", remoteURL); err != nil {
@@ -240,11 +244,44 @@ func pluginForgeRun(t *testing.T, branch string, checks []fakeplugin.Check) (*Ha
 	}
 	t.Setenv(fakeplugin.EnvState, statePath)
 	t.Setenv(fakeplugin.EnvLog, filepath.Join(stateDir, "provider-plugin-requests.ndjson"))
+	if appendix != "" {
+		h.CommitChange("main", ".no-mistakes.yaml", "pr:\n  appendix: "+appendix+"\n", "configure appendix")
+		if out, err := h.runGit(t.Context(), h.WorkDir, "push", "origin", "main"); err != nil {
+			t.Fatalf("push main: %v\n%s", err, out)
+		}
+	}
 	if out, err := h.Run("init"); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
 	h.CommitChange(branch, "refund.txt", "refund feature\n", "add refunds")
 	return h, statePath
+}
+
+// ownedAppendix returns the owned appendix of body and everything outside its
+// markers, after checking the digest its start marker carries (sha256 of the
+// appendix text, the published ownership contract).
+func ownedAppendix(t *testing.T, body string) (appendix, outside string) {
+	t.Helper()
+	const startMarker, endMarker = "<!-- no-mistakes-pr-appendix:v1 sha256=", "\n<!-- /no-mistakes-pr-appendix:v1 -->"
+	start, end := strings.Index(body, startMarker), strings.Index(body, endMarker)
+	if start < 0 || end < start {
+		t.Fatalf("body has no owned appendix:\n%s", body)
+	}
+	digest, appendix, ok := strings.Cut(body[start+len(startMarker):end], " -->\n")
+	if !ok {
+		t.Fatalf("malformed appendix marker:\n%s", body)
+	}
+	if sum := fmt.Sprintf("%x", sha256.Sum256([]byte(appendix))); sum != digest {
+		t.Fatalf("appendix digest %s does not match its content (%s):\n%s", digest, sum, body)
+	}
+	return appendix, body[:start] + body[end+len(endMarker):]
+}
+
+func keepUpdateText(keep bool, remoteURL string) string {
+	if !keep {
+		return ""
+	}
+	return "repository_overrides:\n  " + remoteURL + ":\n    pr:\n      update_text: keep\n"
 }
 
 func pluginPRBody(t *testing.T, statePath string) string {
@@ -261,56 +298,73 @@ func pluginPRBody(t *testing.T, statePath string) string {
 
 // TestCIGateSkipRefreshesTheNotValidatedLiveCallout drives a fully live run
 // whose CI check fails, so the CI step parks (the harness sets auto_fix.ci:
-// 0), and the operator skips it there. The PR body was published before CI with no
-// callout; after the skip the published body must list CI as skipped by the
-// operator, still lead with Intent, and keep its attestation.
+// 0), and the operator skips it there, in the default, minimal and collapsed
+// appendix modes. The PR body was published before CI with no callout; after
+// the skip the published body must be exactly that body with the callout
+// inserted after Intent: in minimal and collapsed bodies no "## " heading
+// follows the lead, so anything bounded by headings would eat the risk line,
+// the fold or the attestation.
 func TestCIGateSkipRefreshesTheNotValidatedLiveCallout(t *testing.T) {
-	const branch = "feature/ci-gate-skip"
-	h, statePath := pluginForgeRun(t, branch, []fakeplugin.Check{{Name: "build", Bucket: "fail", State: "FAILURE"}})
+	const (
+		intent  = "## Intent\n\nLet a customer refund an order"
+		callout = "## Not validated live\n\n⚠️ **1 exception or skip let this run continue without that validation.**\n\n- **Skipped by operator** (`ci`): no reason recorded"
+	)
+	for _, tc := range []struct {
+		name, appendix string
+		keep           bool
+	}{
+		{name: "default"},
+		{name: "minimal", appendix: "minimal"},
+		{name: "collapsed", appendix: "collapsed"},
+		{name: "keep minimal", appendix: "minimal", keep: true},
+		{name: "keep collapsed", appendix: "collapsed", keep: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const branch = "feature/ci-gate-skip"
+			h, statePath := pluginForgeRun(t, branch, []fakeplugin.Check{{Name: "build", Bucket: "fail", State: "FAILURE"}}, tc.appendix, tc.keep)
 
-	out, err := h.Run("axi", "run", "--intent", "Let a customer refund an order", "--wait", "50s")
-	t.Logf("axi run output:\n%s", out)
-	if err != nil {
-		t.Fatalf("axi run: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "gate:") || !strings.Contains(out, "step: ci") {
-		t.Fatalf("run did not park at the CI gate:\n%s", out)
-	}
-	before := pluginPRBody(t, statePath)
-	t.Logf("PR body before the CI decision:\n%s", before)
-	if strings.Contains(before, "## Not validated live") {
-		t.Fatalf("fully live run published a callout before CI:\n%s", before)
-	}
+			out, err := h.Run("axi", "run", "--intent", "Let a customer refund an order", "--wait", "50s")
+			t.Logf("axi run output:\n%s", out)
+			if err != nil {
+				t.Fatalf("axi run: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "gate:") || !strings.Contains(out, "step: ci") {
+				t.Fatalf("run did not park at the CI gate:\n%s", out)
+			}
+			before := pluginPRBody(t, statePath)
+			t.Logf("PR body before the CI decision:\n%s", before)
+			// The lead is at the top of the body, or of the owned appendix.
+			lead, outsideBefore := before, ""
+			if tc.keep {
+				lead, outsideBefore = ownedAppendix(t, before)
+			}
+			if strings.Contains(before, "## Not validated live") || !strings.HasPrefix(lead, intent+"\n\n") {
+				t.Fatalf("unexpected body before CI:\n%s", before)
+			}
 
-	respond, err := h.Run("axi", "respond", "--step", "ci", "--action", "skip", "--wait", "50s")
-	t.Logf("axi respond output:\n%s", respond)
-	if err != nil {
-		t.Fatalf("respond: %v\n%s", err, respond)
-	}
-	body := pluginPRBody(t, statePath)
-	t.Logf("PR body after the CI skip:\n%s", body)
-	callout := strings.Index(body, "## Not validated live")
-	if callout < 0 {
-		t.Fatalf("CI skip did not refresh the callout:\n%s", body)
-	}
-	if !strings.Contains(body, "**Skipped by operator** (`ci`): no reason recorded") {
-		t.Errorf("refreshed callout does not list the CI skip")
-	}
-	if intent := strings.Index(body, "## Intent"); intent < 0 || intent > callout {
-		t.Errorf("callout does not follow Intent")
-	}
-	if changed := strings.Index(body, "## What Changed"); changed >= 0 && changed < callout {
-		t.Errorf("callout does not lead the narrative")
-	}
-	if !strings.Contains(body, "no-mistakes-pipeline-attestation") {
-		t.Errorf("refresh dropped the attestation")
-	}
-	next := strings.Index(body[callout:], "\n\n## ")
-	if next < 0 {
-		t.Fatalf("no section follows the callout:\n%s", body)
-	}
-	if without := body[:callout] + body[callout+next+2:]; without != before {
-		t.Errorf("refresh changed more than the callout:\nbefore:\n%s\nwithout the callout:\n%s", before, without)
+			respond, err := h.Run("axi", "respond", "--step", "ci", "--action", "skip", "--wait", "50s")
+			t.Logf("axi respond output:\n%s", respond)
+			if err != nil {
+				t.Fatalf("respond: %v\n%s", err, respond)
+			}
+			body := pluginPRBody(t, statePath)
+			t.Logf("PR body after the CI skip:\n%s", body)
+			want := intent + "\n\n" + callout + "\n\n" + strings.TrimPrefix(lead, intent+"\n\n")
+			got := body
+			if tc.keep {
+				var outside string
+				got, outside = ownedAppendix(t, body)
+				if outside != outsideBefore {
+					t.Fatalf("refresh changed the body outside the owned appendix:\nbefore:\n%s\nafter:\n%s", before, body)
+				}
+			}
+			if got != want {
+				t.Fatalf("refresh did not insert exactly the callout:\nwant:\n%s\ngot:\n%s", want, got)
+			}
+			if !strings.Contains(body, "no-mistakes-pipeline-attestation") {
+				t.Fatalf("published body carries no attestation:\n%s", body)
+			}
+		})
 	}
 }
 

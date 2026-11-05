@@ -873,6 +873,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		LogFile:    func(string) {},
 		OnPRMerged: e.onPRMerged,
 	}
+	// The CI gate's decision publisher re-renders the PR's Intent lead from
+	// the run's intent, as executeStep supplies it.
+	if run.Intent != nil {
+		reconcileCtx.UserIntent = *run.Intent
+	}
+	if run.IntentSource != nil {
+		reconcileCtx.IntentSource = *run.IntentSource
+	}
 	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx, gate.findings); reconciled {
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
