@@ -251,6 +251,40 @@ func TestBuildTestingSummaryForPR_LinkBaseURLRendersLocalArtifactsAsLinks(t *tes
 	}
 }
 
+func TestBuildTestingSummaryForPR_LinkBaseURLLeavesProseUntouched(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	evidenceRoot := filepath.Join(t.TempDir(), "01RUN")
+	writeEvidenceFile(t, evidenceRoot, "shot.png", []byte("png-bytes"))
+	writeEvidenceFile(t, evidenceRoot, "transcript.txt", []byte("Captured transcript"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Screenshot: shot.png","tested":["Inspected shot.png"],"artifacts":[{"kind":"screenshot","label":"Screenshot evidence","path":%q},{"kind":"text","label":"Transcript","path":%q,"content":"Caption: shot.png"}]}`, filepath.Join(evidenceRoot, "shot.png"), filepath.Join(evidenceRoot, "transcript.txt"))
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	for _, provider := range []scm.Provider{scm.ProviderGitLab, scm.ProviderBitbucket} {
+		for _, compact := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/compact=%t", provider, compact), func(t *testing.T) {
+				t.Parallel()
+				render := func(base string) string {
+					return buildPRTestingSummary(steps, nil, "", "", repoRoot, evidenceRoot, nil, provider, nil, compact, base)
+				}
+				unset, linked := render(""), render(evidenceLinkTestBase)
+				prose := []string{"Screenshot: shot.png", "Caption: shot.png"}
+				if !compact {
+					prose = append(prose, "Inspected shot.png")
+				}
+				for _, text := range prose {
+					if strings.Count(unset, text) != 1 || strings.Count(linked, text) != 1 {
+						t.Fatalf("prose %q must survive once with either base setting:\nunset:\n%s\nlinked:\n%s", text, unset, linked)
+					}
+				}
+				url := evidenceLinkTestBase + "/01RUN/shot.png"
+				if !strings.Contains(linked, "- Evidence: [Screenshot evidence]("+url+")") || strings.Count(linked, url) != 1 {
+					t.Fatalf("only the structured screenshot evidence entry must link to %s:\n%s", url, linked)
+				}
+			})
+		}
+	}
+}
+
 // TestPRStep_LinkBaseURLYieldsToUploadedAttachments: a GitHub user-attachments
 // upload is still the rendering of choice, so the base changes nothing when
 // the upload succeeded and only replaces the local-path fallback when it did
