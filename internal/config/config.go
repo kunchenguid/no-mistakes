@@ -1294,8 +1294,9 @@ type EvidenceRaw struct {
 	// Compact controls PR testing-section presentation only; pushed-readable.
 	Compact *bool `yaml:"compact"`
 	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// when the PR body is rendered. It defaults on so default-config PRs stop
-	// citing local disk paths for screenshots; set false to opt out even when
+	// and images to GitLab project uploads when explicitly enabled. It defaults
+	// on for GitHub so default-config PRs stop citing local disk paths for
+	// screenshots; set false to opt out even when
 	// store_in_repo is true. The orphan-branch store is independent: when both
 	// are on, the PR body carries both the commit-pinned link and the attachment.
 	// Like store_in_repo, this is pushed-readable.
@@ -1353,6 +1354,11 @@ type Evidence struct {
 	Compact     bool
 	StoreInRepo bool
 	AttachMedia bool
+
+	// GitLabAttachMedia resolves the same attach_media setting, defaulting off
+	// for GitLab so uploading real-data screenshots requires explicit opt-in.
+	GitLabAttachMedia bool
+
 	Dir         string
 	Branch      string
 	// CommitMessage is the configured subject template; empty keeps the
@@ -3738,6 +3744,7 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 	if src.Evidence.AttachMedia != nil {
 		dst.Evidence.AttachMedia = *src.Evidence.AttachMedia
+		dst.Evidence.GitLabAttachMedia = *src.Evidence.AttachMedia
 	}
 	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
 		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)

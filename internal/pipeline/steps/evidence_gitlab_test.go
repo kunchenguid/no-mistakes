@@ -45,7 +45,7 @@ func TestGitlabEvidenceSectionUploadsOnceAndRewritesOneSection(t *testing.T) {
 		EvidenceDir: runDir,
 		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
 		DB:          database,
-		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}},
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{GitLabAttachMedia: true}}},
 		Log:         func(string) {},
 	}
 
@@ -112,6 +112,10 @@ func TestGitlabEvidenceAttachMediaGatesUploads(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "shot.png"), []byte("png"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	global, err := config.LoadGlobal(filepath.Join(t.TempDir(), "missing-config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	attach := true
 	detach := false
 	for _, tc := range []struct {
@@ -120,9 +124,12 @@ func TestGitlabEvidenceAttachMediaGatesUploads(t *testing.T) {
 		want int
 	}{
 		{name: "configuration unavailable"},
-		{name: "default", cfg: config.Merge(&config.GlobalConfig{}, &config.RepoConfig{}), want: 1},
+		{name: "missing configuration", cfg: config.Merge(global, &config.RepoConfig{})},
+		{name: "empty configuration", cfg: config.Merge(&config.GlobalConfig{}, &config.RepoConfig{})},
 		{name: "global disabled", cfg: config.Merge(&config.GlobalConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &detach}}}, &config.RepoConfig{})},
 		{name: "repository disabled", cfg: config.Merge(&config.GlobalConfig{}, &config.RepoConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &detach}}})},
+		{name: "global enabled", cfg: config.Merge(&config.GlobalConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &attach}}}, &config.RepoConfig{}), want: 1},
+		{name: "repository disables global enable", cfg: config.Merge(&config.GlobalConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &attach}}}, &config.RepoConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &detach}}})},
 		{name: "explicitly enabled", cfg: config.Merge(&config.GlobalConfig{}, &config.RepoConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: &attach}}}), want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -189,7 +196,7 @@ func TestGitlabEvidenceReportsUnreadableImages(t *testing.T) {
 		Ctx:         context.Background(),
 		EvidenceDir: runDir,
 		Repo:        &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"},
-		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}},
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{GitLabAttachMedia: true}}},
 		Log:         func(line string) { logs = append(logs, line) },
 	}, scm.ProviderGitLab)
 	if uploader.calls != 1 {
@@ -219,7 +226,7 @@ func TestGitlabEvidenceAttemptsEveryImageAndReportsRejections(t *testing.T) {
 	}
 	uploader := &countingGitlabUploader{err: errors.New("attachment rejected by server")}
 	step := &PRStep{gitlabUploader: uploader}
-	sctx := &pipeline.StepContext{Ctx: context.Background(), EvidenceDir: runDir, Repo: &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"}, Config: &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}}, Log: func(string) {}}
+	sctx := &pipeline.StepContext{Ctx: context.Background(), EvidenceDir: runDir, Repo: &db.Repo{UpstreamURL: "https://gitlab.example.com/group/project.git"}, Config: &config.Config{Test: config.Test{Evidence: config.Evidence{GitLabAttachMedia: true}}}, Log: func(string) {}}
 	got := step.gitlabEvidenceSection(sctx, scm.ProviderGitLab)
 	if uploader.calls != 52 {
 		t.Fatalf("upload attempts = %d, want every one of 52 images", uploader.calls)
@@ -240,7 +247,7 @@ func TestGitlabEvidenceIndependentOfTestingInEveryAppendixMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	sctx.Config.Test.Evidence.StoreInRepo = false
-	sctx.Config.Test.Evidence.AttachMedia = true
+	sctx.Config.Test.Evidence.GitLabAttachMedia = true
 	sctx.EvidenceDir = filepath.Join(t.TempDir(), sctx.Run.ID)
 	if err := os.Mkdir(sctx.EvidenceDir, 0o755); err != nil {
 		t.Fatal(err)

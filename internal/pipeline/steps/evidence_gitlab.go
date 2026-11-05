@@ -138,7 +138,7 @@ func gitlabEvidenceUploadEnabled(sctx *pipeline.StepContext) (bool, string) {
 	if sctx == nil || sctx.Config == nil {
 		return false, "no configuration available for media attachments"
 	}
-	if !sctx.Config.Test.Evidence.AttachMedia {
+	if !sctx.Config.Test.Evidence.GitLabAttachMedia {
 		return false, "test.evidence.attach_media is disabled"
 	}
 	return true, ""

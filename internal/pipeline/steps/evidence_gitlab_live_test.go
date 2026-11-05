@@ -60,7 +60,7 @@ func TestLiveGitLabEvidenceSectionOnThrowawayMR(t *testing.T) {
 		EvidenceDir: runDir,
 		Repo:        &db.Repo{UpstreamURL: "https://" + hostName + "/" + project + ".git"},
 		DB:          database,
-		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{AttachMedia: true}}},
+		Config:      &config.Config{Test: config.Test{Evidence: config.Evidence{GitLabAttachMedia: true}}},
 		Log:         func(line string) { t.Log(line) },
 	}
 
