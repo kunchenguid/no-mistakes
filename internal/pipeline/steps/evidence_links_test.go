@@ -129,8 +129,13 @@ func TestPRStep_EvidenceLinkBaseURL_MR1016Fixture(t *testing.T) {
 				}
 			}
 			prefix := "](" + mr1016LinkBase + "/" + mr1016RunID + "/"
-			if strings.Count(testingMD, prefix) != 4 || strings.Count(evidenceMD, prefix) != 4 {
-				t.Fatalf("links = %d in Testing and %d in Evidence, want 4 each", strings.Count(testingMD, prefix), strings.Count(evidenceMD, prefix))
+			if strings.Count(testingMD, prefix) != 14 || strings.Count(evidenceMD, prefix) != 4 {
+				t.Fatalf("links = %d in Testing and %d in Evidence, want 14 in Testing and 4 in Evidence", strings.Count(testingMD, prefix), strings.Count(evidenceMD, prefix))
+			}
+			for _, name := range []string{"roundtrip.json", "hu-excluded.png", "concurrent.json", "both-pending.png", "hu-done-cz-pending.png", "rejected.json", "rejected.png"} {
+				if !strings.Contains(testingMD, prefix+name+")") {
+					t.Fatalf("missing Testing link for %s", name)
+				}
 			}
 			if !strings.Contains(joinedLogs, "without uploading") {
 				t.Fatalf("link mode must say so in the step log, got:\n%s", joinedLogs)
@@ -184,7 +189,10 @@ func TestBuildTestingSummaryForPR_LinkBaseURLRendersLocalArtifactsAsLinks(t *tes
 	repoRoot := t.TempDir()
 	evidenceRoot := filepath.Join(t.TempDir(), "01RUN")
 	shot := filepath.Join(evidenceRoot, "checkout.png")
-	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q},{"kind":"screenshot","label":"Captioned screenshot","path":%q,"content":"Checkout completed visually."},{"kind":"screenshot","label":"Remote screenshot","url":"https://example.com/remote.png","path":%q}]}`, shot, shot, shot)
+	writeEvidenceFile(t, evidenceRoot, "checkout.png", []byte("png-bytes"))
+	writeEvidenceFile(t, filepath.Join(evidenceRoot, "nested"), "transcript.txt", []byte("Checkout transcript"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","scenarios":[{"name":"Checkout","result":"pass","live":true,"evidence":"checkout.png; unrelated, nested/transcript.txt missing.png | extra"}],"artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q},{"kind":"screenshot","label":"Captioned screenshot","path":%q,"content":"Checkout completed visually."},{"kind":"screenshot","label":"Remote screenshot","url":"https://example.com/remote.png","path":%q},{"kind":"text","label":"Transcript","path":%q}]}`, shot, shot, shot, filepath.Join(evidenceRoot, "nested", "transcript.txt"))
+
 	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
 	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}}}
 	link := evidenceLinkTestBase + "/01RUN/checkout.png"
@@ -201,7 +209,11 @@ func TestBuildTestingSummaryForPR_LinkBaseURLRendersLocalArtifactsAsLinks(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			md := buildPRTestingSummary(steps, rounds, "https://gitlab.example.com/group/project.git", "abc123", repoRoot, evidenceRoot, nil, tc.provider, nil, tc.compact, evidenceLinkTestBase)
-			for _, want := range append(tc.want, "- Evidence: [Remote screenshot](https://example.com/remote.png)") {
+			sourcePrefix := "- Evidence"
+			if tc.compact {
+				sourcePrefix = "Source"
+			}
+			for _, want := range append(tc.want, "- Evidence: [Remote screenshot](https://example.com/remote.png)", sourcePrefix+": [Transcript]("+evidenceLinkTestBase+"/01RUN/nested/transcript.txt)", "Checkout transcript", "[checkout.png]("+link+"); unrelated, [nested/transcript.txt]("+evidenceLinkTestBase+"/01RUN/nested/transcript.txt) missing.png \\| extra") {
 				if !strings.Contains(md, want) {
 					t.Fatalf("missing %q in:\n%s", want, md)
 				}

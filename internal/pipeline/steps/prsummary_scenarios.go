@@ -2,7 +2,10 @@ package steps
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -111,7 +114,8 @@ func scenarioResultEmoji(result string) string {
 // an untested scenario's reason: a reader wants one column answering "on what
 // basis?", and for an untested scenario the unavailable capability or absence
 // of a live product surface is that basis.
-func renderScenarioTable(scenarios []types.TestScenario, flavor prBodyFlavor) string {
+func renderScenarioTable(scenarios []types.TestScenario, opts testingSummaryOptions) string {
+	flavor := opts.flavor
 	if len(scenarios) == 0 {
 		return ""
 	}
@@ -138,7 +142,7 @@ func renderScenarioTable(scenarios []types.TestScenario, flavor prBodyFlavor) st
 			scenarioResultEmoji(result),
 			result,
 			live,
-			scenarioCell(basis, flavor),
+			scenarioEvidenceCell(basis, opts),
 		))
 		rows++
 	}
@@ -171,4 +175,33 @@ func truncateScenarioCell(text string) string {
 		return text
 	}
 	return strings.TrimSpace(string(runes[:maxScenarioCellRunes])) + "…"
+}
+
+func scenarioEvidenceCell(text string, opts testingSummaryOptions) string {
+	if opts.evidenceLinkBase == "" || opts.evidenceRoot == "" {
+		return scenarioCell(text, opts.flavor)
+	}
+	clean := truncateScenarioCell(sanitizePromptText(text))
+	var b strings.Builder
+	for _, token := range strings.FieldsFunc(clean, func(r rune) bool { return r == ';' || r == ',' || unicode.IsSpace(r) }) {
+		start := strings.Index(clean, token)
+		b.WriteString(clean[:start])
+		path := filepath.Join(opts.evidenceRoot, filepath.FromSlash(token))
+		link := ""
+		if filepath.IsLocal(token) {
+			if _, inside := artifactPathRelativeToRoot(path, opts.evidenceRoot); inside {
+				if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+					link = renderEvidenceFileLink(opts.evidenceLinkBase, opts.evidenceRoot, path, token)
+				}
+			}
+		}
+		if link != "" {
+			b.WriteString(strings.ReplaceAll(link, "|", "\\|"))
+		} else {
+			b.WriteString(strings.ReplaceAll(escapePRText(token, opts.flavor), "|", "\\|"))
+		}
+		clean = clean[start+len(token):]
+	}
+	b.WriteString(clean)
+	return escapePipelineFoldMarkers(b.String())
 }

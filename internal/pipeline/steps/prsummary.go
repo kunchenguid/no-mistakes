@@ -413,7 +413,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			b.WriteString(liveValidation)
 			b.WriteString("\n")
 		}
-		if table := renderScenarioTable(scenarios, opts.flavor); table != "" {
+		if table := renderScenarioTable(scenarios, opts); table != "" {
 			b.WriteString("\n")
 			b.WriteString(table)
 			b.WriteString("\n")
@@ -731,7 +731,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		} else {
 			b.WriteString(fmt.Sprintf("**%s**\n\n<video src=\"%s\" controls></video>\n", html.EscapeString(label), html.EscapeString(target)))
 		}
-	} else if !hasFile && link == "" {
+	} else if link == "" && (!hasFile || evidenceFileURL(opts.evidenceLinkBase, opts.evidenceRoot, localPath) != "") {
 		if target != "" {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 		} else if localPath != "" {
@@ -793,7 +793,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	var inner strings.Builder
 	if target != "" {
 		inner.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
-	} else if attachment == "" && !hasFile && localPath != "" {
+	} else if attachment == "" && localPath != "" && (!hasFile || evidenceFileURL(opts.evidenceLinkBase, opts.evidenceRoot, localPath) != "") {
 		inner.WriteString(renderLocalArtifactReference("Source", label, localPath, opts))
 		inner.WriteString("\n")
 	}
@@ -1610,7 +1610,7 @@ func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.F
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	if table := renderScenarioTable(findings.Scenarios, flavor); table != "" {
+	if table := renderScenarioTable(findings.Scenarios, testingSummaryOptions{flavor: flavor}); table != "" {
 		b.WriteString("\n")
 		b.WriteString(table)
 		b.WriteString("\n")
