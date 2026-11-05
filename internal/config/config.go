@@ -1359,8 +1359,8 @@ type Evidence struct {
 	// for GitLab so uploading real-data screenshots requires explicit opt-in.
 	GitLabAttachMedia bool
 
-	Dir         string
-	Branch      string
+	Dir    string
+	Branch string
 	// CommitMessage is the configured subject template; empty keeps the
 	// built-in subject (see RenderCommitMessage).
 	CommitMessage string
