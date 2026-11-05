@@ -199,9 +199,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if existing != nil && !sctx.EvalReplay {
 		liveBase := strings.TrimSpace(existing.BaseBranch)
 		if liveBase != "" && liveBase != baseBranch {
-			sha, err := git.LsRemote(ctx, sctx.WorkDir, resolveUpstreamURL(sctx), "refs/heads/"+baseBranch)
-			if err != nil {
-				return nil, fmt.Errorf("look up PR base branch %q: %w", baseBranch, err)
+			lookupCtx, cancel := context.WithTimeout(ctx, fetchUpstreamTimeout)
+			sha, lookupErr := git.LsRemote(lookupCtx, sctx.WorkDir, resolveUpstreamURL(sctx), "refs/heads/"+baseBranch)
+			if lookupErr != nil && errors.Is(lookupCtx.Err(), context.DeadlineExceeded) {
+				lookupErr = fmt.Errorf("%w; check upstream connectivity and retry: %v", context.DeadlineExceeded, lookupErr)
+			}
+			cancel()
+			if lookupErr != nil {
+				return nil, fmt.Errorf("look up PR base branch %q: %w", baseBranch, lookupErr)
 			}
 			if sha == "" {
 				baseBranch = liveBase
