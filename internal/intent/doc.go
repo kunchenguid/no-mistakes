@@ -3,9 +3,9 @@
 // (Claude Code, Codex CLI, OpenCode, Rovo Dev, Pi, and GitHub Copilot CLI) on
 // the developer's machine.
 //
-// Given the repo path, the diff filenames, and the commit time window, the
-// package discovers candidate sessions, picks the one with the strongest
-// file-overlap match, drops tool calls, summarizes the remaining user and
-// assistant text via the configured agent, and returns the summary so it
-// can be injected into pipeline step prompts.
+// Given the repo path, Git change context, diff filenames, and commit time
+// window, the package discovers candidate sessions, picks the one with the
+// strongest file-overlap match, drops tool calls, and summarizes the remaining
+// user and assistant text against that change via the configured agent. The
+// returned summary can be injected into pipeline step prompts.
 package intent

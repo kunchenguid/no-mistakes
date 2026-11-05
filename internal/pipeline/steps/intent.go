@@ -192,7 +192,14 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		gitWorkDir = repo.WorkingPath
 	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, repo.DefaultBranch)
+	gitContext := *sctx
+	gitContext.WorkDir = gitWorkDir
+	baseBranch := effectivePRBaseBranch(&gitContext)
+	fallbackBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, baseBranch)
+	resolvedBaseSHA, err := resolveBranchBaseSHA(ctx, &gitContext, fallbackBaseSHA, baseBranch)
+	if err != nil {
+		return nil, err
+	}
 	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
@@ -200,8 +207,16 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	if len(diffFiles) == 0 {
 		return nil, errIntentEmptyDiff
 	}
+	// Use the submitted range, never HEAD or the live working tree. Disable
+	// external diff/textconv helpers and leave binary data as Git's notices.
+	diff, err := git.Run(ctx, gitWorkDir, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--patch", resolvedBaseSHA+".."+run.HeadSHA, "--")
+	if err != nil {
+		return nil, fmt.Errorf("intent change context: %w", err)
+	}
 
-	baseTime, err := git.CommitTime(ctx, gitWorkDir, resolvedBaseSHA)
+	// Preserve session discovery's push-time window independently of the
+	// branch range used to describe the change. A merge-base can move on rebase.
+	baseTime, err := git.CommitTime(ctx, gitWorkDir, fallbackBaseSHA)
 	if err != nil || git.IsZeroSHA(run.BaseSHA) {
 		baseTime = time.Now().Add(-7 * 24 * time.Hour)
 	}
@@ -224,6 +239,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	return intent.Extract(ctx, intent.ExtractParams{
 		OriginCWD:     repo.WorkingPath,
 		DiffFiles:     diffFiles,
+		Change:        intent.ChangeContext{Base: resolvedBaseSHA, Head: run.HeadSHA, Diff: diff},
 		BaseTime:      baseTime,
 		HeadTime:      headTime,
 		SlackDays:     cfg.Intent.SlackDays,
