@@ -95,7 +95,7 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 		cause = ErrAgentTimeout
 	}
 	if sctx != nil {
-		ag = sctx.Agent
+		ag = bindCallerRestrictions(sctx.Agent, sctx.Run)
 	}
 	activity := observeAgentActivity(&opts)
 	return invokeAgent(parent, timeout, working, cause, activity, func(ctx context.Context) (*agent.Result, error) {

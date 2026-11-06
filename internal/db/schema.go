@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS runs (
     pi_profile           TEXT,
 	 reviewer_profile     TEXT,
     verification_plan    TEXT,
+    caller_restrictions  TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -271,6 +272,8 @@ CREATE TABLE IF NOT EXISTS run_retries (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`ALTER TABLE runs ADD COLUMN caller_restrictions TEXT`,
+	`CREATE TRIGGER IF NOT EXISTS runs_caller_restrictions_immutable BEFORE UPDATE OF caller_restrictions ON runs WHEN NEW.caller_restrictions IS NOT OLD.caller_restrictions BEGIN SELECT RAISE(ABORT, 'run caller restrictions are immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN verification_plan TEXT`,
 	`CREATE TRIGGER IF NOT EXISTS runs_verification_plan_immutable BEFORE UPDATE OF verification_plan ON runs WHEN NEW.verification_plan IS NOT OLD.verification_plan BEGIN SELECT RAISE(ABORT, 'run verification plan is immutable'); END`,
 	`ALTER TABLE runs ADD COLUMN pi_profile TEXT`,

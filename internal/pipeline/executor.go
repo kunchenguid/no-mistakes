@@ -857,7 +857,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		ForgeContext: e.forge,
 		DB:           e.db,
 		StepResultID: gate.stepResult.ID,
-		Agent:        e.agent,
+		Agent:        bindCallerRestrictions(e.agent, run),
 		Sessions:     e.sessions,
 		Shared:       e.shared,
 		// The same value executeStep supplies. A reconciler or resumer that
@@ -1473,6 +1473,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// the recorder reads, so an operator-configured later-round review role
 		// and the recorded evidence name the same round.
 		stepAgent = &roundStampingAgent{inner: stepAgent, round: func() int { return roundNum + 1 }}
+		stepAgent = bindCallerRestrictions(stepAgent, run)
 	}
 	var ciWake <-chan struct{}
 	if e.ciWake != nil {

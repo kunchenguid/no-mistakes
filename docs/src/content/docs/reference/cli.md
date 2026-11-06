@@ -155,6 +155,7 @@ no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --
 | `--intent`      | `string` | (none)  | What the user set out to accomplish; `-` reads stdin to EOF; exclusive with `--intent-file` |
 | `--intent-file` | `string` | (none)  | Read intent from a file relative to the caller's working directory; exclusive with `--intent` |
 | `--verification-plan` | `string` | (none) | Path to a nonempty UTF-8 verification plan, at most 64 KiB (65,536 bytes), captured as separate evidence for a new run only |
+| `--caller-restrictions` | `string` | (none) | Capture a UTF-8 file of caller action restrictions as immutable instructions for every agent turn in a new run |
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
@@ -213,6 +214,20 @@ The captured bytes live privately at `<NM_HOME>/run-inputs/<run-id>/verification
 Review and Test, including their fix turns, receive the same digest-checked snapshot as labeled evidence. Editing or deleting the original source cannot change it; a missing or altered snapshot fails closed when consumed. Reattach with `no-mistakes axi run` **without** `--verification-plan`; providing the flag for an existing run is refused, including strict-launch replay. A new run without the flag does not inherit a prior run's plan. Capture time records when no-mistakes read the file, not proof that its author wrote it before implementation.
 
 Only attached runs receive plan-aware guidance. Review and Test assess the proposed scenarios and independent expected results against actual evidence; the attachment does not direct Review to execute verification. Test receives the execution guidance: when no existing check drives a scenario, perform repeatable product verification with a retained artifact, or name the missing capability and how to provide it and mark the scenario untested. Both steps must follow repository testing rules before changing permanent tests; an attached plan alone is not a reason to add tests. A missing-test finding must identify the observable failure, why existing checks and product evidence do not cover it, and the independent expected result. Runs without a plan retain their existing Review and Test guidance.
+
+### Caller restrictions
+
+```sh
+no-mistakes axi run --intent "validate the change" --caller-restrictions /path/to/restrictions.txt
+```
+
+This opt-in input captures the caller's action restrictions before the gate push and before any agent starts. For example, the file can forbid downloads, installs or repeated test suites. Relative paths resolve from the caller's directory. The CLI reads the file once, preserves its exact bytes, and records the absolute source path, capture time, SHA-256 digest and authority source `caller --caller-restrictions`. Empty, nonregular, non-UTF-8, NUL-containing or oversized input is refused. Symlinks to regular files are accepted. Content is limited to 16 KiB. The complete push option, including its prefix, JSON escaping and base64 expansion, is limited to 24 KiB, leaving room for other arguments within Windows' 32,767-character command-line limit. Long source paths or heavily escaped content can reach the option limit before the content limit. An older daemon is refused before the push.
+
+The record is stored privately in the run's database row, bound to that run's repository, branch and submitted head, and cannot be replaced after creation. Every agent invocation receives the captured restrictions, including conflict resolution, Review fixes, Test, Document, Lint, PR drafting, CI repair, session continuations and fallback attempts. Every turn receives the same private metadata, including the run ID, submitted head, current recorded run head, source path and digest. Editing the source file or branch instructions afterwards cannot replace the captured record. Recovery reads the stored record without reopening the source.
+
+These are caller instructions, separate from verification-plan evidence. They can only tighten trusted configuration and existing gates. Agents are instructed to keep restrictions and their provenance out of published output, including PR text, commit messages and comments. Non-publishing turns report only which action a caller restriction blocked at their normal step gate, without restriction text, provenance or authority details. PR drafting and inferred-intent summarization turns are instead instructed to return no publishable content and keep restrictions, metadata and conflict details out of public-facing fields. Delivery does not enforce adapter tools or commands and does not prove execution containment or obedience. Deterministic configured commands retain their existing behavior.
+
+Reattach without `--caller-restrictions`; supplying it for an existing run is refused. When launching with this flag, attachment to a concurrently started run for the same head is refused if its captured record is missing or differs. `no-mistakes rerun` inherits the selected run's record unless a new file is explicitly supplied with the same flag. `axi retry` preserves the failed run's record. A fresh `axi run` without the flag retains the existing behavior and does not inherit a previous run's record. Restrictions are not automatically published as PR content or included in status output.
 
 ### Other run options
 
@@ -807,6 +822,7 @@ failed step instead of repeating every completed step.
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
+| `--caller-restrictions` | `string` | inherited | Capture a replacement [caller-restrictions record](#caller-restrictions) for the new run |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
 | `--pr-title` | `string` | (none) | Replace the inherited [supplied PR title](#supplied-pr-title-and-description); used only if this rerun creates the PR |

@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
+	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
 	"github.com/kunchenguid/no-mistakes/internal/closingissues"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -116,8 +117,9 @@ type Run struct {
 	// quotarouting.Record JSON), written at run setup when the feature is on
 	// and appended to when a mid-run quota switch moves the run. Empty for
 	// runs from before the feature and whenever it is off. It is local-only.
-	QuotaRouting     string
-	VerificationPlan *verificationplan.Snapshot
+	QuotaRouting       string
+	VerificationPlan   *verificationplan.Snapshot
+	CallerRestrictions *callerrestrictions.Record
 	// ClosingIssueRefs are the explicit issues (axi run --closes) the generated
 	// PR should close, canonicalized by internal/closingissues.
 	ClosingIssueRefs []string
@@ -154,7 +156,11 @@ func (d *DB) runColumns() string {
 	if d.hasColumn("runs", "transcript_homes") {
 		transcriptHomes = "transcript_homes"
 	}
-	return fmt.Sprintf(runColumns, intentCheck, evidenceDir, transcriptHomes)
+	restrictions := "NULL"
+	if d.hasColumn("runs", "caller_restrictions") {
+		restrictions = "caller_restrictions"
+	}
+	return fmt.Sprintf(runColumns, intentCheck, evidenceDir, transcriptHomes) + ", " + restrictions
 }
 
 func scanRun(row interface {
@@ -174,6 +180,7 @@ func scanRun(row interface {
 		&r.PRTitle, &r.PRBody, &r.EvidenceDir, &r.TranscriptHomes,
 		&r.CreatedAt, &r.UpdatedAt,
 		&r.ReviewerProfile,
+		&r.CallerRestrictions,
 	)
 	if err != nil {
 		return err
@@ -263,6 +270,15 @@ func (d *DB) InsertRunWithPRText(repoID, branch, headSHA, baseSHA string, intent
 // InsertRunWithTranscriptHomes records discovery roots in the creation write,
 // before a run can be observed or resumed by the daemon.
 func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, profiles ...agentcfg.RunSelection) (*Run, error) {
+	return d.InsertRunWithCallerRestrictions(repoID, branch, headSHA, baseSHA, intent, launchNonce, validationGeneration, intentDigest, prBaseBranch, omitIntent, plan, prText, homes, nil, profiles...)
+}
+
+// InsertRunWithCallerRestrictions binds caller instructions in the creation
+// write, before any agent may start. The database rejects all later replacements.
+func (d *DB) InsertRunWithCallerRestrictions(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, plan *verificationplan.Snapshot, prText RunPRText, homes *runenv.TranscriptHomes, restrictions *callerrestrictions.Record, profiles ...agentcfg.RunSelection) (*Run, error) {
+	if err := restrictions.Validate(); err != nil {
+		return nil, err
+	}
 	pin := agentcfg.OptionalPiProfile(profiles)
 	if err := pin.Validate(); err != nil {
 		return nil, err
@@ -286,6 +302,7 @@ func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA strin
 		PiProfile:          pin,
 		ReviewerProfile:    reviewer,
 		TranscriptHomes:    homes,
+		CallerRestrictions: restrictions,
 		Status:             types.RunPending,
 		CreatedAt:          ts,
 		UpdatedAt:          ts,
@@ -317,8 +334,8 @@ func (d *DB) InsertRunWithTranscriptHomes(repoID, branch, headSHA, baseSHA strin
 		r.PRBody = &prText.Body
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at, reviewer_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_validation_generation, launch_intent_digest, pr_base_branch, omit_intent, pi_profile, verification_plan, pr_title, pr_body, transcript_homes, created_at, updated_at, reviewer_profile, caller_restrictions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.LaunchValidationGeneration, r.LaunchIntentDigest, r.PRBaseBranch, r.OmitIntent, r.PiProfile, r.VerificationPlan, r.PRTitle, r.PRBody, r.TranscriptHomes, r.CreatedAt, r.UpdatedAt, r.ReviewerProfile, r.CallerRestrictions,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -492,6 +509,14 @@ func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce, submittedHeadSHA, v
 // observer cannot consume `created`, even when the row is inserted while this
 // call runs. With no row yet it returns nil, like any unclaimable receipt.
 func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
+	return d.ClaimLaunchReceiptWithCallerRestrictions(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch, omitIntent, prTextDigest, "", profiles...)
+}
+
+// ClaimLaunchReceiptWithCallerRestrictions checks a requested captured-record
+// identity before consuming the first-observer receipt. The record is immutable
+// and the UPDATE is pinned to the row ID, just as for the supplied PR text.
+// An empty digest preserves the behavior of callers without restrictions.
+func (d *DB) ClaimLaunchReceiptWithCallerRestrictions(repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, prTextDigest, restrictionsDigest string, profiles ...agentcfg.RunSelection) (*Run, bool, error) {
 	request := agentcfg.OptionalPiProfile(profiles)
 	if err := request.ValidateRequest(); err != nil {
 		return nil, false, err
@@ -512,6 +537,9 @@ func (d *DB) ClaimLaunchReceiptWithPRText(repoID, branch, launchNonce, submitted
 	existing, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
 	if err != nil || existing == nil {
 		return nil, false, err
+	}
+	if restrictionsDigest != "" && existing.CallerRestrictions.Digest() != restrictionsDigest {
+		return nil, false, fmt.Errorf("conflicting launch_nonce: caller restrictions differ from run record")
 	}
 	if existing.PRTextDigest() != prTextDigest {
 		return existing, false, nil

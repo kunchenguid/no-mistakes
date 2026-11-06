@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
+	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -1376,7 +1377,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceiptWithPRText(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.PiProfile, p.ReviewerProfile)
+		run, claimed, err := d.ClaimLaunchReceiptWithCallerRestrictions(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.CallerRestrictionsDigest, p.PiProfile, p.ReviewerProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
@@ -1420,6 +1421,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	})
 	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
+	})
+	srv.Handle(ipc.MethodProbeCallerRestrictions, func(context.Context, json.RawMessage) (interface{}, error) {
+		return struct {
+			OK bool `json:"ok"`
+		}{OK: true}, nil
 	})
 
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1505,7 +1511,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.handleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.PiProfile, p.ReviewerProfile)
+		runID, err := mgr.handleRerun(callerrestrictions.WithLaunchRecord(ctx, p.CallerRestrictions), p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.PiProfile, p.ReviewerProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1688,27 +1694,28 @@ func gateContextResult(result gatecontext.Result) ipc.GateContextResult {
 
 func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	info := &ipc.RunInfo{
-		ID:                 r.ID,
-		RepoID:             r.RepoID,
-		Branch:             r.Branch,
-		HeadSHA:            r.HeadSHA,
-		SubmittedHeadSHA:   r.SubmittedHeadSHA,
-		BaseSHA:            r.BaseSHA,
-		Status:             r.Status,
-		PRURL:              r.PRURL,
-		Error:              r.Error,
-		CIReady:            r.CIReadyAt != nil,
-		CIReadyNoCI:        r.CIReadyNoCI,
-		PRBaseBranch:       r.PRBaseBranch,
-		OmitIntent:         r.OmitIntent,
-		QuotaRouting:       r.QuotaRouting,
-		PiProfile:          r.PiProfile,
-		ReviewerProfile:    r.ReviewerProfile,
-		VerificationPlan:   r.VerificationPlan,
-		AwaitingAgent:      r.AwaitingAgentSince != nil,
-		AwaitingAgentSince: r.AwaitingAgentSince,
-		CreatedAt:          r.CreatedAt,
-		UpdatedAt:          r.UpdatedAt,
+		CallerRestrictionsDigest: r.CallerRestrictions.Digest(),
+		ID:                       r.ID,
+		RepoID:                   r.RepoID,
+		Branch:                   r.Branch,
+		HeadSHA:                  r.HeadSHA,
+		SubmittedHeadSHA:         r.SubmittedHeadSHA,
+		BaseSHA:                  r.BaseSHA,
+		Status:                   r.Status,
+		PRURL:                    r.PRURL,
+		Error:                    r.Error,
+		CIReady:                  r.CIReadyAt != nil,
+		CIReadyNoCI:              r.CIReadyNoCI,
+		PRBaseBranch:             r.PRBaseBranch,
+		OmitIntent:               r.OmitIntent,
+		QuotaRouting:             r.QuotaRouting,
+		PiProfile:                r.PiProfile,
+		ReviewerProfile:          r.ReviewerProfile,
+		VerificationPlan:         r.VerificationPlan,
+		AwaitingAgent:            r.AwaitingAgentSince != nil,
+		AwaitingAgentSince:       r.AwaitingAgentSince,
+		CreatedAt:                r.CreatedAt,
+		UpdatedAt:                r.UpdatedAt,
 	}
 	if r.PRTitle != nil {
 		info.PRTitleDigest = db.PRTextDigest(*r.PRTitle, "")

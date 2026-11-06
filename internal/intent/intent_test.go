@@ -153,7 +153,7 @@ func TestExtract_CacheHitSkipsSummarizer(t *testing.T) {
 	// to set AgentName first because Discover does it inside Extract; mimic.
 	sess.AgentName = "claude"
 	base, head := time.Now().Add(-time.Hour), time.Now()
-	cache.Put(summaryCacheKeyFor(sess, SummaryContext{WindowStart: base, WindowEnd: head}), "cached", "claude", "s1")
+	cache.Put(summaryCacheKeyFor(sess, SummaryContext{WindowStart: base, WindowEnd: head}, ""), "cached", "claude", "s1")
 
 	got, err := Extract(context.Background(), ExtractParams{
 		OriginCWD:  "/tmp/repo",
