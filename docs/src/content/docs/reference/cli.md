@@ -227,7 +227,7 @@ The record is stored privately in the run's database row, bound to that run's re
 
 These are caller instructions, separate from verification-plan evidence. They can only tighten trusted configuration and existing gates. Agents are instructed to report an inability to comply, including the proposed action and its authority provenance, at their normal step gate. Delivery does not enforce adapter tools or commands and does not prove execution containment or obedience. Deterministic configured commands retain their existing behavior.
 
-Reattach without `--caller-restrictions`; supplying it for an existing run is refused. `no-mistakes rerun` inherits the selected run's record unless a new file is explicitly supplied with the same flag. `axi retry` preserves the failed run's record. A fresh `axi run` without the flag retains the existing behavior and does not inherit a previous run's record. Restrictions are not automatically published as PR content or included in status output.
+Reattach without `--caller-restrictions`; supplying it for an existing run is refused. When launching with this flag, attachment to a concurrently started run for the same head is refused if its captured record is missing or differs. `no-mistakes rerun` inherits the selected run's record unless a new file is explicitly supplied with the same flag. `axi retry` preserves the failed run's record. A fresh `axi run` without the flag retains the existing behavior and does not inherit a previous run's record. Restrictions are not automatically published as PR content or included in status output.
 
 ### Other run options
 
@@ -822,6 +822,7 @@ failed step instead of repeating every completed step.
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
+| `--caller-restrictions` | `string` | inherited | Capture a replacement [caller-restrictions record](#caller-restrictions) for the new run |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this rerun (adds to the inherited decision; tighten-only) |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves; adds to the [closing references](#closing-issues) inherited from the selected prior run |
 | `--pr-title` | `string` | (none) | Replace the inherited [supplied PR title](#supplied-pr-title-and-description); used only if this rerun creates the PR |
