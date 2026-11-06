@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,26 @@ func bindFixtureCommitIdentity(t *testing.T, d *db.DB, runID string) {
 }
 
 type identityCorrectionStep struct{ commits chan string }
+
+func TestCommitIdentityRecoveryRefusesMissingRunSnapshot(t *testing.T) {
+	manager, run, _ := gatePinFixture(t, "", nil)
+	connection, err := sql.Open("sqlite", manager.paths.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	result, err := connection.Exec("DELETE FROM run_commit_identities WHERE run_id = ?", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		t.Fatalf("removed identity rows = %d, err = %v; want one", rows, err)
+	}
+	plan, err := manager.prepareRecoveredRun(context.Background(), run)
+	if plan != nil || err == nil || !strings.Contains(err.Error(), "commit identity") {
+		t.Fatalf("unbound recovery = %v, err = %v; want refusal despite valid checkout identity", plan, err)
+	}
+}
 
 func (*identityCorrectionStep) Name() types.StepName { return types.StepReview }
 func (s *identityCorrectionStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
