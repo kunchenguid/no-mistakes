@@ -256,7 +256,7 @@ The configured branch is used for PR creation and pipeline integration and chang
 When unset and without a per-run override, no-mistakes targets the repository's forge default branch.
 
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
-A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, Gitea, Cursor Origin, and [provider plugins](/no-mistakes/reference/provider-plugin-protocol/) that advertise `set_pr_base_branch`) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
+A per-run `--base-branch` override can retarget an existing PR; see the [PR step](/no-mistakes/reference/pipeline-steps/#pr) for identity checks, provider support, and the fallback when the selected target was deleted.
 Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created. See [CI](/no-mistakes/reference/pipeline-steps/#ci) for observed scoping state, live-base alignment before a restart at Review, and its provider requirements.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.

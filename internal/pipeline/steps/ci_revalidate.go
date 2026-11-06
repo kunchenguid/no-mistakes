@@ -185,10 +185,9 @@ func parkPublishedHeadRewrite(recorded, worktreeHead, liveHead, reason string) *
 // durably and clears the review approval BEFORE the worktree moves (a durable
 // write that fails must leave the branch and worktree on the reviewed head,
 // since the worktree head is one of the heads the run is credited with owning),
-// the outcome restarts the run at Review. Intent and
-// Rebase are deliberately skipped (their content is base-relative and the
-// restart re-decides it), and the PR step will only refresh the body of the
-// existing pull request.
+// the outcome restarts the run at Review. Intent and Rebase are skipped;
+// Review onward reruns, and the PR step updates the existing pull request
+// under its normal publication and target rules.
 func (s *CIStep) adoptPublishedHeadRewrite(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, observer, liveHead string, prOpen bool) (*pipeline.StepOutcome, error) {
 	recorded := strings.TrimSpace(sctx.Run.HeadSHA)
 	if err := setCIMonitorReadiness(sctx, false, false); err != nil {

@@ -427,8 +427,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
 
-// retargetExistingPRIfNeeded moves an already-open PR onto a per-run
-// --base-branch override when the live forge base disagrees. Repo-config
+// retargetExistingPRIfNeeded moves an already-open PR onto the effective
+// per-run target when the live forge base disagrees. Execute applies the
+// deleted-target fallback before calling this helper. Repo-config
 // pr.base_branch changes still do not retarget: requested is empty in that
 // path, so title and body update in place and CI keeps following the live
 // forge base.
