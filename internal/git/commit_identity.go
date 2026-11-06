@@ -58,6 +58,15 @@ func (i CommitIdentity) Environment() runenv.Overlay {
 	}, Unset: []string{"GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"}}
 }
 
+func (i CommitIdentity) SubprocessEnvironment() runenv.Overlay {
+	environment := i.Environment()
+	for key := range environment.Set {
+		environment.Unset = append(environment.Unset, key)
+	}
+	environment.Set = nil
+	return environment
+}
+
 type commitIdentityContextKey struct{}
 
 // WithCommitIdentity freezes a value, never a pointer owned by an IPC caller.
@@ -73,7 +82,6 @@ func CommitIdentityFromContext(ctx context.Context) (CommitIdentity, bool) {
 	return identity, ok
 }
 
-// ApplyCommitIdentity is shared by the Git runner and step subprocess runner.
 func ApplyCommitIdentity(ctx context.Context, base []string) []string {
 	if identity, ok := CommitIdentityFromContext(ctx); ok {
 		return identity.Environment().Apply(base)

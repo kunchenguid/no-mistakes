@@ -841,6 +841,7 @@ func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipS
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
@@ -985,6 +986,7 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	pushOptions = append(pushOptions, formatVerificationPlanPushOptions(planID)...)
 	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	pushOptions = append(pushOptions, formatPRTextPushOptions(prText)...)
+	pushOptions = append(pushOptions, formatCommitIdentityPushOption(*identity))
 	pushOptions = append(pushOptions,
 		formatIntentPushOption(intent),
 		formatLaunchNoncePushOption(launchNonce),

@@ -25,14 +25,26 @@ func submissionIdentity(ctx context.Context, checkout string) (git.CommitIdentit
 	}
 	// An older caller cannot prove which global config or environment it used.
 	// Only a complete checkout-local identity is safe without its snapshot.
-	// --worktree falls back to --local when worktreeConfig is disabled.
 	var identity git.CommitIdentity
+	scopes := [][]string{{"--local"}}
+	isolated, err := git.Run(ctx, checkout, "config", "--local", "--type=bool", "--get", "--default", "false", "extensions.worktreeConfig")
+	if err != nil {
+		return identity, err
+	}
+	if isolated == "true" {
+		path, err := git.Run(ctx, checkout, "rev-parse", "--git-path", "config.worktree")
+		if err != nil {
+			return identity, err
+		}
+		scopes = append(scopes, []string{"--file", path})
+	}
 	for _, field := range []struct {
 		key   string
 		value *string
 	}{{"user.name", &identity.AuthorName}, {"user.email", &identity.AuthorEmail}} {
-		for _, scope := range []string{"--local", "--worktree"} {
-			value, err := git.Run(ctx, checkout, "config", scope, "--includes", "--get", "--default", "", field.key)
+		for _, scope := range scopes {
+			args := append([]string{"config"}, scope...)
+			value, err := git.Run(ctx, checkout, append(args, "--includes", "--get", "--default", "", field.key)...)
 			if err != nil {
 				return identity, err
 			}
@@ -50,12 +62,9 @@ func submissionIdentity(ctx context.Context, checkout string) (git.CommitIdentit
 
 func pipelineEnvironment(forge *forgecontext.Context, identity git.CommitIdentity) runenv.Overlay {
 	environment := forgeEnvironment(forge).Clone()
-	if environment.Set == nil {
-		environment.Set = make(map[string]string)
-	}
-	bound := identity.Environment()
-	for key, value := range bound.Set {
-		environment.Set[key] = value
+	bound := identity.SubprocessEnvironment()
+	for _, key := range bound.Unset {
+		delete(environment.Set, key)
 	}
 	environment.Unset = append(environment.Unset, bound.Unset...)
 	return environment

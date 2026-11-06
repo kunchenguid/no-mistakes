@@ -11,7 +11,7 @@ import (
 
 // A checkout can have no local identity and still select a different identity
 // through a conditional global include. The gate must keep that effective value.
-func TestCopyLocalUserIdentityUsesEffectiveCheckoutIdentity(t *testing.T) {
+func TestCommitIdentityConditionalIncludeBindsDestination(t *testing.T) {
 	ctx := context.Background()
 	src, dst := initTestRepo(t), initTestRepo(t)
 	run(t, src, "git", "config", "--local", "--unset", "user.name")
@@ -30,7 +30,7 @@ func TestCopyLocalUserIdentityUsesEffectiveCheckoutIdentity(t *testing.T) {
 	if err != nil || bound.AuthorName != "Submitter" || bound.CommitterEmail != "submitter@example.test" {
 		t.Fatalf("effective submission identity = %+v, %v", bound, err)
 	}
-	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
+	if err := CopyLocalUserIdentity(ctx, dst, bound); err != nil {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{"user.name": "Submitter", "user.email": "submitter@example.test"} {
@@ -115,7 +115,7 @@ func TestCommitIdentitySnapshotAlsoPinsWorktreeConfiguration(t *testing.T) {
 	t.Setenv("GIT_AUTHOR_EMAIL", "daemon@example.test")
 	t.Setenv("GIT_COMMITTER_NAME", "Daemon")
 	t.Setenv("GIT_COMMITTER_EMAIL", "daemon@example.test")
-	if err := CopyLocalUserIdentity(context.Background(), src, dst, identity); err != nil {
+	if err := CopyLocalUserIdentity(context.Background(), dst, identity); err != nil {
 		t.Fatal(err)
 	}
 	// A Git child with no identity environment must still get the submitting

@@ -183,7 +183,10 @@ func stepEnvironment(sctx *pipeline.StepContext) []string {
 	if sctx.ForgeContext != nil && !sctx.ForgeContext.Environment.Empty() {
 		env = sctx.ForgeContext.Environment.Apply(env)
 	}
-	return git.ApplyCommitIdentity(sctx.Ctx, env)
+	if identity, ok := git.CommitIdentityFromContext(sctx.Ctx); ok {
+		env = identity.SubprocessEnvironment().Apply(env)
+	}
+	return env
 }
 
 // stepGitRun runs git with the StepContext's environment plus the standard
@@ -197,7 +200,7 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 // stepGitRunRaw preserves NUL-delimited paths and porcelain status columns.
 func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
+	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -217,7 +220,7 @@ func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 // and the read hangs. shellenv ends the whole process tree on cancellation.
 func stepGitRunTree(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
+	cmd.Env = git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir)
 	// OutputShellCommand never fills ExitError.Stderr, so capture it here.
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -233,7 +236,7 @@ func stepGitRunTree(sctx *pipeline.StepContext, args ...string) (string, error) 
 // the step environment, for commands that read identity from GIT_* variables.
 func stepGitRunEnv(sctx *pipeline.StepContext, extraEnv []string, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	cmd.Env = append(git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir), extraEnv...)
+	cmd.Env = append(git.NonInteractiveEnvFrom(git.ApplyCommitIdentity(sctx.Ctx, cmd.Env), sctx.WorkDir), extraEnv...)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""

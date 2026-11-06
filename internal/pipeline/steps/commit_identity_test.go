@@ -60,3 +60,62 @@ func TestAgentCommitRewritePreservesAuthorAndBindsCommitter(t *testing.T) {
 		t.Fatalf("rewritten commit identity = %q", got)
 	}
 }
+
+func TestCommitIdentitySubprocessesKeepNestedRepositoryIdentity(t *testing.T) {
+	for _, entry := range []string{"command", "shell", "repository command"} {
+		t.Run(entry, func(t *testing.T) {
+			sctx, dir, _ := agentCommitContext(t, nil)
+			identity := git.CommitIdentity{AuthorName: "Submitting Author", AuthorEmail: "author@example.test", CommitterName: "Submitting Committer", CommitterEmail: "committer@example.test"}
+			if err := git.CopyLocalUserIdentity(context.Background(), dir, identity); err != nil {
+				t.Fatal(err)
+			}
+			sctx.Ctx = git.WithCommitIdentity(context.Background(), identity)
+			nested := filepath.Join(dir, "fixture")
+			if err := os.Mkdir(nested, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, nested, "init")
+			gitCmd(t, nested, "config", "user.name", "Fixture")
+			gitCmd(t, nested, "config", "user.email", "fixture@example.test")
+			gitCmd(t, nested, "config", "commit.gpgsign", "false")
+			for _, role := range []string{"AUTHOR", "COMMITTER"} {
+				t.Setenv("GIT_"+role+"_NAME", "Daemon")
+				t.Setenv("GIT_"+role+"_EMAIL", "daemon@example.test")
+				t.Setenv("GIT_"+role+"_DATE", "2000-01-01T00:00:00Z")
+				sctx.Env = append(sctx.Env, "GIT_"+role+"_NAME=Step Override", "GIT_"+role+"_EMAIL=step@example.test")
+			}
+			for _, target := range []string{".", "fixture"} {
+				if entry == "command" {
+					cmd := stepCmd(sctx, "git", "-C", target, "commit", "--allow-empty", "-m", "subprocess")
+					if out, err := cmd.CombinedOutput(); err != nil {
+						t.Fatalf("command: %v: %s", err, out)
+					}
+				} else {
+					command := "git -C " + target + " commit --allow-empty -m subprocess"
+					var out string
+					var code int
+					var err error
+					if entry == "shell" {
+						out, code, err = runStepShellCommand(sctx, command)
+					} else {
+						out, code, err = executeRepositoryCommand(sctx, "identity", command)
+					}
+					if err != nil || code != 0 {
+						t.Fatalf("%s: exit=%d err=%v: %s", entry, code, err, out)
+					}
+				}
+			}
+			for target, want := range map[string]string{
+				dir:    "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
+				nested: "Fixture <fixture@example.test> | Fixture <fixture@example.test>",
+			} {
+				if got := gitCmd(t, target, "show", "-s", "--format=%an <%ae> | %cn <%ce>"); got != want {
+					t.Errorf("%s identity = %q, want %q", target, got, want)
+				}
+				if got := gitCmd(t, target, "show", "-s", "--format=%at %ct"); got == "946684800 946684800" {
+					t.Error("subprocess inherited daemon commit dates")
+				}
+			}
+		})
+	}
+}

@@ -2,12 +2,18 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -179,5 +185,68 @@ func TestSubmissionIdentityRefusesUnprovableLegacyGlobalIdentity(t *testing.T) {
 	t.Setenv("GIT_CONFIG_VALUE_1", "daemon@example.test")
 	if _, err := submissionIdentity(context.Background(), repo.WorkingPath); err == nil {
 		t.Fatal("legacy caller silently inherited a valid daemon-global identity")
+	}
+}
+
+func TestSubmissionIdentityWithLinkedCheckouts(t *testing.T) {
+	for _, isolated := range []bool{false, true} {
+		t.Run(fmt.Sprint(isolated), func(t *testing.T) {
+			p, d := newParkedRunEnv(t)
+			repo, _ := setupTestGitRepo(t, p, d, "identity-linked")
+			linked := filepath.Join(t.TempDir(), "linked")
+			gitCmd(t, repo.WorkingPath, "worktree", "add", "-b", "linked", linked)
+			want := "Test"
+			if isolated {
+				gitCmd(t, repo.WorkingPath, "config", "extensions.worktreeConfig", "true")
+				gitCmd(t, linked, "config", "--worktree", "user.name", "Linked Submitter")
+				gitCmd(t, linked, "config", "--worktree", "user.email", "linked@example.test")
+			}
+			for _, checkout := range []string{repo.WorkingPath, linked} {
+				if isolated && checkout == linked {
+					want = "Linked Submitter"
+				}
+				identity, err := submissionIdentity(context.Background(), checkout)
+				if err != nil || identity.AuthorName != want || identity.CommitterName != want {
+					t.Fatalf("legacy linked identity = %+v, %v, want %s", identity, err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCommitIdentityAgentEnvironmentKeepsNestedRepositoryIdentity(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, _ := setupTestGitRepo(t, p, d, "identity-agent")
+	identity := git.CommitIdentity{AuthorName: "Submitting Author", AuthorEmail: "author@example.test", CommitterName: "Submitting Committer", CommitterEmail: "committer@example.test"}
+	if err := git.CopyLocalUserIdentity(context.Background(), repo.WorkingPath, identity); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(repo.WorkingPath, "fixture")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, nested, "init")
+	gitCmd(t, nested, "config", "user.name", "Fixture")
+	gitCmd(t, nested, "config", "user.email", "fixture@example.test")
+	gitCmd(t, nested, "config", "commit.gpgsign", "false")
+	for _, role := range []string{"AUTHOR", "COMMITTER"} {
+		t.Setenv("GIT_"+role+"_NAME", "Daemon")
+		t.Setenv("GIT_"+role+"_EMAIL", "daemon@example.test")
+		t.Setenv("GIT_"+role+"_DATE", "2000-01-01T00:00:00Z")
+	}
+	forge := &forgecontext.Context{Environment: runenv.Overlay{Set: map[string]string{"GIT_AUTHOR_NAME": "Forge Override"}}}
+	for target, want := range map[string]string{
+		repo.WorkingPath: "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
+		nested:           "Fixture <fixture@example.test> | Fixture <fixture@example.test>",
+	} {
+		cmd := exec.Command("git", "commit", "--allow-empty", "-m", "agent subprocess")
+		cmd.Dir = target
+		cmd.Env = pipelineEnvironment(forge, identity).Apply(nil)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("agent commit: %v: %s", err, out)
+		}
+		if got := gitOutput(t, target, "show", "-s", "--format=%an <%ae> | %cn <%ce>"); got != want {
+			t.Errorf("%s identity = %q, want %q", target, got, want)
+		}
 	}
 }
