@@ -80,7 +80,7 @@ func summaryCacheKeyFor(s *Session, change SummaryContext, restrictionsDigest st
 		CallerRestrictionsDigest string
 	}{change.Change, buildSummaryTranscript(s, change), restrictionsDigest})
 	h := sha256.New()
-	h.Write([]byte("change-summary-v3|" + cacheKeyFor(s)))
+	h.Write([]byte("change-summary-v4|" + cacheKeyFor(s)))
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }

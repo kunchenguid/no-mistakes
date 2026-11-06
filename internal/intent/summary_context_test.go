@@ -36,8 +36,9 @@ func TestAgentSummarizer_PreservesNewestOverBudgetTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			var packet struct{ Transcript string }
-			_, data, ok := strings.Cut(fa.lastPrompt, "\n---\n")
-			if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+			_, framed, started := strings.Cut(fa.lastPrompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+			data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+			if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 				t.Fatal("summary request must carry a JSON packet")
 			}
 			if !strings.HasSuffix(packet.Transcript, "NEWEST_REQUEST") {
@@ -112,8 +113,9 @@ func TestAgentSummarizer_PiMessageTimes(t *testing.T) {
 					t.Fatal(err)
 				}
 				var packet struct{ Transcript string }
-				_, data, ok := strings.Cut(fa.lastPrompt, "\n---\n")
-				if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+				_, framed, started := strings.Cut(fa.lastPrompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+				data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+				if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 					t.Fatal("summary request must carry a JSON packet")
 				}
 				for _, role := range []string{"user", "assistant"} {
@@ -163,8 +165,9 @@ func TestAgentSummarizer_CommitSecondPrecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var packet struct{ Transcript string }
-	_, data, ok := strings.Cut(fa.lastPrompt, "\n---\n")
-	if !ok || json.Unmarshal([]byte(data), &packet) != nil {
+	_, framed, started := strings.Cut(fa.lastPrompt, "\nBEGIN UNTRUSTED SUMMARY PACKET\n")
+	data, _, ended := strings.Cut(framed, "\nEND UNTRUSTED SUMMARY PACKET")
+	if !started || !ended || json.Unmarshal([]byte(data), &packet) != nil {
 		t.Fatal("summary request must carry a JSON packet")
 	}
 	for _, want := range []string{"same-second request", "same-second completion"} {
