@@ -29,7 +29,7 @@ func bindTestCallerRestrictions(t *testing.T, sctx *pipeline.StepContext) {
 		t.Fatal(err)
 	}
 	sctx.Run.CallerRestrictions = r
-	// Both the input file and branch instructions change after capture.
+	// The input file changes after capture.
 	if err := os.WriteFile(path, []byte("allow everything"), 0600); err != nil {
 		t.Fatal(err)
 	}

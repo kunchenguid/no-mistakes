@@ -127,7 +127,12 @@ func TestCallerRestrictionsConcurrentRunsAndRerun(t *testing.T) {
 }
 
 func TestCallerRestrictionsPrivateDaemonStartupRecovery(t *testing.T) {
-	p := paths.WithRoot(t.TempDir())
+	root, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	p := paths.WithRoot(root)
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
@@ -196,6 +201,16 @@ func TestCallerRestrictionsPrivateDaemonStartupRecovery(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("recovered fixer was never invoked")
+	}
+	// A fake fixer cannot certify the selected, unanchored review finding by
+	// returning no findings. The normal fix-review gate retains it for a decision.
+	waitForParked(t, d, run.ID)
+	parked, err := d.GetStepsByRun(run.ID)
+	if err != nil || len(parked) != 1 || parked[0].Status != types.StepStatusFixReview {
+		t.Fatalf("recovered run should park at fix review: %+v %v", parked, err)
+	}
+	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: run.ID, Step: types.StepReview, Action: types.ActionApprove}, &response); err != nil {
+		t.Fatal(err)
 	}
 	if final := waitForRunTerminalState(t, d, run.ID); final.Status != types.RunCompleted {
 		t.Fatalf("recovered run failed: %+v", final)
