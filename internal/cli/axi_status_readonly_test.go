@@ -8,11 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	toon "github.com/toon-format/toon-go"
@@ -21,34 +21,54 @@ import (
 // Exercise the built CLI against a separate SQLite writer, rather than only
 // checking which opener the query selects. No daemon or agent is needed.
 func TestAxiStatusReadOnly(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "no-mistakes")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
+	t.Parallel()
+	bin := buildNoMistakesBinary(t)
+	// All commands only read this checkout. Give each schema variant its own
+	// state root explicitly, so independent cases need no process-wide Setenv.
+	dir := t.TempDir()
+	run(t, dir, "git", "init", "-b", "feature/status-reader")
+	run(t, dir, "git", "-c", "user.email=test@test.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "initial")
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
 	}
-	build := exec.Command("go", "build", "-o", bin, "github.com/kunchenguid/no-mistakes/cmd/no-mistakes")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI: %v\n%s", err, out)
+	openFixture := func(t *testing.T) (*paths.Paths, *db.DB, *db.Repo) {
+		t.Helper()
+		p := paths.WithRoot(t.TempDir())
+		if err := p.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+		database, err := db.Open(p.DB())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = database.Close() })
+		repo, err := database.InsertRepoWithID("repo-1", dir, "origin", "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p, database, repo
 	}
 
-	queryCommand := func(t *testing.T, dir, command string, args ...string) (string, error) {
+	queryCommand := func(t *testing.T, root, command string, args ...string) (string, error) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, bin, append([]string{"axi", command}, args...)...)
 		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "NM_HOME="+root, "NM_TEST_START_DAEMON=")
 		out, err := cmd.CombinedOutput()
 		if ctx.Err() != nil {
 			t.Fatalf("%s timed out: %v\n%s", command, ctx.Err(), out)
 		}
 		return string(out), err
 	}
-	query := func(t *testing.T, dir string, args ...string) (string, error) {
+	query := func(t *testing.T, root string, args ...string) (string, error) {
 		t.Helper()
-		return queryCommand(t, dir, "status", args...)
+		return queryCommand(t, root, "status", args...)
 	}
-	assertLogs := func(t *testing.T, dir, id string, args ...string) {
+	assertLogs := func(t *testing.T, root, id string, args ...string) {
 		t.Helper()
-		out, err := queryCommand(t, dir, "logs", append([]string{"--step", "test"}, args...)...)
+		out, err := queryCommand(t, root, "logs", append([]string{"--step", "test"}, args...)...)
 		if err != nil {
 			t.Fatalf("logs %v failed while run %s exists: %v\n%s", args, id, err, out)
 		}
@@ -66,9 +86,9 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			t.Fatalf("logs lost live run %s or its output:\n%s", id, out)
 		}
 	}
-	assertRun := func(t *testing.T, dir, id, step, status string, args ...string) {
+	assertRun := func(t *testing.T, root, id, step, status string, args ...string) string {
 		t.Helper()
-		out, err := query(t, dir, args...)
+		out, err := query(t, root, args...)
 		if err != nil {
 			t.Fatalf("status %v failed while run %s exists: %v\n%s", args, id, err, out)
 		}
@@ -98,10 +118,11 @@ func TestAxiStatusReadOnly(t *testing.T) {
 		}
 		for _, s := range doc.Run.Steps {
 			if s.Step == step && s.Status == status {
-				return
+				return out
 			}
 		}
 		t.Fatalf("status lost %s step in state %s:\n%s", step, status, out)
+		return ""
 	}
 
 	for _, preFork := range []bool{false, true} {
@@ -110,11 +131,9 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			name += " without additive metadata"
 		}
 		t.Run("released schema/"+name, func(t *testing.T) {
-			dir, _, _, repo := setupAxiQueryRepo(t)
-			run(t, dir, "git", "checkout", "-b", "feature/released-schema")
-			t.Setenv("NM_HOME", t.TempDir())
-			p, err := paths.New()
-			if err != nil {
+			t.Parallel()
+			p := paths.WithRoot(t.TempDir())
+			if err := p.EnsureDirs(); err != nil {
 				t.Fatal(err)
 			}
 			writer, err := sql.Open("sqlite", p.DB()+"?_pragma=journal_mode(wal)")
@@ -164,12 +183,12 @@ func TestAxiStatusReadOnly(t *testing.T) {
 					}
 				}
 			}
-			if _, err := writer.Exec(`INSERT INTO repos (id, working_path, upstream_url, default_branch, created_at) VALUES (?, ?, ?, 'main', 1)`, repo.ID, dir, repo.UpstreamURL); err != nil {
+			if _, err := writer.Exec(`INSERT INTO repos (id, working_path, upstream_url, default_branch, created_at) VALUES (?, ?, ?, 'main', 1)`, "repo-1", dir, "origin"); err != nil {
 				t.Fatal(err)
 			}
 			const id = "released-schema-run"
 			head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
-			if _, err := writer.Exec(`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, created_at, updated_at) VALUES (?, ?, 'feature/released-schema', ?, ?, ?, 'running', 1, 2)`, id, repo.ID, head, base, head); err != nil {
+			if _, err := writer.Exec(`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, created_at, updated_at) VALUES (?, ?, 'feature/status-reader', ?, ?, ?, 'running', 1, 2)`, id, "repo-1", head, base, head); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := writer.Exec(`INSERT INTO step_results (id, run_id, step_name, step_order, status) VALUES ('released-schema-step', ?, 'test', ?, 'running')`, id, types.StepTest.Order()); err != nil {
@@ -202,12 +221,10 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			if _, err := tx.Exec("UPDATE runs SET updated_at = updated_at + 1 WHERE id = ?", id); err != nil {
 				t.Fatal(err)
 			}
-			assertAnnotations := func(args ...string) {
+			assertAnnotations := func(out string) {
+				// Check the same successful status observation, rather than
+				// starting an identical second CLI process for its annotations.
 				t.Helper()
-				out, err := query(t, dir, args...)
-				if err != nil {
-					t.Fatalf("legacy annotations: %v\n%s", err, out)
-				}
 				var doc struct {
 					Run struct {
 						Shared []struct {
@@ -233,7 +250,7 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			}
 			assertBranch := func(status string) {
 				t.Helper()
-				out, err := query(t, dir, "--branch", "feature/released-schema")
+				out, err := query(t, p.Root(), "--branch", "feature/status-reader")
 				if err != nil {
 					t.Fatalf("legacy branch snapshot: %v\n%s", err, out)
 				}
@@ -260,9 +277,9 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			}
 			for range 3 {
 				for _, args := range [][]string{nil, {"--run", id}} {
-					assertRun(t, dir, id, "test", "running", args...)
-					assertLogs(t, dir, id, args...)
-					assertAnnotations(args...)
+					out := assertRun(t, p.Root(), id, "test", "running", args...)
+					assertLogs(t, p.Root(), id, args...)
+					assertAnnotations(out)
 				}
 				assertBranch("running")
 			}
@@ -273,8 +290,8 @@ func TestAxiStatusReadOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, args := range [][]string{nil, {"--run", id}} {
-				assertRun(t, dir, id, "test", "completed", args...)
-				assertLogs(t, dir, id, args...)
+				assertRun(t, p.Root(), id, "test", "completed", args...)
+				assertLogs(t, p.Root(), id, args...)
 			}
 			assertBranch("completed")
 			var after int
@@ -290,9 +307,21 @@ func TestAxiStatusReadOnly(t *testing.T) {
 			name = "pending schema"
 		}
 		t.Run("live Test remains visible during a write transaction/"+name, func(t *testing.T) {
-			dir, p, database, repo := setupAxiQueryRepo(t)
-			run(t, dir, "git", "checkout", "-b", "feature/live-test")
-			live, err := database.InsertRun(repo.ID, "feature/live-test", "head", "base")
+			t.Parallel()
+			p, database, repo := openFixture(t)
+			if !pendingSchema {
+				t.Run("missing run is not a live run", func(t *testing.T) {
+					out, err := query(t, p.Root())
+					if err != nil || !strings.Contains(out, "runs_on_current_branch: 0") {
+						t.Fatalf("genuine no-run status: %v\n%s", err, out)
+					}
+					out, err = query(t, p.Root(), "--run", "missing-run")
+					if err == nil || !strings.Contains(out, "not found") {
+						t.Fatalf("missing explicit run must report not found: %v\n%s", err, out)
+					}
+				})
+			}
+			live, err := database.InsertRun(repo.ID, "feature/status-reader", "head", "base")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -344,20 +373,39 @@ func TestAxiStatusReadOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			for range 3 {
-				assertRun(t, dir, live.ID, "test", "running")
-				assertRun(t, dir, live.ID, "test", "running", "--run", live.ID)
-				assertLogs(t, dir, live.ID)
-				assertLogs(t, dir, live.ID, "--run", live.ID)
+				assertRun(t, p.Root(), live.ID, "test", "running")
+				assertRun(t, p.Root(), live.ID, "test", "running", "--run", live.ID)
+				assertLogs(t, p.Root(), live.ID)
+				assertLogs(t, p.Root(), live.ID, "--run", live.ID)
 			}
 			if err := tx.Rollback(); err != nil {
 				t.Fatal(err)
+			}
+			if !pendingSchema {
+				t.Run("does not repair schema", func(t *testing.T) {
+					// Reuse the current-schema fixture after the lock test, before
+					// completing Test, so the same running-state assertions apply.
+					if _, err := writer.Exec("DROP TABLE intent_cache; DROP TRIGGER runs_verification_plan_immutable"); err != nil {
+						t.Fatal(err)
+					}
+					for _, args := range [][]string{nil, {"--run", live.ID}} {
+						assertRun(t, p.Root(), live.ID, "test", "running", args...)
+						var n int
+						if err := writer.QueryRow("SELECT count(*) FROM sqlite_master WHERE name IN ('intent_cache', 'runs_verification_plan_immutable')").Scan(&n); err != nil {
+							t.Fatal(err)
+						}
+						if n != 0 {
+							t.Fatalf("status recreated %d schema/migration objects", n)
+						}
+					}
+				})
 			}
 			if err := database.UpdateStepStatus(step.ID, types.StepStatusCompleted); err != nil {
 				t.Fatal(err)
 			}
 			for _, args := range [][]string{nil, {"--run", live.ID}} {
-				assertRun(t, dir, live.ID, "test", "completed", args...)
-				assertLogs(t, dir, live.ID, args...)
+				assertRun(t, p.Root(), live.ID, "test", "completed", args...)
+				assertLogs(t, p.Root(), live.ID, args...)
 			}
 			if pendingSchema {
 				var n int
@@ -371,98 +419,43 @@ func TestAxiStatusReadOnly(t *testing.T) {
 		})
 	}
 
-	t.Run("does not repair schema", func(t *testing.T) {
-		dir, p, database, repo := setupAxiQueryRepo(t)
-		run(t, dir, "git", "checkout", "-b", "feature/schema-reader")
-		live, err := database.InsertRun(repo.ID, "feature/schema-reader", "head", "base")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := database.UpdateRunStatus(live.ID, types.RunRunning); err != nil {
-			t.Fatal(err)
-		}
-		step, err := database.InsertStepResult(live.ID, types.StepTest)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := database.UpdateStepStatus(step.ID, types.StepStatusRunning); err != nil {
-			t.Fatal(err)
-		}
-		conn, err := sql.Open("sqlite", p.DB())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer conn.Close()
-		// These unused objects distinguish schemaSQL and migrationStatements
-		// from reads without making the status query itself invalid.
-		if _, err := conn.Exec("DROP TABLE intent_cache; DROP TRIGGER runs_verification_plan_immutable"); err != nil {
-			t.Fatal(err)
-		}
-		for _, args := range [][]string{nil, {"--run", live.ID}} {
-			assertRun(t, dir, live.ID, "test", "running", args...)
-			var n int
-			if err := conn.QueryRow("SELECT count(*) FROM sqlite_master WHERE name IN ('intent_cache', 'runs_verification_plan_immutable')").Scan(&n); err != nil {
-				t.Fatal(err)
-			}
-			if n != 0 {
-				t.Fatalf("status recreated %d schema/migration objects", n)
-			}
-		}
-	})
-
-	t.Run("missing run is not a live run", func(t *testing.T) {
-		dir, _, _, _ := setupAxiQueryRepo(t)
-		out, err := query(t, dir)
-		if err != nil || !strings.Contains(out, "runs_on_current_branch: 0") {
-			t.Fatalf("genuine no-run status: %v\n%s", err, out)
-		}
-		out, err = query(t, dir, "--run", "missing-run")
-		if err == nil || !strings.Contains(out, "not found") {
-			t.Fatalf("missing explicit run must report not found: %v\n%s", err, out)
-		}
-	})
-
-	t.Run("missing database is not created", func(t *testing.T) {
-		dir, _, _, _ := setupAxiQueryRepo(t)
-		root := filepath.Join(t.TempDir(), "absent")
-		t.Setenv("NM_HOME", root)
-		for _, args := range [][]string{nil, {"--run", "missing-run"}} {
-			out, err := query(t, dir, args...)
-			if err == nil || !strings.Contains(out, "error:") || strings.Contains(out, "runs_on_current_branch:") {
-				t.Fatalf("missing database must report a read error: %v\n%s", err, out)
-			}
-			if _, err := os.Stat(root); !os.IsNotExist(err) {
-				t.Fatalf("status created state directories: %v", err)
-			}
-		}
-	})
-
-	for _, corrupt := range []bool{false, true} {
-		name := "empty database"
-		if corrupt {
-			name = "corrupt database"
-		}
-		t.Run(name+" reports a read error", func(t *testing.T) {
-			dir, _, _, _ := setupAxiQueryRepo(t)
-			root := t.TempDir()
-			t.Setenv("NM_HOME", root)
+	for _, tc := range []struct {
+		name     string
+		missing  bool
+		contents []byte
+	}{
+		{name: "missing database is not created", missing: true},
+		{name: "empty database reports a read error"},
+		{name: "corrupt database reports a read error", contents: []byte("this is not a SQLite database")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := filepath.Join(t.TempDir(), "state")
 			path := filepath.Join(root, "state.sqlite")
-			var contents []byte
-			if corrupt {
-				contents = []byte("this is not a SQLite database")
-			}
-			if err := os.WriteFile(path, contents, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			for _, args := range [][]string{nil, {"--run", "missing-run"}} {
-				out, err := query(t, dir, args...)
-				if err == nil || !strings.Contains(out, "error:") || strings.Contains(out, "runs_on_current_branch:") || strings.Contains(out, "not found") {
-					t.Fatalf("invalid database must report a read error, not no-run: %v\n%s", err, out)
+			if !tc.missing {
+				if err := os.Mkdir(root, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, tc.contents, 0o600); err != nil {
+					t.Fatal(err)
 				}
 			}
-			after, err := os.ReadFile(path)
-			if err != nil || !bytes.Equal(after, contents) {
-				t.Fatalf("status changed invalid database: %v", err)
+			for _, args := range [][]string{nil, {"--run", "missing-run"}} {
+				out, err := query(t, root, args...)
+				if err == nil || !strings.Contains(out, "error:") || strings.Contains(out, "runs_on_current_branch:") || (!tc.missing && strings.Contains(out, "not found")) {
+					t.Fatalf("invalid database must report a read error, not no-run: %v\n%s", err, out)
+				}
+				if tc.missing {
+					if _, err := os.Stat(root); !os.IsNotExist(err) {
+						t.Fatalf("status created state directories: %v", err)
+					}
+				}
+			}
+			if !tc.missing {
+				after, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(after, tc.contents) {
+					t.Fatalf("status changed invalid database: %v", err)
+				}
 			}
 		})
 	}
