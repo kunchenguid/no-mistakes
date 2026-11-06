@@ -17,6 +17,7 @@ const MaxFrameBytes = 1024 * 1024
 const (
 	MethodPushReceived              = "push_received"
 	MethodResolvePiProfile          = "resolve_pi_profile"
+	MethodResolveReviewerProfile    = "resolve_reviewer_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
 	MethodProbeRunPRText            = "probe_run_pr_text"
 	MethodProbeTranscriptHomes      = "probe_transcript_homes"
@@ -88,9 +89,10 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts. LaunchNonce and ValidationGeneration together
 // opt into a nonce-bound launch proof.
 type PushReceivedParams struct {
-	TranscriptHomes    *runenv.TranscriptHomes `json:"transcript_homes,omitempty"`
-	VerificationPlanID string                  `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile     `json:"pi_profile,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -124,9 +126,10 @@ type PushReceivedParams struct {
 // branch head. The daemon checks the gate while holding the branch lock, so a
 // caller never receives a proof for a drifting creation context.
 type StartFreshRunParams struct {
-	TranscriptHomes    *runenv.TranscriptHomes `json:"transcript_homes,omitempty"`
-	VerificationPlanID string                  `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile     `json:"pi_profile,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
 
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
@@ -193,7 +196,8 @@ type ProbeTranscriptHomesResult struct {
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
-	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
+	PiProfile       *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
 
 	RepoID               string `json:"repo_id"`
 	Branch               string `json:"branch"`
@@ -259,9 +263,11 @@ type GetActiveRunParams struct {
 // leaves the new run to perform fresh inference.
 // ClosingIssueRefs are merged with the selected run's persisted references.
 type RerunParams struct {
-	TranscriptHomes    *runenv.TranscriptHomes `json:"transcript_homes,omitempty"`
-	VerificationPlanID string                  `json:"verification_plan_id,omitempty"`
-	PiProfile          *agentcfg.PiProfile     `json:"pi_profile,omitempty"`
+	TranscriptHomes    *runenv.TranscriptHomes   `json:"transcript_homes,omitempty"`
+	FreshLaunch        bool                      `json:"fresh_launch,omitempty"`
+	ReviewerProfile    *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
+	VerificationPlanID string                    `json:"verification_plan_id,omitempty"`
+	PiProfile          *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
 
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -360,7 +366,13 @@ type GateContextParams struct {
 // AdmitPushParams asks whether a local receive hook's authenticated process
 // ancestry is allowed to mutate a managed gate ref.
 type AdmitPushParams struct {
-	Gate string `json:"gate"`
+	Gate            string                    `json:"gate"`
+	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
+}
+
+type ResolveReviewerProfileParams struct {
+	RepoID          string                    `json:"repo_id"`
+	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile"`
 }
 
 // HealthParams has no fields but exists for consistency.
@@ -418,7 +430,8 @@ type PushReceivedResult struct {
 // selected one durable run before the caller drives it. The validation
 // generation and intent digest are persisted; raw intent is never included.
 type LaunchReceipt struct {
-	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+	ReviewerProfile *agentcfg.ReviewerProfile `json:"reviewer_profile,omitempty"`
+	PiProfile       *agentcfg.PiProfile       `json:"pi_profile,omitempty"`
 
 	RunID                string `json:"run_id"`
 	Disposition          string `json:"disposition"`
@@ -540,7 +553,9 @@ type GateContextResult struct {
 
 // AdmitPushResult is returned before a receive hook permits ref mutation.
 type AdmitPushResult struct {
-	Context GateContextResult `json:"context"`
+	// The helper refuses an older daemon that silently ignores the profile.
+	ReviewerValidated bool              `json:"reviewer_validated,omitempty"`
+	Context           GateContextResult `json:"context"`
 }
 
 // HealthResult confirms the daemon is alive.
@@ -557,6 +572,7 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
+	ReviewerProfile  *agentcfg.ReviewerProfile  `json:"reviewer_profile,omitempty"`
 	VerificationPlan *verificationplan.Snapshot `json:"verification_plan"`
 	PiProfile        *agentcfg.PiProfile        `json:"pi_profile,omitempty"`
 

@@ -212,17 +212,10 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				}
 				return &ipc.GetActiveRunResult{}, nil
 			})
-			type capturedRerun struct {
-				ipc.RerunParams
-				fields map[string]json.RawMessage
-			}
-			requests := make(chan capturedRerun, 1)
+			requests := make(chan map[string]any, 1)
 			srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
-				var params capturedRerun
-				if err := json.Unmarshal(raw, &params.RerunParams); err != nil {
-					return nil, err
-				}
-				if err := json.Unmarshal(raw, &params.fields); err != nil {
+				var params map[string]any
+				if err := json.Unmarshal(raw, &params); err != nil {
 					return nil, err
 				}
 				requests <- params
@@ -249,13 +242,16 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				t.Fatal(err)
 			}
 			params := <-requests
-			if params.CallerHeadSHA != wantHead || params.RepoID != repo.ID || params.Intent != "keep the caller's changes" {
+			if params["fresh_launch"] != nil {
+				t.Fatal("explicit rerun marked as a fresh launch")
+			}
+			if (!dirty && params["caller_head_sha"] != wantHead) || params["repo_id"] != repo.ID || params["intent"] != "keep the caller's changes" {
 				t.Fatalf("rerun request = %v, want caller head %q and original repo/intent", params, wantHead)
 			}
 			if !strings.Contains(out.String(), "Rerun started") {
 				t.Fatalf("missing rerun confirmation: %s", out.String())
 			}
-			if _, present := params.fields["caller_head_sha"]; dirty && present {
+			if _, present := params["caller_head_sha"]; dirty && present {
 				t.Fatal("dirty caller must omit caller_head_sha from the wire request")
 			}
 			t.Logf("CLI output: %sIPC request: %v", out.String(), params)
@@ -278,8 +274,8 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
 				params = <-requests
-				if params.CallerHeadSHA != wantHead {
-					t.Fatalf("AXI omitted known head: %v", params)
+				if params["caller_head_sha"] != wantHead || params["fresh_launch"] != true {
+					t.Fatalf("AXI omitted fresh-launch identity or known head: %v", params)
 				}
 				t.Logf("AXI no-op push fallback IPC request: %v; run_id=%s", params, runID)
 
@@ -309,7 +305,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 								t.Fatalf("matching capture: run=%q err=%v", runID, err)
 							}
 							params := <-requests
-							if params.CallerHeadSHA != capturedHead || params.VerificationPlanID != plan.ID {
+							if params["caller_head_sha"] != capturedHead || params["verification_plan_id"] != plan.ID {
 								t.Fatalf("capture binding lost: %v", params)
 							}
 							return
@@ -348,8 +344,8 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						if currentHead == wantHead {
 							t.Fatal("fixture did not advance the caller HEAD")
 						}
-						if params.CallerHeadSHA != currentHead {
-							t.Errorf("fallback sent stale caller head %s, want current clean head %s", params.CallerHeadSHA, currentHead)
+						if params["caller_head_sha"] != currentHead {
+							t.Errorf("fallback sent stale caller head %s, want current clean head %s", params["caller_head_sha"], currentHead)
 						}
 						gateHead := cliGit(t, gateDir, "rev-parse", "refs/heads/main")
 						wantGate := wantHead
@@ -359,7 +355,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						if gateHead != wantGate {
 							t.Fatalf("gate head = %s, want %s", gateHead, wantGate)
 						}
-						t.Logf("startup=%s current=%s gate=%s request=%s", wantHead, currentHead, gateHead, params.CallerHeadSHA)
+						t.Logf("startup=%s current=%s gate=%s request=%s", wantHead, currentHead, gateHead, params["caller_head_sha"])
 					})
 				}
 			}

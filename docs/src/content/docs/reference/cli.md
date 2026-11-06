@@ -65,7 +65,9 @@ Two refusals apply to every `init`, with or without the flag.
 It refuses to register a checkout that contains a directory an existing [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry points at, naming that entry, because registering it is what would make the placement unusable and stop the daemon; place the checkout elsewhere or repoint the entry first.
 It also refuses to register anything while `~/.no-mistakes/config.yaml` does not load, naming the fault, because the daemon refuses to start on that same config.
 
-Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
+Before reinitializing a nonempty gate directory or changing hook-path isolation, no-mistakes verifies that the intended path resolves to the bare repository itself. A working repository, its `.git` directory, a linked worktree or its Git directory, or a stale directory that discovers an enclosing repository is refused before those Git configuration writes. Identity refusals name the intended and resolved paths, or report the resolved path as unavailable when discovery fails. A missing or empty gate directory can still be initialized.
+
+Re-running `init` on an already-initialized repo with a valid bare gate succeeds and reports `Gate already initialized (refreshed)`.
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and, unless you pass `--skip-user-skill`, the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
@@ -162,6 +164,9 @@ no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --
 | `--pr-body-file` | `string` | (none) | Read the PR description used verbatim when this run creates the PR; `-` reads stdin to EOF |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
+| `--reviewer` | `string` | (none) | Independent immutable [reviewer harness](/no-mistakes/reference/global-config/#per-run-reviewer-profiles) |
+| `--reviewer-model` | `string` | (none) | Reviewer model; requires `--reviewer`, defaults to its `agent_config` profile |
+| `--reviewer-effort` | `string` | (none) | Reviewer effort; requires `--reviewer`, defaults to its `agent_config` profile |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
 | `--launch-nonce` | `string` | (none) | Non-secret correlation identifier for a durable pre-drive receipt; requires `--validation-generation` |
 | `--validation-generation` | `string` | (none) | Caller-selected validation generation bound to `--launch-nonce`; requires that flag |
@@ -216,7 +221,7 @@ Reattaching with a `--base-branch` that differs from the active run's stored tar
 `--no-publish-intent` is likewise persisted on the run, and reattaching with it against an active run started without it is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Before starting a run that may omit the section (this flag set, the global `intent.publish_intent` default `false`, or a global config that cannot be read), `axi run` probes the running daemon for the capability and refuses to start anything when that daemon is too old to honor it (an older daemon would silently drop the field, never read the global default, and publish); restart the daemon with the current binary. Only a run that cannot omit (flag unset, global default `true`) may reuse an older daemon. `rerun` always probes, because it inherits omission from the selected prior run and only the daemon knows that selection.
 Under the flag the PR-drafting turns receive no intent text at all and draft from the diff and commit messages only; every other step prompt keeps the full intent.
-The same omit-to-reattach rule applies to `--model`/`--effort` against an active run's [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles); a different selection cannot change that pin.
+For profile reattachment rules, see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) and [per-run reviewer profiles](/no-mistakes/reference/global-config/#per-run-reviewer-profiles).
 
 ### Closing issues
 
@@ -289,18 +294,19 @@ no-mistakes axi run --intent "the user's goal" \
 After durable creation or claim, AXI writes a TOON `launch_receipt` object to stdout **before** driving the run.
 The receipt remains available to a caller that captures stdout even if driving later stops at a gate or fails.
 It contains `run_id`, `disposition` (`created` or `reused`), `launch_nonce`, `validation_generation`, `branch`, `head_sha`, `submitted_head_sha`, and `intent_digest`.
+When the run has a reviewer pin, it also contains `reviewer_profile` with `agent`, `model`, and `effort`.
 Both head fields contain the full, immutable submitted commit SHA; `intent_digest` is the lowercase SHA-256 digest of the exact persisted intent bytes, including whitespace.
 Raw intent is not included in receipts, and generic run/status output does not expose the nonce binding or intent digest.
 
 The nonce is scoped to the repository and branch.
 The first successful receipt claim returns `created`; subsequent matching claims return `reused` for that same run, including after the gate or pipeline head advances.
-A conflicting submitted head, validation generation, intent, or [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) is refused.
+A conflicting submitted head, validation generation, or intent is refused.
 A different nonce creates a distinct run rather than reattaching to a same-head run; both post-receive creation and the up-to-date-push fallback follow this contract.
 The up-to-date-push fallback preserves the latest same-head run's PR URL unless its recorded PR state is closed or merged, including when an explicit `--base-branch` retargets that PR.
 An explicit `--base-branch` is persisted on creation and must match the stored per-run base on replay; omitting it on replay preserves the stored base.
 A supplied `--pr-title` or `--pr-body-file` is bound the same way: a replay must supply the same text as the run, or none when the run has none.
 A replay that adds `--no-publish-intent` against a run bound to publish the section is refused for the same reason; the stored omit decision folds in the global [`intent.publish_intent`](/no-mistakes/reference/global-config/#intent) default at creation, so a replay without the flag still matches a run whose row omits publication.
-Explicit `--model`/`--effort` must match a stored pin the same way; omitting both preserves it.
+For profile matching on replay and receipt claims, see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) and [per-run reviewer profiles](/no-mistakes/reference/global-config/#per-run-reviewer-profiles).
 A conflicting claim does not consume the first `created` disposition.
 Without the two proof flags, ordinary reattachment is unchanged, and historical runs without a nonce are not adopted into a proof binding.
 
@@ -428,6 +434,7 @@ no-mistakes axi status --branch feature/example
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 A pinned run also includes `pi_profile` with `model` and `effort`; see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles).
+A run with an independent [reviewer pin](/no-mistakes/reference/global-config/#per-run-reviewer-profiles) includes `reviewer_profile` with `agent`, `model`, and `effort`.
 Status offers branch-scoped `axi respond` commands only for the current branch's implicitly resolved run. An explicitly selected gate stays inspection-only even when its branch matches, because a newer active run on that branch could receive the bare response command instead; the gate remains visible, its log commands retain `--run <id>`, and it names `axi respond --run <id>` as the response command.
 When a repository has no configured lint command and Document performs the combined Document/Lint housekeeping invocation, the run object includes `shared_work` evidence naming its `document+lint housekeeping` scope and the duration attributed to Document; Lint's own duration remains the cached-result handoff time.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
@@ -684,7 +691,7 @@ The retry starts a new run at the failed run's preserved head, so every correcti
 - Every later step runs normally. Per-run skips of steps that never ran are kept.
 
 The failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
-The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, and Pi profile; retry takes none of the flags that would change them.
+The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, Pi profile, and [reviewer pin](/no-mistakes/reference/global-config/#per-run-reviewer-profiles); retry takes none of the flags that would change them.
 
 `--run` names the failed run, as `axi status` shows it.
 It does not select a run: the retried run is always the current branch's latest run, and a `--run` that names any other run is refused.
@@ -764,7 +771,7 @@ no-mistakes rerun --closes 95
 no-mistakes rerun --pr-body-file ./pr.md
 ```
 
-`--model` and `--effort` opt this new run into a [pinned Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles), with the same precedence and validation as `axi run`. Omitting both retains current global-config behavior; a prior run's model pin is not inherited.
+For selection, precedence, and inheritance rules, see [per-run Pi profiles](/no-mistakes/reference/global-config/#per-run-pi-profiles) and [per-run reviewer profiles](/no-mistakes/reference/global-config/#per-run-reviewer-profiles).
 
 Starts a new pipeline run from the current gate branch, except when the latest
 terminal run has a verified unpublished head whose custody has not been
@@ -805,6 +812,9 @@ failed step instead of repeating every completed step.
 | `--pr-body-file` | `string` | (none) | Replace the inherited supplied PR description from a file, or `-` for stdin |
 | `--model` | `string` | (none) | Pi provider/model ID for an immutable [per-run profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) |
 | `--effort` | `string` | (none) | Pi reasoning effort for that profile; omitted fields inherit `agent_config.pi` |
+| `--reviewer` | `string` | inherited | Reviewer harness for the new run; omission inherits the previous run's resolved reviewer pin |
+| `--reviewer-model` | `string` | (none) | Reviewer model; requires `--reviewer`, defaults to its `agent_config` profile |
+| `--reviewer-effort` | `string` | (none) | Reviewer effort; requires `--reviewer`, defaults to its `agent_config` profile |
 
 ## no-mistakes sync
 
@@ -882,7 +892,7 @@ Runs with [quota-aware routing](/no-mistakes/reference/global-config/#quota_rout
 
 Use `--agents` for local, per-purpose agent performance aggregates: duration and the subprocess-vs-model time split, session mode, errors, the token totals (input, output, cache-read, cache-creation, fresh input, reasoning), and the model round-trip and tool-category activity histogram, with a `METRICS` coverage count that tells a real zero apart from missing instrumentation.
 Use `--run <id>` to inspect the individual agent invocations for one run - including each invocation's per-round token deltas next to the adapter counters, tool-category breakdown, workload size, finding count, and fallback reason - plus the total time parked at approval gates; it implies `--agents`.
-Pinned runs also print the requested [Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) above that table; `MODEL` there is served evidence, not the pin.
+Pinned runs also print the requested [Pi profile](/no-mistakes/reference/global-config/#per-run-pi-profiles) and independent [reviewer profile](/no-mistakes/reference/global-config/#per-run-reviewer-profiles), when present, above that table. When both are present, the Pi profile is labeled as the primary selection and the reviewer is listed separately. `MODEL` in the invocation table is served evidence, not the pin.
 The combined Document/Lint invocation is labeled `housekeeping (document+lint)` and attributed to `document+lint`, making its shared duration and tokens explicit without adding a second agent call.
 See [local telemetry](/no-mistakes/reference/environment/#what-stays-local-and-what-leaves-the-machine) for token definitions and missing-value semantics.
 A `--agents` token total is all-or-nothing: it reads `-` for the whole purpose unless every invocation in it reported that field, so one failed round that reported no usage leaves the group's total unknown instead of silently under-counted.

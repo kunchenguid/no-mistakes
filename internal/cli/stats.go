@@ -127,7 +127,14 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 
 	fmt.Fprintf(w, "run %s (%s), parked at gates %s total\n", run.ID, run.Status, formatMS(run.ParkedMS))
 	if run.PiProfile != nil {
-		fmt.Fprintf(w, "pinned Pi profile: model=%s effort=%s (requested for every invocation; MODEL below is served evidence)\n", run.PiProfile.Model, run.PiProfile.Effort)
+		scope := "requested for every invocation"
+		if run.ReviewerProfile != nil {
+			scope = "primary; reviewer pinned separately"
+		}
+		fmt.Fprintf(w, "pinned Pi profile: model=%s effort=%s (%s; MODEL below is served evidence)\n", run.PiProfile.Model, run.PiProfile.Effort, scope)
+	}
+	if run.ReviewerProfile != nil {
+		fmt.Fprintf(w, "pinned reviewer: agent=%s model=%s effort=%s (reviewer only)\n", run.ReviewerProfile.Agent, run.ReviewerProfile.Model, run.ReviewerProfile.Effort)
 	}
 	record, err := quotarouting.ParseRecord(run.QuotaRouting)
 	if err != nil {
