@@ -299,9 +299,12 @@ func (s *Service) Refresh(ctx context.Context) State {
 		}
 		return blockedPlan(state, StateTargetChanged, "blocked_binding_changed", "the push binding or configured target changed before refresh; no files or refs were changed")
 	}
-	pushURL := s.resolvedPushURL(ctx, freshRepo, freshRun)
-	if pushURL == "" {
-		return blockedPlan(state, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before refresh; no files or refs were changed")
+	pushURL := freshRepo.PushURL()
+	if freshRun.Integration != nil {
+		pushURL = s.resolvedPushURL(ctx, freshRepo, freshRun)
+		if pushURL == "" {
+			return blockedPlan(state, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before refresh; no files or refs were changed")
+		}
 	}
 
 	// Each remote operation below gets its own bounded deadline derived from
@@ -464,9 +467,12 @@ func (s *Service) Apply(ctx context.Context) State {
 		return recheck
 	}
 
-	pushURL := s.resolvedPushURL(ctx, freshRepo, freshRun)
-	if pushURL == "" {
-		return blockedPlan(plan, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before synchronization; no files or refs were changed")
+	pushURL := s.Repo.PushURL()
+	if freshRun.Integration != nil {
+		pushURL = s.resolvedPushURL(ctx, freshRepo, freshRun)
+		if pushURL == "" {
+			return blockedPlan(plan, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before synchronization; no files or refs were changed")
+		}
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer cancel()
@@ -1584,9 +1590,12 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 	if repoErr != nil || repo == nil {
 		return blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the repository record could not be re-read before rebinding; the push binding was not changed"), true
 	}
-	pushURL := s.resolvedPushURL(ctx, repo, run)
-	if pushURL == "" {
-		return blockedPlan(fresh, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before rebinding; the push binding was not changed"), true
+	pushURL := repo.PushURL()
+	if run.Integration != nil {
+		pushURL = s.resolvedPushURL(ctx, repo, run)
+		if pushURL == "" {
+			return blockedPlan(fresh, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before rebinding; the push binding was not changed"), true
+		}
 	}
 	lsCtx, lsCancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer lsCancel()

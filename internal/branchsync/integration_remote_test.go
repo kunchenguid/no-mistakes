@@ -87,6 +87,80 @@ func TestIntegrationRemoteSyncUsesRuntimeCredentials(t *testing.T) {
 	}
 }
 
+func TestIntegrationRemoteUnpinnedSyncUsesRecordedPushURL(t *testing.T) {
+	for _, fork := range []bool{false, true} {
+		for _, operation := range []string{"refresh", "apply", "recover"} {
+			t.Run(fmt.Sprintf("%s/fork=%t", operation, fork), func(t *testing.T) {
+				t.Parallel()
+				f := newSyncFixture(t)
+				wantHead := f.pushed
+				if operation == "recover" {
+					gate := filepath.Join(t.TempDir(), "gate.git")
+					mustRun(t, f.local, "clone", "--bare", f.remote, gate)
+					f.service.GateDir = gate
+					wantHead = forceRewriteRemote(t, f, "unpinned-rewrite")
+				}
+				const credentialURL = "https://fixture-user:fixture-password@integration.invalid/owner/project.git"
+				const recordedURL = "https://integration.invalid/owner/project.git"
+				mustRun(t, f.local, "remote", "add", "transport", credentialURL)
+				upstream, forkURL, kind := recordedURL, "", "upstream"
+				if fork {
+					upstream, forkURL, kind = f.remote, recordedURL, "fork"
+				}
+				var err error
+				f.repo, err = f.db.ReplaceRepoURLs(f.repo.ID, upstream, forkURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.service.Repo = f.repo
+				if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+					HeadSHA: f.pushed, TargetKind: kind, TargetFingerprint: TargetFingerprint(recordedURL), Ref: "refs/heads/feature/sync",
+				}); err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+					calls++
+					if remote != recordedURL {
+						t.Errorf("unpinned lookup transport = %q, want recorded URL", remote)
+					}
+					return git.LsRemote(ctx, dir, f.remote, ref)
+				}
+				f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
+					calls++
+					if remote != recordedURL {
+						t.Errorf("unpinned fetch transport = %q, want recorded URL", remote)
+					}
+					return git.FetchRemoteBranchToPrivateRef(ctx, dir, f.remote, branch, localRef)
+				}
+				var state State
+				wantCalls := 3
+				switch operation {
+				case "refresh":
+					state = f.service.Refresh(f.ctx)
+					wantCalls = 2
+					if state.State != StateBehind || state.Safety != SafetySafeFastForward || state.Changed {
+						t.Fatalf("unpinned refresh = %#v", state)
+					}
+				case "apply":
+					state = f.service.Apply(f.ctx)
+					if state.State != StateSynchronized || !state.Changed || state.Local.Head != wantHead {
+						t.Fatalf("unpinned apply = %#v", state)
+					}
+				case "recover":
+					state = f.service.Recover(f.ctx, false)
+					if !state.Recovered || state.Changed || state.Pipeline.PushedHead != wantHead {
+						t.Fatalf("unpinned recover = %#v", state)
+					}
+				}
+				if calls != wantCalls {
+					t.Fatalf("Git calls = %d, want %d", calls, wantCalls)
+				}
+			})
+		}
+	}
+}
+
 func selectedSyncFixture(t *testing.T, fork bool) *syncFixture {
 	t.Helper()
 	f := newSyncFixture(t)
