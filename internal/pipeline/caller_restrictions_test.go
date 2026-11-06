@@ -13,7 +13,10 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/callerrestrictions"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/intent"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // The original failing-first version decoded this durable wire shape against
@@ -105,5 +108,91 @@ func TestRunAgentCallerRestrictionsUnsetPreservesPrompt(t *testing.T) {
 	}}
 	if _, err := (&StepContext{Ctx: context.Background(), Run: &db.Run{}, Agent: fake}).RunAgent(agent.RunOpts{Prompt: "unchanged prompt"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExecutorCallerRestrictionsReachDirectIntentAgents(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	const content = "Run product tests only in the disposable Linux guest.\n"
+	run.CallerRestrictions = &callerrestrictions.Record{
+		Source: callerrestrictions.Source, SourcePath: filepath.Join(t.TempDir(), "caller.txt"),
+		Content: content, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(content))), CapturedAt: 1,
+	}
+	submitted := run.HeadSHA
+	run.SubmittedHeadSHA = &submitted
+	var calls []agent.RunOpts
+	fake := &hangingAgent{name: "fake", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		calls = append(calls, opts)
+		return &agent.Result{Text: "summary", Output: json.RawMessage(`{"agent_name":"codex","session_id":"session-one"}`)}, nil
+	}}
+	step := &adaptiveCallStep{name: types.StepIntent, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		session := &intent.Session{AgentName: "codex", SessionID: "session-one", Messages: []intent.Message{{Role: intent.RoleUser, Text: "Implement caller restrictions."}}}
+		if _, err := intent.NewAgentSummarizer(sctx.Agent, sctx.WorkDir).Summarize(sctx.Ctx, session, intent.SummaryContext{}); err != nil {
+			return nil, err
+		}
+		sctx.Run.HeadSHA = "advanced-head"
+		if _, err := intent.NewAgentDisambiguator(sctx.Agent, sctx.WorkDir).Disambiguate(sctx.Ctx, []string{"changed.go"}, []*intent.Match{{Session: session}}); err != nil {
+			return nil, err
+		}
+		_, err := sctx.RunAgent(agent.RunOpts{Prompt: "perform step", CWD: sctx.WorkDir})
+		return &StepOutcome{}, err
+	}}
+	workDir := t.TempDir()
+	executor := NewExecutor(database, p, nil, fake, []Step{step}, nil)
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("invocations = %d, want summarizer, disambiguator and StepContext calls", len(calls))
+	}
+	for i, call := range calls {
+		head := submitted
+		if i > 0 {
+			head = "advanced-head"
+		}
+		for _, want := range []string{content, callerrestrictions.Source, run.ID, run.RepoID, run.Branch, `"SubmittedHead":"` + submitted + `"`, `"CurrentHead":"` + head + `"`} {
+			if !strings.Contains(call.Prompt, want) {
+				t.Errorf("invocation %d lost %q: %s", i, want, call.Prompt)
+			}
+		}
+		if count := strings.Count(call.Prompt, "BEGIN CAPTURED CALLER RESTRICTIONS"); count != 1 {
+			t.Errorf("invocation %d delivered %d restrictions blocks, want 1", i, count)
+		}
+		if call.CWD != workDir {
+			t.Errorf("invocation %d changed working directory: %q", i, call.CWD)
+		}
+	}
+}
+
+func TestExecutorCallerRestrictionsPreserveSessionFallback(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	const content = "Do not install dependencies.\n"
+	run.CallerRestrictions = &callerrestrictions.Record{
+		Source: callerrestrictions.Source, SourcePath: filepath.Join(t.TempDir(), "caller.txt"),
+		Content: content, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(content))), CapturedAt: 1,
+	}
+	fake := newFakeSessionAgent()
+	step := &adaptiveCallStep{name: types.StepDocument, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		for i := 0; i < 3; i++ {
+			if i == 2 {
+				fake.failResumes["sess-1"] = fmt.Errorf("stale session")
+			}
+			if _, err := sctx.RunAgentSession(SessionRoleFixer, agent.RunOpts{Prompt: "continue", CWD: sctx.WorkDir}); err != nil {
+				return nil, err
+			}
+		}
+		return &StepOutcome{}, nil
+	}}
+	executor := NewExecutor(database, p, &config.Config{SessionReuse: true}, fake, []Step{step}, nil)
+	if err := executor.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls) != 4 || fake.calls[1].session == nil || fake.calls[1].session.ID != "sess-1" || !fake.calls[3].fallback {
+		t.Fatalf("session continuation and fallback not exercised: %+v", fake.calls)
+	}
+	for i, call := range fake.calls {
+		if !strings.Contains(call.prompt, content) || strings.Count(call.prompt, "BEGIN CAPTURED CALLER RESTRICTIONS") != 1 {
+			t.Errorf("invocation %d lost or duplicated restrictions: %s", i, call.prompt)
+		}
 	}
 }
