@@ -1563,11 +1563,7 @@ func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
 // that what was written survives a restart.
 func (d *DB) GetRunGates(id string) (string, error) {
 	var gates sql.NullString
-	columns, err := d.readProjection("runs", "gates_json", &gates)
-	if err != nil {
-		return "", err
-	}
-	err = d.sql.QueryRow(`SELECT `+columns+` FROM runs WHERE id = ?`, id).Scan(&gates)
+	err := d.sql.QueryRow(`SELECT gates_json FROM runs WHERE id = ?`, id).Scan(&gates)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
