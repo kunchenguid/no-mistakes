@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,6 +35,9 @@ func TestSyncRefusesIgnoredPathCollisions(t *testing.T) {
 				{"newline", "file", "file", "local\ncache", "local\ncache"},
 			} {
 				t.Run(tc.name+"/axi="+strconv.FormatBool(axi)+"/diverged="+strconv.FormatBool(diverged), func(t *testing.T) {
+					if tc.name == "newline" && runtime.GOOS == "windows" {
+						t.Skip("Windows does not support newline characters in filenames")
+					}
 					f := newCLISyncFixture(t)
 					publishIgnoredSyncTarget(t, &f, diverged, tc.incomingPath, tc.incomingKind)
 					cliWriteIgnored(t, f.local, tc.localPath, tc.localKind)
