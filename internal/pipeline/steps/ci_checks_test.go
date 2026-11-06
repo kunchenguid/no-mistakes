@@ -57,6 +57,23 @@ func TestCITimeoutFindingsPreserveSameNamedCheckIdentity(t *testing.T) {
 	}
 }
 
+func TestCITimeoutTargetsPreserveInfrastructureDecisionWithoutProviderIDs(t *testing.T) {
+	t.Parallel()
+	checks := []scm.Check{
+		{Name: "billing", Bucket: scm.CheckBucketFail, InfrastructureFailure: "billing refusal"},
+		{Name: "unit", Bucket: scm.CheckBucketFail},
+	}
+	targets := terminalCheckTargetsForNames(checks, []string{"billing", "unit"})
+	outcome := ciFailureOutcome(targets, false, "timed out")
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].Check != "unit" {
+		t.Fatalf("generic timeout findings = %+v, want only the real job failure", findings.Items)
+	}
+}
+
 func TestPendingCheckMatchesLastFixed_SpecialCheckNames(t *testing.T) {
 	t.Parallel()
 
