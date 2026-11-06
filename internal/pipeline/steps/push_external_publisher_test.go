@@ -140,7 +140,7 @@ func TestPublication_ExternalPublisherRecovery(t *testing.T) {
 	if err := app.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NM_HOME", app.Root)
+	t.Setenv("NM_HOME", app.Root())
 	gate := app.RepoDir(sctx.Repo.ID)
 	gitCmd(t, "", "init", "--bare", gate)
 	gitCmd(t, gate, "fetch", dir, "feature:refs/heads/feature")
