@@ -93,19 +93,25 @@ func FilteredReviewSummary(items []types.Finding) string {
 	return fmt.Sprintf("%d review findings remain", len(items))
 }
 
-// withFilteredReviewSummary restates a payload's summary as the count of the
-// findings that payload lists. A Review step that settled a finding keeps
-// filtering every later round's report, so the reviewer's own sentence can no
-// longer describe the gate and the pipeline owns it from then on.
-func withFilteredReviewSummary(raw string) string {
-	if raw == "" {
-		return raw
-	}
+// SettledWithoutFixText owns the wording for a human disposition that removed
+// a finding without a fix, so the live gate and the published PR body report a
+// settlement the same way. The count is the lower bound
+// SettledReviewFindingCount reports.
+func SettledWithoutFixText(settled int) string {
+	return fmt.Sprintf("at least %d settled by the operator without a fix", settled)
+}
+
+// withSettledReviewSummary restates a settled Review payload's summary as the
+// count of the findings that payload lists plus the settlement that parked it.
+// A Review step that settled a finding keeps filtering every later round's
+// report, so the reviewer's own sentence can no longer describe the gate, and a
+// round with nothing left to report would otherwise read as a clean pass.
+func withSettledReviewSummary(raw string, settled int) string {
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
 		return raw
 	}
-	findings.Summary = FilteredReviewSummary(findings.Items)
+	findings.Summary = FilteredReviewSummary(findings.Items) + ", " + SettledWithoutFixText(settled)
 	encoded, err := types.MarshalFindingsJSON(findings)
 	if err != nil {
 		return raw

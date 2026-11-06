@@ -637,8 +637,87 @@ func TestExecutor_ASettledReviewGateSummaryCountsTheFindingsItLists(t *testing.T
 	if len(gate.Items) != 2 {
 		t.Fatalf("gate findings = %+v, want the unsettled finding and the new one", gate.Items)
 	}
-	if gate.Summary != "2 review findings remain" {
-		t.Fatalf("gate summary = %q, want it to count the %d findings the gate lists", gate.Summary, len(gate.Items))
+	if gate.Summary != "2 review findings remain, at least 1 settled by the operator without a fix" {
+		t.Fatalf("gate summary = %q, want it to count the %d findings the gate lists and name the settlement", gate.Summary, len(gate.Items))
+	}
+	abortParkedGate(t, exec, types.StepReview)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("aborted Review did not finish")
+	}
+}
+
+// A gate that parks only because a finding was settled has nothing left to
+// list, so its summary is the one place the operator can see why the run
+// stopped. It names the settlement in the wording the published PR body uses
+// for the same decision, which `TestBuildPipelineSummary_SettlementCountsAreLowerBounds`
+// pins independently: "at least 1 settled by the operator without a fix".
+// Without it the gate reads exactly like a review that found nothing.
+func TestExecutor_ASettledReviewGateWithNothingLeftNamesTheSettlement(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := coverageWorkdir(t, database, run)
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		id, line := "note", 10
+		if calls > 1 {
+			id, line = "note-reissued", 24
+		}
+		outcome := dispositionCoverageOutcome(t, sctx, []types.Finding{
+			{ID: id, File: "first.go", Line: line, Severity: types.FindingSeverityWarning, Description: "private maintainer grant already settled", Action: types.ActionAskUser},
+		}, []string{"first.go", "second.go"})
+		outcome.NeedsApproval = false
+		outcome.AutoFixable = false
+		return outcome, nil
+	}}
+	exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { defer close(finished); done <- exec.Execute(ctx, run, repo, workDir) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("executor did not exit")
+		}
+	})
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"note"}, nil, nil, nil, "grant verified on the machine"); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) == 0 {
+		t.Fatalf("steps: %v %+v", err, steps)
+	}
+	stepID := steps[0].ID
+	var gate types.Findings
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rounds, err := database.GetRoundsByStep(stepID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rounds) == 2 && rounds[1].FindingsJSON != nil {
+			gate, err = types.ParseFindingsJSON(*rounds[1].FindingsJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the settled Review never recorded its next round: rounds = %d", len(rounds))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(gate.Items) != 0 {
+		t.Fatalf("gate findings = %+v, want the settled finding suppressed", gate.Items)
+	}
+	if gate.Summary != "no review findings remain, at least 1 settled by the operator without a fix" {
+		t.Fatalf("gate summary = %q, want it to name the settlement that parked the gate", gate.Summary)
 	}
 	abortParkedGate(t, exec, types.StepReview)
 	select {

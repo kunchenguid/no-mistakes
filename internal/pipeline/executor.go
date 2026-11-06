@@ -1831,7 +1831,7 @@ rounds:
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
-		reviewSettled := false
+		settledReviewFindings := 0
 		if carryFindings && e.db != nil {
 			rounds, err := e.db.GetRoundsByStep(sr.ID)
 			if err != nil {
@@ -1853,9 +1853,9 @@ rounds:
 			// be left to the findings themselves - an `info` ask-user finding
 			// parks only while it is still reported, and the filter is exactly
 			// what stops reporting it.
-			if SettledReviewFindingCount(rounds) > 0 {
+			settledReviewFindings = SettledReviewFindingCount(rounds)
+			if settledReviewFindings > 0 {
 				outcome.NeedsApproval = true
-				reviewSettled = true
 			}
 		}
 		// roundFindings is this round's own output, used for the auto-fix
@@ -1927,8 +1927,8 @@ rounds:
 			writeLog(reviewFixRoundLimitMessage(reviewFixRounds, maxReviewFixRounds))
 		}
 
-		if reviewSettled {
-			effectiveFindings = withFilteredReviewSummary(effectiveFindings)
+		if settledReviewFindings > 0 {
+			effectiveFindings = withSettledReviewSummary(effectiveFindings, settledReviewFindings)
 		}
 
 		if effectiveFindings != "" {

@@ -1299,7 +1299,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	count := countFindingsBySeverity(currentFindings)
 	line := fmt.Sprintf("⚠️ **%s** - %s", name, count)
 	if settledFindings > 0 {
-		line = fmt.Sprintf("%s, %s", line, settledWithoutFixText(settledFindings))
+		line = fmt.Sprintf("%s, %s", line, pipeline.SettledWithoutFixText(settledFindings))
 	}
 	return buildDetail(line)
 }
@@ -1443,17 +1443,10 @@ func buildFixResultText(rounds []*db.StepRound, settled int) string {
 		}
 	}
 	if settled > 0 {
-		parts = append(parts, settledWithoutFixText(settled))
+		parts = append(parts, pipeline.SettledWithoutFixText(settled))
 	}
 
 	return strings.Join(parts, " → ")
-}
-
-// settledWithoutFixText owns the published wording for a human disposition
-// that removed a finding without a fix, so every Review summary line reports a
-// settlement the same way whether or not findings remain.
-func settledWithoutFixText(settled int) string {
-	return fmt.Sprintf("at least %d settled by the operator without a fix", settled)
 }
 
 func settledWithoutFixCount(sr *db.StepResult, rounds []*db.StepRound) int {
@@ -1465,7 +1458,7 @@ func settledWithoutFixCount(sr *db.StepResult, rounds []*db.StepRound) int {
 
 func emptyRoundDetailLine(isFixRound bool, settled int) string {
 	if settled > 0 {
-		return fmt.Sprintf("✅ No issues remain - %s.", settledWithoutFixText(settled))
+		return fmt.Sprintf("✅ No issues remain - %s.", pipeline.SettledWithoutFixText(settled))
 	}
 	if isFixRound {
 		return "✅ Re-checked - no issues remain."
