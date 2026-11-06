@@ -35,3 +35,28 @@ func TestCallerRestrictionsCaptureRejectsFIFOWithoutWaitingForWriter(t *testing.
 		t.Fatal("caller restrictions capture waited for a FIFO writer")
 	}
 }
+
+func TestCallerRestrictionsCaptureFollowsRegularFileSymlink(t *testing.T) {
+	dir := t.TempDir()
+	source, link := filepath.Join(dir, "caller.txt"), filepath.Join(dir, "caller-link.txt")
+	const content = "Never install dependencies.\n"
+	if err := os.WriteFile(source, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(source, link); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Capture(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Content != content || r.SourcePath != link {
+		t.Fatalf("symlink capture lost bytes or caller path: %+v", r)
+	}
+	if err := os.WriteFile(source, []byte("changed instructions"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if r.Content != content {
+		t.Fatal("symlink target mutation changed captured restrictions")
+	}
+}

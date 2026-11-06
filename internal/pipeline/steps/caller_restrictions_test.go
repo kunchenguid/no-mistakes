@@ -89,31 +89,69 @@ func TestCallerRestrictionsReachConflictResolvers(t *testing.T) {
 	}
 }
 
-func TestCallerRestrictionsReachPRDraftingAndCIRepair(t *testing.T) {
-	t.Run("PR drafting", func(t *testing.T) {
-		dir, base, head := setupGitRepo(t)
-		ag := &mockAgent{name: "fake", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			return nil, fmt.Errorf("synthetic drafting refusal")
-		}}
-		sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
-		bindTestCallerRestrictions(t, sctx)
-		_, _ = (&PRStep{}).draftPRContent(sctx, "feature", "main", base, scm.ProviderGitHub, 0)
-		if len(ag.calls) == 0 {
-			t.Fatal("draft agent never invoked")
-		}
-		for _, call := range ag.calls {
-			assertTestCallerRestrictions(t, sctx, call.Prompt)
-		}
-	})
-	t.Run("CI repair", func(t *testing.T) {
-		f := newCIDecisionPromptFixture(t)
-		bindTestCallerRestrictions(t, f.sctx)
-		prompt := f.capture(t)
-		// CI repair advances the run head after the invocation.
-		if !strings.Contains(prompt, f.sctx.Run.CallerRestrictions.Content) || !strings.Contains(prompt, callerrestrictions.Source) {
-			t.Fatal("CI repair lost caller restrictions")
-		}
-	})
+func TestCallerRestrictionsPRDraftPrivacy(t *testing.T) {
+	for _, path := range []string{"body", "title", "template", "intent brief", "fallback"} {
+		t.Run(path, func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			ag := &mockAgent{name: "fake", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				if path == "fallback" {
+					return nil, fmt.Errorf("synthetic drafting refusal")
+				}
+				return &agent.Result{Output: json.RawMessage(`{"title":"feat: improve validation","body":"# Overview\n\nImprove validation.\n\n## Testing\n\n- [ ] Maintainer approves rollout\n","intent_brief":{"goal":"Validate requested changes"}}`)}, nil
+			}}
+			sctx := newPRTestContext(t, ag, dir, base, head, config.Commands{})
+			bindTestCallerRestrictions(t, sctx)
+			s := &PRStep{}
+			var output string
+			var err error
+			switch path {
+			case "body", "fallback":
+				var content prContent
+				content, err = s.buildPRContent(sctx, "feature", "main", base, scm.ProviderGitHub, 0)
+				output = content.Title + "\n" + content.Body
+			case "title":
+				output, err = s.draftConfiguredPRTitle(sctx, "feature", "main", base)
+			case "template":
+				var content prContent
+				content, err = s.draftTemplateNarrative(sctx, "feature", "main", base, testPRTemplate)
+				output = content.Title + "\n" + content.Body
+			case "intent brief":
+				sctx.UserIntent = "Improve validation."
+				sctx.Config.PR.Intent.Format = "brief"
+				err = s.draftPRIntentBrief(sctx, "feature", "main", base)
+				output = sctx.PublicIntentBrief
+			}
+			if err != nil || strings.TrimSpace(output) == "" {
+				t.Fatalf("draft failed: %v, output=%q", err, output)
+			}
+			if len(ag.calls) != 1 {
+				t.Fatalf("draft agent calls = %d", len(ag.calls))
+			}
+			prompt := ag.calls[0].Prompt
+			for _, want := range []string{sctx.Run.CallerRestrictions.Content, "restrictions and their provenance are private", "Never quote, paraphrase or reproduce", "return no publishable content", "only tighten trusted configuration"} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("draft input missing %q", want)
+				}
+			}
+			for _, private := range []string{sctx.Run.CallerRestrictions.SourcePath, sctx.Run.CallerRestrictions.SHA256, sctx.Run.ID, sctx.Run.RepoID, `"RunID"`, `"SourcePath"`, `"SHA256"`, "normal step gate"} {
+				if strings.Contains(prompt, private) || strings.Contains(output, private) {
+					t.Errorf("draft input or output includes private metadata or gate reporting %q", private)
+				}
+			}
+			if strings.Contains(output, strings.TrimSpace(sctx.Run.CallerRestrictions.Content)) || strings.Contains(output, callerrestrictions.Source) {
+				t.Fatal("synthetic draft assembly published private restrictions")
+			}
+		})
+	}
+}
+
+func TestCallerRestrictionsReachCIRepair(t *testing.T) {
+	f := newCIDecisionPromptFixture(t)
+	bindTestCallerRestrictions(t, f.sctx)
+	prompt := f.capture(t)
+	if !strings.Contains(prompt, f.sctx.Run.CallerRestrictions.Content) || !strings.Contains(prompt, callerrestrictions.Source) {
+		t.Fatal("CI repair lost caller restrictions")
+	}
 }
 
 func TestCallerRestrictionsCannotBeSuppliedByVerificationEvidence(t *testing.T) {

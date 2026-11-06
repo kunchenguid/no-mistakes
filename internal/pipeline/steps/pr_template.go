@@ -149,7 +149,7 @@ Final diff paths and statuses:
 	if needsPRIntentBrief(sctx) {
 		schema = templatePRContentBriefSchema
 	}
-	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: schema, OnChunk: sctx.LogChunk})
+	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Purpose: "pr-draft", Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: schema, OnChunk: sctx.LogChunk})
 	if err != nil {
 		return prContent{}, fmt.Errorf("draft pr.template narrative (template will not be replaced by a generic fallback): %w", err)
 	}

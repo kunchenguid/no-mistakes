@@ -30,7 +30,7 @@ func TestRunAgentCallerRestrictionsReachEveryTurn(t *testing.T) {
 	run.CallerRestrictions.SourcePath = filepath.Join(t.TempDir(), "caller.txt")
 	run.CallerRestrictions.SHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(run.CallerRestrictions.Content)))
 	ag := &hangingAgent{name: "fake", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-		for _, want := range []string{"Never rerun a suite or install dependencies.\n", "caller --caller-restrictions", "run-one", "submitted-head", "current-head", "trusted configuration", "Report"} {
+		for _, want := range []string{"Never rerun a suite or install dependencies.\n", "caller --caller-restrictions", "run-one", "submitted-head", "current-head", "trusted configuration", "Report", "restrictions and their provenance are private", "Never quote, paraphrase or reproduce"} {
 			if !strings.Contains(opts.Prompt, want) {
 				t.Errorf("actual invocation input lost %q: %s", want, opts.Prompt)
 			}

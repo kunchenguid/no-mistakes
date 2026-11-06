@@ -666,6 +666,7 @@ Final diff paths and statuses:
 		schema = prContentBriefSchema
 	}
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+		Purpose:    "pr-draft",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: schema,
@@ -749,6 +750,7 @@ Final diff paths and statuses:
 		schema = prTitleBriefSchema
 	}
 	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{
+		Purpose:    "pr-draft",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: schema,

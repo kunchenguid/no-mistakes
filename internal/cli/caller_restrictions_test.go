@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -111,7 +112,7 @@ func TestCallerRestrictionsFlagsAndPushTransport(t *testing.T) {
 	if _, err := parseCallerRestrictionsPushOptions(append(options, options...)); err == nil {
 		t.Fatal("duplicate accepted")
 	}
-	if _, err := parseCallerRestrictionsPushOptions([]string{callerRestrictionsPushPrefix + "invalid"}); err == nil {
+	if _, err := parseCallerRestrictionsPushOptions([]string{callerrestrictions.PushOptionPrefix + "invalid"}); err == nil {
 		t.Fatal("corrupt transport accepted")
 	}
 	if got, err := parseCallerRestrictionsPushOptions(nil); err != nil || got != nil {
@@ -268,5 +269,57 @@ func TestCallerRestrictionsTriggerRunChecksCompetingRun(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCallerRestrictionsPushOptionBudget(t *testing.T) {
+	const budget = 24 * 1024
+	for _, over := range []bool{false, true} {
+		t.Run(fmt.Sprintf("over=%t", over), func(t *testing.T) {
+			r := cliRestrictions(t)
+			r.Content = ""
+			empty, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jsonBytes := (budget - len("no-mistakes.caller-restrictions=")) * 3 / 4
+			if over {
+				jsonBytes++
+			}
+			contentBytes := jsonBytes - len(empty)
+			r.Content = strings.Repeat("\x01", contentBytes/6) + strings.Repeat("x", contentBytes%6)
+			r.SHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(r.Content)))
+			wire, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			option := "no-mistakes.caller-restrictions=" + base64.RawURLEncoding.EncodeToString(wire)
+			if (len(option) > budget) != over || (!over && len(option) < budget-1) {
+				t.Fatalf("fixture option length = %d, over=%t", len(option), over)
+			}
+			if err := os.WriteFile(r.SourcePath, []byte(r.Content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			captured, captureErr := callerrestrictions.Capture(r.SourcePath)
+			validateErr := r.Validate()
+			_, valueErr := r.Value()
+			var stored callerrestrictions.Record
+			scanErr := stored.Scan(wire)
+			parsed, parseErr := parseCallerRestrictionsPushOptions([]string{option})
+			for name, err := range map[string]error{"capture": captureErr, "validate": validateErr, "value": valueErr, "scan": scanErr, "push parse": parseErr} {
+				if (err != nil) != over {
+					t.Errorf("%s error = %v, over=%t", name, err, over)
+				}
+			}
+			if !over {
+				if captured == nil || captured.Content != r.Content || parsed == nil || *parsed != *r {
+					t.Fatal("boundary record changed during capture or transport")
+				}
+				options := formatCallerRestrictionsPushOptions(r)
+				if len(options) != 1 || options[0] != option {
+					t.Fatal("formatted option differs from the budgeted wire record")
+				}
+			}
+		})
 	}
 }

@@ -11,8 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const callerRestrictionsPushPrefix = "no-mistakes.caller-restrictions="
-
 func bindCallerRestrictionsFlag(cmd *cobra.Command) {
 	cmd.Flags().String("caller-restrictions", "", "capture caller action restrictions from a UTF-8 file as immutable run instructions (new runs only)")
 }
@@ -56,17 +54,17 @@ func formatCallerRestrictionsPushOptions(r *callerrestrictions.Record) []string 
 		return nil
 	}
 	b, _ := json.Marshal(r)
-	return []string{callerRestrictionsPushPrefix + base64.RawURLEncoding.EncodeToString(b)}
+	return []string{callerrestrictions.PushOptionPrefix + base64.RawURLEncoding.EncodeToString(b)}
 }
 
 func parseCallerRestrictionsPushOptions(options []string) (*callerrestrictions.Record, error) {
 	var record *callerrestrictions.Record
 	for _, option := range options {
-		encoded, ok := strings.CutPrefix(option, callerRestrictionsPushPrefix)
+		encoded, ok := strings.CutPrefix(option, callerrestrictions.PushOptionPrefix)
 		if !ok {
 			continue
 		}
-		if record != nil || len(encoded) > 64*1024 {
+		if record != nil || len(option) > callerrestrictions.MaxPushOptionBytes {
 			return nil, fmt.Errorf("duplicate or oversized caller restrictions push option")
 		}
 		b, err := base64.RawURLEncoding.DecodeString(encoded)

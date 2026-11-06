@@ -91,3 +91,21 @@ func TestCallerRestrictionsRejectInvalidInput(t *testing.T) {
 		t.Fatal("directory accepted")
 	}
 }
+
+func TestCallerRestrictionsCaptureAcceptsRawSizeBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caller.txt")
+	content := strings.Repeat("x", 16*1024)
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Capture(path)
+	if err != nil || r.Content != content {
+		t.Fatalf("16 KiB capture failed: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content+"x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Capture(path); err == nil {
+		t.Fatal("capture accepted more than 16 KiB")
+	}
+}
