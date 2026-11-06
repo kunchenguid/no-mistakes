@@ -184,6 +184,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			restrictions, err := parseCallerRestrictionsPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -205,9 +209,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err := client.RequireTranscriptHomes(); err != nil {
 				return err
 			}
+			if err := requireDaemonCallerRestrictions(client, restrictions); err != nil {
+				return err
+			}
 			homes := runenv.CaptureTranscriptHomes()
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+				CallerRestrictions:     restrictions,
 				TranscriptHomes:        homes,
 				Gate:                   gatePath,
 				Ref:                    ref,

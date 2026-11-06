@@ -45,6 +45,10 @@ func newRerunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			restrictions, err := captureCallerRestrictions(cmd)
+			if err != nil {
+				return err
+			}
 			return trackCommand("rerun", func() error {
 				p, d, err := openResources()
 				if err != nil {
@@ -73,6 +77,9 @@ func newRerunCmd() *cobra.Command {
 					return fmt.Errorf("connect to daemon: %w", err)
 				}
 				defer client.Close()
+				if err := requireDaemonCallerRestrictions(client, restrictions); err != nil {
+					return err
+				}
 				reviewer, err = resolveReviewer(client, repo.ID, reviewer)
 				if err != nil {
 					return err
@@ -110,7 +117,7 @@ func newRerunCmd() *cobra.Command {
 				}
 				homes := runenv.CaptureTranscriptHomes()
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ReviewerProfile: reviewer, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{CallerRestrictions: restrictions, TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ReviewerProfile: reviewer, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -126,6 +133,7 @@ func newRerunCmd() *cobra.Command {
 	bindPRTextFlags(cmd, &prTitle, &prBodyFile)
 	bindPiProfileFlags(cmd, &model, &effort)
 	bindReviewerFlags(cmd)
+	bindCallerRestrictionsFlag(cmd)
 	return cmd
 }
 

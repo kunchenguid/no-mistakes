@@ -96,6 +96,17 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	}
 	if sctx != nil {
 		ag = sctx.Agent
+		if sctx.Run != nil && sctx.Run.CallerRestrictions != nil {
+			r := sctx.Run
+			if err := r.CallerRestrictions.Validate(); err != nil {
+				return nil, err
+			}
+			submitted := ""
+			if r.SubmittedHeadSHA != nil {
+				submitted = *r.SubmittedHeadSHA
+			}
+			opts.Prompt += r.CallerRestrictions.Prompt(r.ID, r.RepoID, r.Branch, submitted, r.HeadSHA)
+		}
 	}
 	activity := observeAgentActivity(&opts)
 	return invokeAgent(parent, timeout, working, cause, activity, func(ctx context.Context) (*agent.Result, error) {
