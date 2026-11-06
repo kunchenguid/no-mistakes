@@ -58,8 +58,11 @@ func TestTriggerRunWithoutMirrorDoesNotQueryUpstream(t *testing.T) {
 	})
 	srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GetActiveRunResult{Run: &ipc.RunInfo{
-			ID: "01M3TRIGGEREDRUN00000000000", RepoID: repo.ID,
-			Branch: "feature", HeadSHA: head, Status: types.RunRunning,
+			ID:      "01M3TRIGGEREDRUN00000000000",
+			RepoID:  repo.ID,
+			Branch:  "feature",
+			HeadSHA: head,
+			Status:  types.RunRunning,
 		}}, nil
 	})
 	done := make(chan error, 1)
