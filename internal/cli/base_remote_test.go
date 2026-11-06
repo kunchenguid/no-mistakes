@@ -5,9 +5,58 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/integration"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
 )
+
+func TestBaseRemoteSubmissionReconciliationUsesSelectedDestination(t *testing.T) {
+	for _, requested := range []string{"", "release/customer"} {
+		name := "selected default"
+		if requested != "" {
+			name = "selected override"
+		}
+		t.Run(name, func(t *testing.T) {
+			work := t.TempDir()
+			cliGit(t, work, "init", "-b", "main")
+			cliGit(t, work, "config", "user.name", "fixture")
+			cliGit(t, work, "config", "user.email", "fixture@localhost")
+			cliGit(t, work, "commit", "--allow-empty", "-m", "origin sentinel")
+			origin := t.TempDir()
+			cliGit(t, origin, "init", "--bare")
+			cliGit(t, work, "remote", "add", "origin", origin)
+			cliGit(t, work, "push", "origin", "main")
+			custom := t.TempDir()
+			cliGit(t, custom, "init", "--bare")
+			cliGit(t, custom, "symbolic-ref", "HEAD", "refs/heads/customer-main")
+			cliGit(t, work, "remote", "add", "custom", custom)
+			cliGit(t, work, "checkout", "-b", "customer-main")
+			cliGit(t, work, "commit", "--allow-empty", "-m", "customer sentinel")
+			cliGit(t, work, "push", "custom", "HEAD:refs/heads/customer-main", "HEAD:refs/heads/release/customer")
+			cliGit(t, work, "checkout", "-b", "topic", "main")
+			head := cliGit(t, work, "rev-parse", "HEAD")
+			originConfig := cliGit(t, work, "config", "--get-regexp", "remote.origin.")
+			originRefs := cliGit(t, work, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/")
+			t.Chdir(work)
+			ctx := integration.WithRemote(context.Background(), "custom")
+			env := &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}
+			got := submissionReconciliationUpstream(ctx, env, head, requested)
+			wantBase := requested
+			if wantBase == "" {
+				wantBase = "customer-main"
+			}
+			if got.URL != custom || got.BaseBranch != wantBase {
+				t.Fatalf("reconciliation destination = %+v, want URL %q base %q", got, custom, wantBase)
+			}
+			if got := cliGit(t, work, "config", "--get-regexp", "remote.origin."); got != originConfig {
+				t.Fatalf("reconciliation changed origin config: %q", got)
+			}
+			if got := cliGit(t, work, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/"); got != originRefs {
+				t.Fatalf("reconciliation changed origin refs: %q", got)
+			}
+		})
+	}
+}
 
 func TestBaseRemotePushOptionsRefuseAmbiguity(t *testing.T) {
 	for _, options := range [][]string{
