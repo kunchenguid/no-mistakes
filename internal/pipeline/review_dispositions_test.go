@@ -353,21 +353,40 @@ func TestFilterSettledReviewFindings_AnOmissionIsNeverADecline(t *testing.T) {
 // A re-minted finding at a new line is the same finding, so a response that
 // declines or externally settles what an earlier round chose to fix is refused
 // there too. Accepting it would echo a decision the filter never applies.
+//
+// The gate must show the moved instance under its own new id for that refusal
+// to be reachable at all, so the fixture takes the route a real run takes: a
+// covering rereview verifies the selected finding away - which is what drops it
+// from the outstanding set, and with it the retained id the next gate would
+// otherwise carry - a second finding keeps the step parked, and only then does
+// the reviewer report the original concern again at a new line.
 func TestExecutor_DispositionsRefuseAnEarlierFixAtANewLine(t *testing.T) {
 	for _, mode := range []string{"ignore", "resolved_external"} {
 		t.Run(mode, func(t *testing.T) {
 			database, p, run, repo := setupTest(t)
 			workDir := coverageWorkdir(t, database, run)
+			grant := types.Finding{ID: "original", File: "first.go", Line: 10, Severity: types.FindingSeverityError, Description: "grant missing", Action: types.ActionAskUser}
 			calls := 0
 			step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
 				calls++
-				id, line := "original", 10
-				if calls > 1 {
-					id, line = "reissued", 19
+				switch calls {
+				case 1:
+					return dispositionCoverageOutcome(t, sctx, []types.Finding{grant}, []string{"first.go"}), nil
+				case 2:
+					// Covers the selected finding's file and reports nothing
+					// in it, which is what verifies it away, and parks on a
+					// finding in the other file instead.
+					return dispositionCoverageOutcome(t, sctx, []types.Finding{
+						{ID: "unrelated", File: "second.go", Line: 40, Severity: types.FindingSeverityWarning, Description: "unrelated concern", Action: types.ActionAskUser},
+					}, []string{"first.go"}), nil
+				default:
+					// Same clearing move for the second selection, and the
+					// original concern comes back at a new line under a new id.
+					moved := grant
+					moved.ID = "reissued"
+					moved.Line = 19
+					return dispositionCoverageOutcome(t, sctx, []types.Finding{moved}, []string{"second.go"}), nil
 				}
-				return dispositionCoverageOutcome(t, sctx, []types.Finding{
-					{ID: id, File: "first.go", Line: line, Severity: types.FindingSeverityError, Description: "grant missing", Action: types.ActionAskUser},
-				}, []string{"first.go"}), nil
 			}}
 			exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -386,26 +405,48 @@ func TestExecutor_DispositionsRefuseAnEarlierFixAtANewLine(t *testing.T) {
 			if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"original"}, nil, nil, nil, ""); err != nil {
 				t.Fatal(err)
 			}
-			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+			waitForParkedGateFinding(t, exec, "unrelated")
+			if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"unrelated"}, nil, nil, nil, ""); err != nil {
+				t.Fatal(err)
+			}
+			waitForParkedGateFinding(t, exec, "reissued")
 
 			var err error
-			deadline := time.Now().Add(5 * time.Second)
-			for {
-				if mode == "ignore" {
-					_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, []string{"reissued"}, nil, nil, "")
-				} else {
-					_, err = exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"reissued"}, nil, nil, nil, "grant verified on the machine")
-				}
-				if err == nil || !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
-					break
-				}
-				time.Sleep(5 * time.Millisecond)
+			if mode == "ignore" {
+				_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, []string{"reissued"}, nil, nil, "")
+			} else {
+				_, err = exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"reissued"}, nil, nil, nil, "grant verified on the machine")
 			}
 			var refusal *RespondRefusal
 			if !errors.As(err, &refusal) || len(refusal.DeclinedEarlierFix) != 1 || refusal.DeclinedEarlierFix[0] != "reissued" {
 				t.Fatalf("a moved earlier fix was accepted as settled: %v", err)
 			}
 		})
+	}
+}
+
+// waitForParkedGateFinding blocks until the executor has registered a parked
+// gate whose payload shows id. A step status read from the database can land
+// before the gate is registered, and after the first fix round the status is
+// already fix_review, so it cannot tell the new park from the answered one.
+func waitForParkedGateFinding(t *testing.T, exec *Executor, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		exec.mu.Lock()
+		waiting, gate := exec.waiting, exec.waitingFindings
+		exec.mu.Unlock()
+		if waiting {
+			for _, got := range findingIDsInPayloadOrder(gate) {
+				if got == id {
+					return
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no parked gate showed finding %s; last gate: %s", id, gate)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

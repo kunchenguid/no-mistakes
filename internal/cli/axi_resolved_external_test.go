@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -22,15 +23,28 @@ func TestNoMistakesBinary_ResolvedExternal(t *testing.T) {
 
 func testResolvedExternalCLI(t *testing.T, invoke func(...string) (string, error)) {
 	t.Helper()
+	// The respond handler runs on the IPC server's goroutine while the test
+	// and the get-run handler read what it recorded, so the request is held
+	// under a mutex: without it `go test -race` fails the test outright.
+	var mu sync.Mutex
 	var got map[string]any
+	request := func() map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return got
+	}
 	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{respond: func(_ context.Context, raw json.RawMessage) (interface{}, error) {
-		if err := json.Unmarshal(raw, &got); err != nil {
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
 			return nil, err
 		}
+		mu.Lock()
+		got = decoded
+		mu.Unlock()
 		return &ipc.RespondResult{OK: true, ResolvedExternal: []string{"grant"}}, nil
 	}})
 	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
-		if got != nil {
+		if request() != nil {
 			return fx.completed(), nil
 		}
 		run := fx.awaiting()
@@ -39,18 +53,19 @@ func testResolvedExternalCLI(t *testing.T, invoke func(...string) (string, error
 		}
 		return run, nil
 	})
-	if out, err := invoke("axi", "respond", "--step", "review", "--action", "resolved_external", "--findings", "grant", "--wait", "3s"); err == nil || !strings.Contains(out, "requires a Review gate") || got != nil {
+	if out, err := invoke("axi", "respond", "--step", "review", "--action", "resolved_external", "--findings", "grant", "--wait", "3s"); err == nil || !strings.Contains(out, "requires a Review gate") || request() != nil {
 		t.Fatalf("CLI accepted an external disposition without a reason: %v %s", err, out)
 	}
 	out, err := invoke("axi", "respond", "--step", "review", "--action", "resolved_external", "--findings", "grant", "--reason", "verified on machine", "--wait", "3s")
 	if err != nil {
 		t.Fatalf("external response failed: %v\n%s", err, out)
 	}
-	if got["action"] != "resolved_external" || got["approval_reason"] != "verified on machine" || got["coverage"] != nil || !strings.Contains(out, "resolved_external") {
-		t.Fatalf("external disposition missing from request or echo: %+v\n%s", got, out)
+	recorded := request()
+	if recorded["action"] != "resolved_external" || recorded["approval_reason"] != "verified on machine" || recorded["coverage"] != nil || !strings.Contains(out, "resolved_external") {
+		t.Fatalf("external disposition missing from request or echo: %+v\n%s", recorded, out)
 	}
-	ids, _ := got["finding_ids"].([]any)
+	ids, _ := recorded["finding_ids"].([]any)
 	if len(ids) != 1 || ids[0] != "grant" {
-		t.Fatalf("finding IDs lost: %+v", got)
+		t.Fatalf("finding IDs lost: %+v", recorded)
 	}
 }
