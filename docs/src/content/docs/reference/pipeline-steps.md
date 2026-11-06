@@ -165,7 +165,7 @@ Follow-up review passes use the history to avoid re-reporting user-ignored findi
 
 ### Coverage continuation
 
-A Review gate with `findings: []` and valid, incomplete stored coverage accepts [`axi respond --action complete-coverage`](/no-mistakes/reference/cli/#no-mistakes-axi-respond).
+A Review gate with no unresolved findings and valid, incomplete stored coverage accepts [`axi respond --action complete-coverage`](/no-mistakes/reference/cli/#no-mistakes-axi-respond).
 The action starts a fresh static review turn over only the missing paths and merges its coverage with the retained record.
 It records a `coverage` round without a finding selection, code fix, approval, or question answer.
 The remaining pipeline gates still apply.
@@ -180,6 +180,7 @@ Legacy records without pipeline-written provenance remain ineligible and receive
 Invalid coverage, source changes, or an incomplete union keep Review gated.
 New findings and questions follow the ordinary Review gate rules.
 A still-valid partial result can support another explicit coverage continuation when its findings remain empty.
+An explicit `--ignore` in a Review fix response remains effective across later coverage rounds, even when the reviewer changes the finding ID or line. `resolved_external` is a separate Review disposition for a human-verified fact outside the review worktree; it requires a reason and starts a static rereview without fixing or approving anything. The reason remains in the round history. Only uniquely matching findings are treated as settled; other warnings, errors, questions, and missing reviewable paths still block coverage continuation. Neither disposition requires the reviewer to read private files or adds private configuration to the repository.
 Fully recorded parked gates can use the same action after daemon recovery only when their source bindings still match.
 Existing evidence remains in place.
 

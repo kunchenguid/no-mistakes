@@ -463,7 +463,7 @@ func declinedFindingLines(r *db.StepRound, earlierFixes map[string]bool) []strin
 		return nil
 	}
 	switch selectionSourceValue(r.SelectionSource) {
-	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined:
+	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined, db.RoundSelectionSourceUserIgnored:
 	default:
 		return nil
 	}
@@ -642,7 +642,7 @@ func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool, ownS
 				b.WriteString(line)
 			}
 		}
-	case db.RoundSelectionSourceUserDeclined:
+	case db.RoundSelectionSourceUserDeclined, db.RoundSelectionSourceUserIgnored:
 		// The user resolved this round's gate with approve, skip, or abort,
 		// so the selection is an explicit empty set and every finding they saw
 		// is declined - except one an earlier round already chose to fix, which
@@ -652,6 +652,16 @@ func renderRoundHistoryEntry(r *db.StepRound, earlierFixes map[string]bool, ownS
 			for _, line := range declined {
 				b.WriteString("\n  - ")
 				b.WriteString(line)
+			}
+		}
+	case db.RoundSelectionSourceExternal:
+		if r.UserFindingsJSON != nil {
+			if lines := renderRoundFindingLines(*r.UserFindingsJSON); len(lines) > 0 {
+				b.WriteString("\nuser_resolved_external:")
+				for _, line := range lines {
+					b.WriteString("\n  - ")
+					b.WriteString(line)
+				}
 			}
 		}
 	case db.RoundSelectionSourceAutoFix:

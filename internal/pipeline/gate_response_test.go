@@ -323,7 +323,7 @@ func TestExecutor_AllIgnoredFixResponseRecordsTheDeclines(t *testing.T) {
 			if err == nil {
 				last = rounds
 				for _, round := range rounds {
-					if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceUserDeclined {
+					if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceUserIgnored {
 						return round
 					}
 				}

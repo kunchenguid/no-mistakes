@@ -267,8 +267,8 @@ func TestExecutor_RecoveredIgnoreOnlyResponseUpdatesDeclinedRoundOrigin(t *testi
 	if recoveredRound.ResponseOrigin != types.ResponseOrigin("auto_yes") {
 		t.Fatalf("round origin = %q, want %q", recoveredRound.ResponseOrigin, "auto_yes")
 	}
-	if recoveredRound.SelectionSource == nil || *recoveredRound.SelectionSource != db.RoundSelectionSourceUserDeclined {
-		t.Fatalf("selection_source = %v, want %q", recoveredRound.SelectionSource, db.RoundSelectionSourceUserDeclined)
+	if recoveredRound.SelectionSource == nil || *recoveredRound.SelectionSource != db.RoundSelectionSourceUserIgnored {
+		t.Fatalf("selection_source = %v, want %q", recoveredRound.SelectionSource, db.RoundSelectionSourceUserIgnored)
 	}
 	if recoveredRound.SelectedFindingIDs == nil || *recoveredRound.SelectedFindingIDs != db.DeclinedSelectionJSON {
 		t.Fatalf("selected_finding_ids = %v, want %q", recoveredRound.SelectedFindingIDs, db.DeclinedSelectionJSON)

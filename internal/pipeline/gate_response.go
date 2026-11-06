@@ -21,6 +21,8 @@ type RespondDispositions struct {
 	Fixed []string
 	// Ignored names the findings the response explicitly declined.
 	Ignored []string
+	// ResolvedExternal names findings settled outside the review worktree.
+	ResolvedExternal []string
 	// Kept names the findings the response omitted that an earlier round of
 	// the same step had already decided, so it kept that decision instead of
 	// declining them by omission.
@@ -290,7 +292,7 @@ func humanDecidedRound(round *db.StepRound) bool {
 		return false
 	}
 	switch *round.SelectionSource {
-	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined:
+	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined, db.RoundSelectionSourceUserIgnored, db.RoundSelectionSourceExternal:
 		return true
 	default:
 		return false

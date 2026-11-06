@@ -483,12 +483,13 @@ type RerunResult struct {
 // transport failure: the gate is intact, the caller's response was wrong, and
 // the caller can correct it. Refusal is non-empty exactly when OK is false.
 type RespondResult struct {
-	OK      bool     `json:"ok"`
-	Fixed   []string `json:"fixed,omitempty"`
-	Ignored []string `json:"ignored,omitempty"`
-	Kept    []string `json:"kept,omitempty"`
-	Refusal string   `json:"refusal,omitempty"`
-	Missing []string `json:"missing,omitempty"`
+	OK               bool     `json:"ok"`
+	Fixed            []string `json:"fixed,omitempty"`
+	Ignored          []string `json:"ignored,omitempty"`
+	ResolvedExternal []string `json:"resolved_external,omitempty"`
+	Kept             []string `json:"kept,omitempty"`
+	Refusal          string   `json:"refusal,omitempty"`
+	Missing          []string `json:"missing,omitempty"`
 	// DeclinedEarlierFix names the findings the response tried to decline that
 	// an earlier round of the same step already chose to fix. Reverting an
 	// applied fix is out of scope for a gate response, so the response was

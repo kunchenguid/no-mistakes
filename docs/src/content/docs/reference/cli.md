@@ -323,6 +323,7 @@ no-mistakes axi respond --action fix --add-finding '{"description":"...","action
 no-mistakes axi respond --action fix --findings F1 --instructions-file ./guidance.md
 no-mistakes axi respond --action fix --add-finding-file ./finding.json
 no-mistakes axi respond --action skip
+no-mistakes axi respond --step review --action resolved_external --findings F1 --reason "grant verified outside the review worktree"
 no-mistakes axi respond --step review --action complete-coverage
 no-mistakes axi respond --action abort --reason "why the gate is rejected"
 no-mistakes axi respond --run <id> --action approve
@@ -330,14 +331,14 @@ no-mistakes axi respond --run <id> --action approve
 
 | Flag             | Type     | Default       | Description                                                          |
 | ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
-| `--action`       | `string` | (none)        | `approve`, `fix`, `skip`, `complete-coverage`, or `abort`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
+| `--action`       | `string` | (none)        | `approve`, `fix`, `skip`, `complete-coverage`, `resolved_external`, or `abort`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
 | `--run`          | `string` | current-branch active run | Answer the gate of this run ID from any directory, without resolving the current branch or worktree |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
-| `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix with `--action fix`               |
+| `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix, or to settle with `resolved_external`               |
 | `--ignore`       | `string` | (none)        | Comma-separated finding IDs to decline with `--action fix`; see the accounting rules below |
 | `--instructions` | `string` | (none)        | Driver fix guidance applied to selected findings with `--action fix`; recorded as `driver_instructions`, never as the user's decision; `-` reads stdin until EOF, cancellation, or `--wait`; exclusive with `--instructions-file` |
 | `--instructions-file` | `string` | (none) | Read driver fix guidance from a file; exclusive with `--instructions` |
-| `--reason`       | `string` | (none)        | Operator's reason: optional exception explanation for a Test approval, required with `--action abort` |
+| `--reason`       | `string` | (none)        | Operator's reason: optional exception explanation for a Test approval, required with `--action abort` or `resolved_external` |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix; a `driver_instructions` key is refused, since driver guidance comes only from `--instructions`; `-` reads stdin until EOF, cancellation, or `--wait`; exclusive with `--add-finding-file` |
 | `--add-finding-file` | `string` | (none) | Read JSON finding object from a file; exclusive with `--add-finding` |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
@@ -356,6 +357,8 @@ Every successful fix response echoes what it recorded in a `recorded:` object: `
 `--action complete-coverage` continues a Review gate under the [coverage continuation rules](/no-mistakes/reference/pipeline-steps/#coverage-continuation).
 It refuses `--yes`, `--findings`, `--ignore`, `--instructions`, `--instructions-file`, `--add-finding`, `--add-finding-file`, and `--reason`.
 The CLI supplies the observed head, step result, and latest round binding automatically.
+
+`--action resolved_external --findings <id,...> --reason <text>` records a human decision that the named Review findings were settled outside the review worktree (for example, a private role grant or machine configuration). It requires a nonempty reason and refuses unknown IDs, `--yes`, `--ignore`, additions, or fix instructions. It starts another static Review turn without a fix or approval. Later rereviews can reissue the same finding under a different ID or line; the recorded decision suppresses only an unambiguous matching fingerprint. Other findings and incomplete coverage still block. The reason is stored in the run's round history; describe the decision without quoting private file contents. The response echoes `recorded.resolved_external` with the accepted finding IDs. Once the next partial Review gate has no unresolved findings, run `--action complete-coverage` as usual.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
