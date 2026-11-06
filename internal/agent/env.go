@@ -69,5 +69,5 @@ func gitSafeEnvWithOverlay(dir string, overlay runenv.Overlay, extra ...[]string
 	if len(extra) > 0 {
 		env = append(env, extra[0]...)
 	}
-	return append(env, GateRoleEnvVar+"=1", CompactAdviserDisableEnvVar+"=1")
+	return append(git.SubprocessEnvironment(env), GateRoleEnvVar+"=1", CompactAdviserDisableEnvVar+"=1")
 }

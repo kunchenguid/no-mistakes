@@ -5,18 +5,15 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -265,84 +262,5 @@ func TestSubmissionIdentityWithLinkedCheckouts(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCommitIdentityAgentEnvironmentPinsEveryRepository(t *testing.T) {
-	p, d := newParkedRunEnv(t)
-	repo, _ := setupTestGitRepo(t, p, d, "identity-agent")
-	identity := git.CommitIdentity{AuthorName: "Submitting Author", AuthorEmail: "author@example.test", CommitterName: "Submitting Committer", CommitterEmail: "committer@example.test"}
-	if err := git.CopyLocalUserIdentity(context.Background(), repo.WorkingPath, identity); err != nil {
-		t.Fatal(err)
-	}
-	nested := filepath.Join(repo.WorkingPath, "fixture")
-	if err := os.Mkdir(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, nested, "init")
-	gitCmd(t, nested, "config", "user.name", "Fixture")
-	gitCmd(t, nested, "config", "user.email", "fixture@example.test")
-	gitCmd(t, nested, "config", "commit.gpgsign", "false")
-	for _, role := range []string{"AUTHOR", "COMMITTER"} {
-		t.Setenv("GIT_"+role+"_NAME", "Daemon")
-		t.Setenv("GIT_"+role+"_EMAIL", "daemon@example.test")
-		t.Setenv("GIT_"+role+"_DATE", "2000-01-01T00:00:00Z")
-	}
-	forge := &forgecontext.Context{Environment: runenv.Overlay{Set: map[string]string{"GIT_AUTHOR_NAME": "Forge Override"}}}
-	t.Setenv("GIT_CONFIG_COUNT", "3")
-	t.Setenv("GIT_CONFIG_KEY_0", "author.name")
-	t.Setenv("GIT_CONFIG_VALUE_0", "Daemon Config Author")
-	t.Setenv("GIT_CONFIG_KEY_1", "author.email")
-	t.Setenv("GIT_CONFIG_VALUE_1", "daemon-config@example.test")
-	t.Setenv("GIT_CONFIG_KEY_2", "test.retained")
-	t.Setenv("GIT_CONFIG_VALUE_2", "count value")
-	t.Setenv("GIT_CONFIG_PARAMETERS", "'committer.name'='Daemon Config Committer' 'committer.email=daemon-config@example.test' 'test.parameter'='O'\\''Brien = value'")
-	for target, want := range map[string]string{
-		repo.WorkingPath: "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
-		nested:           "Submitting Author <author@example.test> | Submitting Committer <committer@example.test>",
-	} {
-		cmd := exec.Command("git", "commit", "--allow-empty", "-m", "agent subprocess")
-		cmd.Dir = target
-		cmd.Env = pipelineEnvironment(forge, identity).Apply(nil)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("agent commit: %v: %s", err, out)
-		}
-		if got := gitOutput(t, target, "show", "-s", "--format=%an <%ae> | %cn <%ce>"); got != want {
-			t.Errorf("%s identity = %q, want %q", target, got, want)
-		}
-		for key, want := range map[string]string{"test.retained": "count value", "test.parameter": "O'Brien = value"} {
-			read := exec.Command("git", "config", "--get", key)
-			read.Dir, read.Env = target, cmd.Env
-			out, err := read.CombinedOutput()
-			if err != nil || string(out) != want+"\n" {
-				t.Errorf("retained %s = %q, %v, want %q", key, out, err, want)
-			}
-		}
-	}
-}
-
-func TestCommitIdentityInheritedIncludeCannotOverrideRun(t *testing.T) {
-	p, d := newParkedRunEnv(t)
-	repo, _ := setupTestGitRepo(t, p, d, "identity-command-include")
-	identity := git.CommitIdentity{AuthorName: "Submitter", AuthorEmail: "submitter@example.test", CommitterName: "Submitter", CommitterEmail: "submitter@example.test"}
-	if err := git.CopyLocalUserIdentity(context.Background(), repo.WorkingPath, identity); err != nil {
-		t.Fatal(err)
-	}
-	included := filepath.Join(t.TempDir(), "daemon-config")
-	if err := os.WriteFile(included, []byte("[author]\nname = Included Daemon\nemail = included@example.test\n[committer]\nname = Included Daemon\nemail = included@example.test\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GIT_CONFIG_COUNT", "1")
-	t.Setenv("GIT_CONFIG_KEY_0", "include.path")
-	t.Setenv("GIT_CONFIG_VALUE_0", included)
-	environment := pipelineEnvironment(nil, identity)
-	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "inherited include")
-	cmd.Dir, cmd.Env = repo.WorkingPath, environment.Apply(nil)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("agent commit: %v: %s", err, out)
-	}
-	want := "Submitter <submitter@example.test> | Submitter <submitter@example.test>"
-	if got := gitOutput(t, repo.WorkingPath, "show", "-s", "--format=%an <%ae> | %cn <%ce>"); got != want {
-		t.Fatalf("command-scope include replaced run identity: %q, want %q", got, want)
 	}
 }

@@ -7,9 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
-	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
 
 func submittedIdentityContext(ctx context.Context, identity *git.CommitIdentity) (context.Context, error) {
@@ -80,20 +78,4 @@ func submissionIdentity(ctx context.Context, checkout string) (git.CommitIdentit
 		return identity, fmt.Errorf("cannot prove submitting checkout identity without a caller snapshot; submit using the current no-mistakes binary: %w", err)
 	}
 	return identity, nil
-}
-
-func pipelineEnvironment(forge *forgecontext.Context, identity git.CommitIdentity) runenv.Overlay {
-	environment := forgeEnvironment(forge).Clone()
-	bound := identity.Environment()
-	for _, key := range bound.Unset {
-		delete(environment.Set, key)
-	}
-	environment.Unset = append(environment.Unset, bound.Unset...)
-	if environment.Set == nil {
-		environment.Set = make(map[string]string)
-	}
-	for key, value := range bound.Set {
-		environment.Set[key] = value
-	}
-	return environment
 }
