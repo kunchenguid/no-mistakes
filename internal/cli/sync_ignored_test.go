@@ -23,22 +23,34 @@ func TestSyncRefusesIgnoredPathCollisions(t *testing.T) {
 		for _, diverged := range []bool{false, true} {
 			for _, tc := range []struct {
 				name, localKind, incomingKind, localPath, incomingPath string
+				ignoreCase                                             bool
 			}{
-				{"directory-to-symlink", "dir", "symlink", "node_modules", "node_modules"},
-				{"file-to-file", "file", "file", "cache", "cache"},
-				{"symlink-to-file", "symlink", "file", "cache", "cache"},
-				{"directory-to-file", "dir", "file", "cache", "cache"},
-				{"file-prefix", "file", "file", "cache", "cache/new"},
-				{"symlink-prefix", "symlink", "file", "cache", "cache/new"},
-				{"directory-prefix", "dir", "file", "cache/nested", "cache"},
-				{"spaces", "file", "file", "local cache", "local cache"},
-				{"newline", "file", "file", "local\ncache", "local\ncache"},
+				{"directory-to-symlink", "dir", "symlink", "node_modules", "node_modules", false},
+				{"file-to-file", "file", "file", "cache", "cache", false},
+				{"symlink-to-file", "symlink", "file", "cache", "cache", false},
+				{"directory-to-file", "dir", "file", "cache", "cache", false},
+				{"file-prefix", "file", "file", "cache", "cache/new", false},
+				{"symlink-prefix", "symlink", "file", "cache", "cache/new", false},
+				{"directory-prefix", "dir", "file", "cache/nested", "cache", false},
+				{"spaces", "file", "file", "local cache", "local cache", false},
+				{"newline", "file", "file", "local\ncache", "local\ncache", false},
+				{"case-file-to-file", "file", "file", "notes.txt", "Notes.txt", true},
+				{"case-symlink-to-file", "symlink", "file", "Cache", "cache", true},
+				{"case-directory-to-file", "dir", "file", "Cache", "cache", true},
+				{"case-directory-to-symlink", "dir", "symlink", "Cache", "cache", true},
+				{"case-file-prefix", "file", "file", "Cache", "cache/new", true},
+				{"case-symlink-prefix", "symlink", "file", "Cache", "cache/new", true},
+				{"case-directory-prefix", "dir", "file", "Cache/nested", "cache", true},
+				{"case-nested-file", "file", "file", "Cache/Nested/Sentinel", "cache/nested/sentinel", true},
+				{"case-nested-symlink", "symlink", "file", "Cache/Nested", "cache/nested/new", true},
+				{"case-nested-directory", "dir", "file", "Cache/Nested", "cache/nested", true},
 			} {
 				t.Run(tc.name+"/axi="+strconv.FormatBool(axi)+"/diverged="+strconv.FormatBool(diverged), func(t *testing.T) {
 					if tc.name == "newline" && runtime.GOOS == "windows" {
 						t.Skip("Windows does not support newline characters in filenames")
 					}
 					f := newCLISyncFixture(t)
+					cliGit(t, f.local, "config", "core.ignorecase", strconv.FormatBool(tc.ignoreCase))
 					publishIgnoredSyncTarget(t, &f, diverged, tc.incomingPath, tc.incomingKind)
 					cliWriteIgnored(t, f.local, tc.localPath, tc.localKind)
 					subdir := filepath.Join(f.local, "caller-subdir")
@@ -69,8 +81,8 @@ func TestSyncRefusesIgnoredPathCollisions(t *testing.T) {
 						message = document.BranchSync.Error
 					}
 					wantPath := tc.localPath
-					if tc.name == "directory-prefix" {
-						wantPath = "cache"
+					if strings.HasSuffix(tc.name, "directory-prefix") {
+						wantPath = strings.Split(tc.localPath, "/")[0]
 					}
 					if err == nil || !strings.Contains(message, "ignored local path") || !strings.Contains(message, strconv.Quote(wantPath)) || (axi && !strings.Contains(out, "blocked_ignored_path_collision")) {
 						t.Errorf("expected named ignored-path refusal, got %v\n%s", err, out)
@@ -92,23 +104,30 @@ func TestSyncRefusesIgnoredPathCollisions(t *testing.T) {
 func TestSyncPreservesNoncollidingIgnoredDirectory(t *testing.T) {
 	for _, axi := range []bool{false, true} {
 		for _, diverged := range []bool{false, true} {
-			t.Run("axi="+strconv.FormatBool(axi)+"/diverged="+strconv.FormatBool(diverged), func(t *testing.T) {
-				f := newCLISyncFixture(t)
-				publishIgnoredSyncTarget(t, &f, diverged, "cache/new", "file")
-				cliWriteIgnored(t, f.local, "cache/local", "dir")
-				args := []string{"sync", "--yes"}
-				if axi {
-					args = []string{"axi", "sync"}
-				}
-				out, err := executeCmd(args...)
-				if err != nil {
-					t.Fatalf("noncolliding sync: %v\n%s", err, out)
-				}
-				if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
-					t.Fatalf("HEAD = %s", got)
-				}
-				assertCLIIgnoredSentinel(t, f.local, "cache/local", "dir")
-			})
+			for _, ignoreCase := range []bool{false, true} {
+				t.Run("axi="+strconv.FormatBool(axi)+"/diverged="+strconv.FormatBool(diverged)+"/ignoreCase="+strconv.FormatBool(ignoreCase), func(t *testing.T) {
+					f := newCLISyncFixture(t)
+					cliGit(t, f.local, "config", "core.ignorecase", strconv.FormatBool(ignoreCase))
+					publishIgnoredSyncTarget(t, &f, diverged, "cache/new", "file")
+					local := "cache/local"
+					if ignoreCase {
+						local = "Cache/Local"
+					}
+					cliWriteIgnored(t, f.local, local, "dir")
+					args := []string{"sync", "--yes"}
+					if axi {
+						args = []string{"axi", "sync"}
+					}
+					out, err := executeCmd(args...)
+					if err != nil {
+						t.Fatalf("noncolliding sync: %v\n%s", err, out)
+					}
+					if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+						t.Fatalf("HEAD = %s", got)
+					}
+					assertCLIIgnoredSentinel(t, f.local, local, "dir")
+				})
+			}
 		}
 	}
 }

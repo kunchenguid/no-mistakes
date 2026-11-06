@@ -36,6 +36,11 @@ func ignoredCollision(ctx context.Context, dir, from, to string) (string, error)
 	if err != nil || len(ignored) == 0 {
 		return "", err
 	}
+	caseSetting, err := git.Run(ctx, dir, "config", "--type=bool", "--get", "--default", "false", "core.ignorecase")
+	if err != nil {
+		return "", err
+	}
+	ignoreCase := caseSetting == "true"
 	incoming, err := git.RunRaw(ctx, dir, "diff", "--no-relative", "--no-ext-diff", "--no-renames", "--name-only", "--diff-filter=ACMT", "-z", from, to, "--")
 	if err != nil {
 		return "", err
@@ -49,30 +54,55 @@ func ignoredCollision(ctx context.Context, dir, from, to string) (string, error)
 			if target == "" {
 				continue
 			}
-			if local == target || strings.HasPrefix(local, target+"/") {
+			localKey, targetKey := local, target
+			if ignoreCase {
+				localKey, targetKey = strings.ToLower(local), strings.ToLower(target)
+			}
+			if localKey == targetKey || strings.HasPrefix(localKey, targetKey+"/") {
 				return local, nil
 			}
-			if !strings.HasPrefix(target, local+"/") {
+			if !strings.HasPrefix(targetKey, localKey+"/") {
 				continue
 			}
 			// --directory collapses wholly ignored directories. An incoming
 			// child may coexist with their unrelated contents, so examine only
 			// its path components, without following any local symlink.
-			prefix := local
-			parts := strings.Split(strings.TrimPrefix(target, local+"/"), "/")
-			for i := 0; ; i++ {
-				info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(prefix)))
-				if os.IsNotExist(err) {
-					break
-				}
-				if err != nil {
-					return "", err
-				}
-				if !info.IsDir() || prefix == target {
-					return prefix, nil
-				}
-				prefix += "/" + parts[i]
+			parts := strings.Split(target, "/")[strings.Count(local, "/")+1:]
+			path, err := ignoredDescendantCollision(dir, local, parts, ignoreCase)
+			if err != nil || path != "" {
+				return path, err
 			}
+		}
+	}
+	return "", nil
+}
+
+func ignoredDescendantCollision(dir, local string, parts []string, ignoreCase bool) (string, error) {
+	path := filepath.Join(dir, filepath.FromSlash(local))
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || len(parts) == 0 {
+		return local, nil
+	}
+	if !ignoreCase {
+		return ignoredDescendantCollision(dir, local+"/"+parts[0], parts[1:], false)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if strings.ToLower(entry.Name()) != strings.ToLower(parts[0]) {
+			continue
+		}
+		collision, err := ignoredDescendantCollision(dir, local+"/"+entry.Name(), parts[1:], true)
+		if err != nil || collision != "" {
+			return collision, err
 		}
 	}
 	return "", nil
