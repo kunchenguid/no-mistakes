@@ -93,6 +93,26 @@ func FilteredReviewSummary(items []types.Finding) string {
 	return fmt.Sprintf("%d review findings remain", len(items))
 }
 
+// withFilteredReviewSummary restates a payload's summary as the count of the
+// findings that payload lists. A Review step that settled a finding keeps
+// filtering every later round's report, so the reviewer's own sentence can no
+// longer describe the gate and the pipeline owns it from then on.
+func withFilteredReviewSummary(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw
+	}
+	findings.Summary = FilteredReviewSummary(findings.Items)
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
 func findingFingerprint(item types.Finding) types.Finding {
 	item = findingKey(item)
 	item.Line = 0

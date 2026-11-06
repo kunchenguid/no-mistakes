@@ -566,53 +566,85 @@ func TestSettledReviewFindingCount_AResettledMovedFindingCountsOnce(t *testing.T
 	}
 }
 
-// axi renders the reviewer's summary beside the gate's findings, so the filter
-// that stopped reporting one of them replaces the stale sentence with one that
-// counts what the gate still lists. It cannot clear the field: the filtered
-// payload is the envelope every later round of the step carries forward, so a
-// cleared summary leaves `axi status` and `axi rounds` with none for the rest
-// of the Review.
-func TestFilterSettledReviewFindings_ASuppressedGateReplacesTheStaleSummary(t *testing.T) {
-	settledItem := types.Finding{ID: "grant", File: "first.go", Line: 3, Severity: types.FindingSeverityWarning, Description: "private grant not visible", Action: types.ActionAskUser}
-	live := types.Finding{ID: "bug", File: "second.go", Line: 9, Severity: types.FindingSeverityError, Description: "off-by-one", Action: types.ActionAskUser}
-	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{settledItem, live}})
-	chosen := `["bug"]`
-	source := db.RoundSelectionSourceUser
-	rounds := []*db.StepRound{{FindingsJSON: &prior, SelectionSource: &source, SelectedFindingIDs: &chosen}}
-
-	raw, _ := types.MarshalFindingsJSON(types.Findings{
-		Items:               []types.Finding{settledItem, live},
-		Summary:             "2 findings",
-		ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}},
+// The operator reads the gate's summary beside the gate's findings (`axi
+// status`, `axi rounds --json`, the TUI review view), so a Review step whose
+// settlement makes the pipeline own that sentence must count the findings the
+// gate presents. The merge takes its metadata from the carried envelope, which
+// holds fewer findings than the gate lists, so a sentence derived from the
+// carried side states a count the gate contradicts.
+func TestExecutor_ASettledReviewGateSummaryCountsTheFindingsItLists(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := coverageWorkdir(t, database, run)
+	settled := types.Finding{ID: "grant", File: "first.go", Line: 3, Severity: types.FindingSeverityWarning, Description: "private grant not visible", Action: types.ActionAskUser}
+	live := types.Finding{ID: "bug", File: "second.go", Line: 9, Severity: types.FindingSeverityWarning, Description: "off-by-one", Action: types.ActionAskUser}
+	added := types.Finding{ID: "added", File: "first.go", Line: 41, Severity: types.FindingSeverityWarning, Description: "missing nil check", Action: types.ActionAskUser}
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		items := []types.Finding{settled, live}
+		if calls > 1 {
+			items = []types.Finding{settled, live, added}
+		}
+		outcome := dispositionCoverageOutcome(t, sctx, items, []string{"first.go", "second.go"})
+		outcome.NeedsApproval = false
+		outcome.AutoFixable = false
+		return outcome, nil
+	}}
+	exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { defer close(finished); done <- exec.Execute(ctx, run, repo, workDir) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("executor did not exit")
+		}
 	})
-	filtered, err := filterSettledReviewFindings(raw, rounds)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := types.ParseFindingsJSON(filtered)
-	if err != nil || len(parsed.Items) != 1 || parsed.Items[0].ID != "bug" {
-		t.Fatalf("findings = %+v %v, want only the unsettled one", parsed.Items, err)
-	}
-	if parsed.Summary != "1 review finding remains" {
-		t.Fatalf("summary = %q, want the count of what the gate still lists", parsed.Summary)
-	}
 
-	next := types.Finding{ID: "later", File: "second.go", Line: 21, Severity: types.FindingSeverityWarning, Description: "missing nil check", Action: types.ActionAskUser}
-	nextRaw, _ := types.MarshalFindingsJSON(types.Findings{
-		Items:               []types.Finding{next},
-		Summary:             "1 finding",
-		ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}},
-	})
-	carried, err := filterSettledReviewFindings(mergeOutstandingFindingsJSON(filtered, nextRaw, []string{"first.go", "second.go"}), rounds)
-	if err != nil {
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"grant"}, nil, nil, nil, "grant verified on the machine"); err != nil {
 		t.Fatal(err)
 	}
-	merged, err := types.ParseFindingsJSON(carried)
-	if err != nil {
-		t.Fatal(err)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) == 0 {
+		t.Fatalf("steps: %v %+v", err, steps)
 	}
-	if merged.Summary == "" {
-		t.Fatalf("a later round of the step carries no summary at all: %+v", merged)
+	stepID := steps[0].ID
+	var gate types.Findings
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rounds, err := database.GetRoundsByStep(stepID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rounds) == 2 && rounds[1].FindingsJSON != nil {
+			gate, err = types.ParseFindingsJSON(*rounds[1].FindingsJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the settled Review never recorded its next round: rounds = %d", len(rounds))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The reviewer re-reported the settled finding, the unsettled one, and one
+	// new finding, so the gate presents exactly two.
+	if len(gate.Items) != 2 {
+		t.Fatalf("gate findings = %+v, want the unsettled finding and the new one", gate.Items)
+	}
+	if gate.Summary != "2 review findings remain" {
+		t.Fatalf("gate summary = %q, want it to count the %d findings the gate lists", gate.Summary, len(gate.Items))
+	}
+	abortParkedGate(t, exec, types.StepReview)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("aborted Review did not finish")
 	}
 }
 

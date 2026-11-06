@@ -131,12 +131,6 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	if !removed {
 		return raw, nil
 	}
-	// The reviewer's summary describes the payload it produced, and this is the
-	// code that stopped reporting part of it, so the sentence is replaced by
-	// one that counts what the gate still lists. Clearing it instead left every
-	// later round of the step with no summary at all, because each round's
-	// outstanding set is the next round's carried envelope.
-	filtered.Summary = FilteredReviewSummary(filtered.Items)
 	return types.MarshalFindingsJSON(filtered)
 }
 

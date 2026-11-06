@@ -1831,6 +1831,7 @@ rounds:
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
+		reviewSettled := false
 		if carryFindings && e.db != nil {
 			rounds, err := e.db.GetRoundsByStep(sr.ID)
 			if err != nil {
@@ -1854,6 +1855,7 @@ rounds:
 			// what stops reporting it.
 			if SettledReviewFindingCount(rounds) > 0 {
 				outcome.NeedsApproval = true
+				reviewSettled = true
 			}
 		}
 		// roundFindings is this round's own output, used for the auto-fix
@@ -1923,6 +1925,10 @@ rounds:
 			}
 			outcome.NeedsApproval = true
 			writeLog(reviewFixRoundLimitMessage(reviewFixRounds, maxReviewFixRounds))
+		}
+
+		if reviewSettled {
+			effectiveFindings = withFilteredReviewSummary(effectiveFindings)
 		}
 
 		if effectiveFindings != "" {
