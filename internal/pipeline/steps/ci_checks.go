@@ -521,7 +521,22 @@ func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
 	}
 }
 
-func getCIChecks(ctx context.Context, host scm.Host, pr *scm.PR) ([]scm.Check, string, bool, error) {
+func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) ([]scm.Check, string, bool, error) {
+	checks, observedHead, moved, err := observeCIChecks(sctx.Ctx, host, pr)
+	if err != nil || strings.TrimSpace(observedHead) != "" {
+		return checks, observedHead, moved, err
+	}
+	boundHead, err := publishedBranchHead(sctx)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("re-read the published branch head after an unbound check read: %w", err)
+	}
+	if !s.ciRunOwnsHead(sctx, boundHead) {
+		return nil, boundHead, true, fmt.Errorf("%w: the check read binds no head and the push target now serves %s, which this run owns nowhere", scm.ErrHeadChanged, shortSHA(boundHead))
+	}
+	return checks, boundHead, !strings.EqualFold(boundHead, pr.HeadSHA), nil
+}
+
+func observeCIChecks(ctx context.Context, host scm.Host, pr *scm.PR) ([]scm.Check, string, bool, error) {
 	requestedHead := pr.HeadSHA
 	pr.ObservedHeadSHA = ""
 	checks, err := host.GetChecks(ctx, pr)

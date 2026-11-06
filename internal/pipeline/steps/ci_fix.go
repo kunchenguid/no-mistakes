@@ -96,7 +96,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		}
 		snapshotPR := *pr
 		snapshotPR.HeadSHA = expectedHeadSHA
-		checks, _, moved, err := getCIChecks(sctx.Ctx, host, &snapshotPR)
+		checks, _, moved, err := s.getCIChecks(sctx, host, &snapshotPR)
 		switch {
 		case moved && !pluginContractBroken(err):
 			sctx.Log("selected CI checks are stale; waiting for current checks before repair")
