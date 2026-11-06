@@ -108,6 +108,9 @@ func TestPushTranscriptHomesInvalidSelectionWithExplicitIntent(t *testing.T) {
 	}
 	defer client.Close()
 	homes := &runenv.TranscriptHomes{ClaudeConfigDir: "", CodexHome: ".codex-work"}
+	if err := client.RequireTranscriptHomes(); err != nil {
+		t.Fatalf("current daemon must confirm transcript-home support: %v", err)
+	}
 	var result ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: head, New: head,

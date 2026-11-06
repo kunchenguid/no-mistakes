@@ -801,6 +801,9 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 // triggerRunWithPRText is triggerRun carrying caller-supplied PR text on the
 // push and on the rerun fallback.
 func triggerRunWithPRText(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, planID string, closesIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (string, error) {
+	if err := env.client.RequireTranscriptHomes(); err != nil {
+		return "", err
+	}
 	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)
@@ -927,6 +930,9 @@ func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submitt
 // the matching nonce-bound receipt. Ordinary active-run heuristics never prove
 // strict launch identity.
 func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, omitIntent bool, launchNonce, validationGeneration, planID string, closesIssues []string, prText db.RunPRText, profiles ...*agentcfg.PiProfile) (*ipc.LaunchReceipt, error) {
+	if err := env.client.RequireTranscriptHomes(); err != nil {
+		return nil, err
+	}
 	homes := runenv.CaptureTranscriptHomes()
 	profile := agentcfg.OptionalPiProfile(profiles)
 	pushOptions := append(formatSkipPushOptions(skipSteps), formatPiProfilePushOptions(profile)...)

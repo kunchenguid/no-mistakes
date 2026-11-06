@@ -97,6 +97,9 @@ func newRerunCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if err := client.RequireTranscriptHomes(); err != nil {
+					return err
+				}
 				homes := runenv.CaptureTranscriptHomes()
 				var result ipc.RerunResult
 				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{TranscriptHomes: homes, RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, OmitIntent: noPublishIntent, CallerHeadSHA: callerHead, PiProfile: profile, ClosingIssueRefs: closes, PRTitle: prText.Title, PRBody: prText.Body}, &result); err != nil {

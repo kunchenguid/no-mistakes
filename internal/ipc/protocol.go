@@ -19,6 +19,7 @@ const (
 	MethodResolvePiProfile          = "resolve_pi_profile"
 	MethodProbeOmitIntent           = "probe_omit_intent"
 	MethodProbeRunPRText            = "probe_run_pr_text"
+	MethodProbeTranscriptHomes      = "probe_transcript_homes"
 	MethodReleaseVerificationPlan   = "release_verification_plan"
 	MethodCaptureVerificationPlan   = "capture_verification_plan"
 	MethodStartFreshRun             = "start_fresh_run"
@@ -179,6 +180,13 @@ type ProbeRunPRTextParams struct{}
 // open a PR with drafted text instead; it refuses the unknown method, so a
 // client that reaches OK=true knows the supplied text is honored.
 type ProbeRunPRTextResult struct {
+	OK bool `json:"ok"`
+}
+
+// ProbeTranscriptHomesResult confirms that launch requests preserve the caller's
+// transcript account selection. Older daemons reject this distinct method
+// instead of silently dropping transcript_homes from an existing request.
+type ProbeTranscriptHomesResult struct {
 	OK bool `json:"ok"`
 }
 

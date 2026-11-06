@@ -174,6 +174,9 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 
+			if err := client.RequireTranscriptHomes(); err != nil {
+				return err
+			}
 			homes := runenv.CaptureTranscriptHomes()
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{

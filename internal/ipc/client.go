@@ -164,6 +164,21 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 	return c.CallWithTimeout(method, params, result, defaultCallTimeout)
 }
 
+// RequireTranscriptHomes must succeed before a caller launches a run with
+// selected transcript homes, including before a push can trigger its hook.
+// The probe uses this connection so it confirms the daemon receiving the run.
+func (c *Client) RequireTranscriptHomes() error {
+	var result ProbeTranscriptHomesResult
+	err := c.Call(MethodProbeTranscriptHomes, nil, &result)
+	if err == nil && !result.OK {
+		err = errors.New("daemon declined the transcript-home capability")
+	}
+	if err != nil {
+		return fmt.Errorf("cannot confirm that the running daemon honors transcript-home selection (%v); restart it with `no-mistakes daemon restart` so the current binary serves it", err)
+	}
+	return nil
+}
+
 // CallWithTimeout is Call with a caller-selected read deadline.
 func (c *Client) CallWithTimeout(method string, params interface{}, result interface{}, timeout time.Duration) error {
 	return c.CallWithContext(context.Background(), method, params, result, timeout)

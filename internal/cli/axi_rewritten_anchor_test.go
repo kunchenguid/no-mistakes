@@ -66,6 +66,7 @@ func TestTriggerRunAfterRemoteRewrittenRecovery(t *testing.T) {
 	}
 
 	srv := ipc.NewServer()
+	serveTranscriptHomesProbe(srv)
 	srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GetRunsResult{}, nil
 	})

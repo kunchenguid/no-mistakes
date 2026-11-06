@@ -68,6 +68,7 @@ func TestTriggerRunReconcilesPrivateMirrorPreservedByRecoveryAnchor(t *testing.T
 	liveHead := cliGit(t, dir, "rev-parse", "HEAD")
 
 	srv := ipc.NewServer()
+	serveTranscriptHomesProbe(srv)
 	srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GetRunsResult{}, nil
 	})

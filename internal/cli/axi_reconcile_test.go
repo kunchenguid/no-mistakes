@@ -59,6 +59,7 @@ func TestTriggerRunRejectedPushRestoresReconciledGateRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := ipc.NewServer()
+	serveTranscriptHomesProbe(srv)
 	srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GetRunsResult{}, nil
 	})
