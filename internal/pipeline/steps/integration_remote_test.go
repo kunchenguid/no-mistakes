@@ -40,6 +40,7 @@ func TestIntegrationRemotePRDestinationAndForkHead(t *testing.T) {
 			var logFile string
 			if provider == "gitlab" {
 				sctx.Env, logFile, _ = fakeGlabWithMRState(t)
+				sctx.Env = append(sctx.Env, "FAKE_CLI_LOG_REPO=1")
 			} else {
 				sctx.Env, logFile = fakeGH(t, "")
 			}
@@ -56,7 +57,11 @@ func TestIntegrationRemotePRDestinationAndForkHead(t *testing.T) {
 				t.Fatal(err)
 			}
 			log := string(data)
-			for _, want := range []string{"--repo customer/project", "release/customer"} {
+			project := "--repo customer/project"
+			if provider == "gitlab" {
+				project = "GITLAB_REPO=https://gitlab.com/customer/project.git"
+			}
+			for _, want := range []string{project, "release/customer"} {
 				if !strings.Contains(log, want) {
 					t.Fatalf("missing %q in forge calls:\n%s", want, log)
 				}
