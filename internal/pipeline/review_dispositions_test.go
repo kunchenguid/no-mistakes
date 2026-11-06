@@ -10,7 +10,6 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -426,6 +425,52 @@ func TestFilterSettledReviewFindings_AnAmbiguousGateStillCreditsTheFixSelection(
 	}
 }
 
+// A decline taken on one of two findings that differ only in line settles that
+// instance and nothing else, and it stops being matched by content once the
+// reviewer moves it, so the operator is asked again rather than having a moved
+// finding settled for them.
+func TestFilterSettledReviewFindings_TwinFindingsSettleOneInstance(t *testing.T) {
+	twin := types.Finding{File: "first.go", Severity: types.FindingSeverityWarning, Description: "grant missing", Action: types.ActionAskUser}
+	first, second := twin, twin
+	first.ID, first.Line = "twin-a", 10
+	second.ID, second.Line = "twin-b", 40
+	shown, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{first, second}})
+	chosen := `["twin-a"]`
+	source := db.RoundSelectionSourceUser
+	rounds := []*db.StepRound{{FindingsJSON: &shown, SelectionSource: &source, SelectedFindingIDs: &chosen}}
+
+	scope := &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}
+	for _, tc := range []struct {
+		name      string
+		line      int
+		wantItems int
+	}{
+		{"the declined instance is settled", 40, 1},
+		{"a moved instance is reported again", 44, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			again, later := twin, twin
+			again.ID, again.Line = "twin-a-again", 10
+			later.ID, later.Line = "twin-b-again", tc.line
+			raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{again, later}, ReviewCoverageScope: scope})
+			filtered, err := filterSettledReviewFindings(raw, rounds)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := types.ParseFindingsJSON(filtered)
+			if err != nil || len(parsed.Items) != tc.wantItems {
+				t.Fatalf("findings = %+v %v, want %d", parsed.Items, err, tc.wantItems)
+			}
+			if tc.wantItems == 1 && parsed.Items[0].ID != "twin-a-again" {
+				t.Fatalf("the wrong instance was settled: %+v", parsed.Items)
+			}
+		})
+	}
+	if got := SettledReviewFindingCount(rounds); got != 1 {
+		t.Fatalf("settled count = %d, want 1: one instance was declined", got)
+	}
+}
+
 func TestFilterSettledReviewFindings_AmbiguousFingerprintFailsClosed(t *testing.T) {
 	item := types.Finding{ID: "first", File: "first.go", Severity: types.FindingSeverityInfo, Description: "same", Action: types.ActionNoOp}
 	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
@@ -495,44 +540,78 @@ func TestExecutor_ExternalDispositionRefusesWhatItCannotSettle(t *testing.T) {
 	}
 }
 
-// A disposition is matched on a later round by fingerprint, so one the gate
-// shows twice under identical content could never be matched again. Recording
-// it would echo a decision the run can never act on.
-func TestExecutor_DispositionsRefuseAnAmbiguousFingerprint(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := coverageWorkdir(t, database, run)
+// Two findings that differ only in line are decided one instance at a time, so
+// both the mixed response and the decline-everything response are accepted. A
+// gate that shows the same finding twice as an identical record cannot be
+// decided apart at all, so a disposition naming either one is refused.
+func TestExecutor_DispositionsSettleTwinFindingsOneInstanceAtATime(t *testing.T) {
 	twin := types.Finding{File: "first.go", Severity: types.FindingSeverityWarning, Description: "grant missing", Action: types.ActionAskUser}
-	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
-		first, second := twin, twin
-		first.ID, first.Line = "twin-a", 10
-		second.ID, second.Line = "twin-b", 40
-		return dispositionCoverageOutcome(t, sctx, []types.Finding{first, second}, []string{"first.go"}), nil
-	}}
-	exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	finished := make(chan struct{})
-	go func() { defer close(finished); _ = exec.Execute(ctx, run, repo, workDir) }()
-	t.Cleanup(func() { cancel(); <-finished })
+	for _, tc := range []struct {
+		name        string
+		secondLine  int
+		selected    []string
+		ignored     []string
+		wantRefusal string
+	}{
+		{name: "mixed fix and decline", secondLine: 40, selected: []string{"twin-a"}, ignored: []string{"twin-b"}},
+		{name: "decline both", secondLine: 40, ignored: []string{"twin-a", "twin-b"}},
+		{name: "identical records", secondLine: 10, selected: []string{"twin-a"}, ignored: []string{"twin-b"}, wantRefusal: "twin-b cannot be declined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			workDir := coverageWorkdir(t, database, run)
+			secondLine := tc.secondLine
+			step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+				first, second := twin, twin
+				first.ID, first.Line = "twin-a", 10
+				second.ID, second.Line = "twin-b", secondLine
+				return dispositionCoverageOutcome(t, sctx, []types.Finding{first, second}, []string{"first.go"}), nil
+			}}
+			exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			finished := make(chan struct{})
+			go func() { defer close(finished); _ = exec.Execute(ctx, run, repo, workDir) }()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("executor did not exit")
+				}
+			})
 
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	_, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"twin-a"}, nil, nil, nil, "grant verified on the machine")
-	var refusal *RespondRefusal
-	if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "twin-a cannot be settled") {
-		t.Fatalf("external disposition on an ambiguous finding was accepted: %v", err)
-	}
-	_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"twin-a"}, []string{"twin-b"}, nil, nil, "")
-	if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "twin-b cannot be declined") {
-		t.Fatalf("ignore of an ambiguous finding was accepted: %v", err)
-	}
-	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
-		t.Fatal(err)
+			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+			dispositions, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, tc.selected, tc.ignored, nil, nil, "")
+			if tc.wantRefusal != "" {
+				var refusal *RespondRefusal
+				if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, tc.wantRefusal) {
+					t.Fatalf("a decision on an identical record was accepted: %v", err)
+				}
+				if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("declining a twin finding was refused: %v", err)
+			}
+			if strings.Join(dispositions.Ignored, ",") != strings.Join(tc.ignored, ",") {
+				t.Fatalf("ignored = %v, want %v", dispositions.Ignored, tc.ignored)
+			}
+			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+			if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
-// Recovery re-parks a round whose external disposition is already recorded.
-// A fix response there would overwrite the only column holding the operator's
-// reason, so it is refused and the gate stays parked.
-func TestExecutor_RecoveredExternalRoundRefusesAFixResponse(t *testing.T) {
+// A daemon restart between recording an external settlement and running the
+// review round it starts must not strand the run: the decision and its reason
+// are already durable, so recovery replays the settlement instead of parking a
+// gate whose every continuation is refused, and the round it starts is an
+// ordinary gate the operator can fix.
+func TestExecutor_RecoveredExternalRoundContinuesTheReview(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
@@ -570,40 +649,56 @@ func TestExecutor_RecoveredExternalRoundRefusesAFixResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exec := NewExecutor(database, p, nil, nil, []Step{newApprovalStep(types.StepReview, declinedTestFindings)}, nil)
-	events := collectEvents(exec)
+	continued := `{"findings":[{"id":"continued","severity":"warning","file":"y.js","line":3,` +
+		`"description":"the rereview found this instead","action":"ask-user"}]}`
+	started := make(chan string, 4)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		if sctx.Fixing {
+			started <- "fix"
+			return &StepOutcome{NeedsApproval: true, Findings: continued, FixSummary: "applied"}, nil
+		}
+		started <- "review"
+		return &StepOutcome{NeedsApproval: true, Findings: continued}, nil
+	}}
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- exec.Resume(ctx, run, repo, t.TempDir()) }()
-	waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepReview)
 
-	for _, tc := range []struct {
-		name     string
-		selected []string
-		ignore   []string
-	}{
-		{"ignore only", nil, []string{"journal-version-deduplication"}},
-		{"with a selection", []string{"journal-version-deduplication"}, nil},
-	} {
-		deadline := time.Now().Add(5 * time.Second)
-		var err error
-		for {
-			_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, tc.selected, tc.ignore, nil, nil, "")
-			if err == nil || !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(5 * time.Millisecond)
+	select {
+	case trigger := <-started:
+		if trigger != "review" {
+			t.Fatalf("recovered round ran as %q, want the replayed review", trigger)
 		}
-		var refusal *RespondRefusal
-		if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "already records an external finding disposition") {
-			t.Fatalf("%s: fix response overwrote a recorded external disposition: %v", tc.name, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery never continued the recorded external settlement")
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"continued"}, nil, nil, nil, "")
+		if err == nil || !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
+			break
 		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("the round after a recovered settlement refused a fix response: %v", err)
+	}
+	select {
+	case trigger := <-started:
+		if trigger != "fix" {
+			t.Fatalf("the accepted fix response ran as %q", trigger)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the accepted fix response never reached the step")
 	}
 
 	rounds, err := database.GetRoundsByStep(stepResult.ID)
-	if err != nil || len(rounds) != 1 {
-		t.Fatalf("rounds: %v %d", err, len(rounds))
+	if err != nil || len(rounds) < 2 {
+		t.Fatalf("rounds: %v %d, want the settlement round and the round it started", err, len(rounds))
 	}
 	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != db.RoundSelectionSourceExternal {
 		t.Fatalf("selection_source = %v, want the recorded %q", rounds[0].SelectionSource, db.RoundSelectionSourceExternal)
@@ -611,7 +706,11 @@ func TestExecutor_RecoveredExternalRoundRefusesAFixResponse(t *testing.T) {
 	if rounds[0].UserFindingsJSON == nil || !strings.Contains(*rounds[0].UserFindingsJSON, "grant verified on the machine") {
 		t.Fatalf("the operator's reason was erased: %v", rounds[0].UserFindingsJSON)
 	}
+	if rounds[1].Trigger != "external" {
+		t.Fatalf("round 2 trigger = %q, want %q", rounds[1].Trigger, "external")
+	}
 
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
 		t.Fatal(err)
 	}

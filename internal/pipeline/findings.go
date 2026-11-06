@@ -93,6 +93,18 @@ func countFindingFingerprints(items []types.Finding) map[types.Finding]int {
 	return counts
 }
 
+// countFindingKeys counts the payload's findings by their full identity,
+// including line. Two findings with one count differ only in where they are,
+// so a decision can still name one of them; two findings with one key are
+// indistinguishable records and a decision cannot.
+func countFindingKeys(items []types.Finding) map[types.Finding]int {
+	counts := make(map[types.Finding]int, len(items))
+	for _, item := range items {
+		counts[findingKey(item)]++
+	}
+	return counts
+}
+
 func hasFindingMatch(item types.Finding, exact map[types.Finding]bool, itemCounts, candidateCounts map[types.Finding]int) bool {
 	if exact[findingKey(item)] {
 		return true

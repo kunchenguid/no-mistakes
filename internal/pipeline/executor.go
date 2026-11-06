@@ -898,6 +898,7 @@ type recoveredGate struct {
 	lastRoundID            string
 	reviewedHeadSHA        string
 	selectedOutstandingIDs []string
+	settledExternally      bool
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -1005,56 +1006,70 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
 	}
 
-	e.mu.Lock()
-	e.waiting = true
-	e.waitingStep = gate.step.Name()
-	e.waitingApprovalRefusal = approvalRefusal(gate.step.Name(), gate.findings)
-	e.waitingApprovalVerify = e.approvalVerifier(gate.step, reconcileCtx)
-	e.waitingFindings = gate.findings
-	e.waitingStepResultID = gate.stepResult.ID
-	e.waitingRoundID = gate.lastRoundID
-	e.mu.Unlock()
-	e.emitStepEventWithFindingsAndError(
-		ipc.EventStepCompleted,
-		run,
-		repo,
-		gate.step.Name(),
-		string(gate.stepResult.Status),
-		gate.findings,
-		"",
-		gate.stepResult.DurationMS,
-	)
-
-	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
-	if errors.Is(err, ErrDaemonShutdown) {
-		return ErrParkedAtShutdown
-	}
-	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
-	}
-	if err != nil {
-		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
-			slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
+	// The round already records the operator's external settlement and its
+	// reason, so there is nothing left to ask: parking again would offer a gate
+	// whose every continuation is refused. The settlement is replayed instead,
+	// exactly as the live loop replays it, and the rereview it starts parks a
+	// fresh round the operator can fix, settle, or continue coverage on.
+	var response approvalResponse
+	if gate.settledExternally {
+		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
 		}
-		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", err.Error(), &duration)
-		return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
-	}
-	if reconciled {
-		return completeReconciledGate()
-	}
+		response = approvalResponse{action: types.ActionResolvedExternal}
+	} else {
+		e.mu.Lock()
+		e.waiting = true
+		e.waitingStep = gate.step.Name()
+		e.waitingApprovalRefusal = approvalRefusal(gate.step.Name(), gate.findings)
+		e.waitingApprovalVerify = e.approvalVerifier(gate.step, reconcileCtx)
+		e.waitingFindings = gate.findings
+		e.waitingStepResultID = gate.stepResult.ID
+		e.waitingRoundID = gate.lastRoundID
+		e.mu.Unlock()
+		e.emitStepEventWithFindingsAndError(
+			ipc.EventStepCompleted,
+			run,
+			repo,
+			gate.step.Name(),
+			string(gate.stepResult.Status),
+			gate.findings,
+			"",
+			gate.stepResult.DurationMS,
+		)
 
-	approvalFields := telemetry.Fields{
-		"step":       telemetry.StepName(gate.step.Name()),
-		"action":     string(response.action),
-		"fix_review": gate.stepResult.Status == types.StepStatusFixReview,
+		waited, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
+		if errors.Is(err, ErrDaemonShutdown) {
+			return ErrParkedAtShutdown
+		}
+		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+		}
+		if err != nil {
+			if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
+				slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", err.Error(), &duration)
+			return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
+		}
+		if reconciled {
+			return completeReconciledGate()
+		}
+		response = waited
+
+		approvalFields := telemetry.Fields{
+			"step":       telemetry.StepName(gate.step.Name()),
+			"action":     string(response.action),
+			"fix_review": gate.stepResult.Status == types.StepStatusFixReview,
+		}
+		if agentName := e.telemetryAgentName(); agentName != "" {
+			approvalFields["agent"] = agentName
+		}
+		if selectedCount := selectedFindingCount(gate.findings, response.findingIDs); selectedCount > 0 {
+			approvalFields["selected_findings_count"] = selectedCount
+		}
+		telemetry.Track("approval", approvalFields)
 	}
-	if agentName := e.telemetryAgentName(); agentName != "" {
-		approvalFields["agent"] = agentName
-	}
-	if selectedCount := selectedFindingCount(gate.findings, response.findingIDs); selectedCount > 0 {
-		approvalFields["selected_findings_count"] = selectedCount
-	}
-	telemetry.Track("approval", approvalFields)
 	switch response.action {
 	case types.ActionApprove:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
@@ -1254,6 +1269,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
 			}
+			gate.settledExternally = latest.SelectionSource != nil && *latest.SelectionSource == db.RoundSelectionSourceExternal
 			continue
 		}
 		if gate == nil {
@@ -1821,13 +1837,9 @@ rounds:
 			// human disposition is never a silent clean pass. The park cannot
 			// be left to the findings themselves - an `info` ask-user finding
 			// parks only while it is still reported, and the filter is exactly
-			// what stops reporting it. Only the auto-fix dispatch is withdrawn,
-			// because a fix round with nothing selected has nothing to fix.
+			// what stops reporting it.
 			if SettledReviewFindingCount(rounds) > 0 {
 				outcome.NeedsApproval = true
-			}
-			if parsed, err := types.ParseFindingsJSON(filtered); err == nil {
-				outcome.AutoFixable = outcome.AutoFixable && len(parsed.Items) > 0
 			}
 		}
 		// roundFindings is this round's own output, used for the auto-fix
