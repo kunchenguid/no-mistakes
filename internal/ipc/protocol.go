@@ -103,6 +103,7 @@ type PushReceivedParams struct {
 	LaunchNonce          string           `json:"launch_nonce,omitempty"`
 	ValidationGeneration string           `json:"validation_generation,omitempty"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	BaseRemote           string           `json:"base_remote,omitempty"`
 	// OmitIntent carries the caller-side, tighten-only request to keep the
 	// generated Intent section out of the PR body. It never publishes intent
 	// a repository's trusted config disabled.
@@ -139,6 +140,7 @@ type StartFreshRunParams struct {
 	LaunchNonce          string           `json:"launch_nonce"`
 	ValidationGeneration string           `json:"validation_generation"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	BaseRemote           string           `json:"base_remote,omitempty"`
 	OmitIntent           bool             `json:"omit_intent,omitempty"`
 	ClosingIssueRefs     []string         `json:"closing_issue_refs,omitempty"`
 	PRTitle              string           `json:"pr_title,omitempty"`
@@ -206,6 +208,7 @@ type ClaimLaunchReceiptParams struct {
 	ValidationGeneration string `json:"validation_generation"`
 	IntentDigest         string `json:"intent_digest"`
 	PRBaseBranch         string `json:"pr_base_branch,omitempty"`
+	BaseRemote           string `json:"base_remote,omitempty"`
 	OmitIntent           bool   `json:"omit_intent,omitempty"`
 	// PRTextDigest is db.PRTextDigest of the supplied PR title and
 	// description, "" for none. A replay must match the run's stored text.
@@ -275,6 +278,7 @@ type RerunParams struct {
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	BaseRemote    string           `json:"base_remote,omitempty"`
 	// OmitIntent requests omission of the public Intent section for the new
 	// run. It is tighten-only: the selected prior run's decision is always
 	// inherited and this can only add to it.
@@ -590,6 +594,7 @@ type RunInfo struct {
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`
+	BaseRemote   string  `json:"base_remote,omitempty"`
 	// OmitIntent is true when this run was started with the caller-side,
 	// tighten-only request to keep the generated Intent section out of the
 	// PR body (see runs.omit_intent).

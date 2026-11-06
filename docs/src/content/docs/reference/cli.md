@@ -158,6 +158,7 @@ no-mistakes axi run --intent "the user's goal" --pr-title "Add widget export" --
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--base-remote` | `string` | `origin` | Named integration remote for this run, independent of a configured fork push target |
 | `--no-publish-intent` | `bool` | `false` | Keep the generated `## Intent` section out of the PR body for this run; tighten-only, see below |
 | `--closes` | `string`, repeatable | (none) | Issue the PR fully resolves (`95`, `owner/repo#95`, or a nested GitLab project path); see [Closing issues](#closing-issues) |
 | `--pr-title` | `string` | (none) | PR title used verbatim when this run creates the PR; see [Supplied PR title and description](#supplied-pr-title-and-description) |
@@ -215,6 +216,28 @@ Review and Test, including their fix turns, receive the same digest-checked snap
 Only attached runs receive plan-aware guidance. Review and Test assess the proposed scenarios and independent expected results against actual evidence; the attachment does not direct Review to execute verification. Test receives the execution guidance: when no existing check drives a scenario, perform repeatable product verification with a retained artifact, or name the missing capability and how to provide it and mark the scenario untested. Both steps must follow repository testing rules before changing permanent tests; an attached plan alone is not a reason to add tests. A missing-test finding must identify the observable failure, why existing checks and product evidence do not cover it, and the independent expected result. Runs without a plan retain their existing Review and Test guidance.
 
 ### Other run options
+
+`--base-remote custom` explicitly selects the configured remote whose branches
+feed integration and whose project receives the PR or MR. Without the flag,
+the integration remote remains `origin`. Branch tracking never selects another
+remote implicitly. For example:
+
+```sh
+no-mistakes axi run --intent "Fix the customer release" --base-remote custom --base-branch release/customer
+```
+
+An explicit selection pins the remote name, URL and default branch on the run.
+Base lookup, fresh fetches, change scoping and forge routing use that destination,
+including after daemon recovery. Fetches use private refs and leave `origin`'s
+configuration and tracking refs unchanged. The selected destination's default
+branch supplies trusted repository settings. A configured GitHub fork still
+receives the head branch, while the PR targets the selected integration project.
+Other providers retain their existing restrictions on fork routing.
+
+Missing, invalid, unreachable or moved selections refuse rather than falling
+back to `origin`. Reattaching cannot change the remote. Omit `--base-remote` to
+keep an existing run's selection. `rerun` and `retry` preserve its pin. An older
+daemon that cannot honor the selector is refused before submission.
 
 `--base-branch` is persisted on the run and honored after resume; the [Pipeline Steps scope rules](/no-mistakes/reference/pipeline-steps/) own its integration and change-scoping behavior.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.

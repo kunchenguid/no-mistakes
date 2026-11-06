@@ -33,7 +33,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	branchTarget := ""
 	pushRemote := resolveUpstreamURL(sctx)
 	if branch != "" {
-		branchTarget = "origin/" + branch
+		branchTarget = runIntegrationRef(sctx, branch)
 		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 			pushRemote = sctx.Repo.PushURL()
 			branchTarget = forkBranchTrackingRef(branch)
@@ -78,7 +78,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
 		return outcome, nil
 	}
-	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA, runIntegrationRef(sctx, defaultBranch)) {
 		findingsJSON, _ := json.Marshal(Findings{
 			Items: []Finding{{
 				Severity:    "warning",
@@ -97,6 +97,13 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if forcePush {
 		sctx.Log("force push detected, skipping " + branchTarget + " sync")
 		targets = forcePushRebaseTargets(branch, defaultBranch)
+	}
+	if sctx.Run.Integration != nil {
+		for i, target := range targets {
+			if target == "origin/"+defaultBranch {
+				targets[i] = runIntegrationRef(sctx, defaultBranch)
+			}
+		}
 	}
 
 	merging := mergesMovedBase(sctx)
@@ -246,7 +253,7 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 	if localTip == "" {
 		return nil
 	}
-	remoteRef := "origin/" + defaultBranch
+	remoteRef := runIntegrationRef(sctx, defaultBranch)
 	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}"); err != nil {
 		return nil
 	}
@@ -330,11 +337,15 @@ func isAncestor(ctx context.Context, workDir, ancestor, descendant string) bool 
 	return err == nil
 }
 
-func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, baseSHA string) bool {
+func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, baseSHA string, refs ...string) bool {
 	if baseSHA == "" || git.IsZeroSHA(baseSHA) {
 		return false
 	}
-	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+	ref := "origin/" + defaultBranch
+	if len(refs) > 0 {
+		ref = refs[0]
+	}
+	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", ref)
 	if err != nil {
 		return false
 	}

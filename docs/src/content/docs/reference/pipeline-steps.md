@@ -79,7 +79,7 @@ Fetches the latest authoritative remote state, fetches the configured pushed-bra
 The integration branch used below is the effective PR base described in the scope rules at the top of this page.
 
 **Behavior:**
-- Fetches `origin/<PR base branch>` from the remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history. A failed base-branch fetch fails the step before any rebase or head update, rather than integrating against a possibly stale cached `origin/<PR base branch>`; the post-integration empty-diff check reuses that same fetched ref
+- Fetches the PR base branch from the integration remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history. The integration remote defaults to `origin`; an explicit [`--base-remote`](/no-mistakes/reference/cli/#other-run-options) uses its pinned destination and private refs. A failed base-branch fetch fails the step before any rebase or head update, rather than integrating against a stale cached ref; the post-integration empty-diff check reuses that same fetched ref
 - Without fork routing, the pushed-branch target is `origin/<branch>`
 - With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
 - If the branch is not the PR base branch, tries rebasing onto the pushed-branch target first, then `origin/<PR base branch>`

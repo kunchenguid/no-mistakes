@@ -25,16 +25,24 @@ func ValidateRunPRBaseBranchName(name string) (string, error) {
 
 // VerifyRemoteBranchExists reports whether origin has refs/heads/<branch>.
 func VerifyRemoteBranchExists(ctx context.Context, workDir, branch string) error {
+	return VerifyRemoteBranchExistsOn(ctx, workDir, "origin", branch)
+}
+
+// VerifyRemoteBranchExistsOn checks exactly the selected remote or URL.
+func VerifyRemoteBranchExistsOn(ctx context.Context, workDir, remote, branch string) error {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
 		return nil
 	}
-	sha, err := git.LsRemote(ctx, workDir, "origin", "refs/heads/"+branch)
+	sha, err := git.LsRemote(ctx, workDir, remote, "refs/heads/"+branch)
 	if err != nil {
 		return fmt.Errorf("look up remote branch %q: %w", branch, err)
 	}
 	if sha == "" {
-		return fmt.Errorf("remote branch %q does not exist on origin", branch)
+		if remote == "origin" {
+			return fmt.Errorf("remote branch %q does not exist on origin", branch)
+		}
+		return fmt.Errorf("remote branch %q does not exist on the selected integration remote", branch)
 	}
 	return nil
 }

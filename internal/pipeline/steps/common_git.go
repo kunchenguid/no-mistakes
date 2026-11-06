@@ -60,7 +60,16 @@ func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallb
 			return "", fmt.Errorf("fetch default branch %q to resolve branch base: %w", defaultBranch, err)
 		}
 	}
-	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	baseSHA := ""
+	if sctx.Run != nil && sctx.Run.Integration != nil {
+		var err error
+		baseSHA, err = git.Run(ctx, sctx.WorkDir, "merge-base", "HEAD", runIntegrationRef(sctx, defaultBranch))
+		if err != nil {
+			return "", fmt.Errorf("resolve selected integration base: %w", err)
+		}
+	} else {
+		baseSHA = mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, defaultBranch)
+	}
 	if baseSHA == "" {
 		baseSHA = resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch)
 	}
@@ -80,7 +89,7 @@ func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext,
 		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
 			return unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
 		}
-		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", runIntegrationRef(sctx, defaultBranch))
 		if err == nil && strings.TrimSpace(sha) != "" {
 			return strings.TrimSpace(sha), true
 		}
@@ -180,6 +189,13 @@ func normalizedBranchRef(ref string) string {
 // This separation lets the database and logs store a redacted URL while the
 // credential still reaches the git push/ls-remote argv that needs it.
 func resolveUpstreamURL(sctx *pipeline.StepContext) string {
+	if sctx.Run != nil && sctx.Run.Integration != nil {
+		remote, err := sctx.Run.Integration.RuntimeURL(sctx.Ctx, sctx.Repo.WorkingPath)
+		if err != nil {
+			return ""
+		}
+		return remote
+	}
 	if url, err := git.GetRemoteURL(sctx.Ctx, sctx.WorkDir, "origin"); err == nil && strings.TrimSpace(url) != "" {
 		// A matching redacted value means origin may carry credentials that the
 		// database intentionally omits. A different registration was refreshed
@@ -219,12 +235,26 @@ func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, bra
 }
 
 func fetchRunUpstreamBranchInner(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
+	if sctx.Run != nil && sctx.Run.Integration != nil {
+		remote, err := sctx.Run.Integration.RuntimeURL(ctx, sctx.Repo.WorkingPath)
+		if err != nil {
+			return err
+		}
+		return git.FetchRemoteBranchToPrivateRef(ctx, sctx.WorkDir, remote, branch, runIntegrationRef(sctx, branch))
+	}
 	upstreamURL := resolveUpstreamURL(sctx)
 	originURL, err := git.GetRemoteURL(ctx, sctx.WorkDir, "origin")
 	if err == nil && upstreamURL == originURL {
 		return git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch)
 	}
 	return git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, upstreamURL, branch, "refs/remotes/origin/"+branch)
+}
+
+func runIntegrationRef(sctx *pipeline.StepContext, branch string) string {
+	if sctx.Run != nil && sctx.Run.Integration != nil {
+		return sctx.Run.Integration.Ref(branch)
+	}
+	return "origin/" + branch
 }
 
 // resolvePushURL returns the URL to push to: the fork when one is configured
