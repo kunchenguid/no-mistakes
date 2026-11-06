@@ -913,6 +913,7 @@ from timestamps. Missing nullable facts are JSON `null`, including unreported
 token counts for error or cancelled invocations. All invocation outcomes are
 included. The raw token counters and per-round `delta_*` counters are distinct,
 because resumed sessions can report cumulative usage.
+Empty stored model names, failure categories and unrecorded selections are `null`.
 
 Each round's `gate` object contains `first_parked_at`, `reason`, `owner`,
 `notified_at`, `escalated_at`, `responded_at`, `responder_identity`, `action`, and

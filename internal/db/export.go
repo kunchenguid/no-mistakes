@@ -140,7 +140,7 @@ func (d *DB) ExportRunFacts(ctx context.Context, runID string) (*RunExport, erro
 		if err := row.Scan(&round.ID, &stepID, &round.Round, &round.Trigger, &round.CreatedAt, &round.DurationMS, &round.ReviewedHeadSHA, &round.SelectionSource, &selected, &round.ResponseOrigin, &round.RepairPublished); err != nil {
 			return err
 		}
-		if selected != nil {
+		if selected != nil && *selected != "" {
 			if err := json.Unmarshal([]byte(*selected), &round.SelectedFindingIDs); err != nil {
 				// Never include the stored payload in diagnostics.
 				return fmt.Errorf("invalid selected finding IDs for round %s", round.ID)
@@ -153,7 +153,7 @@ func (d *DB) ExportRunFacts(ctx context.Context, runID string) (*RunExport, erro
 	if err != nil {
 		return nil, fmt.Errorf("read export rounds: %w", err)
 	}
-	err = readExportRows(ctx, tx, `SELECT id, step_name, round, purpose, agent, model, model_provider, session_mode, started_at, completed_at, duration_ms, subprocess_wait_ms, exit_status, failure_category, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, fresh_input_tokens, reasoning_tokens, delta_input_tokens, delta_output_tokens, delta_cache_read_tokens FROM agent_invocations WHERE run_id = ? ORDER BY started_at, id`, runID, func(row scanner) error {
+	err = readExportRows(ctx, tx, `SELECT id, step_name, round, purpose, agent, NULLIF(model, ''), model_provider, session_mode, started_at, completed_at, duration_ms, subprocess_wait_ms, exit_status, NULLIF(failure_category, ''), input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, fresh_input_tokens, reasoning_tokens, delta_input_tokens, delta_output_tokens, delta_cache_read_tokens FROM agent_invocations WHERE run_id = ? ORDER BY started_at, id`, runID, func(row scanner) error {
 		var i ExportInvocation
 		if err := row.Scan(&i.ID, &i.StepName, &i.Round, &i.Purpose, &i.Agent, &i.Model, &i.ModelProvider, &i.SessionMode, &i.StartedAt, &i.CompletedAt, &i.DurationMS, &i.SubprocessWaitMS, &i.ExitStatus, &i.FailureCategory, &i.InputTokens, &i.OutputTokens, &i.CacheReadTokens, &i.CacheCreationTokens, &i.FreshInputTokens, &i.ReasoningTokens, &i.DeltaInputTokens, &i.DeltaOutputTokens, &i.DeltaCacheReadTokens); err != nil {
 			return err

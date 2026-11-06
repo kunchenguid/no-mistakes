@@ -76,13 +76,17 @@ INSERT INTO step_results(id, run_id, step_name, step_order, status, exit_code, d
 INSERT INTO step_rounds(id, step_result_id, round, trigger_type, duration_ms, created_at, selection_source, selected_finding_ids, response_origin, reviewed_head_sha, repair_published, findings_json, fix_summary, global_config_yaml) VALUES
  ('round-a1', 'review-a', 1, 'initial', 17, 310, 'user_declined', '[]', 'auto_yes', 'reviewed-a', 0, 'SENTINEL_FINDINGS', 'SENTINEL_PROMPT', 'SYNTHETIC_API_KEY'),
  ('round-a2', 'review-a', 2, 'answer', 19, 410, 'user', '["finding-a"]', 'interactive', NULL, 0, NULL, NULL, NULL),
+ ('round-a3', 'review-a', 3, 'initial', 21, 460, NULL, '', 'unknown', NULL, 0, NULL, NULL, NULL),
  ('round-ci', 'ci-a', 2, 'auto_fix', 23, 650, 'auto_fix', '["ci-finding"]', 'unknown', NULL, 1, NULL, NULL, NULL),
  ('round-b', 'review-b', 1, 'initial', 29, 311, NULL, NULL, 'unknown', NULL, 0, NULL, NULL, NULL);
 INSERT INTO agent_invocations(id, run_id, step_name, round, purpose, agent, model, session_mode, started_at, completed_at, duration_ms, exit_status, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, fresh_input_tokens, reasoning_tokens, delta_input_tokens, delta_output_tokens, delta_cache_read_tokens, subprocess_wait_ms, session_key) VALUES
  ('inv-ok', 'run-a', 'review', 1, 'review', 'codex', 'served-model', 'cold', 320, 350, 1234, 'ok', 100, 20, 30, 40, 70, 10, 100, 20, 30, 555, 'PRIVATE_SESSION'),
  ('inv-error', 'run-a', 'review', 2, 'review', 'codex', NULL, 'cold', 420, 450, 2345, 'error', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PRIVATE_SESSION'),
- ('inv-cancel', 'run-a', 'ci', 2, 'ci-fix', 'codex', NULL, 'cold', 660, 680, 3456, 'cancelled', 0, 0, 0, NULL, 0, NULL, 0, 0, 0, 0, NULL),
+ ('inv-cancel', 'run-a', 'ci', 2, 'ci-fix', 'codex', '', 'cold', 660, 680, 3456, 'cancelled', 0, 0, 0, NULL, 0, NULL, 0, 0, 0, 0, NULL),
  ('inv-other', 'run-b', 'review', 1, 'review', 'codex', 'OTHER_RUN_SECRET', 'cold', 321, 351, 9876, 'ok', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+UPDATE agent_invocations SET model_provider = 'openai' WHERE id = 'inv-ok';
+UPDATE agent_invocations SET failure_category = 'exit' WHERE id = 'inv-error';
+UPDATE agent_invocations SET failure_category = 'cancelled' WHERE id = 'inv-cancel';
 `)
 		if err != nil {
 			fixture.Close()
@@ -125,12 +129,14 @@ INSERT INTO agent_invocations(id, run_id, step_name, round, purpose, agent, mode
 		check("review timing", []any{review["id"], review["name"], review["status"], review["started_at"], review["completed_at"], review["duration_ms"], review["response_origin"]}, `["review-a","review","completed",300,500,111,"interactive"]`)
 		check("CI timing", []any{ci["id"], ci["name"], ci["status"], ci["started_at"], ci["completed_at"], ci["duration_ms"], ci["response_origin"], ci["ci_attempt"]}, `["ci-a","ci","awaiting_approval",600,null,222,"auto_yes",null]`)
 		rounds := review["rounds"].([]any)
-		if len(rounds) != 2 {
+		if len(rounds) != 3 {
 			t.Fatalf("rounds = %v", rounds)
 		}
 		check("first round", rounds[0], `{"id":"round-a1","round":1,"trigger":"initial","created_at":310,"duration_ms":17,"reviewed_head_sha":"reviewed-a","selection_source":"user_declined","selected_finding_ids":[],"response_origin":"auto_yes","repair_published":false,"gate":{"first_parked_at":null,"reason":null,"owner":null,"notified_at":null,"escalated_at":null,"responded_at":null,"responder_identity":null,"action":null,"resolution_evidence":null}}`)
 		second := rounds[1].(map[string]any)
 		check("answer round", []any{second["id"], second["round"], second["trigger"], second["created_at"], second["duration_ms"], second["response_origin"], second["selection_source"], second["selected_finding_ids"]}, `["round-a2",2,"answer",410,19,"interactive","user",["finding-a"]]`)
+		third := rounds[2].(map[string]any)
+		check("unrecorded selection", []any{third["selected_finding_ids"], third["selection_source"], third["response_origin"]}, `[null,null,"unknown"]`)
 		ciRound := ci["rounds"].([]any)[0].(map[string]any)
 		check("local CI repair binding", []any{ciRound["id"], ciRound["round"], ciRound["trigger"], ciRound["created_at"], ciRound["duration_ms"], ciRound["repair_published"]}, `["round-ci",2,"auto_fix",650,23,true]`)
 		invs := got["invocations"].([]any)
@@ -144,6 +150,8 @@ INSERT INTO agent_invocations(id, run_id, step_name, round, purpose, agent, mode
 		} {
 			inv := invs[i].(map[string]any)
 			check("invocation facts", []any{inv["id"], inv["step_name"], inv["round"], inv["started_at"], inv["completed_at"], inv["duration_ms"], inv["exit_status"], inv["input_tokens"], inv["output_tokens"], inv["cache_read_tokens"], inv["cache_creation_tokens"], inv["fresh_input_tokens"], inv["reasoning_tokens"], inv["delta_input_tokens"], inv["delta_output_tokens"], inv["delta_cache_read_tokens"], inv["subprocess_wait_ms"]}, expected)
+			metadata := []string{`["review","codex","served-model","openai","cold",null]`, `["review","codex",null,null,"cold","exit"]`, `["ci-fix","codex",null,null,"cold","cancelled"]`}
+			check("invocation identity", []any{inv["purpose"], inv["agent"], inv["model"], inv["model_provider"], inv["session_mode"], inv["failure_category"]}, metadata[i])
 		}
 		for _, secret := range []string{"SENTINEL", "SYNTHETIC_API_KEY", "synthetic-credential", "secret", "/private/", "PRIVATE_SESSION", "OTHER_RUN", "unrelated-", "run-b", "repo-b"} {
 			if strings.Contains(out, secret) {
