@@ -22,19 +22,20 @@ func TestCommitIdentitySubmissionJourney(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			scenario := configurableFixCommitScenario(t, "guard unsafe value")
+			data, err := os.ReadFile(scenario)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = []byte(strings.Replace(string(data), "          action: auto-fix\n", "          action: auto-fix\n          review_scope: source\n", 1))
 			if agentCommits {
-				data, err := os.ReadFile(scenario)
-				if err != nil {
-					t.Fatal(err)
-				}
 				data = []byte(strings.Replace(string(data), "    structured:\n      summary:", "    git:\n      - [add, feature.txt]\n      - [commit, '--author=Contributor <contributor@example.test>', -m, 'agent correction']\n    structured:\n      summary:", 1))
-				if err := os.WriteFile(scenario, data, 0o600); err != nil {
-					t.Fatal(err)
-				}
+			}
+			if err := os.WriteFile(scenario, data, 0o600); err != nil {
+				t.Fatal(err)
 			}
 			h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 			configPath := filepath.Join(h.NMHome, "config.yaml")
-			data, err := os.ReadFile(configPath)
+			data, err = os.ReadFile(configPath)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -40,7 +40,7 @@ func captureHookIdentity(ctx context.Context, client *ipc.Client, p *paths.Paths
 		return nil, err
 	}
 	if repo == nil {
-		return nil, fmt.Errorf("cannot bind identity for an unregistered gate")
+		return nil, fmt.Errorf("unknown repo for gate %s", gateDir)
 	}
 	ctx = git.WithEnvironment(ctx, runenv.Overlay{Unset: []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"}})
 	listing, err := git.Run(ctx, repo.WorkingPath, "worktree", "list", "--porcelain", "-z")
