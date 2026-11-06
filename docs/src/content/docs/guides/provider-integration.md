@@ -96,8 +96,7 @@ git remote set-url origin git@github.com:parent-owner/repo.git
 no-mistakes init --fork-url git@github.com:your-user/repo.git
 ```
 
-With this setup, pipeline pushes update the fork, including CI repairs whether they are published immediately or first revalidated under [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs), while the PR and CI steps stay scoped to the parent repository.
-The GitHub PR step opens PRs with a fork-qualified head such as `your-user:feature-branch`.
+The [Push](/no-mistakes/reference/pipeline-steps/#push) and [PR](/no-mistakes/reference/pipeline-steps/#pr) references own fork routing, including CI repairs under [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs). For a different integration project, see [`--base-remote`](/no-mistakes/reference/cli/#other-run-options).
 Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`.
 
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.

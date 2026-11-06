@@ -36,7 +36,7 @@ When you run `no-mistakes init` in a repo:
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
-6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
+6. When `--fork-url` is supplied, it records the GitHub fork separately. The [Push](/no-mistakes/reference/pipeline-steps/#push) and [PR](/no-mistakes/reference/pipeline-steps/#pr) references own destination routing.
 7. It handles the user-level `/no-mistakes` agent skill as described in the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init), which owns installation and skip behavior.
 8. It makes sure the daemon is running so incoming pushes can start runs.
 
