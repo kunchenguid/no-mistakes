@@ -116,13 +116,11 @@ func TestReviewStickyIgnoreSurvivesARemintedFinding(t *testing.T) {
 	if err != nil || !strings.Contains(gate1, "health") || !strings.Contains(gate1, "tarball") {
 		t.Fatalf("initial review gate: %v\n%s", err, gate1)
 	}
-	settlementEvidence(t, "10-sticky-gate-round1.txt", "$ no-mistakes axi run --intent ... --skip ci\n"+gate1)
 
 	gate2, err := h.Run("axi", "respond", "--action", "fix", "--findings", "health", "--ignore", "tarball")
 	if err != nil {
 		t.Fatalf("fix one finding and decline the other: %v\n%s", err, gate2)
 	}
-	settlementEvidence(t, "11-sticky-gate-round2.txt", "$ no-mistakes axi respond --action fix --findings health --ignore tarball\n"+gate2)
 
 	// The reviewer re-reported BOTH concerns under new ids at new lines. The
 	// declined one must stay off the gate; the one the operator chose to fix
@@ -143,7 +141,6 @@ func TestReviewStickyIgnoreSurvivesARemintedFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("axi rounds: %v\n%s", err, rounds)
 	}
-	settlementEvidence(t, "11b-sticky-rounds.json", rounds)
 	var export struct {
 		Rounds []struct {
 			Round           int    `json:"round"`
@@ -187,7 +184,6 @@ func TestReviewStickyIgnoreSurvivesARemintedFinding(t *testing.T) {
 		{"decline an earlier fix", []string{"axi", "respond", "--step", "review", "--action", "fix", "--ignore", "health"}},
 	} {
 		out, err := h.Run(tc.args...)
-		settlementEvidence(t, "12-refused-"+strings.ReplaceAll(tc.name, " ", "-")+".txt", "$ no-mistakes "+strings.Join(tc.args, " ")+"\n"+out)
 		if err == nil {
 			t.Fatalf("%s: the response was accepted:\n%s", tc.name, out)
 		}
@@ -204,5 +200,4 @@ func TestReviewStickyIgnoreSurvivesARemintedFinding(t *testing.T) {
 	if !strings.Contains(out, "rejected:") || !strings.Contains(out, "ending the journey after the dispositions were exercised") {
 		t.Fatalf("abort did not record the operator's rejection:\n%s", out)
 	}
-	settlementEvidence(t, "13-sticky-abort.txt", "$ no-mistakes axi respond --step review --action abort --reason \"...\"\n"+out)
 }

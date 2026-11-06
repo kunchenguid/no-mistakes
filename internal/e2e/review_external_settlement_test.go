@@ -12,20 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// settlementEvidence writes a product artifact (a real gate transcript or the
-// published PR body) into the directory the operator names, so a reviewer can
-// read what the CLI and the forge actually showed.
-func settlementEvidence(t *testing.T, name, content string) {
-	t.Helper()
-	dir := os.Getenv("NM_SETTLEMENT_EVIDENCE_DIR")
-	if dir == "" {
-		return
-	}
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-		t.Logf("write evidence %s: %v", name, err)
-	}
-}
-
 // The journey an operator takes when a review finding can only be settled
 // outside the review worktree: a secret rotation that lives in a private infra
 // repository the reviewer cannot read. The operator records the settlement with
@@ -120,7 +106,6 @@ func TestReviewExternalSettlementJourney(t *testing.T) {
 	if err != nil || !strings.Contains(gate1, "rotation") {
 		t.Fatalf("initial review gate: %v\n%s", err, gate1)
 	}
-	settlementEvidence(t, "01-review-gate-round1.txt", "$ no-mistakes axi run --intent ... --skip ci\n"+gate1)
 
 	// Adversarial: every malformed settlement is refused and the gate stays
 	// parked, so none of them can settle anything by accident.
@@ -134,10 +119,8 @@ func TestReviewExternalSettlementJourney(t *testing.T) {
 		{"wrong step", []string{"axi", "respond", "--step", "test", "--action", "resolved_external", "--findings", "rotation", "--reason", privateReason}, "resolved_external requires a Review gate"},
 		{"unknown finding", []string{"axi", "respond", "--step", "review", "--action", "resolved_external", "--findings", "not-a-finding", "--reason", privateReason}, "current Review gate"},
 	}
-	var refusalLog strings.Builder
 	for _, tc := range refusals {
 		out, err := h.Run(tc.args...)
-		refusalLog.WriteString("$ no-mistakes " + strings.Join(tc.args, " ") + "\n" + out + "\n")
 		if err == nil {
 			t.Fatalf("%s: settlement was accepted; output:\n%s", tc.name, out)
 		}
@@ -145,14 +128,12 @@ func TestReviewExternalSettlementJourney(t *testing.T) {
 			t.Fatalf("%s: refusal does not explain the problem (want %q):\n%s", tc.name, tc.want, out)
 		}
 	}
-	settlementEvidence(t, "02-refused-settlements.txt", refusalLog.String())
 
 	// The gate survived every refusal: the real settlement is still accepted.
 	gate2, err := h.Run("axi", "respond", "--step", "review", "--action", "resolved_external", "--findings", "rotation", "--reason", privateReason)
 	if err != nil {
 		t.Fatalf("settle the rotation finding: %v\n%s", err, gate2)
 	}
-	settlementEvidence(t, "03-settled-and-next-gate.txt", "$ no-mistakes axi respond --step review --action resolved_external --findings rotation --reason \"...\"\n"+gate2)
 
 	echo := recordedDispositionsBlock(gate2)
 	if echo == "" {
@@ -184,7 +165,6 @@ func TestReviewExternalSettlementJourney(t *testing.T) {
 	// reason, and the round it started is an "external" trigger whose payload
 	// no longer reports the concern.
 	settled := waitForReviewRounds(t, h, branch, 2, 30*time.Second)
-	settlementEvidence(t, "03b-settlement-rounds.json", settled.raw)
 	if got := settled.export.Rounds[0].SelectionSource; got != "resolved_external" {
 		t.Fatalf("round 1 selection_source = %q, want resolved_external:\n%s", got, settled.raw)
 	}
@@ -204,7 +184,6 @@ func TestReviewExternalSettlementJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete coverage after the settlement: %v\n%s", err, gate3)
 	}
-	settlementEvidence(t, "04-coverage-completed-gate.txt", "$ no-mistakes axi respond --step review --action complete-coverage\n"+gate3)
 
 	// Coverage is complete and nothing is reported, yet the step still parks:
 	// a run carrying an operator settlement is never a silent clean pass.
@@ -213,7 +192,6 @@ func TestReviewExternalSettlementJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("axi status while parked: %v\n%s", err, status)
 	}
-	settlementEvidence(t, "05-status-parked-after-full-coverage.txt", "$ no-mistakes axi status\n"+status)
 	if strings.Contains(status, "complete-coverage") {
 		t.Fatalf("coverage is complete but the gate still offers a continuation:\n%s", status)
 	}
@@ -229,7 +207,6 @@ func TestReviewExternalSettlementJourney(t *testing.T) {
 	}
 
 	prBody := livePRBody(t, statePath, branch)
-	settlementEvidence(t, "06-published-pr-body.md", prBody)
 	if !strings.Contains(prBody, "settled by the operator without a fix") {
 		t.Fatalf("the PR body does not report the settled finding as settled without a fix:\n%s", prBody)
 	}

@@ -143,6 +143,34 @@ func TestSplitFixResponse_RefusesDecliningATwinPairTheSelectionNamedInFull(t *te
 	}
 }
 
+// An ambiguous current payload is fail-closed for a disposition and must not be
+// fail-open for a protection: a content whose protection an earlier selection
+// established stays protected however many instances this gate reports, so
+// neither instance can be declined and both may be omitted to keep the earlier
+// fix decision.
+func TestSplitFixResponse_RefusesDecliningAnEarlierFixTheGateReportsTwice(t *testing.T) {
+	first := `{"findings":[{"id":"original","severity":"warning","file":"a.go","line":10,"description":"missing nil check","action":"ask-user"}]}`
+	twice := `{"findings":[` +
+		`{"id":"moved-a","severity":"warning","file":"a.go","line":19,"description":"missing nil check","action":"ask-user"},` +
+		`{"id":"moved-b","severity":"warning","file":"a.go","line":27,"description":"missing nil check","action":"ask-user"}]}`
+	rounds := []*db.StepRound{userDecisionRound(t, first, "original")}
+
+	_, err := splitFixResponse(types.StepReview, twice, rounds, nil, []string{"moved-a", "moved-b"})
+
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) || strings.Join(refusal.DeclinedEarlierFix, ",") != "moved-a,moved-b" {
+		t.Fatalf("an applied fix lost its protection because the gate reported it twice: %v", err)
+	}
+
+	got, err := splitFixResponse(types.StepReview, twice, rounds, nil, nil)
+	if err != nil {
+		t.Fatalf("omitting both instances of an earlier fix was refused: %v", err)
+	}
+	if strings.Join(got.Kept, ",") != "moved-a,moved-b" {
+		t.Fatalf("kept = %v, want both instances held by the earlier fix decision", got.Kept)
+	}
+}
+
 // Two applied fixes of one content protect it at least as well as one. A gate
 // response cannot reverse an applied fix, so the refusal cannot weaken because
 // the operator decided that content a second time.

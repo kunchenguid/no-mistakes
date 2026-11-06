@@ -118,7 +118,6 @@ func TestReviewSettlementReplayedAfterDaemonRestart(t *testing.T) {
 	}
 
 	rounds := waitForReviewRounds(t, h, branch, 2, 90*time.Second)
-	settlementEvidence(t, "20-recovered-settlement-rounds.json", rounds.raw)
 	if got := rounds.export.Rounds[0].SelectionSource; got != "resolved_external" {
 		t.Fatalf("the recovered round's selection_source = %q, want resolved_external:\n%s", got, rounds.raw)
 	}
@@ -136,7 +135,6 @@ func TestReviewSettlementReplayedAfterDaemonRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("axi status after recovery: %v\n%s", err, status)
 	}
-	settlementEvidence(t, "21-recovered-settlement-status.txt", "$ no-mistakes axi status\n"+status)
 	if strings.Contains(status, "rotation-again") {
 		t.Fatalf("the settled concern is back on the recovered gate:\n%s", status)
 	}

@@ -33,6 +33,12 @@ func TestRoundHistory_ReviewFixIdentityAcrossPromptChannels(t *testing.T) {
 			wantDeclined: "twin,twin",
 		},
 		{
+			name: "review fix reported at two new lines",
+			step: types.StepReview,
+			first: `{"findings":[{"id":"original","file":"a.go","line":10,"description":"missing check"}]}`,
+			last: `{"findings":[{"id":"moved-a","file":"a.go","line":19,"description":"missing check"},{"id":"moved-b","file":"a.go","line":27,"description":"missing check"},{"id":"C","file":"c.go","description":"other defect"}]}`,
+		},
+		{
 			name: "moved lint fix retains exact identity",
 			step: types.StepLint,
 			first: `{"findings":[{"id":"original","file":"a.go","line":10,"description":"missing check"}]}`,

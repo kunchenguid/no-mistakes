@@ -65,21 +65,32 @@ func (s *settlementIdentities) contents() map[types.Finding]bool {
 	return out
 }
 
-// matches reports whether item is the finding a recorded decision named. It is
-// the repository's ordinary finding match: content alone identifies a finding
-// only when it identifies exactly one on each side, so an instance a decision
-// never named is reported again instead of answered for the operator.
+// matches reports whether item is the finding a recorded disposition named. It
+// is the repository's ordinary finding match: content alone identifies a
+// finding only when it identifies exactly one on each side, so an instance a
+// disposition never named, and one the current payload shows twice, is reported
+// again instead of answered for the operator.
 func (s *settlementIdentities) matches(item types.Finding, counts map[types.Finding]int) bool {
 	return hasFindingMatch(item, s.exact, counts, s.unique)
 }
 
+// matchesChosen reports whether item is a finding a fix selection protects.
+// A protection set drops the ordinary match's requirement that the current
+// payload hold one instance of the content: an ambiguous payload must report a
+// disposition's finding again, but it must not disarm an applied fix decision,
+// so a payload that reports the protected content at several lines protects
+// every one of them.
+func (s *settlementIdentities) matchesChosen(item types.Finding) bool {
+	return s.exact[findingKey(item)] || s.unique[findingFingerprint(item)] == 1
+}
+
 // recordChosen takes one human round's fix selection, which is a protection set
-// rather than a disposition: the content becomes matchable when the selection
-// named every instance that round's payload showed. A selection that left a
-// twin behind speaks only for the instance it named, so the twin stays
-// decidable; a selection that named them all keeps protecting the content after
-// a later reviewer moves it. Protection is assigned, never accumulated, so
-// deciding one content in several rounds never weakens it.
+// rather than a disposition: the content becomes matchable by matchesChosen
+// when the selection named every instance that round's payload showed. A
+// selection that left a twin behind speaks only for the instance it named, so
+// the twin stays decidable; a selection that named them all keeps protecting
+// the content after a later reviewer moves it. Protection is assigned, never
+// accumulated, so deciding one content in several rounds never weakens it.
 func (s *settlementIdentities) recordChosen(selected, shown []types.Finding) {
 	selectedCounts := countFindingFingerprints(selected)
 	shownCounts := countFindingFingerprints(shown)
@@ -203,7 +214,7 @@ func settledReviewDispositions(rounds []*db.StepRound) (ignored, external *settl
 		counts := countFindingFingerprints(shown.Items)
 		keyCounts := countFindingKeys(shown.Items)
 		settleable := func(item types.Finding) bool {
-			return settleableReviewFinding(item) && keyCounts[findingKey(item)] == 1 && !chosen.matches(item, counts)
+			return settleableReviewFinding(item) && keyCounts[findingKey(item)] == 1 && !chosen.matchesChosen(item)
 		}
 		if source == db.RoundSelectionSourceExternal {
 			if round.UserFindingsJSON == nil || len(selected) != 0 {

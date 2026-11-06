@@ -288,11 +288,12 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 // chose to fix.
 //
 // Only Review carries a decision forward by content, so only there does the
-// reversal refusal ask the settlement identity the filter does - a finding the
-// selection never named, a twin at another line or an instance a payload showed
-// twice, stays declinable on its own. Every other step re-derives its findings
-// each round and settles nothing, so it keeps the exact identity
-// earlierUserDecisionIDs reads.
+// reversal refusal ask the settlement identity the filter does - a twin at
+// another line the selection never named stays declinable on its own, while a
+// content the selection covered in full stays protected however many instances
+// this gate reports. Every other step re-derives its findings each round and
+// settles nothing, so it keeps the exact identity earlierUserDecisionIDs
+// reads.
 func EarlierChosenToFixIDs(step types.StepName, rounds []*db.StepRound, gate string) map[string]bool {
 	if step != types.StepReview {
 		keys := make(map[string]bool)
@@ -305,10 +306,9 @@ func EarlierChosenToFixIDs(step types.StepName, rounds []*db.StepRound, gate str
 	}
 	chosen := chosenToFixSettlements(rounds)
 	findings, _ := types.ParseFindingsJSON(gate)
-	counts := countFindingFingerprints(findings.Items)
 	ids := make(map[string]bool)
 	for _, item := range findings.Items {
-		if chosen.matches(item, counts) {
+		if chosen.matchesChosen(item) {
 			ids[item.ID] = true
 		}
 	}

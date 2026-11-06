@@ -563,6 +563,63 @@ func TestFilterSettledReviewFindings_AFullySelectedContentSurvivesBothDispositio
 	}
 }
 
+// The suppression filter reads the same protection set, so the duplicate
+// payload must not disarm it there either: a disposition round that reports the
+// protected content at two lines settles neither instance, and the finding
+// keeps being reported. Both settlement paths credit the same set, so one
+// matrix covers them.
+func TestFilterSettledReviewFindings_AProtectedContentSurvivesADuplicateDispositionPayload(t *testing.T) {
+	item := types.Finding{File: "first.go", Severity: types.FindingSeverityWarning, Description: "missing nil check", Action: types.ActionAskUser}
+	at := func(id string, line int) types.Finding {
+		shown := item
+		shown.ID, shown.Line = id, line
+		return shown
+	}
+	fixed, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{at("original", 10)}})
+	movedA, movedB := at("moved-a", 19), at("moved-b", 27)
+	pair, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{movedA, movedB}})
+	settledA, settledB := movedA, movedB
+	settledA.UserInstructions = "verified on the machine outside the review worktree"
+	settledB.UserInstructions = "verified on the machine outside the review worktree"
+	resolved, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{settledA, settledB}})
+
+	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{at("still-open", 19)}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+
+	fixSource := db.RoundSelectionSourceUser
+	selected := `["original"]`
+	empty := db.DeclinedSelectionJSON
+	for _, disposition := range []struct {
+		name   string
+		source string
+		userJS *string
+	}{
+		{"explicit ignore", db.RoundSelectionSourceUserIgnored, nil},
+		{"resolved externally", db.RoundSelectionSourceExternal, &resolved},
+	} {
+		t.Run(disposition.name, func(t *testing.T) {
+			source := disposition.source
+			rounds := []*db.StepRound{
+				{FindingsJSON: &fixed, SelectionSource: &fixSource, SelectedFindingIDs: &selected},
+				{FindingsJSON: &pair, SelectionSource: &source, SelectedFindingIDs: &empty, UserFindingsJSON: disposition.userJS},
+			}
+			filtered, err := filterSettledReviewFindings(raw, rounds)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := types.ParseFindingsJSON(filtered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(parsed.Items) != 1 {
+				t.Fatalf("findings = %+v, want the finding the operator chose to fix still reported", parsed.Items)
+			}
+			if got := SettledReviewFindingCount(rounds); got != 0 {
+				t.Fatalf("settled count = %d, want 0: the operator chose to fix that content", got)
+			}
+		})
+	}
+}
+
 // A decline taken on one of two findings that differ only in line settles that
 // instance and nothing else, and it stops being matched by content once the
 // reviewer moves it, so the operator is asked again rather than having a moved
