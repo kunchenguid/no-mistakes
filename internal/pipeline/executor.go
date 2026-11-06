@@ -1816,10 +1816,16 @@ rounds:
 				return false, "", fmt.Errorf("apply Review dispositions to carried findings: %w", err)
 			}
 			// A settled finding is dropped from the gate's work, never from the
-			// operator's verdict: the gate still parks for an explicit
-			// approve, so a run carrying a human disposition is never a silent
-			// clean pass. Only the auto-fix dispatch is withdrawn, because a
-			// fix round with nothing selected has nothing to fix.
+			// operator's verdict: once this step has settled anything, every
+			// later round parks for an explicit approve, so a run carrying a
+			// human disposition is never a silent clean pass. The park cannot
+			// be left to the findings themselves - an `info` ask-user finding
+			// parks only while it is still reported, and the filter is exactly
+			// what stops reporting it. Only the auto-fix dispatch is withdrawn,
+			// because a fix round with nothing selected has nothing to fix.
+			if SettledReviewFindingCount(rounds) > 0 {
+				outcome.NeedsApproval = true
+			}
 			if parsed, err := types.ParseFindingsJSON(filtered); err == nil {
 				outcome.AutoFixable = outcome.AutoFixable && len(parsed.Items) > 0
 			}

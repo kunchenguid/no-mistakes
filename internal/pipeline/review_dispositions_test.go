@@ -98,6 +98,17 @@ func TestExecutor_SettledFindingDoesNotBlockCoverageContinuation(t *testing.T) {
 					waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 				}
 			}
+			deadline = time.Now().Add(5 * time.Second)
+			for {
+				err = exec.Respond(types.StepReview, types.ActionApprove, nil)
+				if err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("a Review that settled a finding never parked for a verdict: %v", err)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
 			select {
 			case err := <-done:
 				if err != nil {
@@ -483,5 +494,92 @@ func TestExecutor_RecoveredExternalRoundRefusesAFixResponse(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("recovered executor timed out")
+	}
+}
+
+// A settled finding leaves the report, so the findings themselves can no
+// longer hold the gate: an `info` ask-user finding parks only while it is
+// still reported, and the filter is what stops reporting it. The settlement
+// itself must park, or Review certifies the head with no operator verdict.
+func TestExecutor_ASettledNonBlockingFindingStillParksForAVerdict(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := coverageWorkdir(t, database, run)
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		id, line := "note", 10
+		if calls > 1 {
+			id, line = "note-reissued", 24
+		}
+		outcome := dispositionCoverageOutcome(t, sctx, []types.Finding{
+			{ID: id, File: "first.go", Line: line, Severity: types.FindingSeverityInfo, Description: "private maintainer grant already settled", Action: types.ActionAskUser},
+		}, []string{"first.go", "second.go"})
+		// The real review step parks a non-blocking finding only through
+		// hasAskUserFindingsJSON; it never asks for approval itself.
+		outcome.NeedsApproval = false
+		outcome.AutoFixable = false
+		return outcome, nil
+	}}
+	exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { defer close(finished); done <- exec.Execute(ctx, run, repo, workDir) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("executor did not exit")
+		}
+	})
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"note"}, nil, nil, nil, "grant verified on the machine"); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) == 0 {
+		t.Fatalf("steps: %v %+v", err, steps)
+	}
+	stepID := steps[0].ID
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rounds, err := database.GetRoundsByStep(stepID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, err := database.GetStepsByRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current[0].Status == types.StepStatusCompleted {
+			t.Fatal("Review completed over a settled finding with no operator verdict")
+		}
+		if len(rounds) == 2 && current[0].Status == types.StepStatusAwaitingApproval {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the settled Review never parked for a verdict: rounds = %d, status = %s", len(rounds), current[0].Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("approved Review did not finish")
+	}
+	if calls != 2 {
+		t.Fatalf("review turns = %d, want 2", calls)
+	}
+	steps, err = database.GetStepsByRun(run.ID)
+	if err != nil || steps[0].Status != types.StepStatusCompleted {
+		t.Fatalf("approved review did not complete: %+v %v", steps, err)
 	}
 }

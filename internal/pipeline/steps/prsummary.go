@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -1250,12 +1251,16 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	hasRoundParseFailure := roundsHaveParseFailure(rounds)
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
-	// A finding the operator ignored or settled outside the worktree leaves
-	// the final set without ever being fixed, so it must not be published as a
-	// cleared finding. The step reports the count it found and did not clear,
-	// exactly as it does for findings approved as-is.
-	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings &&
-		!(sr.StepName == types.StepReview && roundsSettledAFinding(rounds))
+	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
+	// A finding the operator ignored or settled outside the worktree left the
+	// final set without ever being fixed, so it is reported as settled rather
+	// than folded into the fixed count. Only Review carries findings forward
+	// and suppresses a settled one; a declined Test or Lint finding is
+	// re-derived by the next round, so its absence really does mean it is gone.
+	settledFindings := 0
+	if sr.StepName == types.StepReview {
+		settledFindings = pipeline.SettledReviewFindingCount(rounds)
+	}
 	riskLevel := ""
 	if sr.StepName == types.StepReview {
 		src := finalFindings
@@ -1288,7 +1293,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	}
 
 	if findingsCleared {
-		result := buildFixResultText(rounds)
+		result := buildFixResultText(rounds, settledFindings)
 		line := fmt.Sprintf("🔧 **%s** - %s ✅", name, result)
 		return buildDetail(line)
 	}
@@ -1384,44 +1389,6 @@ func roundsHaveFindings(rounds []*db.StepRound) bool {
 	return false
 }
 
-// roundsSettledAFinding reports whether a round recorded a human disposition
-// that drops a finding from later reports without fixing it: a decline, or a
-// fact the operator verified outside the review worktree. Only Review carries
-// findings forward and suppresses a settled one, so only Review consults this;
-// a declined Test or Lint finding is re-derived by the next round and its
-// absence from the final set really does mean it is gone.
-//
-// The decline set is the one declinedFindingLines already owns - the
-// complement of the recorded selection, minus the findings an earlier round
-// chose to fix - because that is the set the Review disposition filter
-// suppresses. Keying on the ignore-only and external sources alone missed the
-// common mixed response, which records a user selection and declines the rest.
-func roundsSettledAFinding(rounds []*db.StepRound) bool {
-	var earlierFixes map[string]bool
-	for _, r := range rounds {
-		earlierFixes = withChosenToFix(earlierFixes, r)
-	}
-	for _, r := range rounds {
-		if r == nil || r.SelectionSource == nil {
-			continue
-		}
-		switch *r.SelectionSource {
-		case db.RoundSelectionSourceExternal:
-			if r.UserFindingsJSON == nil {
-				continue
-			}
-			if settled, err := types.ParseFindingsJSON(*r.UserFindingsJSON); err == nil && len(settled.Items) > 0 {
-				return true
-			}
-		case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserIgnored:
-			if len(declinedFindingLines(r, earlierFixes)) > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func roundsHaveParseFailure(rounds []*db.StepRound) bool {
 	for _, r := range rounds {
 		if r.FindingsJSON == nil {
@@ -1435,7 +1402,7 @@ func roundsHaveParseFailure(rounds []*db.StepRound) bool {
 	return false
 }
 
-func buildFixResultText(rounds []*db.StepRound) string {
+func buildFixResultText(rounds []*db.StepRound, settled int) string {
 	// Count findings in round 1.
 	var initialCount int
 	if len(rounds) > 0 && rounds[0].FindingsJSON != nil {
@@ -1479,6 +1446,9 @@ func buildFixResultText(rounds []*db.StepRound) string {
 		} else if result.count > 1 {
 			parts = append(parts, fmt.Sprintf("%s (%d)", result.text, result.count))
 		}
+	}
+	if settled > 0 {
+		parts = append(parts, fmt.Sprintf("%d settled by the operator without a fix", settled))
 	}
 
 	return strings.Join(parts, " → ")

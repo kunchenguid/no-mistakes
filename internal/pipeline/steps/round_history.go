@@ -63,6 +63,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 		"Use this to avoid repeating work you already tried. " +
 		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
 		"Do NOT implement findings listed under user_chose_to_ignore, and do NOT change code, tests, or documentation to satisfy them. " +
+		"Findings listed under user_resolved_external were verified by the user outside this worktree and are settled; treat them like user_chose_to_ignore and do NOT re-report them. " +
 		"Do NOT revert or undo fixes the user chose under user_chose_to_fix. " +
 		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
 		driverInstructionsNote +

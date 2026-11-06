@@ -329,9 +329,9 @@ func TestBuildPipelineSummary_SkippedStepWithEmptyRoundIsNotAPass(t *testing.T) 
 }
 
 // A finding the operator settled outside the review worktree, or ignored
-// outright, is never fixed: it only stops being reported. Publishing it as a
-// cleared finding tells every PR reader the opposite of what was decided.
-func TestBuildPipelineSummary_ASettledFindingIsNotPublishedAsCleared(t *testing.T) {
+// outright, is never fixed: it only stops being reported. The PR body names it
+// as settled without a fix rather than folding it into the fixed count.
+func TestBuildPipelineSummary_ASettledFindingIsPublishedAsSettled(t *testing.T) {
 	t.Parallel()
 	findings := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible"}],"summary":"1 warning"}`
 	settled := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible","user_instructions":"grant verified on the machine"}]}`
@@ -354,21 +354,19 @@ func TestBuildPipelineSummary_ASettledFindingIsNotPublishedAsCleared(t *testing.
 
 			md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-			if strings.Contains(md, "1 issue found ✅") {
-				t.Errorf("a settled finding was published as cleared, got:\n%s", md)
-			}
-			if !strings.Contains(md, "⚠️ **Review** - 1 warning") {
-				t.Errorf("expected the settled finding to stay counted as found, got:\n%s", md)
+			if !strings.Contains(md, "🔧 **Review** - 1 issue found → 1 settled by the operator without a fix ✅") {
+				t.Errorf("expected the settled finding named as settled, got:\n%s", md)
 			}
 		})
 	}
 }
 
 // The common mixed response - fix one finding, decline another - records a
-// user selection, and the Review disposition filter then drops the declined
-// finding from every later report. The body must still count it as found, and
-// must keep calling a round that declined nothing cleared.
-func TestBuildPipelineSummary_AMixedFixAndIgnoreIsNotPublishedAsCleared(t *testing.T) {
+// single user selection, and the Review disposition filter then drops the
+// declined finding from every later report. The body must credit the fix and
+// name the settlement separately, and must say nothing about a settlement when
+// the response declined nothing.
+func TestBuildPipelineSummary_AMixedFixAndIgnoreSeparatesTheTwoOutcomes(t *testing.T) {
 	t.Parallel()
 	two := `{"findings":[` +
 		`{"id":"bug","severity":"warning","file":"main.go","line":3,"description":"off-by-one"},` +
@@ -377,13 +375,13 @@ func TestBuildPipelineSummary_AMixedFixAndIgnoreIsNotPublishedAsCleared(t *testi
 	source := db.RoundSelectionSourceUser
 	selected := `["bug"]`
 	for _, tc := range []struct {
-		name      string
-		findings  string
-		cleared   bool
-		wantFound string
+		name        string
+		findings    string
+		wantFound   string
+		wantSettled bool
 	}{
-		{"declines the finding it did not select", two, false, "⚠️ **Review** - 2 warnings"},
-		{"selects every finding it showed", one, true, "1 issue found"},
+		{"declines the finding it did not select", two, "2 issues found", true},
+		{"selects every finding it showed", one, "1 issue found", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shown := tc.findings
@@ -395,11 +393,11 @@ func TestBuildPipelineSummary_AMixedFixAndIgnoreIsNotPublishedAsCleared(t *testi
 
 			md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-			if cleared := strings.Contains(md, "🔧 **Review** -"); cleared != tc.cleared {
-				t.Errorf("published as cleared = %v, want %v, got:\n%s", cleared, tc.cleared, md)
+			if !strings.Contains(md, "🔧 **Review** - "+tc.wantFound) {
+				t.Errorf("expected the fixed round still credited with %q, got:\n%s", tc.wantFound, md)
 			}
-			if !strings.Contains(md, tc.wantFound) {
-				t.Errorf("expected %q, got:\n%s", tc.wantFound, md)
+			if settled := strings.Contains(md, "1 settled by the operator without a fix"); settled != tc.wantSettled {
+				t.Errorf("settlement reported = %v, want %v, got:\n%s", settled, tc.wantSettled, md)
 			}
 		})
 	}

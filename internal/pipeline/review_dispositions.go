@@ -42,9 +42,60 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	if current.ReviewCoverageScope == nil {
 		return raw, nil
 	}
-	ignored := make(map[types.Finding]bool)
-	external := make(map[types.Finding]bool)
-	fixed := make(map[types.Finding]bool)
+	ignored, external, fixed, err := settledReviewDispositions(rounds)
+	if err != nil {
+		return "", err
+	}
+	if len(ignored) == 0 && len(external) == 0 {
+		return raw, nil
+	}
+	counts := countFindingFingerprints(current.Items)
+	filtered := types.FindingsMetadata(current)
+	removed := false
+	filtered.Items = make([]types.Finding, 0, len(current.Items))
+	for _, item := range current.Items {
+		key := findingFingerprint(item)
+		if settleableReviewFinding(item) && counts[key] == 1 && !fixed[findingKey(item)] && (ignored[key] || external[key]) {
+			removed = true
+			continue
+		}
+		filtered.Items = append(filtered.Items, item)
+	}
+	if !removed {
+		return raw, nil
+	}
+	return types.MarshalFindingsJSON(filtered)
+}
+
+// SettledReviewFindingCount reports how many distinct findings a human
+// disposition settled without a fix across this step's rounds. It is the size
+// of the set filterSettledReviewFindings suppresses, so the published record
+// and the gate can never disagree about what was settled. Unreadable rounds
+// count nothing: the filter fails the step on them, so a completed step's
+// rounds always parse.
+func SettledReviewFindingCount(rounds []*db.StepRound) int {
+	ignored, external, _, err := settledReviewDispositions(rounds)
+	if err != nil {
+		return 0
+	}
+	settled := make(map[types.Finding]bool, len(ignored)+len(external))
+	for key := range ignored {
+		settled[key] = true
+	}
+	for key := range external {
+		settled[key] = true
+	}
+	return len(settled)
+}
+
+// settledReviewDispositions reads this step's recorded human dispositions into
+// the three fingerprint sets every consumer decides on: the findings an ignore
+// declined, the findings settled outside the worktree, and the identities an
+// earlier round chose to fix.
+func settledReviewDispositions(rounds []*db.StepRound) (ignored, external, fixed map[types.Finding]bool, err error) {
+	ignored = make(map[types.Finding]bool)
+	external = make(map[types.Finding]bool)
+	fixed = make(map[types.Finding]bool)
 	for _, round := range rounds {
 		if round == nil || round.FindingsJSON == nil || round.SelectionSource == nil {
 			continue
@@ -55,14 +106,14 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 		}
 		shown, err := types.ParseFindingsJSON(*round.FindingsJSON)
 		if err != nil {
-			return "", fmt.Errorf("read review disposition: %w", err)
+			return nil, nil, nil, fmt.Errorf("read review disposition: %w", err)
 		}
 		if round.SelectedFindingIDs == nil {
-			return "", fmt.Errorf("review disposition is missing its selection")
+			return nil, nil, nil, fmt.Errorf("review disposition is missing its selection")
 		}
 		var selected []string
 		if err := json.Unmarshal([]byte(*round.SelectedFindingIDs), &selected); err != nil {
-			return "", fmt.Errorf("read review selection: %w", err)
+			return nil, nil, nil, fmt.Errorf("read review selection: %w", err)
 		}
 		shownCounts := countFindingFingerprints(shown.Items)
 		ids := make(map[string]bool, len(selected))
@@ -71,15 +122,15 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 		}
 		if source == db.RoundSelectionSourceExternal {
 			if round.UserFindingsJSON == nil || len(selected) != 0 {
-				return "", fmt.Errorf("external review disposition is incomplete")
+				return nil, nil, nil, fmt.Errorf("external review disposition is incomplete")
 			}
 			resolved, err := types.ParseFindingsJSON(*round.UserFindingsJSON)
 			if err != nil {
-				return "", fmt.Errorf("read external review disposition: %w", err)
+				return nil, nil, nil, fmt.Errorf("read external review disposition: %w", err)
 			}
 			for _, item := range resolved.Items {
 				if item.UserInstructions == "" {
-					return "", fmt.Errorf("external review disposition is missing its reason")
+					return nil, nil, nil, fmt.Errorf("external review disposition is missing its reason")
 				}
 				for _, original := range shown.Items {
 					if !settleableReviewFinding(original) {
@@ -107,25 +158,7 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 			}
 		}
 	}
-	if len(ignored) == 0 && len(external) == 0 {
-		return raw, nil
-	}
-	counts := countFindingFingerprints(current.Items)
-	filtered := types.FindingsMetadata(current)
-	removed := false
-	filtered.Items = make([]types.Finding, 0, len(current.Items))
-	for _, item := range current.Items {
-		key := findingFingerprint(item)
-		if settleableReviewFinding(item) && counts[key] == 1 && !fixed[findingKey(item)] && (ignored[key] || external[key]) {
-			removed = true
-			continue
-		}
-		filtered.Items = append(filtered.Items, item)
-	}
-	if !removed {
-		return raw, nil
-	}
-	return types.MarshalFindingsJSON(filtered)
+	return ignored, external, fixed, nil
 }
 
 // ambiguousSettlementIDs names the findings whose disposition could never be
