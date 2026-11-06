@@ -374,9 +374,25 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		for _, id := range gate {
 			allowed[id] = true
 		}
-		if !parsed || len(idsOutside(uniqueNonEmpty(findingIDs), allowed)) != 0 {
+		ids := uniqueNonEmpty(findingIDs)
+		if !parsed || len(idsOutside(ids, allowed)) != 0 {
 			e.mu.Unlock()
 			return RespondDispositions{}, fmt.Errorf("resolved_external requires finding IDs shown at the current Review gate")
+		}
+		items, err := types.ParseFindingsJSON(e.waitingFindings)
+		if err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, fmt.Errorf("read review findings: %w", err)
+		}
+		named := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			named[id] = true
+		}
+		for _, item := range items.Items {
+			if named[item.ID] && !settleableReviewFinding(item) {
+				e.mu.Unlock()
+				return RespondDispositions{}, fmt.Errorf("resolved_external cannot settle %s: a reviewer's question is answered with `no-mistakes axi answer`, and a pipeline-owned finding is never settled outside the worktree", item.ID)
+			}
 		}
 		rounds, refusal := e.roundsForFixValidation()
 		if refusal != nil {
@@ -387,23 +403,28 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, fmt.Errorf("resolved_external requires an undecided current review round")
 		}
-		items, err := types.ParseFindingsJSON(e.waitingFindings)
-		if err != nil {
-			e.mu.Unlock()
-			return RespondDispositions{}, fmt.Errorf("read review findings: %w", err)
-		}
-		ids := uniqueNonEmpty(findingIDs)
-		resolved := types.ExcludeFindings(items, ids)
-		remaining := make(map[string]bool, len(resolved.Items))
-		for _, item := range resolved.Items {
-			remaining[item.ID] = true
-		}
-		record := types.Findings{Items: []types.Finding{}}
-		for _, item := range items.Items {
-			if !remaining[item.ID] {
-				item.UserInstructions = strings.TrimSpace(approvalReason)
-				record.Items = append(record.Items, item)
+		// An external disposition can only suppress a finding no earlier round
+		// of this step chose to fix, exactly as --ignore can only decline one.
+		// Accepting it here and silently never applying it would report a
+		// decision the run never acted on.
+		chosenToFix := earlierChosenToFixIDs(rounds, e.waitingFindings)
+		var reversals []string
+		for _, id := range gate {
+			if named[id] && chosenToFix[id] {
+				reversals = append(reversals, id)
 			}
+		}
+		if len(reversals) > 0 {
+			e.mu.Unlock()
+			return RespondDispositions{}, &RespondRefusal{
+				Message:            fmt.Sprintf("%s already chosen to fix in an earlier round of this step", strings.Join(reversals, ",")),
+				DeclinedEarlierFix: reversals,
+				Help:               fixResponseRevertHelp,
+			}
+		}
+		record := types.FilterFindings(types.Findings{Items: items.Items}, ids)
+		for i := range record.Items {
+			record.Items[i].UserInstructions = strings.TrimSpace(approvalReason)
 		}
 		encoded, err := types.MarshalFindingsJSON(record)
 		if err != nil {
@@ -1063,6 +1084,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			if err := e.db.UpdateStepStatus(gate.stepResult.ID, types.StepStatusRunning); err != nil {
 				return e.failRun(run, repo, fmt.Errorf("return recovered Review to running: %w", err), ctx)
 			}
+			e.emitStepEvent(ipc.EventStepStarted, run, repo, gate.step.Name(), string(types.StepStatusRunning))
 		} else if response.action == types.ActionAnswer {
 			state.answering = true
 			// Carry the parked gate's outstanding set into the finalize round.
@@ -1744,7 +1766,6 @@ rounds:
 		durationOverrideMS += outcome.DurationOverrideMS
 
 		if carryFindings && e.db != nil {
-			hadFindings := findingsCount(outcome.Findings) > 0
 			rounds, err := e.db.GetRoundsByStep(sr.ID)
 			if err != nil {
 				return false, "", fmt.Errorf("read Review dispositions: %w", err)
@@ -1758,11 +1779,13 @@ rounds:
 			if err != nil {
 				return false, "", fmt.Errorf("apply Review dispositions to carried findings: %w", err)
 			}
+			// A settled finding is dropped from the gate's work, never from the
+			// operator's verdict: the gate still parks for an explicit
+			// approve, so a run carrying a human disposition is never a silent
+			// clean pass. Only the auto-fix dispatch is withdrawn, because a
+			// fix round with nothing selected has nothing to fix.
 			if parsed, err := types.ParseFindingsJSON(filtered); err == nil {
 				outcome.AutoFixable = outcome.AutoFixable && len(parsed.Items) > 0
-				if hadFindings && len(parsed.Items) == 0 && completeReviewCoverage(parsed) {
-					outcome.NeedsApproval = false
-				}
 			}
 		}
 		// roundFindings is this round's own output, used for the auto-fix
@@ -2097,6 +2120,8 @@ rounds:
 				sctx.CoverageContinuation = nil
 				sctx.PreviousFindings = ""
 				sctx.DeferredFindings = ""
+				sctx.CarriedFindings = ""
+				BindUncertifiedPipelineRange(sctx)
 				nextTrigger = "external"
 				continue rounds
 
@@ -2284,8 +2309,7 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 	idsJSON := marshalFindingIDs(combineSelectedFindingIDs(response.findingIDs, persisted))
 	if idsJSON == "" {
 		if len(response.ignoreFindingIDs) > 0 {
-			ignored := db.DeclinedSelectionJSON
-			if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &ignored, db.RoundSelectionSourceUserIgnored, nil, response.origin); err != nil {
+			if err := e.db.SetStepRoundIgnored(e.waitingRoundID, response.origin); err != nil {
 				return fmt.Errorf("record the response's declines: %w", err)
 			}
 			return nil

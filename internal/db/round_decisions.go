@@ -102,6 +102,20 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 // a data loss, so the invariant is enforced in the statement rather than
 // assumed by the caller.
 func (d *DB) SetStepRoundDeclined(id string, origins ...types.ResponseOrigin) error {
+	return d.setStepRoundDecline(id, RoundSelectionSourceUserDeclined, origins...)
+}
+
+// SetStepRoundIgnored records that a fix response declined every finding the
+// round's gate showed (--ignore with no --findings). It is the same write as
+// SetStepRoundDeclined under its own selection source, so an explicit ignore
+// stays distinguishable from an approve/skip/abort, and it carries the same
+// statement-enforced invariant: it never overwrites another selection and it
+// never clears the user findings an earlier decision on this round recorded.
+func (d *DB) SetStepRoundIgnored(id string, origins ...types.ResponseOrigin) error {
+	return d.setStepRoundDecline(id, RoundSelectionSourceUserIgnored, origins...)
+}
+
+func (d *DB) setStepRoundDecline(id, source string, origins ...types.ResponseOrigin) error {
 	origin := types.ResponseOriginUnknown
 	if len(origins) > 0 {
 		origin = origins[0].OrUnknown()
@@ -113,7 +127,7 @@ func (d *DB) SetStepRoundDeclined(id string, origins ...types.ResponseOrigin) er
 		        selection_source = CASE WHEN selection_source IS NULL THEN ? ELSE selection_source END,
 		        response_origin = ?
 		  WHERE id = ? AND (selection_source IS NULL OR selection_source = ?)`,
-		declined, RoundSelectionSourceUserDeclined, origin, id, RoundSelectionSourceUserDeclined,
+		declined, source, origin, id, source,
 	); err != nil {
 		return fmt.Errorf("set step round declined: %w", err)
 	}

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -159,7 +160,7 @@ func TestExecutor_ExternalDispositionRequiresReasonAndKeepsOtherFindingsBlocking
 	}
 }
 
-func TestFilterSettledReviewFindings_LegacyIgnoreOnlyFixIsStickyButApprovalIsNot(t *testing.T) {
+func TestFilterSettledReviewFindings_AnExplicitIgnoreIsStickyButAnApprovalIsNot(t *testing.T) {
 	item := types.Finding{ID: "original", File: "first.go", Severity: types.FindingSeverityInfo, Description: "grant settled", Action: types.ActionNoOp}
 	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
 	item.ID = "new-id"
@@ -167,15 +168,21 @@ func TestFilterSettledReviewFindings_LegacyIgnoreOnlyFixIsStickyButApprovalIsNot
 	current := types.Findings{Items: []types.Finding{item}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}}
 	raw, _ := types.MarshalFindingsJSON(current)
 	selection := db.DeclinedSelectionJSON
-	source := db.RoundSelectionSourceUserDeclined
-	rounds := []*db.StepRound{{FindingsJSON: &prior, SelectionSource: &source, SelectedFindingIDs: &selection}}
 	for _, tc := range []struct {
-		name, trigger string
-		want          int
-	}{{"approval", "coverage", 1}, {"legacy ignore", "auto_fix", 0}} {
+		name, source, nextTrigger string
+		want                      int
+	}{
+		{"approve", db.RoundSelectionSourceUserDeclined, "coverage", 1},
+		{"approve ahead of a fix round", db.RoundSelectionSourceUserDeclined, "auto_fix", 1},
+		{"explicit ignore", db.RoundSelectionSourceUserIgnored, "auto_fix", 0},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			later := append(append([]*db.StepRound(nil), rounds...), &db.StepRound{Trigger: tc.trigger})
-			filtered, err := filterSettledReviewFindings(raw, later)
+			source := tc.source
+			rounds := []*db.StepRound{
+				{FindingsJSON: &prior, SelectionSource: &source, SelectedFindingIDs: &selection},
+				{Trigger: tc.nextTrigger},
+			}
+			filtered, err := filterSettledReviewFindings(raw, rounds)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,6 +191,105 @@ func TestFilterSettledReviewFindings_LegacyIgnoreOnlyFixIsStickyButApprovalIsNot
 				t.Fatalf("items = %d, want %d: %v", len(parsed.Items), tc.want, err)
 			}
 		})
+	}
+}
+
+// A reviewer's open question is resolved by its answer, and the unreadable
+// history marker is pipeline-owned, so no finding disposition may suppress
+// either one. Both would otherwise let Review certify a head with a question
+// still open in the conversation.
+func TestFilterSettledReviewFindings_AQuestionAndAReservedMarkerAreNeverSettled(t *testing.T) {
+	question := types.Finding{ID: "question-q1", Category: types.FindingCategoryReviewQuestion, Severity: types.FindingSeverityWarning, Description: "which grant applies?", Action: types.ActionAskUser}
+	marker := types.Finding{ID: ReviewQuestionsUnreadableFindingID, Severity: types.FindingSeverityWarning, Description: "question history incomplete", Action: types.ActionAskUser}
+	code := types.Finding{ID: "code", File: "first.go", Severity: types.FindingSeverityInfo, Description: "grant settled", Action: types.ActionNoOp}
+	shown := []types.Finding{question, marker, code}
+	prior, _ := types.MarshalFindingsJSON(types.Findings{Items: shown})
+	settled, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{
+		{ID: "question-q1", Category: types.FindingCategoryReviewQuestion, Severity: types.FindingSeverityWarning, Description: "which grant applies?", Action: types.ActionAskUser, UserInstructions: "settled on the machine"},
+		{ID: ReviewQuestionsUnreadableFindingID, Severity: types.FindingSeverityWarning, Description: "question history incomplete", Action: types.ActionAskUser, UserInstructions: "settled on the machine"},
+		{ID: "code", File: "first.go", Severity: types.FindingSeverityInfo, Description: "grant settled", Action: types.ActionNoOp, UserInstructions: "settled on the machine"},
+	}})
+	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: shown, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+	selection := db.DeclinedSelectionJSON
+	for _, tc := range []struct{ name, source string }{
+		{"ignore", db.RoundSelectionSourceUserIgnored},
+		{"resolved external", db.RoundSelectionSourceExternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := tc.source
+			round := &db.StepRound{FindingsJSON: &prior, SelectionSource: &source, SelectedFindingIDs: &selection}
+			if source == db.RoundSelectionSourceExternal {
+				round.UserFindingsJSON = &settled
+			}
+			filtered, err := filterSettledReviewFindings(raw, []*db.StepRound{round})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := types.ParseFindingsJSON(filtered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept := map[string]bool{}
+			for _, item := range parsed.Items {
+				kept[item.ID] = true
+			}
+			if !kept["question-q1"] || !kept[ReviewQuestionsUnreadableFindingID] || kept["code"] {
+				t.Fatalf("settled set = %+v, want the question and the marker kept and the code finding dropped", parsed.Items)
+			}
+		})
+	}
+}
+
+// An earlier fix selection protects only its own identity, so a later explicit
+// disposition of a re-reported finding at a new line is effective. Otherwise
+// the daemon records and echoes a decision the run never acts on.
+func TestFilterSettledReviewFindings_ALaterDispositionBeatsAnEarlierFixAtANewLine(t *testing.T) {
+	item := types.Finding{ID: "original", File: "first.go", Line: 10, Severity: types.FindingSeverityWarning, Description: "grant missing", Action: types.ActionAskUser}
+	firstRound, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}})
+	chosen := `["original"]`
+	fixSource := db.RoundSelectionSourceUser
+
+	reissued := item
+	reissued.ID = "reissued"
+	reissued.Line = 19
+	secondRound, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{reissued}})
+	settledItem := reissued
+	settledItem.UserInstructions = "grant verified on the machine"
+	settled, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{settledItem}})
+	empty := db.DeclinedSelectionJSON
+	externalSource := db.RoundSelectionSourceExternal
+
+	later := item
+	later.ID = "third"
+	later.Line = 27
+	raw, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{later}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+
+	filtered, err := filterSettledReviewFindings(raw, []*db.StepRound{
+		{FindingsJSON: &firstRound, SelectionSource: &fixSource, SelectedFindingIDs: &chosen},
+		{FindingsJSON: &secondRound, SelectionSource: &externalSource, SelectedFindingIDs: &empty, UserFindingsJSON: &settled},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := types.ParseFindingsJSON(filtered)
+	if err != nil || len(parsed.Items) != 0 {
+		t.Fatalf("external disposition was defeated by the earlier fix: %+v %v", parsed.Items, err)
+	}
+
+	// The same finding still shown at the identity the earlier round chose to
+	// fix keeps its fix decision: an omission can never reverse it.
+	sameLine, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{item}, ReviewCoverageScope: &types.ReviewCoverageScope{Paths: []string{"first.go", "second.go"}}})
+	ignoreSource := db.RoundSelectionSourceUserIgnored
+	kept, err := filterSettledReviewFindings(sameLine, []*db.StepRound{
+		{FindingsJSON: &firstRound, SelectionSource: &fixSource, SelectedFindingIDs: &chosen},
+		{FindingsJSON: &firstRound, SelectionSource: &ignoreSource, SelectedFindingIDs: &empty},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err = types.ParseFindingsJSON(kept)
+	if err != nil || len(parsed.Items) != 1 {
+		t.Fatalf("an omission reversed an earlier fix: %+v %v", parsed.Items, err)
 	}
 }
 
@@ -202,5 +308,56 @@ func TestFilterSettledReviewFindings_AmbiguousFingerprintFailsClosed(t *testing.
 	parsed, err := types.ParseFindingsJSON(filtered)
 	if err != nil || len(parsed.Items) != 2 {
 		t.Fatalf("ambiguous findings were dropped: %+v %v", parsed, err)
+	}
+}
+
+// An open question is settled by its answer and a pipeline-owned finding is
+// re-derived every turn, so neither can be named in an external disposition.
+// A finding an earlier round chose to fix cannot be settled externally either,
+// for the same reason --ignore refuses it: a gate response never reverses an
+// applied fix, and accepting one here would record a decision the filter can
+// never apply.
+func TestExecutor_ExternalDispositionRefusesWhatItCannotSettle(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := coverageWorkdir(t, database, run)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		return dispositionCoverageOutcome(t, sctx, []types.Finding{
+			{ID: "question-q1", Category: types.FindingCategoryReviewQuestion, Severity: types.FindingSeverityWarning, Description: "which grant applies?", Action: types.ActionAskUser},
+			{ID: ReviewQuestionsUnreadableFindingID, Severity: types.FindingSeverityWarning, Description: "question history incomplete", Action: types.ActionAskUser},
+			{ID: "code", File: "first.go", Line: 10, Severity: types.FindingSeverityError, Description: "grant missing", Action: types.ActionAskUser},
+		}, []string{"first.go"}), nil
+	}}
+	exec := NewExecutor(database, p, &config.Config{TrustedConfigSHA: "fixture-trusted"}, nil, []Step{step}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	go func() { defer close(finished); _ = exec.Execute(ctx, run, repo, workDir) }()
+	t.Cleanup(func() { cancel(); <-finished })
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	for _, id := range []string{"question-q1", ReviewQuestionsUnreadableFindingID} {
+		_, err := exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{id}, nil, nil, nil, "settled on the machine")
+		if err == nil || !strings.Contains(err.Error(), "cannot settle "+id) {
+			t.Fatalf("%s was accepted as externally settled: %v", id, err)
+		}
+	}
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"code"}, []string{"question-q1", ReviewQuestionsUnreadableFindingID}, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err = exec.RespondWithOverrides(types.StepReview, types.ActionResolvedExternal, []string{"code"}, nil, nil, nil, "settled on the machine")
+		if err == nil || !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) || len(refusal.DeclinedEarlierFix) != 1 || refusal.DeclinedEarlierFix[0] != "code" {
+		t.Fatalf("external disposition was accepted over an applied fix: %v", err)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
+		t.Fatal(err)
 	}
 }

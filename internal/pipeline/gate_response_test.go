@@ -977,3 +977,24 @@ func TestExecutor_FixResponseRefusedWhenAStoredDecisionCannotBeDecoded(t *testin
 	}
 	waitExecutorDone(t, done)
 }
+
+// An external disposition rules only on the findings it names. Crediting its
+// whole gate payload as decided let a later response omit a finding nobody had
+// adjudicated, and the omission then suppressed that finding for good.
+func TestSplitFixResponse_AnExternalRoundDecidesOnlyTheFindingsItNamed(t *testing.T) {
+	settled := `{"findings":[{"id":"R1","severity":"error","file":"a.go","description":"first","action":"ask-user"}]}`
+	round := selectionRound(t, db.RoundSelectionSourceExternal, gateFindingsThree)
+	empty := db.DeclinedSelectionJSON
+	round.SelectedFindingIDs = &empty
+	round.UserFindingsJSON = &settled
+
+	_, err := splitFixResponse(gateFindingsThree, []*db.StepRound{round}, []string{"R2"}, nil)
+
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("error = %v, want a refusal naming the unadjudicated finding", err)
+	}
+	if len(refusal.Missing) != 1 || refusal.Missing[0] != "R3" {
+		t.Fatalf("missing = %v, want only R3: the external round settled R1 and ruled on nothing else", refusal.Missing)
+	}
+}

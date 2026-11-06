@@ -250,8 +250,17 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 		if !humanDecidedRound(round) {
 			continue
 		}
-		if round.FindingsJSON != nil {
-			findings, _ := types.ParseFindingsJSON(*round.FindingsJSON)
+		// An approve/skip/abort or a fix response addresses every finding its
+		// gate showed, so the whole payload is decided. An external
+		// disposition names the findings it settles and rules on nothing else,
+		// so crediting its payload would let a later response omit - and the
+		// complement then permanently suppress - a finding nobody adjudicated.
+		decided := round.FindingsJSON
+		if *round.SelectionSource == db.RoundSelectionSourceExternal {
+			decided = round.UserFindingsJSON
+		}
+		if decided != nil {
+			findings, _ := types.ParseFindingsJSON(*decided)
 			for _, item := range findings.Items {
 				keys[FindingDecisionKey(item)] = true
 			}

@@ -1250,7 +1250,11 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	hasRoundParseFailure := roundsHaveParseFailure(rounds)
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
-	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
+	// A finding the operator ignored or settled outside the worktree leaves
+	// the final set without ever being fixed, so it must not be published as a
+	// cleared finding. The step reports the count it found and did not clear,
+	// exactly as it does for findings approved as-is.
+	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings && !roundsSettledAFinding(rounds)
 	riskLevel := ""
 	if sr.StepName == types.StepReview {
 		src := finalFindings
@@ -1376,6 +1380,22 @@ func roundsHaveFindings(rounds []*db.StepRound) bool {
 		}
 	}
 
+	return false
+}
+
+// roundsSettledAFinding reports whether a round recorded a human disposition
+// that drops a finding from later reports without fixing it: an explicit
+// ignore, or a fact the operator verified outside the review worktree.
+func roundsSettledAFinding(rounds []*db.StepRound) bool {
+	for _, r := range rounds {
+		if r == nil || r.SelectionSource == nil {
+			continue
+		}
+		switch *r.SelectionSource {
+		case db.RoundSelectionSourceUserIgnored, db.RoundSelectionSourceExternal:
+			return true
+		}
+	}
 	return false
 }
 

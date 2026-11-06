@@ -8,10 +8,25 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// settleableReviewFinding reports whether a human finding disposition can
+// settle this finding at all. A reviewer's open question is resolved by its
+// answer and nothing else, and a reserved finding is pipeline-owned and
+// re-derived on every turn, so neither is ever suppressed by an ignore or an
+// external disposition - the same carve-out dropReviewQuestionFindingsJSON
+// applies to the append-only carry-forward.
+func settleableReviewFinding(item types.Finding) bool {
+	return item.Category != types.FindingCategoryReviewQuestion && !IsReservedFindingID(item.ID)
+}
+
 // filterSettledReviewFindings keeps a recorded human disposition effective when
 // a later reviewer re-mints an ID or moves a finding's line. A fingerprint is
 // accepted only when it identifies one finding in each report; ambiguous
 // matches fail closed. Approve/skip/abort do not settle individual findings.
+//
+// An earlier round's fix selection protects only its own finding identity -
+// exactly the identity splitFixResponse refuses to let a later response decline
+// - so every disposition the daemon accepts is effective, and a finding an
+// earlier round chose to fix is never suppressed by a later omission.
 func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, error) {
 	if raw == "" || len(rounds) == 0 {
 		return raw, nil
@@ -30,17 +45,12 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	ignored := make(map[types.Finding]bool)
 	external := make(map[types.Finding]bool)
 	fixed := make(map[types.Finding]bool)
-	for i, round := range rounds {
+	for _, round := range rounds {
 		if round == nil || round.FindingsJSON == nil || round.SelectionSource == nil {
 			continue
 		}
 		source := *round.SelectionSource
-		// Before user_ignored was recorded separately, an ignore-only fix
-		// used user_declined. A following fix round proves it was a fix
-		// response rather than an approve/skip/abort verdict.
-		legacyIgnore := source == db.RoundSelectionSourceUserDeclined && i+1 < len(rounds) &&
-			(rounds[i+1].Trigger == "auto_fix" || rounds[i+1].Trigger == "user_fix")
-		if source != db.RoundSelectionSourceUser && source != db.RoundSelectionSourceUserIgnored && source != db.RoundSelectionSourceExternal && !legacyIgnore {
+		if source != db.RoundSelectionSourceUser && source != db.RoundSelectionSourceUserIgnored && source != db.RoundSelectionSourceExternal {
 			continue
 		}
 		shown, err := types.ParseFindingsJSON(*round.FindingsJSON)
@@ -72,6 +82,9 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 					return "", fmt.Errorf("external review disposition is missing its reason")
 				}
 				for _, original := range shown.Items {
+					if !settleableReviewFinding(original) {
+						continue
+					}
 					if original.ID == item.ID && SameFinding(original, item) && shownCounts[findingFingerprint(original)] == 1 {
 						external[findingFingerprint(original)] = true
 					}
@@ -80,12 +93,15 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 			continue
 		}
 		for _, item := range shown.Items {
+			if !settleableReviewFinding(item) {
+				continue
+			}
 			key := findingFingerprint(item)
 			if shownCounts[key] != 1 {
 				continue
 			}
 			if ids[item.ID] {
-				fixed[key] = true
+				fixed[findingKey(item)] = true
 			} else {
 				ignored[key] = true
 			}
@@ -100,7 +116,7 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	filtered.Items = make([]types.Finding, 0, len(current.Items))
 	for _, item := range current.Items {
 		key := findingFingerprint(item)
-		if counts[key] == 1 && !fixed[key] && (ignored[key] || external[key]) {
+		if settleableReviewFinding(item) && counts[key] == 1 && !fixed[findingKey(item)] && (ignored[key] || external[key]) {
 			removed = true
 			continue
 		}
@@ -110,30 +126,4 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 		return raw, nil
 	}
 	return types.MarshalFindingsJSON(filtered)
-}
-
-// completeReviewCoverage checks the full trusted scope, not merely whether the
-// review recorded some paths. A settled finding cannot waive missing coverage.
-func completeReviewCoverage(findings types.Findings) bool {
-	scope := findings.ReviewCoverageScope
-	if scope == nil || len(scope.Paths) == 0 || len(findings.ReviewedPaths) == 0 {
-		return false
-	}
-	paths := make(map[string]bool, len(scope.Paths))
-	for _, name := range scope.Paths {
-		path := normalizeCoveredPath(name)
-		if path == "" || paths[path] {
-			return false
-		}
-		paths[path] = true
-	}
-	seen := make(map[string]bool, len(findings.ReviewedPaths))
-	for _, name := range findings.ReviewedPaths {
-		path := normalizeCoveredPath(name)
-		if path == "" || !paths[path] {
-			return false
-		}
-		seen[path] = true
-	}
-	return len(seen) == len(paths)
 }

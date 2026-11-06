@@ -327,3 +327,39 @@ func TestBuildPipelineSummary_SkippedStepWithEmptyRoundIsNotAPass(t *testing.T) 
 		})
 	}
 }
+
+// A finding the operator settled outside the review worktree, or ignored
+// outright, is never fixed: it only stops being reported. Publishing it as a
+// cleared finding tells every PR reader the opposite of what was decided.
+func TestBuildPipelineSummary_ASettledFindingIsNotPublishedAsCleared(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible"}],"summary":"1 warning"}`
+	settled := `{"findings":[{"id":"grant","severity":"warning","file":"main.go","line":3,"description":"private grant not visible","user_instructions":"grant verified on the machine"}]}`
+	empty := db.DeclinedSelectionJSON
+	for _, tc := range []struct{ name, source string }{
+		{"resolved external", db.RoundSelectionSourceExternal},
+		{"explicit ignore", db.RoundSelectionSourceUserIgnored},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := tc.source
+			first := &db.StepRound{Round: 1, Trigger: "initial", FindingsJSON: &findings, SelectedFindingIDs: &empty, SelectionSource: &source, DurationMS: 1000}
+			if source == db.RoundSelectionSourceExternal {
+				first.UserFindingsJSON = &settled
+			}
+			steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted}}
+			rounds := map[string][]*db.StepRound{"s1": {
+				first,
+				{Round: 2, Trigger: "external", DurationMS: 700},
+			}}
+
+			md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+			if strings.Contains(md, "1 issue found ✅") {
+				t.Errorf("a settled finding was published as cleared, got:\n%s", md)
+			}
+			if !strings.Contains(md, "⚠️ **Review** - 1 warning") {
+				t.Errorf("expected the settled finding to stay counted as found, got:\n%s", md)
+			}
+		})
+	}
+}
