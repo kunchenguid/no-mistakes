@@ -637,6 +637,25 @@ func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 	return r, nil
 }
 
+// GetIntegrationRuns reads only pinned runs for private-ref cleanup, without
+// materializing unrelated legacy runs and their intent text.
+func (d *DB) GetIntegrationRuns() ([]*Run, error) {
+	rows, err := d.sql.Query(`SELECT ` + d.runColumns() + ` FROM runs WHERE integration_destination IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("get integration runs: %w", err)
+	}
+	defer rows.Close()
+	var runs []*Run
+	for rows.Next() {
+		r := &Run{}
+		if err := scanRun(rows, r); err != nil {
+			return nil, fmt.Errorf("scan integration run: %w", err)
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
 // GetActiveRuns returns all pending or running runs across all repos, newest first.
 func (d *DB) GetActiveRuns() ([]*Run, error) {
 	rows, err := d.sql.Query(

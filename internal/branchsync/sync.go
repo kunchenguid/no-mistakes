@@ -299,7 +299,10 @@ func (s *Service) Refresh(ctx context.Context) State {
 		}
 		return blockedPlan(state, StateTargetChanged, "blocked_binding_changed", "the push binding or configured target changed before refresh; no files or refs were changed")
 	}
-	pushURL := runPushURL(freshRepo, freshRun)
+	pushURL := s.resolvedPushURL(ctx, freshRepo, freshRun)
+	if pushURL == "" {
+		return blockedPlan(state, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before refresh; no files or refs were changed")
+	}
 
 	// Each remote operation below gets its own bounded deadline derived from
 	// ctx, rather than sharing one context across both calls: a slow-but-
@@ -463,7 +466,11 @@ func (s *Service) Apply(ctx context.Context) State {
 
 	checkCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer cancel()
-	live, err := s.runLsRemote(checkCtx, s.workDir(), runPushURL(freshRepo, freshRun), plan.Target.Ref)
+	pushURL := s.resolvedPushURL(checkCtx, freshRepo, freshRun)
+	if pushURL == "" {
+		return blockedPlan(plan, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before synchronization; no files or refs were changed")
+	}
+	live, err := s.runLsRemote(checkCtx, s.workDir(), pushURL, plan.Target.Ref)
 	if err != nil || live != plan.Pipeline.PushedHead {
 		return blockedPlan(plan, StateRemoteRewritten, "blocked_remote_changed_before_apply", "the live remote changed before synchronization; no files or refs were changed")
 	}
@@ -1579,7 +1586,11 @@ func (s *Service) recoverRemoteRewritten(ctx context.Context, run *db.Run, keepL
 	}
 	lsCtx, lsCancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer lsCancel()
-	again, err := s.runLsRemote(lsCtx, s.workDir(), runPushURL(repo, run), fresh.Target.Ref)
+	pushURL := s.resolvedPushURL(lsCtx, repo, run)
+	if pushURL == "" {
+		return blockedPlan(fresh, StateTargetChanged, "blocked_binding_changed", "the selected push target could not be verified before rebinding; the push binding was not changed"), true
+	}
+	again, err := s.runLsRemote(lsCtx, s.workDir(), pushURL, fresh.Target.Ref)
 	if err != nil || again != live {
 		blocked := blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_remote_changed", fmt.Sprintf("the live remote changed again before the push binding could be rebound; the push binding was not changed and the superseded pipeline head stays anchored at %s", anchorRef))
 		blocked.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
@@ -1861,6 +1872,15 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 // does, and an unusable credential fails the live check closed rather than
 // verifying against a remote the pipeline does not publish to.
 func (s *Service) resolvedPushURL(ctx context.Context, repo *db.Repo, run *db.Run) string {
+	if strings.TrimSpace(repo.ForkURL) == "" && run != nil && run.Integration != nil {
+		// The pin is identity evidence, never a credential source. Only the
+		// same named remote may supply this run's current transport URL.
+		remote, err := run.Integration.RuntimeURL(ctx, s.workDir())
+		if err != nil {
+			return ""
+		}
+		return remote
+	}
 	target := runPushURL(repo, run)
 	if strings.TrimSpace(target) == "" {
 		return ""

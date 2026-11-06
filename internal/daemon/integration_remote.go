@@ -82,6 +82,21 @@ func (m *RunManager) checkBranchIntegrationPR(ctx context.Context, repo *db.Repo
 	return nil
 }
 
+// Startup cannot derive this cleanup from worktree directories: a terminal
+// run's worktree may have been reaped before its private refs were removed.
+func (m *RunManager) cleanupTerminalIntegrationRefs(ctx context.Context) {
+	runs, err := m.db.GetIntegrationRuns()
+	if err != nil {
+		slog.Warn("cannot list integration ref runs", "error", err)
+		return
+	}
+	for _, run := range runs {
+		if run.Status.Terminal() {
+			m.cleanupIntegrationRefs(ctx, run, m.paths.RepoDir(run.RepoID))
+		}
+	}
+}
+
 func (m *RunManager) cleanupIntegrationRefs(ctx context.Context, run *db.Run, gateDir string) {
 	if run == nil || run.Integration == nil || !run.Status.Terminal() {
 		return
@@ -99,13 +114,13 @@ func (m *RunManager) cleanupIntegrationRefs(ctx context.Context, run *db.Run, ga
 			return
 		}
 	}
-	refs, err := git.Run(ctx, gateDir, "for-each-ref", "--format=%(refname)", run.Integration.Ref(""))
+	refs, err := git.RunBare(ctx, gateDir, "for-each-ref", "--format=%(refname)", run.Integration.Ref(""))
 	if err != nil {
 		slog.Warn("cannot list integration refs", "run_id", run.ID, "error", err)
 		return
 	}
 	for _, ref := range strings.Fields(refs) {
-		if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", "-d", ref); err != nil {
+		if _, err := git.RunBare(ctx, gateDir, "update-ref", "--no-deref", "-d", ref); err != nil {
 			slog.Warn("cannot remove integration ref", "run_id", run.ID, "error", err)
 		}
 	}
