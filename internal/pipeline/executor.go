@@ -370,6 +370,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	// approval with a selection count and the recovered path report none, for
 	// the same decision.
 	var settledFindingIDs []string
+	var settledFindings *string
 	if action == types.ActionResolvedExternal {
 		if step != types.StepReview || strings.TrimSpace(approvalReason) == "" || len(uniqueNonEmpty(findingIDs)) == 0 || len(ignoreFindingIDs) != 0 || len(addedFindings) != 0 || len(instructions.userNotes()) != 0 || len(instructions.driverNotes()) != 0 {
 			e.mu.Unlock()
@@ -444,11 +445,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			e.mu.Unlock()
 			return RespondDispositions{}, err
 		}
-		empty := db.DeclinedSelectionJSON
-		if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &empty, db.RoundSelectionSourceExternal, &encoded, option.Origin); err != nil {
-			e.mu.Unlock()
-			return RespondDispositions{}, fmt.Errorf("record external review disposition: %w", err)
-		}
+		settledFindings = &encoded
 		settledFindingIDs = idsInPayloadOrder(ids, gate)
 		findingIDs = nil
 	}
@@ -594,6 +591,16 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		if err := e.db.SetStepResponseOrigin(e.waitingStepResultID, option.Origin); err != nil {
 			e.mu.Unlock()
 			return RespondDispositions{}, err
+		}
+	}
+	// Last of the writes that can refuse this response: a settlement stored
+	// before one of them failed would leave the round decided while the gate
+	// stayed parked, and a decided external round refuses every continuation.
+	if settledFindings != nil {
+		empty := db.DeclinedSelectionJSON
+		if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &empty, db.RoundSelectionSourceExternal, settledFindings, option.Origin); err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, fmt.Errorf("record external review disposition: %w", err)
 		}
 	}
 	e.waiting = false
@@ -2370,6 +2377,15 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 	idsJSON := marshalFindingIDs(combineSelectedFindingIDs(response.findingIDs, persisted))
 	if idsJSON == "" {
 		if len(response.ignoreFindingIDs) > 0 {
+			// Only Review settles a finding, so only Review needs an explicit
+			// decline to be distinguishable from an approve - and only there
+			// can a recorded decline refuse one.
+			if step != types.StepReview {
+				if err := e.db.SetStepRoundDeclined(e.waitingRoundID, response.origin); err != nil {
+					return fmt.Errorf("record the response's declines: %w", err)
+				}
+				return nil
+			}
 			if err := e.db.SetStepRoundIgnored(e.waitingRoundID, response.origin); err != nil {
 				if errors.Is(err, db.ErrStepRoundDecisionRecorded) {
 					return &RespondRefusal{

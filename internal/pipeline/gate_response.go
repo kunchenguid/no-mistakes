@@ -284,15 +284,15 @@ func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool
 // earlierChosenToFixIDs names the gate's findings an earlier round already
 // chose to fix. It asks the same settlement identity the filter does, so a
 // response is refused exactly when the disposition it asks for could never be
-// credited, and a finding that differs from a selected one only in line stays
-// declinable on its own.
+// credited, and a finding the selection never named - a twin at another line,
+// or an instance a payload showed twice - stays declinable on its own.
 func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool {
 	chosen := chosenToFixSettlements(rounds)
 	findings, _ := types.ParseFindingsJSON(gate)
 	counts := countFindingFingerprints(findings.Items)
 	ids := make(map[string]bool)
 	for _, item := range findings.Items {
-		if chosen.chose(item, counts) {
+		if chosen.matches(item, counts) {
 			ids[item.ID] = true
 		}
 	}

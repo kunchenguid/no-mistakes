@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -185,10 +184,9 @@ func TestExecutor_RecoveredGateResolutionsWithoutASelectionRecordTheDecline(t *t
 }
 
 // A response recorded before a daemon restart leaves the same declined round
-// parked. An ignore-only retry answering that gate is refused rather than
-// recorded: the round already carries a decline, an ignore cannot replace it,
-// and accepting the retry would echo declines the run never stored.
-func TestExecutor_RecoveredIgnoreOnlyResponseIsRefusedOnADeclinedRound(t *testing.T) {
+// parked. A retry must refresh that round's caller origin rather than silently
+// keeping the first response's provenance.
+func TestExecutor_RecoveredIgnoreOnlyResponseUpdatesDeclinedRoundOrigin(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
@@ -230,7 +228,7 @@ func TestExecutor_RecoveredIgnoreOnlyResponseIsRefusedOnADeclinedRound(t *testin
 	go func() { done <- exec.Resume(ctx, run, repo, t.TempDir()) }()
 	waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepTest)
 
-	_, respondErr := exec.RespondWithOverrides(
+	if _, err := exec.RespondWithOverrides(
 		types.StepTest,
 		types.ActionFix,
 		nil,
@@ -239,24 +237,8 @@ func TestExecutor_RecoveredIgnoreOnlyResponseIsRefusedOnADeclinedRound(t *testin
 		nil,
 		"",
 		ResponseOptions{Origin: types.ResponseOrigin("auto_yes")},
-	)
-	var refusal *RespondRefusal
-	if !errors.As(respondErr, &refusal) {
-		t.Fatalf("recovered ignore-only response = %v, want a refusal", respondErr)
-	}
-	parked, err := database.GetRoundsByStep(stepResult.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(parked) != 1 || parked[0].SelectionSource == nil || *parked[0].SelectionSource != db.RoundSelectionSourceUserDeclined {
-		t.Fatalf("parked round decision = %+v, want the recorded %q", parked, db.RoundSelectionSourceUserDeclined)
-	}
-	if parked[0].ResponseOrigin != types.ResponseOrigin("interactive") {
-		t.Fatalf("round origin = %q, want the recorded %q", parked[0].ResponseOrigin, "interactive")
-	}
-
-	if _, err := exec.RespondWithOverrides(types.StepTest, types.ActionSkip, nil, nil, nil, nil, ""); err != nil {
-		t.Fatalf("skip the still-parked gate: %v", err)
+	); err != nil {
+		t.Fatalf("recovered ignore-only response: %v", err)
 	}
 
 	select {
@@ -281,6 +263,9 @@ func TestExecutor_RecoveredIgnoreOnlyResponseIsRefusedOnADeclinedRound(t *testin
 	}
 	if recoveredRound == nil {
 		t.Fatalf("recovery lost parked round %q; rounds = %d", round.ID, len(rounds))
+	}
+	if recoveredRound.ResponseOrigin != types.ResponseOrigin("auto_yes") {
+		t.Fatalf("round origin = %q, want %q", recoveredRound.ResponseOrigin, "auto_yes")
 	}
 	if recoveredRound.SelectionSource == nil || *recoveredRound.SelectionSource != db.RoundSelectionSourceUserDeclined {
 		t.Fatalf("selection_source = %v, want %q", recoveredRound.SelectionSource, db.RoundSelectionSourceUserDeclined)

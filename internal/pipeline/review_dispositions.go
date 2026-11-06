@@ -24,49 +24,51 @@ func settleableReviewFinding(item types.Finding) bool {
 // taken from: findings differing only in line are decided one instance at a
 // time, and a moved one is reported again rather than silently settled.
 type settlementIdentities struct {
-	exact    map[types.Finding]bool
-	unique   map[types.Finding]int
-	anyPlace map[types.Finding]bool
+	exact  map[types.Finding]bool
+	unique map[types.Finding]int
+	widest map[types.Finding]int
 }
 
 func newSettlementIdentities() *settlementIdentities {
 	return &settlementIdentities{
-		exact:    map[types.Finding]bool{},
-		unique:   map[types.Finding]int{},
-		anyPlace: map[types.Finding]bool{},
+		exact:  map[types.Finding]bool{},
+		unique: map[types.Finding]int{},
+		widest: map[types.Finding]int{},
 	}
 }
 
-func (s *settlementIdentities) record(item types.Finding, uniqueInItsPayload bool) {
-	key := findingKey(item)
-	if s.exact[key] {
-		return
+// record takes one round's decisions. Each item is recorded under its exact
+// instance, and additionally as content-matchable when that content identified
+// one finding in the payload the decision was taken from.
+func (s *settlementIdentities) record(items []types.Finding, counts map[types.Finding]int) {
+	round := make(map[types.Finding]int, len(items))
+	for _, item := range items {
+		fingerprint := findingFingerprint(item)
+		round[fingerprint]++
+		if s.exact[findingKey(item)] {
+			continue
+		}
+		s.exact[findingKey(item)] = true
+		if counts[fingerprint] == 1 {
+			s.unique[fingerprint]++
+		}
 	}
-	s.exact[key] = true
-	fingerprint := findingFingerprint(item)
-	s.anyPlace[fingerprint] = true
-	if uniqueInItsPayload {
-		s.unique[fingerprint]++
+	for fingerprint, instances := range round {
+		if instances > s.widest[fingerprint] {
+			s.widest[fingerprint] = instances
+		}
 	}
 }
 
-// settled reports whether item is the finding a recorded decision named. It is
+// matches reports whether item is the finding a recorded decision named. It is
 // the repository's ordinary finding match: content alone identifies a finding
-// only when it identifies exactly one on each side.
-func (s *settlementIdentities) settled(item types.Finding, counts map[types.Finding]int) bool {
+// only when it identifies exactly one on each side, so an instance a decision
+// never named is reported again instead of answered for the operator.
+func (s *settlementIdentities) matches(item types.Finding, counts map[types.Finding]int) bool {
 	return hasFindingMatch(item, s.exact, counts, s.unique)
 }
 
-// chose reports whether item may be a finding a recorded fix selection named.
-// It is deliberately wider than settled - any recorded instance of the content
-// answers it - because a fix selection leaving the gate unnoticed loses the
-// operator's work, while a disposition withheld only asks them again.
-func (s *settlementIdentities) chose(item types.Finding, counts map[types.Finding]int) bool {
-	fingerprint := findingFingerprint(item)
-	return s.exact[findingKey(item)] || counts[fingerprint] == 1 && s.anyPlace[fingerprint]
-}
-
-func (s *settlementIdentities) size() int { return len(s.exact) }
+func (s *settlementIdentities) empty() bool { return len(s.exact) == 0 }
 
 // filterSettledReviewFindings keeps a recorded human disposition effective when
 // a later reviewer re-mints an ID or moves a finding's line. Content identifies
@@ -97,7 +99,7 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	if err != nil {
 		return "", err
 	}
-	if ignored.size() == 0 && external.size() == 0 {
+	if ignored.empty() && external.empty() {
 		return raw, nil
 	}
 	counts := countFindingFingerprints(current.Items)
@@ -106,7 +108,7 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	removed := false
 	filtered.Items = make([]types.Finding, 0, len(current.Items))
 	for _, item := range current.Items {
-		settled := ignored.settled(item, counts) || external.settled(item, counts)
+		settled := ignored.matches(item, counts) || external.matches(item, counts)
 		if settleableReviewFinding(item) && keyCounts[findingKey(item)] == 1 && settled {
 			removed = true
 			continue
@@ -116,28 +118,39 @@ func filterSettledReviewFindings(raw string, rounds []*db.StepRound) (string, er
 	if !removed {
 		return raw, nil
 	}
+	// The reviewer's summary describes the payload it produced, and this is the
+	// code that stopped reporting part of it, so keeping the sentence would
+	// show the operator a count of findings the gate no longer lists.
+	filtered.Summary = ""
 	return types.MarshalFindingsJSON(filtered)
 }
 
 // SettledReviewFindingCount reports how many distinct findings a human
 // disposition settled without a fix across this step's rounds. It reads the
 // same two sets filterSettledReviewFindings suppresses from, so a finding the
-// operator chose to fix is never published as settled. Unreadable rounds count
-// nothing: the filter fails the step on them, so a completed step's rounds
-// always parse.
+// operator chose to fix is never published as settled. The instances are
+// counted per content, taking the most any single round settled, because the
+// same finding settled again after the reviewer moved it is one finding the
+// operator decided, not two. Unreadable rounds count nothing: the filter fails
+// the step on them, so a completed step's rounds always parse.
 func SettledReviewFindingCount(rounds []*db.StepRound) int {
 	ignored, external, err := settledReviewDispositions(rounds)
 	if err != nil {
 		return 0
 	}
-	settled := make(map[types.Finding]bool, ignored.size()+external.size())
-	for key := range ignored.exact {
-		settled[key] = true
+	settled := 0
+	for fingerprint, instances := range ignored.widest {
+		if other := external.widest[fingerprint]; other > instances {
+			instances = other
+		}
+		settled += instances
 	}
-	for key := range external.exact {
-		settled[key] = true
+	for fingerprint, instances := range external.widest {
+		if _, counted := ignored.widest[fingerprint]; !counted {
+			settled += instances
+		}
 	}
-	return len(settled)
+	return settled
 }
 
 // settledReviewDispositions reads this step's recorded human dispositions into
@@ -175,7 +188,7 @@ func settledReviewDispositions(rounds []*db.StepRound) (ignored, external *settl
 		counts := countFindingFingerprints(shown.Items)
 		keyCounts := countFindingKeys(shown.Items)
 		settleable := func(item types.Finding) bool {
-			return settleableReviewFinding(item) && keyCounts[findingKey(item)] == 1 && !chosen.chose(item, counts)
+			return settleableReviewFinding(item) && keyCounts[findingKey(item)] == 1 && !chosen.matches(item, counts)
 		}
 		if source == db.RoundSelectionSourceExternal {
 			if round.UserFindingsJSON == nil || len(selected) != 0 {
@@ -185,38 +198,57 @@ func settledReviewDispositions(rounds []*db.StepRound) (ignored, external *settl
 			if err != nil {
 				return nil, nil, fmt.Errorf("read external review disposition: %w", err)
 			}
+			var settled []types.Finding
 			for _, item := range resolved.Items {
 				if item.UserInstructions == "" {
 					return nil, nil, fmt.Errorf("external review disposition is missing its reason")
 				}
 				for _, original := range shown.Items {
 					if original.ID == item.ID && SameFinding(original, item) && settleable(original) {
-						external.record(original, counts[findingFingerprint(original)] == 1)
+						settled = append(settled, original)
 					}
 				}
 			}
+			external.record(settled, counts)
 			continue
 		}
+		var declined []types.Finding
 		for _, item := range shown.Items {
 			if settleable(item) {
-				ignored.record(item, counts[findingFingerprint(item)] == 1)
+				declined = append(declined, item)
 			}
 		}
+		ignored.record(declined, counts)
 	}
 	return ignored, external, nil
 }
 
 // chosenToFixSettlements reports every finding instance a human round of this
-// step chose to fix, so no consumer can settle one.
+// step chose to fix, so no consumer can settle one. A selection taken from a
+// payload that showed its content twice speaks only for the instance it named:
+// claiming the other one too refused the operator's own decline of a finding
+// they never selected.
 func chosenToFixSettlements(rounds []*db.StepRound) *settlementIdentities {
 	chosen := newSettlementIdentities()
 	for _, round := range rounds {
 		if !humanDecidedRound(round) {
 			continue
 		}
-		for _, item := range selectedFindingIdentities([]*db.StepRound{round}) {
-			chosen.record(item, false)
+		var shown []types.Finding
+		if round.FindingsJSON != nil {
+			if payload, err := types.ParseFindingsJSON(*round.FindingsJSON); err == nil {
+				shown = payload.Items
+			}
 		}
+		gate := countFindingFingerprints(shown)
+		var selected []types.Finding
+		for _, item := range selectedFindingIdentities([]*db.StepRound{round}) {
+			selected = append(selected, item)
+			if gate[findingFingerprint(item)] == 0 {
+				shown = append(shown, item)
+			}
+		}
+		chosen.record(selected, countFindingFingerprints(shown))
 	}
 	return chosen
 }

@@ -92,6 +92,44 @@ func TestSplitFixResponse_KeepsAnEarlierDecisionOnOmission(t *testing.T) {
 	}
 }
 
+// A selection taken from a payload that showed its content twice speaks only
+// for the instance it named. Once the other instance survives a fix round at a
+// new line it is a finding nobody selected, so declining it is not a reversal
+// and must not be refused as one.
+func TestSplitFixResponse_AllowsDecliningATwinTheSelectionNeverNamed(t *testing.T) {
+	twins := `{"findings":[` +
+		`{"id":"twin-a","severity":"warning","file":"a.go","line":10,"description":"missing nil check","action":"ask-user"},` +
+		`{"id":"twin-b","severity":"warning","file":"a.go","line":50,"description":"missing nil check","action":"ask-user"}]}`
+	moved := `{"findings":[` +
+		`{"id":"survivor","severity":"warning","file":"a.go","line":54,"description":"missing nil check","action":"ask-user"}]}`
+	rounds := []*db.StepRound{userDecisionRound(t, twins, "twin-a")}
+
+	got, err := splitFixResponse(moved, rounds, nil, []string{"survivor"})
+	if err != nil {
+		t.Fatalf("declining a twin the selection never named was refused: %v", err)
+	}
+	if strings.Join(got.Ignored, ",") != "survivor" {
+		t.Fatalf("ignored = %v, want [survivor]", got.Ignored)
+	}
+}
+
+// A selection a payload showed once still speaks for the same content at a new
+// line, so declining it after a line shift is still a reversal.
+func TestSplitFixResponse_RefusesDecliningAUniqueEarlierFixAtANewLine(t *testing.T) {
+	one := `{"findings":[` +
+		`{"id":"only","severity":"warning","file":"a.go","line":10,"description":"missing nil check","action":"ask-user"}]}`
+	moved := `{"findings":[` +
+		`{"id":"reissued","severity":"warning","file":"a.go","line":14,"description":"missing nil check","action":"ask-user"}]}`
+	rounds := []*db.StepRound{userDecisionRound(t, one, "only")}
+
+	_, err := splitFixResponse(moved, rounds, nil, []string{"reissued"})
+
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) || strings.Join(refusal.DeclinedEarlierFix, ",") != "reissued" {
+		t.Fatalf("a moved unique fix selection lost its protection: %v", err)
+	}
+}
+
 // A gate response cannot reverse an applied fix: --ignore naming a finding an
 // earlier user round of the same step already chose to fix is refused, and the
 // refusal names those findings so a caller can correct itself by omitting them.
